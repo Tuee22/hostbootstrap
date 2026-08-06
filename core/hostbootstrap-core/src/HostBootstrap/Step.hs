@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
 {- | The opaque validated step/plan algebra.
@@ -51,6 +52,9 @@ module HostBootstrap.Step (
     -- * Opaque steps
     Step,
     StepAction,
+    StepObservation (..),
+    observationSucceeded,
+    observationDetail,
     StepKind,
     stepLabel,
     stepFrame,
@@ -107,6 +111,7 @@ module HostBootstrap.Step (
 where
 
 import Data.List (group, sort)
+import Data.Text (Text)
 import Data.Word (Word64)
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Lifecycle.Execution (StepExecution)
@@ -132,7 +137,72 @@ rather than by convention. Until then the real guarantee is the /value/ one:
 every identity on the descriptor is the plan's own, and a caller cannot mint one
 (§ U).
 -}
-type StepAction = forall scope planId. StepExecution scope planId -> IO ()
+type StepAction = forall scope planId. StepExecution scope planId -> IO StepObservation
+
+{- | What one step's action observed about its own node.
+
+Before this, an action returned @()@: whatever it learned about the resource it
+touched — that the resource was already in its target state, that a foreign
+object holds its name, that the backend cannot represent this node at all — was
+discarded at the moment it was observed, and every node that did not throw
+became one undifferentiated success. A report card could then only say "the
+chain ran".
+
+The observation is deliberately **plan-independent**: it carries no resource
+handle, no ownership receipt, and no plan index. Those exist only on the far
+side of a prepare (§ CC), and a step that has not passed one has nothing to
+retain — so an action can describe what it saw without being able to claim
+ownership it did not acquire. Turning an observation into a
+'HostBootstrap.Reconcile.ReconcileResult' row is the interpreter's job, because
+only the interpreter can pair it with the handle and receipt the prepare path
+mints.
+
+'StepRefused' is the safety refusal in observation form. An action may still
+throw 'HostBootstrap.Harness.SafetyRefusal'; returning it says the same thing
+without unwinding, so the remaining nodes of the frame are still attempted.
+-}
+data StepObservation
+    = -- | the node was already in its target state; nothing was changed
+      StepUnchanged
+    | -- | the node moved the resource to its target state
+      StepChanged
+    | -- | expected, observed, and how an operator resolves it
+      StepConflict Text Text Text
+    | -- | this backend cannot represent this node
+      StepUnsupported Text
+    | -- | acting would destroy state this run does not own
+      StepRefused Text
+    deriving (Eq, Show)
+
+{- | Whether an observation is one the chain may continue past.
+
+A conflict, an unsupported backend, and a refusal are all *terminal for the
+chain*: the node did not reach its target state, so a later node that depends on
+it would act on a precondition that does not hold. They differ in what an
+operator must do about it, which is why they stay distinct rows rather than one
+failure.
+-}
+observationSucceeded :: StepObservation -> Bool
+observationSucceeded StepUnchanged = True
+observationSucceeded StepChanged = True
+observationSucceeded (StepConflict _ _ _) = False
+observationSucceeded (StepUnsupported _) = False
+observationSucceeded (StepRefused _) = False
+
+-- | A one-line diagnostic for a node that did not reach its target state.
+observationDetail :: StepObservation -> Text
+observationDetail observation = case observation of
+    StepUnchanged -> "unchanged"
+    StepChanged -> "changed"
+    StepConflict expected observed resolution ->
+        "conflict: expected "
+            <> expected
+            <> ", observed "
+            <> observed
+            <> "; "
+            <> resolution
+    StepUnsupported reason -> "unsupported: " <> reason
+    StepRefused reason -> "refused: " <> reason
 
 {- | One execution frame. The id is semantic; the label is presentation only.
 Validation rejects two labels for the same id.
@@ -330,7 +400,7 @@ stepOperationKey step =
 for it. A caller cannot supply a 'StepExecution' of its own: the type has no
 public constructor (§ U).
 -}
-runStep :: Step -> StepExecution scope planId -> IO ()
+runStep :: Step -> StepExecution scope planId -> IO StepObservation
 runStep = internalStepRun
 
 {- | Declare how this step's frame descends into the next frame of the chain

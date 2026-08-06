@@ -264,6 +264,29 @@ protocolTests =
                         ByteString.readFile path >>= (@?= "foreign replacement")
                 cleanup
                 exercise `finally` cleanup
+    , testCase "an edge the root never opened is refused, so relaying is weaker than signing" $
+        withHandoff 9 ProjectUp $ \broker -> do
+            -- Everything an intermediate frame could construct on its own: a
+            -- fresh token, a well-formed binding for a child frame the root
+            -- never planned, and the offer that carries them.
+            token <- freshHandoffToken
+            invented <-
+                expectRight
+                    ( mkHandoffBinding
+                        broker
+                        (bindingInputFor childPayload){requestedChildFrame = "invented-frame"}
+                        token
+                    )
+            relay <- expectRight (brokerRelay broker invented)
+            offer <- expectRight (mkHandoffOffer relay childPayload token)
+            challenge <- freshChallenge
+            granted <- grantHandoff broker offer challenge
+            granted @?= Left HandoffEdgeUnregistered
+            -- And the same root still authorizes an edge it did open, so the
+            -- refusal is about the edge rather than about the broker.
+            (_, planned) <- newOffer broker childPayload
+            plannedGrant <- grantHandoff broker planned challenge
+            assertBool "an opened edge still authenticates" (isRight plannedGrant)
     , testCase "the root makes an identical grant retry idempotent and refuses token reuse" $
         withHandoff 7 ProjectUp $ \broker -> do
             (_, offer) <- newOffer broker childPayload
@@ -316,15 +339,14 @@ protocolTests =
                 other -> assertFailure ("expected a digest refusal, got " <> show other)
     , testCase "the transmitted canonical binding cannot be substituted" $
         withHandoff 7 ProjectUp $ \broker -> do
-            token <- freshHandoffToken
-            binding <- expectRight (mkHandoffBinding broker (bindingInputFor childPayload) token)
+            (relay, token) <- expectRightIO =<< registerHandoffEdge broker (bindingInputFor childPayload)
+            let binding = relayBinding relay
             otherBinding <-
                 expectRight
                     ( mkHandoffBinding broker
                         (bindingInputFor childPayload){requestedChildFrame = "sibling-2"}
                         token
                     )
-            relay <- expectRight (brokerRelay broker binding)
             otherRelay <- expectRight (brokerRelay broker otherBinding)
             offer <- expectRight (mkHandoffOffer relay childPayload token)
             substituted <- expectRight (mkHandoffOffer otherRelay childPayload token)
@@ -475,11 +497,9 @@ newOffer ::
         , HandoffOffer scope brokerGeneration
         )
 newOffer broker payload = do
-    token <- freshHandoffToken
-    binding <- expectRight (mkHandoffBinding broker (bindingInputFor payload) token)
-    relay <- expectRight (brokerRelay broker binding)
+    (relay, token) <- expectRightIO =<< registerHandoffEdge broker (bindingInputFor payload)
     offer <- expectRight (mkHandoffOffer relay payload token)
-    pure (binding, offer)
+    pure (relayBinding relay, offer)
 
 authenticatedPayload ::
     RootBroker scope brokerGeneration verb ->

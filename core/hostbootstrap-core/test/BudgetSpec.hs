@@ -21,7 +21,7 @@ import HostBootstrap.Reconcile (
   UnsupportedDetail (..),
  )
 import qualified Data.Text as Text
-import HostBootstrap.Step (StepFrame (StepFrame), StepPlan, contextInitStep, mkStepPlan)
+import HostBootstrap.Step (StepFrame (StepFrame), StepObservation (StepChanged), StepPlan, contextInitStep, mkStepPlan)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
@@ -319,7 +319,7 @@ testPlan =
   either
     (error . show)
     id
-    (mkStepPlan [contextInitStep "context" (StepFrame "host" "Host") (const (pure ()))])
+    (mkStepPlan [contextInitStep "context" (StepFrame "host" "Host") (const (pure StepChanged))])
 
 withTestLifecyclePlan ::
   (forall planId. LifecyclePlan (Production Fixture.FixtureProject) planId -> result) ->

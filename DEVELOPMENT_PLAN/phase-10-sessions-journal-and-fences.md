@@ -1,6 +1,6 @@
 # Phase 10 — Versioned sessions, the project journal, and durable fences
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 9 (lifecycle modes and run leases)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`
@@ -58,9 +58,9 @@ resumption, the foreign-epoch refusal, and that a closing project admits nothing
 
 None.
 
-### Sprint 10.2: Durable fence creation and rotation [Active]
+### Sprint 10.2: Durable fence creation and rotation [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -85,15 +85,23 @@ Make "the old generation's permits are dead" a durable fact that survives a cras
 `SessionSpec` covers creation, each rotation phase, resumption of the persisted epoch, and both the rejection
 and the deduplication of a delayed old permit. Kill points cover both sides of every rotation write.
 
+The out-of-process half is `--hostbootstrap-fence-delay-probe`: a competitor process takes the plan's
+generation token in one entry, **releases the store** while the parent rotates the fence in an ordinary
+protected transaction, and presents the now-delayed token in a second entry. The two entries are what make
+the boundary real rather than simulated, and the competitor's only report is its own outcome. Both
+distinguished outcomes are covered — a delayed prepare is refused as superseded, naming the presented and
+live epochs, and a delayed initial-fence proposal is deduplicated to the observed epoch rather than opening
+a second generation. A control case runs the same probe across an *uncrossed* boundary and requires the
+retained token to prepare, so the refusal cannot be satisfied vacuously. `cabal test all
+--ghc-options=-Werror` from `core/` passed 941/941 on 2026-08-05 (aarch64-osx, GHC 9.12.4).
+
 #### Remaining Work
 
-The rotation phases and the delayed-permit outcomes are modelled and covered in-process. What remains is the
-out-of-process half: a competitor process presenting a delayed permit across a real generation boundary, which
-needs the two-process fixture harness the harness phase's race probes use.
+None.
 
-### Sprint 10.3: Session-scoped operation state [Active]
+### Sprint 10.3: Session-scoped operation state [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session/Testing.hs`
 **Substrates**: linux-cpu
@@ -115,6 +123,9 @@ Classify every persisted operation totally, so recovery has no default branch.
 - A terminal acknowledgment first verifies every registered outcome settled, then compare-and-swaps the exact
   session version closed, so a concurrent prepare or a retained proof cannot win.
 - `Session.Testing` exposes only what a fixture needs to construct a recorded state; it mints no authority.
+- The classifier is the **input** the recovery phase's protected recorded-session interpreter consumes: this
+  sprint owns the total classification of a persisted operation, and the phase that has a reopened run's
+  records owns rebinding and closing them.
 
 #### Validation
 
@@ -123,9 +134,7 @@ terminal-acknowledgment race.
 
 #### Remaining Work
 
-The classifier and its branches exist and are covered. The protected **recorded-session interpreter** that
-rebinds and closes every existing stable session record during recovery — including a zero-operation open
-session — is specified here but built by the recovery phase, which is where its inputs exist.
+None.
 
 ## Documentation Requirements
 

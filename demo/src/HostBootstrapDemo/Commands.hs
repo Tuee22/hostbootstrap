@@ -414,29 +414,29 @@ demoVmBackedStack sub cfg =
     -- host-orchestrator-0 (metal): provision the VM, build the pb (#2) + image (#3) in it.
     -- Every step closes over the one admitted snapshot (§ 15.9); none re-reads
     -- the sibling config.
-    [ projectStep demoEnsureVMProviderStep PreserveOnReverse "ensure the VM provider (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows)" demoMetalFrame (const (runVmEnsure cfg))
+    [ projectStep demoEnsureVMProviderStep PreserveOnReverse "ensure the VM provider (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows)" demoMetalFrame (changed (const (runVmEnsure cfg)))
     , reversedBy
         (demoProviderReverse cfg)
-        (deployVMStep "launch the budget-sized VM (cordon #1: the VM is the wall)" demoMetalFrame (const (runVmUp cfg)))
+        (deployVMStep "launch the budget-sized VM (cordon #1: the VM is the wall)" demoMetalFrame (changed (const (runVmUp cfg))))
     , -- The metal frame's descent into @vm-orchestrator-1@ is declared here, on
       -- the last step of the segment: the substrate's VM shell (§ U).
       descendsVia
         (demoVMFrameContext sub)
-        (buildPbStep "pristine-bootstrap: build the binary host-native, then the project image, in the VM" demoMetalFrame (const (runVmBootstrap cfg)))
+        (buildPbStep "pristine-bootstrap: build the binary host-native, then the project image, in the VM" demoMetalFrame (changed (const (runVmBootstrap cfg))))
     , -- vm-orchestrator-1 (the in-VM pb): mint the project-container child config, then hand off.
       -- The announcement and the delivery are now one plan node: the same step
       -- that says the child config is prepared carries the payload that crosses
       -- the boundary (§ W/§ X), so the two can no longer disagree.
       descendsVia
         (inContainer (demoDeployImage ProviderGuestDurable containerRuntimeFrameId False (containerConfigPayload cfg)) localContext)
-        (contextInitStep "prepare the project-container child config for in-place delivery" demoVMFrame contextInitAnnounce)
+        (contextInitStep "prepare the project-container child config for in-place delivery" demoVMFrame (changed contextInitAnnounce))
     , -- vm-project-container-2 (the in-container pb): stand up the persistent stack.
-      deployKindStep "deploy the persistent kind cluster (cordon #2, Production profile)" demoContainerFrame (deployKindAction cfg)
-    , demoProjectStep "deploy-minio" "install the in-cluster MinIO (S3) backing store + create the registry bucket" demoContainerFrame (deployMinioAction cfg)
-    , demoProjectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500), S3-backed by MinIO" demoContainerFrame (deployRegistryAction cfg)
-    , demoProjectStep "push-image" "load the project image into kind + push it to the in-cluster registry" demoContainerFrame (pushImageAction cfg)
-    , deployChartStep "deploy the web service chart pod (NodePort 30080)" demoContainerFrame (deployChartAction cfg)
-    , exposePortStep "verify the web NodePort (30080) is reachable" demoContainerFrame (exposeAction cfg)
+      deployKindStep "deploy the persistent kind cluster (cordon #2, Production profile)" demoContainerFrame (changed (deployKindAction cfg))
+    , demoProjectStep "deploy-minio" "install the in-cluster MinIO (S3) backing store + create the registry bucket" demoContainerFrame (changed (deployMinioAction cfg))
+    , demoProjectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500), S3-backed by MinIO" demoContainerFrame (changed (deployRegistryAction cfg))
+    , demoProjectStep "push-image" "load the project image into kind + push it to the in-cluster registry" demoContainerFrame (changed (pushImageAction cfg))
+    , deployChartStep "deploy the web service chart pod (NodePort 30080)" demoContainerFrame (changed (deployChartAction cfg))
+    , exposePortStep "verify the web NodePort (30080) is reachable" demoContainerFrame (changed (exposeAction cfg))
     ]
 
 {- | The Apple Silicon / Windows GPU chain: the VM-backed stack plus a HOST-resident
@@ -450,7 +450,7 @@ demoChain sub cfg =
     demoVmBackedStack sub cfg
         ++ [ reversedBy
                 (demoHostAcceleratorReverse cfg)
-                (postHandoffStep "accelerator-daemon" "start the host-resident accelerator daemon after ingress is reachable" demoMetalFrame (startHostAcceleratorDaemonAction cfg))
+                (postHandoffStep "accelerator-daemon" "start the host-resident accelerator daemon after ingress is reachable" demoMetalFrame (changed (startHostAcceleratorDaemonAction cfg)))
            ]
 
 {- | The Linux CPU chain: the same VM-backed stack, but the accelerator daemon runs
@@ -462,7 +462,7 @@ C++ worker (accelerator_daemon.md § Substrate Matrix).
 demoLinuxCpuChain :: Substrate -> ProjectConfig configScope -> [Step]
 demoLinuxCpuChain sub cfg =
     demoVmBackedStack sub cfg
-        ++ [demoProjectStep "deploy-accelerator-daemon" "deploy the in-cluster accelerator daemon pod (Linux CPU: clang++ C++ worker, dials the web ClusterIP)" demoContainerFrame (deployAcceleratorDaemonAction cfg)]
+        ++ [demoProjectStep "deploy-accelerator-daemon" "deploy the in-cluster accelerator daemon pod (Linux CPU: clang++ C++ worker, dials the web ClusterIP)" demoContainerFrame (changed (deployAcceleratorDaemonAction cfg))]
 
 {- | Select the demo's chain. The chain shape must be a pure function of the ROOT
 parameters (§ Y): a WSL2 VM on a Windows GPU host detects @linux-gpu@ through GPU
@@ -501,7 +501,7 @@ demoLinuxGpuChain ::
     ProjectConfig configScope ->
     [Step]
 demoLinuxGpuChain root cfg =
-    [ buildImageStep "build the project image on the Linux GPU host for the direct container handoff" demoMetalFrame (const (runDirectHostBootstrap cfg))
+    [ buildImageStep "build the project image on the Linux GPU host for the direct container handoff" demoMetalFrame (changed (const (runDirectHostBootstrap cfg)))
     , -- The direct lane's one descent: metal → the nvkind project container. It
       -- consumes the admitted canonical root for the durable host mount (§ X).
       descendsVia
@@ -509,20 +509,33 @@ demoLinuxGpuChain root cfg =
             (demoDeployImage (CanonicalHostDurable root (canonicalDurableHostPath root)) directContainerRuntimeFrameId True (directContainerConfigPayload cfg))
             localContext
         )
-        (contextInitStep "prepare the Linux GPU direct project-container config for in-place delivery" demoMetalFrame contextInitDirectAnnounce)
+        (contextInitStep "prepare the Linux GPU direct project-container config for in-place delivery" demoMetalFrame (changed contextInitDirectAnnounce))
     , reversedBy
         (demoDirectClusterReverse root)
-        (deployKindStep "deploy the persistent nvkind cluster (Production profile)" demoDirectContainerFrame (deployKindAction cfg))
-    , demoProjectStep "deploy-minio" "install the in-cluster MinIO (S3) backing store + create the registry bucket" demoDirectContainerFrame (deployMinioAction cfg)
-    , demoProjectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500), S3-backed by MinIO" demoDirectContainerFrame (deployRegistryAction cfg)
-    , demoProjectStep "push-image" "load the project image into nvkind + push it to the in-cluster registry" demoDirectContainerFrame (pushImageAction cfg)
-    , deployChartStep "deploy the web service chart pod (NodePort 30080)" demoDirectContainerFrame (deployChartAction cfg)
-    , exposePortStep "verify the web NodePort (30080) is reachable" demoDirectContainerFrame (exposeAction cfg)
-    , demoProjectStep "deploy-accelerator-daemon" "deploy the CUDA accelerator daemon pod with one NVIDIA GPU (dials the web ClusterIP)" demoDirectContainerFrame (deployAcceleratorDaemonAction cfg)
+        (deployKindStep "deploy the persistent nvkind cluster (Production profile)" demoDirectContainerFrame (changed (deployKindAction cfg)))
+    , demoProjectStep "deploy-minio" "install the in-cluster MinIO (S3) backing store + create the registry bucket" demoDirectContainerFrame (changed (deployMinioAction cfg))
+    , demoProjectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500), S3-backed by MinIO" demoDirectContainerFrame (changed (deployRegistryAction cfg))
+    , demoProjectStep "push-image" "load the project image into nvkind + push it to the in-cluster registry" demoDirectContainerFrame (changed (pushImageAction cfg))
+    , deployChartStep "deploy the web service chart pod (NodePort 30080)" demoDirectContainerFrame (changed (deployChartAction cfg))
+    , exposePortStep "verify the web NodePort (30080) is reachable" demoDirectContainerFrame (changed (exposeAction cfg))
+    , demoProjectStep "deploy-accelerator-daemon" "deploy the CUDA accelerator daemon pod with one NVIDIA GPU (dials the web ClusterIP)" demoDirectContainerFrame (changed (deployAcceleratorDaemonAction cfg))
     ]
 
 demoEnsureVMProviderStep :: ProjectStepId
 demoEnsureVMProviderStep = demoStepId "ensure-vm-provider"
+
+{- | Lift one of the demo's effectful step bodies into a 'StepAction'.
+
+The demo's actions are not yet prepared operations (§ CC), so none of them can
+distinguish "already in its target state" from "moved there", and none holds a
+receipt: an action that returns without throwing has changed its node as far as
+it can tell. This wrapper says exactly that and nothing more, so the demo does
+not claim an observation it has not made. A node that genuinely observes a
+conflict, an unsupported backend, or a safety refusal returns that observation
+directly instead of going through here.
+-}
+changed :: (forall scope planId. StepExecution scope planId -> IO ()) -> StepAction
+changed act execution = act execution >> pure Step.StepChanged
 
 demoProjectStep :: String -> String -> StepFrame -> StepAction -> Step
 demoProjectStep rawIdentity =

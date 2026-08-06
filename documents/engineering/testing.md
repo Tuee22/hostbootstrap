@@ -39,6 +39,39 @@ production cluster. These checks still do not provide complete transaction owner
 aliases, clusters, ports, and daemons do not uniformly return opaque ownership receipts, teardown is not
 recursive, and the demo itself resolves the live cluster with the Production profile.
 
+### Out-of-process races
+
+Exclusion is a property of a durable record contended by real competitors, so the cases that prove it run
+in **separate processes** rather than separate threads. The test executable re-invokes itself with a probe
+argument that `test/Spec.hs` dispatches before the suite runs, and a probe's only report is its own
+outcome — an exit code plus, where the distinction matters, the name it was refused by. None of them
+exports a read-only observer of the holder's state, which is what
+[ownership_invariant](../architecture/ownership_invariant.md) rules out.
+
+| Probe | What it contends on | Reports |
+|---|---|---|
+| `--hostbootstrap-protected-entry-probe` | the store's exclusive entry (a real kernel lock) | acquired / contended |
+| `--hostbootstrap-harness-acquire-probe` | a whole harness run reservation, held long enough to overlap every competitor | acquired / refused, with the reason |
+| `--hostbootstrap-harness-abandon-probe` | a run plus its installed generated config, then blocks so the parent can hard-kill it | readiness only; only a real kill leaves the state the sweep resolves |
+| `--hostbootstrap-mode-profile-probe` | the project-wide **mode** record, from the other lifecycle profile | acquired / refused, with the held mode's name |
+| `--hostbootstrap-fence-delay-probe` | the plan's **fence** record: it takes the generation token, releases the store while the parent rotates, then presents the delayed token | accepted, with the fence it prepared under / refused as superseded, with the presented and live epochs |
+
+The mode probe is the cross-*profile* half. The composite root brackets take the mode inside one exclusive
+entry and then release the entry, so a holder's body runs with the entry free; what a competitor reaches is
+the mode compare-and-swap, and it is refused there by name — `production` against a live Production
+invocation, `harness:<runId>` against a live run.
+
+The fence probe is the delayed-permit half. It runs in **two entries** with the store free between them,
+which is what makes the generation boundary real: the parent rotates the fence in an ordinary protected
+transaction while the competitor holds nothing, and the competitor then presents a token issued before that
+rotation. Both outcomes the protocol distinguishes are covered — a delayed *prepare* is refused as
+superseded, naming the presented and live epochs, while a delayed *initial-fence proposal* is deduplicated
+to the observed epoch instead of opening a second generation.
+
+Every refusal case has a control that runs the same probe with nothing to be refused by — an empty store
+for the mode probe, an uncrossed boundary for the fence probe — and requires it to *succeed*, so a refusal
+exit code cannot be satisfied vacuously.
+
 Delivery status, exact test totals, dated hardware evidence, and phase closure belong in
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 

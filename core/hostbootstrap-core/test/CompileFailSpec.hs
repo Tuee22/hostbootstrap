@@ -61,6 +61,9 @@ tests =
         , rejectsWith
             "SignHandoffWithoutRootStore.hs"
             ["Variable not in scope: signHandoffGrant"]
+        , rejectsWith
+            "RelaySignsWithoutBroker.hs"
+            ["Couldn't match expected type: RootBroker"]
         , rejects "ForgeSessionPermit.hs"
         , rejectsWith
             "ClosingPermitAsOpen.hs"

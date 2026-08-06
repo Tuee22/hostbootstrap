@@ -4,6 +4,8 @@ module Main (main) where
 
 import qualified AuthoritySpec
 import qualified HandoffProtocolSpec
+import qualified HandoffReceiverSpec
+import qualified HandoffRelaySpec
 import qualified HandoffSpec
 import qualified SessionSpec
 import qualified BuildAuthoritySpec
@@ -63,6 +65,16 @@ main = do
         -- so cross-process exclusion is proved with the production primitive.
         ["--hostbootstrap-protected-entry-probe", storeRoot] ->
             AuthoritySpec.runEntryProbe storeRoot
+        -- A separate process attempting the *other* lifecycle profile against a
+        -- live one, so the cross-profile exclusion is proved across processes
+        -- rather than only within one.
+        ["--hostbootstrap-mode-profile-probe", storeRoot, profile, reasonPath] ->
+            AuthoritySpec.runModeProfileProbe storeRoot profile reasonPath
+        -- A separate process that takes the plan's generation token, releases
+        -- the store while the parent crosses the fence boundary, and then
+        -- presents the now-delayed token.
+        ["--hostbootstrap-fence-delay-probe", storeRoot, mode, readyPath, goPath, reasonPath] ->
+            SessionSpec.runFenceDelayProbe storeRoot mode readyPath goPath reasonPath
         -- A separate process attempting a whole harness run reservation, so the
         -- concurrency matrix races real competitors rather than threads.
         ["--hostbootstrap-harness-acquire-probe", stateRoot, reasonPath] ->
@@ -73,6 +85,17 @@ main = do
         -- in-process exception still runs every finalizer.
         ["--hostbootstrap-harness-abandon-probe", stateRoot, readyPath] ->
             HarnessSpec.runHarnessAbandonProbe stateRoot readyPath
+        -- A real child running the in-binary handoff receiver on its own
+        -- stdin/stdout, so the exchange crosses a process boundary rather than
+        -- a thread one — and its diagnostics go to stderr, because stdout is
+        -- the protocol.
+        ("--hostbootstrap-handoff-receiver-probe" : probeArgs) ->
+            HandoffReceiverSpec.runReceiverProbe probeArgs
+        -- One frame of the nested relay chain. In relay mode it launches the
+        -- next frame down and hands it an edge it obtained by relaying upward,
+        -- because it holds no signing key of its own.
+        ("--hostbootstrap-handoff-relay-probe" : probeArgs) ->
+            HandoffRelaySpec.runRelayProbe probeArgs
         -- A real child launched through the sealed detached-launch boundary, so
         -- the invocation shape is observed by a process rather than asserted of
         -- a record field (§ HH).
@@ -99,6 +122,8 @@ main = do
                         [ AuthoritySpec.tests
                         , HandoffProtocolSpec.tests
                         , HandoffSpec.tests
+                        , HandoffReceiverSpec.tests
+                        , HandoffRelaySpec.tests
                         , SessionSpec.tests
                         , BuildAuthoritySpec.tests
                         , ActivationSpec.tests

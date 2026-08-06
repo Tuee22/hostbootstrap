@@ -18,7 +18,7 @@ import HostBootstrap.Reconcile
     withLifecyclePlan,
     withPlannedResourceOfKind,
   )
-import HostBootstrap.Step (StepFrame (StepFrame), StepPlan, deployVMStep, mkStepPlan)
+import HostBootstrap.Step (StepFrame (StepFrame), StepObservation (StepChanged), StepPlan, deployVMStep, mkStepPlan)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
@@ -155,7 +155,7 @@ testPlan =
   either
     (error . show)
     id
-    (mkStepPlan [deployVMStep "provider" (StepFrame "host" "Host") (const (pure ()))])
+    (mkStepPlan [deployVMStep "provider" (StepFrame "host" "Host") (const (pure StepChanged))])
 
 withTestLifecyclePlan ::
   (forall planId. LifecyclePlan (Production Fixture.FixtureProject) planId -> result) ->

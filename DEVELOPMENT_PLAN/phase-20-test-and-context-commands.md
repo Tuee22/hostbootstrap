@@ -9,6 +9,11 @@
 > **Purpose**: Fix the exact grammar and side-effect boundary of `test init`, `test run <case-id>|all`,
 > `context`, and `check-code`.
 
+Every sprint below is `Done` and the static half of the gate passes. What the phase still owes is its own
+declared **live linux-cpu sequence**: `test init`, `test run`, and `context` run against a real host. The
+overwrite policy and the case-selector surface are exactly what that sequence exercises, so it is owed against
+their current shape rather than an earlier one.
+
 ## Phase Objective
 
 The engine exists; this phase is the surface an operator actually types. Two properties matter: each verb's
@@ -18,10 +23,11 @@ exactly what its name implies — `context` reads and never writes, `test init` 
 
 ## Sprints
 
-### Sprint 20.1: `test init` and its overwrite policy [Active]
+### Sprint 20.1: `test init` and its overwrite policy [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`
 
@@ -41,17 +47,18 @@ Write the test config, and be explicit about replacing one.
 
 #### Validation
 
-`CLISpec` covers the grammar, the typed request, both overwrite branches, and the missing-config refusal.
+`CLISpec` covers the grammar, the typed request, both overwrite branches, and the missing-config refusal:
+a first `test init` writes, a second refuses and leaves an operator's edit byte-identical, and `--replace`
+is the only route that overwrites. `cabal test all --ghc-options=-Werror` from `core/` passed 974/974 on
+2026-08-05 (aarch64-osx, GHC 9.12.4), and the demo suite passed 112/112.
 
 #### Remaining Work
 
-The opaque writer request and the explicit overwrite policy are specified but the current writer accepts a
-looser request shape. The remaining item is narrowing it to the typed request and stating the policy at the
-command layer.
+None.
 
-### Sprint 20.2: `test run <case-id>|all` [Active]
+### Sprint 20.2: `test run <case-id>|all` [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`
@@ -71,12 +78,14 @@ Select compiled cases by their typed identity.
 
 #### Validation
 
-`CLISpec` covers selection, the unknown-case refusal, and the help/metavariable text.
+`CLISpec` covers selection, the unknown-case refusal — which exits non-zero naming the compiled set rather
+than reporting an empty success — and the rendered help itself: the metavariable is `CASE-ID`, the
+whole-matrix selector is named, and no surface text says "suite", asserted against the real `--help` output
+of a subprocess running the actual parser.
 
 #### Remaining Work
 
-The selector accepts the typed identity, but the help text and metavariable still name a suite. The remaining
-item is reconciling the surface text with the compiled-case vocabulary.
+None.
 
 ### Sprint 20.3: Read-only `context` introspection [Done]
 

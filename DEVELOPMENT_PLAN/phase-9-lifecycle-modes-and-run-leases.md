@@ -1,6 +1,6 @@
 # Phase 9 — Lifecycle modes, run leases, and profiles
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 5 (operator, root, and command authority), Phase 7 (Dhall configuration and the
 generic project model)
 **Substrates**: linux-cpu
@@ -20,9 +20,9 @@ no effect, and a bound lease names the exact snapshot its invocation reached.
 
 ## Sprints
 
-### Sprint 9.1: The project-wide mode [Active]
+### Sprint 9.1: The project-wide mode [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
@@ -41,20 +41,26 @@ One mode record, two contending openers, exactly one winner.
   wins, with the loser refused by a message naming the held mode.
 - `releaseMode` compares the mode before deleting, so one profile cannot release another's.
 - `ProjectModeLease projectId brokerGeneration` is opaque and carries the generation it was taken under.
+- The cross-profile exclusion is proved **across processes**, not only in-process: the root brackets
+  release the exclusive entry once the mode transaction commits, so a competitor reaches the mode
+  compare-and-swap itself and is refused there by the held mode's name.
 
 #### Validation
 
 `AuthoritySpec` covers the retain branch, the harness exclusion, the cross-profile refusal, and a
 four-process race proving exactly one winner and that a live run's lease is never taken.
 
+The out-of-process cross-profile probe (`--hostbootstrap-mode-profile-probe`) is a real competitor binary
+whose only report is its own outcome — an exit code plus the name it was refused by, never an observation
+of the holder, so no read-only lease observer is exported (§ EE). Both directions are covered: a harness
+competitor against live Production is refused by `production`, and a Production competitor against a live
+run is refused by `harness:<runId>`. A control case runs the same probe against an empty store and requires
+it to *acquire*, so the refusal exit code cannot be satisfied vacuously. `cabal test all
+--ghc-options=-Werror` from `core/` passed 938/938 on 2026-08-05 (aarch64-osx, GHC 9.12.4).
+
 #### Remaining Work
 
-The **cross-profile** exclusion is proved deterministically in-process, not across processes. The mode
-transaction it turns on is a single compare-and-swap inside one protected entry, and the discriminating
-observable — whether a competitor resolved the other profile's state — is not visible to another process
-without exporting a read-only lease observer, which § EE's clause set rules out. The remaining item is
-therefore an out-of-process cross-profile probe built the way the four-process reservation race is: a real
-competitor binary whose only report is its own outcome.
+None.
 
 ### Sprint 9.2: Plan snapshots and run leases [Done]
 

@@ -1,6 +1,6 @@
 # Phase 7 — Dhall configuration and the generic project model
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 6 (canonical quantities and reconcile results)
 **Substrates**: none (static)
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`, including the schema golden tests
@@ -117,9 +117,9 @@ digests.
 
 None.
 
-### Sprint 7.4: Binary context inside the project config [Active]
+### Sprint 7.4: Binary context inside the project config [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Context.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Config/Install/Native.hs`,
 `core/hostbootstrap-core/test/ContextSpec.hs`
@@ -128,7 +128,8 @@ None.
 
 #### Objective
 
-Carry the runtime context inside `<project>.dhall` as parameters plus context plus witness.
+Carry the runtime context inside `<project>.dhall` as parameters plus context plus witness, and let a
+command's placement — not the config's own claim — decide which verbs that context hosts.
 
 #### Deliverables
 
@@ -142,17 +143,25 @@ Carry the runtime context inside `<project>.dhall` as parameters plus context pl
 - `Config.Install.Native` supplies the create-if-absent **hard link** primitive a sibling config install
   needs; a symbolic link is refused by the inspector and leaves a dangling destination — see
   [rationale.md](rationale.md).
+- `isRootFrame` derives chain root-ness from the validated topology graph rather than reading it off the
+  declared `parentChain`, which `validateTopology` has already proved agrees with the edges.
+- `placementAllowsCommand` is the closed (placement, root-ness, command class) relation every gated verb
+  passes: `allowedCommandClasses` is a *declared* list, so it is a claim, and the placement the graph
+  derives is the fact. `project up` runs only from an orchestration placement; `project down|destroy`
+  additionally require the exact root-kind/empty-parent pair.
+- A forged leaf config that lists `ClusterLifecycleCommand` or `HostOrchestratorCommand` is refused by its
+  placement, so a binary cannot run a verb its context does not place it in.
 
 #### Validation
 
-`ContextSpec` covers derivation, the witness check, the per-frame refusal, and the hard-link primitive.
+`ContextSpec` covers derivation, the witness check, the per-frame refusal, the hard-link primitive, the
+forged-leaf refusal for both lifecycle verbs, the non-root refusal of the unwind, the root-kind refusal of a
+non-host root, and the closure of `placementAllowsCommand` over every placement and class. `cabal test all
+--ghc-options=-Werror` from `core/` passed 935/935 on 2026-08-05 (aarch64-osx, GHC 9.12.4).
 
 #### Remaining Work
 
-Context validation against the derived project identity before command dispatch is specified but not wired at
-every call site; the frames that consume it land with the recursive lifecycle command. The remaining item is
-threading the validated context through dispatch so a binary cannot run a verb its context does not place it
-in.
+None.
 
 ## Documentation Requirements
 

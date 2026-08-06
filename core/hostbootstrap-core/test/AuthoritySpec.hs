@@ -12,7 +12,7 @@ one. Every mode, lease, and invocation decision is a compare-and-swap over a
 durable record, so the crash cases here are the ones an interrupted run
 actually leaves behind.
 -}
-module AuthoritySpec (tests, runEntryProbe) where
+module AuthoritySpec (tests, runEntryProbe, runModeProfileProbe) where
 
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy as LazyByteString
@@ -49,12 +49,14 @@ import HostBootstrap.Reconcile (
 import HostBootstrap.Lift (localContext)
 import HostBootstrap.Step (
     StepFrame (..),
+    StepObservation (StepChanged),
     StepPlan,
     contextInitStep,
     deployVMStep,
     descendsVia,
     mkStepPlan,
  )
+import System.Directory (doesFileExist)
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitSuccess, exitWith)
 import System.FilePath ((</>))
@@ -78,6 +80,55 @@ runEntryProbe storeRoot = do
                 Right (Just ()) -> exitSuccess
                 Right Nothing -> exitWith (ExitFailure 3)
                 Left _ -> exitWith (ExitFailure 4)
+
+{- | The out-of-process half of the **cross-profile** exclusion: open the same
+project's store in a separate process and attempt the named lifecycle profile.
+
+The composite root brackets take the mode inside one exclusive entry and then
+release the entry, so by the time a holder's body runs, the only thing a
+competitor can contend on is the durable mode record. That is what makes this a
+cross-*profile* probe rather than a second exclusive-entry probe: the competitor
+reaches the mode compare-and-swap and is refused there, by name.
+
+Its only report is its own outcome — exit 0 when it took the profile, 3 when the
+mode refused it (with the held/wanted pair written to @reasonPath@), 4 otherwise.
+It never reports what the holder is doing, so no read-only lease observer is
+introduced (§ EE).
+-}
+runModeProfileProbe :: FilePath -> String -> FilePath -> IO ()
+runModeProfileProbe storeRoot profile reasonPath = do
+    opened <- openProtectedStore storeRoot
+    case opened of
+        Left _ -> exitWith (ExitFailure 4)
+        Right store ->
+            case installedProjectFor @Fixture.FixtureProject @Fixture.ProjectConfig "hostbootstrap-demo" of
+                Left _ -> exitWith (ExitFailure 4)
+                Right project -> report =<< attempt store project
+  where
+    attempt store project = case profile of
+        "production" ->
+            withProductionRoot store project ProjectUp (\_ -> pure (Right ()))
+        "harness" -> do
+            swept <- recoverAbandonedHarnessRuns store project neverResolves neverResolves
+            case swept of
+                Left failure -> pure (Left failure)
+                Right proof ->
+                    withHarnessRoot
+                        store
+                        project
+                        ProjectUp
+                        (satisfiedPreconditions project)
+                        proof
+                        (\_ -> pure (Right ()))
+        _ -> pure (Left (ModeInvalidIdentity (Text.pack ("unknown profile " <> profile))))
+
+    report (Right ()) = exitSuccess
+    report (Left failure@(ModeHeldByAnother held wanted)) = do
+        writeFile reasonPath (Text.unpack held <> "\t" <> Text.unpack wanted)
+        failure `seq` exitWith (ExitFailure 3)
+    report (Left failure) = do
+        writeFile reasonPath (Text.unpack (modeErrorMessage failure))
+        exitWith (ExitFailure 4)
 
 tests :: TestTree
 tests =
@@ -1086,6 +1137,56 @@ recoveryCases =
                                     ("expected the production mode to refuse, got " <> show other)
                         pure (Right ())
                 outcome @?= Right ()
+    , -- The control for the two cross-profile races below. Without it, "the
+      -- competitor exited 3" proves nothing: a probe that can never take a
+      -- profile refuses an empty store just as convincingly as a held one.
+      testCase "the competitor process takes either profile when no mode is held" $ do
+        executable <- getExecutablePath
+        withStore $ \store ->
+            probeProfile executable (protectedStoreRoot store) "harness"
+                >>= (@?= ProfileAcquired)
+        withStore $ \store ->
+            probeProfile executable (protectedStoreRoot store) "production"
+                >>= (@?= ProfileAcquired)
+    , -- The out-of-process half of the cross-profile exclusion. The in-process
+      -- case above proves the decision; this one proves it holds against a real
+      -- competitor, because the root brackets release the exclusive entry once
+      -- the mode transaction commits. What the competitor contends on is
+      -- therefore the durable mode record, not the entry.
+      testCase "a competitor harness process is refused by live Production, across processes" $ do
+        executable <- getExecutablePath
+        withStore $ \store ->
+            withProject "hostbootstrap-demo" $ \project -> do
+                outcome <-
+                    withProductionRoot store project ProjectUp $ \_root -> do
+                        probed <- probeProfile executable (protectedStoreRoot store) "harness"
+                        case probed of
+                            ProfileRefusedBy held -> held @?= "production"
+                            other ->
+                                assertFailure
+                                    ("expected the competitor to be refused by production, got " <> show other)
+                        pure (Right ())
+                outcome @?= Right ()
+    , testCase "a competitor production process is refused by a live harness run, across processes" $ do
+        executable <- getExecutablePath
+        withStore $ \store ->
+            withProject "hostbootstrap-demo" $ \project -> do
+                swept <- recoverAbandonedHarnessRuns store project neverResolves neverResolves
+                proof <- either (assertFailure . show) pure swept
+                outcome <-
+                    withHarnessRoot store project ProjectUp (satisfiedPreconditions project) proof $ \root -> do
+                        probed <- probeProfile executable (protectedStoreRoot store) "production"
+                        case probed of
+                            -- The refusal names the exact run holding the mode,
+                            -- so the competitor cannot have been refused by some
+                            -- other obstacle that also exits 3.
+                            ProfileRefusedBy held ->
+                                held @?= "harness:" <> runIdText (harnessRootRunId root)
+                            other ->
+                                assertFailure
+                                    ("expected the competitor to be refused by the harness run, got " <> show other)
+                        pure (Right ())
+                outcome @?= Right ()
     ]
 
 -- Invocation and terminal close -------------------------------------------------------------
@@ -1414,8 +1515,8 @@ testStepPlan =
         (error . show)
         id
         ( mkStepPlan
-            [ descendsVia localContext (deployVMStep "vm" (StepFrame "host" "Host") (const (pure ())))
-            , contextInitStep "context" (StepFrame "vm" "VM") (const (pure ()))
+            [ descendsVia localContext (deployVMStep "vm" (StepFrame "host" "Host") (const (pure StepChanged)))
+            , contextInitStep "context" (StepFrame "vm" "VM") (const (pure StepChanged))
             ]
         )
 
@@ -1424,7 +1525,7 @@ alternateTestStepPlan =
     either
         (error . show)
         id
-        (mkStepPlan [contextInitStep "context" (StepFrame "host" "Host") (const (pure ()))])
+        (mkStepPlan [contextInitStep "context" (StepFrame "host" "Host") (const (pure StepChanged))])
 
 satisfiedPreconditions :: InstalledProject projectId -> HarnessPreconditions
 satisfiedPreconditions project =
@@ -1600,3 +1701,39 @@ probeEntry executable storeRoot = do
         ExitSuccess -> Acquired
         ExitFailure 3 -> Contended
         ExitFailure other -> ProbeFailed (show other <> " " <> out <> " " <> err)
+
+{- | What a separate process observed when it attempted a lifecycle profile
+against this project's store. 'ProfileRefusedBy' carries the mode name the
+competitor was refused by — its own observation, not the holder's state.
+-}
+data ProfileProbe
+    = ProfileAcquired
+    | ProfileRefusedBy Text
+    | ProfileProbeFailed String
+    deriving (Eq, Show)
+
+-- | Attempt a lifecycle profile from a *different process*.
+probeProfile :: FilePath -> FilePath -> String -> IO ProfileProbe
+probeProfile executable storeRoot profile =
+    withSystemTempDirectory "hostbootstrap-profile-probe" $ \directory -> do
+        let reasonPath = directory </> "reason"
+        (code, out, err) <-
+            readProcessWithExitCode
+                executable
+                ["--hostbootstrap-mode-profile-probe", storeRoot, profile, reasonPath]
+                ""
+        case code of
+            ExitSuccess -> pure ProfileAcquired
+            ExitFailure 3 -> do
+                reason <- readFile reasonPath
+                pure $ case Text.splitOn "\t" (Text.pack reason) of
+                    (held : _) -> ProfileRefusedBy held
+                    [] -> ProfileProbeFailed reason
+            ExitFailure other -> do
+                reason <- readReasonIfPresent reasonPath
+                pure (ProfileProbeFailed (show other <> " " <> reason <> " " <> out <> " " <> err))
+
+readReasonIfPresent :: FilePath -> IO String
+readReasonIfPresent path = do
+    present <- doesFileExist path
+    if present then readFile path else pure ""

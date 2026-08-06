@@ -21,6 +21,15 @@ module HostBootstrap.Config.Schema (
     projectConfigFileName,
     projectConfigPathForExecutable,
     siblingProjectConfigPath,
+    siblingTestConfigPath,
+
+    -- * The typed test-config writer
+    TestConfigWrite,
+    testConfigWriteFor,
+    testConfigWritePath,
+    TestConfigReplacement (..),
+    TestConfigWriteOutcome (..),
+    installTestConfig,
 
     -- * Roles
     configRoleNames,
@@ -157,6 +166,69 @@ projectConfigPathForExecutable projectName exe =
 siblingProjectConfigPath :: Text -> IO FilePath
 siblingProjectConfigPath projectName =
     projectConfigPathForExecutable projectName <$> getExecutablePath
+
+{- | The project-local **test** config path: a sibling of the project config
+(§ Z).
+-}
+siblingTestConfigPath :: Text -> IO FilePath
+siblingTestConfigPath projectName = do
+    configPath <- siblingProjectConfigPath projectName
+    pure (takeDirectory configPath </> (T.unpack projectName ++ ".test.dhall"))
+
+{- | One request to write one project's test config.
+
+Opaque, and its only producer resolves the destination itself from the installed
+project name: what a caller supplies is the project's own typed test-config
+value and its codec, never a path and never rendered bytes. So core cannot be
+asked to write arbitrary bytes, nor to write them somewhere other than the
+sibling the @test run@ gate reads.
+-}
+data TestConfigWrite tcfg = TestConfigWrite FilePath (CodecWitness tcfg) tcfg
+
+instance Show (TestConfigWrite tcfg) where
+    show (TestConfigWrite path _ _) = "TestConfigWrite " <> show path
+
+-- | Resolve the sibling destination and bind it to the typed value to write.
+testConfigWriteFor :: Text -> CodecWitness tcfg -> tcfg -> IO (TestConfigWrite tcfg)
+testConfigWriteFor projectName codec value = do
+    path <- siblingTestConfigPath projectName
+    pure (TestConfigWrite path codec value)
+
+-- | The destination this request resolved, for a diagnostic that names the file.
+testConfigWritePath :: TestConfigWrite tcfg -> FilePath
+testConfigWritePath (TestConfigWrite path _ _) = path
+
+{- | Whether an existing test config may be replaced.
+
+Stated rather than implied: silently overwriting is how an operator loses an
+edited matrix, and silently skipping is how they run yesterday's. Neither is a
+default worth having, so the caller says which one it means.
+-}
+data TestConfigReplacement
+    = RefuseExistingTestConfig
+    | ReplaceExistingTestConfig
+    deriving (Eq, Show)
+
+-- | What one write did, so a caller reports it rather than inferring it.
+data TestConfigWriteOutcome
+    = TestConfigWritten FilePath
+    | TestConfigReplaced FilePath
+    | -- | one already existed and replacement was not requested
+      TestConfigExists FilePath
+    deriving (Eq, Show)
+
+-- | Write the request's typed value, honouring the stated replacement policy.
+installTestConfig :: TestConfigReplacement -> TestConfigWrite tcfg -> IO TestConfigWriteOutcome
+installTestConfig replacement (TestConfigWrite path codec value) = do
+    present <- doesFileExist path
+    case (present, replacement) of
+        (True, RefuseExistingTestConfig) -> pure (TestConfigExists path)
+        (True, ReplaceExistingTestConfig) -> write TestConfigReplaced
+        (False, _) -> write TestConfigWritten
+  where
+    write outcome = do
+        writeProjectConfigFile codec path value
+        pure (outcome path)
 
 -- | Parse a user-facing role name for generated local configs.
 parseConfigRole :: String -> Either String Context.ContextKind

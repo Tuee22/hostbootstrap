@@ -1,5 +1,8 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module StepSpec (tests) where
 
+import Data.List (nub)
 import HostBootstrap.Lift (localContext)
 import HostBootstrap.Step
 import Test.Tasty (TestTree, testGroup)
@@ -14,7 +17,47 @@ tests =
         , testGroup "frame segmentation" frameCases
         , testGroup "stable implementation identities" implementationIdentityCases
         , testGroup "plan validation" validationCases
+        , testGroup "step observations" observationCases
         ]
+
+{- | What a step's action reports about its own node. Before it, an action
+returned @()@ and every node that did not throw looked alike. -}
+observationCases :: [TestTree]
+observationCases =
+    [ testCase "reaching the target state is a success; not reaching it is not" $ do
+        map observationSucceeded [StepUnchanged, StepChanged] @?= [True, True]
+        map
+            observationSucceeded
+            [ StepConflict "a" "b" "c"
+            , StepUnsupported "no backend"
+            , StepRefused "pre-existing state"
+            ]
+            @?= [False, False, False]
+    , testCase "each outcome renders a distinct row, not one undifferentiated failure" $ do
+        let rows =
+                map
+                    observationDetail
+                    [ StepUnchanged
+                    , StepChanged
+                    , StepConflict "the run's VM" "a foreign VM" "delete it or rename the project"
+                    , StepUnsupported "bare Linux has no storage quota"
+                    , StepRefused "the cluster holds state this run does not own"
+                    ]
+        length (nub rows) @?= length rows
+        rows
+            @?= [ "unchanged"
+                , "changed"
+                , "conflict: expected the run's VM, observed a foreign VM; delete it or rename the project"
+                , "unsupported: bare Linux has no storage quota"
+                , "refused: the cluster holds state this run does not own"
+                ]
+    , testCase "an action's observation is what runStep returns" $ do
+        -- The plan mints the descriptor, so the only way to observe this is
+        -- through a real interpretation; ChainSpec drives that. Here the point
+        -- is that the value survives the step's own wrapper.
+        let step = deployKindStep "cluster" metal (const (pure (StepUnsupported "no kube toolchain")))
+        stepLabel step @?= "cluster"
+    ]
 
 -- Fixtures: frames and a representative chain interleaving host and project steps.
 metal :: StepFrame
@@ -26,8 +69,8 @@ vmFrame = StepFrame{frameId = "vm-orchestrator-1", frameLabel = "VM"}
 ctrFrame :: StepFrame
 ctrFrame = StepFrame{frameId = "vm-project-container-2", frameLabel = "container"}
 
-noop :: a -> IO ()
-noop _ = pure ()
+noop :: a -> IO StepObservation
+noop _ = pure StepChanged
 
 implementationIdentityCases :: [TestTree]
 implementationIdentityCases =

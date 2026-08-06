@@ -1,6 +1,6 @@
 # Phase 11 — Prepared operations and preconditions
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 10 (versioned sessions, the project journal, and durable fences)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`
@@ -91,11 +91,13 @@ target or operation.
 
 None.
 
-### Sprint 11.3: The plan-minted execution descriptor [Active]
+### Sprint 11.3: The plan-minted execution descriptor [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Protected.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`
 
@@ -113,17 +115,26 @@ Give a step a value that names its own node, so it can reach a gate.
   than a convention.
 - An action derives its node from the descriptor rather than reconstructing it, so the plan and the effect
   cannot disagree about which node ran.
+- `withStepPreparedGate` is the descriptor's route to the prepare compare-and-swap: it reads the plan digest
+  and the operation key **off the descriptor**, so a step reaches exactly one gate — its own — and cannot
+  name a sibling node's operation. It refuses a descriptor whose plan digest is not the session's, because
+  those indices are phantom on the session side and would otherwise unify.
+- `mkRecordName` is the one injective encoding by which a *namespaced* identity reaches the store's key
+  alphabet. Both identities the gate needs are namespaced — a plan operation key (`core:deploy-kind`) and a
+  plan digest (`<specDigest>:<planBytesDigest>`) — so before it, neither could name a durable record at all
+  and a caller had to invent a lossy sanitizer. Its image and its plain domain are disjoint, so two distinct
+  identities can never share one durable phase record.
 
 #### Validation
 
-`LifecycleSpec` covers the descriptor's contents and the absence of a public constructor.
+`ChainSpec` covers the descriptor's contents and the absence of a public constructor. `SessionSpec` covers
+the route: a step reaching the gate for its own operation and the encoded record it lands on, the
+cross-plan refusal, and the injectivity guard that refuses a plain component shaped like an encoded one.
+`cabal test all --ghc-options=-Werror` from `core/` passed 944/944 on 2026-08-05 (aarch64-osx, GHC 9.12.4).
 
 #### Remaining Work
 
-The descriptor exists and carries what a gate needs, but no step action currently *reaches* a gate through it:
-the route from a `StepExecution` to a `PreparedGate` for that step's own operation is the remaining item. Until
-it lands, an acquiring step cannot mint a managed handle for the resource it acquires, which is what the host
-providers phase's durable-alias adoption waits on.
+None.
 
 ## Documentation Requirements
 

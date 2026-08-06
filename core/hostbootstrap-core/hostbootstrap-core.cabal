@@ -34,6 +34,8 @@ library
       HostBootstrap.Build
       HostBootstrap.Detached
       HostBootstrap.Handoff
+      HostBootstrap.Handoff.Receiver
+      HostBootstrap.Handoff.Relay
       HostBootstrap.Lifecycle.Execution
       HostBootstrap.Lifecycle.Prepared
       HostBootstrap.Lifecycle.Session
@@ -144,6 +146,8 @@ test-suite hostbootstrap-core-test
       AuthoritySpec
       HandoffProtocolSpec
       HandoffSpec
+      HandoffReceiverSpec
+      HandoffRelaySpec
       SessionSpec
       BuildAuthoritySpec
       ActivationSpec

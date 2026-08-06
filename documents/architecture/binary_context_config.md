@@ -113,12 +113,20 @@ become a project/lifecycle authority by naming an extra role. The one legal shap
 service placement may also serve another service role. `--also-role` is operator input, so a refused
 addition stops assembly rather than being dropped.
 
-Two checks remain layered on top. `service run` still performs its own primary-kind check and accepts
-only `ClusterService` or `Daemon`, which catches a hand-edited config that carries `ServiceCommand`
-without having gone through `addRole`. `project up|down|destroy` still lack the exact
-root-kind/empty-parent check, so
-[Phase 15's opaque-authority repair](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md) remains
-open for the role-specific command authorities minted by validated transitions.
+Two checks are layered on top, because `allowedCommandClasses` is a **declared** list and the bytes on
+disk belong to the operator: `addRole` governs how a config is *generated*, not what a hand-edited one
+may claim. `service run` performs its own primary-kind check and accepts only `ClusterService` or
+`Daemon`, which catches a config carrying `ServiceCommand` without having gone through `addRole`. The
+project lifecycle verbs consult the closed `placementAllowsCommand` relation, which re-derives the answer
+from the validated topology graph rather than from the declared list: `project up` runs only from an
+orchestration placement (`isOrchestrationPlacement` — a service, daemon, one-shot, or image-build leaf
+hosts no chain), and `project down|destroy` additionally require the exact **root-kind/empty-parent**
+pair — `isRootFrame` plus `HostOrchestratorPlacement`. A forged leaf config that lists
+`ClusterLifecycleCommand` or `HostOrchestratorCommand` is therefore refused by its placement rather than
+believed. The [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
+owns that relation; the role-specific opaque command authorities minted by validated transitions are the
+[operator, root, and command authority phase](../../DEVELOPMENT_PLAN/phase-5-operator-root-and-command-authority.md)'s
+independent gate, which `project up|down|destroy` already enter at the root frame.
 
 One target API shape makes the compatibility relation and exact invocation state explicit:
 
@@ -1391,10 +1399,24 @@ actually received, and the verification key is a separately installed input; a k
 envelope is never consulted. `authorizeChildProject` refuses a genuine grant presented by the wrong
 frame or for the wrong verb.
 
+**The receiver and the relay are implemented too.** `HostBootstrap.Handoff.Receiver` is the binary's
+internal receiver: it runs the child half on a duplex `HandoffChannel` — `stdin` inbound, `stdout`
+outbound, because those are the only descriptors a `docker run` / `limactl shell` / `wsl -d` boundary
+carries, which is also why a receiving binary's diagnostics belong on `stderr`. It mints its challenge
+*after* the offer arrives, compares the offer's key digest against the installed key without ever using
+it as one, and **sends** every refusal, so a parent learns its child declined instead of inferring it
+from a closed pipe. `HostBootstrap.Handoff.Relay` is the parent half: a `BrokerLink` is a frame's route
+to the root's two capabilities — open an edge and grant one. At the root it carries the live broker plus
+the plan's edge admission; at every other frame it carries a channel and a request identity and nothing
+else, so an intermediate frame is structurally keyless. `registerHandoffEdge` makes that separation real
+rather than nominal: the root records each edge it intends before any grant can be asked for, so a frame
+that can relay a request still cannot invent one. Losing the route to the broker before anything durable
+refuses and leaves the edge intact; losing it afterwards reprobes to the same signature rather than
+consuming a second edge.
+
 What is **not yet wired** is the live descent: `Lift.ConfigDelivery` still delivers the child config
-with the `sh -c "cat > <sibling> && exec <binary>"` writer described above. Replacing it needs the
-binary's internal receiver at the child entrypoint and the duplex relay back to the root broker, which
-land with the recursive interpreter in
+with the `sh -c "cat > <sibling> && exec <binary>"` writer described above. Adopting the receiver and
+relay at that call site lands with the recursive interpreter in the
 [recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
 
 The root broker remains live through one recursive invocation. Its one-use command authority opens one

@@ -45,6 +45,7 @@ module HostBootstrap.Handoff (
     -- * Length-delimited framing
     frameWire,
     unframeWire,
+    takeHandoffFrame,
     maxWireBytes,
     handoffProtocolVersion,
 
@@ -52,8 +53,12 @@ module HostBootstrap.Handoff (
     HandoffScope,
     productionHandoffScope,
     harnessHandoffScope,
+    productionScopeTag,
+    harnessScopeTagFor,
     HandoffPayloadKind (..),
     HandoffBindingInput (..),
+    renderHandoffBindingInput,
+    handoffBindingInputFromWire,
     HandoffBinding,
     mkHandoffBinding,
     handoffInstalledProject,
@@ -69,6 +74,7 @@ module HostBootstrap.Handoff (
     handoffPhase,
     handoffTokenCommitment,
     renderHandoffBinding,
+    handoffBindingFromWire,
     childConfigDigest,
 
     -- * Independently installed project identity
@@ -87,20 +93,27 @@ module HostBootstrap.Handoff (
     rootBrokerVerificationKey,
     BrokerRelay,
     brokerRelay,
+    brokerRelayFromWire,
     relayBinding,
+    registerHandoffEdge,
 
     -- * Offer, challenge, grant
     HandoffToken,
     freshHandoffToken,
+    handoffTokenBytes,
+    handoffTokenFromBytes,
     HandoffOffer,
     mkHandoffOffer,
     handoffOfferWire,
+    handoffOfferFrames,
     handoffOfferBinding,
     HandoffChallenge,
     freshChallenge,
     challengeBytes,
+    handoffChallengeFromBytes,
     HandoffGrant,
     grantSignature,
+    handoffGrantFromSignature,
     grantHandoff,
 
     -- * Verified results
@@ -155,9 +168,9 @@ import HostBootstrap.Config.Vocab (
  )
 import HostBootstrap.Handoff.Protocol
 import HostBootstrap.Protected (
-    Expectation (ExpectAbsent),
+    Expectation (ExpectAbsent, ExpectVersion),
     ProtectedError,
-    ProtectedRecord (protectedRecordBytes),
+    ProtectedRecord (protectedRecordBytes, protectedRecordVersion),
     ProtectedSession,
     ProtectedStore,
     compareAndSwapProtectedRecord,
@@ -255,9 +268,22 @@ handoffScopeProject :: HandoffScope scope -> Text
 handoffScopeProject (ProductionHandoffScope project) = installedProjectName project
 handoffScopeProject (HarnessHandoffScope project _) = installedProjectName project
 
+{- | The descriptive tag a Production binding carries in its scope field.
+
+Exported because a receiving frame states the scope it expects before it has
+any config: the tag is what its declaration is compared against, and one
+encoding must serve both sides.
+-}
+productionScopeTag :: Text
+productionScopeTag = "Production"
+
+-- | The descriptive tag a Harness binding carries for one named run.
+harnessScopeTagFor :: Text -> Text
+harnessScopeTagFor runName = "Harness " <> runName
+
 handoffScopeTag :: HandoffScope scope -> Text
-handoffScopeTag (ProductionHandoffScope _) = "Production"
-handoffScopeTag (HarnessHandoffScope _ authority) = "Harness " <> harnessRunName authority
+handoffScopeTag (ProductionHandoffScope _) = productionScopeTag
+handoffScopeTag (HarnessHandoffScope _ authority) = harnessScopeTagFor (harnessRunName authority)
 
 {- | The exact tuple a handoff token and grant are bound to.
 
@@ -352,6 +378,53 @@ mkHandoffBinding broker input token = do
             , handoffTokenCommitment = tokenCommitment token
             }
 
+{- | Canonical bytes for the *request* to open an edge.
+
+A frame that is not the root cannot open one itself, so it describes the edge it
+needs and asks upward. That description is public: it names frames, a phase, and
+digests, and it carries no token, key, or authority. The root re-derives every
+field it owns — project, scope, generation, verb — from its own typed evidence,
+so the description can influence only what it is entitled to influence.
+-}
+renderHandoffBindingInput :: HandoffBindingInput -> ByteString
+renderHandoffBindingInput input =
+    ByteString.concat
+        [ field (requestedSpecDigest input)
+        , field (handoffPayloadKindName (requestedPayloadKind input))
+        , field (requestedPlanRevision input)
+        , field (requestedParentFrame input)
+        , field (requestedChildFrame input)
+        , field (requestedChildConfigDigest input)
+        , field (requestedPhase input)
+        ]
+  where
+    field = frameWire . TextEncoding.encodeUtf8
+
+-- | Parse an edge-opening request. The exact inverse of 'renderHandoffBindingInput'.
+handoffBindingInputFromWire :: ByteString -> Either HandoffError HandoffBindingInput
+handoffBindingInputFromWire raw = do
+    (specDigest, afterSpec) <- bindingTextField raw
+    (kindName, afterKind) <- bindingTextField afterSpec
+    (planRevision, afterRevision) <- bindingTextField afterKind
+    (parentFrame, afterParent) <- bindingTextField afterRevision
+    (childFrame, afterChild) <- bindingTextField afterParent
+    (configDigest, afterConfig) <- bindingTextField afterChild
+    (phase, trailing) <- bindingTextField afterConfig
+    if not (ByteString.null trailing)
+        then Left (HandoffWireTrailingBytes (ByteString.length trailing))
+        else do
+            kind <- payloadKindFromName kindName
+            pure
+                HandoffBindingInput
+                    { requestedSpecDigest = specDigest
+                    , requestedPayloadKind = kind
+                    , requestedPlanRevision = planRevision
+                    , requestedParentFrame = parentFrame
+                    , requestedChildFrame = childFrame
+                    , requestedChildConfigDigest = configDigest
+                    , requestedPhase = phase
+                    }
+
 requireBindingField :: Text -> Text -> Either HandoffError ()
 requireBindingField name value
     | Text.null value = Left (HandoffBindingMismatch (name <> " must not be empty"))
@@ -382,6 +455,86 @@ renderHandoffBinding binding =
         ]
   where
     field = frameWire . TextEncoding.encodeUtf8
+
+{- | Parse canonical binding bytes back into the value that rendered them.
+
+Both ends of a real exchange need this, because a binding travels as bytes: the
+receiving child must recover the edge the root actually signed, and the root's
+grant service must recover the edge a relay is asking about.
+
+A parsed binding authorizes nothing — it *names* an edge. Only a signature
+verified against the independently installed key ('verifyHandoff'), or the live
+root broker's own project\/generation\/verb checks ('brokerRelay'), turn a named
+edge into something a frame may act on. The parse is the exact inverse of
+'renderHandoffBinding': a field that could not have come from
+'mkHandoffBinding' — an empty required field, an unknown payload kind, a
+malformed generation, or trailing bytes — is refused here rather than admitted
+as a binding no producer would mint.
+-}
+handoffBindingFromWire ::
+    ByteString ->
+    Either HandoffError (HandoffBinding scope brokerGeneration)
+handoffBindingFromWire raw = do
+    (project, afterProject) <- bindingTextField raw
+    (specDigest, afterSpec) <- bindingTextField afterProject
+    (kindName, afterKind) <- bindingTextField afterSpec
+    (scope, afterScope) <- bindingTextField afterKind
+    (planRevision, afterRevision) <- bindingTextField afterScope
+    (generationBytes, afterGeneration) <- takeFrame afterRevision
+    (parentFrame, afterParent) <- bindingTextField afterGeneration
+    (childFrame, afterChild) <- bindingTextField afterParent
+    (configDigest, afterConfig) <- bindingTextField afterChild
+    (verb, afterVerb) <- bindingTextField afterConfig
+    (phase, afterPhase) <- bindingTextField afterVerb
+    (commitment, trailing) <- bindingTextField afterPhase
+    if not (ByteString.null trailing)
+        then Left (HandoffWireTrailingBytes (ByteString.length trailing))
+        else do
+            kind <- payloadKindFromName kindName
+            generation <- bindingGenerationField generationBytes
+            requireBindingField "installed project" project
+            requireBindingField "spec digest" specDigest
+            requireBindingField "scope" scope
+            requireBindingField "plan revision" planRevision
+            requireBindingField "parent frame" parentFrame
+            requireBindingField "child frame" childFrame
+            requireBindingField "child config digest" configDigest
+            requireBindingField "verb" verb
+            requireBindingField "phase" phase
+            requireBindingField "token commitment" commitment
+            pure
+                HandoffBinding
+                    { handoffInstalledProject = project
+                    , handoffSpecDigest = specDigest
+                    , handoffPayloadKind = kind
+                    , handoffScope = scope
+                    , handoffPlanRevision = planRevision
+                    , handoffBrokerGeneration = generation
+                    , handoffParentFrame = parentFrame
+                    , handoffChildFrame = childFrame
+                    , handoffChildConfigDigest = configDigest
+                    , handoffVerb = verb
+                    , handoffPhase = phase
+                    , handoffTokenCommitment = commitment
+                    }
+
+bindingTextField :: ByteString -> Either HandoffError (Text, ByteString)
+bindingTextField raw = do
+    (bytes, rest) <- takeFrame raw
+    case TextEncoding.decodeUtf8' bytes of
+        Left _ -> Left (HandoffBindingMismatch "a binding field is not valid UTF-8")
+        Right value -> Right (value, rest)
+
+bindingGenerationField :: ByteString -> Either HandoffError Word64
+bindingGenerationField bytes
+    | ByteString.length bytes /= 8 =
+        Left (HandoffBindingMismatch "the binding's broker generation is not a 64-bit field")
+    | otherwise = Right (bigEndianWord64 (ByteString.unpack bytes))
+
+payloadKindFromName :: Text -> Either HandoffError HandoffPayloadKind
+payloadKindFromName name
+    | name == handoffPayloadKindName NarrowedProjectConfig = Right NarrowedProjectConfig
+    | otherwise = Left (HandoffBindingMismatch ("unknown handoff payload kind " <> name))
 
 -- ---------------------------------------------------------------------------
 -- Keys
@@ -562,6 +715,84 @@ brokerRelay broker binding
 relayBinding :: BrokerRelay scope brokerGeneration -> HandoffBinding scope brokerGeneration
 relayBinding (BrokerRelay binding) = binding
 
+{- | Adopt an edge the root opened and sent down, at a frame that has no broker.
+
+This is the value that makes a middle frame a *relay*. It can carry an edge the
+root opened and offer it onward; it cannot open one, because opening writes a
+durable record only 'registerHandoffEdge' produces, and it cannot authenticate
+one, because a grant is a signature only 'grantHandoff' emits. So the widest
+thing a frame reachable through this constructor can do is transmit — which is
+the whole design: intermediate frames relay, and the root signs.
+-}
+brokerRelayFromWire ::
+    ByteString ->
+    Either HandoffError (BrokerRelay scope brokerGeneration)
+brokerRelayFromWire = fmap BrokerRelay . handoffBindingFromWire
+
+{- | Open one edge the root intends to hand off: mint its one-time token,
+build its canonical binding, and record the edge durably before anyone can ask
+for a grant over it.
+
+This is what makes relaying *weaker* than signing. Without it, a root that
+signs any well-formed request it receives has given an intermediate frame the
+signer's power one message removed: the intermediary could name an edge the
+root never planned — a different child frame, a different phase — and get it
+authenticated. With it, 'grantHandoff' answers only for an edge this function
+already opened, so a frame that can relay still cannot invent.
+
+The record is written under the store's exclusive entry, keyed by the token
+commitment, and expects to be absent — a freshly minted token names a record
+that cannot already exist. It carries the canonical binding bytes, so grant
+issuance compares what it is asked about against what was planned rather than
+against a bare presence.
+-}
+registerHandoffEdge ::
+    RootBroker scope brokerGeneration verb ->
+    HandoffBindingInput ->
+    IO (Either HandoffError (BrokerRelay scope brokerGeneration, HandoffToken))
+registerHandoffEdge broker input = do
+    token <- freshHandoffToken
+    case mkHandoffBinding broker input token >>= brokerRelay broker of
+        Left failure -> pure (Left failure)
+        Right relay -> do
+            entered <-
+                withProtectedEntry (brokerProtectedStore broker) $ \session ->
+                    Right <$> recordPlannedEdge session (relayBinding relay)
+            pure $ case entered of
+                Left failure -> Left (HandoffStoreFailure failure)
+                Right (Left failure) -> Left failure
+                Right (Right ()) -> Right (relay, token)
+
+recordPlannedEdge ::
+    ProtectedSession session ->
+    HandoffBinding scope brokerGeneration ->
+    IO (Either HandoffError ())
+recordPlannedEdge session binding =
+    case mkRecordKey (tokenRecordKey binding) of
+        Left failure -> pure (Left (HandoffStoreFailure failure))
+        Right key -> do
+            written <-
+                compareAndSwapProtectedRecord
+                    session
+                    key
+                    ExpectAbsent
+                    (plannedEdgeRecord binding)
+            pure $ case written of
+                Right _ -> Right ()
+                Left failure -> Left (HandoffStoreFailure failure)
+
+{- | The two states an edge record has, tagged so they cannot be confused.
+
+An untagged encoding would ask a reader to tell a rendered binding from a
+transcript digest by their shapes, and "these two byte strings happen not to
+collide" is not a property worth depending on.
+-}
+plannedEdgeRecord :: HandoffBinding scope brokerGeneration -> ByteString
+plannedEdgeRecord binding = "planned:" <> renderHandoffBinding binding
+
+grantedEdgeRecord :: ByteString -> ByteString
+grantedEdgeRecord transcriptDigest = "granted:" <> transcriptDigest
+
 -- ---------------------------------------------------------------------------
 -- Offer, challenge, grant
 
@@ -583,6 +814,28 @@ freshHandoffToken = HandoffToken <$> (getRandomBytes tokenBytesLength :: IO Byte
 
 tokenBytesLength :: Int
 tokenBytesLength = 32
+
+{- | The token's exact bytes, for a transport that carries fields.
+
+Deliberately narrow: this is the same disclosure 'handoffOfferWire' already
+makes to the peer it is being handed to, expressed as a value instead of a
+concatenation. It is not a way to *learn* a token — only a holder can call it.
+-}
+handoffTokenBytes :: HandoffToken -> ByteString
+handoffTokenBytes (HandoffToken value) = value
+
+{- | Adopt received bytes as the token they claim to be.
+
+A token is one-use because the root's registered edge says so, not because the
+value is hard to build: 'consumeRegisteredEdge' answers for exactly one
+transcript per opened edge, and refuses an edge that was never opened. A frame
+relaying an edge downward must be able to reconstruct the token it was handed,
+so the adoption is explicit and width-checked rather than implicit.
+-}
+handoffTokenFromBytes :: ByteString -> Either HandoffError HandoffToken
+handoffTokenFromBytes raw
+    | ByteString.length raw /= tokenBytesLength = Left HandoffTokenInvalid
+    | otherwise = Right (HandoffToken raw)
 
 tokenFrame :: HandoffToken -> ByteString
 tokenFrame (HandoffToken token) = frameWire token
@@ -652,6 +905,27 @@ handoffOfferWire offer =
         <> tokenFrame (offerToken offer)
         <> frameWire (renderHandoffBinding (offerBinding offer))
 
+{- | The three values 'handoffOfferWire' concatenates, as separate fields:
+the exact config bytes, the exact token, and the canonical binding.
+
+A transport that carries typed fields rather than one opaque blob needs them
+apart, and re-splitting the concatenation at the sender would be a second
+parser of the sender's own output. Nothing is disclosed that
+'handoffOfferWire' does not already transmit — the receiver reassembles
+exactly @frameWire payload <> frameWire token <> frameWire binding@, and that
+reassembly is what its signature is checked over.
+-}
+handoffOfferFrames ::
+    HandoffOffer scope brokerGeneration ->
+    (ByteString, ByteString, ByteString)
+handoffOfferFrames offer =
+    ( offerPayload offer
+    , tokenBytes (offerToken offer)
+    , renderHandoffBinding (offerBinding offer)
+    )
+  where
+    tokenBytes (HandoffToken value) = value
+
 -- | The binding an offer claims. Descriptive until a grant authenticates it.
 handoffOfferBinding ::
     HandoffOffer scope brokerGeneration ->
@@ -676,7 +950,31 @@ challengeBytes (HandoffChallenge value) = value
 
 -- | Mint a fresh challenge in the receiving binary.
 freshChallenge :: IO HandoffChallenge
-freshChallenge = HandoffChallenge <$> (getRandomBytes 32 :: IO ByteString)
+freshChallenge = HandoffChallenge <$> (getRandomBytes challengeBytesLength :: IO ByteString)
+
+challengeBytesLength :: Int
+challengeBytesLength = 32
+
+{- | Adopt received bytes as the challenge a receiver issued.
+
+A signer cannot answer a challenge it is unable to reconstruct, so the root
+side of a real exchange needs this. Adopting a nonce grants nothing: the whole
+value of a challenge is that the *receiver* chose it and will compare the
+signature against the one it holds, so bytes that arrive here are answered, not
+trusted. A width other than the protocol's is refused rather than padded.
+-}
+handoffChallengeFromBytes :: ByteString -> Either HandoffError HandoffChallenge
+handoffChallengeFromBytes raw
+    | ByteString.length raw /= challengeBytesLength =
+        Left
+            ( HandoffBindingMismatch
+                ( "a challenge is "
+                    <> Text.pack (show challengeBytesLength)
+                    <> " bytes, received "
+                    <> Text.pack (show (ByteString.length raw))
+                )
+            )
+    | otherwise = Right (HandoffChallenge raw)
 
 {- | The root's signature over one challenge and one binding. Opaque: a
 consumer cannot alter which binding a grant speaks for.
@@ -690,6 +988,17 @@ instance Show (HandoffGrant scope brokerGeneration) where
 -- | The raw signature bytes, for transmission.
 grantSignature :: HandoffGrant scope brokerGeneration -> ByteString
 grantSignature (HandoffGrant value) = value
+
+{- | Adopt received bytes as the grant they claim to be.
+
+This is not a way to mint authority: a grant is exactly a signature, and
+'verifyHandoff' is the only thing that decides whether one speaks for an edge.
+A receiver must be able to form the value from the bytes that arrived, so the
+constructor that admits them is explicit rather than a byte-shaped hole in
+'verifyHandoff'.
+-}
+handoffGrantFromSignature :: ByteString -> HandoffGrant scope brokerGeneration
+handoffGrantFromSignature = HandoffGrant
 
 {- | Consume one token at the root and issue its grant.
 
@@ -711,7 +1020,7 @@ grantHandoff broker offer challenge =
         Right _ -> do
             entered <-
                 withProtectedEntry (brokerProtectedStore broker) $ \session ->
-                    Right <$> consumeTokenAtRoot session binding material
+                    Right <$> consumeRegisteredEdge session binding material
             pure $ case entered of
                 Left failure -> Left (HandoffStoreFailure failure)
                 Right (Left failure) -> Left failure
@@ -888,6 +1197,16 @@ decodeOfferWire raw = do
                 then Left (HandoffWireTrailingBytes (ByteString.length trailing))
                 else Right (payload, HandoffToken tokenBytes, bindingBytes)
 
+{- | Split one leading frame off a concatenation, leaving the remainder.
+
+'unframeWire' requires its frame to be the whole input, which is right at a
+message boundary and wrong for the three-frame offer wire. This is the reader
+that walks such a concatenation, and it is the same one every parser in this
+module uses, so no consumer invents a second framing.
+-}
+takeHandoffFrame :: ByteString -> Either HandoffError (ByteString, ByteString)
+takeHandoffFrame = takeFrame
+
 takeFrame :: ByteString -> Either HandoffError (ByteString, ByteString)
 takeFrame raw
     | ByteString.length raw < 8 = Left (HandoffWireTruncated 8 (ByteString.length raw))
@@ -899,43 +1218,57 @@ takeFrame raw
     (header, body) = ByteString.splitAt 8 raw
     declared = bigEndianWord64 (ByteString.unpack header)
 
-{- | Burn the token in the root store. An identical retry observes the same
-transcript digest and succeeds without advancing the record version.
+{- | Consume the registered edge in the root store.
+
+Three observations, three answers. A record that still holds the planned
+binding is this edge's first grant: it moves to the transcript digest, at the
+exact version just observed, so a concurrent peer loses the swap rather than
+issuing a second first-grant. A record that already holds *this* transcript is
+an identical retry — the same challenge, the same material, and therefore the
+same deterministic signature — so it succeeds without advancing the version. A
+record holding some other transcript is a token being used a second time, for a
+challenge it did not authorize, and is refused.
+
+Absence is the fourth case and the important one: no edge was ever opened here,
+so there is nothing to authenticate. That is what stops a frame that can relay
+from also being able to invent (see 'registerHandoffEdge').
 -}
-consumeTokenAtRoot ::
+consumeRegisteredEdge ::
     ProtectedSession session ->
     HandoffBinding scope brokerGeneration ->
     ByteString ->
     IO (Either HandoffError ())
-consumeTokenAtRoot session binding material =
+consumeRegisteredEdge session binding material =
     case mkRecordKey (tokenRecordKey binding) of
         Left failure -> pure (Left (HandoffStoreFailure failure))
         Right key -> do
             observed <- readProtectedRecord session key
             case observed of
                 Left failure -> pure (Left (HandoffStoreFailure failure))
+                Right Nothing -> pure (Left HandoffEdgeUnregistered)
                 Right (Just record)
-                    | protectedRecordBytes record == transcriptDigest -> pure (Right ())
-                    | otherwise -> pure (Left HandoffTokenConsumed)
-                Right Nothing -> do
-                    written <-
-                        compareAndSwapProtectedRecord
-                            session
-                            key
-                            ExpectAbsent
-                            transcriptDigest
-                    case written of
-                        Right _ -> pure (Right ())
-                        Left writeFailure -> do
-                            raced <- readProtectedRecord session key
-                            pure $ case raced of
-                                Right (Just record)
-                                    | protectedRecordBytes record == transcriptDigest -> Right ()
-                                    | otherwise -> Left HandoffTokenConsumed
-                                Right Nothing -> Left (HandoffStoreFailure writeFailure)
-                                Left readFailure -> Left (HandoffStoreFailure readFailure)
+                    | protectedRecordBytes record == granted -> pure (Right ())
+                    | protectedRecordBytes record /= plannedEdgeRecord binding ->
+                        pure (Left HandoffTokenConsumed)
+                    | otherwise -> do
+                        written <-
+                            compareAndSwapProtectedRecord
+                                session
+                                key
+                                (ExpectVersion (protectedRecordVersion record))
+                                granted
+                        case written of
+                            Right _ -> pure (Right ())
+                            Left writeFailure -> do
+                                raced <- readProtectedRecord session key
+                                pure $ case raced of
+                                    Right (Just latest)
+                                        | protectedRecordBytes latest == granted -> Right ()
+                                        | otherwise -> Left HandoffTokenConsumed
+                                    Right Nothing -> Left (HandoffStoreFailure writeFailure)
+                                    Left readFailure -> Left (HandoffStoreFailure readFailure)
   where
-    transcriptDigest = TextEncoding.encodeUtf8 (digestBytes material)
+    granted = grantedEdgeRecord (TextEncoding.encodeUtf8 (digestBytes material))
 
 tokenRecordKey :: HandoffBinding scope brokerGeneration -> Text
 tokenRecordKey binding = "handoff-token." <> handoffTokenCommitment binding
@@ -1020,6 +1353,8 @@ data HandoffError
     | HandoffTokenInvalid
     | -- | this token has already been used
       HandoffTokenConsumed
+    | -- | the root never opened this edge, so there is nothing to authenticate
+      HandoffEdgeUnregistered
     | HandoffSignatureInvalid
     | -- | expected digest, then the digest of the bytes received
       HandoffPayloadDigestMismatch Text Text
@@ -1046,6 +1381,7 @@ handoffErrorMessage err = case err of
         "handoff: " <> show count <> " unexpected bytes after the last frame"
     HandoffTokenInvalid -> "handoff: invalid one-time token"
     HandoffTokenConsumed -> "handoff: one-time token has already authorized another transcript"
+    HandoffEdgeUnregistered -> "handoff: the root opened no such edge"
     HandoffSignatureInvalid -> "handoff: the grant signature is invalid for this transcript"
     HandoffPayloadDigestMismatch expected actual ->
         "handoff: payload digest " <> Text.unpack actual <> " does not match the bound " <> Text.unpack expected

@@ -40,6 +40,7 @@ import HostBootstrap.Authority (authorityErrorMessage, installedProjectFor)
 import HostBootstrap.Harness (
     Case (Case),
     CaseId,
+    allCasesSelector,
     CaseResult (Fail, Pass),
     SafetyRefusal (SafetyRefusal),
     TestSuite (TestSuite),
@@ -75,7 +76,7 @@ import HostBootstrap.Service (
     serviceRoleSchemaFamilies,
     withFinalizedServiceRegistry,
  )
-import HostBootstrap.Step (ProjectStepId, ReversePolicy (ProjectManagedReverse), Step, StepFrame (..), StepPlanError (DuplicateStepIdentities), TeardownAction (DeleteFrame, StopFrame), TeardownOutcome (TeardownReleased), deployVMStep, projectStep, projectStepId, reversedBy, stepLabel, stepPlanSteps)
+import HostBootstrap.Step (ProjectStepId, ReversePolicy (ProjectManagedReverse), Step, StepFrame (..), StepObservation (..), StepPlanError (DuplicateStepIdentities), TeardownAction (DeleteFrame, StopFrame), TeardownOutcome (TeardownReleased), deployVMStep, projectStep, projectStepId, reversedBy, stepLabel, stepPlanSteps)
 import System.Directory (doesDirectoryExist, doesFileExist, doesPathExist, getCurrentDirectory, removeFile)
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv, withArgs, withProgName)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), die)
@@ -194,10 +195,10 @@ tests =
         , testCase "independent step fragments append in exact declaration order" $ do
             let first :: FixtureFragment
                 first _ _ =
-                    [projectStep (fixtureProjectStepId "first-fragment") ProjectManagedReverse "first" (StepFrame "host-orchestrator-0" "host") (const (pure ()))]
+                    [projectStep (fixtureProjectStepId "first-fragment") ProjectManagedReverse "first" (StepFrame "host-orchestrator-0" "host") (const (pure StepChanged))]
                 second :: FixtureFragment
                 second _ _ =
-                    [projectStep (fixtureProjectStepId "second-fragment") ProjectManagedReverse "second" (StepFrame "host-orchestrator-0" "host") (const (pure ()))]
+                    [projectStep (fixtureProjectStepId "second-fragment") ProjectManagedReverse "second" (StepFrame "host-orchestrator-0" "host") (const (pure StepChanged))]
                 spec =
                     finalized $
                         addSteps second $
@@ -248,7 +249,7 @@ tests =
         , testCase "duplicate identities across additive fragments fail before interpretation" $ do
             let duplicate :: FixtureFragment
                 duplicate _ _ =
-                    [projectStep (fixtureProjectStepId "shared") ProjectManagedReverse "duplicate" (StepFrame "host-orchestrator-0" "host") (const (pure ()))]
+                    [projectStep (fixtureProjectStepId "shared") ProjectManagedReverse "duplicate" (StepFrame "host-orchestrator-0" "host") (const (pure StepChanged))]
                 spec =
                     finalized $
                         addSteps duplicate $
@@ -287,6 +288,32 @@ tests =
                         try (withArgs ["test", "init"] (runHostBootstrapCLI "cli-test-init" (specWith passingSuite (pure ()) []))) ::
                             IO (Either ExitCode ())
                     result @?= Right ()
+                )
+                `finally` removeFile testPath
+        , testCase "test init refuses an existing test config unless replacement is requested" $ do
+            cfgPath <- Schema.siblingProjectConfigPath "cli-test-replace"
+            let testPath = takeDirectory cfgPath </> "cli-test-replace.test.dhall"
+                spec = specWith passingSuite (pure ()) []
+                initWith args =
+                    try (withArgs ("test" : "init" : args) (runHostBootstrapCLI "cli-test-replace" spec)) ::
+                        IO (Either ExitCode ())
+            ( do
+                    first <- initWith []
+                    first @?= Right ()
+                    original <- TIO.readFile testPath
+                    -- A second plain `init` must not silently replace what the
+                    -- operator may have edited.
+                    refused <- initWith []
+                    refused @?= Left (ExitFailure 1)
+                    TIO.writeFile testPath (original <> "-- operator edit\n")
+                    edited <- TIO.readFile testPath
+                    stillThere <- initWith []
+                    stillThere @?= Left (ExitFailure 1)
+                    TIO.readFile testPath >>= (@?= edited)
+                    -- Explicit replacement is the only route that overwrites.
+                    replaced <- initWith ["--replace"]
+                    replaced @?= Right ()
+                    TIO.readFile testPath >>= (@?= original)
                 )
                 `finally` removeFile testPath
         , testCase "test init then test run exits non-zero when a case fails (config is generated then removed)" $ do
@@ -387,6 +414,30 @@ tests =
         , testCase "consumer service schema command output owns the project-config snapshot" $ do
             output <- schemaFixtureOutput "service"
             assertGolden "service_schema_consumer.txt" (serviceSchemaOutline output)
+        , testCase "test run names a compiled case, not a suite, in its surface text" $ do
+            output <- schemaFixtureOutput "test-run-help"
+            assertBool
+                ("the metavariable names a case id, saw " ++ T.unpack output)
+                ("CASE-ID" `T.isInfixOf` output)
+            assertBool
+                ("the help names the whole-matrix selector, saw " ++ T.unpack output)
+                (T.pack allCasesSelector `T.isInfixOf` output)
+            assertBool
+                ("no surface text names a suite, saw " ++ T.unpack output)
+                (not ("SUITE" `T.isInfixOf` output) && not ("suite" `T.isInfixOf` output))
+        , testCase "test run refuses an unknown case by naming the compiled set" $ do
+            cfgPath <- Schema.siblingProjectConfigPath "cli-test-unknown"
+            let testPath = takeDirectory cfgPath </> "cli-test-unknown.test.dhall"
+            ( do
+                    _ <-
+                        try (withArgs ["test", "init"] (runHostBootstrapCLI "cli-test-unknown" (specWith passingSuite (pure ()) []))) ::
+                            IO (Either ExitCode ())
+                    result <-
+                        try (withArgs ["test", "run", "no-such-case"] (runHostBootstrapCLI "cli-test-unknown" (specWith passingSuite (pure ()) []))) ::
+                            IO (Either ExitCode ())
+                    result @?= Left (ExitFailure 1)
+                )
+                `finally` removeFile testPath
         , testCase "service run fails fast on a non-service-role config" $
             withProjectConfig "cli-svc-role" $ do
                 let spec = specWithServices (Just "web") [("web", pure ())]
@@ -527,7 +578,7 @@ tests =
                     reversedChain _ _ =
                         [ reversedBy
                             (\_ action -> modifyIORef' observed (action :) >> pure TeardownReleased)
-                            (deployVMStep "launch the VM" (StepFrame "host-orchestrator-0" "metal") (const (pure ())))
+                            (deployVMStep "launch the VM" (StepFrame "host-orchestrator-0" "metal") (const (pure StepChanged)))
                         ]
                     spec = finalized (addSteps reversedChain (builderWith passingSuite (pure ()) []))
                 result <-
@@ -560,7 +611,10 @@ tests =
                             ProjectManagedReverse
                             "replace the sibling config mid-run"
                             frame
-                            (\_ -> Schema.writeProjectConfigFile Fixture.projectConfigCodec path replaced)
+                            ( \_ -> do
+                                Schema.writeProjectConfigFile Fixture.projectConfigCodec path replaced
+                                pure StepChanged
+                            )
                         , projectStep
                             (fixtureProjectStepId "observe-config")
                             ProjectManagedReverse
@@ -569,6 +623,7 @@ tests =
                             ( \_ -> do
                                 onDisk <- Fixture.decodeProjectConfigFile path
                                 modifyIORef' seen ((Fixture.dockerfile cfg, Fixture.dockerfile onDisk) :)
+                                pure StepChanged
                             )
                         ]
                     spec =
@@ -631,7 +686,7 @@ data HarnessPlanRun
 -- A one-step demo-shaped chain used to prove `project up --dry-run` renders.
 sampleChain :: FixtureFragment
 sampleChain _ _ =
-    [deployVMStep "launch the VM" (StepFrame "host-orchestrator-0" "metal") (const (pure ()))]
+    [deployVMStep "launch the VM" (StepFrame "host-orchestrator-0" "metal") (const (pure StepChanged))]
 
 fixtureProjectStepId :: String -> ProjectStepId
 fixtureProjectStepId = either error id . projectStepId
@@ -857,6 +912,11 @@ runSchemaFixture fixture =
             let spec = specWithServices Nothing [("web", pure ())]
             withArgs ["service", "schema"] $
                 runHostBootstrapCLI "cli-schema-service" spec
+        -- @--help@ prints to stdout and exits successfully, so the rendered
+        -- surface text is captured the same way a schema snapshot is.
+        "test-run-help" ->
+            withArgs ["test", "run", "--help"] $
+                runHostBootstrapCLI "cli-test-help" (specWith passingSuite (pure ()) [])
         _ -> die ("unknown schema fixture " ++ show fixture)
 
 assertGolden :: FilePath -> T.Text -> IO ()

@@ -58,6 +58,8 @@ module HostBootstrap.Protected (
     RecordKey,
     mkRecordKey,
     recordKeyText,
+    mkRecordName,
+    recordNameIdentity,
     RecordVersion,
     recordVersionWord,
     ProtectedRecord (..),
@@ -402,10 +404,20 @@ instance Show RecordKey where
 recordKeyText :: RecordKey -> Text
 recordKeyText (RecordKey value) = value
 
+{- | Validate a record key.
+
+The length cap is derived from the filesystem, which is what a key ultimately
+names: a record is written as @\<key\>.rec@ and published from
+@\<key\>.rec.tmp-\<16 hex\>@, so the on-disk component is the key plus 25 bytes,
+against the 255-byte component limit APFS and ext4 both impose. 200 leaves
+headroom for that suffix and for the longest key the lifecycle actually forms —
+an operation key carries the plan digest (@\<specDigest\>:\<planBytesDigest\>@,
+81 characters encoded), a session identifier, and the operation's own name.
+-}
 mkRecordKey :: Text -> Either ProtectedError RecordKey
 mkRecordKey raw
     | Text.null raw = Left (ProtectedInvalid "a record key must not be empty")
-    | Text.length raw > 120 = Left (ProtectedInvalid "a record key must be at most 120 characters")
+    | Text.length raw > 200 = Left (ProtectedInvalid "a record key must be at most 200 characters")
     | not (Text.all legal raw) =
         Left
             ( ProtectedInvalid
@@ -415,6 +427,60 @@ mkRecordKey raw
     | otherwise = Right (RecordKey raw)
   where
     legal character = isAlphaNum character || character `elem` ("-_." :: String)
+
+{- | Encode one **namespaced identity** as a record-name component.
+
+The store's key alphabet is alphanumerics, @-@, @_@, and @.@ — deliberately
+narrow, because a key is a filesystem name. Several identities above this module
+are namespaced with a colon: a plan operation key (@core:deploy-kind@,
+@project:build-image@) and a plan digest (@\<specDigest\>:\<planBytesDigest\>@).
+Neither could name a record at all, so the identities the lifecycle actually
+wants to key by were unreachable and a caller had to invent a lossy sanitizer.
+
+This is the one encoding, and it is **injective**: its image is exactly the
+components containing a @.@, and its domain admits a @.@ only after the
+namespace, so
+
+* a plain component (no colon) may contain no @.@, and therefore collides with
+  no encoded one;
+* an encoded component's namespace may contain no @.@, so the first @.@ is
+  always the separator and @ns.token@ determines @(ns, token)@ uniquely.
+
+At most one colon is admitted; a second would make the separator ambiguous. Two
+distinct identities can therefore never share one durable record — which a
+character-replacing sanitizer does not guarantee.
+-}
+mkRecordName :: Text -> Either ProtectedError Text
+mkRecordName raw
+    | Text.null raw = refuse "must not be empty"
+    | not (Text.all admitted raw) =
+        refuse "may contain only alphanumerics, '-', '_', '.', and one ':'"
+    | otherwise = case Text.splitOn ":" raw of
+        [plain]
+            | Text.any (== '.') plain ->
+                refuse "a component with no namespace may not contain '.'"
+            | otherwise -> Right plain
+        [namespace, token]
+            | Text.null namespace -> refuse "a namespaced component needs a namespace"
+            | Text.null token -> refuse "a namespaced component needs a token"
+            | Text.any (== '.') namespace ->
+                refuse "a component's namespace may not contain '.'"
+            | otherwise -> Right (namespace <> "." <> token)
+        _ -> refuse "a component has at most one namespace"
+  where
+    refuse reason =
+        Left (ProtectedInvalid ("record name " <> raw <> " " <> reason))
+    admitted character = legal character || character == ':'
+    legal character = isAlphaNum character || character `elem` ("-_." :: String)
+
+{- | The identity a record-name component denotes. Total inverse of
+'mkRecordName' on its image: the first @.@ is the namespace separator, and a
+component with no @.@ was never namespaced.
+-}
+recordNameIdentity :: Text -> Text
+recordNameIdentity name = case Text.breakOn "." name of
+    (_, rest) | Text.null rest -> name
+    (namespace, rest) -> namespace <> ":" <> Text.drop 1 rest
 
 {- | A record's monotonic version. Version 1 is the first published value; a
 record that has never existed has no version at all, which is why 'Expectation'

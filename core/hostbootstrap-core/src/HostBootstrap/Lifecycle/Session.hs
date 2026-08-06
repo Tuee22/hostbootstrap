@@ -87,6 +87,7 @@ module HostBootstrap.Lifecycle.Session (
     preparedGateAttempt,
     preparedGateJournalVersion,
     withPreparedGate,
+    withStepPreparedGate,
 
     -- * Terminal acknowledgment
     OperationAdvance,
@@ -115,6 +116,11 @@ import Data.Word (Word64)
 import HostBootstrap.Authority (
     BrokerEpoch,
     brokerEpochWord,
+ )
+import HostBootstrap.Lifecycle.Execution (
+    StepExecution,
+    stepExecutionOperationKey,
+    stepExecutionPlanDigest,
  )
 import HostBootstrap.Lifecycle.Prepared (
     PreparedGate,
@@ -158,8 +164,10 @@ import HostBootstrap.Protected (
     compareAndSwapProtectedRecord,
     listProtectedRecords,
     mkRecordKey,
+    mkRecordName,
     protectedErrorMessage,
     readProtectedRecord,
+    recordNameIdentity,
     recordVersionWord,
  )
 
@@ -215,10 +223,20 @@ projectPermitVersion :: ProjectPermit scope planId -> Word64
 projectPermitVersion (ProjectPermit permit) = transactionPermitVersion permit
 
 projectKey :: Text -> Either SessionError RecordKey
-projectKey planDigest = keyFor ("project." <> planDigest)
+projectKey planDigest = do
+    digest <- recordName planDigest
+    keyFor ("project." <> digest)
 
 keyFor :: Text -> Either SessionError RecordKey
 keyFor raw = either (Left . SessionStoreFailure) Right (mkRecordKey raw)
+
+-- | 'mkRecordName' in this module's failure type.
+recordName :: Text -> Either SessionError Text
+recordName raw = either (Left . SessionStoreFailure) Right (mkRecordName raw)
+
+-- | The identity a record-name component denotes ('recordNameIdentity').
+recordIdentity :: Text -> Text
+recordIdentity = recordNameIdentity
 
 transactionFailure :: TransactionError -> SessionError
 transactionFailure failure = case failure of
@@ -499,10 +517,11 @@ verifyAllSessionsClosed session planDigest = do
             listed <- listProtectedRecords session
             case listed of
                 Left failure -> pure (Left (SessionStoreFailure failure))
-                Right keys -> do
-                    let prefix = sessionKeyPrefix planDigest
-                        members =
-                            [ SessionId (Text.drop (Text.length prefix) raw)
+                Right keys -> case sessionKeyPrefixFor planDigest of
+                  Left failure -> pure (Left failure)
+                  Right prefix -> do
+                    let members =
+                            [ SessionId (recordIdentity (Text.drop (Text.length prefix) raw))
                             | raw <- map recordKeyText keys
                             , prefix `Text.isPrefixOf` raw
                             ]
@@ -547,10 +566,15 @@ operationSessionId :: OperationSession scope planId -> SessionId
 operationSessionId = sessionRecordId
 
 sessionKey :: Text -> SessionId -> Either SessionError RecordKey
-sessionKey planDigest (SessionId sid) = keyFor ("session." <> planDigest <> "." <> sid)
+sessionKey planDigest (SessionId sid) = do
+    prefix <- sessionKeyPrefixFor planDigest
+    name <- recordName sid
+    keyFor (prefix <> name)
 
-sessionKeyPrefix :: Text -> Text
-sessionKeyPrefix planDigest = "session." <> planDigest <> "."
+sessionKeyPrefixFor :: Text -> Either SessionError Text
+sessionKeyPrefixFor planDigest = do
+    digest <- recordName planDigest
+    pure ("session." <> digest <> ".")
 
 data SessionRecordState = SessionRecordState
     { sessionRecordIsOpen :: Bool
@@ -616,17 +640,17 @@ legacyOperationNames ::
     IO (Either SessionError [Text])
 legacyOperationNames session planDigest sid = do
     listed <- listProtectedRecords session
-    pure $ case listed of
-        Left failure -> Left (SessionStoreFailure failure)
-        Right keys ->
-            let prefix = operationPrefix planDigest sid
-             in Right
-                    ( sort
-                        [ Text.drop (Text.length prefix) raw
-                        | raw <- map recordKeyText keys
-                        , prefix `Text.isPrefixOf` raw
-                        ]
-                    )
+    pure $ case (listed, operationPrefixFor planDigest sid) of
+        (Left failure, _) -> Left (SessionStoreFailure failure)
+        (_, Left failure) -> Left failure
+        (Right keys, Right prefix) ->
+            Right
+                ( sort
+                    [ recordIdentity (Text.drop (Text.length prefix) raw)
+                    | raw <- map recordKeyText keys
+                    , prefix `Text.isPrefixOf` raw
+                    ]
+                )
 
 sessionOperationNames ::
     ProtectedSession session ->
@@ -709,10 +733,11 @@ openSessionsFor session planDigest = do
     listed <- listProtectedRecords session
     case listed of
         Left failure -> pure (Left (SessionStoreFailure failure))
-        Right keys -> do
-            let prefix = sessionKeyPrefix planDigest
-                candidates =
-                    [ SessionId (Text.drop (Text.length prefix) raw)
+        Right keys -> case sessionKeyPrefixFor planDigest of
+          Left failure -> pure (Left failure)
+          Right prefix -> do
+            let candidates =
+                    [ SessionId (recordIdentity (Text.drop (Text.length prefix) raw))
                     | raw <- map recordKeyText keys
                     , prefix `Text.isPrefixOf` raw
                     ]
@@ -791,11 +816,16 @@ closeOperationSession session sess (ProjectPermit presented) =
 -- Operation records
 
 operationKeyFor :: Text -> SessionId -> Text -> Either SessionError RecordKey
-operationKeyFor planDigest (SessionId sid) opKey =
-    keyFor ("op." <> planDigest <> "." <> sid <> "." <> opKey)
+operationKeyFor planDigest (SessionId sid) opKey = do
+    prefix <- operationPrefixFor planDigest (SessionId sid)
+    name <- recordName opKey
+    keyFor (prefix <> name)
 
-operationPrefix :: Text -> SessionId -> Text
-operationPrefix planDigest (SessionId sid) = "op." <> planDigest <> "." <> sid <> "."
+operationPrefixFor :: Text -> SessionId -> Either SessionError Text
+operationPrefixFor planDigest (SessionId sid) = do
+    digest <- recordName planDigest
+    name <- recordName sid
+    pure ("op." <> digest <> "." <> name <> ".")
 
 {- | Where an operation's first intent may legitimately come from: no prior
 history at all, or a previous generation that was explicitly released.
@@ -977,7 +1007,9 @@ fenceEpochWord :: FenceEpoch scope planId -> Word64
 fenceEpochWord (FenceEpoch value) = value
 
 fenceKey :: Text -> Either SessionError RecordKey
-fenceKey planDigest = keyFor ("fence." <> planDigest)
+fenceKey planDigest = do
+    digest <- recordName planDigest
+    keyFor ("fence." <> digest)
 
 {- | Establish the plan's initial fence, or resume an interrupted establishment.
 
@@ -1194,7 +1226,14 @@ settledPhases =
 
 terminalPhases :: [Text]
 terminalPhases =
-    [ "ObservedForeign"
+    [ -- A chain node that returned a definite non-success observation: a
+      -- conflict, an unsupported backend, or a safety refusal. All three are
+      -- terminal for recovery in the same way — an operator resolves them, a
+      -- successor may not retry them — so they settle at one phase. Which of the
+      -- three it was is carried by the interpreter's row, not by the record,
+      -- because the record's only job here is the recovery classification.
+      "StepObservedTerminal"
+    , "ObservedForeign"
     , "TeardownObservedForeign"
     , "AdoptionObservedForeign"
     , "AdoptionRefused"
@@ -1441,6 +1480,62 @@ withPreparedGate session sess epoch fence opKey unknownPhase (ProjectPermit pres
                                 )
                                 (ProjectPermit next)
 
+{- | The route from a step's plan-minted execution descriptor to the prepared
+gate for **that step's own operation** (§ CC).
+
+'withPreparedGate' takes the operation key as an ordinary argument, which is
+correct for the core's own operations but is not a route a *step action* may
+take: an action holding a descriptor could name any key the plan happens to
+contain, and prepare a node other than its own. This seam removes the choice.
+The plan digest and the operation key are both read off the descriptor, whose
+sole producer is 'HostBootstrap.Reconcile.stepExecutionFor' over a real
+validated plan, so a step can reach exactly one gate — its own.
+
+The @scope@ and @planId@ indices are shared with the 'OperationSession' and the
+'FenceEpoch', so a descriptor from one plan cannot be presented in another
+plan's session. The plan digest is compared as a *value* as well, because those
+indices are phantom on the session side and a caller could otherwise instantiate
+them to agree: the descriptor's digest comes from the plan and the session's from
+the journal, and a disagreement means the two are not the same interpretation.
+
+Everything else — the broker epoch, the open session, the operation's
+registration, the live fence, the recorded phase, and the durable unknown write —
+is 'withPreparedGate''s own compare-and-swap, unchanged.
+-}
+withStepPreparedGate ::
+    ProtectedSession session ->
+    OperationSession scope planId ->
+    BrokerEpoch brokerGeneration ->
+    FenceEpoch scope planId ->
+    StepExecution scope planId ->
+    -- | the unknown phase to record before the call
+    Text ->
+    ProjectPermit scope planId ->
+    ( PreparedGate ->
+      ProjectPermit scope planId ->
+      IO (Either SessionError result)
+    ) ->
+    IO (Either SessionError result)
+withStepPreparedGate session sess epoch fence execution unknownPhase permit use
+    | stepExecutionPlanDigest execution /= sessionPlanDigest sess =
+        pure
+            ( Left
+                ( SessionStepPlanMismatch
+                    (sessionPlanDigest sess)
+                    (stepExecutionPlanDigest execution)
+                )
+            )
+    | otherwise =
+        withPreparedGate
+            session
+            sess
+            epoch
+            fence
+            (stepExecutionOperationKey execution)
+            unknownPhase
+            permit
+            use
+
 recordedAttempt :: ByteString -> Word64
 recordedAttempt raw = case decodeFields raw of
     (_ : _ : _ : attempt : _) -> maybe 0 id (readWord attempt)
@@ -1573,6 +1668,8 @@ data SessionError
     | SessionRetryNeedsFreshFence Text Word64 Word64
     | SessionUnclassifiedPhase Text Text
     | SessionPreparedGateMismatch Text
+    | -- | the session's plan digest, then the step descriptor's
+      SessionStepPlanMismatch Text Text
     | -- | consumed version, then the version actually on the record
       SessionStaleJournalVersion Word64 Word64
     deriving (Eq, Show)
@@ -1626,5 +1723,10 @@ sessionErrorMessage err = case err of
         "session: operation " <> Text.unpack opKey <> " is at unrecognised phase " <> Text.unpack phase
     SessionPreparedGateMismatch field ->
         "session: the prepared gate does not match the " <> Text.unpack field
+    SessionStepPlanMismatch sessionPlan stepPlan ->
+        "session: the step descriptor belongs to plan "
+            <> Text.unpack stepPlan
+            <> ", but this session is open on "
+            <> Text.unpack sessionPlan
     SessionStaleJournalVersion consumed actual ->
         "session: journal version " <> show consumed <> " was superseded by " <> show actual

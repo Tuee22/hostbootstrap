@@ -64,7 +64,11 @@ import HostBootstrap.Config.Schema (
     withSiblingProjectConfigContext,
     withSiblingValidatedProjectConfigContext,
     withSiblingValidatedProjectConfigRoot,
-    writeProjectConfigFile,
+    TestConfigReplacement (RefuseExistingTestConfig, ReplaceExistingTestConfig),
+    TestConfigWriteOutcome (TestConfigExists, TestConfigReplaced, TestConfigWritten),
+    installTestConfig,
+    siblingTestConfigPath,
+    testConfigWriteFor,
     writeScopedProjectConfigFile,
  )
 import qualified HostBootstrap.Config.Vocab as V
@@ -292,42 +296,70 @@ testCommand _productionCodec testCodec progName suite projectPlan assemblyInputs
         "test"
         ( info
             (hsubparser (testInitCmd <> testRunCmd))
-            (progDesc "Test surface: `init` writes <project>.test.dhall; `run` runs a suite against the live stack (root-only)")
+            (progDesc "Test surface: `init` writes <project>.test.dhall; `run` runs compiled cases against the live stack (root-only)")
         )
   where
     testInitCmd =
         command
             "init"
             ( info
-                (pure runTestInit)
+                (runTestInit <$> replaceFlag)
                 (progDesc "Write <project>.test.dhall next to the project config (needs no pre-existing project config)")
+            )
+    {- The policy is a flag rather than a default, because both defaults are
+    wrong: overwriting silently loses an edited matrix, and skipping silently
+    runs yesterday's. -}
+    replaceFlag =
+        flag
+            RefuseExistingTestConfig
+            ReplaceExistingTestConfig
+            ( long "replace"
+                <> help "replace an existing <project>.test.dhall instead of refusing"
             )
     testRunCmd =
         command
             "run"
             ( info
                 (runTestRun <$> caseArg)
-                (progDesc ("Run a test suite, or `" ++ allCasesSelector ++ "` for the whole matrix (needs <project>.test.dhall)"))
+                (progDesc ("Run one compiled test case, or `" ++ allCasesSelector ++ "` for the whole matrix (needs <project>.test.dhall)"))
             )
+    {- The selector's vocabulary is the compiled case registry, so the surface
+    text names a case. It said @SUITE@, which described a grouping the typed
+    vocabulary does not have: what a project contributes is a non-empty set of
+    'Case's with validated 'CaseId's, and the only other selector is
+    'allCasesSelector'. An operator reading @SUITE@ has no way to discover what
+    to type, because nothing anywhere is named a suite. -}
     caseArg =
         argument
             (eitherReader (either (Left . show) Right . parseCaseSelector . T.pack))
-            ( metavar "SUITE"
-                <> help ("test suite to run, or `" ++ allCasesSelector ++ "` for the whole matrix")
+            ( metavar "CASE-ID"
+                <> help ("test case to run, or `" ++ allCasesSelector ++ "` for every compiled case")
             )
     -- @test init@ writes the project's test config from defaults (no flags, no
     -- pre-existing project config required): the project's 'psTestInit'
     -- interprets the same defaultless 'InitArgs' the harness uses.
-    runTestInit = do
-        path <- testDhallPath progName
-        let tc = testInit defaultInitArgs
-        writeProjectConfigFile testCodec path tc
-        putStrLn ("test init: wrote " ++ path)
+    {- The writer takes an opaque request, not a path and not bytes: the
+    request's producer resolves the sibling destination itself from the
+    project's own name, and what a caller supplies is the project's typed
+    test-config value. So @test init@ cannot be asked to write arbitrary bytes,
+    or to write them anywhere but the file @test run@ reads. -}
+    runTestInit replacement = do
+        request <- testConfigWriteFor (T.pack progName) testCodec (testInit defaultInitArgs)
+        outcome <- installTestConfig replacement request
+        case outcome of
+            TestConfigWritten path -> putStrLn ("test init: wrote " ++ path)
+            TestConfigReplaced path -> putStrLn ("test init: replaced " ++ path)
+            TestConfigExists path ->
+                die
+                    ( "test init: "
+                        ++ path
+                        ++ " already exists; pass --replace to overwrite it"
+                    )
     -- @test run@ is not context-gated: it does NOT load a sibling project config
     -- (the harness generates it); its guards are the test config's existence
     -- precondition plus the suite's own safety preconditions.
     runTestRun selector = do
-        tpath <- testDhallPath progName
+        tpath <- siblingTestConfigPath (T.pack progName)
         exists <- doesFileExist tpath
         unless exists (die ("test run: missing " ++ tpath ++ "; run `" ++ progName ++ " test init` first"))
         tc <- decodeFile testCodec tpath
@@ -508,14 +540,6 @@ defaultInitArgs =
         , force = False
         , ifMissing = False
         }
-
-{- | The per-project @test.dhall@ path: a sibling of the project config (the
-@test run@ gate, § Z).
--}
-testDhallPath :: String -> IO FilePath
-testDhallPath progName = do
-    cfgPath <- siblingProjectConfigPath (T.pack progName)
-    pure (takeDirectory cfgPath </> (progName ++ ".test.dhall"))
 
 {- | The @check-code@ verb: the fail-fast image-build quality gate. Its body is
 supplied by the project spec (or by the explicit bare-core entrypoint).
@@ -831,6 +855,16 @@ projectCommandGroup codec progName projectPlan initBuilder =
     applyChain plan root ctx = do
         cfg <- hostConfig
         self <- currentSelfRef ("/usr/local/bin/" ++ progName)
+        -- The interpreter runs each node as a prepared operation (§ EE), so it
+        -- needs the project's own protected store and installed identity. Both
+        -- come from the same openers the root gate uses, under the canonical
+        -- root — not a second store beside it.
+        store <- openAuthorityStore root
+        project <-
+            either
+                (dieAuthority . T.unpack . Authority.authorityErrorMessage)
+                pure
+                (Authority.installedProjectFor @projectId @cfg (T.pack progName))
         let current = T.unpack (Context.currentFrame ctx)
         -- Guard the chain apply with best-effort teardown: a chain failure — a `Left`
         -- from a non-zero handoff, or a thrown exception — at the ROOT frame runs the
@@ -851,7 +885,7 @@ projectCommandGroup codec progName projectPlan initBuilder =
         -- codec and the same admitted 'StepPlan', and that derivation is pure.
         outcome <-
             withLifecyclePlan codec plan $ \lifecyclePlan ->
-                try (runChainFromFrame cfg self current lifecyclePlan)
+                try (runChainFromFrame cfg self current store project lifecyclePlan)
         case outcome of
             Right (Right ()) -> pure ()
             Right (Left err)

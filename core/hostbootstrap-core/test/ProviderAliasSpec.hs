@@ -631,8 +631,8 @@ testPlan =
         (error . show)
         id
         ( mkStepPlan
-            [ descendsVia localContext (deployVMStep "provider" (StepFrame "host" "Host") (const (pure ())))
-            , copySourceStep "durable share" (StepFrame "provider" "Provider") (const (pure ()))
+            [ descendsVia localContext (deployVMStep "provider" (StepFrame "host" "Host") (const (pure StepChanged)))
+            , copySourceStep "durable share" (StepFrame "provider" "Provider") (const (pure StepChanged))
             ]
         )
 

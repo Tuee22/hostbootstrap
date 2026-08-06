@@ -18,6 +18,11 @@ module HostBootstrap.Handoff.Protocol (
     decodeProtocolMessage,
     readProtocolMessage,
     writeProtocolMessage,
+    HandoffChannel,
+    handoffChannel,
+    stdioHandoffChannel,
+    channelReceive,
+    channelSend,
     ChildProtocolState,
     initialChildProtocolState,
     childProtocolReceive,
@@ -35,7 +40,15 @@ import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import qualified Data.ByteString as ByteString
 import Data.ByteString (ByteString)
 import Data.Word (Word16, Word64, Word8)
-import System.IO (Handle, hFlush)
+import System.IO (
+    BufferMode (BlockBuffering),
+    Handle,
+    hFlush,
+    hSetBinaryMode,
+    hSetBuffering,
+    stdin,
+    stdout,
+ )
 
 -- | Stable magic at the start of every decoded body.
 protocolMagic :: ByteString
@@ -214,6 +227,53 @@ writeProtocolMessage handle message = do
         Left (failure :: IOException) -> Left (ProtocolIOFailure (firstLine (show failure)))
         Right () -> Right ()
 
+{- | The two handles one end of an exchange owns: the stream it reads its
+peer's messages from, and the stream it writes its own into.
+
+A channel is two handles rather than one bidirectional endpoint because the
+transport that actually crosses a VM or container boundary is a pipe pair —
+@stdin@ inbound and @stdout@ outbound, the only descriptors a
+@docker run@ \/ @limactl shell@ \/ @wsl -d@ boundary carries. A binary that
+receives on this channel therefore writes its diagnostics to @stderr@:
+@stdout@ carries protocol frames and nothing else, so a stray @putStrLn@
+cannot corrupt the exchange.
+-}
+data HandoffChannel = HandoffChannel
+    { channelInbound :: Handle
+    , channelOutbound :: Handle
+    }
+
+instance Show HandoffChannel where
+    show _ = "HandoffChannel <duplex>"
+
+{- | Adopt a handle pair as a channel.
+
+Both handles are put in binary mode, because the frames are bytes and a
+locale-dependent text encoding would rewrite them. The outbound handle is
+block-buffered and every 'channelSend' flushes, so a message reaches the peer
+as one write rather than waiting for a line.
+-}
+handoffChannel :: Handle -> Handle -> IO HandoffChannel
+handoffChannel inbound outbound = do
+    hSetBinaryMode inbound True
+    hSetBinaryMode outbound True
+    hSetBuffering outbound (BlockBuffering Nothing)
+    pure (HandoffChannel{channelInbound = inbound, channelOutbound = outbound})
+
+{- | The channel a receiving binary is launched with: @stdin@ inbound,
+@stdout@ outbound.
+-}
+stdioHandoffChannel :: IO HandoffChannel
+stdioHandoffChannel = handoffChannel stdin stdout
+
+-- | Read one complete message from the channel's inbound stream.
+channelReceive :: HandoffChannel -> IO (Either ProtocolError ProtocolMessage)
+channelReceive = readProtocolMessage . channelInbound
+
+-- | Write and flush one complete message to the channel's outbound stream.
+channelSend :: HandoffChannel -> ProtocolMessage -> IO (Either ProtocolError ())
+channelSend channel = writeProtocolMessage (channelOutbound channel)
+
 readExactly :: Handle -> Int -> IO (Either Int ByteString)
 readExactly handle wanted = go [] 0
   where
@@ -243,24 +303,46 @@ childProtocolFinished :: ChildProtocolState -> Bool
 childProtocolFinished ChildFinished = True
 childProtocolFinished _ = False
 
--- | Advance for a message received by the child.
+{- | Advance for a message received by the child.
+
+'ChildRunning' is where the channel becomes a *duplex* one. Once the child has
+accepted its own edge it may need edges of its own — it is the parent of the
+next frame — and the only route to the root is back up the channel it arrived
+on. So an admitted child keeps receiving the root's answers to the requests it
+relays, and stays admitted while it does: an answer does not end the run, and
+the run ends only at 'CompletedTag' or a refusal.
+-}
 childProtocolReceive :: ChildProtocolState -> ProtocolMessage -> Either ProtocolError ChildProtocolState
 childProtocolReceive state message = case (state, protocolMessageTag message) of
     (ChildAwaitingOffer, OfferTag) -> Right (ChildMustSendChallenge requestId)
+    -- A parent may decide there is no edge to offer at all. The child has no
+    -- request identity yet, so it accepts the refusal on its face and ends: an
+    -- announced refusal is strictly better than the closed pipe it replaces.
+    (ChildAwaitingOffer, RefusedTag) -> Right ChildFinished
     (ChildAwaitingGrant expected, GrantTag) ->
         requireRequest expected requestId (ChildMustSendAccepted expected)
     (ChildAwaitingGrant expected, RefusedTag) -> requireRequest expected requestId ChildFinished
+    (ChildRunning expected, OfferResponseTag) -> requireRequest expected requestId state
+    (ChildRunning expected, GrantResponseTag) -> requireRequest expected requestId state
+    (ChildRunning expected, RefusedTag) -> requireRequest expected requestId ChildFinished
     _ -> Left (ProtocolInvalidTransition "receive" state (protocolMessageTag message))
   where
     requestId = protocolMessageRequestId message
 
--- | Advance for a message emitted by the child.
+{- | Advance for a message emitted by the child.
+
+The relay requests an admitted child may raise are the mirror of the answers it
+may receive, and they are available only from 'ChildRunning': a frame cannot ask
+the root to open an edge before it has been admitted to one itself.
+-}
 childProtocolSend :: ChildProtocolState -> ProtocolMessage -> Either ProtocolError ChildProtocolState
 childProtocolSend state message = case (state, protocolMessageTag message) of
     (ChildMustSendChallenge expected, ChallengeTag) ->
         requireRequest expected requestId (ChildAwaitingGrant expected)
     (ChildMustSendAccepted expected, AcceptedTag) ->
         requireRequest expected requestId (ChildRunning expected)
+    (ChildRunning expected, OfferRequestTag) -> requireRequest expected requestId state
+    (ChildRunning expected, GrantRequestTag) -> requireRequest expected requestId state
     (ChildRunning expected, CompletedTag) -> requireRequest expected requestId ChildFinished
     (_, RefusedTag)
         | state /= ChildFinished -> requireStateRequest state requestId ChildFinished

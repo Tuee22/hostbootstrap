@@ -115,9 +115,11 @@ Let the report card carry what the reconcilers actually observed.
 
 #### Remaining Work
 
-The row *vocabulary* exists in the result algebra but has no producer at a harness call site, because a step's
-action still returns no observation the interpreter can convert. This item consumes the step-result work in the
-step-algebra phase and the structured per-node rows in the recursive-lifecycle-command phase.
+The row *vocabulary* exists in the result algebra and a step's action now returns an observation the chain
+interpreter converts into that node's row, but no **harness** call site produces those rows: the engine still
+reports a variant's outcome without the reconcile rows its nodes observed. A `ManagedResult`/`ForeignResult`
+row additionally needs the handle and receipt only a prepared call mints, which is the carried-handle item in
+the step-algebra phase; the structured per-node teardown rows are the recursive-lifecycle-command phase's.
 
 ## Documentation Requirements
 

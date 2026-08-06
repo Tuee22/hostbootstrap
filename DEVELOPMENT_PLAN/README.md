@@ -37,20 +37,20 @@ its row here.
 | 4 | [Protected store](phase-4-protected-store.md) | Done | linux-cpu | — |
 | 5 | [Operator, root, and command authority](phase-5-operator-root-and-command-authority.md) | Done | — | — |
 | 6 | [Canonical quantities and reconcile results](phase-6-canonical-quantities-and-reconcile-results.md) | Done | — | — |
-| 7 | [Dhall configuration and the project model](phase-7-dhall-configuration-and-project-model.md) | Active | — | 7.4 context validation at dispatch |
+| 7 | [Dhall configuration and the project model](phase-7-dhall-configuration-and-project-model.md) | Done | — | — |
 | 8 | [Ensure reconcilers](phase-8-ensure-reconcilers.md) | Done | linux-cpu | — |
-| 9 | [Lifecycle modes and run leases](phase-9-lifecycle-modes-and-run-leases.md) | Active | linux-cpu | 9.1 out-of-process cross-profile probe |
-| 10 | [Sessions, journal, and fences](phase-10-sessions-journal-and-fences.md) | Active | linux-cpu | 10.2 out-of-process fence probe; 10.3 recorded-session interpreter |
-| 11 | [Prepared operations](phase-11-prepared-operations.md) | Active | linux-cpu | 11.3 a step reaching a prepared gate |
-| 12 | [Step algebra and the project plan](phase-12-step-algebra-and-project-plan.md) | Active | linux-cpu | 12.4 the step action's result |
-| 13 | [Authenticated handoff and child admission](phase-13-authenticated-handoff-and-child-admission.md) | Active | linux-cpu | 13.4 in-binary receiver and duplex root relay |
+| 9 | [Lifecycle modes and run leases](phase-9-lifecycle-modes-and-run-leases.md) | Done | linux-cpu | — |
+| 10 | [Sessions, journal, and fences](phase-10-sessions-journal-and-fences.md) | Done | linux-cpu | — |
+| 11 | [Prepared operations](phase-11-prepared-operations.md) | Done | linux-cpu | — |
+| 12 | [Step algebra and the project plan](phase-12-step-algebra-and-project-plan.md) | Active | linux-cpu | 12.5 projected operations and carried handles |
+| 13 | [Authenticated handoff and child admission](phase-13-authenticated-handoff-and-child-admission.md) | Done | linux-cpu | — |
 | 14 | [Ownership clauses and reservations](phase-14-ownership-clauses-and-reservations.md) | Done | linux-cpu | — |
 | 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Active | linux-cpu | 15.3 prepared guest-alias adoption |
 | 16 | [Cluster lifecycle and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Done | linux-cpu | — |
 | 17 | [Recursive lifecycle command](phase-17-recursive-lifecycle-command.md) | Active | linux-cpu | 17.3 recursive child-first unwind |
 | 18 | [Recovery and migration](phase-18-recovery-and-migration.md) | Active | linux-cpu | 18.2 broker/fence/manifest half; 18.3 migration gates |
 | 19 | [Test harness and run ownership](phase-19-test-harness-and-run-ownership.md) | Active | linux-cpu | 19.3 reconciler-produced report rows |
-| 20 | [`test` and `context` commands](phase-20-test-and-context-commands.md) | Active | linux-cpu | 20.1 typed writer request; 20.2 help vocabulary |
+| 20 | [`test` and `context` commands](phase-20-test-and-context-commands.md) | Active | linux-cpu | live linux-cpu verb sequence (phase gate) |
 | 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Done | linux-cpu | — |
 | 22 | [Service runtime](phase-22-service-runtime.md) | Active | linux-cpu | 22.2 effect-indexed narrowing; 22.3 role adoption at `service run` |
 | 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
@@ -62,17 +62,19 @@ its row here.
 
 ## The current frontier
 
-The lowest-numbered open phase is **7** (context validation at dispatch), but the largest tranche is the
-**11 → 12 → 17** chain, and it is where the work actually unblocks:
+The lowest-numbered open phase is **12**. The remaining baseline work shares one shape: the machinery exists
+and is unit-gated, but a **production call site** does not yet drive it.
 
-- **11.3** lets a step reach a prepared gate. Until it lands, an acquiring step cannot mint a managed handle,
-  which is what phase 15's guest-alias adoption waits on.
-- **12.4** gives a step's action a result, so what it observes can become a reconcile row. That is what phase
-  19's `Conflict`/`Unsupported` report rows wait on.
+- **12.5** is the one the rest of the frontier turns out to rest on. A relating resource's operation key is a
+  projection of the keys it relates, so it is not any node's own key and no node can prepare it; and a prepared
+  call's dependency snapshot consumes a *managed* handle another node minted, which cannot be serialized. Until
+  a node can reach its projections' gates and receive its dependencies' handles, no resource adapter has a
+  reachable call site.
+- **15.3**'s guest-alias backend and **24**'s alias adoption are the first consumers of exactly that.
 - **17.3** makes `project destroy` descend into child frames before running its own reverse steps, which is
-  what gives the landed teardown forest a production call site.
-- **13.4** transports the handoff over the real child boundary, which is what lets root authority extend past
-  the root frame and what phase 22's activation signing waits on.
+  what gives the landed teardown forest a production call site. The recursive descent is also where phase 13's
+  authenticated transport gets its call site.
+- **19.3** turns each node's row into a report-card row; the rows themselves now exist.
 
 Every one of those depends only on lower-numbered phases, so they can be taken in order.
 

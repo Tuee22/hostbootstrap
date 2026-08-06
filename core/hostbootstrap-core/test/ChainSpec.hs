@@ -4,10 +4,13 @@
 
 module ChainSpec (tests) where
 
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import Data.List (isInfixOf)
+import Data.ByteString (ByteString)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Fixture
+import HostBootstrap.Authority (InstalledProject, installedProjectFor)
 import HostBootstrap.Chain
 import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
 import qualified HostBootstrap.Config.Vocab as V
@@ -19,6 +22,19 @@ import HostBootstrap.Lifecycle.Execution (
     stepExecutionFrame,
     stepExecutionOperationKey,
     stepExecutionPlanDigest,
+ )
+import HostBootstrap.Lifecycle.Execution (StepExecution)
+import HostBootstrap.Lifecycle.Prepared (decodeFields)
+import HostBootstrap.Protected (
+    ProtectedError,
+    ProtectedRecord (protectedRecordBytes),
+    ProtectedSession,
+    ProtectedStore,
+    listProtectedRecords,
+    openProtectedStore,
+    readProtectedRecord,
+    recordKeyText,
+    withProtectedEntry,
  )
 import HostBootstrap.Reconcile (lifecyclePlanDigest, withLifecyclePlan)
 import HostBootstrap.Substrate (
@@ -36,8 +52,10 @@ import HostBootstrap.Lift (
     mkSelfRef,
  )
 import HostBootstrap.Step
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 tests :: TestTree
 tests =
@@ -47,6 +65,8 @@ tests =
         , testGroup "handoffDispatch (recursive `project up` handoff)" handoffCases
         , testGroup "renderChain is the single representation" renderCases
         , testGroup "the plan mints each step's execution descriptor (§ U)" descriptorCases
+        , testGroup "the interpreter converts each node's observation" observationCases
+        , testGroup "the interpreter's durable transaction" transactionCases
         ]
 
 -- Fixtures.
@@ -59,8 +79,8 @@ vmFrame = StepFrame{frameId = "vm-orchestrator-1", frameLabel = "VM"}
 ctrFrame :: StepFrame
 ctrFrame = StepFrame{frameId = "vm-project-container-2", frameLabel = "container"}
 
-noop :: a -> IO ()
-noop _ = pure ()
+noop :: a -> IO StepObservation
+noop _ = pure StepChanged
 
 demoSteps :: [Step]
 demoSteps =
@@ -228,11 +248,177 @@ descriptorCases =
         [digest | (_, _, digest, _) <- take 1 oneObserved] @?= [oneDigest]
     ]
 
+{- | The interpreter turns each node's observation into that node's own outcome
+(§ W). A node that did not reach its target state stops the chain and is named
+with the kind of outcome it was, so a conflict, an unsupported backend, and a
+refusal are told apart rather than reduced to one failure. -}
+observationCases :: [TestTree]
+observationCases =
+    [ testCase "a node that reached its target state lets the chain continue" $ do
+        ran <- newIORef (0 :: Int)
+        outcome <- runInnermostWith [countingStep "first" ran StepUnchanged, countingStep "second" ran StepChanged]
+        outcome @?= Right ()
+        readIORef ran >>= (@?= 2)
+    , testCase "each non-success outcome names its own node and its own kind" $ do
+        let expectRow observation fragment = do
+                ran <- newIORef (0 :: Int)
+                outcome <- runInnermostWith [countingStep "deploy-kind-probe" ran observation, countingStep "later" ran StepChanged]
+                case outcome of
+                    Left err -> do
+                        assertBool
+                            ("the row names the node: " ++ err)
+                            ("deploy-kind-probe" `isInfixOf` err)
+                        assertBool
+                            ("the row names the outcome: " ++ err)
+                            (fragment `isInfixOf` err)
+                        -- the later node did not run
+                        readIORef ran >>= (@?= 1)
+                    Right () -> assertFailure "expected the chain to stop at the node"
+        expectRow (StepConflict "the run's cluster" "a foreign cluster" "delete it") "conflict:"
+        expectRow (StepUnsupported "no kube toolchain in this frame") "unsupported:"
+        expectRow (StepRefused "the cluster holds state this run does not own") "refused:"
+    ]
+
+{- | The durable half of the interpreter's transaction (§ EE).
+
+These are the properties the unit-level prepare tests cannot show, because they
+are about *when* the record is written relative to the effect and *whether* the
+store is locked while the effect runs. -}
+transactionCases :: [TestTree]
+transactionCases =
+    [ testCase "the unknown phase is durable before the effect, and the entry is free while it runs" $
+        withChainStore $ \store project -> do
+            observed <- newIORef ([] :: [T.Text])
+            let probe _ = do
+                    -- Taking the exclusive entry here is itself the assertion
+                    -- that the interpreter is not holding it: a provider call
+                    -- or a cluster bring-up can take minutes, and the store
+                    -- must stay available to a peer for that whole time.
+                    phases <- withProtectedEntry store (readOperationPhases)
+                    either (assertFailure . show) (writeIORef observed) phases
+                    pure StepChanged
+            outcome <-
+                runFrom store project [countingProbe "probe-node" probe]
+            outcome @?= Right ()
+            -- While the effect ran, its own record already said an attempt may
+            -- have happened.
+            readIORef observed >>= (@?= ["EffectOutcomeUnknown"])
+    , testCase "a node that reached its target state settles at Committed" $
+        withChainStore $ \store project -> do
+            outcome <- runFrom store project [countingProbe "probe-node" (const (pure StepChanged))]
+            outcome @?= Right ()
+            settled <- withProtectedEntry store readOperationPhases
+            either (assertFailure . show) (@?= ["Committed"]) settled
+    , testCase "a node that did not reach it settles terminally, not as unknown" $
+        withChainStore $ \store project -> do
+            outcome <-
+                runFrom
+                    store
+                    project
+                    [countingProbe "probe-node" (const (pure (StepUnsupported "no backend here")))]
+            case outcome of
+                Left err -> assertBool ("names the outcome: " ++ err) ("unsupported:" `isInfixOf` err)
+                Right () -> assertFailure "expected the chain to stop at the node"
+            -- Terminal, not unknown: an operator resolves it, and a successor
+            -- refuses to retry it rather than blocking on an unclassifiable
+            -- record.
+            settled <- withProtectedEntry store readOperationPhases
+            either (assertFailure . show) (@?= ["StepObservedTerminal"]) settled
+    ]
+
+-- | The recorded phase of every operation record in the store, in key order.
+readOperationPhases :: ProtectedSession session -> IO (Either ProtectedError [T.Text])
+readOperationPhases s = do
+    listed <- listProtectedRecords s
+    case listed of
+        Left failure -> pure (Left failure)
+        Right keys -> traverse phaseOf (filter isOperationKey keys) >>= pure . sequence
+  where
+    isOperationKey = T.isPrefixOf "op." . recordKeyText
+    phaseOf key = do
+        record <- readProtectedRecord s key
+        pure $ case record of
+            Left failure -> Left failure
+            Right Nothing -> Right ""
+            Right (Just value) -> Right (recordedPhase (protectedRecordBytes value))
+
+{- | The operation phase inside one durable record.
+
+The transaction coordinator stamps every target as
+@hbtx-target-v1\t\<sequence\>\n\<payload\>@, so the phase is the first
+tab-separated field of the payload that follows that newline. -}
+recordedPhase :: ByteString -> T.Text
+recordedPhase raw = case decodeFields raw of
+    (_magic : stamped : _) -> T.drop 1 (T.dropWhile (/= '\n') stamped)
+    _ -> ""
+
+-- | One container-frame node running an explicit action.
+countingProbe :: String -> (forall scope planId. StepExecution scope planId -> IO StepObservation) -> Step
+countingProbe name action =
+    projectStep (fixtureProjectStepId name) ProjectManagedReverse "probe node" ctrFrame action
+
+-- | Interpret the innermost frame against a caller-supplied store.
+runFrom ::
+    ProtectedStore ->
+    InstalledProject Fixture.FixtureProject ->
+    [Step] ->
+    IO (Either String ())
+runFrom store project steps = do
+    let plan = expectPlan steps
+        cfg = HostConfig{hcSubstrate = descriptorSubstrate, hcToolPaths = Map.empty}
+    run <-
+        withProductionProjectCodec @Fixture.FixtureProject @Fixture.ProjectConfig $ \codec ->
+            withLifecyclePlan codec plan $ \lifecycle ->
+                pure (runChainFromFrame cfg self (frameId ctrFrame) store project lifecycle)
+    run
+
+-- | A container-frame node that records that it ran and reports @observation@.
+-- Each carries its own project identity, so two can share a plan.
+countingStep :: String -> IORef Int -> StepObservation -> Step
+countingStep name ran observation =
+    projectStep
+        (fixtureProjectStepId name)
+        ProjectManagedReverse
+        "counting node"
+        ctrFrame
+        (\_ -> modifyIORef' ran (+ 1) >> pure observation)
+
+-- | Interpret the innermost frame over an explicit step list.
+runInnermostWith :: [Step] -> IO (Either String ())
+runInnermostWith steps =
+    withChainStore $ \store project -> do
+        let plan = expectPlan steps
+            cfg = HostConfig{hcSubstrate = descriptorSubstrate, hcToolPaths = Map.empty}
+        run <-
+            withProductionProjectCodec @Fixture.FixtureProject @Fixture.ProjectConfig $ \codec ->
+                withLifecyclePlan codec plan $ \lifecycle ->
+                    pure (runChainFromFrame cfg self (frameId ctrFrame) store project lifecycle)
+        run
+
+{- | A throwaway protected store plus the fixture's installed identity.
+
+The interpreter runs every node as a real prepared operation, so these cases
+drive the production transaction against a real store on a real filesystem
+rather than a stand-in. -}
+withChainStore ::
+    (ProtectedStore -> InstalledProject Fixture.FixtureProject -> IO result) ->
+    IO result
+withChainStore use =
+    withSystemTempDirectory "hostbootstrap-chain" $ \directory -> do
+        opened <- openProtectedStore (directory </> "authority")
+        store <- either (assertFailure . show) pure opened
+        project <-
+            either
+                (assertFailure . show)
+                pure
+                (installedProjectFor @Fixture.FixtureProject @Fixture.ProjectConfig "hostbootstrap-demo")
+        use store project
+
 -- | What one action observed about itself: key, frame, plan digest, edge set.
 type ObservedExecution = (T.Text, T.Text, T.Text, [T.Text])
 
 observing :: IORef [ObservedExecution] -> StepAction
-observing sink execution =
+observing sink execution = do
     modifyIORef'
         sink
         ( ++
@@ -244,6 +430,7 @@ observing sink execution =
                 )
             ]
         )
+    pure StepChanged
 
 {- | Interpret the innermost frame, which runs its steps and then ends the
 descent, so the recorded descriptors are exactly this frame's. Returns the
@@ -261,9 +448,10 @@ runInnermost build = do
             withLifecyclePlan codec plan $ \lifecycle ->
                 pure
                     ( lifecyclePlanDigest lifecycle
-                    , runChainFromFrame cfg self (frameId ctrFrame) lifecycle
+                    , \store project ->
+                        runChainFromFrame cfg self (frameId ctrFrame) store project lifecycle
                     )
-    outcome <- run
+    outcome <- withChainStore run
     outcome @?= Right ()
     observed <- readIORef sink
     pure (planDigest, observed)

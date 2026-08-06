@@ -113,10 +113,20 @@ Own a guest-side durable alias under all four clauses.
 
 #### Remaining Work
 
-The backend holds all four clauses and is gated, but no production call site consumes it: a lifecycle step
-cannot yet reach a `PreparedGate`, so it cannot mint the `Managed` handle the prepared alias call requires.
-The remaining item is that adoption, and it waits on the step-reaches-a-gate item in the prepared-operations
-phase and the step-result item in the step-algebra phase.
+The backend holds all four clauses and is gated, but no production call site consumes it, and the two
+capabilities that call site needs are the **interpreter's**, not this phase's:
+
+- the alias's operation key is a *projection* — `<provider>/<share>/guest-alias`, derived from the two
+  resources it relates — so the gate it prepares against is not the gate for any node's own operation. A node
+  currently reaches exactly one gate, its own (`withStepPreparedGate`), which is right for the node and
+  insufficient for an operation projected from it;
+- the prepared call's dependency snapshot consumes the share's **managed** handle, which a different node
+  mints. Generative handles are never serialized (§ EE), so they must be carried in-process from the node that
+  minted one to the node that depends on it.
+
+Both are the chain interpreter's, and the [step-algebra phase](phase-12-step-algebra-and-project-plan.md)
+owns them; the call site that then consumes this backend is the demo's alias action, which the
+[worked-demo phase](phase-24-worked-demo.md) owns.
 
 ## Documentation Requirements
 

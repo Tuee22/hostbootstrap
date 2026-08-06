@@ -439,8 +439,8 @@ mkPlan = either (error . show) id . mkStepPlan
 demoStep :: String -> ProjectStepId
 demoStep = either (error . show) id . projectStepId
 
-noop :: p -> IO ()
-noop _ = pure ()
+noop :: p -> IO StepObservation
+noop _ = pure StepChanged
 
 metalFrame :: StepFrame
 metalFrame = StepFrame "host-orchestrator-0" "Host"

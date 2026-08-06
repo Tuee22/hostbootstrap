@@ -177,20 +177,20 @@ singleStepPlan label fid frameName =
   either
     (error . show)
     id
-    (mkStepPlan [contextInitStep label (StepFrame fid frameName) (const (pure ()))])
+    (mkStepPlan [contextInitStep label (StepFrame fid frameName) (const (pure StepChanged))])
 
 orderedCanonicalPlan :: StepPlan
 orderedCanonicalPlan =
   planFrom
-    [ ensureStep "ghc" "ensure" (StepFrame "host" "Host") (const (pure ()))
-    , contextInitStep "context" (StepFrame "host" "Host") (const (pure ()))
+    [ ensureStep "ghc" "ensure" (StepFrame "host" "Host") (const (pure StepChanged))
+    , contextInitStep "context" (StepFrame "host" "Host") (const (pure StepChanged))
     ]
 
 reorderedCanonicalPlan :: StepPlan
 reorderedCanonicalPlan =
   planFrom
-    [ contextInitStep "context" (StepFrame "host" "Host") (const (pure ()))
-    , ensureStep "ghc" "ensure" (StepFrame "host" "Host") (const (pure ()))
+    [ contextInitStep "context" (StepFrame "host" "Host") (const (pure StepChanged))
+    , ensureStep "ghc" "ensure" (StepFrame "host" "Host") (const (pure StepChanged))
     ]
 
 providerCanonicalPlan :: String -> StepPlan
@@ -198,20 +198,20 @@ providerCanonicalPlan image =
   planFrom
     [ descendsVia
         (inVM (IncusVM "fixture-vm" image) localContext)
-        (deployVMStep "vm" (StepFrame "host" "Host") (const (pure ())))
-    , contextInitStep "context" (StepFrame "vm" "VM") (const (pure ()))
+        (deployVMStep "vm" (StepFrame "host" "Host") (const (pure StepChanged)))
+    , contextInitStep "context" (StepFrame "vm" "VM") (const (pure StepChanged))
     ]
 
 defaultReversePlan :: StepPlan
 defaultReversePlan =
-  singleStepCore (deployKindStep "cluster" (StepFrame "host" "Host") (const (pure ())))
+  singleStepCore (deployKindStep "cluster" (StepFrame "host" "Host") (const (pure StepChanged)))
 
 declaredReversePlan :: StepPlan
 declaredReversePlan =
   singleStepCore
     ( reversedBy
         (\_ _ -> pure TeardownReleased)
-        (deployKindStep "cluster" (StepFrame "host" "Host") (const (pure ())))
+        (deployKindStep "cluster" (StepFrame "host" "Host") (const (pure StepChanged)))
     )
 
 revisedImplementationPlan :: StepPlan
@@ -219,7 +219,7 @@ revisedImplementationPlan =
   singleStepCore
     ( implementedAt
         (either error id (mkStepImplementationRevision 2))
-        (deployKindStep "cluster" (StepFrame "host" "Host") (const (pure ())))
+        (deployKindStep "cluster" (StepFrame "host" "Host") (const (pure StepChanged)))
     )
 
 revisedReverseAdapterPlan :: StepPlan
@@ -228,7 +228,7 @@ revisedReverseAdapterPlan =
     ( reversedByAt
         (either error id (mkStepReverseAdapterRevision 2))
         (\_ _ -> pure TeardownReleased)
-        (deployKindStep "cluster" (StepFrame "host" "Host") (const (pure ())))
+        (deployKindStep "cluster" (StepFrame "host" "Host") (const (pure StepChanged)))
     )
 
 containerCanonicalPlan :: Text.Text -> StepPlan
@@ -236,8 +236,8 @@ containerCanonicalPlan payload =
   planFrom
     [ descendsVia
         (inContainer container localContext)
-        (buildImageStep "image" (StepFrame "host" "Host") (const (pure ())))
-    , contextInitStep "context" (StepFrame "container" "Container") (const (pure ()))
+        (buildImageStep "image" (StepFrame "host" "Host") (const (pure StepChanged)))
+    , contextInitStep "context" (StepFrame "container" "Container") (const (pure StepChanged))
     ]
   where
     container =
@@ -260,7 +260,7 @@ testPlan =
   either
     (error . show)
     id
-    (mkStepPlan [contextInitStep "context" (StepFrame "host" "Host") (const (pure ()))])
+    (mkStepPlan [contextInitStep "context" (StepFrame "host" "Host") (const (pure StepChanged))])
 
 dependentTestPlan :: StepPlan
 dependentTestPlan =
@@ -268,8 +268,8 @@ dependentTestPlan =
     (error . show)
     id
     ( mkStepPlan
-        [ descendsVia localContext (deployVMStep "vm" (StepFrame "host" "Host") (const (pure ()))),
-          contextInitStep "context" (StepFrame "vm" "VM") (const (pure ()))
+        [ descendsVia localContext (deployVMStep "vm" (StepFrame "host" "Host") (const (pure StepChanged))),
+          contextInitStep "context" (StepFrame "vm" "VM") (const (pure StepChanged))
         ]
     )
 
@@ -455,9 +455,9 @@ projectPrefixedPlan =
             PreserveOnReverse
             "ensure the VM provider"
             (StepFrame "host" "Host")
-            (const (pure ())),
-          descendsVia localContext (deployVMStep "vm" (StepFrame "host" "Host") (const (pure ()))),
-          copySourceStep "durable share" (StepFrame "vm" "VM") (const (pure ()))
+            (const (pure StepChanged)),
+          descendsVia localContext (deployVMStep "vm" (StepFrame "host" "Host") (const (pure StepChanged))),
+          copySourceStep "durable share" (StepFrame "vm" "VM") (const (pure StepChanged))
         ]
     )
 

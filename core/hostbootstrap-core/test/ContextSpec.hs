@@ -19,7 +19,7 @@ import qualified HostBootstrap.Config.Schema as Schema
 import HostBootstrap.Config.Class (AssemblyRequest (..), pureConfigAssembly)
 import HostBootstrap.Context
 import HostBootstrap.Harness (Case (Case), CaseResult (Pass), TestSuite (TestSuite), mkCaseId)
-import HostBootstrap.Step (StepFrame (StepFrame), deployVMStep)
+import HostBootstrap.Step (StepFrame (StepFrame), StepObservation (StepChanged), deployVMStep)
 import System.Directory (removeFile)
 import System.Environment (withArgs, withProgName)
 import System.Exit (ExitCode (ExitFailure))
@@ -79,7 +79,7 @@ fixtureSpec progName =
     either (error . show) id $
         finalizeProjectSpec $
             addSteps
-                (\_ _ -> [deployVMStep "fixture step" (StepFrame "host-orchestrator-0" "metal") (const (pure ()))])
+                (\_ _ -> [deployVMStep "fixture step" (StepFrame "host-orchestrator-0" "metal") (const (pure StepChanged))])
                     ( projectSpec
                             passingSuite
                             (pure ())
@@ -529,6 +529,123 @@ tests =
             let irrelevant = RuntimeWitness WitnessExecutable "sudo" ""
             validateContext req ctr{runtimeWitnesses = irrelevant : runtimeWitnesses ctr}
                 @?= Left (ContextWitnessSetMismatch [] [irrelevant])
+        , testCase "a forged leaf config cannot self-declare orchestration authority" $ do
+            -- `allowedCommandClasses` is a DECLARED list: `addRole` refuses the
+            -- pair, but the bytes on disk are the operator's. The placement the
+            -- validated topology derives is what decides (§ X).
+            let host = hostOrchestratorContext "demo" "demo" "/workspace/demo"
+                daemon = deriveHostDaemonContext host "/workspace/daemon"
+                forged =
+                    daemon
+                        { allowedCommandClasses =
+                            allowedCommandClasses daemon
+                                ++ [ClusterLifecycleCommand, HostOrchestratorCommand]
+                        }
+                upReq = contextRequirement "demo" ClusterLifecycleCommand []
+                downReq = contextRequirement "demo" HostOrchestratorCommand []
+            -- the declared list now says yes
+            commandAllowed forged ClusterLifecycleCommand @?= True
+            commandAllowed forged HostOrchestratorCommand @?= True
+            -- and the placement still says no, for both verbs
+            validateContext upReq forged
+                @?= Left
+                    (ContextPlacementRefusesCommand ClusterLifecycleCommand HostDaemonPlacement False)
+            validateContext downReq forged
+                @?= Left
+                    (ContextPlacementRefusesCommand HostOrchestratorCommand HostDaemonPlacement False)
+        , testCase "down/destroy require the chain root, not merely an orchestration frame" $ do
+            let host = hostOrchestratorContext "demo" "demo" "/workspace/demo"
+                vm = deriveVMContextWithProvider LimaVMProvider host "/vm/demo"
+                forged =
+                    vm{allowedCommandClasses = allowedCommandClasses vm ++ [HostOrchestratorCommand]}
+                upReq = contextRequirement "demo" ClusterLifecycleCommand []
+                downReq = contextRequirement "demo" HostOrchestratorCommand []
+            isRootFrame host @?= True
+            isRootFrame vm @?= False
+            -- a VM orchestrator interprets the chain, so `up` is its verb …
+            validateContext upReq vm @?= Right vm
+            -- … but the unwind belongs to the root frame alone.
+            validateContext downReq forged
+                @?= Left
+                    ( ContextPlacementRefusesCommand
+                        HostOrchestratorCommand
+                        (VMOrchestratorPlacement LimaVMProvider)
+                        False
+                    )
+        , testCase "a root frame that is not the host orchestrator cannot unwind the chain" $ do
+            -- A single-frame topology rooted at a VM orchestrator is structurally
+            -- legal, so the empty-parent half alone would authorize `destroy`.
+            -- The root-KIND half is what refuses it.
+            let rooted =
+                    (contextForKind "demo" "demo" "/workspace/demo" VMOrchestrator)
+                        { allowedCommandClasses =
+                            allowedCommandClasses
+                                (contextForKind "demo" "demo" "/workspace/demo" VMOrchestrator)
+                                ++ [HostOrchestratorCommand]
+                        }
+                downReq = contextRequirement "demo" HostOrchestratorCommand []
+            isRootFrame rooted @?= True
+            validateTopology rooted @?= Right ()
+            validateContext downReq rooted
+                @?= Left
+                    ( ContextPlacementRefusesCommand
+                        HostOrchestratorCommand
+                        (VMOrchestratorPlacement IncusVMProvider)
+                        True
+                    )
+        , testCase "the host orchestrator at the chain root hosts every lifecycle verb" $ do
+            let host = hostOrchestratorContext "demo" "demo" "/workspace/demo"
+            validateContext (contextRequirement "demo" ClusterLifecycleCommand []) host
+                @?= Right host
+            validateContext (contextRequirement "demo" HostOrchestratorCommand []) host
+                @?= Right host
+        , testCase "placementAllowsCommand is closed over every placement and class" $ do
+            let placements =
+                    [ HostOrchestratorPlacement
+                    , VMOrchestratorPlacement IncusVMProvider
+                    , VMBackedProjectContainerPlacement
+                    , DirectLinuxGpuContainerPlacement
+                    , ImageBuildContainerPlacement
+                    , ClusterServicePlacement
+                    , ClusterDaemonPlacement
+                    , HostDaemonPlacement
+                    , OneShotJobPlacement
+                    , TestHarnessPlacement
+                    ]
+                lifecycleRefused =
+                    [ (placement, cls)
+                    | placement <- placements
+                    , cls <- [ClusterLifecycleCommand, HostOrchestratorCommand]
+                    , not (placementAllowsCommand placement True cls)
+                    ]
+            -- Only the four leaves plus the image-build container are refused
+            -- `up`; every non-host placement is refused the unwind.
+            map fst (filter ((== ClusterLifecycleCommand) . snd) lifecycleRefused)
+                @?= [ ImageBuildContainerPlacement
+                    , ClusterServicePlacement
+                    , ClusterDaemonPlacement
+                    , HostDaemonPlacement
+                    , OneShotJobPlacement
+                    ]
+            map fst (filter ((== HostOrchestratorCommand) . snd) lifecycleRefused)
+                @?= filter (/= HostOrchestratorPlacement) placements
+            -- and no other class is placement-indexed
+            [ (placement, cls)
+                | placement <- placements
+                , cls <-
+                    [ EnsureCommand
+                    , ConfigInspectionCommand
+                    , ConfigGenerationCommand
+                    , ContextCreationCommand
+                    , TestWorkflowCommand
+                    , CheckCodeCommand
+                    , DaemonCommand
+                    , ServiceCommand
+                    , ProjectCommand
+                    ]
+                , not (placementAllowsCommand placement False cls)
+                ]
+                @?= []
         , testCase "a kind its provider cannot own is refused before authorization" $ do
             let host = hostOrchestratorContext "demo" "demo" "/workspace/demo"
                 svc = deriveServiceContext host "/srv/demo"

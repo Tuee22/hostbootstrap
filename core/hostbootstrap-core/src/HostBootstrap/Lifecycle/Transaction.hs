@@ -60,6 +60,7 @@ import HostBootstrap.Protected (
     RecordVersion,
     compareAndSwapProtectedRecord,
     mkRecordKey,
+    mkRecordName,
     readProtectedRecord,
     recordKeyText,
     recordVersionWord,
@@ -212,12 +213,14 @@ data TransactionDescriptor = TransactionDescriptor
     }
     deriving (Eq, Show)
 
+-- | The coordinator's record for one plan. The plan digest is namespaced
+-- (@\<specDigest\>:\<planBytesDigest\>@), so it reaches the store's key alphabet
+-- through the one injective encoding rather than a local sanitizer.
 coordinatorKey :: Text -> Either TransactionError RecordKey
 coordinatorKey plan =
-    either
-        (Left . TransactionStoreFailure)
-        Right
-        (mkRecordKey ("transaction." <> plan))
+    either (Left . TransactionStoreFailure) Right $ do
+        digest <- mkRecordName plan
+        mkRecordKey ("transaction." <> digest)
 
 ensureTransactionCoordinator ::
     ProtectedSession session ->
@@ -431,13 +434,23 @@ expectedRoles kind = case kind of
     TxnFinalizeHarnessClose -> []
     TxnFinalizeProductionProject -> []
 
+{- | Whether a target names a record of this plan.
+
+The comparison is against the plan digest's **record name**, not the digest
+itself: a plan digest is namespaced, so the keys the store actually holds carry
+its encoded form, and comparing the raw digest here would reject every real
+plan's own targets.
+-}
 targetMatchesPlan :: Text -> TransactionTarget -> Bool
 targetMatchesPlan plan target =
-    let key = recordKeyText (targetKey target)
-     in case targetRole target of
-            ProjectTarget -> key == "project." <> plan
-            SessionTarget -> ("session." <> plan <> ".") `Text.isPrefixOf` key
-            OperationTarget -> ("op." <> plan <> ".") `Text.isPrefixOf` key
+    case mkRecordName plan of
+        Left _ -> False
+        Right digest ->
+            let key = recordKeyText (targetKey target)
+             in case targetRole target of
+                    ProjectTarget -> key == "project." <> digest
+                    SessionTarget -> ("session." <> digest <> ".") `Text.isPrefixOf` key
+                    OperationTarget -> ("op." <> digest <> ".") `Text.isPrefixOf` key
 
 -- Encoding -----------------------------------------------------------------------
 
