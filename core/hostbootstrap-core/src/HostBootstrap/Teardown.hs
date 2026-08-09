@@ -78,21 +78,28 @@ module HostBootstrap.Teardown (
     authorizationPointKey,
     PreDescentStep,
     preDescentStepKey,
+    preDescentStepFrame,
     SettledChildren,
     settledChildrenKeys,
     TeardownCursor,
     teardownCursorAction,
+    teardownCursorKey,
+    teardownCursorFrame,
+    teardownCursorPolicy,
+    teardownCursorRun,
     withTeardownAuthorization,
 
     -- * Attempting one step
     TeardownOutcome (..),
     attemptTeardownStep,
+    driveTeardownForest,
 
     -- * Settlement
     DestroySettled,
     destroySettledPlanDigest,
     destroySettledReleasedKeys,
     verifyDestroySettled,
+    settledDestroyEvidence,
 
     -- * Failures
     TeardownError (..),
@@ -207,12 +214,12 @@ A throwing effect becomes 'TeardownFailed' rather than aborting the traversal,
 so an unrelated later node still gets its turn — the § Y rule that a refusal or
 a failure skips only its own resource.
 
-This drives the pure projection, not the 'TeardownForest'. The forest adds
-child-first ordering and the destroy-only pre-descent reachability step, both of
-which only become truthful once the verb recurses into each descendant frame;
-until then a forest run here could report a @destroy@ as settled whose deeper
-nodes were never visited. That recursion is the remaining half of the recursive-lifecycle-command phase's
-open item 3.
+This drives the pure projection, not the 'TeardownForest'. It is the single-frame
+traversal: it visits only the nodes this binary can act on and claims nothing
+about deeper frames. The production lifecycle verbs drive the __forest__ instead,
+because the forest adds child-first ordering and the destroy-only pre-descent
+reachability step, and those are only truthful when the verb recurses into each
+descendant frame — which it now does.
 -}
 runTeardownProjection ::
     TeardownPlan scope planId verb ->
@@ -455,6 +462,10 @@ newtype PreDescentStep scope planId verb = PreDescentStep ReverseStep
 preDescentStepKey :: PreDescentStep scope planId verb -> Text
 preDescentStepKey (PreDescentStep step) = reverseKey step
 
+-- | The frame whose provider this reachability step makes reachable again.
+preDescentStepFrame :: PreDescentStep scope planId verb -> Text
+preDescentStepFrame (PreDescentStep step) = reverseFrame step
+
 -- | Proof that this node's exact child set has settled.
 newtype SettledChildren scope planId = SettledChildren [Text]
 
@@ -466,6 +477,32 @@ data TeardownCursor scope planId verb = TeardownCursor ReverseStep
 
 teardownCursorAction :: TeardownCursor scope planId verb -> TeardownAction
 teardownCursorAction (TeardownCursor step) = reverseAction step
+
+-- | This node's plan operation key.
+teardownCursorKey :: TeardownCursor scope planId verb -> Text
+teardownCursorKey (TeardownCursor step) = reverseKey step
+
+{- | The frame the plan placed this node in. A driver compares it against the
+frame it is running in: a node of a deeper frame is released by the binary that
+can see it, reached through the descent the plan declares, not by this one.
+-}
+teardownCursorFrame :: TeardownCursor scope planId verb -> Text
+teardownCursorFrame (TeardownCursor step) = reverseFrame step
+
+-- | The reverse policy the node's forward step declared.
+teardownCursorPolicy :: TeardownCursor scope planId verb -> ReversePolicy
+teardownCursorPolicy (TeardownCursor step) = reversePolicy step
+
+{- | The reverse effect this node's own forward step declared with
+'HostBootstrap.Step.reversedBy'. 'Nothing' means it declared none: either the
+core adapter owns it (@CoreManagedReverse@) or it acquired nothing this frame
+must release. Exposed so a caller driving the __forest__ runs exactly the effects
+'runTeardownProjection' would, rather than resolving them beside the plan.
+-}
+teardownCursorRun ::
+    TeardownCursor scope planId verb ->
+    Maybe (HostConfig -> TeardownAction -> IO TeardownOutcome)
+teardownCursorRun (TeardownCursor step) = reverseRun step
 
 {- | Find the next schedulable step, or prove the forest is complete.
 
@@ -601,6 +638,48 @@ attemptTeardownStep (TeardownAuthorizationPoint forest path _ preDescent) outcom
     foreignNode node detail = node{nodeState = Settled, nodeNote = Just (Text.pack detail)}
     failedNode node detail = node{nodeState = SelfFailed, nodeNote = Just (Text.pack detail)}
 
+{- | Drive one forest to completion, or report the nodes that never settled.
+
+The scheduling policy lives here rather than at the call site: the forest is what
+knows the child-first ordering, the destroy-only pre-descent step, and which
+nodes are outstanding, so a lifecycle verb supplies only the effect for one
+offered node and a reporter for its row.
+
+A node that failed is __not__ retried. 'nextTeardownWork' re-offers it after its
+unrelated siblings have drained — which is what keeps the rest of the cleanup
+going — and this loop stops when that happens, returning every node still
+outstanding. Retrying inside one run would spin, and the forest could never
+complete either way.
+-}
+driveTeardownForest ::
+    TeardownForest scope planId verb ->
+    -- | attempt exactly the offered node
+    (TeardownAuthorizationPoint scope planId verb -> IO TeardownOutcome) ->
+    -- | report one node's row
+    (Text -> TeardownOutcome -> IO ()) ->
+    IO (Either [Text] (CompletedTeardownForest scope planId verb))
+driveTeardownForest forest attempt report = go [] forest
+  where
+    go failed current =
+        eliminateTeardownProgress
+            (nextTeardownWork current)
+            (pure . Right)
+            ( \point ->
+                let key = authorizationPointKey point
+                 in if key `elem` failed
+                        then pure (Left (teardownForestOutstanding current))
+                        else do
+                            outcome <- attempt point
+                            report key outcome
+                            go
+                                (failed ++ [key | isTeardownFailure outcome])
+                                (attemptTeardownStep point outcome)
+            )
+
+isTeardownFailure :: TeardownOutcome -> Bool
+isTeardownFailure (TeardownFailed _) = True
+isTeardownFailure _ = False
+
 -- ---------------------------------------------------------------------------
 -- Settlement
 
@@ -638,6 +717,23 @@ verifyDestroySettled projection (CompletedTeardownForest _ digest settled _)
     | otherwise = Right (DestroySettled digest settled)
   where
     missing = [key | key <- nub (teardownPlanStepKeys projection), key `notElem` settled]
+
+{- | The verb-dispatching front end a call site driving either projection uses.
+
+A lifecycle verb is written once for both verbs, so it holds a
+@TeardownVerb verb@ it cannot case on — the constructors are private, which is
+what stops a caller claiming a @Down@ run settled a destroy. This matches on the
+verb index inside the module and hands back 'verifyDestroySettled' only on the
+destroy branch: a @down@ yields 'Nothing', and there is no other way to reach the
+proof.
+-}
+settledDestroyEvidence ::
+    TeardownPlan scope planId verb ->
+    CompletedTeardownForest scope planId verb ->
+    Maybe (Either TeardownError (DestroySettled scope planId))
+settledDestroyEvidence projection@(TeardownPlan verb _ _) completed = case verb of
+    DownTeardown -> Nothing
+    DestroyTeardown -> Just (verifyDestroySettled projection completed)
 
 -- ---------------------------------------------------------------------------
 -- Failures

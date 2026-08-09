@@ -110,11 +110,12 @@ import HostBootstrap.Cluster.Lifecycle (
     clusterCreate,
     clusterNodeNames,
     deployChart,
-    ensureDurableDataPath,
+    ensureProfileDataPath,
+    profileDataSegments,
     resolvePlan,
     resolvePlanWithDriver,
  )
-import HostBootstrap.Config.Fields (LocalContextView, localSourceRoot)
+import HostBootstrap.Config.Fields (roleParamsValue)
 import HostBootstrap.Config.Schema (projectConfigSnapshotHash, projectConfigSnapshotHashBytes, renderProjectConfigSnapshotLog, siblingProjectConfigPath, writeProjectConfigFile)
 import HostBootstrap.Config.Vocab (Mount (..), PodResources (..), Production)
 import qualified HostBootstrap.Context as Context
@@ -171,7 +172,12 @@ import HostBootstrap.Network (
     hostLocalClient,
     loopbackExposure,
  )
-import HostBootstrap.ProjectRoot (CanonicalHostPath, CanonicalProjectRoot, canonicalDurableHostPath, canonicalProjectRootPath)
+import HostBootstrap.ProjectRoot (
+    CanonicalHostPath,
+    CanonicalProjectRoot,
+    canonicalHostSubPath,
+    canonicalProjectRootPath,
+ )
 import HostBootstrap.Readiness (
     ObservedReady,
     PollPolicy,
@@ -204,7 +210,11 @@ import HostBootstrap.RegistryPlan (
     renderStorageRedirect,
     settleBlobRoute,
  )
-import HostBootstrap.Service (ServiceRegistry, serviceDefinition, serviceId, serviceRegistry)
+import HostBootstrap.RoleLifecycle (
+    DeclaredEffects (NoEffects, WithEffect),
+    EffectName (DurableStoreName, NetworkListenName, ProcessSpawnName),
+ )
+import HostBootstrap.Service (ServiceHandler, ServiceRegistry, serviceDefinition, serviceId, serviceRegistry)
 import HostBootstrap.Step (
     ProjectStepId,
     ReversePolicy (..),
@@ -266,6 +276,7 @@ import HostBootstrapDemo.Config (
     ProjectConfig (..),
     Resources,
     WebServiceConfig (WebServiceConfig),
+    clusterProfileOf,
     configuredServiceVariant,
     cpu,
     decodeProjectConfigFile,
@@ -282,7 +293,7 @@ import HostBootstrapDemo.Config (
     renderProjectConfig,
     storage,
  )
-import HostBootstrapDemo.Container (dockerBuildArgs)
+import HostBootstrapDemo.Container (dockerBuildArgs, resolvePublishedBase)
 import HostBootstrapDemo.Web.Api (demoWebPod)
 import HostBootstrapDemo.Web.Bridge (writeBridge)
 import HostBootstrapDemo.Web.Server (serveWebWithConfig)
@@ -397,6 +408,26 @@ literalCaseId value =
 demoProject :: String
 demoProject = "hostbootstrap-demo"
 
+{- | The host-side durable root this run owns, as a path the admitted canonical
+root vouches for.
+
+The segments come from 'profileDataSegments', which is also where a resolved
+cluster plan's preserved @dataPath@ comes from — so the directory the container
+mounts and the directory teardown preserves are the same one by construction. A
+production run gets @.data@; a harness run gets the @.test_data\/\<run\>@
+generation its ownership bracket already holds, which is what keeps the long gate
+off the operator's durable state.
+-}
+runDurableHostPath ::
+    ClusterProfile ->
+    CanonicalProjectRoot rootScope rootId ->
+    CanonicalHostPath rootScope rootId
+runDurableHostPath profile root =
+    either
+        (\err -> error ("the run's durable root is not under the admitted project root: " ++ show err))
+        id
+        (canonicalHostSubPath root (profileDataSegments profile))
+
 {- | The VM-backed persistent stack shared by the Apple/Windows host-daemon chain
 ('demoChain') and the Linux CPU in-cluster-daemon chain ('demoLinuxCpuChain') — a
 contributed @chain :: ProjectConfig -> [Step]@ value the core @project up@ interprets
@@ -431,7 +462,7 @@ demoVmBackedStack sub cfg =
         (inContainer (demoDeployImage ProviderGuestDurable containerRuntimeFrameId False (containerConfigPayload cfg)) localContext)
         (contextInitStep "prepare the project-container child config for in-place delivery" demoVMFrame (changed contextInitAnnounce))
     , -- vm-project-container-2 (the in-container pb): stand up the persistent stack.
-      deployKindStep "deploy the persistent kind cluster (cordon #2, Production profile)" demoContainerFrame (changed (deployKindAction cfg))
+      deployKindStep "deploy the persistent kind cluster (cordon #2, at the run's own profile)" demoContainerFrame (changed (deployKindAction cfg))
     , demoProjectStep "deploy-minio" "install the in-cluster MinIO (S3) backing store + create the registry bucket" demoContainerFrame (changed (deployMinioAction cfg))
     , demoProjectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500), S3-backed by MinIO" demoContainerFrame (changed (deployRegistryAction cfg))
     , demoProjectStep "push-image" "load the project image into kind + push it to the in-cluster registry" demoContainerFrame (changed (pushImageAction cfg))
@@ -506,13 +537,13 @@ demoLinuxGpuChain root cfg =
       -- consumes the admitted canonical root for the durable host mount (§ X).
       descendsVia
         ( inContainer
-            (demoDeployImage (CanonicalHostDurable root (canonicalDurableHostPath root)) directContainerRuntimeFrameId True (directContainerConfigPayload cfg))
+            (demoDeployImage (CanonicalHostDurable root (runDurableHostPath (clusterProfileOf cfg) root)) directContainerRuntimeFrameId True (directContainerConfigPayload cfg))
             localContext
         )
         (contextInitStep "prepare the Linux GPU direct project-container config for in-place delivery" demoMetalFrame (changed contextInitDirectAnnounce))
     , reversedBy
-        (demoDirectClusterReverse root)
-        (deployKindStep "deploy the persistent nvkind cluster (Production profile)" demoDirectContainerFrame (changed (deployKindAction cfg)))
+        (demoDirectClusterReverse (clusterProfileOf cfg) root)
+        (deployKindStep "deploy the persistent nvkind cluster (at the run's own profile)" demoDirectContainerFrame (changed (deployKindAction cfg)))
     , demoProjectStep "deploy-minio" "install the in-cluster MinIO (S3) backing store + create the registry bucket" demoDirectContainerFrame (changed (deployMinioAction cfg))
     , demoProjectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500), S3-backed by MinIO" demoDirectContainerFrame (changed (deployRegistryAction cfg))
     , demoProjectStep "push-image" "load the project image into nvkind + push it to the in-cluster registry" demoDirectContainerFrame (changed (pushImageAction cfg))
@@ -621,20 +652,25 @@ contextInitDirectAnnounce _ =
     putStrLn
         "context-init: the Linux GPU direct project-container config is streamed into the host-launched container with the direct topology witness"
 
-{- | The persistent cluster plan for the demo's container-frame steps: the
-Production profile (fixed name + the never-removed @.data@ path, § Y), rooted at
-the container's source root.
+{- | The cluster plan for the demo's container-frame steps, rooted at the
+container's source root.
+
+The profile is the __run's own__ ('clusterProfileOf'), not a hardcoded
+@Production@: a production run gets the fixed name and the never-removed @.data@
+path (§ Y), while a harness run gets its own run-scoped cluster, its own
+removable state, and no host-port publishing — which is what stops the long gate
+from taking the operator's production identity (the worked-demo phase).
 -}
-containerPlan :: Context.BinaryContext -> ClusterPlan
-containerPlan ctx =
+containerPlan :: ClusterProfile -> Context.BinaryContext -> ClusterPlan
+containerPlan profile ctx =
     basePlan{clusterConfigFile = Just configFile}
   where
     root = T.unpack (Context.sourceRoot ctx)
     placement = acceleratorPlacementForContext ctx
     basePlan
         | Context.isExplicitLinuxGpuContainer ctx =
-            resolvePlanWithDriver demoProject root Production NvkindDriver
-        | otherwise = resolvePlan demoProject root Production
+            resolvePlanWithDriver demoProject root profile NvkindDriver
+        | otherwise = resolvePlan demoProject root profile
     configFile
         | Context.isExplicitLinuxGpuContainer ctx = "nvkind-in-cluster.yaml"
         | placement == InClusterDaemon = "kind-in-cluster.yaml"
@@ -676,7 +712,7 @@ siblings on the VM daemon) and @kubectl@/@helm@/@kind@ resolve on @$PATH@ (baked
 into the base image). Each reads the container's local @<project>.dhall@ for the
 source root + resources, then drives the real reconcile — reusing the core
 cluster lifecycle and the demo's registry logic. The persistent stack: a cordoned
-kind cluster (Production profile) → the in-cluster registry → the image (kind-loaded
+kind cluster (at the run's own profile) → the in-cluster registry → the image (kind-loaded
 + pushed) → the web chart pod → the verified NodePort.
 -}
 deployKindAction :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
@@ -685,7 +721,7 @@ deployKindAction stepCfg _ = demoConfigContext stepCfg Context.ClusterLifecycleC
     -- Cordon the cluster to a slice within the budget-sized VM wall (§ O), not the
     -- full budget — the budget is used once, as the VM wall (cordon #1).
     slice <- either die pure (clusterSliceOfBudget (resources projectCfg))
-    withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterCreate cfg (containerPlan ctx) (envelopeOfResources slice))
+    withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterCreate cfg (containerPlan (clusterProfileOf projectCfg) ctx) (envelopeOfResources slice))
 
 {- | The in-cluster OCI registry image: the single-binary, natively multi-arch
 CNCF @distribution@ registry. Because it ships one multi-arch manifest, it runs on
@@ -1117,7 +1153,7 @@ pushImageAction stepCfg _ = demoContext stepCfg Context.ProjectCommand [] $ \ctx
     -- registry (the capability the demo demonstrates). A @localhost@ registry is
     -- insecure-by-default in Docker, and @registry:2@ is anonymous, so the HTTP
     -- NodePort needs no @docker login@ and no TLS.
-    runOrDie cfg Kind ["load", "docker-image", demoProjectImage, "--name", clusterName (containerPlan ctx)]
+    runOrDie cfg Kind ["load", "docker-image", demoProjectImage, "--name", clusterName (containerPlan (clusterProfileOf stepCfg) ctx)]
     let ref = registryEndpoint ++ "/library/hostbootstrap-demo:demo"
     -- Poll GET /v2/ on the registry NodePort from this frame, minting the
     -- `Ready RegistryServing` witness `pushImageBlob` requires: the tag-and-push
@@ -1429,7 +1465,7 @@ deployChartAction stepCfg _ = demoConfigContext stepCfg Context.ClusterLifecycle
             ]
                 ++ acceleratorHelmValues
     runOrDieStdin cfg Kubectl ["apply", "-f", "-"] (serviceConfigMapManifest serviceConfig)
-    withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (deployChart cfg (containerPlan ctx) extraValues)
+    withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (deployChart cfg (containerPlan (clusterProfileOf projectCfg) ctx) extraValues)
 
 {- | The accelerator hub is process-local, so requests and the daemon connection
 must meet in one web pod. Reject an HA value that would make routing
@@ -2287,9 +2323,14 @@ can run this even after a failed @project up@ — the guaranteed-teardown path.
 demoTestDown :: IO ()
 demoTestDown = do
     self <- getExecutablePath
+    -- The run's own profile is read off the generated sibling config *before* the
+    -- destroy, because that is the config `project destroy` itself interprets: the
+    -- stack this must prove gone is the run's, never production's.
+    cfgPath <- siblingProjectConfigPath (T.pack demoProject)
+    projectCfg <- decodeProjectConfigFile cfgPath
     putStrLn "test run: tearing the stack down via `project destroy`"
     runSelfOrDie self ["project", "destroy"]
-    verifyHarnessTeardown
+    verifyHarnessTeardown (clusterProfileOf projectCfg)
 
 harnessMutationGuardEnv :: String
 harnessMutationGuardEnv = "HOSTBOOTSTRAP_DEMO_HARNESS_MUTATION_GUARD"
@@ -2308,8 +2349,8 @@ withHarnessMutationGuard body = do
 {- | A green variant requires a proven-empty teardown, not merely a zero exit
 from best-effort lifecycle cleanup.
 -}
-verifyHarnessTeardown :: IO ()
-verifyHarnessTeardown = do
+verifyHarnessTeardown :: ClusterProfile -> IO ()
+verifyHarnessTeardown profile = do
     cfg <- resolveHostConfig
     root <- getCurrentDirectory
     let daemonDir = root </> ".build" </> "accelerator-daemon"
@@ -2325,7 +2366,7 @@ verifyHarnessTeardown = do
         then do
             unless (toolPresent cfg Docker) $
                 die "test teardown: Docker is unavailable, so absence of the direct nvkind stack cannot be proven"
-            let plan = resolvePlanWithDriver demoProject root Production NvkindDriver
+            let plan = resolvePlanWithDriver demoProject root profile NvkindDriver
             remaining <- directClusterExists cfg plan
             when remaining (die "test teardown: the direct nvkind stack still exists after project destroy")
         else do
@@ -2589,8 +2630,16 @@ data WebRoleFields = WebRoleFields
     }
     deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
-newtype AcceleratorRoleFields = AcceleratorRoleFields
+{- | The accelerator role's own parameters.
+
+@acceleratorSourceRoot@ is here rather than read off a framework view handed to
+the handler: a handler receives only its role's 'RoleParams' bundle (§ AA), so
+anything it needs is something its own projection put there. The projection
+below takes it from the validated leaf context.
+-}
+data AcceleratorRoleFields = AcceleratorRoleFields
     { acceleratorParameters :: AcceleratorServiceConfig
+    , acceleratorSourceRoot :: T.Text
     }
     deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
@@ -2605,10 +2654,18 @@ demoServices =
             [ serviceDefinition
                 (either (error . show) id (serviceId "web"))
                 selectWeb
+                -- The web role listens, and `durable-readback` writes through it
+                -- to the host durable root, so it declares both. It does *not*
+                -- declare process spawn: the accelerator is reached over the
+                -- network, not forked by the web role.
+                (WithEffect NetworkListenName (WithEffect DurableStoreName NoEffects))
                 runWeb
             , serviceDefinition
                 (either (error . show) id (serviceId "accelerator"))
                 selectAccelerator
+                -- The daemon binds a private listener and runs its own worker
+                -- process. It reaches no durable root of its own.
+                (WithEffect NetworkListenName (WithEffect ProcessSpawnName NoEffects))
                 runAccelerator
             ]
   where
@@ -2632,17 +2689,20 @@ demoServices =
                     ( Just
                         AcceleratorRoleFields
                             { acceleratorParameters = acceleratorServiceConfig cfg
+                            , acceleratorSourceRoot = Context.sourceRoot (context cfg)
                             }
                     )
             _ -> Right Nothing
-    runWeb :: LocalContextView -> WebRoleFields -> IO ()
-    runWeb _ fields =
-        serveWebWithConfig (servedMessage fields) (webParameters fields)
-    runAccelerator :: LocalContextView -> AcceleratorRoleFields -> IO ()
-    runAccelerator contextView fields =
-        serveAcceleratorDaemonWithConfig
-            (T.unpack (localSourceRoot contextView))
-            (acceleratorParameters fields)
+    runWeb :: ServiceHandler WebRoleFields
+    runWeb params =
+        let fields = roleParamsValue params
+         in serveWebWithConfig (servedMessage fields) (webParameters fields)
+    runAccelerator :: ServiceHandler AcceleratorRoleFields
+    runAccelerator params =
+        let fields = roleParamsValue params
+         in serveAcceleratorDaemonWithConfig
+                (T.unpack (acceleratorSourceRoot fields))
+                (acceleratorParameters fields)
 
 -- ---------------------------------------------------------------------------
 -- Metal-host orchestration helpers.
@@ -3107,7 +3167,7 @@ runVmUp stepCfg = demoConfigContext stepCfg Context.HostOrchestratorCommand [Con
     cfg <- resolveHostConfig
     sp <- demoProvider cfg
     projectRoot <- makeAbsolute =<< getCurrentDirectory
-    hostDurableRoot <- ensureDurableDataPath projectRoot
+    hostDurableRoot <- ensureProfileDataPath (clusterProfileOf projectCfg) projectRoot
     let lifecycleResources = resources projectCfg
         durableShare = spShare sp hostDurableRoot
         envelope = envelopeOfResources lifecycleResources
@@ -3339,8 +3399,8 @@ runDirectHostBootstrap stepCfg = demoConfigContext stepCfg Context.HostOrchestra
     runEnsure EnsureDocker.reconciler
     cfgAfterDocker <- resolveHostConfig
     let root = T.unpack (Context.sourceRoot ctx)
-    _hostDurableRoot <- ensureDurableDataPath root
-    let directPlan = resolvePlanWithDriver demoProject root Production NvkindDriver
+    _hostDurableRoot <- ensureProfileDataPath (clusterProfileOf parentCfg) root
+    let directPlan = resolvePlanWithDriver demoProject root (clusterProfileOf parentCfg) NvkindDriver
     harnessRun <- lookupEnv harnessMutationGuardEnv
     when (harnessRun == Just "1") $ do
         exists <- directClusterExists cfgAfterDocker directPlan
@@ -3362,8 +3422,16 @@ runDirectHostBootstrap stepCfg = demoConfigContext stepCfg Context.HostOrchestra
     createDirectoryIfMissing True bridgeDir
     writeBridge bridgeDir
     putStrLn "direct-linux-gpu-bootstrap: build the project container on the host for nvkind"
+    -- Resolve the *published* base to its digest before building. The pull is
+    -- what keeps a stale local image sharing the rolling tag out of the build,
+    -- and the digest makes the reference explicit rather than tag-shaped. It is
+    -- a within-run handoff and is never written anywhere (§ FF).
+    pinnedBase <-
+        either (die . ("direct-linux-gpu-bootstrap: " ++)) pure
+            =<< resolvePublishedBase cfg (demoBaseImage cfg)
+    putStrLn ("direct-linux-gpu-bootstrap: building FROM " ++ pinnedBase)
     withCurrentDirectory repoRoot $
-        runOrDie cfg Docker (dockerBuildArgs repoRootCfg (demoBaseImage cfg))
+        runOrDie cfg Docker (dockerBuildArgs repoRootCfg pinnedBase)
     putStrLn "direct-linux-gpu-bootstrap: done (project image built on the host)"
 
 {- | Stream the parent-derived VM-orchestrator config into the VM **in-place**
@@ -3577,11 +3645,12 @@ that node instead and executes the image's pinned @kind@ against the host Docker
 socket. Both verbs delete, because kind has no reliable stop contract.
 -}
 demoDirectClusterReverse ::
+    ClusterProfile ->
     CanonicalProjectRoot rootScope rootId ->
     HostConfig ->
     TeardownAction ->
     IO TeardownOutcome
-demoDirectClusterReverse rootAuthority cfg _action
+demoDirectClusterReverse profile rootAuthority cfg _action
     | not (toolPresent cfg Docker) =
         pure
             ( Step.TeardownFailed
@@ -3589,7 +3658,7 @@ demoDirectClusterReverse rootAuthority cfg _action
             )
     | otherwise = do
         let root = canonicalProjectRootPath rootAuthority
-            directPlan = resolvePlanWithDriver demoProject root Production NvkindDriver
+            directPlan = resolvePlanWithDriver demoProject root profile NvkindDriver
         exists <- directClusterExists cfg directPlan
         when exists $ do
             putStrLn "project teardown: deleting the direct nvkind cluster through the project image"

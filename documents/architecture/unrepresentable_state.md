@@ -144,9 +144,34 @@ Stating the limits is part of the contract, not a caveat appended to it.
 | Command authority (§ X) | `CommandAuthority`, `RootInvocationAuthority` | `ForgeCommandAuthority.hs` |
 | Plan, descent, reverse (§ W/§ Y) | `StepPlan`, `StepExecution`, `TeardownForest` | `ForgeStepExecution.hs`, `ForgeTeardownForest.hs` |
 | Process launch (§ HH) | `DetachedLaunch`, `DetachedChild`, `DetachedWorkingDirectory`, `DetachedOutputSink` | `ForgeDetachedLaunch.hs`, `RelabelDetachedLaunch.hs` |
+| Teardown frame and descent (§ X/§ Y) — **target** | `CurrentFrame`, the frame phantom on plan/forest/cursor, the local\/foreign cursor sum, the descent entry | `CrossFrameTeardownCursor.hs`, `ForgeTeardownDescent.hs` |
 
+The last row is a **target contract**, not implemented behaviour: it is owned by
+[the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
+and its wire by [the authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md).
 Phase status is tracked in [the development plan](../../DEVELOPMENT_PLAN/README.md); this page does not
 duplicate it.
+
+## The teardown descent boundary — target
+
+A recursive verb reaches two states that look alike and are not. An **operator** types
+`project destroy` at the topology root. A **parent frame** invokes the same verb inside its child during
+a child-first unwind. One command class asked to mean both is a convention: it either admits the nested
+form to an operator, or refuses the descent its own architecture requires.
+
+The two states therefore get two types. The operator entry validates at the root and nowhere else. The
+descent entry is admitted only by verifying the recovery wire its parent minted from the forest's own
+authorization point — so its discriminator is an authenticated value on a private channel, not a flag,
+an environment variable, or an `argv` position. There is no constructor for it without that wire, which
+is what `ForgeTeardownDescent.hs` pins.
+
+Alongside it, whether an offered node belongs to this frame stops being a comparison of frame names and
+becomes a closed sum with a total eliminator: the local reverse runner accepts only a local cursor, and a
+foreign cursor's sole continuation is the descent. The `frame` phantom is what makes the two
+distinguishable, and `CrossFrameTeardownCursor.hs` pins that one frame's cursor is not another's.
+
+Both fixtures are the § HH proof obligation for the claims in this section. Until they exist and fail for
+their named reasons, the section describes an intent rather than a boundary.
 
 ## The process-launch boundary
 

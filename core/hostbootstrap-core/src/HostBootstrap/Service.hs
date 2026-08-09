@@ -18,7 +18,9 @@ module HostBootstrap.Service (
     serviceId,
     serviceIdText,
     ServiceDefinition,
+    ServiceHandler,
     serviceDefinition,
+    serviceDeclaredEffects,
     ServiceRegistry,
     ServiceRegistryError (..),
     emptyServiceRegistry,
@@ -57,6 +59,11 @@ import HostBootstrap.Config.Fields.Internal (
     ValidatedServiceRequest (..),
     WireKind (ServiceRoleWire),
  )
+import HostBootstrap.RoleLifecycle (
+    DeclaredEffects,
+    RoleEffect,
+    declaredEffectList,
+ )
 import HostBootstrap.Dhall.Gen (
     CodecWitness,
     autoCodecWitness,
@@ -82,30 +89,70 @@ serviceIdText (ServiceId value) = value
 {- | One service's inseparable config projection, role-field codec, and handler.
 'Nothing' means this definition is not selected by the effective config.
 -}
+{- | What a service handler is handed (§ AA, § P).
+
+Not the framework view, and not the full config: a handler receives only the
+opaque 'RoleParams' bundle its own role's projection produced, indexed by the
+finalized specification, the config and secret identities, and the service it
+belongs to. Everything the role needs is therefore something its own projection
+put there — which is what makes "least authority" a property of the type rather
+than of handler discipline. A handler that needs a framework datum (a source
+root, say) declares it as a role field, and the projection supplies it.
+
+The indices are universally quantified, so a handler sees them as skolems it
+cannot choose and cannot pair a bundle from one finalization with another's.
+-}
+type ServiceHandler fields =
+    forall specDigest configId secretDigest service.
+    RoleParams specDigest configId secretDigest fields service ->
+    IO ()
+
 data ServiceDefinition cfg =
-    forall fields.
+    forall fields effects.
     ServiceDefinition
         ServiceId
         (cfg -> Either String (Maybe fields))
-        (LocalContextView -> fields -> IO ())
+        (DeclaredEffects effects)
+        (ServiceHandler fields)
         (CodecWitness (RuntimeRoleWire fields))
 
+{- | Define one service, including __the effect row it declares__.
+
+The row is part of the definition rather than a separate table because the
+registry is what fixes what a handler may do: 'authorizeServiceEffects' admits a
+declared row only when the signed placement permits every member, and it carries
+the /declared/ row forward rather than the ceiling. A role that declares no
+exclusive effect therefore does not inherit its ceiling's lease requirement.
+
+The row is a 'DeclaredEffects' — the term-level twin of the type-level list — so
+what the definition declares and what the type says cannot disagree.
+-}
 serviceDefinition ::
-    forall fields cfg.
+    forall fields effects cfg.
     (FromDhall fields, ToDhall fields) =>
     ServiceId ->
     (cfg -> Either String (Maybe fields)) ->
-    (LocalContextView -> fields -> IO ()) ->
+    DeclaredEffects effects ->
+    ServiceHandler fields ->
     ServiceDefinition cfg
-serviceDefinition identity project run =
+serviceDefinition identity project effects run =
     ServiceDefinition
         identity
         project
+        effects
         run
         ( requireCodecWitness
             ("RuntimeRoleWire/" ++ serviceIdText identity)
             (autoCodecWitness @(RuntimeRoleWire fields))
         )
+
+{- | The effect row a definition declares, as the term-level list.
+
+This is what a caller compares against a signed ceiling. It reads the row off the
+type rather than off a second source, so there is no way for the two to drift.
+-}
+serviceDeclaredEffects :: ServiceDefinition cfg -> [RoleEffect]
+serviceDeclaredEffects (ServiceDefinition _ _ effects _ _) = declaredEffectList effects
 
 -- | An opaque duplicate-free registry.
 newtype ServiceRegistry cfg = ServiceRegistry [ServiceDefinition cfg]
@@ -135,14 +182,15 @@ mergeServiceRegistries (ServiceRegistry left) (ServiceRegistry right) =
 
 serviceVariantNames :: ServiceRegistry cfg -> [String]
 serviceVariantNames (ServiceRegistry definitions) =
-    [serviceIdText identity | ServiceDefinition identity _ _ _ <- definitions]
+    [serviceIdText identity | ServiceDefinition identity _ _ _ _ <- definitions]
 
 data FinalizedServiceDefinition scope specDigest cfg =
-    forall fields service.
+    forall fields effects service.
     FinalizedServiceDefinition
         ServiceId
         (cfg -> Either String (Maybe fields))
-        (LocalContextView -> fields -> IO ())
+        (DeclaredEffects effects)
+        (ServiceHandler fields)
         (RoleCodec scope specDigest fields service)
 
 newtype FinalizedServiceRegistry scope specDigest cfg
@@ -169,10 +217,11 @@ withFinalizedServiceRegistry scopeKind codec registry use =
             (FinalizedServiceRegistry (map (finalizeDefinition finalCodec) definitions))
   where
     ServiceRegistry definitions = registry
-    finalizeDefinition finalCodec (ServiceDefinition identity project run wireCodec) =
+    finalizeDefinition finalCodec (ServiceDefinition identity project effects run wireCodec) =
         FinalizedServiceDefinition
             identity
             project
+            effects
             run
             RoleCodec
                 { internalRoleName = T.pack (serviceIdText identity)
@@ -185,7 +234,7 @@ finalizedServiceVariantNames ::
     FinalizedServiceRegistry scope specDigest cfg ->
     [String]
 finalizedServiceVariantNames (FinalizedServiceRegistry definitions) =
-    [serviceIdText identity | FinalizedServiceDefinition identity _ _ _ <- definitions]
+    [serviceIdText identity | FinalizedServiceDefinition identity _ _ _ _ <- definitions]
 
 {- | Render the role-wire schema registry as distinct descriptive Production
 and Harness families. Empty registries have a structured explicit result.
@@ -217,7 +266,7 @@ serviceRoleSchemaFamilies registry =
             )
     schemas =
         [ (T.pack (serviceIdText identity), roleCodecSchemaText codec)
-        | FinalizedServiceDefinition identity _ _ codec <- definitions
+        | FinalizedServiceDefinition identity _ _ _ codec <- definitions
         ]
     FinalizedServiceRegistry definitions = registry
 
@@ -241,6 +290,8 @@ withSelectedServiceRequest ::
         secretDigest
         fields
         service ->
+      -- | the effect row this definition declared
+      [RoleEffect] ->
       IO () ->
       result
     ) ->
@@ -260,7 +311,7 @@ withSelectedServiceRequest verifiedDigest contextView cfg (FinalizedServiceRegis
                     ++ comma (map (serviceIdText . fst) many)
                 )
   where
-    project (FinalizedServiceDefinition identity select run codec) =
+    project (FinalizedServiceDefinition identity select effects run codec) =
         case select cfg of
             Left err -> Left (serviceIdText identity ++ ": " ++ err)
             Right Nothing -> Right Nothing
@@ -271,11 +322,12 @@ withSelectedServiceRequest verifiedDigest contextView cfg (FinalizedServiceRegis
                         , mintRequest
                             identity
                             codec
+                            (declaredEffectList effects)
                             run
                             params
                         )
                     )
-    mintRequest identity codec run params =
+    mintRequest identity codec declared run params =
         use
             identity
             codec
@@ -289,18 +341,22 @@ withSelectedServiceRequest verifiedDigest contextView cfg (FinalizedServiceRegis
                 verifiedDigest
                 (RoleParams params)
             )
-            (run contextView params)
+            declared
+            -- The handler runs on the *same* bundle the request carries, not on
+            -- a second projection of the config beside it.
+            (run (RoleParams params))
 
 {- | Select exactly one typed definition from the config. Projection errors are
 returned with the definition identity; zero or multiple matches are explicit
-errors. The returned action closes over only the selected role fields.
+errors. The returned action closes over only the selected role's own
+'RoleParams' bundle — it takes no framework view, because a handler that needs a
+framework datum declares it as a role field instead.
 -}
 selectServiceAction ::
-    LocalContextView ->
     cfg ->
     FinalizedServiceRegistry scope specDigest cfg ->
-    Either String (ServiceId, IO ())
-selectServiceAction contextView cfg (FinalizedServiceRegistry definitions) = do
+    Either String (ServiceId, [RoleEffect], IO ())
+selectServiceAction cfg (FinalizedServiceRegistry definitions) = do
     matches <- traverse project definitions
     case [match | Just match <- matches] of
         [] ->
@@ -312,34 +368,41 @@ selectServiceAction contextView cfg (FinalizedServiceRegistry definitions) = do
         many ->
             Left
                 ( "effective project config selects multiple services: "
-                    ++ comma [serviceIdText identity | (identity, _) <- many]
+                    ++ comma [serviceIdText identity | (identity, _, _) <- many]
                 )
   where
-    project (FinalizedServiceDefinition identity select run _) =
+    project (FinalizedServiceDefinition identity select effects run _) =
         case select cfg of
             Left err -> Left (serviceIdText identity ++ ": " ++ err)
             Right Nothing -> Right Nothing
-            Right (Just params) -> Right (Just (identity, run contextView params))
+            Right (Just params) ->
+                Right
+                    ( Just
+                        ( identity
+                        , declaredEffectList effects
+                        , run (RoleParams params)
+                        )
+                    )
 
 registryManifest :: ServiceRegistry cfg -> Text
 registryManifest (ServiceRegistry definitions) =
     T.intercalate
         "\n"
         [ T.pack (serviceIdText identity) <> ":" <> codecSchemaText wireCodec
-        | ServiceDefinition identity _ _ wireCodec <- definitions
+        | ServiceDefinition identity _ _ _ wireCodec <- definitions
         ]
 
 duplicateIds :: [ServiceDefinition cfg] -> [ServiceId]
 duplicateIds definitions =
     [identity | identity : _ : _ <- group (sort identities)]
   where
-    identities = [identity | ServiceDefinition identity _ _ _ <- definitions]
+    identities = [identity | ServiceDefinition identity _ _ _ _ <- definitions]
 
 registeredSuffix :: [FinalizedServiceDefinition scope specDigest cfg] -> String
 registeredSuffix [] = "; this binary registers no services"
 registeredSuffix definitions =
     "; registered: "
-        ++ comma [serviceIdText identity | FinalizedServiceDefinition identity _ _ _ <- definitions]
+        ++ comma [serviceIdText identity | FinalizedServiceDefinition identity _ _ _ _ <- definitions]
 
 comma :: [String] -> String
 comma = foldr join ""

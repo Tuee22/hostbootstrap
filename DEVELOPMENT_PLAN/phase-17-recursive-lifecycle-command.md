@@ -82,7 +82,8 @@ None.
 
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`,
+`core/hostbootstrap-core/test/TeardownSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`
 
@@ -92,29 +93,69 @@ Make each verb clean the frames the current binary can reach, deepest first.
 
 #### Deliverables
 
-- `project destroy` at the root descends into each child frame and runs that frame's own reverse nodes before
-  running its own, so a deeper frame is released by the binary that can see it rather than released implicitly
-  with its parent.
-- The teardown forest is driven from the real plan at the real call site, so its child-first ordering and its
-  destroy-only pre-descent step govern actual effects.
-- A failed `up` unwinds through the same projection, so there is one release path rather than a cleanup beside it.
-- Each node's outcome becomes a structured row: released, preserved, foreign-retained, refused, or failed.
-- Only a completed forest whose every projected node settled can yield settled-destroy evidence, so a one-frame
-  run cannot mint it for nodes it never visited.
+- `project down` and `project destroy` descend into the next frame — invoking the **same verb** there through
+  the descent the plan itself declares — and settle that frame's nodes from that invocation, so a deeper frame
+  is released by the binary that can see it rather than released implicitly with its parent. The child runs the
+  same loop over its own segment and recurses further itself.
+- The teardown **forest** is what the verbs drive, so its child-first ordering and its destroy-only pre-descent
+  reachability step govern actual effects. The reachability step is satisfied by reaching the child frame:
+  invoking the child binary is what demonstrates the stopped provider is reachable again.
+- `driveTeardownForest` owns the loop, because the forest is what knows the ordering, the outstanding set, and
+  that a failed node is terminal for the run. A verb supplies one node's effect and one node's row and nothing
+  else; a node the forest re-offers after a failure ends the run with every outstanding node named.
+- A node runs the reverse its own forward step declared, read off the cursor rather than resolved beside the
+  plan. `teardownCursorRun`, `teardownCursorPolicy`, and `teardownCursorKey` are what make the forest
+  drivable without a second lookup that could disagree with the projection.
+- The projection is **frame-indexed**. `TeardownPlan`, `TeardownForest`, and `TeardownCursor` each carry a
+  `frame` phantom, and the sole forest producer consumes a `CurrentFrame scope planId frame` witness
+  derived from the `LifecyclePlan` together with the validated binary context — so a forest is bound to
+  the frame that opened it rather than merely accompanied by its name.
+- Whether an offered node belongs to this frame is a **closed sum with a total eliminator**: a local
+  cursor is the only value the local reverse runner accepts, and a foreign cursor's sole continuation is
+  the descent. The forest carries every frame's levels, because one memoized descent settles the deeper
+  ones; what makes the boundary hold is the index, not the forest's contents.
+- The two entries are distinct types (§ X). An **operator-initiated** `down`/`destroy` validates at the
+  topology root and nowhere else. A **descent-initiated** one runs in a nested frame and is admitted only
+  by verifying the recovery wire its parent minted from this forest's own authorization point, so it is
+  unreachable from `argv`, an environment variable, or a flag. A lifecycle verb names no command class as
+  a source constant chosen per call site.
+- A failed `up` unwinds through the same call, so there is one release path rather than a cleanup beside it.
+- Each node's outcome becomes a structured row: released, retained, refused, or failed.
+- `settledDestroyEvidence` is the only route from a completed forest to `DestroySettled`, and it matches on the
+  verb index inside the module — a `down` yields nothing. A run that never visited a deeper frame's nodes has a
+  forest that cannot complete, so it cannot mint the proof for nodes it never visited.
 
 #### Validation
 
-`TeardownSpec` covers the projection and the forest in isolation; the call-site behaviour is confirmed by live
-`project destroy` on linux-cpu printing exactly the plan's own reverse nodes deepest-frame-first and leaving
-nothing behind.
+`TeardownSpec` covers the projection and the forest in isolation, and the production driver directly: the order
+every node is offered in (pre-descent, then deepest frame, then outwards), one row per node, a failing node
+ending the run with its blocked chain named and no spin, a foreign settlement not blocking completion, and a
+`down` run being unable to mint settled-destroy evidence while a `destroy` run mints it for the plan's own
+digest.
 
 #### Remaining Work
 
-All of it. The projection, the forest, and the settlement proof exist and are gated, but they have **no
-production call site**: `project destroy` does not yet descend into child frames before running its own reverse
-steps. Until it does, the deeper frames are released with their parent, and the forest's guarantees are not the
-ones the live verb provides. This item also carries the structured per-node rows the test-harness phase's report
-card consumes, and it depends on the step-result item in the step-algebra phase.
+The frame index, the two entries, and the live half of the phase gate.
+
+The forest, its ordering, and the per-node rows are built. What the descent still needs is the typed
+boundary: the `frame` phantom and its `CurrentFrame` witness, the local/foreign cursor sum, and the
+descent entry that admits a nested verb by verifying the recovery wire the
+[authenticated-handoff phase](phase-13-authenticated-handoff-and-child-admission.md) owns. Until those
+land the descent has no admission a nested frame accepts, so `project destroy` settles the frames one
+binary can reach and reports the rest outstanding.
+
+The § HH proof obligations are part of this sprint: a compile-fail fixture pinning that a cursor indexed
+by one frame is not accepted in another, and a second pinning that the descent entry has no constructor
+without a verified wire. `TeardownSpec` gains a fixture whose levels carry frames with different legal
+command classes, because a projection driven over synthetic single-frame levels cannot exercise a frame
+boundary at all.
+
+Dated evidence: `cabal test all --ghc-options=-Werror` from `core/` passes on 2026-08-08 (aarch64-osx,
+GHC 9.12.4). The declared live `project up`/`down`/`destroy` lane is owed.
+
+Consuming the `DestroySettled` proof as `ProjectClosureEvidence SettledDestroyClose` needs a bound run lease
+and the all-sessions-closed proof, which the lifecycle verbs do not open — that is the
+[recovery phase](phase-18-recovery-and-migration.md)'s, not this one's.
 
 ## Documentation Requirements
 

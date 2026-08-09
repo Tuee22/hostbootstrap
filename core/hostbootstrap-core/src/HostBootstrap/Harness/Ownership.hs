@@ -76,6 +76,7 @@ import Control.Exception.Safe (generalBracket)
 import Data.ByteString (ByteString)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Word (Word64)
 import HostBootstrap.Authority (
     InstalledProject,
     ProjectVerb (ProjectUp),
@@ -112,8 +113,11 @@ import HostBootstrap.Lifecycle.Mode (
     HarnessBoundRecovery (HarnessOpenRevisionRecovery, HarnessPersistedClosing),
     HarnessRoot,
     IncompleteLeaseKind (IncompleteBound, IncompleteUnbound),
-    ModeError (ModeOwnershipUnresolved, ModeRecoveryRequired, ModeStoreFailure),
+    ModeError (ModeOwnershipUnresolved, ModeStoreFailure),
     OpenRevisionKind (CompletedMigration, IncompleteMigration, NormalRevision),
+    abandonedHarnessBroker,
+    activateMigratedPlan,
+    withCompletedMigrationRecovery,
     RunId,
     VerifiedIncompleteRunLease,
     abandonedHarnessCloseRoot,
@@ -131,6 +135,9 @@ import HostBootstrap.Lifecycle.Mode (
     openRevisionKind,
     recoverAbandonedHarnessRuns,
     runIdText,
+    abandonedHarnessBoundLease,
+    finalizeHarnessClose,
+    resumeHarnessClose,
     verifyNoProjectResourcesAcquired,
     withAbandonedHarnessRun,
     withHarnessRoot,
@@ -489,10 +496,28 @@ That branch reclaims the run's two owned objects and closes its lease and mode
 under the reopening's own close authority, which is exactly the interrupted-run
 case the reservation exists for.
 
-Every other branch stays fail-closed and names why: a persisted @Closing@ epoch
-and either migration revision need the close-journal and migration resumption
-the recursive-lifecycle-command phase owns, and a run that /did/ record effects needs the recursive
-teardown forest, not a lease close.
+A persisted @Closing@ epoch is the second branch it resolves. That run already
+proved its sessions closed and had its close authorized — 'authorizeHarnessClose'
+persists the epoch /before/ the terminal projection precisely so the gap is
+resumable — so recovery finishes the close it started rather than reopening the
+run: it reclaims the two owned objects (already settled on the ordinary path, and
+reclaiming from a durable origin record is idempotent), resumes the authorization
+for that exact persisted epoch through 'resumeHarnessClose', and runs the same
+'finalizeHarnessClose' the live run would have.
+
+An __incomplete__ migration is resolved the same way, and for the same reason.
+Its recorded kind is a durable observation that the activation barrier was never
+crossed, so there is no new revision to follow through: the staging is discarded
+rather than resumed. What makes that safe is
+'verifyNoProjectResourcesAcquired', not the classification — a staging that
+acquired anything wrote an effect record and the proof refuses.
+
+A __completed__ migration stays fail-closed and names why. Its activation
+compare-and-swap committed, so the project's live revision is the new one and the
+only correct continuation is to follow that activation through — a resumption
+that needs the recovery boundary's own teardown, which this phase still owes. A
+run that /did/ record effects likewise needs the recursive teardown forest, not a
+lease close.
 -}
 resolveBoundRun ::
     forall projectId.
@@ -508,23 +533,94 @@ resolveBoundRun store project dataParent configPath lease =
         IncompleteBound _ _ ->
             withAbandonedHarnessRun store project lease $ \reopened ->
                 case abandonedHarnessRecovery reopened of
-                    HarnessPersistedClosing epoch ->
-                        pure (Left (needsOperator ("a persisted closing epoch " <> showEpoch epoch)))
+                    HarnessPersistedClosing epoch -> finishPersistedClose reopened epoch
                     HarnessOpenRevisionRecovery revision ->
                         case openRevisionKind revision of
-                            IncompleteMigration key ->
-                                pure (Left (needsOperator ("an incomplete migration " <> key)))
-                            CompletedMigration key ->
-                                pure (Left (needsOperator ("a completed migration " <> key)))
+                            -- The barrier was not crossed: no activation
+                            -- committed, so there is no new revision to follow
+                            -- through and the staging is discarded rather than
+                            -- resumed. What makes discarding it safe is the same
+                            -- proof the normal branch takes, not the
+                            -- classification: a staging that acquired anything
+                            -- wrote an effect record, and the proof refuses.
+                            IncompleteMigration _ -> closeIfNothingAcquired reopened
+                            -- The barrier *was* crossed. The activation
+                            -- compare-and-swap committed, so the project's live
+                            -- revision is the new one and following it through
+                            -- is a resumption, not a close: the activation is
+                            -- driven to completion first, and only then is the
+                            -- run settled the ordinary way.
+                            CompletedMigration _ -> resumeCompletedMigration reopened
                             NormalRevision -> closeIfNothingAcquired reopened
   where
     run = incompleteRunLeaseRun lease
-    needsOperator detail =
-        ModeRecoveryRequired (runIdText run <> " carries " <> detail)
-    showEpoch = Text.pack . show
+
+    {- Finish a close the abandoned run had already authorized. The owned objects
+    are reclaimed first — the ordinary path settles them before authorizing, so
+    this is normally a no-op against an absent object, and reclaiming reads the
+    durable origin record rather than guessing. -}
+    finishPersistedClose ::
+        forall oldRunId specDigest planDigest planId brokerGeneration.
+        AbandonedHarnessRun projectId oldRunId specDigest planDigest planId brokerGeneration ->
+        Word64 ->
+        IO (Either ModeError ())
+    finishPersistedClose reopened epoch = do
+        reclaimed <- reclaimAbandonedRun store project dataParent configPath lease
+        case reclaimed of
+            Left failure -> pure (Left failure)
+            Right () -> do
+                resumed <-
+                    runInEntry store $ \session ->
+                        resumeHarnessClose
+                            session
+                            project
+                            (abandonedHarnessCloseRoot reopened)
+                            (abandonedHarnessModeLease reopened)
+                            (abandonedHarnessBoundLease reopened)
+                            epoch
+                case resumed of
+                    Left failure -> pure (Left failure)
+                    Right authorization ->
+                        runInEntry store $ \session ->
+                            fmap (fmap (const ())) (finalizeHarnessClose session project authorization)
+
+    {- Follow a committed activation through, then settle the run.
+
+    The activation compare-and-swap already switched the lineage, so what is
+    owed is the half that had not run when the invocation died: settle the
+    superseded revision's sessions and admit the new revision's broker. That is
+    'activateMigratedPlan', reached through the only opener that can name the
+    candidate without a config — 'withCompletedMigrationRecovery' loads it back
+    under the durable stable migration key, so an operator who edited or deleted
+    the config in between cannot change which revision is activated.
+
+    Only after the activation completes is the ordinary settlement attempted. A
+    run that acquired resources still refuses there, by name: releasing them
+    needs the recursive teardown forest at a recovery boundary, which is a
+    different capability from closing a lease. -}
+    resumeCompletedMigration ::
+        forall oldRunId specDigest planDigest planId brokerGeneration.
+        AbandonedHarnessRun projectId oldRunId specDigest planDigest planId brokerGeneration ->
+        IO (Either ModeError ())
+    resumeCompletedMigration reopened = do
+        activated <-
+            runInEntry store $ \session ->
+                withCompletedMigrationRecovery session project run $ \barrier ->
+                    fmap
+                        (fmap (const ()))
+                        ( activateMigratedPlan
+                            session
+                            barrier
+                            (abandonedHarnessBoundLease reopened)
+                            (abandonedHarnessBroker reopened)
+                        )
+        case activated of
+            Left failure -> pure (Left failure)
+            Right () -> closeIfNothingAcquired reopened
+
     closeIfNothingAcquired ::
-        forall oldRunId specDigest planDigest brokerGeneration.
-        AbandonedHarnessRun projectId oldRunId specDigest planDigest brokerGeneration ->
+        forall oldRunId specDigest planDigest planId brokerGeneration.
+        AbandonedHarnessRun projectId oldRunId specDigest planDigest planId brokerGeneration ->
         IO (Either ModeError ())
     closeIfNothingAcquired reopened = do
         -- The proof is taken first: nothing is reclaimed and no lease is closed

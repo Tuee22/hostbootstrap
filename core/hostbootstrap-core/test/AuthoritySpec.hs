@@ -28,6 +28,7 @@ import HostBootstrap.Lifecycle.Session (
     ProjectJournalState (ClosedProject, ClosingProject),
     SessionError (SessionProjectClosing, SessionStillOpen),
     VerifiedAllSessionsClosed,
+    admissionPlanDigest,
     beginClosingProject,
     openOperationSession,
     openProjectJournal,
@@ -139,6 +140,7 @@ tests =
         , testGroup "project mode and run leases" modeCases
         , testGroup "invocation and terminal close" closeCases
         , testGroup "abandoned-run recovery" recoveryCases
+        , testGroup "plan migration" migrationCases
         ]
 
 -- The protected store ----------------------------------------------------------
@@ -1049,13 +1051,88 @@ recoveryCases =
                                 other ->
                                     assertFailure
                                         ("expected the closing branch, got " <> show other)
-                -- And it stays fail-closed: a close this sprint cannot resume
-                -- must block the next run rather than be swept away.
+                -- The callback resolved nothing, so the sweep's recheck still
+                -- refuses and names the run.
                 case swept of
                     Left (ModeRecoveryRequired named) ->
                         assertBool
                             ("the refusal names the run: " <> Text.unpack named)
                             (runIdText run `Text.isInfixOf` named)
+                    other -> assertFailure ("expected required recovery, got " <> show other)
+    , {- The close was already authorized: 'authorizeHarnessClose' persists the
+      epoch *before* the terminal projection precisely so the gap is resumable.
+      Recovery therefore finishes that close rather than reopening the run — and
+      it can only finish the exact close the dead run persisted. -}
+      testCase "a persisted closing epoch is resumed, and only at its own epoch" $
+        withStore $ \store ->
+            withProject "hostbootstrap-demo" $ \project -> do
+                (run, _) <- abandonBoundHarnessRun store project
+                _ <-
+                    expectRight
+                        =<< withProtectedEntry'
+                            store
+                            (\session -> recordHarnessClosingEpoch session project run 9)
+                swept <-
+                    recoverAbandonedHarnessRuns store project neverResolves $ \lease ->
+                        withAbandonedHarnessRun store project lease $ \reopened ->
+                            case abandonedHarnessRecovery reopened of
+                                HarnessPersistedClosing epoch -> do
+                                    epoch @?= 9
+                                    let resume presented =
+                                            withProtectedEntry' store $ \session ->
+                                                resumeHarnessClose
+                                                    session
+                                                    project
+                                                    (abandonedHarnessCloseRoot reopened)
+                                                    (abandonedHarnessModeLease reopened)
+                                                    (abandonedHarnessBoundLease reopened)
+                                                    presented
+                                    -- an epoch this run never persisted resumes nothing
+                                    wrong <- resume (epoch + 1)
+                                    case wrong of
+                                        Left (ModeEpochMismatch persisted presented) -> do
+                                            persisted @?= 9
+                                            presented @?= 10
+                                        other ->
+                                            assertFailure
+                                                ("expected an epoch mismatch, got " <> show (() <$ other))
+                                    authorization <- expectRight =<< resume epoch
+                                    finalized <-
+                                        withProtectedEntry' store $ \session ->
+                                            finalizeHarnessClose session project authorization
+                                    closed <- expectRight finalized
+                                    closedHarnessProjectRun closed @?= run
+                                    pure (Right ())
+                                other ->
+                                    assertFailure
+                                        ("expected the closing branch, got " <> show other)
+                -- The resumed close settled the run, so the sweep's recheck sees
+                -- an empty set and the next run may start.
+                proof <- either (assertFailure . show) pure swept
+                closedAbandonedHarnessRunsCount proof @?= 1
+    , testCase "a run with no persisted close has nothing to resume" $
+        withStore $ \store ->
+            withProject "hostbootstrap-demo" $ \project -> do
+                _ <- abandonBoundHarnessRun store project
+                swept <-
+                    recoverAbandonedHarnessRuns store project neverResolves $ \lease ->
+                        withAbandonedHarnessRun store project lease $ \reopened -> do
+                            refused <-
+                                withProtectedEntry' store $ \session ->
+                                    resumeHarnessClose
+                                        session
+                                        project
+                                        (abandonedHarnessCloseRoot reopened)
+                                        (abandonedHarnessModeLease reopened)
+                                        (abandonedHarnessBoundLease reopened)
+                                        9
+                            case refused of
+                                Left (ModeRecoveryRequired _) -> pure (Right ())
+                                other ->
+                                    assertFailure
+                                        ("expected no close to resume, got " <> show (() <$ other))
+                case swept of
+                    Left (ModeRecoveryRequired _) -> pure ()
                     other -> assertFailure ("expected required recovery, got " <> show other)
     , -- The sweep observed the lease at an earlier store version, so reopening
       -- rechecks it. A lease another resolver already closed is not a run this
@@ -1544,7 +1621,7 @@ reopening's own 'RecoveredHarnessClose' authority.
 resolveNothingAcquired ::
     ProtectedStore ->
     InstalledProject projectId ->
-    AbandonedHarnessRun projectId oldRunId specDigest planDigest brokerGeneration ->
+    AbandonedHarnessRun projectId oldRunId specDigest planDigest planId brokerGeneration ->
     IO (Either ModeError ())
 resolveNothingAcquired store project reopened = do
     proved <-
@@ -1633,6 +1710,208 @@ abandonBoundHarnessRun store project = do
 {- | Persist a run's plan snapshot and hand back the verified value, which is
 the only thing 'bindRunLease' accepts.
 -}
+-- ---------------------------------------------------------------------------
+-- Plan migration
+
+{- | The revision-carry algebra: the profile, the candidate, the freeze, the
+activation compare-and-swap, and the configless post-CAS recovery.
+
+The cases are ordered the way the protocol is, and each one names the state a
+crash at that point would leave — because the whole reason the protocol has this
+many durable steps is that every gap between two of them has to be recoverable.
+-}
+migrationCases :: [TestTree]
+migrationCases =
+    [ testCase "the migration profile refuses a recovery-owed binding" $
+        withStore $ \store ->
+            withProject "hostbootstrap-demo" $ \project -> do
+                outcome <-
+                    withProductionRoot store project ProjectUp $ \root ->
+                        withProtectedEntry' store $ \session ->
+                            withBoundSnapshot session project root $ \snapshot -> do
+                                let bind =
+                                        bindRunLease
+                                            session
+                                            project
+                                            (productionRootUnboundLease root)
+                                            snapshot
+                                -- Bind once so the second binding is the
+                                -- abandoned-invocation case.
+                                _ <- expectRight =<< bind (\_ -> pure (Right ()))
+                                bind
+                                    ( \binding -> case binding of
+                                        -- An already-bound lease yields no
+                                        -- NormalActiveRecovery at all, so a
+                                        -- migration cannot even be proposed from
+                                        -- it: the type is the refusal.
+                                        ExistingRunLeaseBinding _ _ -> pure (Right ())
+                                        FreshRunLeaseBinding _ _ ->
+                                            assertFailure "the second binding must not be fresh"
+                                    )
+                outcome @?= Right ()
+    , testCase "a migration onto the same plan digest is refused" $
+        withMigrationProfile $ \project _ profile session -> do
+            outcome <-
+                withProspectiveMigrationPlan
+                    session
+                    project
+                    profile
+                    "spec-1"
+                    "plan-1"
+                    (\_ -> pure (Right ()))
+            case outcome of
+                Left (ModeSnapshotMismatch expected observed) -> do
+                    expected @?= "plan-1"
+                    observed @?= "plan-1"
+                    pure (Right ())
+                other -> assertFailure ("expected a same-digest refusal, got " <> show other)
+    , testCase "a candidate is persisted, read back, and authorizes nothing" $
+        withMigrationProfile $ \project _ profile session ->
+            withProspectiveMigrationPlan session project profile "spec-2" "plan-2" $ \candidate -> do
+                prospectiveSnapshotSpecDigest candidate @?= "spec-2"
+                prospectiveSnapshotPlanDigest candidate @?= "plan-2"
+                -- The stable key names the run and both revisions, so a retry
+                -- converges on it rather than proposing a second migration.
+                stableMigrationKeyText (prospectiveSnapshotKey candidate)
+                    @?= "production.plan-1.plan-2"
+                pure (Right ())
+    , testCase "freezing stops the old revision from being bindable" $
+        withMigrationProfile $ \project _ profile session ->
+            withProspectiveMigrationPlan session project profile "spec-2" "plan-2" $ \candidate -> do
+                frozen <- expectRight =<< withPlanMigration session project profile candidate
+                stableMigrationKeyText (frozenMigrationKey frozen) @?= "production.plan-1.plan-2"
+                -- The recorded kind says the barrier was not crossed.
+                kind <- readRecordedRevisionKind session project
+                kind @?= IncompleteMigration "production.plan-1.plan-2"
+                pure (Right ())
+    , testCase "the activation compare-and-swap switches the lineage and records it" $
+        withMigrationProfile $ \project epoch profile session ->
+            withProspectiveMigrationPlan session project profile "spec-2" "plan-2" $ \candidate -> do
+                frozen <- expectRight =<< withPlanMigration session project profile candidate
+                (bound, barrier) <-
+                    expectRight =<< commitMigrationActivation session project frozen epoch
+                boundRunLeasePlanDigest bound @?= "plan-2"
+                migrationBarrierOldPlanDigest barrier @?= "plan-1"
+                migrationBarrierNewPlanDigest barrier @?= "plan-2"
+                kind <- readRecordedRevisionKind session project
+                kind @?= CompletedMigration "production.plan-1.plan-2"
+                pure (Right ())
+    , testCase "activation is idempotent, so a crash after the swap converges" $
+        withMigrationProfile $ \project epoch profile session ->
+            withProspectiveMigrationPlan session project profile "spec-2" "plan-2" $ \candidate -> do
+                frozen <- expectRight =<< withPlanMigration session project profile candidate
+                (_, first) <-
+                    expectRight =<< commitMigrationActivation session project frozen epoch
+                -- Re-running against the same frozen capability observes the
+                -- already-bound candidate and completes rather than refusing.
+                (_, second) <-
+                    expectRight =<< commitMigrationActivation session project frozen epoch
+                migrationBarrierNewPlanDigest first @?= migrationBarrierNewPlanDigest second
+                pure (Right ())
+    , testCase "activating the plan admits the new revision's broker" $
+        withMigrationProfile $ \project epoch profile session ->
+            withProspectiveMigrationPlan session project profile "spec-2" "plan-2" $ \candidate -> do
+                frozen <- expectRight =<< withPlanMigration session project profile candidate
+                (bound, barrier) <-
+                    expectRight =<< commitMigrationActivation session project frozen epoch
+                admission <- expectRight =<< activateMigratedPlan session barrier bound epoch
+                admissionPlanDigest admission @?= "plan-2"
+                pure (Right ())
+    , testCase "completed-migration recovery loads the candidate from the durable key" $
+        withMigrationProfile $ \project epoch profile session ->
+            withProspectiveMigrationPlan session project profile "spec-2" "plan-2" $ \candidate -> do
+                frozen <- expectRight =<< withPlanMigration session project profile candidate
+                (bound, _) <-
+                    expectRight =<< commitMigrationActivation session project frozen epoch
+                recovered <-
+                    withCompletedMigrationRecovery session project productionRunId $ \barrier -> do
+                        -- Both digests came from the stable key and the lease
+                        -- record; no config was consulted.
+                        migrationBarrierOldPlanDigest barrier @?= "plan-1"
+                        migrationBarrierNewPlanDigest barrier @?= "plan-2"
+                        fmap (fmap (const ())) (activateMigratedPlan session barrier bound epoch)
+                recovered @?= Right ()
+                pure (Right ())
+    , testCase "a run with no completed migration has nothing to recover" $
+        withMigrationProfile $ \project _ _ session -> do
+            outcome <-
+                withCompletedMigrationRecovery
+                    session
+                    project
+                    productionRunId
+                    (\_ -> pure (Right ()))
+            case outcome of
+                Left (ModeWrongRecoveryScope expected observed) -> do
+                    expected @?= "completed-migration"
+                    observed @?= "normal revision"
+                    pure (Right ())
+                other -> assertFailure ("expected a wrong-scope refusal, got " <> show other)
+    ]
+
+{- | A live Production @up@ that has bound its plan freshly, presented as the
+migration profile only such a binding can produce.
+
+Everything the profile needs comes from one composite root bracket, so the four
+values it revalidates genuinely share a broker generation rather than being
+assembled to look as though they do.
+-}
+withMigrationProfile ::
+    ( forall brokerGeneration oldSpecDigest oldPlanDigest session.
+      InstalledProject Fixture.FixtureProject ->
+      BrokerEpoch brokerGeneration ->
+      ProjectUpMigrationProfile
+        Fixture.FixtureProject
+        oldSpecDigest
+        oldPlanDigest
+        brokerGeneration ->
+      ProtectedSession session ->
+      IO (Either ModeError ())
+    ) ->
+    IO ()
+withMigrationProfile use =
+    withStore $ \store ->
+        withProject "hostbootstrap-demo" $ \project -> do
+            outcome <-
+                withProductionRoot store project ProjectUp $ \root ->
+                    withProtectedEntry' store $ \session ->
+                        withBoundSnapshot session project root $ \snapshot ->
+                            bindRunLease
+                                session
+                                project
+                                (productionRootUnboundLease root)
+                                snapshot
+                                ( \binding -> case binding of
+                                    ExistingRunLeaseBinding _ recovery ->
+                                        assertFailure
+                                            ("expected a fresh binding, got " <> show recovery)
+                                    FreshRunLeaseBinding bound active ->
+                                        case
+                                            withProjectUpMigrationProfile
+                                                (productionRootAuthority root)
+                                                (productionRootModeLease root)
+                                                bound
+                                                snapshot
+                                                active
+                                            of
+                                            Left failure -> pure (Left failure)
+                                            Right profile ->
+                                                use
+                                                    project
+                                                    (rootAuthorityEpoch (productionRootAuthority root))
+                                                    profile
+                                                    session
+                                )
+            outcome @?= Right ()
+
+-- | The recorded migration side of the barrier, read back off the durable record.
+readRecordedRevisionKind ::
+    ProtectedSession session ->
+    InstalledProject Fixture.FixtureProject ->
+    IO OpenRevisionKind
+readRecordedRevisionKind session project = do
+    observed <- readRecordedOpenRevisionKind session project productionRunId
+    expectRight observed
+
 withBoundSnapshot ::
     ProtectedSession session ->
     InstalledProject Fixture.FixtureProject ->

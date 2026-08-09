@@ -12,9 +12,12 @@
 - `hostbootstrap-demo` is a project binary that depends on `hostbootstrap-core` and contributes one
   substrate-selected `chain :: ProjectConfig -> [Step]`. There is no base-image LABEL/ENTRYPOINT
   integration mode.
-- `project up` recursively descends the chain. Current `project down`/`destroy` do not recursively invoke
-  the lifecycle verb in every child; they run the verb's reverse projection of the one plan, which
-  reaches only the frames this binary can touch.
+- `project up` recursively descends the chain, and `project down`/`destroy` drive the same plan's reverse
+  projection, descending into each child frame to invoke the verb there. The **operator** sequence is
+  unchanged by that and stays root-only: you run these verbs at the project root, exactly as below, and
+  there is no nested form to type. Admitting the descent's nested invocation is a target contract owned by
+  [the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md);
+  until it lands, teardown settles the frames one binary can reach and reports the rest outstanding.
 - The chain includes MinIO before the registry and places the accelerator daemon after the workload.
 - Host `.data` is carried through the stable `/var/tmp/hostbootstrap-demo-data` Linux alias into
   kind/nvkind and the pod. The live destroy/up/readback proof passed on the native Linux GPU lane.

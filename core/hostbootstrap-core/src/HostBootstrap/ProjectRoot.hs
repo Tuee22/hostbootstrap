@@ -8,6 +8,7 @@ module HostBootstrap.ProjectRoot
     , withCanonicalProjectRoot
     , canonicalProjectRootPath
     , canonicalDurableHostPath
+    , canonicalHostSubPath
     , canonicalHostPathValue
     )
 where
@@ -31,6 +32,8 @@ data ProjectRootError
     | ProjectRootNotDirectory FilePath
     | ProjectRootEscapesAnchor FilePath FilePath
     | ProjectRootResolutionFailed FilePath String
+    | -- | a requested subpath segment could leave the admitted root
+      ProjectRootSegmentUnsafe String
     deriving (Eq, Show)
 
 -- | Resolve a configured root against the stable project-home anchor owned by
@@ -78,7 +81,43 @@ canonicalProjectRootPath (CanonicalProjectRoot root) = root
 
 -- | The canonical host-side Production durable root.
 canonicalDurableHostPath :: CanonicalProjectRoot scope rootId -> CanonicalHostPath scope rootId
-canonicalDurableHostPath root = CanonicalHostPath (canonicalProjectRootPath root </> ".data")
+canonicalDurableHostPath root = canonicalHostSubPathUnchecked root [".data"]
+
+{- | A host path under the admitted root, named by relative segments.
+
+A run-scoped durable root is not a fixed name — a harness run's is its own
+generation — so the segments are supplied rather than baked in. Each is checked
+to be a single ordinary component: non-empty, free of path separators and drive
+letters, and neither @.@ nor @..@. That is what keeps the returned
+'CanonicalHostPath' genuinely under the root it was derived from, which is the
+whole point of the type: a segment that could climb out would hand a trusted host
+adapter a path the root never admitted.
+-}
+canonicalHostSubPath ::
+    CanonicalProjectRoot scope rootId ->
+    [String] ->
+    Either ProjectRootError (CanonicalHostPath scope rootId)
+canonicalHostSubPath root segments
+    | null segments = Left (ProjectRootSegmentUnsafe "<no segments>")
+    | otherwise = case filter (not . safeSegment) segments of
+        (unsafe : _) -> Left (ProjectRootSegmentUnsafe unsafe)
+        [] -> Right (canonicalHostSubPathUnchecked root segments)
+
+safeSegment :: String -> Bool
+safeSegment segment =
+    not (null segment)
+        && segment /= "."
+        && segment /= ".."
+        && not (any separator segment)
+  where
+    separator character = character `elem` ("/\\:" :: String)
+
+canonicalHostSubPathUnchecked ::
+    CanonicalProjectRoot scope rootId ->
+    [String] ->
+    CanonicalHostPath scope rootId
+canonicalHostSubPathUnchecked root segments =
+    CanonicalHostPath (foldl (</>) (canonicalProjectRootPath root) segments)
 
 -- | Render a canonical host path for the small set of trusted adapters that
 -- consume it. Construction remains private.

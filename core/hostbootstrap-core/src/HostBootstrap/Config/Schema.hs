@@ -805,6 +805,8 @@ withSiblingProjectConfigRoot codec projectName cls caps action = do
         "relative sourceRoot escapes its config-owned project anchor: " ++ root ++ " (anchor " ++ anchor ++ ")"
     renderProjectRootError (ProjectRootResolutionFailed root detail) =
         "failed to canonicalize sourceRoot " ++ root ++ ": " ++ firstLine detail
+    renderProjectRootError (ProjectRootSegmentUnsafe segment) =
+        "a path segment under the project root is not a single ordinary component: " ++ segment
 
     shouldLogSnapshot commandClass cfgCtx =
         commandClass `elem` [Context.DaemonCommand, Context.ServiceCommand]

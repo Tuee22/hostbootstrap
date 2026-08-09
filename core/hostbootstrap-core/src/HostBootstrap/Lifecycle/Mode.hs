@@ -86,6 +86,7 @@ module HostBootstrap.Lifecycle.Mode (
     recordProductionInvocationAcknowledgment,
     recordHarnessClosingEpoch,
     recordOpenRevisionMigration,
+    readRecordedOpenRevisionKind,
 
     -- * Lifecycle profiles
     LifecycleProfile,
@@ -100,12 +101,39 @@ module HostBootstrap.Lifecycle.Mode (
     recoveredProductionProfileEpoch,
     withRecoveredProductionLifecycleProfile,
 
+    -- * Plan migration
+    StableMigrationKey,
+    stableMigrationKeyText,
+    ProspectivePlanSnapshot,
+    prospectiveSnapshotKey,
+    prospectiveSnapshotSpecDigest,
+    prospectiveSnapshotPlanDigest,
+    ProjectUpMigrationProfile,
+    migrationProfileRun,
+    migrationProfileOldSpecDigest,
+    migrationProfileOldPlanDigest,
+    migrationProfileEpoch,
+    withProjectUpMigrationProfile,
+    withProspectiveMigrationPlan,
+    FrozenMigrationRunLease,
+    frozenMigrationKey,
+    frozenMigrationRun,
+    withPlanMigration,
+    PlanMigrationBarrier,
+    migrationBarrierKey,
+    migrationBarrierOldPlanDigest,
+    migrationBarrierNewPlanDigest,
+    commitMigrationActivation,
+    activateMigratedPlan,
+    withCompletedMigrationRecovery,
+
     -- * Composite root brackets
     ProductionRoot,
     productionRootAuthority,
     productionRootModeLease,
     productionRootUnboundLease,
     withProductionRoot,
+    productionRunId,
     HarnessRoot,
     harnessRootAuthority,
     harnessRootHarnessAuthority,
@@ -140,6 +168,7 @@ module HostBootstrap.Lifecycle.Mode (
     harnessCloseRun,
     harnessCloseOrigin,
     authorizeHarnessClose,
+    resumeHarnessClose,
     ClosedHarnessProject,
     closedHarnessProjectRun,
     finalizeHarnessClose,
@@ -170,6 +199,11 @@ module HostBootstrap.Lifecycle.Mode (
     abandonedHarnessDestroyRoot,
     abandonedHarnessRecovery,
     abandonedHarnessCloseRoot,
+    abandonedHarnessBroker,
+    abandonedHarnessFencedPermits,
+    abandonedHarnessManifest,
+    abandonedHarnessInterpretation,
+    abandonedHarnessAdmission,
     withAbandonedHarnessRun,
 
     -- * Failures
@@ -224,9 +258,21 @@ import HostBootstrap.Lifecycle.Plan (
     canonicalPlanSnapshotSpecDigest,
  )
 import HostBootstrap.Lifecycle.Session (
+    CurrentBrokerSessionAdmission,
+    InterpretedRecovery,
+    OldPermitsFenced,
+    ProjectPermit,
+    SessionError,
     VerifiedAllSessionsClosed,
+    VerifiedSessionManifest,
+    admitCurrentBroker,
     allSessionsClosedCount,
     allSessionsClosedPlanDigest,
+    fenceOldPermits,
+    interpretRecordedSessions,
+    openProjectJournal,
+    sessionErrorMessage,
+    verifySessionManifest,
  )
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
@@ -1110,6 +1156,19 @@ writeInvocationDisposition session project run disposition =
                         (encodeDisposition disposition)
                 pure (either (Left . ModeStoreFailure) (const (Right ())) written)
 
+{- | Read the recorded migration side of the activation barrier for a run.
+
+The classification itself is internal — it is reached through the two bound
+eliminators — but the recorded kind is an ordinary durable observation, and the
+migration protocol's own callers need to be able to assert on it.
+-}
+readRecordedOpenRevisionKind ::
+    ProtectedSession session ->
+    InstalledProject projectId ->
+    RunId ->
+    IO (Either ModeError OpenRevisionKind)
+readRecordedOpenRevisionKind = readOpenRevisionKind
+
 readOpenRevisionKind ::
     ProtectedSession session ->
     InstalledProject projectId ->
@@ -1306,6 +1365,793 @@ withRecoveredProductionLifecycleProfile root modeLease bound snapshot open use
                     (brokerEpochWord (rootAuthorityEpoch root))
                 )
             )
+
+-- Plan migration --------------------------------------------------------------------
+
+{- | The stable key one migration is named by, for its whole life.
+
+Everything a migration persists hangs off this key, and every later step reads
+the key back rather than recomputing a digest from the current config. That is
+what § EE means by "Both paths first load and verify the exact prospective
+snapshot named by the durable @stableMigrationKey@, never a digest inferred from
+current config": an operator who edits the config between the freeze and the
+activation must not thereby change which candidate is activated.
+-}
+newtype StableMigrationKey = StableMigrationKey Text
+    deriving (Eq, Ord)
+
+instance Show StableMigrationKey where
+    show (StableMigrationKey value) = "StableMigrationKey " <> show value
+
+stableMigrationKeyText :: StableMigrationKey -> Text
+stableMigrationKeyText (StableMigrationKey value) = value
+
+{- | The pure, non-authorizing snapshot of a migration candidate.
+
+It is deliberately /not/ a 'VerifiedPlanSnapshot': a candidate authorizes
+nothing. No prepared operation, no lease binding, and no effect can be reached
+from one — § EE's "prospective, frozen, and staged records authorize no effect".
+It exists so the freeze has something exact to persist and the activation has
+something exact to compare against.
+-}
+data ProspectivePlanSnapshot projectId newSpecDigest newPlanDigest
+    = ProspectivePlanSnapshot StableMigrationKey Text Text
+
+instance Show (ProspectivePlanSnapshot projectId newSpecDigest newPlanDigest) where
+    show (ProspectivePlanSnapshot key spec plan) =
+        "ProspectivePlanSnapshot " <> show key <> " " <> show spec <> " " <> show plan
+
+prospectiveSnapshotKey ::
+    ProspectivePlanSnapshot projectId newSpecDigest newPlanDigest -> StableMigrationKey
+prospectiveSnapshotKey (ProspectivePlanSnapshot key _ _) = key
+
+prospectiveSnapshotSpecDigest ::
+    ProspectivePlanSnapshot projectId newSpecDigest newPlanDigest -> Text
+prospectiveSnapshotSpecDigest (ProspectivePlanSnapshot _ spec _) = spec
+
+prospectiveSnapshotPlanDigest ::
+    ProspectivePlanSnapshot projectId newSpecDigest newPlanDigest -> Text
+prospectiveSnapshotPlanDigest (ProspectivePlanSnapshot _ _ plan) = plan
+
+{- | The migration profile: the sole route from a live Production @up@ to a
+revision carry.
+
+§ EE names 'withProjectUpMigrationProfile' as its sole producer, and every input
+is revalidated rather than trusted:
+
+* the root must be the exact Production @ProjectUp@ authority. A @down@ or
+  @destroy@ root cannot migrate a revision;
+* the mode lease must currently hold Production under the same broker
+  generation;
+* the old bound lease and the verified snapshot must agree on both digests;
+* the recovery evidence must be 'NormalActiveRecovery'. This is the one that
+  rules out the dangerous case: a migration may only be started from a binding
+  that was /fresh/, because an abandoned invocation's revision has to be
+  recovered before anything may be carried forward from it.
+
+It carries no plan. § EE: "Compatible revision carry first uses the sole
+'withProjectUpMigrationProfile' producer to revalidate ... without a new plan."
+-}
+data ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration
+    = ProjectUpMigrationProfile RunId Text Text Word64
+
+instance
+    Show
+        (ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration)
+    where
+    show (ProjectUpMigrationProfile run spec plan epoch) =
+        "ProjectUpMigrationProfile "
+            <> show run
+            <> " "
+            <> show spec
+            <> " "
+            <> show plan
+            <> " "
+            <> show epoch
+
+migrationProfileRun ::
+    ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration -> RunId
+migrationProfileRun (ProjectUpMigrationProfile run _ _ _) = run
+
+migrationProfileOldSpecDigest ::
+    ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration -> Text
+migrationProfileOldSpecDigest (ProjectUpMigrationProfile _ spec _ _) = spec
+
+migrationProfileOldPlanDigest ::
+    ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration -> Text
+migrationProfileOldPlanDigest (ProjectUpMigrationProfile _ _ plan _) = plan
+
+migrationProfileEpoch ::
+    ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration -> Word64
+migrationProfileEpoch (ProjectUpMigrationProfile _ _ _ epoch) = epoch
+
+-- | Mint the migration profile, or refuse. See 'ProjectUpMigrationProfile'.
+withProjectUpMigrationProfile ::
+    RootInvocationAuthority (Production projectId) brokerGeneration VerbUp ->
+    ProjectModeLease projectId brokerGeneration ->
+    BoundRunLease (Production projectId) oldSpecDigest oldPlanDigest brokerGeneration ->
+    VerifiedPlanSnapshot projectId oldSpecDigest oldPlanDigest ->
+    NormalActiveRecovery (Production projectId) ->
+    Either
+        ModeError
+        (ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration)
+withProjectUpMigrationProfile root modeLease bound snapshot active
+    | ProductionMode /= projectModeLeaseMode modeLease =
+        Left
+            ( ModeWrongMode
+                "production"
+                (projectModeName (projectModeLeaseMode modeLease))
+            )
+    | brokerEpochWord (rootAuthorityEpoch root)
+        /= brokerEpochWord (projectModeLeaseEpoch modeLease) =
+        Left
+            ( ModeEpochMismatch
+                (brokerEpochWord (projectModeLeaseEpoch modeLease))
+                (brokerEpochWord (rootAuthorityEpoch root))
+            )
+    | boundRunLeaseRun bound /= planSnapshotRun snapshot =
+        Left
+            ( ModeSnapshotMismatch
+                (runIdText (boundRunLeaseRun bound))
+                (runIdText (planSnapshotRun snapshot))
+            )
+    | boundRunLeaseRun bound /= normalActiveRecoveryRun active =
+        Left
+            ( ModeSnapshotMismatch
+                (runIdText (boundRunLeaseRun bound))
+                (runIdText (normalActiveRecoveryRun active))
+            )
+    | boundRunLeaseSpecDigest bound /= planSnapshotSpecDigest snapshot =
+        Left
+            ( ModeSnapshotMismatch
+                (boundRunLeaseSpecDigest bound)
+                (planSnapshotSpecDigest snapshot)
+            )
+    | boundRunLeasePlanDigest bound /= planSnapshotPlanDigest snapshot =
+        Left
+            ( ModeSnapshotMismatch
+                (boundRunLeasePlanDigest bound)
+                (planSnapshotPlanDigest snapshot)
+            )
+    | otherwise =
+        Right
+            ( ProjectUpMigrationProfile
+                (boundRunLeaseRun bound)
+                (planSnapshotSpecDigest snapshot)
+                (planSnapshotPlanDigest snapshot)
+                (brokerEpochWord (rootAuthorityEpoch root))
+            )
+
+{- | Build one migration candidate and persist it under a fresh stable key,
+before anything is frozen.
+
+This is the pre-freeze half, and its whole point is that a crash here is
+harmless. § EE: "failed/unknown persistence leaves admission unchanged, and a
+pre-freeze crash leaves only a non-authorizing unreferenced record." Nothing
+about the live revision changes; the store simply gains a candidate record
+nobody references.
+
+The candidate is persisted and then __authoritatively read back__ before the
+continuation sees it, so what the freeze will later act on is bytes the store
+actually holds rather than bytes this process believes it wrote.
+
+A migration to the same plan digest is refused. Carrying a revision forward onto
+itself has no meaning, and admitting it would let a caller freeze the live
+revision against a candidate that cannot supersede it.
+
+The rank-2 continuation binds fresh @newSpecDigest@\/@newPlanDigest@ indices, so
+the candidate cannot be confused with the old revision's.
+-}
+withProspectiveMigrationPlan ::
+    forall session projectId oldSpecDigest oldPlanDigest brokerGeneration result.
+    ProtectedSession session ->
+    InstalledProject projectId ->
+    ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration ->
+    -- | the candidate's spec digest
+    Text ->
+    -- | the candidate's plan digest
+    Text ->
+    ( forall newSpecDigest newPlanDigest.
+      ProspectivePlanSnapshot projectId newSpecDigest newPlanDigest ->
+      IO (Either ModeError result)
+    ) ->
+    IO (Either ModeError result)
+withProspectiveMigrationPlan session project profile newSpec newPlan use
+    | Text.null newSpec || Text.null newPlan =
+        pure (Left (ModeInvalidIdentity "a migration candidate needs both digests"))
+    | newPlan == migrationProfileOldPlanDigest profile =
+        pure
+            ( Left
+                ( ModeSnapshotMismatch
+                    (migrationProfileOldPlanDigest profile)
+                    newPlan
+                )
+            )
+    | otherwise = withRecordKey (prospectiveKey project key) $ \recordKey -> do
+        observed <- readProtectedRecord session recordKey
+        case observed of
+            Left failure -> pure (Left (ModeStoreFailure failure))
+            Right existing -> do
+                let expectation =
+                        maybe ExpectAbsent (ExpectVersion . protectedRecordVersion) existing
+                written <-
+                    compareAndSwapProtectedRecord
+                        session
+                        recordKey
+                        expectation
+                        (encodeFields ["prospective", newSpec, newPlan])
+                case written of
+                    Left failure -> pure (Left (ModeStoreFailure failure))
+                    Right _ -> do
+                        -- Read the candidate back authoritatively: the freeze
+                        -- must act on what the store holds, not on what this
+                        -- process just claimed to write.
+                        readBack <- readProspectiveSnapshot session project key
+                        case readBack of
+                            Left failure -> pure (Left failure)
+                            Right (spec, plan)
+                                | spec /= newSpec -> pure (Left (ModeSnapshotMismatch newSpec spec))
+                                | plan /= newPlan -> pure (Left (ModeSnapshotMismatch newPlan plan))
+                                | otherwise ->
+                                    use (ProspectivePlanSnapshot key spec plan)
+  where
+    key = stableMigrationKeyFor profile newPlan
+
+{- | The stable key a migration is named by: the old plan digest, the candidate's
+plan digest, and the run.
+
+It is a pure function of the three, so a retried migration of the same candidate
+resumes the same key rather than proposing a second one — which is what makes
+the whole protocol idempotent under a crash.
+-}
+stableMigrationKeyFor ::
+    ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration ->
+    Text ->
+    StableMigrationKey
+stableMigrationKeyFor profile newPlan =
+    StableMigrationKey
+        ( runIdText (migrationProfileRun profile)
+            <> "."
+            <> migrationProfileOldPlanDigest profile
+            <> "."
+            <> newPlan
+        )
+
+readProspectiveSnapshot ::
+    ProtectedSession session ->
+    InstalledProject projectId ->
+    StableMigrationKey ->
+    IO (Either ModeError (Text, Text))
+readProspectiveSnapshot session project key =
+    withRecordKey (prospectiveKey project key) $ \recordKey -> do
+        observed <- readProtectedRecord session recordKey
+        pure $ case observed of
+            Left failure -> Left (ModeStoreFailure failure)
+            Right Nothing -> Left (ModeSnapshotMissing (stableMigrationKeyText key))
+            Right (Just record) -> case decodeFields (protectedRecordBytes record) of
+                ["prospective", spec, plan] -> Right (spec, plan)
+                _ -> Left (ModeMalformedRecord (recordKeyText recordKey))
+
+{- | The old revision's lease, frozen under one stable migration key.
+
+Freezing is what makes old- and new-bound authority unable to coexist (§ EE):
+the lease record is no longer @bound@, so 'bindRunLease' refuses it and no
+prepared operation can be issued against the old revision. The only thing that
+can consume this capability is the activation compare-and-swap, and consuming it
+is what produces the new bound lease.
+-}
+data FrozenMigrationRunLease
+    projectId
+    oldSpecDigest
+    oldPlanDigest
+    newSpecDigest
+    newPlanDigest
+    brokerGeneration
+    = FrozenMigrationRunLease RunId StableMigrationKey Text Text Text Text Word64
+
+instance
+    Show
+        ( FrozenMigrationRunLease
+            projectId
+            oldSpecDigest
+            oldPlanDigest
+            newSpecDigest
+            newPlanDigest
+            brokerGeneration
+        )
+    where
+    show (FrozenMigrationRunLease run key oldSpec oldPlan newSpec newPlan epoch) =
+        "FrozenMigrationRunLease "
+            <> show run
+            <> " "
+            <> show key
+            <> " "
+            <> show oldSpec
+            <> " "
+            <> show oldPlan
+            <> " -> "
+            <> show newSpec
+            <> " "
+            <> show newPlan
+            <> " "
+            <> show epoch
+
+frozenMigrationKey ::
+    FrozenMigrationRunLease
+        projectId
+        oldSpecDigest
+        oldPlanDigest
+        newSpecDigest
+        newPlanDigest
+        brokerGeneration ->
+    StableMigrationKey
+frozenMigrationKey (FrozenMigrationRunLease _ key _ _ _ _ _) = key
+
+frozenMigrationRun ::
+    FrozenMigrationRunLease
+        projectId
+        oldSpecDigest
+        oldPlanDigest
+        newSpecDigest
+        newPlanDigest
+        brokerGeneration ->
+    RunId
+frozenMigrationRun (FrozenMigrationRunLease run _ _ _ _ _ _) = run
+
+{- | Freeze the old revision against a persisted candidate.
+
+The order is § EE's, and each step is durable before the one after it can be
+observed:
+
+1. the candidate is loaded back under its own stable key. A caller cannot pass a
+   candidate that was never persisted, and cannot substitute one, because the
+   key is derived from the profile and the digests are compared against the
+   record;
+2. the migration is recorded as an __incomplete__ revision on the run, which is
+   the durable observation the recovery classifier later reads. Recording it
+   before the freeze is what makes the window recoverable: a crash between here
+   and the freeze leaves a run whose recorded kind says the barrier was not
+   crossed, and 'resolveBoundRun' discards the staging;
+3. only then is the lease compare-and-swapped from @bound@ to @frozen@. That is
+   the point at which old-revision preparation stops: the lease is no longer
+   bindable and no new prepared operation can be issued under it.
+
+Freezing an already-frozen lease under the same key is idempotent and returns
+the same capability, so a retried migration converges rather than refusing.
+-}
+withPlanMigration ::
+    ProtectedSession session ->
+    InstalledProject projectId ->
+    ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration ->
+    ProspectivePlanSnapshot projectId newSpecDigest newPlanDigest ->
+    IO
+        ( Either
+            ModeError
+            ( FrozenMigrationRunLease
+                projectId
+                oldSpecDigest
+                oldPlanDigest
+                newSpecDigest
+                newPlanDigest
+                brokerGeneration
+            )
+        )
+withPlanMigration session project profile candidate = do
+    loaded <- readProspectiveSnapshot session project key
+    case loaded of
+        Left failure -> pure (Left failure)
+        Right (spec, plan)
+            | spec /= prospectiveSnapshotSpecDigest candidate ->
+                pure (Left (ModeSnapshotMismatch (prospectiveSnapshotSpecDigest candidate) spec))
+            | plan /= prospectiveSnapshotPlanDigest candidate ->
+                pure (Left (ModeSnapshotMismatch (prospectiveSnapshotPlanDigest candidate) plan))
+            | otherwise -> do
+                recorded <-
+                    recordOpenRevisionMigration
+                        session
+                        project
+                        run
+                        (IncompleteMigration (stableMigrationKeyText key))
+                case recorded of
+                    Left failure -> pure (Left failure)
+                    Right () -> freezeLease session project profile key spec plan
+  where
+    key = prospectiveSnapshotKey candidate
+    run = migrationProfileRun profile
+
+freezeLease ::
+    ProtectedSession session ->
+    InstalledProject projectId ->
+    ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration ->
+    StableMigrationKey ->
+    Text ->
+    Text ->
+    IO
+        ( Either
+            ModeError
+            ( FrozenMigrationRunLease
+                projectId
+                oldSpecDigest
+                oldPlanDigest
+                newSpecDigest
+                newPlanDigest
+                brokerGeneration
+            )
+        )
+freezeLease session project profile key newSpec newPlan =
+    withRecordKey (leaseKey project run) $ \recordKey -> do
+        observed <- readProtectedRecord session recordKey
+        case observed of
+            Left failure -> pure (Left (ModeStoreFailure failure))
+            Right Nothing -> pure (Left (ModeLeaseMissing (runIdText run)))
+            Right (Just record) -> case decodeLease (protectedRecordBytes record) of
+                Nothing -> pure (Left (ModeMalformedRecord (recordKeyText recordKey)))
+                -- Already frozen under this exact key: idempotent resume.
+                Just (LeaseFrozen _ recorded oldSpec oldPlan recordedSpec recordedPlan)
+                    | recorded /= stableMigrationKeyText key ->
+                        pure
+                            ( Left
+                                ( ModeSnapshotMismatch
+                                    (stableMigrationKeyText key)
+                                    recorded
+                                )
+                            )
+                    | otherwise ->
+                        pure
+                            ( Right
+                                ( FrozenMigrationRunLease
+                                    run
+                                    key
+                                    oldSpec
+                                    oldPlan
+                                    recordedSpec
+                                    recordedPlan
+                                    (migrationProfileEpoch profile)
+                                )
+                            )
+                Just (LeaseBound epoch recordedSpec recordedPlan)
+                    | recordedSpec /= migrationProfileOldSpecDigest profile ->
+                        pure
+                            ( Left
+                                ( ModeSnapshotMismatch
+                                    (migrationProfileOldSpecDigest profile)
+                                    recordedSpec
+                                )
+                            )
+                    | recordedPlan /= migrationProfileOldPlanDigest profile ->
+                        pure
+                            ( Left
+                                ( ModeSnapshotMismatch
+                                    (migrationProfileOldPlanDigest profile)
+                                    recordedPlan
+                                )
+                            )
+                    | otherwise -> do
+                        written <-
+                            compareAndSwapProtectedRecord
+                                session
+                                recordKey
+                                (ExpectVersion (protectedRecordVersion record))
+                                ( encodeLease
+                                    ( LeaseFrozen
+                                        epoch
+                                        (stableMigrationKeyText key)
+                                        recordedSpec
+                                        recordedPlan
+                                        newSpec
+                                        newPlan
+                                    )
+                                )
+                        pure $ case written of
+                            Left failure -> Left (ModeStoreFailure failure)
+                            Right _ ->
+                                Right
+                                    ( FrozenMigrationRunLease
+                                        run
+                                        key
+                                        recordedSpec
+                                        recordedPlan
+                                        newSpec
+                                        newPlan
+                                        (migrationProfileEpoch profile)
+                                    )
+                Just other ->
+                    pure (Left (ModeLeaseNotBindable (runIdText run) (leaseStateName other)))
+  where
+    run = migrationProfileRun profile
+
+{- | The activation barrier: proof that the lineage switch committed.
+
+It is indexed by /both/ plan digests, so a barrier minted for one migration
+cannot authorize another's activation. Its constructor is private and
+'commitMigrationActivation' is its sole producer.
+-}
+data PlanMigrationBarrier projectId oldPlanDigest newPlanDigest
+    = PlanMigrationBarrier StableMigrationKey RunId Text Text
+
+instance Show (PlanMigrationBarrier projectId oldPlanDigest newPlanDigest) where
+    show (PlanMigrationBarrier key run old new) =
+        "PlanMigrationBarrier "
+            <> show key
+            <> " "
+            <> show run
+            <> " "
+            <> show old
+            <> " -> "
+            <> show new
+
+migrationBarrierKey ::
+    PlanMigrationBarrier projectId oldPlanDigest newPlanDigest -> StableMigrationKey
+migrationBarrierKey (PlanMigrationBarrier key _ _ _) = key
+
+migrationBarrierOldPlanDigest ::
+    PlanMigrationBarrier projectId oldPlanDigest newPlanDigest -> Text
+migrationBarrierOldPlanDigest (PlanMigrationBarrier _ _ old _) = old
+
+migrationBarrierNewPlanDigest ::
+    PlanMigrationBarrier projectId oldPlanDigest newPlanDigest -> Text
+migrationBarrierNewPlanDigest (PlanMigrationBarrier _ _ _ new) = new
+
+{- | The activation compare-and-swap: switch the lineage old → new.
+
+This is the barrier the whole recovery classification is about. It consumes the
+frozen capability and, in one compare-and-swap over the lease record, replaces
+the frozen state with a lease bound to the __candidate's__ digests. Only after
+that succeeds is the run recorded as a __completed__ migration.
+
+That ordering is the one a restart depends on. A crash before the swap leaves a
+frozen lease and an @IncompleteMigration@ record, so recovery discards the
+staging; a crash after it leaves a new-bound lease and a @CompletedMigration@
+record, so recovery resumes activation. There is no window in which the lease
+says one thing and the recorded kind says the other in the dangerous direction:
+the lease commits first, and a lease that committed with the record still
+saying incomplete is repaired by re-running this function, which observes the
+already-bound candidate and completes the record.
+-}
+commitMigrationActivation ::
+    ProtectedSession session ->
+    InstalledProject projectId ->
+    FrozenMigrationRunLease
+        projectId
+        oldSpecDigest
+        oldPlanDigest
+        newSpecDigest
+        newPlanDigest
+        brokerGeneration ->
+    BrokerEpoch brokerGeneration ->
+    IO
+        ( Either
+            ModeError
+            ( BoundRunLease (Production projectId) newSpecDigest newPlanDigest brokerGeneration
+            , PlanMigrationBarrier projectId oldPlanDigest newPlanDigest
+            )
+        )
+commitMigrationActivation session project frozen epoch =
+    withRecordKey (leaseKey project run) $ \recordKey -> do
+        observed <- readProtectedRecord session recordKey
+        case observed of
+            Left failure -> pure (Left (ModeStoreFailure failure))
+            Right Nothing -> pure (Left (ModeLeaseMissing (runIdText run)))
+            Right (Just record) -> case decodeLease (protectedRecordBytes record) of
+                Nothing -> pure (Left (ModeMalformedRecord (recordKeyText recordKey)))
+                Just (LeaseFrozen _ recorded _oldSpec oldPlan newSpec newPlan)
+                    | recorded /= stableMigrationKeyText key ->
+                        pure (Left (ModeSnapshotMismatch (stableMigrationKeyText key) recorded))
+                    | otherwise -> do
+                        written <-
+                            compareAndSwapProtectedRecord
+                                session
+                                recordKey
+                                (ExpectVersion (protectedRecordVersion record))
+                                (encodeLease (LeaseBound (brokerEpochWord epoch) newSpec newPlan))
+                        case written of
+                            Left failure -> pure (Left (ModeStoreFailure failure))
+                            Right _ -> complete oldPlan newSpec newPlan
+                -- The swap already committed and the record write did not: the
+                -- lease is bound to the candidate, so finish the record rather
+                -- than refusing a migration that is in fact activated.
+                Just (LeaseBound _ recordedSpec recordedPlan)
+                    | (recordedSpec, recordedPlan) == candidateDigests ->
+                        complete oldPlanOf recordedSpec recordedPlan
+                Just other ->
+                    pure (Left (ModeLeaseNotBindable (runIdText run) (leaseStateName other)))
+  where
+    FrozenMigrationRunLease _ key _oldSpecOf oldPlanOf newSpecOf newPlanOf _ = frozen
+    run = frozenMigrationRun frozen
+    candidateDigests = (newSpecOf, newPlanOf)
+
+    complete oldPlan newSpec newPlan = do
+        recorded <-
+            recordOpenRevisionMigration
+                session
+                project
+                run
+                (CompletedMigration (stableMigrationKeyText key))
+        pure $ case recorded of
+            Left failure -> Left failure
+            Right () ->
+                Right
+                    ( BoundRunLease run newSpec newPlan epoch
+                    , PlanMigrationBarrier key run oldPlan newPlan
+                    )
+
+{- | Activate the migrated plan: the last gate before the new revision may open
+a session.
+
+§ EE: "'activateMigratedPlan' must consume that barrier, the exact new-bound
+lease\/active revision, local plan\/binding, and complete set before exposing a
+journal or preparation authority. It rechecks that no old session remains Open
+and jointly yields the new revision's 'CurrentBrokerSessionAdmission'."
+
+So it takes the barrier and the new lease, checks they name the same candidate,
+and then — the load-bearing recheck — runs the recorded-session interpreter over
+the __old__ revision's plan digest. An old session still Open is exactly the
+state that must not be able to reach the new revision's admission, and the
+interpreter is what both proves and settles it. The admission it returns is the
+new revision's, minted from the new plan's own complete sets.
+-}
+activateMigratedPlan ::
+    ProtectedSession session ->
+    PlanMigrationBarrier projectId oldPlanDigest newPlanDigest ->
+    BoundRunLease scope newSpecDigest newPlanDigest brokerGeneration ->
+    BrokerEpoch brokerGeneration ->
+    IO (Either ModeError (CurrentBrokerSessionAdmission scope newPlanDigest brokerGeneration))
+activateMigratedPlan session barrier bound epoch
+    | boundRunLeasePlanDigest bound /= migrationBarrierNewPlanDigest barrier =
+        pure
+            ( Left
+                ( ModeSnapshotMismatch
+                    (migrationBarrierNewPlanDigest barrier)
+                    (boundRunLeasePlanDigest bound)
+                )
+            )
+    | otherwise = do
+        -- Settle the old revision's sessions first. Until this succeeds there
+        -- is no admission for the new revision at all.
+        oldSettled <- settleRevision session epoch (migrationBarrierOldPlanDigest barrier)
+        case oldSettled of
+            Left failure -> pure (Left failure)
+            Right () -> settleAndAdmit session epoch (migrationBarrierNewPlanDigest barrier)
+
+{- | Drive one revision's recorded sessions to Closed, discarding the admission.
+
+Used for the __old__ revision at activation: what matters there is that nothing
+of it is still Open, not that it can be admitted. The admission it necessarily
+produces on the way is dropped rather than returned, so there is no value a
+caller could present as the old revision's authority.
+-}
+settleRevision ::
+    ProtectedSession session ->
+    BrokerEpoch brokerGeneration ->
+    Text ->
+    IO (Either ModeError ())
+settleRevision session epoch planDigest = do
+    admitted <- settleAndAdmit session epoch planDigest
+    pure (fmap discard admitted)
+  where
+    -- The indices are irrelevant here precisely because the value is dropped;
+    -- naming them keeps the ambiguity from leaking into the caller.
+    discard ::
+        CurrentBrokerSessionAdmission (Production ()) () brokerGeneration -> ()
+    discard _ = ()
+
+{- | The fence → manifest → interpret → admit chain over one plan digest.
+
+It is the same chain 'withAbandonedHarnessRun' runs, factored out because the
+activation transition needs it for two different revisions.
+-}
+settleAndAdmit ::
+    forall session scope planId brokerGeneration.
+    ProtectedSession session ->
+    BrokerEpoch brokerGeneration ->
+    Text ->
+    IO (Either ModeError (CurrentBrokerSessionAdmission scope planId brokerGeneration))
+settleAndAdmit session epoch planDigest = do
+    fenced <- fenceOldPermits session planDigest
+    case fenced of
+        Left failure -> pure (Left (ModeSessionFailure failure))
+        Right fencedPermits -> do
+            manifested <- verifySessionManifest session planDigest
+            case manifested of
+                Left failure -> pure (Left (ModeSessionFailure failure))
+                Right manifest -> do
+                    journal <- openProjectJournal session planDigest
+                    case journal of
+                        Left failure -> pure (Left (ModeSessionFailure failure))
+                        Right (permit :: ProjectPermit scope planId) -> do
+                            driven <-
+                                interpretRecordedSessions session epoch manifest fencedPermits permit
+                            case driven of
+                                Left failure -> pure (Left (ModeSessionFailure failure))
+                                Right (interpreted, _spent) -> do
+                                    admitted <-
+                                        admitCurrentBroker session epoch manifest fencedPermits interpreted
+                                    pure (either (Left . ModeSessionFailure) Right admitted)
+
+{- | The configless post-CAS recovery path.
+
+§ EE: "A post-CAS restart selects completed recovery ... 'withCompletedMigrationRecovery'
+uses the same non-secret protected snapshot data for configless teardown."
+
+It is reachable only from a run whose recorded kind is 'CompletedMigration', and
+it loads the candidate back under the durable stable key named by that record —
+never a digest inferred from the current config, which may have been edited or
+removed. What it yields is the barrier, so the caller can drive the activation
+through with the destroy-only authority a recovery holds; it yields no profile,
+no plan, and no route to @up@.
+
+Only @oldPlanDigest@ is bound generatively, and the asymmetry is deliberate. The
+superseded revision is the one recovery can name from /nothing but/ the durable
+key, so nothing the caller holds may be substituted for it. The new revision is
+the caller's own bound lease — it is what recovery is activating /towards/ — so
+its index is the caller's, and 'activateMigratedPlan' still compares the two
+digests at the term level before admitting anything.
+-}
+withCompletedMigrationRecovery ::
+    ProtectedSession session ->
+    InstalledProject projectId ->
+    RunId ->
+    ( forall oldPlanDigest.
+      PlanMigrationBarrier projectId oldPlanDigest newPlanDigest ->
+      IO (Either ModeError result)
+    ) ->
+    IO (Either ModeError result)
+withCompletedMigrationRecovery session project run use = do
+    kind <- readOpenRevisionKind session project run
+    case kind of
+        Left failure -> pure (Left failure)
+        Right (CompletedMigration key) -> withRecordKey (leaseKey project run) $ \recordKey -> do
+            observed <- readProtectedRecord session recordKey
+            case observed of
+                Left failure -> pure (Left (ModeStoreFailure failure))
+                Right Nothing -> pure (Left (ModeLeaseMissing (runIdText run)))
+                Right (Just record) -> case decodeLease (protectedRecordBytes record) of
+                    Nothing -> pure (Left (ModeMalformedRecord (recordKeyText recordKey)))
+                    -- The lease is bound to the candidate, so the old plan
+                    -- digest is recovered from the stable key rather than from
+                    -- any config.
+                    Just (LeaseBound _ _ recordedPlan) ->
+                        case oldPlanFromStableKey key of
+                            Nothing -> pure (Left (ModeMalformedRecord key))
+                            Just oldPlan ->
+                                use
+                                    ( PlanMigrationBarrier
+                                        (StableMigrationKey key)
+                                        run
+                                        oldPlan
+                                        recordedPlan
+                                    )
+                    Just other ->
+                        pure (Left (ModeLeaseNotBindable (runIdText run) (leaseStateName other)))
+        Right other ->
+            pure
+                ( Left
+                    ( ModeWrongRecoveryScope
+                        "completed-migration"
+                        (openRevisionKindName other)
+                    )
+                )
+
+-- | The old plan digest a stable migration key names: @\<run\>.\<old\>.\<new\>@.
+oldPlanFromStableKey :: Text -> Maybe Text
+oldPlanFromStableKey raw = case Text.splitOn "." raw of
+    [_run, old, _new] | not (Text.null old) -> Just old
+    _ -> Nothing
+
+openRevisionKindName :: OpenRevisionKind -> Text
+openRevisionKindName kind = case kind of
+    NormalRevision -> "normal revision"
+    IncompleteMigration key -> "incomplete migration " <> key
+    CompletedMigration key -> "completed migration " <> key
+
+prospectiveKey :: InstalledProject projectId -> StableMigrationKey -> Either ModeError RecordKey
+prospectiveKey project key =
+    storeKey
+        ( "prospective."
+            <> installedProjectName project
+            <> "."
+            <> stableMigrationKeyText key
+        )
 
 -- Composite root brackets --------------------------------------------------------------
 
@@ -1927,6 +2773,57 @@ checkHarnessCloseRoot project (HarnessCloseRoot _ rootRun rootProject rootEpoch)
                     )
             | otherwise -> Right ()
 
+{- | Resume a close that was already authorized and never finished.
+
+'authorizeHarnessClose' persists the Closing epoch **before** the terminal
+projection runs, exactly so a crash between the two is resumable rather than
+indistinguishable from a live run. This is that resumption, and it is the only
+route to a 'HarnessCloseAuthorization' that does not persist a new epoch.
+
+It cannot invent a close. The durable disposition is re-read inside the caller's
+entry and must be exactly the @Closing@ epoch the recovery classification
+observed; an Open or acknowledged record — a run that never reached its close —
+is refused. It also needs no fresh 'VerifiedAllSessionsClosed': the close it
+resumes already consumed one, and manufacturing a second proof for a dead run's
+sessions is precisely what recovery must not do.
+
+The close root is the recovery's, so what finishes the close is the reopening's
+own authority under its fresh broker generation.
+-}
+resumeHarnessClose ::
+    ProtectedSession session ->
+    InstalledProject projectId ->
+    HarnessCloseRoot projectId runId brokerGeneration ->
+    ProjectModeLease projectId brokerGeneration ->
+    BoundRunLease (Harness projectId runId) specDigest planDigest brokerGeneration ->
+    -- | the epoch the abandoned run persisted; must be positive
+    Word64 ->
+    IO (Either ModeError (HarnessCloseAuthorization projectId runId))
+resumeHarnessClose session project closeRoot modeLease bound epoch
+    | epoch == 0 =
+        pure (Left (ModeInvalidIdentity "a closing epoch must be positive"))
+    | otherwise = case checkHarnessCloseRoot project closeRoot modeLease run of
+        Left failure -> pure (Left failure)
+        Right () -> do
+            recorded <- readInvocationDisposition session project run
+            pure $ case recorded of
+                Left failure -> Left failure
+                Right (InvocationClosing persisted)
+                    | persisted == epoch ->
+                        Right (HarnessCloseAuthorization origin run epoch)
+                    | otherwise -> Left (ModeEpochMismatch persisted epoch)
+                Right InvocationOpen ->
+                    Left (ModeRecoveryRequired (runIdText run <> " has no persisted close to resume"))
+                Right (InvocationAcknowledged key) ->
+                    Left
+                        ( ModeClosureMismatch
+                            ("harness closing epoch " <> Text.pack (show epoch))
+                            ("production acknowledgment " <> invocationCloseKeyText key)
+                        )
+  where
+    run = boundRunLeaseRun bound
+    origin = harnessCloseRootOrigin closeRoot
+
 {- | Proof that a harness run reached terminal @ClosedProject@ and gave its mode
 back.
 -}
@@ -2120,7 +3017,7 @@ snapshot, the lease, the destroy root and the close root are pinned to /this/
 reopening: none of them can be mixed with a value from the live run or from a
 second reopening.
 -}
-data AbandonedHarnessRun projectId oldRunId specDigest planDigest brokerGeneration
+data AbandonedHarnessRun projectId oldRunId specDigest planDigest planId brokerGeneration
     = AbandonedHarnessRun
     { abandonedHarnessRunId :: RunId
     -- ^ the abandoned run this reopening belongs to
@@ -2138,15 +3035,29 @@ data AbandonedHarnessRun projectId oldRunId specDigest planDigest brokerGenerati
     -- ^ the exhaustive first branch: a persisted Closing epoch, or Open revision recovery
     , abandonedHarnessCloseRoot :: HarnessCloseRoot projectId oldRunId brokerGeneration
     -- ^ the narrow close authority, marked 'RecoveredHarnessClose'
+    , abandonedHarnessBroker :: BrokerEpoch brokerGeneration
+    -- ^ the fresh authority broker every retained record was rebound onto
+    , abandonedHarnessFencedPermits ::
+        OldPermitsFenced (Harness projectId oldRunId) planId
+    -- ^ the exact set of old permits this reopening superseded
+    , abandonedHarnessManifest ::
+        VerifiedSessionManifest (Harness projectId oldRunId) planId
+    -- ^ the paired complete session and operation sets
+    , abandonedHarnessInterpretation ::
+        InterpretedRecovery (Harness projectId oldRunId) planId
+    -- ^ what the recorded-session interpreter did to each of them
+    , abandonedHarnessAdmission ::
+        CurrentBrokerSessionAdmission (Harness projectId oldRunId) planId brokerGeneration
+    -- ^ the admission only both complete sets can mint
     }
 
 {- | A reopening whose generative indices are hidden, so the protected
 transaction that mints it can complete before the continuation runs.
 -}
 data SomeAbandonedHarnessRun projectId
-    = forall oldRunId specDigest planDigest brokerGeneration.
+    = forall oldRunId specDigest planDigest planId brokerGeneration.
         SomeAbandonedHarnessRun
-            (AbandonedHarnessRun projectId oldRunId specDigest planDigest brokerGeneration)
+            (AbandonedHarnessRun projectId oldRunId specDigest planDigest planId brokerGeneration)
 
 {- | Reopen one abandoned __bound__ harness run under a fresh broker generation.
 
@@ -2197,8 +3108,8 @@ withAbandonedHarnessRun ::
     InstalledProject projectId ->
     -- | the bound lease the sweep minted; an unbound one is refused
     VerifiedIncompleteRunLease projectId ->
-    ( forall oldRunId specDigest planDigest brokerGeneration.
-      AbandonedHarnessRun projectId oldRunId specDigest planDigest brokerGeneration ->
+    ( forall oldRunId specDigest planDigest planId brokerGeneration.
+      AbandonedHarnessRun projectId oldRunId specDigest planDigest planId brokerGeneration ->
       IO (Either ModeError result)
     ) ->
     IO (Either ModeError result)
@@ -2230,7 +3141,7 @@ withAbandonedHarnessRun store project lease use = case incompleteRunLeaseKind le
                     Left failure -> pure (Left failure)
                     Right recovery ->
                         verifyPlanSnapshot session project run $ \snapshot ->
-                            case checkSnapshotDigests snapshot recordedSpec recordedPlan of
+                            case checkSnapshotDigests recovery snapshot recordedSpec recordedPlan of
                                 Left failure -> pure (Left failure)
                                 Right () -> do
                                     operator <- verifyOperatorAuthorization session
@@ -2244,53 +3155,155 @@ withAbandonedHarnessRun store project lease use = case incompleteRunLeaseKind le
                                                     authorized
                                                     epoch
                                                     ProjectDestroy
-                                                    (retain session snapshot recovery epoch)
+                                                    ( retain
+                                                        session
+                                                        snapshot
+                                                        (recordedSpec, recordedPlan)
+                                                        recovery
+                                                        epoch
+                                                    )
 
     retain ::
         ProtectedSession session ->
         VerifiedPlanSnapshot projectId specDigest planDigest ->
+        (Text, Text) ->
         HarnessBoundRecovery projectId ->
         BrokerEpoch brokerGeneration ->
         RootInvocationAuthority (Harness projectId oldRunId) brokerGeneration VerbDestroy ->
         IO (Either ModeError (SomeAbandonedHarnessRun projectId))
-    retain session snapshot recovery epoch root = do
+    retain session snapshot recordedDigests recovery epoch root = do
         retained <- retainAbandonedHarnessMode session project run epoch
         case retained of
             Left failure -> pure (Left failure)
             Right modeLease -> do
-                rebound <- retainBoundLeaseGeneration session project snapshot epoch
-                pure $ case rebound of
-                    Left failure -> Left failure
-                    Right bound ->
-                        Right
-                            ( SomeAbandonedHarnessRun
-                                AbandonedHarnessRun
-                                    { abandonedHarnessRunId = run
-                                    , abandonedHarnessSnapshot = snapshot
-                                    , abandonedHarnessBoundLease = bound
-                                    , abandonedHarnessModeLease = modeLease
-                                    , abandonedHarnessDestroyRoot = root
-                                    , abandonedHarnessRecovery = recovery
-                                    , abandonedHarnessCloseRoot =
-                                        HarnessCloseRoot
-                                            RecoveredHarnessClose
-                                            run
-                                            (installedProjectName project)
-                                            epoch
-                                    }
-                            )
+                rebound <-
+                    retainBoundLeaseGeneration session project snapshot recordedDigests epoch
+                case rebound of
+                    Left failure -> pure (Left failure)
+                    Right bound -> do
+                        admitted <- readmitSessions session snapshot epoch
+                        pure $ case admitted of
+                            Left failure -> Left failure
+                            Right (fenced, manifest, interpreted, admission) ->
+                                Right
+                                    ( SomeAbandonedHarnessRun
+                                        AbandonedHarnessRun
+                                            { abandonedHarnessRunId = run
+                                            , abandonedHarnessSnapshot = snapshot
+                                            , abandonedHarnessBoundLease = bound
+                                            , abandonedHarnessModeLease = modeLease
+                                            , abandonedHarnessDestroyRoot = root
+                                            , abandonedHarnessRecovery = recovery
+                                            , abandonedHarnessCloseRoot =
+                                                HarnessCloseRoot
+                                                    RecoveredHarnessClose
+                                                    run
+                                                    (installedProjectName project)
+                                                    epoch
+                                            , abandonedHarnessBroker = epoch
+                                            , abandonedHarnessFencedPermits = fenced
+                                            , abandonedHarnessManifest = manifest
+                                            , abandonedHarnessInterpretation = interpreted
+                                            , abandonedHarnessAdmission = admission
+                                            }
+                                    )
 
+    {- Fence the dead generation's permits, verify the paired complete session
+    and operation sets, run the recorded-session interpreter over them, and mint
+    the admission the three of them together authorize.
+
+    The order is § EE's and each step depends on the one before it: the fence
+    must be rotated before the interpreter settles anything, because the phase it
+    writes records the epoch under which the operation was abandoned; the
+    manifest must be verified before the interpreter runs, because the
+    interpreter drives the manifest's members rather than re-enumerating; and the
+    admission is minted last from all three, so no partial evidence can produce
+    one.
+
+    All four run inside the reopening's own protected entry, so a concurrent
+    holder cannot open a session between the interpretation and the admission. -}
+    readmitSessions ::
+        forall session oldRunId planId brokerGeneration specDigest planDigest.
+        ProtectedSession session ->
+        VerifiedPlanSnapshot projectId specDigest planDigest ->
+        BrokerEpoch brokerGeneration ->
+        IO
+            ( Either
+                ModeError
+                ( OldPermitsFenced (Harness projectId oldRunId) planId
+                , VerifiedSessionManifest (Harness projectId oldRunId) planId
+                , InterpretedRecovery (Harness projectId oldRunId) planId
+                , CurrentBrokerSessionAdmission (Harness projectId oldRunId) planId brokerGeneration
+                )
+            )
+    readmitSessions session snapshot epoch = do
+        let planDigest = planSnapshotPlanDigest snapshot
+        fenced <- fenceOldPermits session planDigest
+        case fenced of
+            Left failure -> pure (Left (ModeSessionFailure failure))
+            Right fencedPermits -> do
+                manifested <- verifySessionManifest session planDigest
+                case manifested of
+                    Left failure -> pure (Left (ModeSessionFailure failure))
+                    Right manifest -> do
+                        journal <- openProjectJournal session planDigest
+                        case journal of
+                            Left failure -> pure (Left (ModeSessionFailure failure))
+                            Right (permit :: ProjectPermit (Harness projectId oldRunId) planId) -> do
+                                driven <-
+                                    interpretRecordedSessions
+                                        session
+                                        epoch
+                                        manifest
+                                        fencedPermits
+                                        permit
+                                case driven of
+                                    Left failure -> pure (Left (ModeSessionFailure failure))
+                                    Right (interpreted, _spent) -> do
+                                        admitted <-
+                                            admitCurrentBroker
+                                                session
+                                                epoch
+                                                manifest
+                                                fencedPermits
+                                                interpreted
+                                        pure $ case admitted of
+                                            Left failure -> Left (ModeSessionFailure failure)
+                                            Right admission ->
+                                                Right
+                                                    ( fencedPermits
+                                                    , manifest
+                                                    , interpreted
+                                                    , admission
+                                                    )
+
+    {- The lease and the persisted snapshot must name the same revision — except
+    across a committed activation barrier, where they are *supposed* to differ.
+
+    A completed migration bound the lease to the candidate and could not rewrite
+    the immutable snapshot record, so the divergence there is the evidence that
+    the barrier was crossed rather than a substitution. The snapshot the
+    reopening yields stays the old revision's, which is what teardown of the
+    superseded revision needs. -}
     checkSnapshotDigests ::
+        HarnessBoundRecovery projectId ->
         VerifiedPlanSnapshot projectId specDigest planDigest ->
         Text ->
         Text ->
         Either ModeError ()
-    checkSnapshotDigests snapshot recordedSpec recordedPlan
+    checkSnapshotDigests recovery snapshot recordedSpec recordedPlan
+        | crossedActivationBarrier recovery = Right ()
         | planSnapshotSpecDigest snapshot /= recordedSpec =
             Left (ModeSnapshotMismatch recordedSpec (planSnapshotSpecDigest snapshot))
         | planSnapshotPlanDigest snapshot /= recordedPlan =
             Left (ModeSnapshotMismatch recordedPlan (planSnapshotPlanDigest snapshot))
         | otherwise = Right ()
+
+    crossedActivationBarrier recovery = case recovery of
+        HarnessOpenRevisionRecovery revision -> case openRevisionKind revision of
+            CompletedMigration _ -> True
+            _ -> False
+        HarnessPersistedClosing _ -> False
 
 {- | Recheck that the lease is still recorded @bound@ to the digests the sweep
 observed. The sweep's observation was taken at an earlier store version, so
@@ -2369,13 +3382,28 @@ The digests are the /verified snapshot's/, not a caller's, so this cannot rebind
 a lease to a different plan: it writes back the same two digests it read out of
 the durable snapshot record and refuses if the lease disagrees with them.
 -}
+{- | Retain the already-bound lease onto the fresh generation.
+
+The digests it retains are the ones the __lease record__ holds, not the
+snapshot's, and the two are allowed to differ in exactly one case: a completed
+migration. Its activation compare-and-swap bound the lease to the candidate
+while the run's persisted snapshot still names the superseded revision — the
+snapshot record is immutable by construction, so the activation could not have
+rewritten it even in principle. Comparing the lease against the snapshot there
+would refuse a correctly-activated run for the one reason that is not a fault.
+
+Every other divergence is still a substitution and still refuses, because the
+caller passes the digests it expects and this compares against them.
+-}
 retainBoundLeaseGeneration ::
     ProtectedSession session ->
     InstalledProject projectId ->
     VerifiedPlanSnapshot projectId specDigest planDigest ->
+    -- | the digests the lease record must currently hold
+    (Text, Text) ->
     BrokerEpoch brokerGeneration ->
     IO (Either ModeError (BoundRunLease scope specDigest planDigest brokerGeneration))
-retainBoundLeaseGeneration session project snapshot epoch =
+retainBoundLeaseGeneration session project snapshot (spec, plan) epoch =
     withRecordKey (leaseKey project run) $ \key -> do
         observed <- readProtectedRecord session key
         case observed of
@@ -2400,8 +3428,6 @@ retainBoundLeaseGeneration session project snapshot epoch =
                     pure (Left (ModeLeaseNotBindable (runIdText run) (leaseStateName other)))
   where
     run = planSnapshotRun snapshot
-    spec = planSnapshotSpecDigest snapshot
-    plan = planSnapshotPlanDigest snapshot
 
 {- | Release the project-wide mode when it is held by this exact abandoned run.
 A Production mode, or another run's mode, is left untouched.
@@ -2423,24 +3449,35 @@ releaseModeIfRun session project run = do
 data LeaseState
     = LeaseUnbound Word64
     | LeaseBound Word64 Text Text
+    | -- | The old revision, frozen by a migration under one stable key. The
+      -- candidate's digests travel with it, so the activation compare-and-swap
+      -- reads which revision it is switching to off the frozen record rather
+      -- than off a caller's argument.
+      LeaseFrozen Word64 Text Text Text Text Text
     | LeaseClosed Word64
     deriving (Eq, Show)
 
 leaseStateName :: LeaseState -> Text
 leaseStateName (LeaseUnbound _) = "unbound"
 leaseStateName LeaseBound{} = "bound"
+leaseStateName LeaseFrozen{} = "frozen"
 leaseStateName (LeaseClosed _) = "closed"
 
 encodeLease :: LeaseState -> ByteString
 encodeLease state = case state of
     LeaseUnbound epoch -> encodeFields ["unbound", showWord epoch]
     LeaseBound epoch spec plan -> encodeFields ["bound", showWord epoch, spec, plan]
+    LeaseFrozen epoch key oldSpec oldPlan newSpec newPlan ->
+        encodeFields ["frozen", showWord epoch, key, oldSpec, oldPlan, newSpec, newPlan]
     LeaseClosed epoch -> encodeFields ["closed", showWord epoch]
 
 decodeLease :: ByteString -> Maybe LeaseState
 decodeLease raw = case decodeFields raw of
     ["unbound", epoch] -> LeaseUnbound <$> readWord epoch
     ["bound", epoch, spec, plan] -> (\value -> LeaseBound value spec plan) <$> readWord epoch
+    ["frozen", epoch, key, oldSpec, oldPlan, newSpec, newPlan]
+        | not (Text.null key) ->
+            (\value -> LeaseFrozen value key oldSpec oldPlan newSpec newPlan) <$> readWord epoch
     ["closed", epoch] -> LeaseClosed <$> readWord epoch
     _ -> Nothing
 
@@ -2638,6 +3675,7 @@ closeLease session project run =
 leaseEpoch :: LeaseState -> Word64
 leaseEpoch (LeaseUnbound epoch) = epoch
 leaseEpoch (LeaseBound epoch _ _) = epoch
+leaseEpoch (LeaseFrozen epoch _ _ _ _ _) = epoch
 leaseEpoch (LeaseClosed epoch) = epoch
 
 {- | The incomplete leases the harness sweep may resolve: every one except the
@@ -2694,6 +3732,13 @@ incompleteLeases session project = do
                         pure (fmap (VerifiedIncompleteRunLease run (kindOf state) :) rest')
     kindOf (LeaseUnbound _) = IncompleteUnbound
     kindOf (LeaseBound _ spec plan) = IncompleteBound spec plan
+    -- A frozen lease reached a plan — the *old* one, which is the revision an
+    -- interrupted migration must be recovered against. Classifying it by the
+    -- old digests is what sends it down the bound branch, where the recorded
+    -- migration kind then selects which side of the activation barrier it is
+    -- on. Classifying it as unbound would let the sweep close it behind the
+    -- no-effect proof, discarding a revision that may hold real resources.
+    kindOf (LeaseFrozen _ _ oldSpec oldPlan _ _) = IncompleteBound oldSpec oldPlan
     kindOf (LeaseClosed _) = IncompleteUnbound
 
 sweptSetStillEmpty ::
@@ -2859,6 +3904,8 @@ data ModeError
     | -- | A recovery record belongs to the other lifecycle scope.
       ModeWrongRecoveryScope Text Text
     | ModeAuthorityFailure AuthorityError
+    | -- | The recorded-session interpreter, the manifest, or the fence set refused.
+      ModeSessionFailure SessionError
     | ModeStoreFailure ProtectedError
     deriving (Eq, Show)
 
@@ -2900,4 +3947,5 @@ modeErrorMessage failure = case failure of
     ModeWrongRecoveryScope scope observed ->
         scope <> " recovery cannot consume " <> observed
     ModeAuthorityFailure inner -> authorityErrorMessage inner
+    ModeSessionFailure inner -> Text.pack (sessionErrorMessage inner)
     ModeStoreFailure inner -> protectedErrorMessage inner

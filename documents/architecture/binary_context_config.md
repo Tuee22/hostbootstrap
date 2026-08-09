@@ -123,7 +123,18 @@ orchestration placement (`isOrchestrationPlacement` — a service, daemon, one-s
 hosts no chain), and `project down|destroy` additionally require the exact **root-kind/empty-parent**
 pair — `isRootFrame` plus `HostOrchestratorPlacement`. A forged leaf config that lists
 `ClusterLifecycleCommand` or `HostOrchestratorCommand` is therefore refused by its placement rather than
-believed. The [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
+believed.
+
+That root-only pair governs the **operator** entry to a teardown verb, and it is the whole of what is
+implemented today. The **target** adds the second entry the child-first unwind needs: a
+descent-initiated `down|destroy` runs in a nested frame, where the root-only pair correctly refuses it,
+and is admitted instead by verifying the recovery wire its parent minted for that exact edge. The two
+entries are two types rather than one command class asked to mean both, and a lifecycle verb names no
+command class as a source constant chosen per call site — which is why `project up`, uniform across
+orchestration frames, needs no such split while the teardown verbs do. The wire belongs to
+[the authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
+and the entries to
+[the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md). The [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
 owns that relation; the role-specific opaque command authorities minted by validated transitions are the
 [operator, root, and command authority phase](../../DEVELOPMENT_PLAN/phase-5-operator-root-and-command-authority.md)'s
 independent gate, which `project up|down|destroy` already enter at the root frame.

@@ -25,13 +25,14 @@ module HostBootstrap.Command (
 )
 where
 
-import Control.Exception (SomeException, fromException, mask)
+import Control.Exception (SomeException, displayException, fromException, mask)
 import Control.Exception.Safe (finally, try)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Control.Monad (unless, when)
 import Data.List (find, intercalate, isInfixOf)
 import qualified Data.Text as T
 import qualified HostBootstrap.Authority as Authority
-import HostBootstrap.Chain (renderChain, runChainFromFrame)
+import HostBootstrap.Chain (nextFrameAfter, renderChain, runChainFromFrame)
 import HostBootstrap.Cluster.Lifecycle (
     ClusterPlan,
     ClusterProfile (Production),
@@ -136,7 +137,12 @@ import HostBootstrap.Lifecycle.Mode (
     verifyPlanSnapshot,
     withHarnessLifecycleProfile,
  )
-import HostBootstrap.Lift (currentSelfRef)
+import HostBootstrap.Lift (
+    SelfRef,
+    currentSelfRef,
+    liftStdin,
+    liftSubcommandWithStdin,
+ )
 import HostBootstrap.ProjectRoot (
     CanonicalProjectRoot,
     canonicalProjectRootPath,
@@ -150,6 +156,7 @@ import HostBootstrap.Protected (
     withProtectedEntry,
  )
 import HostBootstrap.Reconcile (LifecyclePlan, lifecyclePlanDigest, withLifecyclePlan)
+import HostBootstrap.RoleLifecycle (RoleEffect, roleEffectName)
 import HostBootstrap.Service (
     FinalizedServiceRegistry,
     finalizedServiceVariantNames,
@@ -157,7 +164,14 @@ import HostBootstrap.Service (
     serviceRoleSchemaFamilies,
     withSelectedServiceRequest,
  )
-import HostBootstrap.Step (StepPlan, StepPlanError, isDeployKindStep, stepsForFrame)
+import HostBootstrap.Step (
+    StepPlan,
+    StepPlanError,
+    frameDescent,
+    frameId,
+    isDeployKindStep,
+    stepsForFrame,
+ )
 import qualified HostBootstrap.Step as Step
 import HostBootstrap.Substrate (detect)
 import qualified HostBootstrap.Teardown as Teardown
@@ -165,7 +179,7 @@ import Numeric.Natural (Natural)
 import Options.Applicative
 import System.Directory (doesFileExist, getCurrentDirectory, withCurrentDirectory)
 import System.Environment (getExecutablePath)
-import System.Exit (die)
+import System.Exit (ExitCode (ExitSuccess), die)
 import System.FilePath (takeDirectory, (</>))
 
 {- | The context-free @ensure@ reconciler library — the host-configuration
@@ -959,10 +973,145 @@ projectCommandGroup codec progName projectPlan initBuilder =
         IO ()
     reverseProjection plan root ctx cfg verb clusterEffect =
         withLifecyclePlan codec plan $ \lifecyclePlan -> do
+            self <- currentSelfRef ("/usr/local/bin/" ++ progName)
+            descended <- newIORef Nothing
             let projection = Teardown.teardownPlan lifecyclePlan verb
-            outcomes <- Teardown.runTeardownProjection projection coreManaged cfg
-            reportReverseOutcomes outcomes
+                current = Context.currentFrame ctx
+            case Teardown.openTeardownForest lifecyclePlan projection of
+                Left err -> die ("project teardown: " ++ Teardown.teardownErrorMessage err)
+                Right opened -> do
+                    {- The forest drives itself: the child-first ordering and the
+                    destroy-only pre-descent reachability step are its, not this
+                    call site's. This supplies only the effect for one offered
+                    node and the row for its outcome. -}
+                    driven <-
+                        Teardown.driveTeardownForest
+                            opened
+                            ( \point ->
+                                Teardown.withTeardownAuthorization
+                                    point
+                                    (\_ -> descendOnce self descended current)
+                                    (\_settled cursor -> ordinaryReverse self descended current cursor)
+                            )
+                            announce
+                    case driven of
+                        Left outstanding ->
+                            die
+                                ( "project teardown attempted every reverse step but "
+                                    ++ "these nodes did not settle:\n"
+                                    ++ unlines (map (("  - " ++) . T.unpack) outstanding)
+                                )
+                        -- Settled-destroy evidence is minted from the completed
+                        -- forest, never from the fact that the verb returned: a
+                        -- run that never visited a deeper frame's nodes has a
+                        -- forest that cannot complete, so it cannot mint it.
+                        Right completed ->
+                            case Teardown.settledDestroyEvidence projection completed of
+                                Nothing -> pure ()
+                                Just (Left err) ->
+                                    die ("project teardown: " ++ Teardown.teardownErrorMessage err)
+                                Just (Right settled) ->
+                                    putStrLn
+                                        ( "project teardown: settled "
+                                            ++ show (length (Teardown.destroySettledReleasedKeys settled))
+                                            ++ " nodes of plan "
+                                            ++ T.unpack (Teardown.destroySettledPlanDigest settled)
+                                        )
       where
+        {- One ordinary node's attempt.
+
+        A node of a deeper frame is settled by the one recursive descent: the
+        child binary is the only one that can see that frame's resources, so this
+        binary invokes its own verb there rather than releasing them implicitly
+        with their parent. A node of *this* frame runs the reverse its own
+        forward step declared, or the core adapter when the node is core-managed
+        and declared none.
+        -}
+        ordinaryReverse ::
+            forall cursorScope cursorPlanId.
+            SelfRef ->
+            IORef (Maybe Step.TeardownOutcome) ->
+            T.Text ->
+            Teardown.TeardownCursor cursorScope cursorPlanId verb ->
+            IO Step.TeardownOutcome
+        ordinaryReverse self descended current cursor
+            | Teardown.teardownCursorFrame cursor /= current =
+                descendOnce self descended current
+            | otherwise =
+                case (Teardown.teardownCursorRun cursor, Teardown.teardownCursorPolicy cursor) of
+                    (Just declared, _) ->
+                        guardedReverse (declared cfg (Teardown.teardownCursorAction cursor))
+                    (Nothing, Step.CoreManagedReverse) ->
+                        guardedReverse
+                            ( coreManaged
+                                (Teardown.teardownCursorKey cursor)
+                                (Teardown.teardownCursorAction cursor)
+                            )
+                    (Nothing, _) ->
+                        pure
+                            ( Step.TeardownForeignRetained
+                                "the node acquired nothing this frame must release"
+                            )
+
+        {- Invoke this verb in the next frame, at most once per run.
+
+        The descent context is the plan's own — the same node that announced the
+        child on the way down — so the reverse crosses exactly the boundary the
+        forward pass crossed. Every node of every deeper frame is settled by that
+        one invocation, because the child binary runs the same forest over its own
+        segment and recurses further itself.
+        -}
+        descendOnce self descended current = do
+            already <- readIORef descended
+            case already of
+                Just outcome -> pure outcome
+                Nothing -> do
+                    outcome <- runDescent self current
+                    writeIORef descended (Just outcome)
+                    pure outcome
+
+        runDescent self current = case nextFrameAfter (T.unpack current) plan of
+            Nothing ->
+                pure
+                    ( Step.TeardownForeignRetained
+                        "this frame is the innermost one the chain enters"
+                    )
+            Just next -> case frameDescent (T.unpack current) plan of
+                Nothing ->
+                    pure
+                        ( Step.TeardownFailed
+                            ( "frame "
+                                ++ T.unpack current
+                                ++ " declares no descent into "
+                                ++ frameId next
+                            )
+                        )
+                Just nextCtx -> do
+                    putStrLn
+                        ( "project teardown: descending into "
+                            ++ frameId next
+                            ++ " to run its own reverse steps first"
+                        )
+                    result <-
+                        liftSubcommandWithStdin
+                            cfg
+                            self
+                            nextCtx
+                            ["project", T.unpack (Teardown.teardownVerbName verb)]
+                            (liftStdin nextCtx)
+                    case result of
+                        Right (ExitSuccess, out, _) ->
+                            putStr out >> pure Step.TeardownReleased
+                        Right (_, out, err) ->
+                            putStr out >> pure (Step.TeardownFailed err)
+                        Left err -> pure (Step.TeardownFailed err)
+
+        guardedReverse effect = do
+            attempted <- try effect
+            pure $ case attempted of
+                Right outcome -> outcome
+                Left exc -> Step.TeardownFailed (displayException (exc :: SomeException))
+
         {- The one resource the core releases itself is the kind cluster, and
         only from the frame that owns the `deploy-kind` step: the kube tools live
         in the cluster-bearing project container, not on every host frame. A
@@ -992,24 +1141,17 @@ projectCommandGroup codec progName projectPlan initBuilder =
                         )
             _ -> pure (Step.TeardownForeignRetained "released with the cluster that contains it")
 
-    {- Report every node of the reverse projection, then fail if any attempt
-    failed. Independent nodes all get their turn first (§ Y): a failure or a
-    refusal skips only its own resource. -}
-    reportReverseOutcomes outcomes = do
-        mapM_ announce outcomes
-        let failures = [T.unpack key ++ ": " ++ detail | (key, Just (Step.TeardownFailed detail)) <- outcomes]
-        unless (null failures) $
-            die ("project teardown attempted every reverse step but failed:\n" ++ unlines (map ("  - " ++) failures))
-      where
-        announce (key, outcome) = case outcome of
-            Nothing -> pure ()
-            Just Step.TeardownReleased -> putStrLn ("project teardown: released " ++ T.unpack key)
-            Just (Step.TeardownForeignRetained detail) ->
-                putStrLn ("project teardown: retained " ++ T.unpack key ++ " — " ++ detail)
-            Just (Step.TeardownRefused detail) ->
-                putStrLn ("project teardown: refused " ++ T.unpack key ++ " — " ++ detail)
-            Just (Step.TeardownFailed detail) ->
-                putStrLn ("project teardown: FAILED " ++ T.unpack key ++ " — " ++ detail)
+    {- One structured row per node of the reverse projection (§ Y). The five
+    outcomes stay distinct because an operator resolves them differently, and
+    because the test harness's report card consumes exactly these rows. -}
+    announce key outcome = case outcome of
+        Step.TeardownReleased -> putStrLn ("project teardown: released " ++ T.unpack key)
+        Step.TeardownForeignRetained detail ->
+            putStrLn ("project teardown: retained " ++ T.unpack key ++ " — " ++ detail)
+        Step.TeardownRefused detail ->
+            putStrLn ("project teardown: refused " ++ T.unpack key ++ " — " ++ detail)
+        Step.TeardownFailed detail ->
+            putStrLn ("project teardown: FAILED " ++ T.unpack key ++ " — " ++ detail)
 
     {- Run a lifecycle verb behind the independent root gate (the recursive-lifecycle-command phase).
 
@@ -1182,7 +1324,7 @@ serviceCommandGroup codec progName registry initBuilder =
                         ++ show (Context.contextKind serviceCtx)
                         ++ " is not a service leaf; expected ClusterService or Daemon"
                     )
-            (identity, serviceAction) <-
+            (identity, declared, serviceAction) <-
                 either
                     (die . ("service run: " ++))
                     pure
@@ -1191,10 +1333,32 @@ serviceCommandGroup codec progName registry initBuilder =
                         (inspectLocalContext serviceCtx)
                         projectCfg
                         registry
-                        (\selectedIdentity _ _ serviceEffect -> (selectedIdentity, serviceEffect))
+                        ( \selectedIdentity _ _ declaredEffects serviceEffect ->
+                            (selectedIdentity, declaredEffects, serviceEffect)
+                        )
                     )
             putStrLn ("service run: selected " ++ serviceIdText identity)
+            -- The row the registry fixed for this variant. Once the deploy step
+            -- installs a signed activation, this is exactly the row
+            -- 'authorizeServiceEffects' compares against the placement's signed
+            -- ceiling; printing it now means the declaration is observable
+            -- before the authorization that will consume it exists.
+            putStrLn
+                ( "service run: declared effects "
+                    ++ renderDeclaredEffects declared
+                )
             serviceAction
+
+{- | Render a declared effect row for the operator.
+
+An empty row is spelled out rather than printed as @[]@: "this role declares no
+effects" is a real and meaningful declaration — it is the one that drops its
+ceiling's lease requirement — and it should not read like missing output.
+-}
+renderDeclaredEffects :: [RoleEffect] -> String
+renderDeclaredEffects [] = "(none)"
+renderDeclaredEffects effects =
+    intercalate ", " (map (T.unpack . roleEffectName) effects)
 
 hostConfig :: IO HostConfig
 hostConfig = do

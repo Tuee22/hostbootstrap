@@ -102,6 +102,41 @@ module HostBootstrap.Lifecycle.Session (
     recoveredContinuableCount,
     recoverAbandonedSessions,
 
+    -- * The old-permit fence set
+    OldPermitsFenced,
+    oldPermitsFencedPlanDigest,
+    oldPermitsFencedFrom,
+    oldPermitsFencedTo,
+    oldPermitsFencedOperations,
+    fenceOldPermits,
+
+    -- * The session\/operation manifest
+    ManifestSession,
+    manifestSessionId,
+    manifestSessionIsOpen,
+    manifestSessionOperations,
+    VerifiedSessionManifest,
+    manifestPlanDigest,
+    manifestSessions,
+    manifestOperationCount,
+    verifySessionManifest,
+
+    -- * The recorded-session interpreter
+    RecoveredOperation (..),
+    InterpretedRecovery,
+    interpretedRecoveryPlanDigest,
+    interpretedRecoverySessions,
+    interpretedRecoveryOperations,
+    interpretRecordedSessions,
+
+    -- * Current-broker admission
+    CurrentBrokerSessionAdmission,
+    admissionPlanDigest,
+    admissionBrokerGeneration,
+    admissionSessionCount,
+    admissionOperationCount,
+    admitCurrentBroker,
+
     -- * Failures
     SessionError (..),
     sessionErrorMessage,
@@ -1233,6 +1268,14 @@ terminalPhases =
       -- three it was is carried by the interpreter's row, not by the record,
       -- because the record's only job here is the recovery classification.
       "StepObservedTerminal"
+    , -- What the recorded-session interpreter writes over an operation whose
+      -- owning run was abandoned. It is terminal rather than continuable
+      -- because the run that registered it is gone: a successor is a different
+      -- run with its own session, and letting it inherit this operation's
+      -- authority is exactly the replay the fence set exists to prevent. It is
+      -- distinct from the other terminal phases so the journal still says *why*
+      -- the operation stopped.
+      "RecoveryAbandoned"
     , "ObservedForeign"
     , "TeardownObservedForeign"
     , "AdoptionObservedForeign"
@@ -1354,6 +1397,647 @@ classifySessionOperations session planDigest sid = do
                                 )
                         Continuable -> Right (acc + 1)
                         _ -> Right acc
+
+-- ---------------------------------------------------------------------------
+-- Abandoned-run recovery admission
+
+{- | The exact set of permits the old broker generation could still be holding,
+proved fenced out.
+
+Its constructor is private and it carries the /enumerated/ operation keys rather
+than a count, because § EE requires recovery to consume "the exact old-permit
+fence set in a protected exact-set fold". A caller cannot present a set it chose:
+'fenceOldPermits' reads the set out of the store and rotates the fence in the
+same protected entry, so the set named here is exactly the set the rotation
+superseded.
+
+The two epochs are both retained. @from@ is what a delayed permit would carry and
+@to@ is what the prepare gate will now demand, so the proof states the window it
+closed instead of asserting that one was closed.
+-}
+data OldPermitsFenced scope planId
+    = OldPermitsFenced Text Word64 Word64 [Text]
+
+instance Show (OldPermitsFenced scope planId) where
+    show (OldPermitsFenced plan from to keys) =
+        "OldPermitsFenced "
+            <> show plan
+            <> " "
+            <> show from
+            <> " -> "
+            <> show to
+            <> " "
+            <> show keys
+
+-- | The plan digest this fencing was taken over.
+oldPermitsFencedPlanDigest :: OldPermitsFenced scope planId -> Text
+oldPermitsFencedPlanDigest (OldPermitsFenced plan _ _ _) = plan
+
+-- | The superseded epoch — what a delayed old permit carries.
+oldPermitsFencedFrom :: OldPermitsFenced scope planId -> Word64
+oldPermitsFencedFrom (OldPermitsFenced _ from _ _) = from
+
+-- | The epoch the prepare gate now demands.
+oldPermitsFencedTo :: OldPermitsFenced scope planId -> Word64
+oldPermitsFencedTo (OldPermitsFenced _ _ to _) = to
+
+{- | The exact operation keys that were still able to receive authority under the
+superseded epoch, in sorted order.
+-}
+oldPermitsFencedOperations :: OldPermitsFenced scope planId -> [Text]
+oldPermitsFencedOperations (OldPermitsFenced _ _ _ keys) = keys
+
+{- | Fence out every permit the abandoned generation could still be holding.
+
+The order is the whole of the guarantee:
+
+1. the fence protocol is /settled/ first. A run killed between proposing an epoch
+   and observing it leaves @FenceIntentRecorded@ or @FenceOutcomeUnknown@, and
+   § EE names that "an explicit recovery state" whose stable protocol recovery
+   completes idempotently rather than proposing a fresh epoch beside it.
+   'establishInitialFence' is exactly that completion: it resumes the persisted
+   proposal, and only an absent record starts at 1;
+2. the outstanding set is enumerated /before/ the rotation, so it is the set
+   issued under the epoch being superseded rather than whatever survives it;
+3. only then is the fence rotated. A permit minted under @from@ now fails
+   'withPreparedGate''s equality check against the live epoch, so a delayed
+   backend call from the dead run cannot land as though it were current.
+
+An operation already at a settled or terminal phase is not a member: it holds no
+authority to fence. The membership test is 'classifyRecordedPhase', so the set
+here and the set the prepare gate would admit cannot drift apart.
+-}
+fenceOldPermits ::
+    ProtectedSession session ->
+    -- | plan digest
+    Text ->
+    IO (Either SessionError (OldPermitsFenced scope planId))
+fenceOldPermits session planDigest = do
+    settled <- establishInitialFence session planDigest 1
+    case settled of
+        Left failure -> pure (Left failure)
+        Right (FenceEpoch from) -> do
+            outstanding <- outstandingOperationKeys session planDigest
+            case outstanding of
+                Left failure -> pure (Left failure)
+                Right keys -> do
+                    rotated <- rotateFence session planDigest (FenceEpoch from :: FenceEpoch scope planId)
+                    pure $ case rotated of
+                        Left failure -> Left failure
+                        Right (FenceEpoch to) -> Right (OldPermitsFenced planDigest from to keys)
+
+{- | Every operation record of this plan whose recorded phase can still receive
+effect authority, named by its own operation key.
+
+This walks the store's own key space rather than any session's declared
+membership: an operation whose session record was lost is still an outstanding
+permit, and a fence set derived from membership would silently omit it.
+-}
+outstandingOperationKeys ::
+    ProtectedSession session ->
+    Text ->
+    IO (Either SessionError [Text])
+outstandingOperationKeys session planDigest = do
+    enumerated <- enumerateOperationRecords session planDigest
+    pure (fmap (sort . outstanding) enumerated)
+  where
+    outstanding records =
+        [opKey | (disposition, opKey, _) <- records, holdsAuthority disposition]
+
+    holdsAuthority disposition = case disposition of
+        Settled -> False
+        TerminalDisposition -> False
+        _ -> True
+
+{- | Every operation record of this plan, as
+@(disposition, operationKey, sessionId)@ triples read out of the store's key
+space.
+-}
+enumerateOperationRecords ::
+    ProtectedSession session ->
+    Text ->
+    IO (Either SessionError [(OperationDisposition, Text, Text)])
+enumerateOperationRecords session planDigest = do
+    listed <- listProtectedRecords session
+    case (listed, operationKeyNamespace planDigest) of
+        (Left failure, _) -> pure (Left (SessionStoreFailure failure))
+        (_, Left failure) -> pure (Left failure)
+        (Right keys, Right namespace) ->
+            foldM step (Right []) [raw | raw <- map recordKeyText keys, namespace `Text.isPrefixOf` raw]
+      where
+        step (Left failure) _ = pure (Left failure)
+        step (Right acc) raw = do
+            observed <- readOperationRecordAt session raw
+            pure $ case observed of
+                Left failure -> Left failure
+                Right Nothing -> Right acc
+                Right (Just (disposition, opKey, sid)) ->
+                    Right ((disposition, opKey, sid) : acc)
+
+{- | The @op.\<digest\>.@ prefix every one of this plan's operation records sits
+under.
+-}
+operationKeyNamespace :: Text -> Either SessionError Text
+operationKeyNamespace planDigest = do
+    digest <- recordName planDigest
+    pure ("op." <> digest <> ".")
+
+{- | Read one operation record by its raw store key, recovering the session and
+operation components from the key itself.
+
+An operation key is @op.\<digest\>.\<session\>.\<operation\>@, so the two
+components are the last two segments. A key that does not have them is not an
+operation record this plan owns and is skipped rather than guessed at.
+-}
+readOperationRecordAt ::
+    ProtectedSession session ->
+    Text ->
+    IO (Either SessionError (Maybe (OperationDisposition, Text, Text)))
+readOperationRecordAt session raw = case splitOperationKey raw of
+    Nothing -> pure (Right Nothing)
+    Just (sid, opKey) -> case keyFor raw of
+        Left failure -> pure (Left failure)
+        Right key -> do
+            observed <- readTransactionRecord session key
+            pure $ case observed of
+                Left failure -> Left (transactionFailure failure)
+                Right Nothing -> Right Nothing
+                Right (Just record) ->
+                    Right
+                        ( Just
+                            ( classifyRecordedPhase (phaseTextOf (transactionRecordPayload record))
+                            , opKey
+                            , sid
+                            )
+                        )
+
+{- | Split @op.\<digest\>.\<session\>.\<operation\>@ into its session and
+operation identities.
+
+Both components come back through 'recordIdentity', so a namespaced record name
+and the identity it denotes agree with what 'operationKeyFor' would have built.
+-}
+splitOperationKey :: Text -> Maybe (Text, Text)
+splitOperationKey raw = case reverse (Text.splitOn "." raw) of
+    (opKey : sid : _rest@(_ : _ : _)) -> Just (recordIdentity sid, recordIdentity opKey)
+    _ -> Nothing
+
+{- | One session as the manifest observed it, with the operation set the /store/
+holds for it rather than the set the session record claims.
+-}
+data ManifestSession = ManifestSession
+    { manifestSessionId :: SessionId
+    , manifestSessionIsOpen :: Bool
+    , manifestSessionOperations :: [Text]
+    }
+    deriving (Eq, Show)
+
+{- | A manifest pairing the plan's independently enumerated complete session set
+with its independently enumerated complete operation set.
+
+"Independently" is the load-bearing word. The session set comes from the
+@session.\<digest\>.@ key space and the operation set from the
+@op.\<digest\>.@ key space; neither is derived from the other. The pairing is
+then /checked/ rather than assumed, which is what makes a wrong membership a
+refusal instead of an unnoticed divergence.
+
+A zero-operation Open session is a required member (§ EE) — it is precisely what
+a run killed immediately after 'openOperationSession' leaves behind, and a
+manifest that dropped it would let the next admission believe the plan had no
+outstanding session.
+-}
+data VerifiedSessionManifest scope planId
+    = VerifiedSessionManifest Text [ManifestSession]
+
+instance Show (VerifiedSessionManifest scope planId) where
+    show (VerifiedSessionManifest plan sessions) =
+        "VerifiedSessionManifest " <> show plan <> " " <> show (length sessions)
+
+-- | The plan digest this manifest was taken over.
+manifestPlanDigest :: VerifiedSessionManifest scope planId -> Text
+manifestPlanDigest (VerifiedSessionManifest plan _) = plan
+
+-- | Every session of the plan, in sorted identity order.
+manifestSessions :: VerifiedSessionManifest scope planId -> [ManifestSession]
+manifestSessions (VerifiedSessionManifest _ sessions) = sessions
+
+-- | How many operations the paired complete operation set holds.
+manifestOperationCount :: VerifiedSessionManifest scope planId -> Int
+manifestOperationCount = sum . map (length . manifestSessionOperations) . manifestSessions
+
+{- | Verify the manifest, refusing every way the two sets can fail to pair.
+
+The refusals are exactly § EE's: a missing record, a duplicate record, and a
+wrong membership. Concretely:
+
+* an operation record naming a session with no session record is
+  'SessionManifestOrphanOperation' — the operation exists but nothing owns it,
+  so no admission may be minted over it;
+* two store keys resolving to one session identity is
+  'SessionManifestDuplicateSession'. Record names are namespaced, so this needs
+  two differently-spelled keys denoting the same identity; it is checked rather
+  than assumed impossible because the pairing's correctness rests on the session
+  set being a set;
+* a session whose record declares a membership different from the operation
+  records the store actually holds is 'SessionManifestMembershipMismatch'. The
+  enumerated set wins as the truth and the declared one is reported beside it,
+  because the declaration is what a killed writer can leave stale.
+
+A session record that predates exact membership declares none; that is not a
+mismatch, and its enumerated operations are simply adopted.
+-}
+verifySessionManifest ::
+    ProtectedSession session ->
+    -- | plan digest
+    Text ->
+    IO (Either SessionError (VerifiedSessionManifest scope planId))
+verifySessionManifest session planDigest = do
+    coordinator <- ensureCoordinator session planDigest
+    case coordinator of
+        Left failure -> pure (Left failure)
+        Right _ -> do
+            listed <- listProtectedRecords session
+            case (listed, sessionKeyPrefixFor planDigest) of
+                (Left failure, _) -> pure (Left (SessionStoreFailure failure))
+                (_, Left failure) -> pure (Left failure)
+                (Right keys, Right prefix) -> do
+                    let identities =
+                            [ recordIdentity (Text.drop (Text.length prefix) raw)
+                            | raw <- map recordKeyText keys
+                            , prefix `Text.isPrefixOf` raw
+                            ]
+                    case firstDuplicate (sort identities) of
+                        Just repeated ->
+                            pure (Left (SessionManifestDuplicateSession (SessionId repeated)))
+                        Nothing -> do
+                            enumerated <- enumerateOperationRecords session planDigest
+                            case enumerated of
+                                Left failure -> pure (Left failure)
+                                Right records ->
+                                    pairEnumeratedSets session planDigest (sort identities) records
+
+{- | Pair the enumerated session set with the enumerated operation set, or refuse.
+
+An operation whose owning session has no record is refused first: it is the one
+failure that cannot be repaired by reading further, because there is no session
+whose membership could be compared against it.
+-}
+pairEnumeratedSets ::
+    ProtectedSession session ->
+    Text ->
+    [Text] ->
+    [(OperationDisposition, Text, Text)] ->
+    IO (Either SessionError (VerifiedSessionManifest scope planId))
+pairEnumeratedSets session planDigest identities records =
+    case [(opKey, sid) | (_, opKey, sid) <- records, sid `notElem` identities] of
+        ((opKey, sid) : _) -> pure (Left (SessionManifestOrphanOperation opKey sid))
+        [] -> do
+            members <- foldM step (Right []) identities
+            pure (fmap (VerifiedSessionManifest planDigest . reverse) members)
+  where
+    step (Left failure) _ = pure (Left failure)
+    step (Right acc) sid = do
+        observed <- readSessionRecord session planDigest (SessionId sid)
+        pure $ case observed of
+            Left failure -> Left failure
+            Right Nothing -> Left (SessionManifestMissingRecord (SessionId sid))
+            Right (Just (_, state))
+                | sessionRecordHasExactMembership state
+                , sort (sessionRecordMembers state) /= enumeratedFor sid ->
+                    Left
+                        ( SessionManifestMembershipMismatch
+                            (SessionId sid)
+                            (Text.intercalate "," (sort (sessionRecordMembers state)))
+                            (Text.intercalate "," (enumeratedFor sid))
+                        )
+                | otherwise ->
+                    Right
+                        ( ManifestSession
+                            { manifestSessionId = SessionId sid
+                            , manifestSessionIsOpen = sessionRecordIsOpen state
+                            , manifestSessionOperations = enumeratedFor sid
+                            }
+                            : acc
+                        )
+
+    enumeratedFor sid = sort [opKey | (_, opKey, owner) <- records, owner == sid]
+
+-- | The first value that appears twice in a sorted list.
+firstDuplicate :: (Eq a) => [a] -> Maybe a
+firstDuplicate (x : y : rest)
+    | x == y = Just x
+    | otherwise = firstDuplicate (y : rest)
+firstDuplicate _ = Nothing
+
+{- | What the interpreter did with one recorded operation.
+
+Every constructor is a /handled/ outcome. The unknown phase is not one of them:
+it has no disposition the interpreter may act on, so it refuses the whole
+interpretation rather than appearing here as a fifth kind of success.
+-}
+data RecoveredOperation
+    = -- | already committed; left exactly as it was
+      OperationAlreadySettled Text Text
+    | -- | already terminal; left exactly as it was
+      OperationAlreadyTerminal Text Text
+    | -- | pre-call, so no effect was attempted; recorded terminal for this run
+      OperationAbandonedPreCall Text Text
+    | -- | observed-absent under the old fence; recorded terminal for this run
+      OperationAbandonedRetryable Text Text
+    deriving (Eq, Show)
+
+{- | The result of running the recorded-session interpreter over one plan.
+
+Its constructor is private: it exists only as evidence that every session in the
+manifest was driven to Closed and every one of their operations was handled.
+-}
+data InterpretedRecovery scope planId
+    = InterpretedRecovery Text [SessionId] [RecoveredOperation]
+
+instance Show (InterpretedRecovery scope planId) where
+    show (InterpretedRecovery plan sessions operations) =
+        "InterpretedRecovery "
+            <> show plan
+            <> " "
+            <> show (length sessions)
+            <> " "
+            <> show (length operations)
+
+interpretedRecoveryPlanDigest :: InterpretedRecovery scope planId -> Text
+interpretedRecoveryPlanDigest (InterpretedRecovery plan _ _) = plan
+
+-- | Every session the interpretation drove to Closed, in the order it drove them.
+interpretedRecoverySessions :: InterpretedRecovery scope planId -> [SessionId]
+interpretedRecoverySessions (InterpretedRecovery _ sessions _) = sessions
+
+-- | Every operation the interpretation handled, with what it did to each.
+interpretedRecoveryOperations :: InterpretedRecovery scope planId -> [RecoveredOperation]
+interpretedRecoveryOperations (InterpretedRecovery _ _ operations) = operations
+
+{- | Drive every session in the manifest to Closed under the fresh broker
+generation, handling each of its operations by its recorded disposition.
+
+This is § EE's recorded-session interpreter, and it is what normal activation
+with an older Open session must run before any current-broker session admission.
+It is a strictly stronger thing than 'recoverAbandonedSessions': that sweep
+closes Open sessions and /counts/ continuable operations, leaving them at a phase
+a later holder could still prepare against, and it never rebinds a session to the
+generation that is about to run. This one settles them and rebinds.
+
+Per session, in order:
+
+1. every operation is classified. 'UnknownDisposition' refuses the whole
+   interpretation — a phase this binary cannot classify is exactly the case where
+   guessing is unsafe, so it blocks admission rather than being swept;
+2. a 'Continuable' or 'FencedRetryable' operation is recorded terminal at
+   @RecoveryAbandoned@. That is sound in both cases and for the same reason: the
+   run that registered the operation is dead, so nothing will continue it. The
+   pre-call one attempted no effect at all; the retryable one attempted an effect
+   and observed its absence, and its permit is in the set 'fenceOldPermits'
+   already superseded, so a delayed landing cannot be mistaken for this run's;
+3. a 'Settled' or 'TerminalDisposition' operation is left byte-for-byte alone.
+   Recovery never rewrites committed work;
+4. the session record is compare-and-swapped to the fresh broker generation while
+   /still Open/ — the rebind § EE names — so what closes next is unambiguously
+   this generation's record and not a record another generation could still be
+   holding a version of;
+5. only then is the session closed, which re-proves through
+   'closeOperationSession' that no operation was left unsettled.
+
+The permit is threaded through all of it, so the whole interpretation is one
+chain of sole-successor advances rather than a set of independent writes.
+-}
+interpretRecordedSessions ::
+    ProtectedSession session ->
+    BrokerEpoch brokerGeneration ->
+    VerifiedSessionManifest scope planId ->
+    OldPermitsFenced scope planId ->
+    ProjectPermit scope planId ->
+    IO (Either SessionError (InterpretedRecovery scope planId, ProjectPermit scope planId))
+interpretRecordedSessions session epoch manifest fenced permit
+    | manifestPlanDigest manifest /= oldPermitsFencedPlanDigest fenced =
+        pure
+            ( Left
+                ( SessionRecoveryPlanMismatch
+                    (manifestPlanDigest manifest)
+                    (oldPermitsFencedPlanDigest fenced)
+                )
+            )
+    | otherwise = do
+        driven <- foldM step (Right ([], [], permit)) (manifestSessions manifest)
+        pure $ case driven of
+            Left failure -> Left failure
+            Right (sessions, operations, finalPermit) ->
+                Right
+                    ( InterpretedRecovery planDigest (reverse sessions) (reverse operations)
+                    , finalPermit
+                    )
+  where
+    planDigest = manifestPlanDigest manifest
+
+    step (Left failure) _ = pure (Left failure)
+    step (Right (sessions, operations, current)) member = do
+        handled <- foldM (handleOperation member) (Right (operations, current)) (manifestSessionOperations member)
+        case handled of
+            Left failure -> pure (Left failure)
+            Right (afterOperations, afterPermit) -> do
+                closed <- rebindAndClose member afterPermit
+                pure $ case closed of
+                    Left failure -> Left failure
+                    Right nextPermit ->
+                        Right (manifestSessionId member : sessions, afterOperations, nextPermit)
+
+    handleOperation _ (Left failure) _ = pure (Left failure)
+    handleOperation member (Right (operations, current)) opKey =
+        case operationKeyFor planDigest (manifestSessionId member) opKey of
+            Left failure -> pure (Left failure)
+            Right oKey -> do
+                observed <- readTransactionRecord session oKey
+                case observed of
+                    Left failure -> pure (Left (transactionFailure failure))
+                    -- The manifest enumerated this key from the store under the
+                    -- same protected entry, so an absent record here is a torn
+                    -- store rather than an ordinary miss.
+                    Right Nothing -> pure (Left (SessionManifestOrphanOperation opKey (sessionIdText (manifestSessionId member))))
+                    Right (Just record) -> do
+                        let recorded = phaseTextOf (transactionRecordPayload record)
+                        case classifyRecordedPhase recorded of
+                            UnknownDisposition ->
+                                pure (Left (SessionUnclassifiedPhase opKey recorded))
+                            Settled ->
+                                pure (Right (OperationAlreadySettled opKey recorded : operations, current))
+                            TerminalDisposition ->
+                                pure (Right (OperationAlreadyTerminal opKey recorded : operations, current))
+                            Continuable ->
+                                abandon member oKey record opKey recorded operations current OperationAbandonedPreCall
+                            FencedRetryable ->
+                                abandon member oKey record opKey recorded operations current OperationAbandonedRetryable
+
+    abandon member oKey record opKey recorded operations (ProjectPermit current) build = do
+        let desired =
+                encodeFields
+                    [ "RecoveryAbandoned"
+                    , sessionIdText (manifestSessionId member)
+                    , Text.pack (show (oldPermitsFencedTo fenced))
+                    , Text.pack (show (recordedAttempt (transactionRecordPayload record)))
+                    ]
+        advanced <-
+            runTransaction
+                session
+                planDigest
+                current
+                TxnAcknowledgeOutcome
+                [operationTransactionTarget oKey (Just record) desired]
+        pure $ case advanced of
+            Left failure -> Left failure
+            Right next -> Right (build opKey recorded : operations, ProjectPermit next)
+
+    rebindAndClose member current@(ProjectPermit raw) =
+        case sessionKey planDigest (manifestSessionId member) of
+            Left failure -> pure (Left failure)
+            Right sKey -> do
+                observed <- readSessionRecord session planDigest (manifestSessionId member)
+                case observed of
+                    Left failure -> pure (Left failure)
+                    Right Nothing ->
+                        pure (Left (SessionManifestMissingRecord (manifestSessionId member)))
+                    Right (Just (record, state))
+                        -- A session already Closed needs neither rebind nor
+                        -- close; it is a member of the manifest because the set
+                        -- is complete, not because it has work outstanding.
+                        | not (sessionRecordIsOpen state) -> pure (Right current)
+                        | otherwise -> do
+                            rebound <-
+                                runTransaction
+                                    session
+                                    planDigest
+                                    raw
+                                    TxnRebindSession
+                                    [ sessionTransactionTarget
+                                        sKey
+                                        (Just record)
+                                        ( encodeSessionRecord
+                                            True
+                                            (Text.pack (show (brokerEpochWord epoch)))
+                                            (manifestSessionOperations member)
+                                        )
+                                    ]
+                            case rebound of
+                                Left failure -> pure (Left failure)
+                                Right next ->
+                                    closeOperationSession
+                                        session
+                                        OperationSession
+                                            { sessionRecordId = manifestSessionId member
+                                            , sessionPlanDigest = planDigest
+                                            , sessionBrokerGeneration = brokerEpochWord epoch
+                                            }
+                                        (ProjectPermit next)
+
+{- | Proof that the current broker generation may open sessions for this plan.
+
+§ EE: "Only both complete session/operation sets yield
+'CurrentBrokerSessionAdmission'; missing/duplicate records, wrong membership,
+missing/replaced resource evidence, or unresolved recovery cannot manufacture it
+or create a second logical session."
+
+So its constructor is private and 'admitCurrentBroker' is its sole producer,
+requiring all three of the fence set, the manifest, and the interpretation that
+consumed them — and requiring the interpretation to have covered the manifest
+exactly. A caller cannot verify a manifest, skip the interpreter, and present the
+manifest alone.
+-}
+data CurrentBrokerSessionAdmission scope planId brokerGeneration
+    = CurrentBrokerSessionAdmission Text Word64 Int Int
+
+instance Show (CurrentBrokerSessionAdmission scope planId brokerGeneration) where
+    show (CurrentBrokerSessionAdmission plan generation sessions operations) =
+        "CurrentBrokerSessionAdmission "
+            <> show plan
+            <> " "
+            <> show generation
+            <> " "
+            <> show sessions
+            <> " "
+            <> show operations
+
+admissionPlanDigest :: CurrentBrokerSessionAdmission scope planId brokerGeneration -> Text
+admissionPlanDigest (CurrentBrokerSessionAdmission plan _ _ _) = plan
+
+admissionBrokerGeneration ::
+    CurrentBrokerSessionAdmission scope planId brokerGeneration -> Word64
+admissionBrokerGeneration (CurrentBrokerSessionAdmission _ generation _ _) = generation
+
+-- | How many sessions the admission's manifest covered.
+admissionSessionCount :: CurrentBrokerSessionAdmission scope planId brokerGeneration -> Int
+admissionSessionCount (CurrentBrokerSessionAdmission _ _ sessions _) = sessions
+
+-- | How many operations the admission's manifest covered.
+admissionOperationCount :: CurrentBrokerSessionAdmission scope planId brokerGeneration -> Int
+admissionOperationCount (CurrentBrokerSessionAdmission _ _ _ operations) = operations
+
+{- | Mint current-broker session admission from the complete evidence, or refuse.
+
+Every input is compared rather than trusted:
+
+* all three values must be over the same plan digest, because the phantom indices
+  alone would let evidence taken for one plan authorize another;
+* the interpretation must have covered exactly the manifest's sessions. A
+  manifest of three sessions and an interpretation of two is
+  'SessionRecoveryIncomplete', which is the "unresolved recovery" § EE says
+  cannot manufacture an admission;
+* every session must be observed Closed /again/, at this store version, through
+  'verifyAllSessionsClosed'. The interpreter proved it drove them closed; this
+  re-proves it against the store after the fact, so a session reopened between
+  the interpretation and the admission refuses.
+-}
+admitCurrentBroker ::
+    ProtectedSession session ->
+    BrokerEpoch brokerGeneration ->
+    VerifiedSessionManifest scope planId ->
+    OldPermitsFenced scope planId ->
+    InterpretedRecovery scope planId ->
+    IO (Either SessionError (CurrentBrokerSessionAdmission scope planId brokerGeneration))
+admitCurrentBroker session epoch manifest fenced interpreted
+    | manifestPlanDigest manifest /= oldPermitsFencedPlanDigest fenced =
+        pure
+            ( Left
+                ( SessionRecoveryPlanMismatch
+                    (manifestPlanDigest manifest)
+                    (oldPermitsFencedPlanDigest fenced)
+                )
+            )
+    | manifestPlanDigest manifest /= interpretedRecoveryPlanDigest interpreted =
+        pure
+            ( Left
+                ( SessionRecoveryPlanMismatch
+                    (manifestPlanDigest manifest)
+                    (interpretedRecoveryPlanDigest interpreted)
+                )
+            )
+    | sort (map manifestSessionId (manifestSessions manifest))
+        /= sort (interpretedRecoverySessions interpreted) =
+        pure
+            ( Left
+                ( SessionRecoveryIncomplete
+                    (length (manifestSessions manifest))
+                    (length (interpretedRecoverySessions interpreted))
+                )
+            )
+    | otherwise = do
+        closed <- verifyAllSessionsClosed session (manifestPlanDigest manifest)
+        pure $ case closed of
+            Left (SessionStillOpen sid) ->
+                Left (SessionRecoveryUnresolved (sessionIdText sid <> " is still open"))
+            Left failure -> Left failure
+            Right (proof :: VerifiedAllSessionsClosed scope planId) ->
+                Right
+                    ( CurrentBrokerSessionAdmission
+                        (allSessionsClosedPlanDigest proof)
+                        (brokerEpochWord epoch)
+                        (length (manifestSessions manifest))
+                        (manifestOperationCount manifest)
+                    )
 
 -- ---------------------------------------------------------------------------
 -- The prepare compare-and-swap
@@ -1672,6 +2356,20 @@ data SessionError
       SessionStepPlanMismatch Text Text
     | -- | consumed version, then the version actually on the record
       SessionStaleJournalVersion Word64 Word64
+    | -- | an operation record names a session the manifest does not carry
+      SessionManifestOrphanOperation Text Text
+    | -- | the store holds two records resolving to one session identity
+      SessionManifestDuplicateSession SessionId
+    | -- | the session's declared membership, then what the store actually holds
+      SessionManifestMembershipMismatch SessionId Text Text
+    | -- | a manifest member's session record vanished between enumeration and use
+      SessionManifestMissingRecord SessionId
+    | -- | a value taken over one plan digest was presented for another
+      SessionRecoveryPlanMismatch Text Text
+    | -- | recovery left something an operator must resolve, so nothing is admitted
+      SessionRecoveryUnresolved Text
+    | -- | the interpretation did not cover the manifest it was taken against
+      SessionRecoveryIncomplete Int Int
     deriving (Eq, Show)
 
 sessionErrorMessage :: SessionError -> String
@@ -1730,3 +2428,34 @@ sessionErrorMessage err = case err of
             <> Text.unpack sessionPlan
     SessionStaleJournalVersion consumed actual ->
         "session: journal version " <> show consumed <> " was superseded by " <> show actual
+    SessionManifestOrphanOperation opKey sid ->
+        "session: operation "
+            <> Text.unpack opKey
+            <> " names session "
+            <> Text.unpack sid
+            <> ", which is not a member of the manifest"
+    SessionManifestDuplicateSession sid ->
+        "session: " <> Text.unpack (sessionIdText sid) <> " is recorded more than once"
+    SessionManifestMembershipMismatch sid declared enumerated ->
+        "session: "
+            <> Text.unpack (sessionIdText sid)
+            <> " declares membership ["
+            <> Text.unpack declared
+            <> "] but the store holds ["
+            <> Text.unpack enumerated
+            <> "]"
+    SessionManifestMissingRecord sid ->
+        "session: the record for " <> Text.unpack (sessionIdText sid) <> " is gone"
+    SessionRecoveryPlanMismatch expected presented ->
+        "session: recovery evidence for plan "
+            <> Text.unpack presented
+            <> " was presented for "
+            <> Text.unpack expected
+    SessionRecoveryUnresolved detail ->
+        "session: recovery is unresolved: " <> Text.unpack detail
+    SessionRecoveryIncomplete manifested interpreted ->
+        "session: the interpretation covered "
+            <> show interpreted
+            <> " of the manifest's "
+            <> show manifested
+            <> " sessions"

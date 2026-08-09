@@ -89,10 +89,12 @@ sequencing. `CompileFailSpec` proves the production planner is unreachable.
 
 None.
 
-### Sprint 19.3: Reconciler-produced report rows [Active]
+### Sprint 19.3: Reconciler-produced report rows [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
+`core/hostbootstrap-core/test/HarnessSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`
 
@@ -102,24 +104,37 @@ Let the report card carry what the reconcilers actually observed.
 
 #### Deliverables
 
-- An acquisition `Conflict`, a `SafetyRefusal`, and an `Unsupported` outcome are distinct structured rows, so a
-  skipped resource reads as skipped rather than failed.
-- A `ManagedResult Unchanged` row retains its managed handle and teardown receipt; a `ForeignResult` row exposes
-  only an unmanaged handle that cannot type-check at teardown.
+- An acquisition conflict, a safety refusal, and an unsupported backend are distinct structured rows —
+  `CONFLICT`, `REFUSED`, `SKIPPED` — so a lane the substrate cannot run reads as skipped rather than broken,
+  and state an operator must resolve reads as a conflict rather than a break.
+- `classifyLifecycleReason` is what produces them, and it reads the cause the interpreted chain already
+  reported. A cause naming none of the three stays an ordinary `BROKEN` row rather than being guessed into one.
+- The three markers live with the harness and are what `observationDetail` renders with, so the row the chain
+  interpreter printed and the row the report card classifies cannot drift apart.
+- None of the new rows is a pass: a skipped lane did not do what was asked, and `caseResultPassed` stays total
+  so a later outcome cannot be silently counted as success.
+- A `ManagedResult` retains its managed handle and teardown receipt while a `ForeignResult` exposes only an
+  unmanaged handle, and the guest-alias release accepts only the managed one — that is the result algebra's,
+  and `ForeignGuestAliasRelease.hs` pins that a foreign handle does not type-check at teardown.
 - Independent variants continue when it is safe to do so, and a teardown failure turns its own variant red
   without aborting the others.
 
 #### Validation
 
-`HarnessSpec` covers each row's rendering and that a foreign row's handle is rejected at teardown.
+`HarnessSpec` covers each row's label and reason on the rendered card, that every non-passing outcome is
+counted as a failure, that each of the three causes classifies to its own row while an unrelated cause does
+not, and that `observationDetail`'s own rendering of each observation classifies back to the matching row.
+`CompileFailSpec`'s `ForeignGuestAliasRelease.hs` pins the foreign-handle teardown refusal.
 
 #### Remaining Work
 
-The row *vocabulary* exists in the result algebra and a step's action now returns an observation the chain
-interpreter converts into that node's row, but no **harness** call site produces those rows: the engine still
-reports a variant's outcome without the reconcile rows its nodes observed. A `ManagedResult`/`ForeignResult`
-row additionally needs the handle and receipt only a prepared call mints, which is the carried-handle item in
-the step-algebra phase; the structured per-node teardown rows are the recursive-lifecycle-command phase's.
+None.
+
+## Phase Remaining Work
+
+The live half of the phase gate. Every sprint's own deliverables are built and closed by the host static gate;
+a live `test run all` on linux-cpu is what the phase still owes, and this repository's current development host
+is aarch64-osx.
 
 ## Documentation Requirements
 

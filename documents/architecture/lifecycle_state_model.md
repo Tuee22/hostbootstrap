@@ -4045,7 +4045,10 @@ snapshot-driven old-revision teardown can continue. If the
   and teardown policy already committed for that child edge. Verification yields
   `VerifiedRecoveryWire` plus the exact `RecoveryProjectionBinding`; a fresh teardown-only
   `VerifiedHandoff ... RecoveryHandoff recoveryWireId verb TeardownPhase` binds that payload to the
-  recorded parent and child frames. `withRecoveredProjectFrame` can mint the required local frame proof
+  recorded parent and child frames. The `RecoveryHandoff` tag belongs to
+  [the authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md),
+  which owns every v1 protocol tag and pins each one's field shape and negative paths; a nested teardown
+  and a nested recovery are one edge and share it rather than each minting a private tag. `withRecoveredProjectFrame` can mint the required local frame proof
   only from that bound snapshot, its plan binding, the complete `RehydratedResourceSet`, and the exact
   closed `TeardownAuthorizationPoint` returned by the forest.
   `withRecoveredDescentResource` returns only the exact owned stopped-provider frame/resource binding,

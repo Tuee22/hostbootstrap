@@ -61,7 +61,8 @@ Each needs the one below: a session belongs to a lease, and a prepare revalidate
 reverse effects are three projections of one value. It is above prepare because a step's action must be able to
 reach a gate.
 
-**Crossing process boundaries (13).** The challenge/grant handoff, child admission, and the build and
+**Crossing process boundaries (13).** The closed v1 tag vocabulary — config admission, activation
+signing, and the recovery edge a nested teardown or recovery is admitted on — plus the challenge/grant handoff, child admission, and the build and
 activation authorities. Above the plan because a grant is bound to a plan edge.
 
 **Ownership (14).** The four ownership clauses and the host-local backends that hold them. Above prepare

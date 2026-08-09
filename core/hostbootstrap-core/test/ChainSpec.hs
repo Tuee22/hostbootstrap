@@ -17,14 +17,18 @@ import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Docker, Incus))
 import HostBootstrap.Incus (IncusVM (..))
+import Data.Word (Word64)
 import HostBootstrap.Lifecycle.Execution (
+    StepExecution,
     stepExecutionDependencyKeys,
     stepExecutionFrame,
     stepExecutionOperationKey,
     stepExecutionPlanDigest,
+    stepExecutionPreparedGate,
+    stepExecutionProjectedOperations,
+    stepExecutionTakeProjectedGate,
  )
-import HostBootstrap.Lifecycle.Execution (StepExecution)
-import HostBootstrap.Lifecycle.Prepared (decodeFields)
+import HostBootstrap.Lifecycle.Prepared (PreparedGate, decodeFields, preparedGateOperation)
 import HostBootstrap.Protected (
     ProtectedError,
     ProtectedRecord (protectedRecordBytes),
@@ -36,7 +40,27 @@ import HostBootstrap.Protected (
     recordKeyText,
     withProtectedEntry,
  )
-import HostBootstrap.Reconcile (lifecyclePlanDigest, withLifecyclePlan)
+import HostBootstrap.Reconcile (
+    BackendReconcileObservation (BackendCreated),
+    FailureDetail (FailureDetail),
+    PlannedResourceKind (ClusterResourceKind),
+    ReconcileError (Conflict, Failure, SafetyRefusal, Unsupported),
+    RecoveryDisposition (DoNotRetry),
+    carryManagedResource,
+    completeReconcile,
+    lifecyclePlanDigest,
+    plannedNodeOperation,
+    resourceHandleGeneration,
+    resourceHandleKey,
+    resourceHandleObservationVersion,
+    withCarriedManagedResource,
+    withLifecyclePlan,
+    withNodeObservedResource,
+    withNodeResourceOfKind,
+    withPreparedOperation,
+    withReconcileResult,
+    zeroDependencyPreconditions,
+ )
 import HostBootstrap.Substrate (
     Arch (Arm64),
     Substrate (..),
@@ -67,6 +91,8 @@ tests =
         , testGroup "the plan mints each step's execution descriptor (§ U)" descriptorCases
         , testGroup "the interpreter converts each node's observation" observationCases
         , testGroup "the interpreter's durable transaction" transactionCases
+        , testGroup "a node's projected operations (§ CC)" projectionCases
+        , testGroup "carried managed handles (§ EE)" carrierCases
         ]
 
 -- Fixtures.
@@ -325,6 +351,303 @@ transactionCases =
             settled <- withProtectedEntry store readOperationPhases
             either (assertFailure . show) (@?= ["StepObservedTerminal"]) settled
     ]
+
+{- | A node's projected operations (§ CC).
+
+A relating resource's key is not any node's own, so before this no node could
+prepare one. The plan is where a node claims the relation, and the interpreter is
+what turns that claim into a registered operation, an open gate the node's action
+can take, and a settlement that happens with the node. -}
+projectionCases :: [TestTree]
+projectionCases =
+    [ testCase "an action takes the gate for an operation its node projects" $ do
+        seen <- newIORef ([] :: [(T.Text, Bool)])
+        outcome <-
+            runInnermostWith
+                [ deployKindStep "the resource this one relates to" ctrFrame (const (pure StepChanged))
+                , projectsOperation aliasProjection $
+                    projectStep
+                        (fixtureProjectStepId "relating-node")
+                        ProjectManagedReverse
+                        "relate them"
+                        ctrFrame
+                        ( \execution -> do
+                            let record key = do
+                                    gate <- stepExecutionTakeProjectedGate execution key
+                                    modifyIORef' seen (++ [(key, gateNames key gate)])
+                            -- its own projection, twice: a prepared gate
+                            -- authorises exactly one effect
+                            record aliasProjectionKey
+                            record aliasProjectionKey
+                            -- an operation the plan placed under another node
+                            record "core:deploy-kind/something"
+                            -- and its own operation key is not a projection
+                            record "project:relating-node"
+                            pure StepChanged
+                        )
+                ]
+        outcome @?= Right ()
+        observed <- readIORef seen
+        observed
+            @?= [ (aliasProjectionKey, True)
+                , (aliasProjectionKey, False)
+                , ("core:deploy-kind/something", False)
+                , ("project:relating-node", False)
+                ]
+    , testCase "the descriptor names exactly the projections the plan validated" $ do
+        seen <- newIORef ([] :: [[T.Text]])
+        outcome <-
+            runInnermostWith
+                [ deployKindStep "related" ctrFrame (const (pure StepChanged))
+                , projectsOperation aliasProjection $
+                    projectStep
+                        (fixtureProjectStepId "relating-node")
+                        ProjectManagedReverse
+                        "relate them"
+                        ctrFrame
+                        ( \execution -> do
+                            modifyIORef' seen (++ [stepExecutionProjectedOperations execution])
+                            _ <- stepExecutionTakeProjectedGate execution aliasProjectionKey
+                            pure StepChanged
+                        )
+                , exposePortStep "an unrelated later node" ctrFrame (\execution -> do
+                    modifyIORef' seen (++ [stepExecutionProjectedOperations execution])
+                    pure StepChanged)
+                ]
+        outcome @?= Right ()
+        readIORef seen >>= (@?= [[aliasProjectionKey], []])
+    , testCase "a node's own gate is reachable from its action" $ do
+        seen <- newIORef ([] :: [(T.Text, T.Text)])
+        outcome <-
+            runInnermostWith
+                [ projectStep
+                    (fixtureProjectStepId "own-gate")
+                    ProjectManagedReverse
+                    "prepare itself"
+                    ctrFrame
+                    ( \execution -> do
+                        gate <- stepExecutionPreparedGate execution
+                        case gate of
+                            Nothing -> pure (StepUnsupported "no gate was opened for this node")
+                            Just opened -> do
+                                modifyIORef'
+                                    seen
+                                    ( ++
+                                        [
+                                            ( preparedGateOperation opened
+                                            , stepExecutionPlanDigest execution
+                                            )
+                                        ]
+                                    )
+                                pure StepChanged
+                    )
+                ]
+        outcome @?= Right ()
+        observed <- readIORef seen
+        map fst observed @?= ["project:own-gate"]
+        -- the gate belongs to the same interpretation the descriptor names
+        case observed of
+            [(_, digest)] -> assertBool "the plan digest is real" (not (T.null digest))
+            _ -> assertFailure "expected exactly one observation"
+    , testCase "a projection registers and settles with its node" $
+        withChainStore $ \store project -> do
+            outcome <-
+                runFrom
+                    store
+                    project
+                    [ deployKindStep "related" ctrFrame (const (pure StepChanged))
+                    , projectsOperation aliasProjection $
+                        projectStep
+                            (fixtureProjectStepId "relating-node")
+                            ProjectManagedReverse
+                            "relate them"
+                            ctrFrame
+                            ( \execution -> do
+                                _ <- stepExecutionTakeProjectedGate execution aliasProjectionKey
+                                pure StepChanged
+                            )
+                    ]
+            outcome @?= Right ()
+            settled <- withProtectedEntry store readOperationPhases
+            -- three records: two nodes plus the relation one of them projects
+            either (assertFailure . show) (@?= replicate 3 "Committed") settled
+    , testCase "a projection settles terminally when its node does" $
+        withChainStore $ \store project -> do
+            outcome <-
+                runFrom
+                    store
+                    project
+                    [ projectsOperation "project:relating-node/relation" $
+                        projectStep
+                            (fixtureProjectStepId "relating-node")
+                            ProjectManagedReverse
+                            "relate them"
+                            ctrFrame
+                            ( \execution -> do
+                                _ <- stepExecutionTakeProjectedGate execution "project:relating-node/relation"
+                                pure (StepUnsupported "the backend cannot hold the relation")
+                            )
+                    ]
+            case outcome of
+                Left err -> assertBool ("names the outcome: " ++ err) ("unsupported:" `isInfixOf` err)
+                Right () -> assertFailure "expected the chain to stop at the node"
+            settled <- withProtectedEntry store readOperationPhases
+            either
+                (assertFailure . show)
+                (@?= replicate 2 "StepObservedTerminal")
+                settled
+    , testCase "a declared projection the node never takes leaves the session unable to close" $ do
+        outcome <-
+            runInnermostWith
+                [ projectsOperation "project:relating-node/relation" $
+                    projectStep
+                        (fixtureProjectStepId "relating-node")
+                        ProjectManagedReverse
+                        "declare but never perform"
+                        ctrFrame
+                        (const (pure StepChanged))
+                ]
+        case outcome of
+            Left err -> do
+                assertBool ("the close is refused: " ++ err) ("has not settled" `isInfixOf` err)
+                assertBool
+                    ("it names the unsettled projection: " ++ err)
+                    ("project:relating-node/relation" `isInfixOf` err)
+            Right () -> assertFailure "a session with an unsettled projection was closed"
+    ]
+
+{- | Managed handles crossing between nodes in process (§ EE).
+
+A generative handle is never serialised, so the node that acquires a resource
+hands it to the node that depends on it through the interpretation's own carrier.
+-}
+carrierCases :: [TestTree]
+carrierCases =
+    [ testCase "a handle one node acquires is adopted by the node that depends on it" $ do
+        adopted <- newIORef ([] :: [Either T.Text (T.Text, Word64, Word64)])
+        outcome <-
+            runInnermostWith
+                [ deployKindStep
+                    "acquire the cluster"
+                    ctrFrame
+                    (\execution -> carryClusterHandle execution >> pure StepChanged)
+                , projectStep
+                    (fixtureProjectStepId "dependent-node")
+                    ProjectManagedReverse
+                    "adopt the dependency"
+                    ctrFrame
+                    ( \execution -> do
+                        result <-
+                            withCarriedManagedResource execution "core:deploy-kind" $ \handle ->
+                                ( resourceHandleKey handle
+                                , resourceHandleGeneration handle
+                                , resourceHandleObservationVersion handle
+                                )
+                        modifyIORef' adopted (++ [either (Left . summarizeError) Right result])
+                        pure StepChanged
+                    )
+                ]
+        outcome @?= Right ()
+        readIORef adopted >>= (@?= [Right ("core:deploy-kind", 5, 7)])
+    , testCase "a node cannot adopt a handle for an operation it does not depend on" $ do
+        adopted <- newIORef ([] :: [Either T.Text (T.Text, Word64, Word64)])
+        outcome <-
+            runInnermostWith
+                [ projectStep
+                    (fixtureProjectStepId "independent-node")
+                    ProjectManagedReverse
+                    "reach past its own prefix"
+                    ctrFrame
+                    ( \execution -> do
+                        result <-
+                            withCarriedManagedResource execution "core:deploy-kind" $ \handle ->
+                                ( resourceHandleKey handle
+                                , resourceHandleGeneration handle
+                                , resourceHandleObservationVersion handle
+                                )
+                        modifyIORef' adopted (++ [either (Left . summarizeError) Right result])
+                        pure StepChanged
+                    )
+                , deployKindStep "a later, unrelated acquisition" ctrFrame (const (pure StepChanged))
+                ]
+        outcome @?= Right ()
+        readIORef adopted >>= (@?= [Left "conflict"])
+    , testCase "a dependency nobody carried is a reprobe failure, not an empty success" $ do
+        adopted <- newIORef ([] :: [Either T.Text (T.Text, Word64, Word64)])
+        outcome <-
+            runInnermostWith
+                [ deployKindStep "acquire nothing" ctrFrame (const (pure StepChanged))
+                , projectStep
+                    (fixtureProjectStepId "dependent-node")
+                    ProjectManagedReverse
+                    "adopt the dependency"
+                    ctrFrame
+                    ( \execution -> do
+                        result <-
+                            withCarriedManagedResource execution "core:deploy-kind" $ \handle ->
+                                ( resourceHandleKey handle
+                                , resourceHandleGeneration handle
+                                , resourceHandleObservationVersion handle
+                                )
+                        modifyIORef' adopted (++ [either (Left . summarizeError) Right result])
+                        pure StepChanged
+                    )
+                ]
+        outcome @?= Right ()
+        readIORef adopted >>= (@?= [Left "failure"])
+    ]
+
+{- | Acquire this node's own cluster resource through the real prepared path and
+carry it. The gate is the node's own, opened by the interpreter, so this is the
+production route rather than a fixture handle. -}
+carryClusterHandle :: StepExecution scope planId -> IO ()
+carryClusterHandle execution = do
+    gate <- stepExecutionPreparedGate execution
+    case gate of
+        Nothing -> assertFailure "the interpreter opened no gate for this node"
+        Just opened ->
+            case acquire opened of
+                Left err -> assertFailure ("acquiring the cluster failed: " ++ show err)
+                Right carry -> carry
+  where
+    acquire opened =
+        joinReconcile $
+            withNodeResourceOfKind execution ClusterResourceKind "core:deploy-kind" $ \planned ->
+                joinReconcile $
+                    withNodeObservedResource execution planned 5 7 $ \observed -> do
+                        descriptor <- plannedNodeOperation execution planned observed "cluster:create"
+                        preconditionSet <- zeroDependencyPreconditions descriptor
+                        joinReconcile $
+                            withPreparedOperation descriptor preconditionSet opened $
+                                \prepared preconditions -> do
+                                    reconciled <-
+                                        completeReconcile observed prepared preconditions (BackendCreated 5)
+                                    withReconcileResult
+                                        reconciled
+                                        (\managed _ _ -> Right (carryManagedResource execution managed))
+                                        (\_ _ -> Left (unexpectedForeign))
+    unexpectedForeign =
+        Failure (FailureDetail "acquire cluster" "unexpected foreign cluster" DoNotRetry)
+
+summarizeError :: ReconcileError -> T.Text
+summarizeError err = case err of
+    Conflict _ -> "conflict"
+    SafetyRefusal _ -> "safety"
+    Unsupported _ -> "unsupported"
+    Failure _ -> "failure"
+
+joinReconcile :: Either ReconcileError (Either ReconcileError value) -> Either ReconcileError value
+joinReconcile = either Left id
+
+-- | The relation the fixture's relating node claims.
+aliasProjection :: String
+aliasProjection = "core:deploy-kind/project:relating-node/relation"
+
+aliasProjectionKey :: T.Text
+aliasProjectionKey = T.pack aliasProjection
+
+gateNames :: T.Text -> Maybe PreparedGate -> Bool
+gateNames key = maybe False ((== key) . preparedGateOperation)
 
 -- | The recorded phase of every operation record in the store, in key order.
 readOperationPhases :: ProtectedSession session -> IO (Either ProtectedError [T.Text])

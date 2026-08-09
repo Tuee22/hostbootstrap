@@ -428,7 +428,8 @@ mkRecordKey raw
   where
     legal character = isAlphaNum character || character `elem` ("-_." :: String)
 
-{- | Encode one **namespaced identity** as a record-name component.
+{- | Encode one **namespaced identity**, or a path of them, as a record-name
+component.
 
 The store's key alphabet is alphanumerics, @-@, @_@, and @.@ — deliberately
 narrow, because a key is a filesystem name. Several identities above this module
@@ -437,50 +438,68 @@ are namespaced with a colon: a plan operation key (@core:deploy-kind@,
 Neither could name a record at all, so the identities the lifecycle actually
 wants to key by were unreachable and a caller had to invent a lossy sanitizer.
 
-This is the one encoding, and it is **injective**: its image is exactly the
-components containing a @.@, and its domain admits a @.@ only after the
-namespace, so
+A plan operation may also be a __relation__ between operations, whose identity is
+a @\/@-separated path of them
+(@core:deploy-vm\/core:copy-source\/guest-alias@, § CC). A @\/@ can never reach a
+filesystem name, so the path is encoded here too rather than sanitized away.
 
-* a plain component (no colon) may contain no @.@, and therefore collides with
-  no encoded one;
-* an encoded component's namespace may contain no @.@, so the first @.@ is
-  always the separator and @ns.token@ determines @(ns, token)@ uniquely.
+This is the one encoding, and it is **injective**:
 
-At most one colon is admitted; a second would make the separator ambiguous. Two
-distinct identities can therefore never share one durable record — which a
-character-replacing sanitizer does not guarantee.
+* a plain segment (no colon) may contain no @.@, and therefore collides with no
+  encoded one;
+* an encoded segment's namespace may contain no @.@, so the first @.@ is always
+  the separator and @ns.token@ determines @(ns, token)@ uniquely;
+* no segment may contain @..@, so an encoded segment holds no adjacent pair of
+  dots and @..@ unambiguously separates path segments.
+
+At most one colon per segment is admitted; a second would make the namespace
+separator ambiguous. Two distinct identities can therefore never share one
+durable record — which a character-replacing sanitizer does not guarantee.
 -}
 mkRecordName :: Text -> Either ProtectedError Text
 mkRecordName raw
-    | Text.null raw = refuse "must not be empty"
-    | not (Text.all admitted raw) =
-        refuse "may contain only alphanumerics, '-', '_', '.', and one ':'"
-    | otherwise = case Text.splitOn ":" raw of
+    | Text.null raw = refuse raw "must not be empty"
+    | otherwise =
+        Text.intercalate ".." <$> traverse (recordNameSegment raw) (Text.splitOn "/" raw)
+
+recordNameSegment :: Text -> Text -> Either ProtectedError Text
+recordNameSegment raw segment
+    | Text.null segment = refuse raw "must not contain an empty path segment"
+    | not (Text.all admitted segment) =
+        refuse raw "may contain only alphanumerics, '-', '_', '.', '/', and one ':' per segment"
+    | Text.isInfixOf ".." segment =
+        refuse raw "a path segment may not contain '..'"
+    | otherwise = case Text.splitOn ":" segment of
         [plain]
             | Text.any (== '.') plain ->
-                refuse "a component with no namespace may not contain '.'"
+                refuse raw "a segment with no namespace may not contain '.'"
             | otherwise -> Right plain
         [namespace, token]
-            | Text.null namespace -> refuse "a namespaced component needs a namespace"
-            | Text.null token -> refuse "a namespaced component needs a token"
+            | Text.null namespace -> refuse raw "a namespaced segment needs a namespace"
+            | Text.null token -> refuse raw "a namespaced segment needs a token"
             | Text.any (== '.') namespace ->
-                refuse "a component's namespace may not contain '.'"
+                refuse raw "a segment's namespace may not contain '.'"
             | otherwise -> Right (namespace <> "." <> token)
-        _ -> refuse "a component has at most one namespace"
+        _ -> refuse raw "a segment has at most one namespace"
   where
-    refuse reason =
-        Left (ProtectedInvalid ("record name " <> raw <> " " <> reason))
     admitted character = legal character || character == ':'
     legal character = isAlphaNum character || character `elem` ("-_." :: String)
 
+refuse :: Text -> Text -> Either ProtectedError result
+refuse raw reason = Left (ProtectedInvalid ("record name " <> raw <> " " <> reason))
+
 {- | The identity a record-name component denotes. Total inverse of
-'mkRecordName' on its image: the first @.@ is the namespace separator, and a
-component with no @.@ was never namespaced.
+'mkRecordName' on its image: @..@ separates path segments, the first @.@ of a
+segment is the namespace separator, and a segment with no @.@ was never
+namespaced.
 -}
 recordNameIdentity :: Text -> Text
-recordNameIdentity name = case Text.breakOn "." name of
-    (_, rest) | Text.null rest -> name
-    (namespace, rest) -> namespace <> ":" <> Text.drop 1 rest
+recordNameIdentity name =
+    Text.intercalate "/" (map segmentIdentity (Text.splitOn ".." name))
+  where
+    segmentIdentity segment = case Text.breakOn "." segment of
+        (_, rest) | Text.null rest -> segment
+        (namespace, rest) -> namespace <> ":" <> Text.drop 1 rest
 
 {- | A record's monotonic version. Version 1 is the first published value; a
 record that has never existed has no version at all, which is why 'Expectation'

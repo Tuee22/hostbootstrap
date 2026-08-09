@@ -124,9 +124,11 @@ those kinds across the topologies above. Which layer contributes which kind is
 One operation must have one representation. Forward ordering is the `[Step]` returned by
 `chain`, `project up` is its interpreter, each frame's descent is a node of the same plan
 (`descendsVia`), and each acquiring node declares the effect that releases it (`reversedBy`), which
-`project down`/`project destroy` drive as two verb-indexed projections of that plan. What the lifecycle
-still lacks for the rule is the recursive child-first unwind: each verb cleans the frames the current
-binary can reach rather than descending into every frame it acquired. The target opaque
+`project down`/`project destroy` drive as two verb-indexed projections of that plan, descending into each
+child frame to invoke the verb there. What the unwind still lacks is its typed boundary: the frame index
+that makes a foreign node's only continuation the descent, and the recovery wire by which a parent admits
+its child to the nested verb. Until those land, the descent has no admission a nested frame accepts, so
+each verb settles the frames the current binary can reach and reports the rest outstanding. The target opaque
 `ProjectPlan scope specDigest planId configId cfg`
 accepts one non-empty validated step sequence, derives topology, and derives child-first reverse work
 from the receipts acquired during forward interpretation. The canonical home is

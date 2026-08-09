@@ -79,6 +79,21 @@ data ProtocolTag
     | GrantTag
     | AcceptedTag
     | CompletedTag
+    | -- | A nested frame asking the root to sign one activation manifest.
+      --
+      -- The config-admission edges above relay a child's /config/ to the root.
+      -- This pair relays an /activation manifest/, and it exists because
+      -- 'HostBootstrap.Activation.withActivationBroker' consumes a
+      -- @RootInvocationAuthority@ that only the root frame can mint, while the
+      -- services that need a signed manifest are deployed from a nested frame.
+      -- Without it a nested frame has no route to a signature at all.
+      --
+      -- It is deliberately a distinct tag pair rather than a reuse of the grant
+      -- edges: the two carry different material, are answered by different
+      -- keypairs, and must not be substitutable for one another.
+      ActivationSignRequestTag
+    | -- | The root's signature over that manifest.
+      ActivationSignResponseTag
     | RefusedTag
     deriving (Eq, Ord, Show)
 
@@ -136,6 +151,8 @@ expectedFieldCount tag = case tag of
     GrantTag -> 2
     AcceptedTag -> 1
     CompletedTag -> 1
+    ActivationSignRequestTag -> 1
+    ActivationSignResponseTag -> 1
     RefusedTag -> 2
 
 -- | Encode one message as a complete outer frame.
@@ -324,6 +341,7 @@ childProtocolReceive state message = case (state, protocolMessageTag message) of
     (ChildAwaitingGrant expected, RefusedTag) -> requireRequest expected requestId ChildFinished
     (ChildRunning expected, OfferResponseTag) -> requireRequest expected requestId state
     (ChildRunning expected, GrantResponseTag) -> requireRequest expected requestId state
+    (ChildRunning expected, ActivationSignResponseTag) -> requireRequest expected requestId state
     (ChildRunning expected, RefusedTag) -> requireRequest expected requestId ChildFinished
     _ -> Left (ProtocolInvalidTransition "receive" state (protocolMessageTag message))
   where
@@ -343,6 +361,11 @@ childProtocolSend state message = case (state, protocolMessageTag message) of
         requireRequest expected requestId (ChildRunning expected)
     (ChildRunning expected, OfferRequestTag) -> requireRequest expected requestId state
     (ChildRunning expected, GrantRequestTag) -> requireRequest expected requestId state
+    -- Only an *admitted* child may ask for a signature. Reachable from
+    -- 'ChildRunning' alone, exactly like the other two relay requests: a frame
+    -- that has not completed its own admission cannot ask the root to sign
+    -- anything.
+    (ChildRunning expected, ActivationSignRequestTag) -> requireRequest expected requestId state
     (ChildRunning expected, CompletedTag) -> requireRequest expected requestId ChildFinished
     (_, RefusedTag)
         | state /= ChildFinished -> requireStateRequest state requestId ChildFinished
@@ -452,6 +475,8 @@ tagByte tag = case tag of
     AcceptedTag -> 8
     CompletedTag -> 9
     RefusedTag -> 10
+    ActivationSignRequestTag -> 11
+    ActivationSignResponseTag -> 12
 
 byteTag :: Word8 -> Either ProtocolError ProtocolTag
 byteTag raw = case raw of
@@ -465,6 +490,8 @@ byteTag raw = case raw of
     8 -> Right AcceptedTag
     9 -> Right CompletedTag
     10 -> Right RefusedTag
+    11 -> Right ActivationSignRequestTag
+    12 -> Right ActivationSignResponseTag
     _ -> Left (ProtocolUnknownTag raw)
 
 word16BigEndian :: Word16 -> [Word8]

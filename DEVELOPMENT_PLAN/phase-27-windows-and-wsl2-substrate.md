@@ -120,9 +120,13 @@ live distro.
 
 #### Remaining Work
 
-The recorded evidence predates both the current matrix size and the currently-open work in the
+The frame-indexed teardown descent is behaviour this lane exercises: an operator teardown here crosses a
+real frame boundary into the WSL distro, so acceptance is owed against the descent's typed admission
+rather than against a run that predates it.
+
+The recorded evidence also predates the current matrix size and the currently-open work in the
 recursive-lifecycle-command, prepared-operations, step-algebra, authenticated-handoff, and recovery phases. A
-current provider-lifecycle observation on this substrate is owed: the existing snapshot validates the historical
+current provider-lifecycle observation on this substrate is owed: the existing snapshot validates the recorded
 WSL lane and the native adapter, not the whole provider lifecycle at the current shape.
 
 ## Documentation Requirements

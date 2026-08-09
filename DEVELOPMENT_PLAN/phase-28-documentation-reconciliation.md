@@ -36,12 +36,21 @@ Make each governed document describe what the code does.
 - Every engineering document's commands and paths are the real ones.
 - Each document's `**Referenced by**` list is accurate, and each family's canonical home is the one
   `documents/README.md` names.
+- Every `documents/` reference to a phase is **by name and link** (§ J). A bare number in prose is an
+  execution position that a renumbering falsifies, and a bare *sprint* number falsifies faster still —
+  a citation naming a sprint the owning phase no longer declares points at nothing at all.
 - Duration and capacity figures are the observed ones, and any figure another document *derives* from them is
   recomputed rather than left resting on a stale input.
+- [legacy_tracking_for_deletion.md](legacy_tracking_for_deletion.md) is empty, because every shape it named
+  has been deleted by the phase that owned it. An empty ledger is this phase's closing condition for that
+  document, not a document to keep populated.
+- Every ledger row that still exists names a deleting phase that resolves, which `DocValidatorSpec`
+  enforces mechanically — an unowned row is how a ledger rots into the repair log § I forbids.
 
 #### Validation
 
-`DocValidatorSpec` plus a read-through of each family against its implementation.
+`DocValidatorSpec` plus a read-through of each family against its implementation. The validator checks the
+ledger's rows resolve; the read-through checks the ledger is empty.
 
 #### Remaining Work
 

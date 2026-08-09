@@ -49,7 +49,7 @@ Write the test config, and be explicit about replacing one.
 
 `CLISpec` covers the grammar, the typed request, both overwrite branches, and the missing-config refusal:
 a first `test init` writes, a second refuses and leaves an operator's edit byte-identical, and `--replace`
-is the only route that overwrites. `cabal test all --ghc-options=-Werror` from `core/` passed 974/974 on
+is the only route that overwrites. `cabal test all --ghc-options=-Werror` from `core/` passed 998/998 on
 2026-08-05 (aarch64-osx, GHC 9.12.4), and the demo suite passed 112/112.
 
 #### Remaining Work

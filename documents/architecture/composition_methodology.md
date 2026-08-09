@@ -106,9 +106,21 @@ local host. `project up` is the recursive interpreter of the chain over that sta
 create/repair/no-op/conflict result, so typed idempotence is not yet enforced. `project up --dry-run`
 resolves and renders the same `StepPlan` without effects.
 `project down` stops service/VM frames and deletes kind clusters while preserving durable state; provider
-VMs use provider stop, while kind clusters use `kind delete cluster`. `project destroy` invokes
-the verb's reverse projection of the one plan. It does **not** recursively dispatch the verb into
-every child frame before stopping/deleting the parent. Cleanup is best-effort and aggregates failures,
+VMs use provider stop, while kind clusters use `kind delete cluster`. Both verbs drive the **teardown
+forest** of the one plan, so each descends into the next frame — invoking the same verb there through the
+descent the plan itself declares — and settles that frame's nodes from that invocation before running its
+own. The child runs the same loop over its own segment and recurses further itself, so a deeper frame is
+released by the binary that can see it.
+
+Two typed boundaries carry that descent, and both are **target** rather than implemented. The reverse
+projection is frame-indexed — a `frame` phantom on plan, forest, and cursor, minted with a `CurrentFrame`
+witness derived from the plan and the validated binary context — so whether an offered node belongs to
+this frame is a closed sum with a total eliminator rather than a comparison of frame names. And the
+nested verb is admitted by verifying the recovery wire its parent minted from the forest's own
+authorization point, because the root-only gate that correctly guards an operator's teardown would
+otherwise refuse the descent the unwind requires. The forest still carries every frame's levels: one
+memoized descent settles the deeper ones, so what makes the boundary hold is the index rather than the
+forest's contents. Cleanup aggregates failures,
 and neither verb places the plan's data path in its cluster-teardown removal set — `down`'s
 removal set is empty and `destroy`'s holds only derived paths. The demo creates host
 `<project-root>/.data` and carries it through provider shares and the stable Linux alias, so provider
@@ -258,14 +270,60 @@ Windows GPU place that daemon on the host; Linux CPU/GPU place it in the cluster
 still the chain and context graph, not a second hidden accelerator path; see
 [accelerator_daemon](../engineering/accelerator_daemon.md).
 
+## What A Node Reaches
+
+A step's action receives the plan-minted `StepExecution scope planId` descriptor and never the plan
+itself. The descriptor is therefore the whole of what a node may act on, and it is derived from the
+validated plan rather than supplied beside it.
+
+**Its own operation.** `stepExecutionOperationKey`, `stepExecutionFrame`, `stepExecutionPlanDigest`, and
+`stepExecutionDependencyKeys` are the node's own identities and its exact ordered plan prefix.
+`stepExecutionPreparedGate` is the `PreparedGate` the interpreter opened for that operation before running
+the action — the same gate it settles against afterwards — so an adapter the action drives prepares the
+node's own effect rather than a fabricated one.
+
+**Operations projected from it.** A resource that *relates* others has an operation key derived from the
+keys it relates: the provider guest alias is `<provider>/<share>/guest-alias`. That key is nobody's own,
+so without a route to it no node could prepare the relation at all. A step claims one with
+`projectsOperation`, and `mkStepPlan` admits exactly the shape
+
+```text
+<zero or more of the declaring step's dependency keys, in plan order>/<its own key>/<suffix>
+```
+
+with a non-empty separator-free suffix, claimed once across the plan and never colliding with a node's own
+key. The declaring node is thus the **last** resource the key names — the only one that can perform the
+relation, because every other resource the key names is already behind it in the plan. The guest alias is
+claimed by the durable-share node, whose prefix carries the provider.
+
+The interpreter registers each projection with its node, opens a gate for each in the same exclusive entry
+that publishes the node's own unknown phase, and settles the ones the action took at the phase the node
+itself settles at. `stepExecutionTakeProjectedGate` hands out each once; a key the plan did not place under
+this node yields `Nothing`. A declared projection whose gate is never taken stays unsettled and the session
+close refuses, so declaring a relation the node does not perform fails closed.
+
+**Its dependencies' handles.** A prepared call's dependency snapshot consumes the dependency's `Managed`
+handle, and a generative handle is never serialised (see [ownership_invariant](ownership_invariant.md)).
+The interpreter opens one `ResourceCarrier scope planId` for the whole interpretation;
+`carryManagedResource` accepts only a handle `completeReconcile`/`completePreparedUnchanged` produced, and
+`withCarriedManagedResource` reads one back under fresh generative indices, for a key in this node's
+prefix only.
+
+**Its planned resources.** `withNodeResourceOfKind` resolves the node's own planned resource or one member
+of its prefix under the closed `PlannedResourceKind` relation; `withNodeObservedResource` additionally
+compares the planned resource's plan digest against the descriptor's; `plannedNodeOperation` plans an
+operation on the node's own resource from the same edge set the plan-level route reads; and
+`withNodeGuestAliasProjection` derives the alias from the node's own declared projection.
+
 ## Single Representation: The Chain Is The Representation
 
 A project must have exactly **one lifecycle representation** (§ W). Forward order is now one opaque
 `StepPlan`: typed core/project identities are disjoint, operation keys and dependency prefixes derive
 from that plan, frame segments are exact and contiguous, and render/apply/frame traversal consume the
-same value, and each frame's descent is a node of that same plan. The implementation has not fully
-reached the receipt-aware lifecycle target: teardown remains a checked single-assignment function beside
-the plan, and current teardown is a current-frame hook rather than a reverse interpretation.
+same value, and each frame's descent is a node of that same plan. Teardown is a reverse
+interpretation of that same plan, driven child-first across frames. The implementation has not fully
+reached the receipt-aware lifecycle target: the reverse effect is still a callback each step declares
+rather than a receipt-bound transition.
 
 The target replaces those independent inputs with one **opaque** validated plan from which forward steps,
 frame topology, and reverse transitions are derived:
@@ -727,11 +785,10 @@ preserved exactly and an invalid `A, B, A` shape is rejected rather than regroup
 `project up` is the recursive interpreter driven by the resolved `StepPlan`. The VM-backed demo branches
 descend the 3-frame topology
 (`host-orchestrator-0`, `vm-orchestrator-1`, `vm-project-container-2`); the direct native Linux GPU branch
-uses a 2-frame metal → direct-project-container chain with no VM frame. `project down`/`destroy` are not
-the same recursive interpretation: they run the verb's reverse projection, reaching only the frames this
-binary can touch.
-The finalized `ProjectSpec` still carries its one teardown projection beside the plan, so receipt-bound
-child-first reverse traversal remains open; Phase 16.6 owns that consolidation.
+uses a 2-frame metal → direct-project-container chain with no VM frame. `project down`/`destroy` are the same recursive
+interpretation taken in reverse: each drives the plan's teardown forest, descends into the next frame by
+invoking the same verb there, and runs its own frame's nodes only once that descent has settled. Binding
+each reverse node to an ownership receipt rather than to a declared callback remains open.
 
 `context` is read-only introspection (`inspect`/`path`/`show`/
 `schema`/`render`), and `test init` writes `<project>.test.dhall` while `test run <case-id>|all` runs the

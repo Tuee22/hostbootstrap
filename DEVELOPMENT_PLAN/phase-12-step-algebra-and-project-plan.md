@@ -1,6 +1,6 @@
 # Phase 12 — The step algebra and the single project plan
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 11 (prepared operations and preconditions)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`
@@ -168,9 +168,7 @@ continue, and each non-success outcome stops it, names its own node, names its o
 nodes unrun — and its **durable** transaction: a node's action reads its own record mid-effect and finds the
 unknown phase already published, which simultaneously proves the ordering and that the exclusive entry is free
 while the effect runs; a node that reached its target state settles at `Committed`; one that did not settles
-terminally rather than as an unclassifiable unknown. `cabal test all --ghc-options=-Werror` from `core/`
-passed 952/952 on 2026-08-05 (aarch64-osx, GHC 9.12.4), twice in succession against a persisting store, and
-the demo suite passed 112/112.
+terminally rather than as an unclassifiable unknown.
 
 #### Remaining Work
 
@@ -179,43 +177,135 @@ managed handle through a gate is a **resource adapter's** act, not the generic i
 cannot know a node's resource identity, which is why the observation is plan-independent. What an adapter needs
 to reach a gate at all is the next sprint's.
 
-### Sprint 12.5: A node's projected operations and carried handles [Planned]
+### Sprint 12.5: A node's projected operations [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`
 
 #### Objective
 
-Let a node's own adapter reach the gate and the dependency it needs, so a resource adapter has a call site.
+Let a node reach the gate for an operation projected from it, not only for itself.
 
 #### Deliverables
 
-- A node reaches a gate for an operation **projected from** its own node, not only for the node itself. A
-  relating resource's operation key is a projection of the keys it relates — the guest alias is
-  `<provider>/<share>/guest-alias` — so it is not any node's own key and no node can currently prepare it. A
-  step declares its projections in the plan, `mkStepPlan` requires each to be prefixed by the declaring node's
-  own operation key, and the interpreter registers and settles them with the node.
-- A step's action receives the gates its node opened, so an adapter reaches exactly the operations its node
-  declared and no sibling's.
-- Managed handles are carried in-process from the node that mints one to the node that depends on it, because
-  a generative handle is never serialized (§ EE) and a prepared call's dependency snapshot consumes the
-  dependency's *managed* handle.
-- A node that declares a projection and does not settle it leaves that operation unsettled, so the session
-  cannot close — the same rule the node's own operation already obeys.
+- A resource that *relates* others has an operation key derived from the keys it relates — the guest alias
+  is `<provider>/<share>/guest-alias` — so it is nobody's own key. `projectsOperation` is where a step
+  claims one, in the same validated plan the forward traversal, the descent, and the reverse projection are
+  taken from.
+- `mkStepPlan` admits a projected key of exactly the shape
+  `<zero or more of the declaring step's dependency keys, in plan order>/<its own key>/<suffix>`, with a
+  non-empty separator-free suffix. The declaring node is therefore the **last** resource the key names,
+  which is the only node that can perform the relation: every other resource the key names is already
+  behind it in the plan. The guest alias is claimed by the durable-share node, whose prefix carries the
+  provider.
+- A projected key is claimed once across the plan and may not collide with a node's own operation key, so
+  two nodes cannot register, gate, and settle one durable operation record.
+- The interpreter registers each node's projections with the node, opens a gate for each in the same
+  exclusive entry that publishes the node's own unknown phase, and settles the ones the action took at the
+  phase the node itself settles at.
+- A step's action reaches its own node's gate (`stepExecutionPreparedGate`) and takes a projection's gate by
+  key (`stepExecutionTakeProjectedGate`), once each. A key the plan did not place under this node yields
+  `Nothing`, so an adapter reaches exactly what the node declared and no sibling's.
+- A node that declares a projection and does not take its gate leaves that operation unsettled, so
+  `closeOperationSession` refuses and the chain fails closed. Declaring a relation the node does not perform
+  is a plan error, not a silent success.
+- `mkRecordName` (the protected-store phase) already encodes a `/`-separated identity path injectively, so a
+  relation's key names a durable record without a sanitizer.
 
 #### Validation
 
-`StepSpec` covers the declaration and the prefix rule; `ChainSpec` covers registration, the gates an action
-receives, settlement of a node's projections with the node, and the refused close when one is left unsettled.
+`StepSpec` covers the declaration, the shape rule in both directions, and both uniqueness rules. `ChainSpec`
+drives the real interpreter: an action takes its projection's gate and is refused a sibling's, its own key's,
+and a second take; the descriptor names exactly the validated projections; a projection registers and settles
+`Committed` with its node and `StepObservedTerminal` when the node does not reach its target state; and a
+declared projection whose gate is never taken refuses the close naming that operation.
 
 #### Remaining Work
 
-All of it. Without it the guest-alias backend the
-[host-providers phase](phase-15-host-providers-and-the-lift.md) built has no reachable call site, and the
-[worked-demo phase](phase-24-worked-demo.md)'s alias adoption cannot be written.
+None.
+
+### Sprint 12.6: Carried managed handles [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Chain.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+Let the node that acquires a resource hand it to the node that depends on it.
+
+#### Deliverables
+
+- A prepared call's dependency snapshot consumes the dependency's **managed** handle, and a generative handle
+  is never serialized (§ EE): its identity index is a skolem of the bracket that minted it. It therefore has
+  to travel in process, inside one interpretation.
+- The interpreter opens one `ResourceCarrier scope planId` before its first node and threads it through every
+  node's descriptor, so the carrier's plan indices are the interpretation's own.
+- `carryManagedResource` takes a `Managed` handle — which only `completeReconcile` and
+  `completePreparedUnchanged` produce — so an unowned or foreign resource cannot be carried. Carrying a key
+  twice keeps the newer identity, which is the one a re-run acquired.
+- `withCarriedManagedResource` reads one back under fresh generative indices in a rank-2 continuation, and
+  only for a key in **this node's** exact ordered plan prefix. A dependency nobody carried is a typed
+  reprobe failure, never an empty success.
+
+#### Validation
+
+`ChainSpec` drives a real interpretation in which one node acquires its cluster through the production
+prepared path against its own gate and carries it, and the node after it adopts the same key, generation, and
+observation version. A node reaching outside its prefix is a conflict; an uncarried dependency is a failure.
+
+#### Remaining Work
+
+None.
+
+### Sprint 12.7: The node's plan view [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/composition_methodology.md`
+
+#### Objective
+
+Let a step action name the planned resources its own node may act on, without handing it the plan.
+
+#### Deliverables
+
+- A step action receives the descriptor the plan minted for its node, never the `LifecyclePlan`. A planned
+  resource is a plan digest, an operation key, and a frame, so the descriptor carries each dependency's frame
+  alongside its key and the node can name what the plan already placed.
+- `withNodeResourceOfKind` resolves the node's own resource or one member of its ordered prefix, under the
+  same closed `PlannedResourceKind` relation the plan-level route uses. A key outside that set is refused
+  even when the plan contains it.
+- `withNodeObservedResource` compares the planned resource's plan digest against the descriptor's, which the
+  plan-level route cannot: an action holds only descriptors and could otherwise pair another plan's resource
+  with this node's gate.
+- `plannedNodeOperation` plans an operation on the node's **own** resource, reading the same ordered
+  edge set the plan-level route reads and narrowing it to its resource-bearing members.
+- `withNodeGuestAliasProjection` derives the guest alias from the node's own declared projection, requiring
+  the provider to precede the durable share in the node's plan order.
+
+#### Validation
+
+`ChainSpec` reaches `withNodeResourceOfKind`, `withNodeObservedResource`, and `plannedNodeOperation` from
+inside a real step action to acquire a managed cluster; `ProviderAliasSpec` continues to cover the
+plan-level projection, and the [host-providers phase](phase-15-host-providers-and-the-lift.md) covers the
+node-level alias route at its production call site.
+
+Dated evidence for the phase gate: `cabal test all --ghc-options=-Werror` from `core/` passed 988/988 on
+2026-08-05 (aarch64-osx, GHC 9.12.4), and the demo suite passed 112/112.
+
+#### Remaining Work
+
+None.
 
 ## Documentation Requirements
 

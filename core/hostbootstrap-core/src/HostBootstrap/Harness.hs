@@ -59,6 +59,10 @@ module HostBootstrap.Harness (
     safetyRefusalMarker,
     LifecycleFailure (..),
     lifecycleFailureMarker,
+    conflictObservationMarker,
+    unsupportedObservationMarker,
+    refusedObservationMarker,
+    classifyLifecycleReason,
     runSuiteSelection,
     testSafetyPreconditions,
     testDataRoot,
@@ -75,7 +79,7 @@ where
 import Control.Exception (Exception, SomeAsyncException, SomeException, displayException, fromException, tryJust)
 import Control.Exception.Safe (finally)
 import Data.Char (isAlphaNum)
-import Data.List (group, sort)
+import Data.List (group, isInfixOf, sort)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NE
 import Data.Maybe (mapMaybe)
@@ -177,6 +181,13 @@ data TestMatrixError
     | DuplicateVariantPairs [(CaseId, VariantId)]
     | OrphanVariants [VariantId]
     | UnknownSelectedCase CaseId
+    | {- | A project projected its variant set from decoded configuration and one
+      declaration is not a valid identity. The matrix is where a project's own
+      config becomes the run's variants, so a malformed declaration is a matrix
+      construction error — discovered before any mutation, like every other
+      member of this type.
+      -}
+      InvalidVariantDeclaration IdentifierError
     deriving (Eq, Show)
 
 data TestMatrix a = TestMatrix
@@ -321,6 +332,15 @@ data CaseResult
       down; the cause is the reason, never a bare exit code (§ CC).
       -}
       LifecycleFailed String
+    | {- | A node observed a conflict: the resource it names exists and is not
+      what this run's plan describes. An operator resolves it; a rerun will
+      observe the same thing.
+      -}
+      Conflicted String
+    | {- | A node's backend cannot represent it on this substrate. The lane was
+      not run rather than run and broken, so it reads as skipped.
+      -}
+      Unsupported String
     | {- | Cleanup failed. The variant is red rather than green with leaked
       state, and the reason names what could not be released.
       -}
@@ -335,6 +355,10 @@ caseResultPassed outcome = case outcome of
     Pass -> True
     Fail _ -> False
     Refused _ -> False
+    -- A skipped lane did not do what was asked, so it is not a pass. It is a
+    -- distinct row so an operator can tell it from a broken one.
+    Conflicted _ -> False
+    Unsupported _ -> False
     LifecycleFailed _ -> False
     TeardownFailed _ -> False
 
@@ -344,11 +368,13 @@ from leaked state without reading the reason.
 -}
 caseResultLabel :: CaseResult -> String
 caseResultLabel outcome = case outcome of
-    Pass -> "PASS    "
-    Fail _ -> "FAIL    "
-    Refused _ -> "REFUSED "
-    LifecycleFailed _ -> "BROKEN  "
-    TeardownFailed _ -> "LEAKED? "
+    Pass -> "PASS     "
+    Fail _ -> "FAIL     "
+    Refused _ -> "REFUSED  "
+    Conflicted _ -> "CONFLICT "
+    Unsupported _ -> "SKIPPED  "
+    LifecycleFailed _ -> "BROKEN   "
+    TeardownFailed _ -> "LEAKED?  "
 
 -- | The reason an outcome carries, if it carries one.
 caseResultReason :: CaseResult -> Maybe String
@@ -356,6 +382,8 @@ caseResultReason outcome = case outcome of
     Pass -> Nothing
     Fail reason -> Just reason
     Refused reason -> Just reason
+    Conflicted reason -> Just reason
+    Unsupported reason -> Just reason
     LifecycleFailed reason -> Just reason
     TeardownFailed reason -> Just reason
 
@@ -541,6 +569,45 @@ instance Exception SafetyRefusal
 safetyRefusalMarker :: String
 safetyRefusalMarker = "HOSTBOOTSTRAP_SAFETY_REFUSAL:"
 
+{- | The markers a node's non-success observation renders with.
+
+They live here, in the module with no @HostBootstrap@ imports of its own, because
+both ends need them: "HostBootstrap.Step" renders an observation's detail with
+them, and the harness classifies a bring-up failure by them. A shared constant is
+what keeps the row the interpreter printed and the row the report card renders
+from drifting apart.
+
+A conflict, an unsupported backend, and a refusal are all terminal for the chain
+and all different for an operator: one is state to resolve, one is a lane this
+substrate cannot run, one is state this run does not own.
+-}
+conflictObservationMarker :: String
+conflictObservationMarker = "conflict:"
+
+unsupportedObservationMarker :: String
+unsupportedObservationMarker = "unsupported:"
+
+refusedObservationMarker :: String
+refusedObservationMarker = "refused:"
+
+{- | Classify one lifecycle failure's cause into the outcome it actually was.
+
+An interpreted chain stops on the first node that did not reach its target state
+and reports that node's own row, so the reason a bring-up failure carries already
+names which of the three it was. Without this the report card flattened all of
+them to @BROKEN@, and a lane the substrate cannot run read the same as a broken
+one.
+
+'Nothing' is the honest answer for a cause that names none of them: it is an
+ordinary lifecycle failure and the caller renders it as such rather than guessing.
+-}
+classifyLifecycleReason :: String -> Maybe CaseResult
+classifyLifecycleReason reason
+    | conflictObservationMarker `isInfixOf` reason = Just (Conflicted reason)
+    | unsupportedObservationMarker `isInfixOf` reason = Just (Unsupported reason)
+    | refusedObservationMarker `isInfixOf` reason = Just (Refused reason)
+    | otherwise = Nothing
+
 {- | A structured bring-up failure carrying its cause across the self-reference
 subprocess boundary and the harness catch — the peer of 'SafetyRefusal'
 (development_plan_standards § CC). A lifecycle step that fails throws this instead
@@ -698,13 +765,16 @@ runSuiteSelection ownership (TestSuite safety bringUp cases assertCase tearDown)
                     -- structured exception) surfaces its reason via 'displayException'
                     -- rather than collapsing to the literal @"ExitFailure 1"@ a
                     -- message-less @die@ would print (development_plan_standards § CC).
+                    -- What the failing node observed is already in the cause,
+                    -- so the row it produces is that node's own outcome rather
+                    -- than one undifferentiated BROKEN (§ Y).
                     Nothing ->
                         withTeardown
                             chosen
                             ( pure
                                 ( allOutcomes
                                     chosen
-                                    (LifecycleFailed ("bring-up failed: " ++ displayException err))
+                                    (bringUpOutcome (displayException err))
                                 )
                             )
             Right env -> withTeardown chosen (runMatrix (assertSeams env) chosen)
@@ -723,6 +793,10 @@ runSuiteSelection ownership (TestSuite safety bringUp cases assertCase tearDown)
             (Left err, Right ()) -> variantBroke chosen err
             (Left err, Left tornErr) ->
                 addRows (variantBroke chosen err) [teardownRow tornErr]
+    bringUpOutcome cause =
+        case classifyLifecycleReason cause of
+            Just classified -> classified
+            Nothing -> LifecycleFailed ("bring-up failed: " ++ cause)
     variantBroke chosen err =
         allOutcomes chosen (LifecycleFailed ("variant failed: " ++ displayException err))
     teardownRow err = ("teardown", TeardownFailed (displayException err))

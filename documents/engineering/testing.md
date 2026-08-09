@@ -122,23 +122,31 @@ drives the real `project up`, runs compiled case assertions, and invokes `projec
 The selector names a compiled **case id**, not a dynamically defined suite. In the demo:
 
 ```haskell
-newtype TestConfig = TestConfig { testResources :: Resources }
+data TestVariantConfig = TestVariantConfig { variantName :: Text, variantMessage :: Text }
+data TestConfig = TestConfig { testResources :: Resources, testVariants :: [TestVariantConfig] }
 ```
 
-`demoCases` is the executable source of truth. Its opaque `CaseId`s and the demo's stable `VariantId`
-drafts are validated into one total relation: both registries are non-empty and unique, every case has
-exactly one non-empty row, every reference exists, and every variant is used. Construction also rejects
-duplicate rows/pairs and unknown/orphan references. Selection, generation, and reporting consume that
-relation. The remaining Phase 20 work is to move the demo's concrete hard-coded two-message mapping into
-typed test config; the generic core no longer carries an unchecked suite-name or string-label list.
+`demoCases` is the executable source of truth for the **case** set. The **variant** set is a projection of
+decoded configuration: `demoTestMatrix` reads `testVariants` and validates each declared name into a
+`VariantId`, so adding, renaming, or removing a variant is an edit to the generated
+`<project>.test.dhall` rather than to a Haskell module. Both registries are then validated into one total
+relation: both non-empty and unique, every case has exactly one non-empty row, every reference exists, and
+every variant is used. Construction also rejects duplicate rows/pairs and unknown/orphan references. A
+declaration that is empty, duplicated, or not a valid identity is refused while the matrix is being built —
+`EmptyVariantRegistry`, `DuplicateVariantIds`, and `InvalidVariantDeclaration` respectively — which is
+before the run acquires anything. Selection, generation, and reporting consume that relation.
 
 ## Current Safety Defects
 
 The following statements are false for the current implementation:
 
 - “The parser root-gates `test init` and `test run`.” It does not apply the context root gate.
-- “The demo always uses `TestCase`/`.test_data/<caseId>`.” Its `containerPlan` call selects `Production`, so its real
-  provider, cluster, and mounts use `.data` and the production cluster identity.
+- “A harness run touches no host state at all.” Its cluster identity, removable state, host-port publishing,
+  and durable root are now the run's own — `containerPlan` and the durable mount both take the profile
+  `clusterProfileOf` reads off the config, and a harness config carries `HarnessRun` with that run's name, so
+  the run owns `.test_data/<run>` rather than production's `.data`. It still brings up real provider VMs,
+  Docker state, and clusters on the host, which is why a disposable host remains the supported way to run the
+  long gate.
 - “A passing harness run proves resources are owned.” The run's `.test_data` root **is** owned under all
   four [ownership_invariant](../architecture/ownership_invariant.md) clauses — kernel-identity binding and
   identity-conditional release included — but most other lifecycle mutations still return `IO ()`, and

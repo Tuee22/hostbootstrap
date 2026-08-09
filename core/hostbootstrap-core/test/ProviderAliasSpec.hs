@@ -23,6 +23,15 @@ import HostBootstrap.Substrate.Provider
 import HostBootstrap.Substrate.Provider.Alias
 import HostBootstrap.Wsl2 (Wsl2VM (..))
 #ifndef mingw32_HOST_OS
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.List (isInfixOf)
+import qualified Data.Map.Strict as Map
+import HostBootstrap.Authority (installedProjectFor)
+import HostBootstrap.Chain (runChainFromFrame)
+import HostBootstrap.HostConfig (HostConfig (..))
+import HostBootstrap.Lifecycle.Execution (StepExecution, stepExecutionPreparedGate)
+import HostBootstrap.Lift (SelfRef, mkSelfRef)
+import HostBootstrap.Protected (openProtectedStore)
 import System.Directory (createDirectory, doesPathExist, pathIsSymbolicLink)
 import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath ((</>))
@@ -207,6 +216,34 @@ posixFilesystemCases =
                 AliasCallForeign _ foreignState ->
                     foreignIdentity foreignState @?= Text.pack (dir </> "alias")
                 other -> assertFailure ("expected a foreign observation, got " ++ show other)
+    , {- The production call site. The chain interpreter opens the gate for the
+      operation the durable-share node declared as its projection, the provider
+      node carries the managed handle the share's own prepared call depends on,
+      and the alias is reconciled from inside the step action against a real
+      guest filesystem — no fixture gate, no fixture plan, no hand-built
+      dependency snapshot. -}
+      testCase "the durable-share node reconciles the alias it claims, through the chain" $
+        withRealAlias $ \spec dir backend -> do
+            settled <- newIORef []
+            outcome <- runAliasChain spec backend settled
+            outcome @?= Right ()
+            readIORef settled >>= (@?= [Right (GuestAliasReconciled (Changed Created))])
+            isLink <- pathIsSymbolicLink (dir </> "alias")
+            assertBool "the interpreted chain created the managed alias" isLink
+    , testCase "a node that never carried its dependency cannot prepare the alias" $
+        withRealAlias $ \spec dir backend -> do
+            settled <- newIORef []
+            outcome <- runAliasChainWithoutShare spec backend settled
+            case outcome of
+                Left err ->
+                    assertBool ("the node stops the chain: " ++ err) ("unsupported:" `isInfixOf` err)
+                Right () -> assertFailure "an unprepared alias node was allowed to continue"
+            observed <- readIORef settled
+            case observed of
+                [Left (Failure _)] -> pure ()
+                other -> assertFailure ("expected a reprobe failure, got " ++ show other)
+            created <- doesPathExist (dir </> "alias")
+            assertBool "no alias was created" (not created)
     ]
 #endif
 
@@ -328,6 +365,207 @@ createSettleThenRelease spec backend between prepared = do
                             )
                         )
                 )
+
+-- ---------------------------------------------------------------------------
+-- The production call site: the alias reconciled from inside a real chain.
+
+{- | The frame both nodes of the alias chain run in. It is the innermost frame,
+so the interpretation ends with this segment rather than descending.
+-}
+aliasFrame :: StepFrame
+aliasFrame = StepFrame{frameId = "host", frameLabel = "metal"}
+
+-- | The operation the durable-share node claims: the relation it completes.
+aliasProjectedOperation :: String
+aliasProjectedOperation = "core:deploy-vm/core:copy-source/guest-alias"
+
+{- | Interpret a two-node chain: the provider node acquires and carries its
+managed handle, then the durable-share node prepares its own operation against
+that carried dependency and reconciles the alias it claims.
+-}
+runAliasChain ::
+    GuestAliasSpec ->
+    StrongAliasBackend ->
+    IORef [Either ReconcileError GuestAliasSettlement] ->
+    IO (Either String ())
+runAliasChain spec backend sink =
+    interpretAliasChain
+        [ deployVMStep "acquire the provider" aliasFrame acquireProviderAction
+        , projectsOperation
+            aliasProjectedOperation
+            (copySourceStep "mount the durable share" aliasFrame (shareAction spec backend sink))
+        ]
+
+{- | The same chain with the provider node acquiring nothing, so the durable
+share has no carried dependency to seal. The share node then cannot prepare its
+own operation and never reaches the alias.
+-}
+runAliasChainWithoutShare ::
+    GuestAliasSpec ->
+    StrongAliasBackend ->
+    IORef [Either ReconcileError GuestAliasSettlement] ->
+    IO (Either String ())
+runAliasChainWithoutShare spec backend sink =
+    interpretAliasChain
+        [ deployVMStep "acquire nothing" aliasFrame (const (pure StepChanged))
+        , projectsOperation
+            aliasProjectedOperation
+            (copySourceStep "mount the durable share" aliasFrame (shareAction spec backend sink))
+        ]
+
+interpretAliasChain :: [Step] -> IO (Either String ())
+interpretAliasChain steps =
+    withSystemTempDirectory "hb-alias-chain" $ \directory -> do
+        opened <- openProtectedStore (directory </> "authority")
+        store <- either (assertFailure . show) pure opened
+        project <-
+            either
+                (assertFailure . show)
+                pure
+                (installedProjectFor @Fixture.FixtureProject @Fixture.ProjectConfig "hostbootstrap-demo")
+        plan <- either (assertFailure . show) pure (mkStepPlan steps)
+        run <-
+            withProductionProjectCodec @Fixture.FixtureProject @Fixture.ProjectConfig $ \codec ->
+                withLifecyclePlan codec plan $ \lifecycle ->
+                    pure
+                        ( runChainFromFrame
+                            aliasHostConfig
+                            aliasSelfRef
+                            (frameId aliasFrame)
+                            store
+                            project
+                            lifecycle
+                        )
+        run
+
+aliasHostConfig :: HostConfig
+aliasHostConfig =
+    HostConfig{hcSubstrate = Substrate LinuxCpu Amd64, hcToolPaths = Map.empty}
+
+aliasSelfRef :: SelfRef
+aliasSelfRef = mkSelfRef "/proc/self/exe" "/usr/local/bin/hostbootstrap-demo"
+
+{- | Acquire the provider through the gate the interpreter opened for this node's
+own operation, and carry the managed handle so the node that depends on it can
+seal it.
+-}
+acquireProviderAction :: StepExecution scope planId -> IO StepObservation
+acquireProviderAction execution = do
+    gate <- stepExecutionPreparedGate execution
+    case gate of
+        Nothing -> pure (StepUnsupported "the interpreter opened no gate for this node")
+        Just opened ->
+            case acquire opened of
+                Left err -> pure (StepUnsupported (Text.pack (show err)))
+                Right carry -> carry >> pure StepChanged
+  where
+    acquire opened =
+        joinReconcile $
+            withNodeResourceOfKind execution ProviderResourceKind "core:deploy-vm" $ \planned ->
+                joinReconcile $
+                    withNodeObservedResource execution planned 5 7 $ \observed -> do
+                        descriptor <- plannedNodeOperation execution planned observed "provider:create"
+                        preconditionSet <- zeroDependencyPreconditions descriptor
+                        joinReconcile $
+                            withPreparedOperation descriptor preconditionSet opened $
+                                \prepared preconditions -> do
+                                    reconciled <-
+                                        completeReconcile observed prepared preconditions (BackendCreated 5)
+                                    withReconcileResult
+                                        reconciled
+                                        (\managed _ _ -> Right (carryManagedResource execution managed))
+                                        ( \_ _ ->
+                                            Left
+                                                ( Failure
+                                                    ( FailureDetail
+                                                        "acquire provider"
+                                                        "unexpected foreign provider"
+                                                        DoNotRetry
+                                                    )
+                                                )
+                                        )
+
+{- | Mount the durable share against the carried provider, carry the share, then
+reconcile the alias this node claims. -}
+shareAction ::
+    GuestAliasSpec ->
+    StrongAliasBackend ->
+    IORef [Either ReconcileError GuestAliasSettlement] ->
+    StepExecution scope planId ->
+    IO StepObservation
+shareAction spec backend sink execution = do
+    gate <- stepExecutionPreparedGate execution
+    case gate of
+        Nothing -> pure (StepUnsupported "the interpreter opened no gate for this node")
+        Just opened -> do
+            mounted <- acquireShare execution opened
+            case mounted of
+                Left err -> do
+                    modifyIORef' sink (++ [Left err])
+                    pure (StepUnsupported (Text.pack (show err)))
+                Right () -> do
+                    settled <-
+                        reconcileNodeGuestAlias
+                            execution
+                            backend
+                            spec
+                            (23, 29)
+                            (pure (Right 19))
+                    modifyIORef' sink (++ [settled])
+                    pure $ case settled of
+                        Right (GuestAliasReconciled _) -> StepChanged
+                        Right (GuestAliasForeignRetained _) ->
+                            StepConflict "the managed alias" "a foreign object" "remove it"
+                        Left err -> StepUnsupported (Text.pack (show err))
+
+{- | Prepare and settle the durable share's own operation. Its plan prefix names
+the provider, so the traversal seals the provider handle the earlier node carried
+and refuses when nothing was carried. -}
+acquireShare ::
+    StepExecution scope planId ->
+    PreparedGate ->
+    IO (Either ReconcileError ())
+acquireShare execution opened = do
+    adopted <-
+        withCarriedManagedResource execution "core:deploy-vm" $ \managedProvider ->
+            withDependencySnapshotEntry
+                managedProvider
+                (dependencyProbe (pure (Right 17)))
+                emptyDependencySnapshot
+    case adopted of
+        Left err -> pure (Left err)
+        Right snapshot ->
+            joinIO $
+                withNodeResourceOfKind execution DurableShareResourceKind "core:copy-source" $ \planned ->
+                    joinIO $
+                        withNodeObservedResource execution planned 11 13 $ \observed ->
+                            case plannedNodeOperation execution planned observed "share:mount" of
+                                Left err -> pure (Left err)
+                                Right descriptor -> do
+                                    sealed <- withOperationPreconditions descriptor snapshot
+                                    case sealed >>= settle observed descriptor of
+                                        Left err -> pure (Left err)
+                                        Right carry -> Right <$> carry
+  where
+    settle observed descriptor preconditionSet =
+        joinReconcile $
+            withPreparedOperation descriptor preconditionSet opened $
+                \prepared preconditions -> do
+                    reconciled <-
+                        completeReconcile observed prepared preconditions (BackendCreated 11)
+                    withReconcileResult
+                        reconciled
+                        (\managed _ _ -> Right (carryManagedResource execution managed))
+                        ( \_ _ ->
+                            Left
+                                ( Failure
+                                    ( FailureDetail
+                                        "mount durable share"
+                                        "unexpected foreign share"
+                                        DoNotRetry
+                                    )
+                                )
+                        )
 
 {- | Repoint the alias at a foreign target, standing in for a peer that replaces
 the managed link between ownership and release.

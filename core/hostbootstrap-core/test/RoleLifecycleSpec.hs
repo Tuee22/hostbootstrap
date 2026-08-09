@@ -10,7 +10,7 @@ root invocation, a real protected store on a real filesystem, and a real kernel
 lock for the exclusive branch. Nothing here mints a cursor, a receipt, or an
 activation by hand, because none of those has a public constructor.
 -}
-module RoleLifecycleSpec (tests) where
+module RoleLifecycleSpec (tests, withRole, mutatingEffects, storeDraft) where
 
 import qualified Data.ByteString as ByteString
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
@@ -40,6 +40,7 @@ tests =
         , testGroup "draft verification" verificationTests
         , testGroup "one-use lifecycle admission" admissionTests
         , testGroup "the phase machine" engineTests
+        , testGroup "the declared effect row" effectRowTests
         ]
 
 -- ---------------------------------------------------------------------------
@@ -194,6 +195,74 @@ admissionTests =
                                 @?= Right (RequiresGenerationLease, [DurableStore, NetworkListen], "accelerator")
                         other -> assertFailure ("expected a reservation, got " ++ describeAdmission other)
     ]
+
+{- | The declared effect row and its authorization against the signed ceiling
+(§ AA).
+
+The row a handler is indexed by is the one its /definition/ declares; the signed
+ceiling is what decides whether that choice is admissible. Declaring less than
+the ceiling permits is the point of the split, so the interesting cases are the
+narrower row (admitted) and the wider one (refused by name).
+-}
+effectRowTests :: [TestTree]
+effectRowTests =
+    [ testCase "a declared row reads back exactly the effects its type names" $ do
+        declaredEffectList NoEffects @?= []
+        declaredEffectList (WithEffect NetworkListenName NoEffects) @?= [NetworkListen]
+        declaredEffectList
+            (WithEffect DurableStoreName (WithEffect NetworkListenName NoEffects))
+            @?= [DurableStore, NetworkListen]
+    , testCase "a row within the signed ceiling is authorized at its own row" $
+        withRole mutatingEffects storeDraft $ \_ _ placement _ -> do
+            -- the ceiling is [DurableStore, NetworkListen]
+            placementPermittedEffects placement @?= [DurableStore, NetworkListen]
+            case authorizeServiceEffects placement (WithEffect NetworkListenName NoEffects) of
+                Right authorization -> do
+                    -- the authorization carries the DECLARED row, not the ceiling
+                    authorizedEffects authorization @?= [NetworkListen]
+                    -- and the lease requirement follows the declaration: a role
+                    -- that declares no exclusive effect does not inherit its
+                    -- ceiling's lease
+                    authorizedLeaseRequirement authorization @?= NoExclusiveEffects
+                    placementLeaseRequirement placement @?= RequiresGenerationLease
+                Left failure ->
+                    assertFailure ("a narrower row was refused: " ++ roleLifecycleErrorMessage failure)
+    , testCase "the exact ceiling is authorized, and keeps its lease requirement" $
+        withRole mutatingEffects storeDraft $ \_ _ placement _ ->
+            case authorizeServiceEffects
+                placement
+                (WithEffect DurableStoreName (WithEffect NetworkListenName NoEffects)) of
+                Right authorization -> do
+                    authorizedEffects authorization @?= [DurableStore, NetworkListen]
+                    authorizedLeaseRequirement authorization @?= RequiresGenerationLease
+                Left failure ->
+                    assertFailure ("the exact ceiling was refused: " ++ roleLifecycleErrorMessage failure)
+    , testCase "a row outside the ceiling is refused, naming the service and the effect" $
+        withRole mutatingEffects storeDraft $ \_ _ placement _ ->
+            case authorizeServiceEffects
+                placement
+                (WithEffect ProcessSpawnName (WithEffect NetworkListenName NoEffects)) of
+                Left (RoleEffectNotPermitted service effect) -> do
+                    service @?= "accelerator"
+                    effect @?= "process"
+                other ->
+                    assertFailure
+                        ("expected a not-permitted refusal, got " ++ describeAuthorization other)
+    , testCase "an empty row is admitted under any ceiling and needs no lease" $
+        withRole mutatingEffects storeDraft $ \_ _ placement _ ->
+            case authorizeServiceEffects placement NoEffects of
+                Right authorization -> do
+                    authorizedEffects authorization @?= []
+                    authorizedLeaseRequirement authorization @?= NoExclusiveEffects
+                Left failure ->
+                    assertFailure ("an empty row was refused: " ++ roleLifecycleErrorMessage failure)
+    ]
+
+describeAuthorization ::
+    Either RoleLifecycleError (EffectAuthorization scope specDigest planId frame revision instanceId service effects) ->
+    String
+describeAuthorization (Left failure) = roleLifecycleErrorMessage failure
+describeAuthorization (Right authorization) = "authorized " ++ show (authorizedEffects authorization)
 
 -- ---------------------------------------------------------------------------
 -- The phase machine

@@ -41,6 +41,10 @@ module HostBootstrap.Substrate.Provider.Alias (
     PreparedGuestAliasRelease,
     withPreparedGuestAliasRelease,
     runPreparedGuestAliasRelease,
+
+    -- * The node's route
+    GuestAliasSettlement (..),
+    reconcileNodeGuestAlias,
 )
 where
 
@@ -49,9 +53,14 @@ import Data.List (intercalate, stripPrefix)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
+import HostBootstrap.Lifecycle.Execution (
+    StepExecution,
+    stepExecutionTakeProjectedGate,
+ )
 import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 import HostBootstrap.Reconcile (
     BackendReconcileObservation (..),
+    ChangeView,
     ConflictDetail (..),
     DependencySnapshot,
     DurableAliasResource,
@@ -63,6 +72,7 @@ import HostBootstrap.Reconcile (
     OwnershipReceipt,
     PlannedEdge,
     PlannedResource,
+    PlannedResourceKind (DurableShareResourceKind, ProviderResourceKind),
     PreparedOperation,
     PreparedPreconditions,
     PriorCommitProof,
@@ -75,12 +85,21 @@ import HostBootstrap.Reconcile (
     UnsupportedDetail (..),
     completePreparedUnchanged,
     completeReconcile,
+    dependencyProbe,
+    emptyDependencySnapshot,
     plannedGuestAliasOperation,
+    plannedResourceKey,
     resourceHandleGeneration,
     resourceHandleKey,
     validateOwnershipReceipt,
+    withCarriedManagedResource,
+    withDependencySnapshotEntry,
+    withNodeGuestAliasProjection,
+    withNodeObservedResource,
+    withNodeResourceOfKind,
     withOperationPreconditions,
     withPreparedOperation,
+    withReconcileResult,
  )
 import HostBootstrap.Substrate.Provider (
     SubstrateProvider,
@@ -691,3 +710,120 @@ keyField key fields =
     case [value | field <- fields, Just value <- [stripPrefix (key ++ "=") field]] of
         (value : _) | not (null value) -> Text.pack value
         _ -> "unknown"
+
+-- ---------------------------------------------------------------------------
+-- The node's route
+
+{- | What one node's alias reconcile settled to.
+
+A managed settlement carries the change the backend observed; a foreign one
+carries what was found instead.  Neither leaks the handle or receipt: releasing
+the alias is the reverse projection's, and a handle that escaped the settlement
+would be ownership a later caller never proved.
+-}
+data GuestAliasSettlement
+    = GuestAliasReconciled ChangeView
+    | GuestAliasForeignRetained ForeignObservation
+    deriving (Eq, Show)
+
+{- | Reconcile the guest alias from inside the step action that __claims__ it.
+
+This is the production route, and it exists because every input it needs is now
+on the node's own descriptor rather than in a plan the action cannot see:
+
+* the provider and durable share are resolved out of this node's plan prefix and
+  its own resource ('withNodeResourceOfKind'), so the relation is derived from
+  what the plan ordered rather than from keys the call site spelled;
+* the alias identity is the node's own declared projection
+  ('withNodeGuestAliasProjection'), and its gate is the one the interpreter
+  opened for exactly that projection — taken once, so one prepared call
+  authorises one effect;
+* the durable share's __managed__ handle is the one the acquiring node carried in
+  process ('withCarriedManagedResource'), because a generative handle is never
+  serialised, and the plan-owned traversal runs @shareProbe@ at prepare time
+  rather than trusting an observation taken earlier in the bring-up.
+
+The step that calls this is the durable-share node: validation requires the
+declaring node to be the last resource the projected key names, and the provider
+is already behind it in the plan.
+-}
+reconcileNodeGuestAlias ::
+    StepExecution scope planId ->
+    StrongAliasBackend ->
+    GuestAliasSpec ->
+    -- | the alias's plan-assigned generation and observation version
+    (Word64, Word64) ->
+    -- | the durable share's readiness probe, run by the traversal at prepare time
+    IO (Either ReconcileError Word64) ->
+    IO (Either ReconcileError GuestAliasSettlement)
+reconcileNodeGuestAlias execution backend spec (generation, observationVersion) shareProbe =
+    joinAliasIO $
+        withNodeResourceOfKind execution ProviderResourceKind providerOperation $ \provider ->
+            joinAliasIO $
+                withNodeResourceOfKind execution DurableShareResourceKind shareOperation $ \share ->
+                    joinAliasIO $
+                        withNodeGuestAliasProjection execution provider share $ \alias edge ->
+                            withSnapshot (aliasCall alias edge)
+  where
+    providerOperation = "core:deploy-vm"
+    shareOperation = "core:copy-source"
+
+    withSnapshot use = do
+        adopted <-
+            withCarriedManagedResource execution shareOperation $ \managedShare ->
+                withDependencySnapshotEntry
+                    managedShare
+                    (dependencyProbe shareProbe)
+                    emptyDependencySnapshot
+        case adopted of
+            Left err -> pure (Left err)
+            Right snapshot -> use snapshot
+
+    aliasCall alias edge snapshot = do
+        taken <- stepExecutionTakeProjectedGate execution (plannedResourceKey alias)
+        case taken of
+            Nothing ->
+                pure
+                    ( Left
+                        ( Conflict
+                            ( ConflictDetail
+                                (plannedResourceKey alias)
+                                "an open gate for this node's declared projection"
+                                "no gate is available for it"
+                                "declare the projection on this step and take its gate once"
+                            )
+                        )
+                    )
+            Just gate ->
+                joinAliasIO $
+                    withNodeObservedResource execution alias generation observationVersion $
+                        \aliasHandle -> do
+                            prepared <-
+                                withPreparedGuestAliasCall
+                                    alias
+                                    edge
+                                    aliasHandle
+                                    snapshot
+                                    spec
+                                    gate
+                                    (runAndSettle backend)
+                            case prepared of
+                                Left err -> pure (Left err)
+                                Right run -> run
+
+    runAndSettle strong call = do
+        observed <- runPreparedGuestAliasCall strong call
+        pure $ case settlePreparedGuestAliasCall Nothing call observed of
+            Left err -> Left err
+            Right settled ->
+                Right
+                    ( withReconcileResult
+                        settled
+                        (\_ _ change -> GuestAliasReconciled change)
+                        (\_ foreignState -> GuestAliasForeignRetained foreignState)
+                    )
+
+joinAliasIO ::
+    Either ReconcileError (IO (Either ReconcileError value)) ->
+    IO (Either ReconcileError value)
+joinAliasIO = either (pure . Left) id

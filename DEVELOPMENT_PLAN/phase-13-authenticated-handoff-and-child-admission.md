@@ -1,6 +1,6 @@
 # Phase 13 — Authenticated handoff and child admission
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 12 (the step algebra and the single project plan)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`, including the cross-process fixtures
@@ -21,9 +21,9 @@ signing capability at all.
 
 ## Sprints
 
-### Sprint 13.1: The handoff protocol [Done]
+### Sprint 13.1: The handoff protocol and its closed tag vocabulary [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Protocol.hs`,
 `core/hostbootstrap-core/test/HandoffProtocolSpec.hs`
 **Substrates**: linux-cpu
@@ -31,7 +31,7 @@ signing capability at all.
 
 #### Objective
 
-Define the wire shape and its refusals before anything transports it.
+Define the wire shape, its closed tag vocabulary, and its refusals before anything transports it.
 
 #### Deliverables
 
@@ -44,14 +44,32 @@ Define the wire shape and its refusals before anything transports it.
 - A bring-up token cannot be reused at teardown; every later edge, including teardown, mints a fresh one.
 - Tokens never travel through Dhall, `argv`, an environment variable, or durable config — see
   [rationale.md](rationale.md).
+- **This phase owns every v1 protocol tag.** `ProtocolTag` is closed here and each member's exact field
+  shape, round trip, and negative paths are pinned here, whatever later phase consumes it. A tag is a
+  wire-format commitment, so the phase that owns the wire owns the vocabulary; a consumer that minted its
+  own tag would leave this phase's stated surface incomplete on its own gate.
+  - the **config-admission** set — offer, challenge, grant, accepted, completed, refused — plus the
+    relay request/response pairs an admitted child raises;
+  - the **activation-signing** pair, by which a nested frame asks the root to sign one activation
+    manifest. It is deliberately distinct from the grant edges: the two carry different material and are
+    answered by different keypairs, so they must not be substitutable;
+  - the **recovery** pair, by which a parent admits a nested frame to a teardown or recovery edge. A
+    nested teardown and a nested recovery are one edge, so they share one tag.
+- Every request tag is reachable from an **admitted** child only, so a frame that has not completed its
+  own admission cannot raise one.
 
 #### Validation
 
-`HandoffProtocolSpec` covers the round trip and each refusal, including replay and the envelope-supplied key.
+`HandoffProtocolSpec` covers the round trip and each refusal, including replay and the envelope-supplied
+key, and holds the exhaustive tag list so a new tag cannot be added without its field shape being pinned
+beside the others.
 
 #### Remaining Work
 
-None.
+The recovery pair. The config-admission set and the activation-signing pair are built and covered; the
+recovery tag, its `RecoveryProjectionBinding`, and its `VerifiedRecoveryWire` are what the
+[recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md)'s descent and the
+[recovery phase](phase-18-recovery-and-migration.md)'s nested boundary consume.
 
 ### Sprint 13.2: Verified wire, verified handoff, and child plan authority [Done]
 

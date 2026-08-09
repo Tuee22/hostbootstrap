@@ -1,6 +1,6 @@
 # Phase 15 — Host providers and the self-reference lift
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 8 (ensure reconcilers), Phase 14 (the four ownership clauses and host-local
 reservations)
 **Substrates**: linux-cpu
@@ -84,9 +84,9 @@ the Incus provider lifecycle gate reported `10/10` on native linux-cpu.
 
 None.
 
-### Sprint 15.3: The clause-holding guest alias backend [Active]
+### Sprint 15.3: The clause-holding guest alias backend [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Alias.hs`,
 `core/hostbootstrap-core/test/ProviderAliasSpec.hs`
 **Substrates**: linux-cpu
@@ -94,7 +94,7 @@ None.
 
 #### Objective
 
-Own a guest-side durable alias under all four clauses.
+Own a guest-side durable alias under all four clauses, and give a node a route to it.
 
 #### Deliverables
 
@@ -105,28 +105,29 @@ Own a guest-side durable alias under all four clauses.
 - A found alias is a reported conflict; release unlinks only on an exact re-observed identity.
 - The alias operation is a prepared operation: the effect is reached through a `PreparedGate`, so it mints a
   `Managed` share handle with a receipt rather than an unowned link.
+- `reconcileNodeGuestAlias` is the route a step action takes, and every input it needs comes off that node's
+  own descriptor: the provider and durable share are resolved from the node's plan prefix and its own
+  resource, the alias identity is the node's own declared projection, its gate is the one the interpreter
+  opened for exactly that projection and is taken once, and the durable share's managed handle is the one the
+  acquiring node carried in process. The step that calls it is the durable-share node, because plan
+  validation requires the declaring node to be the last resource the projected key names.
+- The settlement it returns is a change or a foreign observation and never the handle or receipt: releasing
+  the alias is the reverse projection's, and a handle that escaped the settlement would be ownership a later
+  caller never proved.
 
 #### Validation
 
 `ProviderAliasSpec` covers each clause, the conflict, the probe-reported userland branches, and the
-`Unsupported` outcome where a clause cannot be held.
+`Unsupported` outcome where a clause cannot be held. On a POSIX host it also drives the production route
+end to end through the real chain interpreter against a real guest filesystem: the provider node acquires and
+carries its managed handle, the durable-share node seals that carried dependency into its own prepared call,
+takes the gate for the projection it declared, and creates the managed alias — and a node whose dependency
+nobody carried is refused before any guest command runs, leaving no alias behind.
 
 #### Remaining Work
 
-The backend holds all four clauses and is gated, but no production call site consumes it, and the two
-capabilities that call site needs are the **interpreter's**, not this phase's:
-
-- the alias's operation key is a *projection* — `<provider>/<share>/guest-alias`, derived from the two
-  resources it relates — so the gate it prepares against is not the gate for any node's own operation. A node
-  currently reaches exactly one gate, its own (`withStepPreparedGate`), which is right for the node and
-  insufficient for an operation projected from it;
-- the prepared call's dependency snapshot consumes the share's **managed** handle, which a different node
-  mints. Generative handles are never serialized (§ EE), so they must be carried in-process from the node that
-  minted one to the node that depends on it.
-
-Both are the chain interpreter's, and the [step-algebra phase](phase-12-step-algebra-and-project-plan.md)
-owns them; the call site that then consumes this backend is the demo's alias action, which the
-[worked-demo phase](phase-24-worked-demo.md) owns.
+None. The demo's use of this route — selecting the alias paths from its config and placing the call on its
+`copy-source` step — is the [worked-demo phase](phase-24-worked-demo.md)'s.
 
 ## Documentation Requirements
 

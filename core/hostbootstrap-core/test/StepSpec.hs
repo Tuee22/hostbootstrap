@@ -17,8 +17,110 @@ tests =
         , testGroup "frame segmentation" frameCases
         , testGroup "stable implementation identities" implementationIdentityCases
         , testGroup "plan validation" validationCases
+        , testGroup "projected operations" projectionCases
         , testGroup "step observations" observationCases
         ]
+
+{- | A node's __projected__ operations (§ CC).
+
+A relating resource's operation key is derived from the keys it relates, so it
+is nobody's own key. The plan is where a node claims one. Validation requires the
+claiming node to be the /last/ resource the key names, with every earlier one in
+its own dependency prefix — which is what makes the relation performable — and
+requires the claim to be unique across the plan.
+-}
+projectionCases :: [TestTree]
+projectionCases =
+    [ testCase "a step declares nothing by default and keeps what it declares, in order" $ do
+        map operationKeyText (stepProjectedOperations (copySourceStep "b" metal noop)) @?= []
+        let declared =
+                projectsOperation "core:deploy-vm/core:copy-source/guest-alias" $
+                    projectsOperation "core:copy-source/warm-cache" $
+                        copySourceStep "b" metal noop
+        map operationKeyText (stepProjectedOperations declared)
+            @?= ["core:copy-source/warm-cache", "core:deploy-vm/core:copy-source/guest-alias"]
+    , testCase "a validated plan carries each node's declared projections" $ do
+        plan <- either (assertFailure . show) pure (mkStepPlan aliasProjectionSteps)
+        map (map operationKeyText . stepProjectedOperations) (stepPlanSteps plan)
+            @?= [[], ["core:deploy-vm/core:copy-source/guest-alias"]]
+    , testCase "the declaring node is the last resource the key names" $ do
+        let refuse steps expected =
+                case mkStepPlan steps of
+                    Left err -> err @?= expected
+                    Right _ -> assertFailure "a projection outside its node was validated"
+        -- the provider node cannot claim it: the share is not behind it
+        refuse
+            [ projectsOperation
+                "core:deploy-vm/core:copy-source/guest-alias"
+                (deployVMStep "a" metal noop)
+            , copySourceStep "b" metal noop
+            ]
+            ( ProjectionOutsideStep
+                (CoreStepIdentity DeployVMId)
+                "core:deploy-vm/core:copy-source/guest-alias"
+            )
+        -- a resource named before the node must be one the plan ordered ahead
+        refuse
+            [ copySourceStep "b" metal noop
+            , projectsOperation "core:build-image/core:build-pb/x" (buildPbStep "c" metal noop)
+            ]
+            ( ProjectionOutsideStep
+                (CoreStepIdentity BuildPbId)
+                "core:build-image/core:build-pb/x"
+            )
+        -- another node's key alone is not this node's projection
+        refuse
+            [ deployVMStep "a" metal noop
+            , projectsOperation "core:deploy-vm/guest-alias" (copySourceStep "b" metal noop)
+            ]
+            (ProjectionOutsideStep (CoreStepIdentity CopySourceId) "core:deploy-vm/guest-alias")
+        -- the node's own key with nothing under it is not a projection
+        refuse
+            [projectsOperation "core:copy-source" (copySourceStep "b" metal noop)]
+            (ProjectionOutsideStep (CoreStepIdentity CopySourceId) "core:copy-source")
+        refuse
+            [projectsOperation "core:copy-source/" (copySourceStep "b" metal noop)]
+            (ProjectionOutsideStep (CoreStepIdentity CopySourceId) "core:copy-source/")
+        -- a shared textual stem is not the same node
+        refuse
+            [projectsOperation "core:copy-source-extra/guest-alias" (copySourceStep "b" metal noop)]
+            ( ProjectionOutsideStep
+                (CoreStepIdentity CopySourceId)
+                "core:copy-source-extra/guest-alias"
+            )
+    , testCase "a projected operation is claimed exactly once in the plan" $
+        case
+            mkStepPlan
+                [ projectsOperation
+                    "core:copy-source/alias"
+                    (projectsOperation "core:copy-source/alias" (copySourceStep "b" metal noop))
+                ] of
+            Left err -> err @?= DuplicateProjectedOperation "core:copy-source/alias"
+            Right _ -> assertFailure "one node claiming a projection twice was validated"
+    , testCase "a projection may not collide with a node's own operation key" $
+        -- An ensure step's tool name is free text, so its key can be spelled to
+        -- land exactly where another node projects. Both would then register,
+        -- gate, and settle the one durable operation record.
+        case
+            mkStepPlan
+                [ projectsOperation
+                    "core:ensure-docker/warm"
+                    (ensureStep "docker" "ensure docker" metal noop)
+                , ensureStep "docker/warm" "ensure the warm store" metal noop
+                ] of
+            Left err -> err @?= DuplicateProjectedOperation "core:ensure-docker/warm"
+            Right _ -> assertFailure "a projection over a node's own operation key was validated"
+    ]
+
+{- | The shape the guest alias needs: the provider, then the durable share that
+claims the relation between them. -}
+aliasProjectionSteps :: [Step]
+aliasProjectionSteps =
+    [ deployVMStep "launch the VM" metal noop
+    , projectsOperation
+        "core:deploy-vm/core:copy-source/guest-alias"
+        (copySourceStep "stage source into the VM" metal noop)
+    ]
 
 {- | What a step's action reports about its own node. Before it, an action
 returned @()@ and every node that did not throw looked alike. -}

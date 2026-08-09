@@ -44,6 +44,7 @@ module HostBootstrap.DocValidator
     checkNoReversal,
     checkSprintStructure,
     checkSubstrateBudget,
+    checkLegacyLedger,
   )
 where
 
@@ -102,6 +103,7 @@ validateRepo root = do
   reversalV <- concatMapM (checkNoReversal root) phaseDocs
   sprintV <- concatMapM (checkSprintStructure root) phaseDocs
   substrateV <- concatMapM (checkSubstrateBudget root) phaseDocs
+  ledgerV <- checkLegacyLedger root
   pure
     ( sortOn
         (\v -> (vFile v, vMessage v))
@@ -113,6 +115,7 @@ validateRepo root = do
             ++ readmeV
             ++ namingV
             ++ taxonomyV
+            ++ ledgerV
             ++ numberingV
             ++ headerV
             ++ orderingV
@@ -368,6 +371,69 @@ checkSubstrateBudget root file = do
               ("phase declares more than one non-baseline substrate: " ++ unwords special)
           | length special > 1
           ]
+
+{- | § I: every row of the legacy ledger names a __deleting phase__ that resolves.
+
+The ledger is permitted only because it records repository state — code still
+standing that the architecture does not want — rather than a plan obligation. An
+unowned row is exactly how that distinction collapses: with no phase whose
+completion removes it, a row becomes a standing cleanup obligation, which is the
+repair log § A forbids. So a row whose link does not resolve to a real phase
+document fails the build, and the ledger's absence is not a violation because an
+empty ledger is the healthy end state.
+-}
+checkLegacyLedger :: FilePath -> IO [Violation]
+checkLegacyLedger root = do
+  let ledger = root </> "DEVELOPMENT_PLAN" </> "legacy_tracking_for_deletion.md"
+      rel = rrel root ledger
+  exists <- doesFileExist ledger
+  if not exists
+    then pure []
+    else do
+      ls <- readLines ledger
+      let rows = [l | l <- ls, "|" `isPrefixOf` trimStart l, isTrackedRow l]
+      concatMapM (rowViolations root rel) rows
+
+{- | A table row that tracks a shape, as opposed to the header or its separator.
+A tracked row has the four columns the ledger declares and is not the header.
+-}
+isTrackedRow :: String -> Bool
+isTrackedRow l =
+  length (filter (== '|') l) >= 5
+    && not ("| Shape" `isPrefixOf` trimStart l)
+    && not ("|---" `isPrefixOf` filter (/= ' ') (trimStart l))
+
+-- | The deleting phase a row names must resolve to a phase document.
+rowViolations :: FilePath -> FilePath -> String -> IO [Violation]
+rowViolations root rel row =
+  case linkTargets row of
+    [] ->
+      pure
+        [ Violation
+            rel
+            "legacy ledger row names no deleting phase; § I requires every row to name one"
+        ]
+    targets -> concatMapM (resolveTarget root rel) targets
+  where
+    resolveTarget r f target = do
+      let candidate = r </> "DEVELOPMENT_PLAN" </> target
+      present <- doesFileExist candidate
+      pure
+        [ Violation f ("legacy ledger row names an unresolvable deleting phase: " ++ target)
+        | not present
+        ]
+
+-- | Markdown link targets in one line, unadorned by anchors or titles.
+linkTargets :: String -> [String]
+linkTargets = go
+  where
+    go [] = []
+    go (c : rest)
+      | c == '(' =
+          let (target, remainder) = break (== ')') rest
+           in [takeWhile (/= '#') target | isPhaseTarget target] ++ go remainder
+      | otherwise = go rest
+    isPhaseTarget t = "phase-" `isPrefixOf` t && ".md" `isInfixOf` t
 
 checkReadmeRefs :: FilePath -> IO [Violation]
 checkReadmeRefs root = do

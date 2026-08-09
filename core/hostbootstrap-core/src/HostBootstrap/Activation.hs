@@ -33,6 +33,7 @@ module HostBootstrap.Activation (
     -- * The signed manifest
     ActivationManifest (..),
     renderActivationManifest,
+    activationManifestFromWire,
 
     -- * The broker that signs it
     ActivationBroker,
@@ -41,6 +42,7 @@ module HostBootstrap.Activation (
     ActivationGrant,
     activationGrantSignature,
     signActivationManifest,
+    adoptRelayedActivationGrant,
 
     -- * What startup measures for itself
     MeasuredInstance (..),
@@ -86,6 +88,7 @@ import HostBootstrap.Authority (RootInvocationAuthority)
 import HostBootstrap.Handoff (
     ProjectVerificationKey,
     frameWire,
+    takeHandoffFrame,
     verificationKeyBytes,
  )
 import HostBootstrap.Protected (
@@ -196,6 +199,20 @@ instance Show ActivationGrant where
 activationGrantSignature :: ActivationGrant -> ByteString
 activationGrantSignature (ActivationGrant value) = value
 
+{- | Adopt a signature that arrived over the relay as this frame's grant.
+
+This exists because a nested frame's signature is produced by the root and
+travels back as bytes; without it the relayed half could not hold its own answer.
+It is safe for the same reason the wire is: __an 'ActivationGrant' is not
+authority__. It is a signature, and the only thing that consumes one is
+'verifyRuntimeRoleActivation', which checks it against the independently
+installed project verification key over the manifest's own domain-separated
+material. Adopting arbitrary bytes here therefore yields a grant that fails
+verification, not a grant that authorizes anything.
+-}
+adoptRelayedActivationGrant :: ByteString -> ActivationGrant
+adoptRelayedActivationGrant = ActivationGrant
+
 {- | Sign an activation manifest. Refuses a manifest with an empty revision or
 an empty effect row identity, so an unbound rollout cannot be signed.
 -}
@@ -224,6 +241,73 @@ signActivationManifest broker manifest
 signedMaterial :: ActivationManifest -> ByteString
 signedMaterial manifest =
     frameWire "hostbootstrap/activation/v1" <> frameWire (renderActivationManifest manifest)
+
+{- | Read a manifest back out of its canonical bytes.
+
+This is what makes a __relayed__ signature possible. A nested frame cannot reach
+'withActivationBroker' — it consumes a @RootInvocationAuthority@ only the root
+mints — so it sends the manifest to the root instead. The root must not sign
+opaque bytes: signing is an authorization, and authorizing something it cannot
+read would make the broker a blind oracle. So it rebuilds the value and puts it
+back through the same 'signActivationManifest' validation a local caller faces.
+
+The decoder is total and every failure is named. Trailing bytes are refused
+rather than ignored, because a manifest that renders to a prefix of the received
+bytes is not the manifest that was sent.
+-}
+activationManifestFromWire :: ByteString -> Either ActivationError ActivationManifest
+activationManifestFromWire raw = do
+    (scope, afterScope) <- textField raw
+    (planDigest, afterPlan) <- textField afterScope
+    (specDigest, afterSpec) <- textField afterPlan
+    (binaryDigest, afterBinary) <- textField afterSpec
+    (frame, afterFrame) <- textField afterBinary
+    (revision, afterRevision) <- textField afterFrame
+    (configDigest, afterConfig) <- textField afterRevision
+    (secretDigest, afterSecret) <- textField afterConfig
+    (service, afterService) <- textField afterSecret
+    (rolePlanDigest, afterRolePlan) <- textField afterService
+    (effectRow, afterEffects) <- frameField afterRolePlan
+    (secretChannel, afterChannel) <- textField afterEffects
+    effects <- effectList effectRow
+    if ByteString.null afterChannel
+        then
+            Right
+                ActivationManifest
+                    { manifestScope = scope
+                    , manifestPlanDigest = planDigest
+                    , manifestSpecDigest = specDigest
+                    , manifestBinaryDigest = binaryDigest
+                    , manifestFrame = frame
+                    , manifestRevision = revision
+                    , manifestConfigDigest = configDigest
+                    , manifestSecretDigest = secretDigest
+                    , manifestService = service
+                    , manifestRolePlanDigest = rolePlanDigest
+                    , manifestPermittedEffects = effects
+                    , manifestSecretChannel = secretChannel
+                    }
+        else Left (ActivationManifestInvalid "the manifest wire has trailing bytes")
+  where
+    frameField bytes =
+        either
+            (const (Left (ActivationManifestInvalid "the manifest wire is truncated")))
+            Right
+            (takeHandoffFrame bytes)
+
+    textField bytes = do
+        (value, rest) <- frameField bytes
+        case TextEncoding.decodeUtf8' value of
+            Left _ -> Left (ActivationManifestInvalid "a manifest field is not valid UTF-8")
+            Right decoded -> Right (decoded, rest)
+
+    -- The row is itself length-prefixed, so a row of two entries cannot be read
+    -- as one longer entry; this walks the inner frames to exhaustion.
+    effectList bytes
+        | ByteString.null bytes = Right []
+        | otherwise = do
+            (value, rest) <- textField bytes
+            fmap (value :) (effectList rest)
 
 -- ---------------------------------------------------------------------------
 -- Measurement

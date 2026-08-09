@@ -49,6 +49,10 @@ module HostBootstrap.Step (
     OperationKey,
     operationKeyText,
 
+    -- * Plan-owned projected operations
+    projectsOperation,
+    stepProjectedOperations,
+
     -- * Opaque steps
     Step,
     StepAction,
@@ -110,9 +114,15 @@ module HostBootstrap.Step (
 )
 where
 
-import Data.List (group, sort)
+import Data.List (group, isPrefixOf, sort)
 import Data.Text (Text)
+import qualified Data.Text as Text
 import Data.Word (Word64)
+import HostBootstrap.Harness (
+    conflictObservationMarker,
+    refusedObservationMarker,
+    unsupportedObservationMarker,
+ )
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Lifecycle.Execution (StepExecution)
 import HostBootstrap.Lift (LiftContext)
@@ -195,14 +205,19 @@ observationDetail observation = case observation of
     StepUnchanged -> "unchanged"
     StepChanged -> "changed"
     StepConflict expected observed resolution ->
-        "conflict: expected "
+        marker conflictObservationMarker
+            <> " expected "
             <> expected
             <> ", observed "
             <> observed
             <> "; "
             <> resolution
-    StepUnsupported reason -> "unsupported: " <> reason
-    StepRefused reason -> "refused: " <> reason
+    StepUnsupported reason -> marker unsupportedObservationMarker <> " " <> reason
+    StepRefused reason -> marker refusedObservationMarker <> " " <> reason
+  where
+    -- The markers are the harness's, so the row the interpreter prints and the
+    -- row the report card classifies cannot drift apart (§ Z).
+    marker = Text.pack
 
 {- | One execution frame. The id is semantic; the label is presentation only.
 Validation rejects two labels for the same id.
@@ -354,6 +369,10 @@ data Step = Step
     -- first.
     , internalStepReverse :: [HostConfig -> TeardownAction -> IO TeardownOutcome]
     -- ^ The reverse effect this step declares, retained the same way.
+    , internalStepProjections :: [String]
+    -- ^ The operations this step projects out of its own. Retained as declared
+    -- so 'mkStepPlan' can reject one that does not live under this step's own
+    -- operation key, or one two steps claim.
     }
 
 stepLabel :: Step -> String
@@ -395,6 +414,40 @@ stepOperationKey step =
         case stepIdentity step of
             CoreStepIdentity identity -> "core:" ++ stepKindName (CoreKind identity)
             ProjectStepIdentity identity -> "project:" ++ stepKindName (ProjectKind identity)
+
+{- | Declare an operation this step __projects__ out of its own node.
+
+A resource that /relates/ two others has an operation key derived from the keys
+it relates — the provider guest alias is
+@\<provider\>\/\<share\>\/guest-alias@ — so it is not any node's own key, and a
+node that may reach only its own gate can never prepare it. Declaring the
+projection here puts it in the same validated plan the forward traversal, the
+descent, and the reverse projection are taken from, so the operation an adapter
+prepares is a node of the plan rather than a key it composed at the call site.
+
+'mkStepPlan' requires the projected key to be exactly
+
+@\<zero or more of this step's dependency keys, in plan order\>\/\<this step's own key\>\/\<suffix\>@
+
+with a non-empty separator-free suffix, and requires it to be claimed once across
+the whole plan. The declaring node is therefore the /last/ resource the key
+relates — the suffix names the relation, not another resource — which
+is the only node that can perform the relation: every other resource named in
+the key is already behind it in the plan. The guest alias is claimed by the
+durable-share node, whose prefix contains the provider. The interpreter then
+registers the projection with that node, opens its gate with the node's, and
+settles it with the node.
+-}
+projectsOperation :: String -> Step -> Step
+projectsOperation key step =
+    step{internalStepProjections = internalStepProjections step ++ [key]}
+
+{- | The operations this step projects, in declared order. Each is validated by
+'mkStepPlan', so an 'OperationKey' read out of a plan step is one the plan
+admitted rather than one a caller spelled.
+-}
+stepProjectedOperations :: Step -> [OperationKey]
+stepProjectedOperations = map OperationKey . internalStepProjections
 
 {- | Run one step's forward action against the descriptor the interpreter minted
 for it. A caller cannot supply a 'StepExecution' of its own: the type has no
@@ -541,6 +594,10 @@ data StepPlanError
       DuplicateStepReverse StepIdentity Int
     | -- | the step never enters a reverse projection, so its effect is dead
       ReverseOnPreservedStep StepIdentity
+    | -- | a projected operation that does not live under the declaring node
+      ProjectionOutsideStep StepIdentity String
+    | -- | a projected operation claimed twice, or already a node's own
+      DuplicateProjectedOperation String
     deriving (Eq, Show)
 
 {- | Validate the exact declared sequence. Normal steps must form contiguous
@@ -572,6 +629,8 @@ mkStepPlan steps
     | Just failure <- descentFailure =
         Left failure
     | Just failure <- reverseFailure =
+        Left failure
+    | Just failure <- projectionFailure =
         Left failure
     | otherwise = Right (StepPlan steps)
   where
@@ -616,6 +675,47 @@ mkStepPlan steps
                 (_, declared) -> Just (DuplicateStepReverse (stepIdentity step) declared)
             | step <- steps
             ]
+    {- A projected operation is the relation the declaring node completes, and it
+    is claimed exactly once in the whole plan. The shape rule is what makes the
+    projection reachable from its declaring node and unreachable from a sibling:
+    every resource the key names before the declaring node is one the plan
+    already ordered ahead of it, so the node holds every input the relation
+    needs. The uniqueness rule is what stops two nodes registering, gating, and
+    settling the same durable operation record. -}
+    ownOperationKeys = map (operationKeyText . stepOperationKey) steps
+    declaredProjections =
+        [ (step, take index ownOperationKeys, key)
+        | (index, step) <- zip [0 ..] steps
+        , key <- internalStepProjections step
+        ]
+    projectionFailure =
+        firstJust
+            ( [ if relates dependencyKeys (operationKeyText (stepOperationKey step)) key
+                    then Nothing
+                    else Just (ProjectionOutsideStep (stepIdentity step) key)
+              | (step, dependencyKeys, key) <- declaredProjections
+              ]
+                ++ [ if claimed > 1 || key `elem` ownOperationKeys
+                        then Just (DuplicateProjectedOperation key)
+                        else Nothing
+                   | key <- unique [key | (_, _, key) <- declaredProjections]
+                   , let claimed = length [() | (_, _, candidate) <- declaredProjections, candidate == key]
+                   ]
+            )
+    {- Consume each dependency key the projection names, left to right and in
+    plan order, then the declaring node's own key, then require a non-empty
+    suffix. Operation keys are unique and a segment is only consumed when the
+    separator follows it, so the scan is unambiguous. -}
+    relates dependencyKeys owner key =
+        case stripSegment owner (foldl consume key dependencyKeys) of
+            Nothing -> False
+            Just suffix -> not (null suffix) && '/' `notElem` suffix
+      where
+        consume remaining dependencyKey =
+            maybe remaining id (stripSegment dependencyKey remaining)
+    stripSegment segment value
+        | (segment ++ "/") `isPrefixOf` value = Just (drop (length segment + 1) value)
+        | otherwise = Nothing
     descentFailure = firstJust (map descentFailureFor (zip [1 :: Int ..] descentFrameIds))
     descentFailureFor (position, fid)
         | position == length descentFrameIds =
@@ -731,6 +831,7 @@ coreStep identity reversePolicy label frame action =
         action
         []
         []
+        []
 
 deployVMStep :: String -> StepFrame -> StepAction -> Step
 deployVMStep = coreStep DeployVMId ProjectManagedReverse
@@ -778,5 +879,6 @@ projectStep identity reversePolicy label frame action =
         initialStepImplementationRevision
         initialStepReverseAdapterRevision
         action
+        []
         []
         []

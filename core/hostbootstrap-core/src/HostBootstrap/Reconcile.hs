@@ -25,6 +25,8 @@ module HostBootstrap.Reconcile
     lifecyclePlanFrames,
     lifecyclePlanSteps,
     stepExecutionFor,
+    carryManagedResource,
+    withCarriedManagedResource,
     Unclassified,
     Managed,
     Unmanaged,
@@ -57,6 +59,10 @@ module HostBootstrap.Reconcile
     PlannedEdge,
     withPlannedEdge,
     withProviderGuestAliasProjection,
+    withNodeResourceOfKind,
+    withNodeGuestAliasProjection,
+    withNodeObservedResource,
+    plannedNodeOperation,
     withObservedPlannedResource,
     OwnershipReceipt,
     ownershipReceiptOperationKey,
@@ -138,7 +144,20 @@ import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Lifecycle.Execution.Internal (
   ExecutionNode (..),
   StepExecution,
+  StepRuntime,
+  carriedResourceGeneration,
+  carriedResourceKey,
+  carriedResourceObservationVersion,
+  executionNodeDependencyKeys,
+  mintCarriedResource,
   mintStepExecution,
+  pushCarriedResource,
+  readCarriedResources,
+  stepExecutionNode,
+  stepExecutionOperationKey,
+  stepExecutionPlanDigest,
+  stepExecutionRuntime,
+  stepRuntimeCarrier,
  )
 import HostBootstrap.Lifecycle.Prepared (
   PreparedGate,
@@ -157,6 +176,7 @@ import HostBootstrap.Step
     stepIdentity,
     stepOperationKey,
     stepPlanSteps,
+    stepProjectedOperations,
   )
 
 data LifecyclePlan scope planId = LifecyclePlan CanonicalPlanSnapshot StepPlan
@@ -226,9 +246,10 @@ first step. An interpreter iterating the plan's own steps never sees 'Nothing'.
 stepExecutionFor ::
   LifecyclePlan scope planId ->
   HostConfig ->
+  StepRuntime scope planId ->
   Step ->
   Maybe (StepExecution scope planId)
-stepExecutionFor plan cfg step
+stepExecutionFor plan cfg runtime step
   | not planMember = Nothing
   | otherwise =
       Just
@@ -236,29 +257,118 @@ stepExecutionFor plan cfg step
             cfg
             (lifecyclePlanDigest plan)
             (executionNodeFor steps step)
+            runtime
         )
   where
     steps = lifecyclePlanSteps plan
     planMember =
       stepIdentity step `elem` map stepIdentity (stepPlanSteps steps)
 
-{- | The neutral view of one node: its operation key, its frame, and the
-operation keys of its exact ordered plan prefix. The prefix is walked in plan
-order, and plan identities are unique, so each edge resolves to exactly one
-step.
+{- | The neutral view of one node: its operation key, its frame, the operation
+keys of its exact ordered plan prefix, and the operations it projects. The
+prefix is walked in plan order, and plan identities are unique, so each edge
+resolves to exactly one step. The projections are the plan's own, validated by
+'HostBootstrap.Step.mkStepPlan' to live under this node's key, so a node cannot
+widen the set of gates its action may take.
 -}
 executionNodeFor :: StepPlan -> Step -> ExecutionNode
 executionNodeFor plan step =
   ExecutionNode
     { executionNodeOperationKey = Text.pack (operationKeyText (stepOperationKey step)),
       executionNodeFrame = Text.pack (frameId (stepFrame step)),
-      executionNodeDependencyKeys =
-        [ Text.pack (operationKeyText (stepOperationKey candidate))
+      executionNodeDependencies =
+        [ ( Text.pack (operationKeyText (stepOperationKey candidate)),
+            Text.pack (frameId (stepFrame candidate))
+          )
         | identity <- stepDependencies plan step,
           candidate <- stepPlanSteps plan,
           stepIdentity candidate == identity
-        ]
+        ],
+      executionNodeProjectedKeys =
+        map (Text.pack . operationKeyText) (stepProjectedOperations step)
     }
+
+{- | Carry one managed resource this node acquired to the nodes that depend on
+it (§ EE).
+
+A generative handle is never serialised: its @id@ index is a skolem of the
+bracket that minted it, and durable bytes cannot reproduce one. A node whose
+prepared call needs a /managed/ dependency therefore has to receive it in
+process, from the node that acquired it, inside the same interpretation. The
+carrier is the interpretation's own state and is indexed by the plan's @scope@
+and @planId@, so a handle carried under one plan cannot be read out under
+another.
+
+Only 'completeReconcile' and 'completePreparedUnchanged' produce the @Managed@
+handle this takes, so an unowned or foreign resource cannot be carried. Carrying
+a key twice keeps the newer identity, which is the one a re-run acquired.
+-}
+carryManagedResource ::
+  StepExecution scope planId ->
+  ResourceHandle scope planId id resource Managed phase ->
+  IO ()
+carryManagedResource execution (ResourceHandle key generation version) =
+  pushCarriedResource
+    (stepRuntimeCarrier (stepExecutionRuntime execution))
+    (mintCarriedResource key generation version)
+
+{- | Read one carried managed resource back under fresh generative indices, so
+this node can seal it into an 'OperationPreconditionSet'.
+
+The key must be one this node may name — its own, or a member of its exact
+ordered plan prefix — so a node reaches the resource it acquired and the ones it
+declared an edge to, and no others. Its own is admitted because a relation a node
+performs may depend on the resource that same node just acquired: the carrier is
+where a managed handle lives for the interpretation, so the acquiring node
+publishes it there rather than threading a generative handle through call
+signatures. The continuation is rank-2, so the recovered @dependencyId@ is a
+skolem the caller cannot choose and the handle can only be paired with a probe
+minted in the same continuation.
+-}
+withCarriedManagedResource ::
+  StepExecution scope planId ->
+  Text ->
+  ( forall dependencyId dependency phase.
+    ResourceHandle scope planId dependencyId dependency Managed phase ->
+    result
+  ) ->
+  IO (Either ReconcileError result)
+withCarriedManagedResource execution dependencyKey consume
+  | dependencyKey `notElem` map fst (nodeResources execution) =
+      pure
+        ( Left
+            ( Conflict
+                ( ConflictDetail
+                    dependencyKey
+                    "this node's own operation or a member of its plan dependency prefix"
+                    "an operation this node neither owns nor depends on"
+                    "declare the dependency in the plan before adopting its handle"
+                )
+            )
+        )
+  | otherwise = do
+      carried <- readCarriedResources (stepRuntimeCarrier (stepExecutionRuntime execution))
+      pure $ case filter ((== dependencyKey) . carriedResourceKey) carried of
+        [] ->
+          Left
+            ( Failure
+                ( FailureDetail
+                    "adopt carried dependency"
+                    ( "no managed resource has been carried for plan dependency "
+                        <> dependencyKey
+                    )
+                    ReprobeBeforeRetry
+                )
+            )
+        (entry : _) ->
+          Right
+            ( consume
+                ( ResourceHandle
+                    (carriedResourceKey entry)
+                    (carriedResourceGeneration entry)
+                    (carriedResourceObservationVersion entry)
+                )
+            )
 
 -- | Every frame identifier the validated plan declares, in chain order. The
 -- command gate compares a requested frame against this list, so an authority
@@ -543,9 +653,9 @@ withProviderGuestAliasProjection ::
   Either ReconcileError result
 withProviderGuestAliasProjection (LifecyclePlan _ plan) provider share consume
   | providerKey /= "core:deploy-vm" =
-      wrongKind providerKey "provider operation core:deploy-vm"
+      wrongAliasKind providerKey "provider operation core:deploy-vm"
   | shareKey /= "core:copy-source" =
-      wrongKind shareKey "durable-share operation core:copy-source"
+      wrongAliasKind shareKey "durable-share operation core:copy-source"
   | otherwise =
       case (findStep providerKey, findStep shareKey) of
         (Just providerStep, Just shareStep)
@@ -582,16 +692,235 @@ withProviderGuestAliasProjection (LifecyclePlan _ plan) provider share consume
       find
         ((== Text.unpack key) . operationKeyText . stepOperationKey)
         (stepPlanSteps plan)
-    wrongKind observed expected =
+
+{- | Resolve a resource __this node may name__ as a planned resource (§ CC):
+either its own, or one member of its exact ordered plan prefix.
+
+A step action never receives the 'LifecyclePlan': it receives the descriptor the
+plan minted for its own node. That descriptor carries the node's own key and
+frame together with its edge set and each member's frame, which is everything a
+planned resource is — so a node can name what it acquires and what it declared a
+dependency on, and nothing else. A key outside that set is refused even when the
+plan contains it, because acting on a resource a node did not declare an edge to
+is acting on a precondition the plan never ordered.
+-}
+withNodeResourceOfKind ::
+  StepExecution scope planId ->
+  PlannedResourceKind resource ->
+  Text ->
+  ( forall id frame.
+    PlannedResource scope planId id resource frame ->
+    result
+  ) ->
+  Either ReconcileError result
+withNodeResourceOfKind execution resourceKind requestedKey consume
+  | not (plannedKindAccepts resourceKind requestedKey) =
       Left
         ( Conflict
             ( ConflictDetail
-                observed
-                expected
-                "resource belongs to another operation family"
-                "use the closed planned resource kind for the provider guest projection"
+                requestedKey
+                ("operation key for " <> plannedKindName resourceKind)
+                "operation key belongs to another resource family"
+                "use the closed plan resource kind associated with this operation"
             )
         )
+  | otherwise =
+      case [frame | (key, frame) <- nodeResources execution, key == requestedKey] of
+        (frame : _) ->
+          Right
+            ( consume
+                ( PlannedResource
+                    (stepExecutionPlanDigest execution)
+                    requestedKey
+                    frame
+                )
+            )
+        [] ->
+          Left
+            ( Failure
+                ( FailureDetail
+                    "resolve node resource"
+                    ( "operation key is neither this node's own nor in its plan "
+                        <> "dependency prefix: "
+                        <> requestedKey
+                    )
+                    DoNotRetry
+                )
+            )
+
+{- | Derive the provider-guest durable alias from __this node's own__ declared
+projection.
+
+'withProviderGuestAliasProjection' derives the same relating resource from the
+whole plan, which is right for a plan-level caller and unreachable from a step
+action. This is the node's route: the alias key must be one the plan validated as
+a projection of this node, and the provider must come before the durable share in
+the node's own plan order. Validation already guarantees the declaring node is
+the last resource the key names — the durable share — so the node holds every
+input the relation needs, and it cannot mint an alias identity the plan did not
+admit.
+-}
+withNodeGuestAliasProjection ::
+  StepExecution scope planId ->
+  PlannedResource scope planId providerId ProviderResource providerFrame ->
+  PlannedResource scope planId shareId DurableShareResource shareFrame ->
+  ( forall aliasId.
+    PlannedResource scope planId aliasId DurableAliasResource shareFrame ->
+    PlannedEdge
+      scope
+      planId
+      aliasId
+      DurableAliasResource
+      shareFrame
+      shareId
+      DurableShareResource
+      shareFrame ->
+    result
+  ) ->
+  Either ReconcileError result
+withNodeGuestAliasProjection execution provider share consume
+  | providerKey /= "core:deploy-vm" =
+      wrongAliasKind providerKey "provider operation core:deploy-vm"
+  | shareKey /= "core:copy-source" =
+      wrongAliasKind shareKey "durable-share operation core:copy-source"
+  | aliasKey `notElem` executionNodeProjectedKeys (stepExecutionNode execution) =
+      Left
+        ( Conflict
+            ( ConflictDetail
+                aliasKey
+                "an operation this node projects"
+                "an operation the plan did not place under this node"
+                "declare the projection on the step that performs it"
+            )
+        )
+  | not (providerKey `precedes` shareKey) =
+      Left
+        ( Conflict
+            ( ConflictDetail
+                aliasKey
+                "validated provider -> durable-share prefix"
+                "durable share is not downstream of the provider"
+                "derive the projection from the finalized provider/share plan"
+            )
+        )
+  | otherwise =
+      Right
+        ( consume
+            (PlannedResource (plannedResourcePlanDigest share) aliasKey (plannedResourceFrame share))
+            (PlannedEdge aliasKey shareKey)
+        )
+  where
+    providerKey = plannedResourceKey provider
+    shareKey = plannedResourceKey share
+    aliasKey = providerKey <> "/" <> shareKey <> "/guest-alias"
+    ordered = map fst (nodeResources execution)
+    precedes earlier later =
+      case break (== earlier) ordered of
+        (_, _ : after) -> later `elem` after
+        (_, []) -> False
+
+wrongAliasKind :: Text -> Text -> Either ReconcileError result
+wrongAliasKind observed expected =
+  Left
+    ( Conflict
+        ( ConflictDetail
+            observed
+            expected
+            "resource belongs to another operation family"
+            "use the closed planned resource kind for the provider guest projection"
+        )
+    )
+
+{- | Observe one of this node's nameable resources, checking the planned value
+came out of the same interpretation the descriptor names.
+
+The plan-level 'withObservedPlannedResource' takes the plan for symmetry and
+never reads it; here the descriptor's digest is a real comparison, because a step
+action holds only descriptors and could otherwise pair a planned resource from
+another plan with this node's gate.
+-}
+withNodeObservedResource ::
+  StepExecution scope planId ->
+  PlannedResource scope planId id resource frame ->
+  Word64 ->
+  Word64 ->
+  ( ResourceHandle scope planId id resource Unclassified Observed ->
+    result
+  ) ->
+  Either ReconcileError result
+withNodeObservedResource execution planned generation version consume
+  | plannedResourcePlanDigest planned /= stepExecutionPlanDigest execution =
+      Left
+        ( Conflict
+            ( ConflictDetail
+                (plannedResourceKey planned)
+                ("a planned resource from plan " <> stepExecutionPlanDigest execution)
+                ("a planned resource from plan " <> plannedResourcePlanDigest planned)
+                "resolve the resource through this node's own descriptor"
+            )
+        )
+  | otherwise = withObservedPlannedResourceValues planned generation version consume
+
+{- | Plan one operation on __this node's own__ resource.
+
+The plan-level 'plannedOperation' reads the target's ordered edge set out of the
+plan. A step action has no plan, but it has its own node's edge set on the
+descriptor, which is the same list for the same node — so this is restricted to
+the node's own resource rather than any planned one. Reconciliation narrows the
+prefix to its resource-bearing members exactly as the plan-level route does.
+-}
+plannedNodeOperation ::
+  StepExecution scope planId ->
+  PlannedResource scope planId id resource frame ->
+  ResourceHandle scope planId id resource Unclassified Observed ->
+  Text ->
+  Either
+    ReconcileError
+    (OperationDescriptor scope planId id resource Observed Provisioned)
+plannedNodeOperation execution planned handle callDigest
+  | plannedResourceKey planned /= stepExecutionOperationKey execution =
+      Left
+        ( Conflict
+            ( ConflictDetail
+                (plannedResourceKey planned)
+                ("this node's own operation " <> stepExecutionOperationKey execution)
+                "another node's operation"
+                "plan an operation on the node's own resource"
+            )
+        )
+  | plannedResourceKey planned /= resourceHandleKey handle =
+      Left
+        ( Conflict
+            ( ConflictDetail
+                (resourceHandleKey handle)
+                ("planned target " <> plannedResourceKey planned)
+                "different observed target"
+                "prepare the handle obtained from the same planned resource"
+            )
+        )
+  | nullText callDigest =
+      Left (Failure (FailureDetail "plan operation" "call digest is empty" DoNotRetry))
+  | otherwise =
+      Right
+        ( OperationDescriptor
+            (plannedResourcePlanDigest planned)
+            (plannedResourceKey planned)
+            callDigest
+            [ key
+            | key <- executionNodeDependencyKeys (stepExecutionNode execution)
+            , key `elem` plannedResourceFamilyKeys
+            ]
+        )
+
+{- | Every resource this node may name, in plan order: its dependency prefix
+followed by its own.
+-}
+nodeResources :: StepExecution scope planId -> [(Text, Text)]
+nodeResources execution =
+  executionNodeDependencies node
+    ++ [(executionNodeOperationKey node, executionNodeFrame node)]
+  where
+    node = stepExecutionNode execution
 
 withObservedPlannedResource ::
   LifecyclePlan scope planId ->
@@ -602,7 +931,17 @@ withObservedPlannedResource ::
     result
   ) ->
   Either ReconcileError result
-withObservedPlannedResource _ planned generation version consume
+withObservedPlannedResource _ = withObservedPlannedResourceValues
+
+withObservedPlannedResourceValues ::
+  PlannedResource scope planId id resource frame ->
+  Word64 ->
+  Word64 ->
+  ( ResourceHandle scope planId id resource Unclassified Observed ->
+    result
+  ) ->
+  Either ReconcileError result
+withObservedPlannedResourceValues planned generation version consume
   | nullText key =
       Left (Failure (FailureDetail "observe resource" "resource key is empty" DoNotRetry))
   | generation == 0 =

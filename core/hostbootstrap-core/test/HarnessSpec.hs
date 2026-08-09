@@ -15,8 +15,13 @@ import qualified HostBootstrap.Authority as Authority
 import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Harness
+import HostBootstrap.Step (
+    StepObservation (StepConflict, StepRefused, StepUnsupported),
+    observationDetail,
+ )
 import HostBootstrap.Harness.Ownership (
     OwnedHarnessRoot,
+    harnessAuthorityStoreDirectory,
     acquireOwnedRunConfig,
     ownedHarnessConfigPath,
     protectedProjectRunOwnership,
@@ -24,19 +29,35 @@ import HostBootstrap.Harness.Ownership (
     withOwnedHarnessRoot,
  )
 import HostBootstrap.Lifecycle.Mode (
-    ModeError (ModeRecoveryRequired),
+    ModeError (ModeRecoveryRequired, ModeStoreFailure),
+    OpenRevisionKind (CompletedMigration, IncompleteMigration),
+    RunId,
     RunLeaseBinding (ExistingRunLeaseBinding, FreshRunLeaseBinding),
+    VerifiedIncompleteRunLease,
     bindRunLease,
+    harnessPreconditions,
     harnessRootHarnessAuthority,
     harnessRootRunId,
     harnessRootUnboundLease,
     modeErrorMessage,
     persistPlanSnapshot,
+    recordOpenRevisionMigration,
+    recoverAbandonedHarnessRuns,
     runIdText,
     verifyPlanSnapshot,
+    withHarnessRoot,
  )
-import HostBootstrap.ProjectRoot (withCanonicalProjectRoot)
-import HostBootstrap.Protected (protectedStoreRoot, withProtectedEntry)
+import HostBootstrap.ProjectRoot (canonicalProjectRootPath, withCanonicalProjectRoot)
+import HostBootstrap.Protected (
+    Expectation (ExpectAbsent),
+    ProtectedSession,
+    ProtectedStore,
+    compareAndSwapProtectedRecord,
+    mkRecordKey,
+    openProtectedStore,
+    protectedStoreRoot,
+    withProtectedEntry,
+ )
 import System.Directory (
     createDirectory,
     doesDirectoryExist,
@@ -155,25 +176,69 @@ suiteCases =
                         [ ("passing", Pass)
                         , ("asserted", Fail "the marker was absent")
                         , ("refused", Refused "a production cluster is running")
+                        , ("conflicted", Conflicted "conflict: expected the run's VM, observed a foreign VM")
+                        , ("skipped", Unsupported "unsupported: no kube toolchain in this frame")
                         , ("broken", LifecycleFailed "kind create cluster failed")
                         , ("teardown", TeardownFailed "the VM did not stop")
                         ]
                     )
-        assertBool ("counts only the pass: " ++ card) ("1/5 passed" `isInfixOf` card)
+        assertBool ("counts only the pass: " ++ card) ("1/7 passed" `isInfixOf` card)
         mapM_
             (\expected -> assertBool ("card contains " ++ expected ++ ":\n" ++ card) (expected `isInfixOf` card))
-            [ "PASS    passing"
-            , "FAIL    asserted — the marker was absent"
-            , "REFUSED refused — a production cluster is running"
-            , "BROKEN  broken — kind create cluster failed"
-            , "LEAKED? teardown — the VM did not stop"
+            [ "PASS     passing"
+            , "FAIL     asserted — the marker was absent"
+            , "REFUSED  refused — a production cluster is running"
+            , "CONFLICT conflicted — conflict: expected the run's VM, observed a foreign VM"
+            , "SKIPPED  skipped — unsupported: no kube toolchain in this frame"
+            , "BROKEN   broken — kind create cluster failed"
+            , "LEAKED?  teardown — the VM did not stop"
             ]
         -- Every non-passing outcome is counted as a failure, and no outcome is
         -- silently treated as success.
         map
             caseResultPassed
-            [Pass, Fail "x", Refused "x", LifecycleFailed "x", TeardownFailed "x"]
-            @?= [True, False, False, False, False]
+            [ Pass
+            , Fail "x"
+            , Refused "x"
+            , Conflicted "x"
+            , Unsupported "x"
+            , LifecycleFailed "x"
+            , TeardownFailed "x"
+            ]
+            @?= [True, False, False, False, False, False, False]
+    , {- A node that did not reach its target state already says which of the
+      three it was, so the row the report card renders is that node's own outcome
+      rather than one undifferentiated BROKEN (the test-harness phase). -}
+      testCase "a bring-up failure carries the node's own outcome into its row" $ do
+        classifyLifecycleReason
+            "project up: [host] deploy-vm — launch: conflict: expected ours, observed foreign; delete it"
+            @?= Just
+                ( Conflicted
+                    "project up: [host] deploy-vm — launch: conflict: expected ours, observed foreign; delete it"
+                )
+        classifyLifecycleReason "project up: [host] deploy-kind — kind: unsupported: no kube toolchain"
+            @?= Just
+                (Unsupported "project up: [host] deploy-kind — kind: unsupported: no kube toolchain")
+        classifyLifecycleReason "project up: [host] deploy-kind — kind: refused: state this run does not own"
+            @?= Just
+                (Refused "project up: [host] deploy-kind — kind: refused: state this run does not own")
+        -- A cause naming none of them stays an ordinary lifecycle failure rather
+        -- than being guessed into one of the three.
+        classifyLifecycleReason "docker: command not found" @?= Nothing
+    , testCase "the observation the interpreter renders is the one the card classifies" $
+        -- One shared marker, so a row printed by the chain and a row classified
+        -- by the harness cannot drift apart.
+        mapM_
+            ( \(observation, expected) ->
+                classifyLifecycleReason (T.unpack (observationDetail observation)) @?= Just expected
+            )
+            [
+                ( StepConflict "ours" "foreign" "delete it"
+                , Conflicted "conflict: expected ours, observed foreign; delete it"
+                )
+            , (StepUnsupported "no backend", Unsupported "unsupported: no backend")
+            , (StepRefused "not ours", Refused "refused: not ours")
+            ]
     , testCase "`all` runs the whole matrix (rows labeled by variant)" $ do
         outcome <- runSuiteSelection passthroughOwnership twoCaseSuite [variant ["a", "b"] "v0"]
         case outcome of
@@ -538,6 +603,135 @@ withTypedOwnership action =
                             )
         either (assertFailure . show) pure =<< prepared
 
+{- | Leave one __abandoned bound__ run in the store the production ownership
+bracket will sweep, carrying the given migration side of the activation barrier,
+then hand that bracket to the body.
+
+The run is abandoned the way a killed one is: its lease is bound to a persisted
+snapshot and never closed. Everything here goes through the same public openers
+production uses, so what the body exercises is the real sweep rather than a
+stand-in for it.
+-}
+withAbandonedMigration ::
+    OpenRevisionKind ->
+    (forall projectId. HarnessRunOwnership (OwnedHarnessRoot projectId) -> IO ()) ->
+    IO ()
+withAbandonedMigration kind = withAbandonedMigrationRecording kind False
+
+{- | 'withAbandonedMigration', optionally recording an effect for the abandoned
+run so the no-resources proof has something to refuse.
+-}
+withAbandonedMigrationRecording ::
+    OpenRevisionKind ->
+    Bool ->
+    (forall projectId. HarnessRunOwnership (OwnedHarnessRoot projectId) -> IO ()) ->
+    IO ()
+withAbandonedMigrationRecording kind recordEffect body =
+    withSystemTempDirectory "hostbootstrap-abandoned-migration" $ \root -> do
+        prepared <-
+            either (assertFailure . show) pure $
+                Authority.withInstalledProject "hostbootstrap-demo" $ \project ->
+                    withCanonicalProjectRoot root root $ \canonicalRoot -> do
+                        -- The exact store the ownership bracket sweeps: derived
+                        -- from the *canonical* root and namespaced by installed
+                        -- project identity, as `protectedProjectRunOwnership`
+                        -- derives it. Opening a differently-spelled path would
+                        -- seed a store nothing under test ever reads.
+                        store <-
+                            either (assertFailure . show) pure
+                                =<< openProtectedStore
+                                    ( canonicalProjectRootPath canonicalRoot
+                                        </> harnessAuthorityStoreDirectory
+                                        </> T.unpack (Authority.installedProjectName project)
+                                    )
+                        abandonBoundRunWithMigration store project kind recordEffect
+                        body
+                            ( protectedProjectRunOwnership
+                                project
+                                canonicalRoot
+                                root
+                                (root </> ".test_data")
+                            )
+        either (assertFailure . show) pure =<< prepared
+
+{- | Take a harness run all the way to a bound lease and then walk away from it,
+recording the migration side of the barrier it was on.
+-}
+abandonBoundRunWithMigration ::
+    ProtectedStore ->
+    Authority.InstalledProject projectId ->
+    OpenRevisionKind ->
+    Bool ->
+    IO ()
+abandonBoundRunWithMigration store project kind recordEffect = do
+    swept <- recoverAbandonedHarnessRuns store project resolvesNothing resolvesNothing
+    proof <- either (assertFailure . show) pure swept
+    outcome <-
+        withHarnessRoot
+            store
+            project
+            Authority.ProjectUp
+            (harnessPreconditions project "/nonexistent-hostbootstrap-dir" (pure False))
+            proof
+            ( \harnessRoot -> inModeEntry store $ \session -> do
+                let run = harnessRootRunId harnessRoot
+                persisted <- persistPlanSnapshot session project run 1 "spec-1" "plan-1"
+                case persisted of
+                    Left failure -> pure (Left failure)
+                    Right () -> do
+                        bound <-
+                            verifyPlanSnapshot session project run $ \snapshot ->
+                                bindRunLease
+                                    session
+                                    project
+                                    (harnessRootUnboundLease harnessRoot)
+                                    snapshot
+                                    (\_ -> pure (Right ()))
+                        case bound of
+                            Left failure -> pure (Left failure)
+                            Right () -> do
+                                marked <- recordOpenRevisionMigration session project run kind
+                                case marked of
+                                    Left failure -> pure (Left failure)
+                                    Right ()
+                                        | recordEffect -> recordRunEffect session project run
+                                        | otherwise -> pure (Right ())
+            )
+    either (assertFailure . show) pure outcome
+
+{- | Write one effect-shaped record for a run, which is what
+@verifyNoProjectResourcesAcquired@ refuses on. -}
+recordRunEffect ::
+    ProtectedSession session ->
+    Authority.InstalledProject projectId ->
+    RunId ->
+    IO (Either ModeError ())
+recordRunEffect session project run = do
+    key <-
+        either (assertFailure . show) pure $
+            mkRecordKey
+                ( "effect."
+                    <> Authority.installedProjectName project
+                    <> "."
+                    <> runIdText run
+                    <> ".seeded"
+                )
+    written <- compareAndSwapProtectedRecord session key ExpectAbsent "seeded effect"
+    pure (either (Left . ModeStoreFailure) (const (Right ())) written)
+
+-- | A sweep fold that resolves nothing, used only to obtain the empty-set proof.
+resolvesNothing :: VerifiedIncompleteRunLease projectId -> IO (Either ModeError ())
+resolvesNothing _ = pure (Right ())
+
+inModeEntry ::
+    ProtectedStore ->
+    (forall session. ProtectedSession session -> IO (Either ModeError result)) ->
+    IO (Either ModeError result)
+inModeEntry store action = do
+    outcome <- withProtectedEntry store (fmap Right . action)
+    pure (either (Left . ModeStoreFailure) id outcome)
+
+
 {- | Wait for a probe process to announce readiness. The probe writes the file
 only after it holds both the run and its generated config, so the parent never
 kills it before there is any state to abandon.
@@ -633,6 +827,54 @@ ownershipCases =
                     kinds @?= [True]
                 Right (_, Just failure) ->
                     assertFailure ("the run cleanup failed: " ++ show failure)
+    , {- The sweep's bound branch, driven through the *production* ownership
+      bracket rather than its pieces. An incomplete migration never crossed the
+      activation barrier, so once the run's own records prove it acquired
+      nothing there is nothing to follow through and the sweep closes it — which
+      is observable as the next run being admitted (the recovery phase). -}
+      testCase "the sweep resolves an abandoned run whose migration never activated" $
+        withAbandonedMigration (IncompleteMigration "migration-1") $ \ownership -> do
+            admitted <- runWithOwnedRun ownership (\_ -> pure ())
+            case admitted of
+                Right ((), Nothing) -> pure ()
+                Right ((), Just failure) ->
+                    assertFailure ("the successor run's cleanup failed: " ++ show failure)
+                Left reason ->
+                    assertFailure ("the successor run was refused: " ++ reason)
+    , {- A completed migration is the other side of the same barrier: its
+      activation compare-and-swap committed, so the project's live revision is
+      the new one and following it through is a resumption, not a close.
+
+      The stable key is well-formed here because a real one always is —
+      'stableMigrationKeyFor' builds @\<run\>.\<old\>.\<new\>@ — and the
+      configless recovery reads the superseded revision straight out of it
+      rather than from any config. -}
+      testCase "the sweep resumes an abandoned run whose migration already activated" $
+        withAbandonedMigration (CompletedMigration "production.plan-0.plan-1") $ \ownership -> do
+            admitted <- runWithOwnedRun ownership (\_ -> pure ())
+            case admitted of
+                Right ((), Nothing) -> pure ()
+                Right ((), Just failure) ->
+                    assertFailure ("the successor run's cleanup failed: " ++ show failure)
+                Left reason ->
+                    assertFailure
+                        ("a resumed activation must not block the next run: " ++ reason)
+    , {- The classification is not the safety gate: a staging that acquired
+      something wrote an effect record, and the proof refuses whichever side of
+      the barrier it is on. -}
+      testCase "an incomplete migration that recorded an effect is still refused" $
+        withAbandonedMigrationRecording
+            (IncompleteMigration "migration-1")
+            True
+            $ \ownership -> do
+                admitted <- runWithOwnedRun ownership (\_ -> pure ())
+                case admitted of
+                    Left reason ->
+                        assertBool
+                            ("the refusal names the recorded effect: " ++ reason)
+                            ("effect" `isInfixOf` reason)
+                    Right _ ->
+                        assertFailure "a staging that acquired something must block the next run"
     , testCase "an owned run releases its generation and keeps the .test_data parent" $
         withSystemTempDirectory "hostbootstrap-test-data" $ \root -> do
             let parent = root </> ".test_data"

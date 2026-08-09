@@ -66,6 +66,10 @@ import HostBootstrap.Protected (
     recordKeyText,
     tryProtectedEntry,
  )
+import HostBootstrap.RoleLifecycle (
+    DeclaredEffects (NoEffects, WithEffect),
+    EffectName (NetworkListenName),
+ )
 import HostBootstrap.Service (
     ServiceRegistry,
     ServiceRegistryError (..),
@@ -666,7 +670,11 @@ fixtureServiceRegistry selected handlers =
             [ serviceDefinition
                 (either error id (serviceId name))
                 (\_ -> Right (if selected == Just name then Just () else Nothing))
-                (\_ _ -> handler)
+                -- The fixture declares a listen-only row: enough that the
+                -- selection carries a real declaration, narrow enough that a
+                -- widening would show up as a diff here.
+                (WithEffect NetworkListenName NoEffects)
+                (\_ -> handler)
             | (name, handler) <- handlers
             ]
 

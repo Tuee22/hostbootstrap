@@ -37,6 +37,10 @@ One exclusive entry, one versioned record type, one compare-and-swap.
 - A `ProtectedSession` exists only inside that continuation and is the sole capability for reading or
   writing records, so no record operation can straddle two transactions.
 - `RecordKey` is validated on construction, so a key cannot shift the meaning of the fields after it.
+- `mkRecordName` is the one **injective** encoding from a namespaced identity — or a `/`-separated path of
+  them, which is what a relation between operations is — into that alphabet. A key is a filesystem name, so
+  neither `:` nor `/` can reach one; encoding rather than sanitizing is what keeps two distinct identities
+  from sharing one durable record. `recordNameIdentity` is its total inverse on the image.
 - `readProtectedRecord`, `compareAndSwapProtectedRecord`, and `compareAndDeleteProtectedRecord` take an
   `Expectation` (`ExpectAbsent` or `ExpectVersion`), so every write states what it believed.
 - `listProtectedRecords` enumerates at one store version, so a fold sees a consistent set.

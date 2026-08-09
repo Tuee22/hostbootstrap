@@ -22,7 +22,13 @@ import HostBootstrap.Authority (BrokerEpoch, withFreshBrokerEpoch)
 import qualified HostBootstrap.Authority as Authority
 import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
 import HostBootstrap.HostConfig (HostConfig (..))
-import HostBootstrap.Lifecycle.Execution (StepExecution, stepExecutionOperationKey)
+import HostBootstrap.Lifecycle.Execution (
+    StepExecution,
+    newResourceCarrier,
+    newStepRuntime,
+    stepExecutionOperationKey,
+ )
+import HostBootstrap.Lifecycle.Prepared (encodeFields)
 import HostBootstrap.Lifecycle.Session
 import HostBootstrap.Lifecycle.Session.Testing
 import HostBootstrap.Reconcile (
@@ -242,6 +248,7 @@ tests =
         , testGroup "phase classification" classificationTests
         , testGroup "the prepare compare-and-swap" prepareTests
         , testGroup "recovery" recoveryTests
+        , testGroup "abandoned-run admission" admissionTests
         , testGroup "transaction recovery" transactionRecoveryTests
         ]
 
@@ -739,9 +746,10 @@ expectExecution ::
     LifecyclePlan scope planId ->
     Step ->
     IO (StepExecution scope planId)
-expectExecution lifecycle step =
+expectExecution lifecycle step = do
+    runtime <- newResourceCarrier >>= newStepRuntime
     maybe (assertFailure "the plan does not contain the fixture step") pure $
-        stepExecutionFor lifecycle routeHostConfig step
+        stepExecutionFor lifecycle routeHostConfig runtime step
 
 {- | A journal, epoch, session, and settled fence on the given plan digest.
 
@@ -822,6 +830,244 @@ recoveryTests =
             recovered <- expect swept
             recoveredSessionCount recovered @?= 0
     ]
+
+-- ---------------------------------------------------------------------------
+-- Abandoned-run admission
+
+{- | The fence set, the manifest, the recorded-session interpreter, and the
+admission only both complete sets can mint.
+
+Every case here abandons a real session the way a kill does — stopping between
+two durable writes and reopening the store — because the whole point of this
+machinery is what it does to state nobody closed.
+-}
+admissionTests :: [TestTree]
+admissionTests =
+    [ testCase "fencing enumerates the outstanding permits and then supersedes them" $
+        withStore $ \store -> do
+            _ <- inEntry store $ \s ->
+                withOpenSession s $ \_ sess permit -> do
+                    _ <- expect' =<< registerOperationIntent s sess "op-1" NoHistory permit
+                    pure (Right ())
+            reopened <- reopenStore store
+            fenced <- expect =<< inEntry reopened (\s -> fenceOldPermits s plan)
+            -- The set is the operation that can still receive authority, read
+            -- out of the store rather than supplied.
+            oldPermitsFencedOperations fenced @?= ["op-1"]
+            -- Establishing settled the initial epoch; rotating superseded it.
+            oldPermitsFencedFrom fenced @?= 1
+            oldPermitsFencedTo fenced @?= 2
+            oldPermitsFencedPlanDigest fenced @?= plan
+            -- A permit minted under the superseded epoch is now refused.
+            live <- expect =<< inEntry reopened (\s -> currentFence s plan)
+            fenceEpochWord live @?= 2
+    , testCase "a settled operation holds no authority, so it is not in the fence set" $
+        withStore $ \store -> do
+            _ <- inEntry store $ \s ->
+                withPrepared s $ \_ sess _ gate permit -> do
+                    _ <- expect' =<< acknowledgeOutcome s sess gate "Committed" () permit
+                    pure (Right ())
+            reopened <- reopenStore store
+            fenced <- expect =<< inEntry reopened (\s -> fenceOldPermits s plan)
+            oldPermitsFencedOperations fenced @?= []
+    , testCase "the fence protocol is completed idempotently when it was left unsettled" $
+        withStore $ \store -> do
+            -- No fence record at all: the classifier completes the stable
+            -- initial-fence protocol rather than refusing.
+            _ <- inEntry store (\s -> openProjectJournal s plan)
+            fenced <- expect =<< inEntry store (\s -> fenceOldPermits s plan)
+            oldPermitsFencedFrom fenced @?= 1
+            oldPermitsFencedTo fenced @?= 2
+    , testCase "the manifest pairs the independently enumerated session and operation sets" $
+        withStore $ \store -> do
+            _ <- inEntry store $ \s ->
+                withOpenSession s $ \_ sess permit -> do
+                    afterOne <- expect' =<< registerOperationIntent s sess "op-1" NoHistory permit
+                    _ <- expect' =<< registerOperationIntent s sess "op-2" NoHistory afterOne
+                    pure (Right ())
+            reopened <- reopenStore store
+            manifest <- expect =<< inEntry reopened (\s -> verifySessionManifest s plan)
+            manifestPlanDigest manifest @?= plan
+            map (sessionIdText . manifestSessionId) (manifestSessions manifest) @?= ["session-a"]
+            map manifestSessionOperations (manifestSessions manifest) @?= [["op-1", "op-2"]]
+            manifestOperationCount manifest @?= 2
+    , testCase "a zero-operation Open session is still a required manifest member" $
+        withStore $ \store -> do
+            _ <- inEntry store $ \s ->
+                withOpenSession s $ \_ _ _ -> pure (Right ())
+            reopened <- reopenStore store
+            manifest <- expect =<< inEntry reopened (\s -> verifySessionManifest s plan)
+            map (sessionIdText . manifestSessionId) (manifestSessions manifest) @?= ["session-a"]
+            map manifestSessionOperations (manifestSessions manifest) @?= [[]]
+            map manifestSessionIsOpen (manifestSessions manifest) @?= [True]
+    , testCase "an operation naming no session record refuses the manifest" $
+        withStore $ \store -> do
+            _ <- inEntry store (\s -> openProjectJournal s plan)
+            -- An operation record whose session has no record at all: the
+            -- operation exists and nothing owns it.
+            _ <- inEntry store $ \s -> writeOrphanOperation s "session-ghost" "op-1"
+            manifested <- inEntry store (\s -> verifySessionManifest s plan)
+            case manifested of
+                Left (SessionManifestOrphanOperation opKey sid) -> do
+                    opKey @?= "op-1"
+                    sid @?= "session-ghost"
+                other -> assertFailure ("expected an orphan refusal, got " <> show other)
+    , testCase "a session whose declared membership disagrees with the store refuses" $
+        withStore $ \store -> do
+            _ <- inEntry store $ \s ->
+                withOpenSession s $ \_ sess permit -> do
+                    _ <- expect' =<< registerOperationIntent s sess "op-1" NoHistory permit
+                    pure (Right ())
+            -- The session record still declares only op-1 while the store now
+            -- holds a second operation record for it.
+            _ <- inEntry store $ \s -> writeOrphanOperation s "session-a" "op-2"
+            manifested <- inEntry store (\s -> verifySessionManifest s plan)
+            case manifested of
+                Left (SessionManifestMembershipMismatch sid declared enumerated) -> do
+                    sessionIdText sid @?= "session-a"
+                    declared @?= "op-1"
+                    enumerated @?= "op-1,op-2"
+                other -> assertFailure ("expected a membership mismatch, got " <> show other)
+    , testCase "the interpreter settles pre-call work, closes the session, and admits the broker" $
+        withStore $ \store -> do
+            _ <- inEntry store $ \s ->
+                withOpenSession s $ \_ sess permit -> do
+                    _ <- expect' =<< registerOperationIntent s sess "op-1" NoHistory permit
+                    pure (Right ())
+            reopened <- reopenStore store
+            -- The admission is indexed by the broker generation the rank-2
+            -- continuation binds, so what leaves the entry is what it says
+            -- rather than the value itself.
+            outcome <- inEntry reopened $ \s -> do
+                fenced <- expect' =<< fenceOldPermits s plan
+                manifest <- expect' =<< verifySessionManifest s plan
+                permit <- expect' =<< openProjectJournal s plan
+                withEpoch s $ \epoch -> do
+                    (interpreted, _) <-
+                        expect' =<< interpretRecordedSessions s epoch manifest fenced permit
+                    admitted <- admitCurrentBroker s epoch manifest fenced interpreted
+                    pure $ case admitted of
+                        Left failure -> Left failure
+                        Right admission ->
+                            Right
+                                ( interpretedRecoveryOperations interpreted
+                                , map sessionIdText (interpretedRecoverySessions interpreted)
+                                , admissionPlanDigest admission
+                                , admissionSessionCount admission
+                                , admissionOperationCount admission
+                                )
+            (operations, sessions, digest, sessionCount, operationCount) <- expect outcome
+            -- The pre-call operation was handled, not left continuable.
+            operations @?= [OperationAbandonedPreCall "op-1" "IntentRecorded"]
+            sessions @?= ["session-a"]
+            digest @?= plan
+            sessionCount @?= 1
+            operationCount @?= 1
+            -- The session really is closed, so a fresh one now opens.
+            fresh <- inEntry reopened $ \s -> do
+                permit <- expect' =<< openProjectJournal s plan
+                withEpoch s $ \epoch ->
+                    fmap (fmap (const ())) (openOperationSession s epoch plan "session-b" permit)
+            assertBool "a fresh session opens after interpretation" (isRight fresh)
+    , testCase "committed work is left alone rather than rewritten" $
+        withStore $ \store -> do
+            _ <- inEntry store $ \s ->
+                withPrepared s $ \_ sess _ gate permit -> do
+                    _ <- expect' =<< acknowledgeOutcome s sess gate "Committed" () permit
+                    pure (Right ())
+            reopened <- reopenStore store
+            interpreted <- expect =<< inEntry reopened (\s -> interpretHere s)
+            interpretedRecoveryOperations interpreted
+                @?= [OperationAlreadySettled "op-1" "Committed"]
+    , testCase "an unrecognised phase blocks the interpretation instead of being swept" $
+        withStore $ \store -> do
+            _ <- inEntry store $ \s ->
+                withPrepared s $ \_ sess _ gate permit -> do
+                    _ <- expect' =<< acknowledgeOutcome s sess gate "SomeFuturePhase" () permit
+                    pure (Right ())
+            reopened <- reopenStore store
+            outcome <- inEntry reopened (\s -> interpretHere s)
+            case outcome of
+                Left (SessionUnclassifiedPhase opKey phase) -> do
+                    opKey @?= "op-1"
+                    phase @?= "SomeFuturePhase"
+                other -> assertFailure ("expected an unclassified refusal, got " <> show other)
+    , testCase "an interrupted effect is settled as abandoned under the new fence" $
+        withStore $ \store -> do
+            -- EffectAbsent is on the fenced-retryable whitelist: an effect was
+            -- attempted and observed absent.
+            _ <- inEntry store $ \s ->
+                withPrepared s $ \_ sess _ gate permit -> do
+                    _ <- expect' =<< acknowledgeOutcome s sess gate "EffectAbsent" () permit
+                    pure (Right ())
+            reopened <- reopenStore store
+            interpreted <- expect =<< inEntry reopened (\s -> interpretHere s)
+            interpretedRecoveryOperations interpreted
+                @?= [OperationAbandonedRetryable "op-1" "EffectAbsent"]
+    , testCase "evidence taken over another plan cannot be paired" $
+        withStore $ \store -> do
+            _ <- inEntry store $ \s ->
+                withOpenSession s $ \_ _ _ -> pure (Right ())
+            outcome <- inEntry store $ \s -> do
+                manifest <- expect' =<< verifySessionManifest s plan
+                -- A fence set taken over a different plan digest entirely.
+                otherFenced <- expect' =<< fenceOldPermits s "plan-digest-2"
+                permit <- expect' =<< openProjectJournal s plan
+                withEpoch s $ \epoch ->
+                    fmap
+                        (fmap (const ()))
+                        (interpretRecordedSessions s epoch manifest otherFenced permit)
+            case outcome of
+                Left (SessionRecoveryPlanMismatch expected presented) -> do
+                    expected @?= plan
+                    presented @?= "plan-digest-2"
+                other -> assertFailure ("expected a plan mismatch, got " <> show other)
+    ]
+
+{- | Run the whole fence → manifest → interpret chain over the fixture plan. -}
+interpretHere ::
+    ProtectedSession session ->
+    IO (Either SessionError (InterpretedRecovery scope planId))
+interpretHere s = do
+    fenced <- fenceOldPermits s plan
+    case fenced of
+        Left failure -> pure (Left failure)
+        Right fencedPermits -> do
+            manifested <- verifySessionManifest s plan
+            case manifested of
+                Left failure -> pure (Left failure)
+                Right manifest -> do
+                    opened <- openProjectJournal s plan
+                    case opened of
+                        Left failure -> pure (Left failure)
+                        Right permit -> withEpoch s $ \epoch ->
+                            fmap
+                                (fmap fst)
+                                (interpretRecordedSessions s epoch manifest fencedPermits permit)
+
+{- | Write an operation record directly at @op.\<plan\>.\<session\>.\<op\>@,
+bypassing 'registerOperationIntent'.
+
+This is how the two manifest refusals are reached: both need the store to hold an
+operation record the session-membership path would never have created, which is
+exactly the torn state a killed writer can leave.
+-}
+writeOrphanOperation ::
+    ProtectedSession session ->
+    Text ->
+    Text ->
+    IO (Either SessionError ())
+writeOrphanOperation session sid opKey =
+    case mkRecordKey ("op." <> plan <> "." <> sid <> "." <> opKey) of
+        Left failure -> pure (Left (SessionStoreFailure failure))
+        Right key -> do
+            written <-
+                compareAndSwapProtectedRecord
+                    session
+                    key
+                    ExpectAbsent
+                    (encodeFields ["IntentRecorded", sid, "0"])
+            pure (either (Left . SessionStoreFailure) (const (Right ())) written)
 
 -- ---------------------------------------------------------------------------
 -- Recoverable lifecycle transactions

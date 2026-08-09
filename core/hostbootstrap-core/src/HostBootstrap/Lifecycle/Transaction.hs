@@ -145,6 +145,12 @@ data TxnKind
     | TxnRegisterIntent
     | TxnPrepareOperation
     | TxnAcknowledgeOutcome
+    | -- | Abandoned-run recovery rebinding one existing stable session record
+      -- to the fresh broker generation. It is deliberately its own kind rather
+      -- than a second use of 'TxnCloseSession': a rebind leaves the session
+      -- __Open__, so a journal reader can tell a recovered-and-still-open
+      -- session from a closed one, and only the recovery interpreter emits it.
+      TxnRebindSession
     | TxnCloseSession
     | TxnBeginProjectClose
     | TxnRecordProjectClosed
@@ -427,6 +433,7 @@ expectedRoles kind = case kind of
     TxnRegisterIntent -> [OperationTarget, SessionTarget]
     TxnPrepareOperation -> [OperationTarget]
     TxnAcknowledgeOutcome -> [OperationTarget]
+    TxnRebindSession -> [SessionTarget]
     TxnCloseSession -> [SessionTarget]
     TxnBeginProjectClose -> [ProjectTarget]
     TxnRecordProjectClosed -> [ProjectTarget]
@@ -551,6 +558,7 @@ kindText kind = case kind of
     TxnRegisterIntent -> "register-intent"
     TxnPrepareOperation -> "prepare-operation"
     TxnAcknowledgeOutcome -> "acknowledge-outcome"
+    TxnRebindSession -> "rebind-session"
     TxnCloseSession -> "close-session"
     TxnBeginProjectClose -> "begin-project-close"
     TxnRecordProjectClosed -> "record-project-closed"
@@ -565,6 +573,7 @@ parseKind raw = case raw of
     "register-intent" -> Just TxnRegisterIntent
     "prepare-operation" -> Just TxnPrepareOperation
     "acknowledge-outcome" -> Just TxnAcknowledgeOutcome
+    "rebind-session" -> Just TxnRebindSession
     "close-session" -> Just TxnCloseSession
     "begin-project-close" -> Just TxnBeginProjectClose
     "record-project-closed" -> Just TxnRecordProjectClosed

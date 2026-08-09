@@ -123,6 +123,21 @@ negativeCase = withSystemTempDirectory "hb-docval" $ \root -> do
     )
   -- A documents/ category outside the canonical taxonomy.
   createDirectoryIfMissing True (root </> "documents" </> "reference")
+  -- A legacy ledger with one unowned row and one naming a phase that does not
+  -- exist. \194\167 I permits the ledger only because every row names a deleting
+  -- phase; a row without one is a standing cleanup obligation, which is the
+  -- repair log the section forbids.
+  writeFile
+    (root </> "DEVELOPMENT_PLAN" </> "legacy_tracking_for_deletion.md")
+    ( unlines
+        [ "# Legacy",
+          "",
+          "| Shape | Location | Why | Deleted by |",
+          "|---|---|---|---|",
+          "| a shape | `src/X.hs` | reason | nobody in particular |",
+          "| another | `src/Y.hs` | reason | [a phase](phase-99-missing.md) |"
+        ]
+    )
   violations <- validateRepo root
   let msgs = map renderViolation violations
       expect needle =
@@ -147,6 +162,9 @@ negativeCase = withSystemTempDirectory "hb-docval" $ \root -> do
       "phase narrative reverses earlier work",
       "sprint carries a '**Blocked by**' field",
       "sprint title has no [Done|Active|Planned] tag",
-      "an Active sprint has an empty '#### Remaining Work' section"
+      "an Active sprint has an empty '#### Remaining Work' section",
+      -- \194\167 I: a ledger row must name a deleting phase, and it must resolve.
+      "legacy ledger row names no deleting phase",
+      "legacy ledger row names an unresolvable deleting phase: phase-99-missing.md"
     ]
     expect

@@ -37,7 +37,128 @@ tests =
         , testGroup "driving the projection" projectionDriverTests
         , testGroup "the forest" forestTests
         , testGroup "settlement" settlementTests
+        , testGroup "the production driver" driverTests
         ]
+
+{- | The loop a lifecycle verb runs (the recursive-lifecycle-command phase).
+
+The verb supplies only one node's effect and one node's row; the ordering, the
+retry policy, and the outstanding report are the forest's. These are the
+properties the live verb depends on, taken here without a provider.
+-}
+driverTests :: [TestTree]
+driverTests =
+    [ testCase "the driver visits every node child-first and completes" $
+        withPlan $ \plan -> do
+            visited <- newIORef []
+            rows <- newIORef []
+            forest <- openOrFail plan (teardownPlan plan destroyVerb)
+            driven <-
+                driveTeardownForest
+                    forest
+                    ( \point -> do
+                        modifyIORef' visited (++ [authorizationPointKey point])
+                        pure TeardownReleased
+                    )
+                    (\key outcome -> modifyIORef' rows (++ [(key, outcome)]))
+            case driven of
+                Left outstanding -> assertFailure ("did not complete: " ++ show outstanding)
+                Right completed ->
+                    assertBool
+                        "every projected identity settled"
+                        ( all
+                            (`elem` completedForestSettledKeys completed)
+                            (teardownPlanStepKeys (teardownPlan plan destroyVerb))
+                        )
+            -- the provider's pre-descent step first, then the deepest frame,
+            -- then outwards; every node reports exactly one row
+            readIORef visited
+                >>= ( @?=
+                        [ "core:deploy-vm"
+                        , "core:deploy-chart"
+                        , "core:deploy-kind"
+                        , "core:build-pb"
+                        , "core:deploy-vm"
+                        ]
+                    )
+            observedRows <- readIORef rows
+            map fst observedRows
+                @?= [ "core:deploy-vm"
+                    , "core:deploy-chart"
+                    , "core:deploy-kind"
+                    , "core:build-pb"
+                    , "core:deploy-vm"
+                    ]
+            assertBool "every row is released" (all ((== TeardownReleased) . snd) observedRows)
+    , testCase "a failed node stops the run and names every node left outstanding" $
+        withPlan $ \plan -> do
+            attempts <- newIORef (0 :: Int)
+            forest <- openOrFail plan (teardownPlan plan destroyVerb)
+            driven <-
+                driveTeardownForest
+                    forest
+                    ( \point -> do
+                        modifyIORef' attempts (+ 1)
+                        pure $
+                            if authorizationPointKey point == "core:deploy-chart"
+                                then TeardownFailed "boom"
+                                else TeardownReleased
+                    )
+                    (\_ _ -> pure ())
+            case driven of
+                Right _ -> assertFailure "a forest with a failing node must not complete"
+                Left outstanding ->
+                    assertBool
+                        ("the blocked chain is named: " ++ show outstanding)
+                        ( all
+                            (`elem` outstanding)
+                            ["core:deploy-chart", "core:build-pb", "core:deploy-vm"]
+                        )
+            -- the pre-descent step, the failing node, and its one schedulable
+            -- sibling: the failing node is attempted once, not spun on
+            readIORef attempts >>= (@?= 3)
+    , testCase "a foreign or refused node settles and does not block completion" $
+        withPlan $ \plan -> do
+            forest <- openOrFail plan (teardownPlan plan destroyVerb)
+            driven <-
+                driveTeardownForest
+                    forest
+                    ( \point ->
+                        pure $
+                            if authorizationPointKey point == "core:deploy-chart"
+                                then TeardownForeignRetained "not this run's release"
+                                else TeardownReleased
+                    )
+                    (\_ _ -> pure ())
+            case driven of
+                Left outstanding -> assertFailure ("did not complete: " ++ show outstanding)
+                Right _ -> pure ()
+    , testCase "only a destroy run can mint settled-destroy evidence" $
+        withPlan $ \plan -> do
+            let destroyProjection = teardownPlan plan destroyVerb
+                downProjection = teardownPlan plan downVerb
+            destroyForest <- openOrFail plan destroyProjection
+            downForest <- openOrFail plan downProjection
+            destroyDone <- driveTeardownForest destroyForest (const (pure TeardownReleased)) (\_ _ -> pure ())
+            downDone <- driveTeardownForest downForest (const (pure TeardownReleased)) (\_ _ -> pure ())
+            case (destroyDone, downDone) of
+                (Right destroyed, Right downed) -> do
+                    case settledDestroyEvidence downProjection downed of
+                        Nothing -> pure ()
+                        Just _ -> assertFailure "a down run minted settled-destroy evidence"
+                    case settledDestroyEvidence destroyProjection destroyed of
+                        Just (Right settled) ->
+                            destroySettledPlanDigest settled @?= planDigestOf plan
+                        other ->
+                            assertFailure
+                                ("expected settled-destroy evidence, got " ++ describeEvidence other)
+                _ -> assertFailure "both forests must complete"
+    ]
+
+describeEvidence :: Maybe (Either TeardownError a) -> String
+describeEvidence Nothing = "no evidence (a down projection)"
+describeEvidence (Just (Left err)) = teardownErrorMessage err
+describeEvidence (Just (Right _)) = "settled"
 
 -- ---------------------------------------------------------------------------
 -- Projection

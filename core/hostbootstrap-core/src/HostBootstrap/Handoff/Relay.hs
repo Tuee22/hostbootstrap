@@ -29,6 +29,7 @@ each frame in between holding no more than a pipe.
 module HostBootstrap.Handoff.Relay (
     -- * Reaching the root
     BrokerLink,
+    linkSignActivation,
     rootBrokerLink,
     relayedBrokerLink,
     EdgeAdmission,
@@ -49,6 +50,18 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
+import HostBootstrap.Activation (
+    ActivationBroker,
+    ActivationError,
+    ActivationGrant,
+    ActivationManifest,
+    activationErrorMessage,
+    activationGrantSignature,
+    activationManifestFromWire,
+    adoptRelayedActivationGrant,
+    renderActivationManifest,
+    signActivationManifest,
+ )
 import HostBootstrap.Handoff (
     BrokerRelay,
     HandoffBindingInput,
@@ -87,6 +100,8 @@ import HostBootstrap.Handoff.Protocol (
         AcceptedTag,
         ChallengeTag,
         CompletedTag,
+        ActivationSignRequestTag,
+        ActivationSignResponseTag,
         GrantRequestTag,
         GrantResponseTag,
         GrantTag,
@@ -132,6 +147,15 @@ data BrokerLink scope brokerGeneration = BrokerLink
         HandoffOffer scope brokerGeneration ->
         HandoffChallenge ->
         IO (Either RelayError (HandoffGrant scope brokerGeneration))
+    , linkSignActivation ::
+        ActivationManifest ->
+        IO (Either RelayError ActivationGrant)
+    -- ^ Ask this frame's route to the root to sign one activation manifest.
+    --
+    -- The root signs; every other frame relays. That asymmetry is the whole
+    -- point: 'withActivationBroker' consumes a @RootInvocationAuthority@ the
+    -- root alone can mint, and the services that need a signed manifest are
+    -- deployed from nested frames.
     , linkKeyDigest :: ByteString
     }
 
@@ -146,10 +170,12 @@ cannot outlive the invocation that earned it.
 -}
 rootBrokerLink ::
     RootBroker scope brokerGeneration verb ->
+    -- | the activation broker whose key the runtimes verify against
+    ActivationBroker scope brokerGeneration verb ->
     ProjectVerificationKey ->
     EdgeAdmission ->
     BrokerLink scope brokerGeneration
-rootBrokerLink broker key admits =
+rootBrokerLink broker activation key admits =
     BrokerLink
         { linkOpen = \input -> do
             admitted <- admits input
@@ -161,6 +187,10 @@ rootBrokerLink broker key admits =
                         (registerHandoffEdge broker input)
         , linkGrant = \offer challenge ->
             fmap (either (Left . RelayHandoffFailure) Right) (grantHandoff broker offer challenge)
+        , -- The root signs locally, through the ordinary validating signer: a
+          -- relayed manifest gets no weaker check than a local one.
+          linkSignActivation =
+            pure . either (Left . RelayActivationRefused) Right . signActivationManifest activation
         , linkKeyDigest = TextEncoding.encodeUtf8 (verificationKeyDigest key)
         }
 
@@ -182,8 +212,39 @@ relayedBrokerLink channel request key =
     BrokerLink
         { linkOpen = relayOpen channel request
         , linkGrant = relayGrant channel request
+        , linkSignActivation = relaySignActivation channel request
         , linkKeyDigest = TextEncoding.encodeUtf8 (verificationKeyDigest key)
         }
+
+{- | Relay one activation-signing request outward and adopt the answer.
+
+What travels is the manifest's canonical bytes, not a signature request the
+intermediate frame composed: an intermediate cannot alter what is signed without
+altering the bytes it forwards, and the root rebuilds the manifest from those
+bytes and validates it before signing.
+-}
+relaySignActivation ::
+    HandoffChannel ->
+    Word64 ->
+    ActivationManifest ->
+    IO (Either RelayError ActivationGrant)
+relaySignActivation channel request manifest = do
+    sent <-
+        transmit
+            channel
+            ActivationSignRequestTag
+            request
+            [renderActivationManifest manifest]
+    case sent of
+        Left failure -> pure (Left failure)
+        Right () -> do
+            answer <- await channel ActivationSignResponseTag
+            pure (answer >>= adoptActivationGrant)
+
+adoptActivationGrant :: [ByteString] -> Either RelayError ActivationGrant
+adoptActivationGrant [signature] = Right (adoptRelayedActivationGrant signature)
+adoptActivationGrant fields =
+    Left (RelayMalformedMessage ActivationSignResponseTag (length fields))
 
 relayOpen ::
     HandoffChannel ->
@@ -356,6 +417,9 @@ serveUntilDone link channel request = do
             GrantRequestTag -> do
                 served <- serveGrant link channel request message
                 either (pure . Left) (const (serveUntilDone link channel request)) served
+            ActivationSignRequestTag -> do
+                served <- serveActivationSigning link channel request message
+                either (pure . Left) (const (serveUntilDone link channel request)) served
             tag -> pure (Left (RelayUnexpectedMessage tag))
 
 -- | Answer a child's request to open an edge, through this frame's own link.
@@ -399,6 +463,35 @@ serveGrant link channel request message = case protocolMessageFields message of
                 Right grant ->
                     transmit channel GrantResponseTag request [grantSignature grant]
     fields -> refuse channel request (RelayMalformedMessage GrantRequestTag (length fields))
+
+{- | Answer a child's request to sign an activation manifest.
+
+The manifest is rebuilt from the bytes that arrived and then signed through the
+link, so the signer sees a value it decoded rather than an opaque blob. A
+manifest that does not decode is refused before the broker is reached at all —
+signing is an authorization, and a broker that signed bytes it could not read
+would be an oracle rather than an authority.
+-}
+serveActivationSigning ::
+    BrokerLink scope brokerGeneration ->
+    HandoffChannel ->
+    Word64 ->
+    ProtocolMessage ->
+    IO (Either RelayError ())
+serveActivationSigning link channel request message = case protocolMessageFields message of
+    [raw] -> case activationManifestFromWire raw of
+        Left failure -> refuse channel request (RelayActivationRefused failure)
+        Right manifest -> do
+            signed <- linkSignActivation link manifest
+            case signed of
+                Left failure -> refuse channel request failure
+                Right grant ->
+                    transmit
+                        channel
+                        ActivationSignResponseTag
+                        request
+                        [activationGrantSignature grant]
+    fields -> refuse channel request (RelayMalformedMessage ActivationSignRequestTag (length fields))
 
 {- | Rebuild the offer and challenge a relayed request describes.
 
@@ -482,6 +575,7 @@ refusalCode failure = case failure of
     RelayMalformedMessage _ _ -> "malformed-message"
     RelayUnexpectedMessage _ -> "unexpected-message"
     RelayRefusedByPeer _ _ -> "peer-refused"
+    RelayActivationRefused _ -> "activation-refused"
 
 refusalDetail :: RelayError -> ByteString
 refusalDetail = TextEncoding.encodeUtf8 . Text.pack . relayErrorMessage
@@ -499,6 +593,8 @@ data RelayError
     | RelayUnexpectedMessage ProtocolTag
     | -- | the peer declined: code, then detail
       RelayRefusedByPeer Text Text
+    | -- | the manifest did not decode, or the signer refused to sign it
+      RelayActivationRefused ActivationError
     deriving (Eq, Show)
 
 -- | A one-line diagnostic.
@@ -512,6 +608,8 @@ relayErrorMessage failure = case failure of
     RelayUnexpectedMessage tag -> "handoff relay: unexpected " <> show tag
     RelayRefusedByPeer code detail ->
         "handoff relay: the peer refused (" <> Text.unpack code <> "): " <> Text.unpack detail
+    RelayActivationRefused detail ->
+        "handoff relay: activation signing refused: " <> activationErrorMessage detail
 
 fromHandoff :: Either HandoffError a -> Either RelayError a
 fromHandoff = either (Left . RelayHandoffFailure) Right

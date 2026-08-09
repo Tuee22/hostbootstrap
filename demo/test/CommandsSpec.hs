@@ -11,7 +11,7 @@ import Data.List (isInfixOf, isSuffixOf)
 import qualified Data.Text as T
 import qualified Dhall
 import HostBootstrap.Chain (renderChain)
-import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon), AcceleratorIngressPlan (ingressKindListenAddress), ClusterDriver (..), ClusterPlan (clusterConfigFile, clusterDriver), acceleratorIngressPlan)
+import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon), AcceleratorIngressPlan (ingressKindListenAddress), ClusterDriver (..), ClusterPlan (clusterConfigFile, clusterDriver, clusterName, dataPath, publishesHostPorts), ClusterProfile (Production, TestCase), acceleratorIngressPlan, profileDataPath, profileDataSegments)
 import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec), projectCodecSpecDigest)
 import HostBootstrap.Config.Fields (
     ScopeKind (ProductionScope),
@@ -30,7 +30,7 @@ import HostBootstrap.Config.Fields (
     roleCodecSpecDigest,
  )
 import HostBootstrap.Config.Vocab (Mount (..))
-import HostBootstrap.Context (ContextKind (HostOrchestrator))
+import HostBootstrap.Context (ContextKind (HostOrchestrator, VMOrchestrator, VMProjectContainer))
 import HostBootstrap.Detached (detachedLaunchArguments, detachedLaunchExecutable)
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (artifactName)
@@ -50,8 +50,15 @@ import HostBootstrap.Service (
     withFinalizedServiceRegistry,
     withSelectedServiceRequest,
  )
+import HostBootstrap.RoleLifecycle (RoleEffect (DurableStore, NetworkListen, ProcessSpawn))
 import HostBootstrap.Step (Step, StepFrame (..), StepPlan, chainFrames, frameDescent, frameId, mkStepPlan, postHandoffStepsForFrame, stepKind, stepKindName, stepLabel, stepPlanSteps)
 import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (Substrate), SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu))
+import HostBootstrapDemo.Container (
+    baseDigestArgs,
+    basePullArgs,
+    dockerBuildArgs,
+    pinnedBaseReference,
+ )
 import HostBootstrapDemo.Commands (
     absoluteHostAcceleratorDaemonExePath,
     acceleratorDaemonManifest,
@@ -87,11 +94,14 @@ import HostBootstrapDemo.Config (
     DemoProject,
     Port,
     ProjectConfig (..),
+    RunProfile (HarnessRun),
     WebServiceConfig (WebServiceConfig),
+    clusterProfileOf,
     demoDefaultDeployConfig,
     demoDefaultDockerfile,
     demoDefaultMessage,
     demoDefaultResources,
+    deriveProjectConfigForKind,
     mkPort,
     projectConfigForRole,
  )
@@ -107,6 +117,12 @@ import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 expectPlan :: [Step] -> StepPlan
 expectPlan = either (error . show) id . mkStepPlan
+
+{- | The rendered schema text up to the accelerator entry, i.e. the web role's
+own portion. Used to show a field belongs to one role rather than to every one.
+-}
+webFamilyOnly :: T.Text -> T.Text
+webFamilyOnly = fst . T.breakOn "- service: accelerator"
 
 {- | Admit the demo's own canonical project root. The chain is built under it
 (§ X), so a test that inspects the plan must go through the same bracket
@@ -215,10 +231,50 @@ tests =
             let directCtx = Context.deriveLinuxGpuContainerContext (context hostCfg) "/workspace/demo"
                 vmCtx = Context.deriveVMContextWithProvider Context.IncusVMProvider (context hostCfg) "/vm/demo"
                 ordinaryCtx = Context.deriveContainerContext vmCtx "/workspace/demo"
-            clusterDriver (containerPlan directCtx) @?= NvkindDriver
-            clusterConfigFile (containerPlan directCtx) @?= Just "nvkind-in-cluster.yaml"
-            clusterDriver (containerPlan ordinaryCtx) @?= KindDriver
-            clusterConfigFile (containerPlan ordinaryCtx) @?= Just "kind-in-cluster.yaml"
+            clusterDriver (containerPlan Production directCtx) @?= NvkindDriver
+            clusterConfigFile (containerPlan Production directCtx) @?= Just "nvkind-in-cluster.yaml"
+            clusterDriver (containerPlan Production ordinaryCtx) @?= KindDriver
+            clusterConfigFile (containerPlan Production ordinaryCtx) @?= Just "kind-in-cluster.yaml"
+        , {- The profile a container-frame plan resolves under is the run's own,
+          so a harness run never takes the production cluster name, the durable
+          @.data@ root, or the fixed host ports (the worked-demo phase). -}
+          testCase "a harness run's container plan is scoped to its own run" $ do
+            let ctx = Context.deriveContainerContext (Context.deriveVMContextWithProvider Context.IncusVMProvider (context hostCfg) "/vm/demo") "/workspace/demo"
+                production = containerPlan Production ctx
+                harness = containerPlan (TestCase "run-42") ctx
+            clusterName production @?= "hostbootstrap-demo"
+            clusterName harness @?= "hostbootstrap-demo-test-run-42"
+            publishesHostPorts production @?= True
+            publishesHostPorts harness @?= False
+            -- the durable production root is never the harness run's state
+            assertBool
+                "the harness run's state is its own generation"
+                (dataPath harness /= dataPath production)
+        , {- The profile travels in the config, so the frame that resolves the
+          plan is the frame the parent handed it to. -}
+          testCase "the run profile is decoded from the config and crosses each frame" $ do
+            let harnessCfg = hostCfg{runProfile = HarnessRun "run-42"}
+            clusterProfileOf hostCfg @?= Production
+            clusterProfileOf harnessCfg @?= TestCase "run-42"
+            vm <- either assertFailure pure (deriveProjectConfigForKind VMOrchestrator harnessCfg "/vm/demo")
+            child <- either assertFailure pure (deriveProjectConfigForKind VMProjectContainer vm "/workspace/demo")
+            clusterProfileOf vm @?= TestCase "run-42"
+            clusterProfileOf child @?= TestCase "run-42"
+        , {- The durable host root is the run's own too, and it is the *same*
+          directory the resolved plan preserves — both come from
+          'profileDataSegments'. That is what keeps the long gate off the
+          operator's durable state (the worked-demo phase). -}
+          testCase "the durable host root is the run's own, and is the path teardown preserves" $ do
+            profileDataSegments Production @?= [".data"]
+            profileDataSegments (TestCase "run-42") @?= [".test_data", "run-42"]
+            profileDataPath Production "/srv/demo" @?= "/srv/demo/.data"
+            profileDataPath (TestCase "run-42") "/srv/demo" @?= "/srv/demo/.test_data/run-42"
+            -- the mount and the preserved path are one directory by construction
+            let ctx = Context.deriveContainerContext (Context.deriveVMContextWithProvider Context.IncusVMProvider (context hostCfg) "/vm/demo") "/workspace/demo"
+            dataPath (containerPlan (TestCase "run-42") ctx)
+                @?= profileDataPath (TestCase "run-42") "/workspace/demo"
+            dataPath (containerPlan Production ctx)
+                @?= profileDataPath Production "/workspace/demo"
         , testCase "accelerator Helm values follow validated daemon placement" $ do
             let directCtx = Context.deriveLinuxGpuContainerContext (context hostCfg) "/workspace/demo"
                 incusCtx = Context.deriveContainerContext (Context.deriveVMContextWithProvider Context.IncusVMProvider (context hostCfg) "/vm/demo") "/workspace/demo"
@@ -314,6 +370,52 @@ tests =
                 @?= "docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64"
             demoBaseImageFor (Substrate WindowsGpu Amd64)
                 @?= "docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64"
+        , testCase "a derived build always pulls, so a stale local base cannot be used" $ do
+            let argv =
+                    dockerBuildArgs
+                        (projectConfigForRole
+                            "hostbootstrap-demo"
+                            "hostbootstrap-demo"
+                            "/srv"
+                            "docker/Dockerfile"
+                            demoDefaultResources
+                            demoDefaultDeployConfig
+                            demoDefaultMessage
+                            Context.HostOrchestrator)
+                        "docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64"
+            -- Without this a host that once built the rolling tag locally would
+            -- build FROM that stale image and never notice (94w FF).
+            assertBool "the build pulls its base" ("--pull" `elem` argv)
+            assertBool
+                "the base still reaches the Dockerfile as a build arg"
+                ( "BASE_IMAGE=docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64"
+                    `elem` argv
+                )
+        , testCase "a published digest pins the repository, not the tag text" $ do
+            pinnedBaseReference
+                "docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64"
+                "sha256:abc123"
+                @?= Right "docker.io/tuee22/hostbootstrap@sha256:abc123"
+            -- A registry port is not a tag separator.
+            pinnedBaseReference "localhost:5000/base:rolling" "sha256:def456"
+                @?= Right "localhost:5000/base@sha256:def456"
+            -- A reference with no tag is already a repository.
+            pinnedBaseReference "docker.io/tuee22/hostbootstrap" "sha256:abc123"
+                @?= Right "docker.io/tuee22/hostbootstrap@sha256:abc123"
+        , testCase "a digest that is not a sha256 reference is refused, not concatenated" $
+            case pinnedBaseReference "repo/base:tag" "not-a-digest" of
+                Left reason ->
+                    assertBool
+                        ("the refusal names the digest: " ++ reason)
+                        ("not-a-digest" `isInfixOf` reason)
+                Right value ->
+                    assertFailure ("a malformed digest produced " ++ show value)
+        , testCase "the pull and inspect argv name the published tag" $ do
+            basePullArgs "repo/base:tag" @?= ["pull", "repo/base:tag"]
+            let inspectArgv = baseDigestArgs "repo/base:tag"
+            assertBool "inspect targets the tag" ("repo/base:tag" `elem` inspectArgv)
+            assertBool "inspect asks for repository digests" $
+                any ("RepoDigests" `isInfixOf`) inspectArgv
         , testCase "direct project-container handoff passes the GPU and normal handoff does not" $ do
             canonicalDemo <- canonicalizePath "."
             -- Both descents are read off the plan itself: the direct lane's is
@@ -515,6 +617,15 @@ tests =
             assertBool "Harness family is named separately" ("service schema family Harness:" `T.isInfixOf` schemas)
             assertBool "Web role fields are reflected" ("servedMessage" `T.isInfixOf` schemas && "webParameters" `T.isInfixOf` schemas)
             assertBool "Accelerator role fields are reflected" ("acceleratorParameters" `T.isInfixOf` schemas)
+            -- The source root the accelerator handler needs is a field of its own
+            -- role wire, because a handler receives only its role's bundle and
+            -- never a framework view (§ AA).
+            assertBool
+                "the accelerator's own source root is a role field"
+                ("acceleratorSourceRoot" `T.isInfixOf` schemas)
+            assertBool
+                "the web role does not carry it"
+                (not ("acceleratorSourceRoot" `T.isInfixOf` webFamilyOnly schemas))
         , testCase "selected role wires contain only framework validation and that role's fields" $ do
             let webCfg =
                     projectConfigForRole
@@ -548,7 +659,7 @@ tests =
                                     (inspectLocalContext (context cfg))
                                     cfg
                                     registry
-                                    ( \identity codec request _ ->
+                                    ( \identity codec request _ _ ->
                                         ( serviceIdText identity
                                         , requestVerifiedDigest request
                                         , renderValidatedServiceRequest codec request
@@ -565,6 +676,55 @@ tests =
             acceleratorIdentity @?= "accelerator"
             assertBool "accelerator wire retains only its service fields" ("acceleratorParameters" `T.isInfixOf` acceleratorWire)
             assertBool "accelerator wire excludes web fields" (all (not . (`T.isInfixOf` acceleratorWire)) ["servedMessage", "webParameters"])
+    , testCase "each role declares its own effect row, not the union of both" $ do
+        let webCfg =
+                projectConfigForRole
+                    "hostbootstrap-demo"
+                    "hostbootstrap-demo"
+                    "/srv"
+                    "docker/Dockerfile"
+                    demoDefaultResources
+                    demoDefaultDeployConfig
+                    demoDefaultMessage
+                    Context.ClusterService
+            acceleratorCfg =
+                projectConfigForRole
+                    "hostbootstrap-demo"
+                    "hostbootstrap-demo"
+                    "/srv"
+                    "docker/Dockerfile"
+                    demoDefaultResources
+                    demoDefaultDeployConfig
+                    demoDefaultMessage
+                    Context.Daemon
+            declaredFor cfg =
+                withProductionProjectCodec @DemoProject @ProjectConfig $ \baseCodec ->
+                    withFinalizedServiceRegistry
+                        ProductionScope
+                        baseCodec
+                        demoServices
+                        ( \_ registry ->
+                            withSelectedServiceRequest
+                                "verified-config-digest"
+                                (inspectLocalContext (context cfg))
+                                cfg
+                                registry
+                                (\_ _ _ declared _ -> declared)
+                        )
+        webDeclared <- either (fail . show) pure (declaredFor webCfg)
+        acceleratorDeclared <- either (fail . show) pure (declaredFor acceleratorCfg)
+        -- The web role reaches the durable root; the accelerator does not.
+        webDeclared @?= [NetworkListen, DurableStore]
+        -- The accelerator runs a worker process; the web role does not.
+        acceleratorDeclared @?= [NetworkListen, ProcessSpawn]
+        -- Neither is the union: least authority is a property of the
+        -- declaration, so a widening shows up as a diff here.
+        assertBool
+            "the web role does not declare process spawn"
+            (ProcessSpawn `notElem` webDeclared)
+        assertBool
+            "the accelerator does not declare durable store"
+            (DurableStore `notElem` acceleratorDeclared)
         , testCase "common envelope agrees across full and role wires and rejects changed tags" $ do
             let webCfg =
                     projectConfigForRole
@@ -593,7 +753,7 @@ tests =
                             (inspectLocalContext (context webCfg))
                             webCfg
                             registry
-                            ( \_ roleCodec request _ -> do
+                            ( \_ roleCodec request _ _ -> do
                                 let roleValidation = requestFrameworkValidation request
                                     rendered = renderValidatedServiceRequest roleCodec request
                                     changedDigest =

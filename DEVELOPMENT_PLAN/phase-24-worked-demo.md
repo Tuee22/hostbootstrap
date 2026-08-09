@@ -84,10 +84,10 @@ reported `10/10 passed`.
 
 None.
 
-### Sprint 24.3: The five-case test matrix from decoded config [Active]
+### Sprint 24.3: The five-case test matrix from decoded config [Done]
 
-**Status**: Active
-**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/src/HostBootstrapDemo/Config.hs`
+**Status**: Done
+**Implementation**: `demo/src/HostBootstrapDemo/Config.hs`, `demo/test/ConfigSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`, `documents/operations/demo_runbook.md`
 
@@ -101,20 +101,25 @@ Generate the matrix from configuration, not from Haskell source.
   `durable-readback`; two config variants; ten report-card rows.
 - `durable-readback` writes through the web service, runs `project destroy`, runs `project up`, and reads the same
   bytes back from the host durable root.
-- The test matrix and its variant drafts are constructed from **decoded typed config values**, so changing the
-  variant set does not require a Haskell edit.
+- `TestConfig` carries a declared `testVariants` set, and `demoTestMatrix` projects the run matrix out of it, so
+  adding, renaming, or removing a variant is an edit to the generated `<project>.test.dhall` rather than to a
+  Haskell module. `test init` writes the two the demo ships with.
+- Each declared name is validated into a `VariantId` while the matrix is being built — before the run acquires
+  anything. An empty set is the core's own `EmptyVariantRegistry`, duplicates are its `DuplicateVariantIds`, and a
+  malformed name is `InvalidVariantDeclaration`, which the harness phase's matrix vocabulary now carries because
+  a project's decoded declaration is exactly where one can be malformed.
 - The demo's test component receives only the harness-indexed planning function.
 
 #### Validation
 
-`CommandsSpec` covers the generated matrix and each case's assertions; the live `test run all` reports
-`10/10 passed`.
+`ConfigSpec` covers the projection directly: the matrix's variants are the declared ones, a third variant
+appears from a config edit alone, each variant carries its own served message, every case runs under every
+declared variant, and each of the empty, malformed, and duplicate declarations is refused before the run.
+`CommandsSpec` covers each case's assertions; the live `test run all` reports `10/10 passed`.
 
 #### Remaining Work
 
-The five cases and two variants exist and pass, but the matrix is constructed in Haskell rather than projected
-from decoded config, so adding a variant still requires a source edit. The remaining item is that projection,
-which consumes the typed case/variant projection in the Dhall-configuration phase.
+None.
 
 ### Sprint 24.4: Production-plan wiring and artifact provenance [Active]
 
@@ -131,20 +136,64 @@ Make the demo's production path use the same owned machinery its harness path do
 
 - The demo's production plan is threaded through the same profile opener, prepared operations, and teardown
   projection as its harness plan; there is no production-only shortcut.
-- Published-base consumption is enforced by digest, so a derived build cannot silently use a stale local image.
+- The run's profile is a field of the config rather than a constant in the source. `RunProfile` is written by
+  assembly — `ProductionRun` for a production config, `HarnessRun` carrying that run's own name for a harness
+  one — and `clusterProfileOf` turns it into the core's `ClusterProfile`. Because it is an ordinary field of the
+  config a parent streams to each child frame, the container frame resolves the profile the host frame decided
+  rather than re-deciding it.
+- Every cluster plan the demo resolves takes that profile, so a harness run gets its own run-scoped cluster
+  name, its own removable state, and no host-port publishing. The one deliberate exception is the pre-run safety
+  probe, which asks whether the operator's *production* stack is running and must therefore keep naming it.
+- The **durable host root** is the run's own as well: `profileDataSegments` is the single definition of where a
+  run's durable state lives — production's never-removed `.data`, or the `.test_data/<run>` generation the
+  harness ownership bracket already holds under all four clauses — and both a resolved plan's preserved
+  `dataPath` and the container's durable mount derive from it, so the directory mounted and the directory
+  preserved are one by construction. `canonicalHostSubPath` is what admits it: a run-scoped root is not a fixed
+  name, so the segments are supplied and each is checked to be a single ordinary component, because a segment
+  that could climb out would hand a trusted host adapter a path the root never admitted.
+- The harness's own teardown verification reads the profile off the generated sibling config before running
+  `project destroy`, so what it proves gone is the run's stack rather than production's.
+- Published-base consumption cannot silently fall back to a stale local image. Two things enforce it, and the
+  split is deliberate:
+  - every derived build passes `--pull`, so the base named in `FROM` is fetched before the build rather than
+    taken from whatever the host already has under that rolling tag. It is on the argv rather than in a wrapper
+    because both lanes go through one builder, including the one that renders the argv into an in-VM shell
+    script where a command substitution would be quoting-fragile;
+  - the host-native lane additionally resolves the published tag to its **repository digest** and builds `FROM`
+    that reference. An image with no repository digest is refused by name — that is exactly the stale-local
+    case, since an image built locally and never pulled or pushed has no repo digest at all.
+  The digest is a **within-run handoff**, never written to config or committed: § FF is explicit that a digest
+  "does not make locked inputs, digest-pinned consumers, or reproducible rebuilds part of the architecture", so
+  the reference is resolved fresh on every build and a rebuild that discovers a newer compatible base simply
+  resolves a newer digest.
 - Object-storage and registry metadata are reconciled from one finalized plan.
 - The durable-share and guest-alias operations are prepared operations that mint managed handles.
 
 #### Validation
 
-The live `test run all` on linux-cpu plus the production `project up` / `down` / `destroy` sequence.
+`CommandsSpec` covers the profile threading: a harness run's container plan carries its own cluster name, its
+own state, and no host ports, while production's keeps all three; the profile decoded from a config survives
+each child-frame projection; and the durable root a run mounts is the same path its plan preserves, for both
+profiles. `ProjectRootSpec` covers the subpath admission — the production and run-scoped roots it produces, and
+that `..`, `.`, an empty segment, an embedded separator, a drive letter, and an empty segment list are each
+refused by name. `CommandsSpec` and `ConfigSpec` cover the published-base consumption: every derived build's
+argv carries `--pull` and still passes the base through as a build arg, a published digest pins the repository
+rather than the tag text (including when a registry port is present and when the reference carries no tag), a
+digest that is not a `sha256:` reference is refused rather than concatenated, and the pull and inspect argv name
+the published tag and ask for its repository digests. The live `test run all` on linux-cpu plus the production `project up` / `down` / `destroy`
+sequence close the rest.
 
 #### Remaining Work
 
-The demo's plan resolution still hardcodes `Production`, so the live test stack uses the production cluster
-identity and durable root — which is why the long gate must run on a disposable host. Threading the harness
-profile through the demo's own resolution is the remaining item, together with the prepared guest-alias adoption
-that waits on the step-reaches-a-gate work.
+One item. Published-base consumption is enforced; the guest-alias route is not.
+
+The demo still mints its durable alias through its own `classifyAlias`/`planAliasEnsure` state machine over raw
+guest probes, rather than through `reconcileNodeGuestAlias` — the route the
+[host-providers phase](phase-15-host-providers-and-the-lift.md) supplies, which is what turns the durable-share
+and alias operations into prepared operations minting managed handles. Adopting it means threading a
+plan-minted `StepExecution` into the alias step, which is a change to how that step is declared and driven
+rather than a local edit, and its correctness is only really observable inside a live guest — so it is owed
+together with this phase's live acceptance rather than closable against the static gate alone.
 
 ## Documentation Requirements
 

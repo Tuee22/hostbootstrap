@@ -50,12 +50,17 @@ freshly observed generation and observation version against the managed handle o
 The repository does not yet enforce that boundary end to end:
 
 - several provider, staging, cluster, chart, NVIDIA, and teardown effects still use compatibility waits
-  or return `IO ()` rather than consuming a prepared operation. A chain step's action now receives the
-  plan-minted `StepExecution scope planId` descriptor, so it can name its own operation key, frame, plan
-  digest, and ordered edge set (§ U, landed 2026-08-02); what it still cannot reach is a `PreparedGate`,
-  so it cannot enter the traversal above. Both the prepare path and the *result* half of that signature
-  — an action returns `IO ()`, so nothing it observes can become a `ReconcileResult` — remain Sprint
-  16.6's single-`ProjectPlan` item;
+  or return `IO ()` rather than consuming a prepared operation. A chain step's action does now have every
+  input the traversal needs, delivered by the
+  [step-algebra phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md): the plan-minted
+  `StepExecution scope planId` descriptor names its own operation key, frame, plan digest, and ordered
+  edge set (§ U); `stepExecutionPreparedGate` and `stepExecutionTakeProjectedGate` reach the
+  `PreparedGate` the interpreter opened for the node's own operation and for each operation the plan
+  validated as a projection of it; `withCarriedManagedResource` reads back a dependency's `Managed` handle
+  the acquiring node carried in process; and `withNodeResourceOfKind` / `withNodeObservedResource` /
+  `plannedNodeOperation` name the planned resources the node may act on without handing it the plan. What
+  remains is adoption: each effect that still returns `IO ()` has to be rewritten to consume a prepared
+  operation and return a `ReconcileResult`;
 - provider adapters still need identity-bound conditional effects and recovery paths — a backend holding
   the four [ownership_invariant](ownership_invariant.md) clauses;
 - structured `LifecycleFailure` is not yet the universal subprocess boundary; and

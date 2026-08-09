@@ -16,6 +16,9 @@ module HostBootstrap.Cluster.Lifecycle (
     TeardownKind (..),
     durableDataPath,
     ensureDurableDataPath,
+    profileDataSegments,
+    profileDataPath,
+    ensureProfileDataPath,
     resolvePlan,
     resolvePlanWithDriver,
     resolveAcceleratorPlan,
@@ -122,7 +125,7 @@ resolvePlanWithDriver project root profile driver = case profile of
     Production ->
         ClusterPlan
             { clusterName = project
-            , dataPath = durableDataPath root
+            , dataPath = durableDataPathFor profile root
             , derivedPaths = [root </> ".cluster" </> project]
             , publishesHostPorts = True
             , clusterDriver = driver
@@ -132,7 +135,7 @@ resolvePlanWithDriver project root profile driver = case profile of
     TestCase caseId ->
         ClusterPlan
             { clusterName = project ++ "-test-" ++ caseId
-            , dataPath = root </> ".test_data" </> caseId
+            , dataPath = durableDataPathFor profile root
             , derivedPaths = [root </> ".cluster" </> (project ++ "-test-" ++ caseId)]
             , publishesHostPorts = False
             , clusterDriver = driver
@@ -198,15 +201,41 @@ data TeardownKind = Down | Delete
 
 -- | The canonical host-owned durable root for a production project.
 durableDataPath :: FilePath -> FilePath
-durableDataPath root = root </> ".data"
+durableDataPath root = durableDataPathFor Production root
+
+{- | The durable state root's path segments for one profile, relative to the
+project root.
+
+This is the __one__ definition of where a run's durable state lives, and
+'resolvePlanWithDriver' derives a plan's @dataPath@ from it. A production run
+owns the never-removed @.data@; a harness run owns the @.test_data\/\<run\>@
+generation its ownership bracket already holds under all four ownership clauses.
+Keeping it here, as segments, is what lets a caller that needs a
+'HostBootstrap.ProjectRoot.CanonicalHostPath' derive the same location the plan
+preserves rather than re-spelling it.
+-}
+profileDataSegments :: ClusterProfile -> [FilePath]
+profileDataSegments Production = [".data"]
+profileDataSegments (TestCase runName) = [".test_data", runName]
+
+-- | The durable state root for one profile, under @root@.
+profileDataPath :: ClusterProfile -> FilePath -> FilePath
+profileDataPath = durableDataPathFor
+
+durableDataPathFor :: ClusterProfile -> FilePath -> FilePath
+durableDataPathFor profile root = foldl (</>) root (profileDataSegments profile)
 
 {- | Ensure the canonical host-owned durable root exists and return its path.
 Creating an existing directory is an idempotent no-op and never inspects or
 removes its contents.
 -}
 ensureDurableDataPath :: FilePath -> IO FilePath
-ensureDurableDataPath root = do
-    let path = durableDataPath root
+ensureDurableDataPath = ensureProfileDataPath Production
+
+-- | 'ensureDurableDataPath' for one profile's own durable root.
+ensureProfileDataPath :: ClusterProfile -> FilePath -> IO FilePath
+ensureProfileDataPath profile root = do
+    let path = profileDataPath profile root
     createDirectoryIfMissing True path
     pure path
 

@@ -59,7 +59,15 @@ import HostBootstrap.Lifecycle.Session (
     registerOperationIntent,
     sessionErrorMessage,
     withOperationAdvance,
+    withPreparedGate,
     withStepPreparedGate,
+ )
+import HostBootstrap.Lifecycle.Execution.Internal (
+    newResourceCarrier,
+    newStepRuntime,
+    openStepRuntimeGate,
+    setStepRuntimeOwnGate,
+    stepRuntimeTakenGates,
  )
 import HostBootstrap.Protected (
     ProtectedSession,
@@ -94,6 +102,7 @@ import HostBootstrap.Step (
     renderStep,
     runStep,
     stepOperationKey,
+    stepProjectedOperations,
     operationKeyText,
     StepObservation (StepRefused),
  )
@@ -203,9 +212,14 @@ runChainFromFrame cfg self current store project lifecyclePlan
         case opened of
             Left err -> pure (Left err)
             Right (ChainJournal epochWord sess fence permit) -> do
+                -- One carrier for the whole interpretation: the node that
+                -- acquires a managed resource hands it to the node that depends
+                -- on it in process, because a generative handle cannot be
+                -- serialised (§ EE).
+                carrier <- newResourceCarrier
                 outcome <-
                     withRecordedBrokerEpoch epochWord $ \epoch ->
-                        Right <$> interpret epoch sess fence permit
+                        Right <$> interpret carrier epoch sess fence permit
                 pure (either (Left . Text.unpack . authorityErrorMessage) id outcome)
   where
     plan = lifecyclePlanSteps lifecyclePlan
@@ -214,13 +228,23 @@ runChainFromFrame cfg self current store project lifecyclePlan
     -- Every node of this frame, in plan order, plus the descent between them.
     frameSteps = preHandoffStepsForFrame current plan ++ postHandoffStepsForFrame current plan
 
-    interpret epoch sess fence permit = do
-        preRan <- runPlanSteps epoch sess fence permit (preHandoffStepsForFrame current plan)
+    {- Every operation this frame's segment owns: each node's own, plus the
+    operations that node projects. A projection is registered with its node, so
+    it is a member of this session from the same moment and obeys the same
+    settlement rule. -}
+    frameOperationKeys =
+        [ Text.pack (operationKeyText key)
+        | step <- frameSteps
+        , key <- stepOperationKey step : stepProjectedOperations step
+        ]
+
+    interpret carrier epoch sess fence permit = do
+        preRan <- runPlanSteps carrier epoch sess fence permit (preHandoffStepsForFrame current plan)
         case preRan of
             Left err -> pure (Left err)
             Right afterPre -> case nextFrameAfter current plan of
-                Nothing -> runPostHandoff epoch sess fence afterPre
-                Just next -> descendInto epoch sess fence afterPre next
+                Nothing -> runPostHandoff carrier epoch sess fence afterPre
+                Just next -> descendInto carrier epoch sess fence afterPre next
 
     {- Open this interpretation's journal, session, and fence, and register every
     node of this frame, all inside one exclusive entry.
@@ -254,7 +278,7 @@ runChainFromFrame cfg self current store project lifecyclePlan
                                     case settled of
                                         Left failure -> pure (Right (Left failure))
                                         Right fence -> do
-                                            registered <- registerAll s sess afterOpen frameSteps
+                                            registered <- registerAll s sess afterOpen frameOperationKeys
                                             pure
                                                 ( Right
                                                     ( ChainJournal (brokerEpochWord epoch) sess fence
@@ -266,14 +290,8 @@ runChainFromFrame cfg self current store project lifecyclePlan
                     Right inner -> inner
 
     registerAll _ _ permit [] = pure (Right permit)
-    registerAll s sess permit (step : rest) = do
-        registered <-
-            registerOperationIntent
-                s
-                sess
-                (Text.pack (operationKeyText (stepOperationKey step)))
-                NoHistory
-                permit
+    registerAll s sess permit (opKey : rest) = do
+        registered <- registerOperationIntent s sess opKey NoHistory permit
         case registered of
             Left failure -> pure (Left failure)
             Right next -> registerAll s sess next rest
@@ -307,9 +325,10 @@ runChainFromFrame cfg self current store project lifecyclePlan
     a fail-closed error rather than a default descriptor because running a step
     under a descriptor the plan never validated is exactly what the seam exists
     to prevent. -}
-    runPlanSteps _ _ _ permit [] = pure (Right permit)
-    runPlanSteps epoch sess fence permit (step : rest) =
-        case stepExecutionFor lifecyclePlan cfg step of
+    runPlanSteps _ _ _ _ permit [] = pure (Right permit)
+    runPlanSteps carrier epoch sess fence permit (step : rest) = do
+        runtime <- newStepRuntime carrier
+        case stepExecutionFor lifecyclePlan cfg runtime step of
             Nothing ->
                 pure
                     ( Left
@@ -319,7 +338,7 @@ runChainFromFrame cfg self current store project lifecyclePlan
                         )
                     )
             Just execution -> do
-                ran <- runNode epoch sess fence permit step execution
+                ran <- runNode epoch sess fence permit step execution runtime
                 case ran of
                     Left err -> pure (Left err)
                     Right (observation, afterNode)
@@ -332,7 +351,7 @@ runChainFromFrame cfg self current store project lifecyclePlan
                         -- state, so a later node that depends on it would act on
                         -- a precondition that does not hold.
                         | observationSucceeded observation ->
-                            runPlanSteps epoch sess fence afterNode rest
+                            runPlanSteps carrier epoch sess fence afterNode rest
                         | otherwise -> do
                             -- The row names *which* node and *what kind* of
                             -- outcome it was, so the three are told apart on the
@@ -350,21 +369,33 @@ runChainFromFrame cfg self current store project lifecyclePlan
     happened always precedes the attempt, and a crash at any point leaves a state
     the next invocation's sweep can classify.
 
-    The gate is minted through 'withStepPreparedGate', which reads the plan
-    digest and the operation key off this node's own plan-minted descriptor — so
-    a node prepares itself and cannot name a sibling. -}
-    runNode epoch sess fence permit step execution = do
+    The node's own gate is minted through 'withStepPreparedGate', which reads the
+    plan digest and the operation key off this node's own plan-minted descriptor
+    — so a node prepares itself and cannot name a sibling.
+
+    A gate is also opened for each operation this node __projects__, in the same
+    entry and before the same effect. A relating resource's key is a projection
+    of the keys it relates, so it is nobody's own key; the plan validated these
+    as living under this node, and the runtime behind the descriptor is the only
+    place the action can reach them. The interpreter settles exactly the ones the
+    action took: a declared projection whose gate is never taken stays unsettled,
+    and the session close then refuses. -}
+    runNode epoch sess fence permit step execution runtime = do
         prepared <-
             inEntry $ \s ->
-                withStepPreparedGate
-                    s
-                    sess
-                    epoch
-                    fence
-                    execution
-                    unknownStepPhase
-                    permit
-                    (\gate next -> pure (Right (gate, next)))
+                openProjections s sess epoch fence runtime permit (projectedKeysOf step) $ \afterProjections ->
+                    withStepPreparedGate
+                        s
+                        sess
+                        epoch
+                        fence
+                        execution
+                        unknownStepPhase
+                        afterProjections
+                        ( \gate next -> do
+                            setStepRuntimeOwnGate runtime gate
+                            pure (Right (gate, next))
+                        )
         case prepared of
             Left err -> pure (Left err)
             Right (gate, afterPrepare) -> do
@@ -382,14 +413,16 @@ runChainFromFrame cfg self current store project lifecyclePlan
                         Right observed -> observed
                         Left (SafetyRefusal reason) -> StepRefused (Text.pack reason)
                 settled <-
-                    inEntry $ \s ->
-                        acknowledgeOutcome
-                            s
-                            sess
-                            gate
-                            (settledPhaseFor observation)
-                            observation
-                            afterPrepare
+                    inEntry $ \s -> do
+                        taken <- stepRuntimeTakenGates runtime
+                        settleProjections s sess observation taken afterPrepare $ \afterTaken ->
+                            acknowledgeOutcome
+                                s
+                                sess
+                                gate
+                                (settledPhaseFor observation)
+                                observation
+                                afterTaken
                 case attempted of
                     -- Settled first, then re-thrown, so the caller's existing
                     -- refusal handling is unchanged and the record is correct
@@ -399,6 +432,43 @@ runChainFromFrame cfg self current store project lifecyclePlan
 
     renderRow step observation =
         renderStep step ++ ": " ++ Text.unpack (observationDetail observation)
+
+    projectedKeysOf step =
+        map (Text.pack . operationKeyText) (stepProjectedOperations step)
+
+    {- Publish the durable unknown phase of each operation this node projects and
+    hand the resulting gate to the node's runtime, so the action can take exactly
+    those. The permit is spent by each prepare in turn, which is why this is a
+    fold in continuation form rather than a traversal. -}
+    openProjections _ _ _ _ _ permit [] use = use permit
+    openProjections s sess epoch fence runtime permit (opKey : rest) use =
+        withPreparedGate
+            s
+            sess
+            epoch
+            fence
+            opKey
+            unknownStepPhase
+            permit
+            ( \gate next -> do
+                openStepRuntimeGate runtime gate
+                openProjections s sess epoch fence runtime next rest use
+            )
+
+    {- Settle each projection the node reached, at the phase the node itself
+    settles at. A projection the action never took is left registered and
+    unsettled, so 'closeOperationSession' refuses — declaring a projection the
+    node does not perform is a plan error and fails closed. -}
+    settleProjections _ _ _ [] permit use = use permit
+    settleProjections s sess observation (projected : rest) permit use = do
+        acknowledged <-
+            acknowledgeOutcome s sess projected (settledPhaseFor observation) () permit
+        case acknowledged of
+            Left failure -> pure (Left failure)
+            Right advance ->
+                withOperationAdvance
+                    advance
+                    (\() next -> settleProjections s sess observation rest next use)
 
     -- Stream the next frame's child config in-place: for a container frame
     -- with config delivery, 'liftStdin' carries the narrowed projection on
@@ -410,7 +480,7 @@ runChainFromFrame cfg self current store project lifecyclePlan
     -- step announcing the descent and the payload crossing it are one value.
     -- A validated plan always carries one for a frame that has a successor;
     -- the 'Nothing' branch is the total fail-closed reading of that invariant.
-    descendInto epoch sess fence permit next =
+    descendInto carrier epoch sess fence permit next =
         case frameDescent current plan of
             Nothing ->
                 pure
@@ -425,7 +495,7 @@ runChainFromFrame cfg self current store project lifecyclePlan
                 result <- liftSubcommandWithStdin cfg self nextCtx handoffArgv (liftStdin nextCtx)
                 case result of
                     Right (ExitSuccess, out, _) ->
-                        putStr out >> runPostHandoff epoch sess fence permit
+                        putStr out >> runPostHandoff carrier epoch sess fence permit
                     -- Surface the nested frame's captured stdout even on failure (it holds
                     -- the frame's step-by-step progress); the stderr becomes the error.
                     Right (_, out, err) -> putStr out >> pure (Left err)
@@ -437,8 +507,8 @@ runChainFromFrame cfg self current store project lifecyclePlan
     a chain that stopped early leaves registered-but-unsettled nodes, so its
     session stays Open and the next invocation's sweep resolves it rather than
     this one pretending it finished. -}
-    runPostHandoff epoch sess fence permit = do
-        ran <- runPlanSteps epoch sess fence permit (postHandoffStepsForFrame current plan)
+    runPostHandoff carrier epoch sess fence permit = do
+        ran <- runPlanSteps carrier epoch sess fence permit (postHandoffStepsForFrame current plan)
         case ran of
             Left err -> pure (Left err)
             Right afterPost -> do

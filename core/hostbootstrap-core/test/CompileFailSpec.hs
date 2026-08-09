@@ -79,6 +79,12 @@ tests =
         , rejects "ForgeTeardownForest.hs"
         , rejects "ForgePreconditionSet.hs"
         , rejects "ForgePreparedGate.hs"
+        , -- A role performs only the effects its declared row names. 'HasEffect'
+          -- has no empty-row equation, so the diagnostic names the effect the
+          -- row lacks rather than reporting a generic mismatch.
+          rejectsWith
+            "UndeclaredServiceEffect.hs"
+            ["Could not solve: \8216HasEffect DurableStore '[]\8217"]
         , rejectsWith
             "ForgeStepExecution.hs"
             [ "Illegal term-level use of the type constructor 'StepExecution'"

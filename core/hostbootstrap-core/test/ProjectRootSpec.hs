@@ -9,6 +9,8 @@ import HostBootstrap.Lift (canonicalHostMount)
 import HostBootstrap.ProjectRoot (
     ProjectRootError (..),
     canonicalDurableHostPath,
+    canonicalHostPathValue,
+    canonicalHostSubPath,
     canonicalProjectRootPath,
     withCanonicalProjectRoot,
  )
@@ -26,7 +28,35 @@ tests :: TestTree
 tests =
     testGroup
         "ProjectRootSpec"
-        [ testCase "relative roots resolve against the config-owned anchor, independent of cwd" $
+        [ {- A run-scoped durable root is not a fixed name, so the segments are
+          supplied — and each one is checked to be a single ordinary component.
+          A segment that could climb out would hand a trusted host adapter a path
+          the root never admitted. -}
+          testCase "a host subpath stays under the admitted root, or is refused" $
+            withSystemTempDirectory "hostbootstrap-subpath" $ \workspace -> do
+                let configPath = workspace </> ".build" </> "demo.dhall"
+                createDirectoryIfMissing True (workspace </> ".build")
+                expected <- canonicalizePath workspace
+                admitted <-
+                    withCanonicalProjectRoot configPath "." $ \root -> do
+                        let under segments = fmap canonicalHostPathValue (canonicalHostSubPath root segments)
+                        -- the production durable root is the one-segment case
+                        under [".data"] @?= Right (canonicalHostPathValue (canonicalDurableHostPath root))
+                        -- a run-scoped generation is two ordinary segments
+                        under [".test_data", "run-42"]
+                            @?= Right (expected </> ".test_data" </> "run-42")
+                        -- and every way out is refused by name
+                        under [".."] @?= Left (ProjectRootSegmentUnsafe "..")
+                        under ["."] @?= Left (ProjectRootSegmentUnsafe ".")
+                        under [""] @?= Left (ProjectRootSegmentUnsafe "")
+                        under ["a/b"] @?= Left (ProjectRootSegmentUnsafe "a/b")
+                        under ["a\\b"] @?= Left (ProjectRootSegmentUnsafe "a\\b")
+                        under ["C:"] @?= Left (ProjectRootSegmentUnsafe "C:")
+                        under [".test_data", ".."] @?= Left (ProjectRootSegmentUnsafe "..")
+                        under [] @?= Left (ProjectRootSegmentUnsafe "<no segments>")
+                        pure ()
+                admitted @?= Right ()
+        , testCase "relative roots resolve against the config-owned anchor, independent of cwd" $
             withSystemTempDirectory "hostbootstrap-project-root" $ \workspace -> do
                 let project = workspace </> "project"
                     buildDir = project </> ".build"

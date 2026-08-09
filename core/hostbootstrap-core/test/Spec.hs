@@ -39,6 +39,7 @@ import qualified ReconcileSpec
 import qualified RegistryPlanSpec
 import qualified RegistrySpec
 import qualified RoleLifecycleSpec
+import qualified ServiceProgramSpec
 import qualified TeardownSpec
 import qualified SchemaSpec
 import qualified StepSpec
@@ -166,6 +167,7 @@ main = do
                         , RegistrySpec.tests
                         , RegistryPlanSpec.tests
                         , RoleLifecycleSpec.tests
+                        , ServiceProgramSpec.tests
                         , TeardownSpec.tests
                         , docTests
                         ]

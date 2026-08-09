@@ -94,6 +94,7 @@ library
       HostBootstrap.Harness.Identity.Native
       HostBootstrap.Harness.Ownership
       HostBootstrap.Service
+      HostBootstrap.Service.Program
       HostBootstrap.DocValidator
   other-modules:
       HostBootstrap.Config.Authority.Internal
@@ -185,6 +186,7 @@ test-suite hostbootstrap-core-test
       RegistrySpec
       RegistryPlanSpec
       RoleLifecycleSpec
+      ServiceProgramSpec
       TeardownSpec
       DocValidatorSpec
   if os(windows)

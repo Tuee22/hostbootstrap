@@ -15,8 +15,26 @@ module ConfigSpec (tests) where
 import Control.Exception (SomeException, try)
 import qualified Data.Text as T
 import qualified Dhall
-import HostBootstrap.Config.Class (InitArgs (..))
+import qualified Data.List.NonEmpty as NE
+import HostBootstrap.Config.Class (InitArgs (..), TestCfg (projectTestMatrix))
 import qualified HostBootstrap.Config.Class as Config
+import HostBootstrap.Harness (
+    CaseId,
+    CaseSelector,
+    IdentifierError (EmptyVariantId, InvalidVariantId),
+    TestMatrixError (DuplicateVariantIds, EmptyVariantRegistry, InvalidVariantDeclaration),
+    VariantId,
+    allCasesSelector,
+    mkCaseId,
+    mkVariantId,
+    parseCaseSelector,
+    selectTestMatrix,
+    selectedVariantCaseIds,
+    selectedVariantDraft,
+    testMatrixCaseIds,
+    testMatrixVariantIds,
+    variantDraftValue,
+ )
 import HostBootstrap.Context (
     BinaryContext (..),
     Capability (..),
@@ -35,6 +53,8 @@ import HostBootstrapDemo.Config (
     Port,
     ProjectConfig (..),
     Resources,
+    TestConfig (..),
+    TestVariantConfig (..),
     TimeoutSeconds,
     WebServiceConfig (..),
     configuredServiceVariant,
@@ -98,6 +118,48 @@ tests =
             let tc = defaultTestConfig (validResources 6 "10GiB" "80GiB")
             decoded <- decodeTestConfigText (renderTestConfig tc)
             decoded @?= tc
+        , {- The matrix is a projection of decoded configuration, not of this
+          module (the worked-demo phase): the variants a run executes are the
+          ones `test.dhall` declares, so adding one is a config edit. -}
+          testCase "the run matrix is projected from the declared variant set" $ do
+            let tc = defaultTestConfig demoDefaultResources
+            matrix <- expectDecoded (projectTestMatrix demoCaseIds tc)
+            testMatrixVariantIds matrix @?= map (literalVariantId . variantName) (testVariants tc)
+            testMatrixCaseIds matrix @?= demoCaseIds
+            -- a third variant is an edit to the config alone
+            let extended =
+                    tc
+                        { testVariants =
+                            testVariants tc
+                                ++ [TestVariantConfig{variantName = "hello-again", variantMessage = "Hello, again!"}]
+                        }
+            extendedMatrix <- expectDecoded (projectTestMatrix demoCaseIds extended)
+            testMatrixVariantIds extendedMatrix
+                @?= map (literalVariantId . variantName) (testVariants extended)
+        , testCase "each declared variant carries its own served message" $ do
+            let tc = defaultTestConfig demoDefaultResources
+            matrix <- expectDecoded (projectTestMatrix demoCaseIds tc)
+            selected <- expectDecoded (selectTestMatrix allSelector matrix)
+            map (variantDraftValue . selectedVariantDraft) selected
+                @?= map variantMessage (testVariants tc)
+            -- every case runs under every declared variant, so the row count is
+            -- the product of the two decoded sets
+            map (NE.toList . selectedVariantCaseIds) selected
+                @?= replicate (length (testVariants tc)) demoCaseIds
+        , {- A malformed or empty declaration is refused while the matrix is
+          being built — before the run acquires anything. -}
+          testCase "a malformed or empty variant declaration is refused before the run" $ do
+            let tc = defaultTestConfig demoDefaultResources
+                withVariants vs = tc{testVariants = vs}
+                declared name = TestVariantConfig{variantName = name, variantMessage = "m"}
+            projectTestMatrix demoCaseIds (withVariants [])
+                @?= Left EmptyVariantRegistry
+            projectTestMatrix demoCaseIds (withVariants [declared "has space"])
+                @?= Left (InvalidVariantDeclaration (InvalidVariantId "has space"))
+            projectTestMatrix demoCaseIds (withVariants [declared ""])
+                @?= Left (InvalidVariantDeclaration EmptyVariantId)
+            projectTestMatrix demoCaseIds (withVariants [declared "dup", declared "dup"])
+                @?= Left (DuplicateVariantIds [literalVariantId "dup"])
         , testCase "Dhall text literal rendering escapes chart-injected strings" $
             renderDhallText "Hello, \"Dhall\"\\world"
                 @?= "\"Hello, \\\"Dhall\\\"\\\\world\""
@@ -233,9 +295,12 @@ tests =
             assertBool "surfaces the message value" ("Hello, world!" `isInfixOfS` summary)
         , testCase "projectImageTag is <project>:local" $
             projectImageTag hostCfg @?= "hostbootstrap-demo:local"
-        , testCase "dockerBuildArgs builds the dockerfile FROM the base, tagged, from ." $
+        , -- @--pull@ is part of the contract, not an incidental flag: without it a
+          -- host that once built the rolling tag locally would build FROM that
+          -- stale image and never notice (\194\167 FF).
+          testCase "dockerBuildArgs pulls, then builds the dockerfile FROM the base, tagged, from ." $
             dockerBuildArgs hostCfg "base:tag"
-                @?= ["build", "-f", "docker/Dockerfile", "--build-arg", "BASE_IMAGE=base:tag", "-t", "hostbootstrap-demo:local", "."]
+                @?= ["build", "--pull", "-f", "docker/Dockerfile", "--build-arg", "BASE_IMAGE=base:tag", "-t", "hostbootstrap-demo:local", "."]
         , testCase "the sole project resource value projects to a provider envelope" $
             envelopeOfResources hostCfg.resources @?= ResourceEnvelope 6 "10GiB" "80GiB"
         , testCase "command authority narrows across the host -> service projection" $ do
@@ -332,3 +397,29 @@ assertDecodeFails action = do
 
 expectRight :: Either String a -> IO a
 expectRight = either assertFailure pure
+
+-- | 'expectRight' for a structured project error.
+expectDecoded :: (Show failure) => Either failure a -> IO a
+expectDecoded = either (assertFailure . show) pure
+
+{- | The demo's five compiled cases. Written out here rather than imported so the
+projection under test is compared against the declared set an operator reads. -}
+demoCaseIds :: [CaseId]
+demoCaseIds =
+    map
+        literalCaseId
+        [ "pristine-bootstrap"
+        , "web-build"
+        , "e2e-tabs"
+        , "registry-persistence"
+        , "durable-readback"
+        ]
+
+literalCaseId :: T.Text -> CaseId
+literalCaseId = either (error . show) id . mkCaseId
+
+literalVariantId :: T.Text -> VariantId
+literalVariantId = either (error . show) id . mkVariantId
+
+allSelector :: CaseSelector
+allSelector = either (error . show) id (parseCaseSelector (T.pack allCasesSelector))

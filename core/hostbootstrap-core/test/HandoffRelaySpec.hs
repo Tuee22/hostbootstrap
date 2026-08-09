@@ -57,6 +57,15 @@ import HostBootstrap.Handoff.Receiver (
     receiverErrorMessage,
     withReceivedHandoffEdge,
  )
+import HostBootstrap.Activation (
+    ActivationBroker,
+    ActivationManifest (..),
+    activationGrantSignature,
+    activationManifestFromWire,
+    renderActivationManifest,
+    signActivationManifest,
+    withActivationBroker,
+ )
 import HostBootstrap.Handoff.Relay (
     BrokerLink,
     EdgeAdmission,
@@ -66,6 +75,7 @@ import HostBootstrap.Handoff.Relay (
     relayErrorMessage,
     relayedBrokerLink,
     rootBrokerLink,
+    linkSignActivation,
  )
 import HostBootstrap.Lifecycle.Mode (productionRootAuthority, withProductionRoot)
 import HostBootstrap.Protected (openProtectedStore)
@@ -93,6 +103,7 @@ tests =
         [ testGroup "the root's own link" rootLinkTests
         , testGroup "a nested frame relaying to the root" nestedTests
         , testGroup "losing the route to the broker" brokerLossTests
+        , testGroup "relayed activation signing" activationSigningTests
         ]
 
 -- ---------------------------------------------------------------------------
@@ -116,8 +127,8 @@ rootLinkTests =
                         ("refused" `Text.isInfixOf` Text.pack detail)
                 Right value -> assertFailure ("the child admitted " <> show value)
     , testCase "each opened edge authenticates exactly once through the link" $
-        withRoot 43 $ \broker -> do
-            let link = rootBrokerLink broker (rootBrokerVerificationKey broker) admitEverything
+        withRoot 43 $ \broker activation -> do
+            let link = rootBrokerLink broker activation (rootBrokerVerificationKey broker) admitEverything
             (relay, token) <- expectRight =<< registerHandoffEdge broker middleFrameInput
             offer <- expectRight (mkHandoffOffer relay middlePayload token)
             challenge <- freshChallenge
@@ -173,7 +184,7 @@ nestedTests =
 brokerLossTests :: [TestTree]
 brokerLossTests =
     [ testCase "a relayed link whose channel is gone refuses, and the edge survives it" $
-        withRoot 46 $ \broker -> do
+        withRoot 46 $ \broker activation -> do
             (relay, token) <- expectRight =<< registerHandoffEdge broker middleFrameInput
             offer <- expectRight (mkHandoffOffer relay middlePayload token)
             challenge <- freshChallenge
@@ -184,12 +195,12 @@ brokerLossTests =
                 other -> assertFailure ("expected a transport failure, got " <> show other)
             -- The loss happened before anything durable, so the opened edge is
             -- still there to be authenticated.
-            let live = rootBrokerLink broker (rootBrokerVerificationKey broker) admitEverything
+            let live = rootBrokerLink broker activation (rootBrokerVerificationKey broker) admitEverything
             recovered <- grantThroughLink live offer challenge
             assertBool "the opened edge survived the lost link" (isRight recovered)
     , testCase "a lost answer reprobes to the same signature rather than minting a second" $
-        withRoot 47 $ \broker -> do
-            let link = rootBrokerLink broker (rootBrokerVerificationKey broker) admitEverything
+        withRoot 47 $ \broker activation -> do
+            let link = rootBrokerLink broker activation (rootBrokerVerificationKey broker) admitEverything
             (relay, token) <- expectRight =<< registerHandoffEdge broker middleFrameInput
             offer <- expectRight (mkHandoffOffer relay middlePayload token)
             challenge <- freshChallenge
@@ -308,11 +319,12 @@ withNestedProcesses seedByte admits check =
         let keyPath = directory </> "project.pub"
             middleOut = directory </> "middle.bytes"
             leafOut = directory </> "leaf.bytes"
-        withRootIn directory seedByte $ \broker -> do
+        withRootIn directory seedByte $ \broker activation -> do
             ByteString.writeFile keyPath (verificationKeyBytes (rootBrokerVerificationKey broker))
             let link =
                     rootBrokerLink
                         broker
+                        activation
                         (rootBrokerVerificationKey broker)
                         (recordingAdmission requested admits)
             spawned <-
@@ -369,7 +381,7 @@ withRootAndChildThread ::
     IO ()
 withRootAndChildThread seedByte admits check =
     withSystemTempDirectory "hostbootstrap-handoff-link" $ \directory ->
-        withRootIn directory seedByte $ \broker -> do
+        withRootIn directory seedByte $ \broker activation -> do
             (toChildRead, toChildWrite) <- createPipe
             (toParentRead, toParentWrite) <- createPipe
             childChannel <- handoffChannel toChildRead toParentWrite
@@ -386,7 +398,7 @@ withRootAndChildThread seedByte admits check =
                                 (\edge -> pure (Right (authenticatedConfigBytes (receivedEdgeConfig edge))))
                         putMVar childVar (either (Left . receiverErrorMessage) Right received)
                     )
-            let link = rootBrokerLink broker (rootBrokerVerificationKey broker) admits
+            let link = rootBrokerLink broker activation (rootBrokerVerificationKey broker) admits
             opened <- offerHandoffEdge link parentChannel requestId middleFrameInput middlePayload
             admitted <- takeMVar childVar
             hClose toChildWrite
@@ -410,10 +422,72 @@ severedLink key = do
     hClose readEnd
     pure (relayedBrokerLink channel requestId key)
 
+{- | The relayed activation-signing edge.
+
+'withActivationBroker' consumes a @RootInvocationAuthority@ only the root frame
+mints, so a nested frame has no route to a signature except this one. These cases
+cover the round trip, that a relayed signature is the same one a local signer
+would produce, and the two ways the root refuses.
+-}
+activationSigningTests :: [TestTree]
+activationSigningTests =
+    [ testCase "the root signs a manifest relayed from its own link" $
+        withRoot 61 $ \broker activation -> do
+            let link = rootBrokerLink broker activation (rootBrokerVerificationKey broker) admitEverything
+            signed <- linkSignActivation link sampleManifest
+            grant <- expectRight signed
+            -- A relayed signature is byte-identical to the local one, so the
+            -- relay adds a route rather than a second signing rule.
+            local <- expectRight (signActivationManifest activation sampleManifest)
+            activationGrantSignature grant @?= activationGrantSignature local
+    , testCase "a manifest with no rollout revision is refused rather than signed" $
+        withRoot 62 $ \broker activation -> do
+            let link = rootBrokerLink broker activation (rootBrokerVerificationKey broker) admitEverything
+            signed <- linkSignActivation link sampleManifest{manifestRevision = ""}
+            case signed of
+                Left (RelayActivationRefused _) -> pure ()
+                other -> assertFailure ("expected an activation refusal, got " <> show other)
+    , testCase "a manifest round-trips through its wire form exactly" $ do
+        let wire = renderActivationManifest sampleManifest
+        decoded <- expectRight (activationManifestFromWire wire)
+        decoded @?= sampleManifest
+    , testCase "a truncated or trailing manifest wire is refused, not partially read" $ do
+        let wire = renderActivationManifest sampleManifest
+        case activationManifestFromWire (ByteString.take (ByteString.length wire - 1) wire) of
+            Left _ -> pure ()
+            Right value -> assertFailure ("a truncated wire decoded to " <> show value)
+        case activationManifestFromWire (wire <> "extra") of
+            Left _ -> pure ()
+            Right value -> assertFailure ("a wire with trailing bytes decoded to " <> show value)
+    , testCase "the effect row survives the wire as a row, not one joined entry" $ do
+        let manifest = sampleManifest{manifestPermittedEffects = ["listen", "durable-store"]}
+        decoded <- expectRight (activationManifestFromWire (renderActivationManifest manifest))
+        manifestPermittedEffects decoded @?= ["listen", "durable-store"]
+    ]
+
+-- | A structurally complete manifest; individual cases vary one field.
+sampleManifest :: ActivationManifest
+sampleManifest =
+    ActivationManifest
+        { manifestScope = "production"
+        , manifestPlanDigest = "plan-1"
+        , manifestSpecDigest = "spec-1"
+        , manifestBinaryDigest = "binary-1"
+        , manifestFrame = "runtime-container"
+        , manifestRevision = "revision-1"
+        , manifestConfigDigest = "config-1"
+        , manifestSecretDigest = "secret-1"
+        , manifestService = "web"
+        , manifestRolePlanDigest = "role-plan-1"
+        , manifestPermittedEffects = ["listen"]
+        , manifestSecretChannel = "file:///run/secrets/web"
+        }
+
 withRoot ::
     Word8 ->
     ( forall (brokerGeneration :: Type).
       RootBroker (Production Fixture.FixtureProject) brokerGeneration VerbUp ->
+      ActivationBroker (Production Fixture.FixtureProject) brokerGeneration VerbUp ->
       IO ()
     ) ->
     IO ()
@@ -426,6 +500,7 @@ withRootIn ::
     Word8 ->
     ( forall (brokerGeneration :: Type).
       RootBroker (Production Fixture.FixtureProject) brokerGeneration VerbUp ->
+      ActivationBroker (Production Fixture.FixtureProject) brokerGeneration VerbUp ->
       IO ()
     ) ->
     IO ()
@@ -442,7 +517,9 @@ withRootIn directory seedByte use = do
                 store
                 signing
                 (productionRootAuthority root)
-                use
+                ( \broker ->
+                    withActivationBroker (productionRootAuthority root) (use broker)
+                )
         _ <- expectRight brokered
         pure (Right ())
     _ <- expectRight outcome

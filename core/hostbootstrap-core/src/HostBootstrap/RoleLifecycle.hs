@@ -1,4 +1,11 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -78,6 +85,17 @@ module HostBootstrap.RoleLifecycle (
     roleEffectExclusive,
     LeaseRequirement (..),
 
+    -- * The declared effect row and its authorization
+    EffectName (..),
+    effectNameOf,
+    DeclaredEffects (..),
+    declaredEffectList,
+    HasEffect,
+    EffectAuthorization,
+    authorizedEffects,
+    authorizedLeaseRequirement,
+    authorizeServiceEffects,
+
     -- * One-use durable lifecycle admission
     ReservedRoleAdmission,
     reservedRoleAdmissionKey,
@@ -126,6 +144,7 @@ import qualified Crypto.Hash as Hash
 import qualified Data.ByteArray as ByteArray
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
+import Data.Kind (Constraint)
 import Data.List (group, sort)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -334,6 +353,113 @@ parsePermittedEffects = traverse parseOne
     parseOne value = case parseRoleEffect value of
         Just effect -> Right effect
         Nothing -> Left (RoleEffectUnsupported value)
+
+{- | A term-level tag for one effect, so a value can report its own index.
+
+The same shape "HostBootstrap.Network" uses for 'HostBootstrap.Network.ScopeName':
+a promoted closed family plus a GADT whose constructors are in bijection with it,
+so a type-level effect always has exactly one term-level witness and vice versa.
+-}
+data EffectName (e :: RoleEffect) where
+    NetworkListenName :: EffectName 'NetworkListen
+    NetworkConnectName :: EffectName 'NetworkConnect
+    DurableStoreName :: EffectName 'DurableStore
+    ProcessSpawnName :: EffectName 'ProcessSpawn
+
+deriving instance Eq (EffectName e)
+
+deriving instance Show (EffectName e)
+
+effectNameOf :: EffectName e -> RoleEffect
+effectNameOf NetworkListenName = NetworkListen
+effectNameOf NetworkConnectName = NetworkConnect
+effectNameOf DurableStoreName = DurableStore
+effectNameOf ProcessSpawnName = ProcessSpawn
+
+{- | The effect row a service definition declares, as a type-level list with a
+term-level twin that agrees with it __by construction__.
+
+A project writes its row directly — @WithEffect NetworkListenName (WithEffect
+DurableStoreName NoEffects)@ — and 'declaredEffectList' reads back exactly the
+effects the type names. There is no reification class and no @Proxy@: the value
+/is/ the evidence, the same way 'HostBootstrap.Network.reachableFrom' cannot
+disagree with @Reachability@.
+-}
+data DeclaredEffects (effects :: [RoleEffect]) where
+    NoEffects :: DeclaredEffects '[]
+    WithEffect :: EffectName e -> DeclaredEffects es -> DeclaredEffects (e ': es)
+
+deriving instance Show (DeclaredEffects effects)
+
+-- | The term-level view of a declared row, in declaration order.
+declaredEffectList :: DeclaredEffects effects -> [RoleEffect]
+declaredEffectList NoEffects = []
+declaredEffectList (WithEffect name rest) = effectNameOf name : declaredEffectList rest
+
+{- | Membership of an effect in a declared row, as a constraint.
+
+There is deliberately no @'[]@ equation: a program constructor demanding an
+effect the row does not carry produces an /unsolved constraint/ naming both the
+effect and the row, so an undeclared effect is a compile error rather than a
+runtime refusal. This is the piece that makes "a handler performs only what its
+role declared" unrepresentable rather than checked.
+-}
+type family HasEffect (e :: RoleEffect) (es :: [RoleEffect]) :: Constraint where
+    HasEffect e (e ': _) = ()
+    HasEffect e (_ ': es) = HasEffect e es
+
+{- | Authority to run a program demanding exactly @effects@.
+
+Its constructor is private and 'authorizeServiceEffects' is the sole producer, so
+the row a program is indexed by can only be one the signed placement ceiling
+admits. The index is the __declared__ row rather than the ceiling: the registry
+fixes what a handler may do, and the signature is what validates that choice.
+-}
+data EffectAuthorization scope specDigest planId frame revision instanceId service (effects :: [RoleEffect])
+    = EffectAuthorization Text [RoleEffect] LeaseRequirement
+
+-- | The effects this authorization admits, in the row's own order.
+authorizedEffects ::
+    EffectAuthorization scope specDigest planId frame revision instanceId service effects ->
+    [RoleEffect]
+authorizedEffects (EffectAuthorization _ effects _) = effects
+
+{- | What holding this authorization requires of the run, derived from the same
+ceiling that admitted it: a row naming any exclusive effect needs the live fenced
+generation lease.
+-}
+authorizedLeaseRequirement ::
+    EffectAuthorization scope specDigest planId frame revision instanceId service effects ->
+    LeaseRequirement
+authorizedLeaseRequirement (EffectAuthorization _ _ requirement) = requirement
+
+{- | Admit a declared effect row against the signed placement ceiling.
+
+Every declared effect must appear in @placementPermittedEffects@; one that does
+not refuses by name. A row may be narrower than the ceiling — declaring less than
+you are permitted is the point — but never wider, and the lease requirement is
+recomputed from the __declared__ row so a role that declares no exclusive effect
+does not inherit its ceiling's lease.
+-}
+authorizeServiceEffects ::
+    VerifiedServicePlacement scope specDigest planId frame revision instanceId service permittedEffects ->
+    DeclaredEffects effects ->
+    Either
+        RoleLifecycleError
+        (EffectAuthorization scope specDigest planId frame revision instanceId service effects)
+authorizeServiceEffects placement declared =
+    case [effect | effect <- requested, effect `notElem` permitted] of
+        (outside : _) -> Left (RoleEffectNotPermitted (placementService placement) (roleEffectName outside))
+        [] ->
+            Right
+                ( EffectAuthorization
+                    (placementService placement)
+                    requested
+                    (leaseRequirementOf requested)
+                )
+  where
+    requested = declaredEffectList declared
+    permitted = placementPermittedEffects placement
 
 {- | What the run must hold.  Derived from the signed ceiling before Acquire;
 never selected by a caller.
@@ -870,6 +996,8 @@ data RoleLifecycleError
     | -- | the signed digest, then the one this binary's draft renders to
       RoleDraftDigestMismatch Text Text
     | RoleEffectUnsupported Text
+    | -- | the service, then the declared effect its signed ceiling does not permit
+      RoleEffectNotPermitted Text Text
     | RoleAdmissionAlreadyConsumed Text
     | RoleAdmissionStoreFailure ProtectedError
     deriving (Eq, Show)
@@ -885,6 +1013,12 @@ roleLifecycleErrorMessage failure = case failure of
     RoleEffectUnsupported value ->
         "role lifecycle: the signed effect ceiling names an unsupported effect: "
             <> Text.unpack value
+    RoleEffectNotPermitted service effect ->
+        "role lifecycle: service "
+            <> Text.unpack service
+            <> " declares the effect "
+            <> Text.unpack effect
+            <> ", which its signed ceiling does not permit"
     RoleAdmissionAlreadyConsumed key ->
         "role lifecycle: lifecycle admission " <> Text.unpack key <> " is already consumed"
     RoleAdmissionStoreFailure detail ->

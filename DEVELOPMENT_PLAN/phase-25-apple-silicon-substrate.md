@@ -119,6 +119,10 @@ surviving records, the generated config gone, the durable root intact, and the L
 
 #### Remaining Work
 
+The frame-indexed teardown descent is behaviour this lane exercises: an operator teardown here crosses a
+real frame boundary into the provider guest, so acceptance is owed against the descent's typed admission
+rather than against a run that predates it.
+
 The recorded acceptance predates the currently-open work in the recursive-lifecycle-command,
 prepared-operations, step-algebra, authenticated-handoff, and recovery phases. Acceptance is re-run once those
 land, because each changes behaviour this lane exercises.

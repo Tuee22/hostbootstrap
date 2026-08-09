@@ -106,6 +106,8 @@ allTags =
     , GrantTag
     , AcceptedTag
     , CompletedTag
+    , ActivationSignRequestTag
+    , ActivationSignResponseTag
     , RefusedTag
     ]
 
@@ -125,6 +127,8 @@ fieldCount tag = case tag of
     GrantTag -> 2
     AcceptedTag -> 1
     CompletedTag -> 1
+    ActivationSignRequestTag -> 1
+    ActivationSignResponseTag -> 1
     RefusedTag -> 2
 
 wireFor :: ProtocolTag -> Word -> [ByteString] -> ByteString
