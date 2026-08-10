@@ -30,13 +30,13 @@ document is its canonical explanation and per-substrate realization.
 ## Current Status
 
 The invariant is defined and the algebra that consumes it exists. The prepared Incus provider/share and
-provider-guest alias implementations now encode all four clauses, but the
+provider-guest alias implementations encode all four clauses, and the
 [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
-has a closed static gate and remains Active until its native Linux/x86_64 KVM/Incus gate passes. The demo
+carries both its static and its native Linux/x86_64 KVM/Incus closure evidence. The demo
 still uses its compatibility
 provider/alias call site; adopting the sealed route belongs to the
-[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md). Those facts are implementation claims,
-not closure or native-validation evidence.
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md), which is where that call site's
+native validation lives.
 
 - `HostBootstrap.ProjectPlan` is the sole whole-plan producer of `PlannedResource` and `PlannedEdge`.
   Its facade takes an opaque admitted `OperationKey` plus a closed `PlannedResourceKind`, generates the

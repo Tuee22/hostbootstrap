@@ -166,6 +166,12 @@ mkIncusBackendSpec ::
 mkIncusBackendSpec name image hostConfig stateDirectory cpu memory storage
     | substrateName (hcSubstrate hostConfig) /= LinuxCpu = invalid "the Incus provider backend requires a linux-cpu HostConfig"
     | not (safeName name) = invalid "the Incus instance name is empty or contains a non-portable character"
+    | length name > maxIncusInstanceNameLength =
+        invalid
+            ( "the Incus instance name is longer than "
+                <> Text.pack (show maxIncusInstanceNameLength)
+                <> " characters, so its share device socket path exceeds the platform limit"
+            )
     | null image || '\0' `elem` image = invalid "the Incus image must be non-empty and contain no NUL"
     | not (absolutePath stateDirectory) = invalid "the provider state directory must be an absolute path"
     | cpu == 0 = invalid "the provider CPU quantity must be positive"
@@ -556,10 +562,52 @@ shareDeviceName ::
     PreparedProviderShare scope planId backendId providerId shareId operationKey callDigest attempt journalVersion ->
     String
 shareDeviceName prepared =
-    "hb-share-"
-        <> take 32 (ByteString.unpack (convertToBase Base16 digest))
+    shareDevicePrefix
+        <> take shareDeviceDigestLength (ByteString.unpack (convertToBase Base16 digest))
   where
     digest = hash (ByteString.pack (Text.unpack (preparedShareBinding prepared))) :: Digest SHA256
+
+{- | The share device is named from the share binding digest, so the same
+prepared share always addresses the same device and a different binding never
+addresses it.  The name is bounded because it is a component of a POSIX
+unix-domain socket pathname (see 'maxIncusInstanceNameLength'); a truncated
+binding digest still names the device from the binding rather than from a
+pathname, and a same-named device carrying a different binding is refused by
+the share manifest before any mutation.
+-}
+shareDevicePrefix :: String
+shareDevicePrefix = "hb-share-"
+
+shareDeviceDigestLength :: Int
+shareDeviceDigestLength = 12
+
+shareDeviceNameLength :: Int
+shareDeviceNameLength = length shareDevicePrefix + shareDeviceDigestLength
+
+{- | Incus's default state directory.  It opens one virtio-fs control socket per
+attached share device at
+@\<incusVarPath\>\/devices\/\<instance\>\/virtio-fs.\<device\>.sock@.
+-}
+incusVarPath :: FilePath
+incusVarPath = "/var/lib/incus"
+
+{- | A POSIX @sun_path@ holds 108 bytes including the terminating NUL, so a
+socket pathname has 107 usable bytes.  @connect(2)@ answers @EINVAL@ for a
+longer one, which surfaces as an unattachable share rather than as a bad
+declaration, so the bound belongs to backend admission.
+-}
+unixSocketPathLimit :: Int
+unixSocketPathLimit = 107
+
+{- | The instance name and the share device name share the one socket-pathname
+budget, and the device name is fixed by 'shareDeviceNameLength', so admission
+bounds the instance name by what remains.
+-}
+maxIncusInstanceNameLength :: Int
+maxIncusInstanceNameLength =
+    unixSocketPathLimit
+        - length (incusVarPath <> "/devices/" <> "/virtio-fs." <> ".sock")
+        - shareDeviceNameLength
 
 preparedShareBinding ::
     PreparedProviderShare scope planId backendId providerId shareId operationKey callDigest attempt journalVersion ->
@@ -804,13 +852,16 @@ providerOwnershipProgram =
         , "def token(value):"
         , "    value = str(value)"
         , "    return value if token_re.fullmatch(value) else 'invalid-token'"
+        , "def diagnostic(value):"
+        , "    folded = re.sub(r'[^A-Za-z0-9:._/=-]', '-', str(value))[:200].strip('-')"
+        , "    return folded if folded else 'no-diagnostic'"
         , "def emit(tag,*fields):"
         , "    print(' '.join([tag]+[token(field) for field in fields]), flush=True)"
         , "    raise SystemExit(0)"
         , "def run(args):"
         , "    return subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)"
         , "def require(result, operation):"
-        , "    if result.returncode != 0: raise OSError(operation+'-exit-'+str(result.returncode)+'-'+token(result.stderr.splitlines()[0] if result.stderr else 'no-diagnostic'))"
+        , "    if result.returncode != 0: raise OSError(operation+'-exit-'+str(result.returncode)+'-'+diagnostic(result.stderr.splitlines()[0] if result.stderr else 'no-diagnostic'))"
         , "    return result.stdout.strip()"
         , "def fsync_dir(path):"
         , "    fd=os.open(path,os.O_RDONLY|getattr(os,'O_DIRECTORY',0))"
@@ -912,7 +963,11 @@ providerOwnershipProgram =
         , "    shares=value.get('shares')"
         , "    if not isinstance(shares,dict): raise Conflict('share-manifest','invalid','record-shares')"
         , "    for device,entry in shares.items():"
-        , "        if not re.fullmatch(r'hb-share-[0-9a-f]{32}',str(device)): raise Conflict('bounded-share-device',token(device),'record-share-device')"
+        , "        if not re.fullmatch(r'"
+            <> shareDevicePrefix
+            <> "[0-9a-f]{"
+            <> show shareDeviceDigestLength
+            <> "}',str(device)): raise Conflict('bounded-share-device',token(device),'record-share-device')"
         , "        if not isinstance(entry,dict) or set(entry)!={'binding','source','target'} or not all(isinstance(entry.get(key),str) for key in ('binding','source','target')): raise Conflict('complete-share-binding','invalid','record-share-entry')"
         , "    state=value.get('state')"
         , "    if state=='prepared' and set(value)=={'magic','name','nonce','origin','owner','shares','state'}: return value"

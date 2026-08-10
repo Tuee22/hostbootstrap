@@ -95,6 +95,12 @@ portableCases =
         case mkIncusBackendSpec vmName imageName config "/state" 2 "4GiB" "40GiB" of
             Left (Failure _) -> pure ()
             other -> assertFailure ("expected substrate refusal, got " <> showEither other)
+    , testCase "Incus construction refuses an instance name whose share socket path cannot fit" $ do
+        let config = fakeResolvedHostConfig
+            overlong = vmName <> replicate 64 'x'
+        case mkIncusBackendSpec overlong imageName config "/state" 2 "4GiB" "40GiB" of
+            Left (Failure _) -> pure ()
+            other -> assertFailure ("expected socket-path bound refusal, got " <> showEither other)
     , testCase "Incus construction refuses unresolved ownership tools" $
         case mkIncusBackendSpec vmName imageName emptyHostConfig "/state" 2 "4GiB" "40GiB" of
             Left (Unsupported _) -> pure ()

@@ -3,7 +3,12 @@ module CompileFailSpec (tests) where
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf, stripPrefix)
 import Data.Maybe (listToMaybe)
 import HostBootstrap.DocValidator (findRepoRoot)
-import System.Directory (getCurrentDirectory, listDirectory, withCurrentDirectory)
+import System.Directory (
+    findExecutable,
+    getCurrentDirectory,
+    listDirectory,
+    withCurrentDirectory,
+ )
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.FilePath ((</>))
 import System.Process (readProcessWithExitCode)
@@ -1330,9 +1335,12 @@ resolvePublicCompiler = do
     cwd <- getCurrentDirectory
     root <- findRepoRoot cwd >>= maybe (fail ("could not locate repo root from " ++ cwd)) pure
     let coreRoot = root </> "core"
+    cabalExecutable <-
+        findExecutable "cabal"
+            >>= maybe (fail "could not resolve cabal while resolving the public compiler") pure
     (pathCode, pathOutput, pathError) <-
         withCurrentDirectory coreRoot $
-            readProcessWithExitCode "cabal" ["path"] ""
+            readProcessWithExitCode cabalExecutable ["path"] ""
     case pathCode of
         ExitSuccess -> pure ()
         ExitFailure _ ->

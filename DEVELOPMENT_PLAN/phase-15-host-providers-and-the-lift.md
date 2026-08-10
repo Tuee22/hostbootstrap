@@ -1,6 +1,6 @@
 # Phase 15 — Host providers and the self-reference lift
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 8 (ensure reconcilers), Phase 12 (step algebra and plan-owned resource
 projections), Phase 14 (the four ownership clauses and host-local reservations)
 **Substrates**: linux-cpu
@@ -252,11 +252,15 @@ Admit only complete, bounded Incus and Direct backend descriptions.
 - Direct retains an exact canonical local root, Python, Docker, and egress image declaration.
 - Backend execution receives an opaque request with a read-only process view.
 - Invalid substrate, unresolved tool, unbounded value, and ambiguous path inputs fail closed.
+- Admission bounds the Incus instance name by what the provider's per-device control-socket pathname
+  admits, so a declaration whose share device could not attach is refused before discovery.
+- A non-zero backend call folds its provider diagnostic into the bounded single-line token vocabulary
+  rather than discarding it, so a refusal names the condition it observed.
 
 #### Validation
 
-`ProviderBackendSpec` covers valid descriptions, every validation refusal, and the single-lock-namespace
-rule.
+`ProviderBackendSpec` covers valid descriptions, every validation refusal, the socket-pathname bound, and
+the single-lock-namespace rule.
 
 #### Remaining Work
 
@@ -379,6 +383,8 @@ Attach one declared durable share through the exact Running provider authority.
 
 - `ProviderShareSpec` validates exact absolute host and guest paths.
 - `PreparedProviderShare` seals the exact provider dependency and fresh probe.
+- The share device is named from its binding digest inside the bound its provider control-socket pathname
+  admits, and the durable manifest accepts only that shape.
 - Incus publishes a complete share intent, device binding, and sidecar under the provider lock.
 - Direct admits only the already-local canonical root identity projection.
 - Share settlement returns an opaque provider-indexed managed share or descriptive foreign observation.
@@ -574,6 +580,8 @@ Hold locked-origin identity ownership over guest alias acquisition.
 - One retained guest `flock` spans origin observation, mutation, identity binding, and readback.
 - An owner-bound staging file is fully written and flushed before no-replace origin publication.
 - The origin records explicit absence, a fresh nonce, complete provider/share/spec binding, and exact bytes.
+- The origin directory the guest publishes inside the durable share is observable by the frame that owns
+  that share, so the same ownership state is readable from either side of the boundary.
 - Alias publication uses a nonce-named symlink staged and hard-linked into place without replacement.
 - The symlink's own device/inode identity is bound durably before ownership settles.
 - Prepared, managed, and transition staging crash windows converge without adoption.
@@ -640,6 +648,8 @@ Release an alias only after a durable, version-fenced intent and exact identity 
 - Replacement leaves alias and origin untouched as Conflict.
 - Final record and alias absence are directory-flushed and reproved before success.
 - A different-nonce or malformed alias staging residue is refused before release mutation.
+- Dropping the last origin record reclaims the origin directory only while it is empty, so a concurrent
+  owner's record retains it and the share is otherwise left as it was found.
 
 #### Validation
 
@@ -681,9 +691,9 @@ stale, and cross-origin dependency refusal. The demo call-site adoption remains 
 
 None.
 
-### Sprint 15.22: Provider-live prepared-route adoption [Active]
+### Sprint 15.22: Provider-live prepared-route adoption [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/provider-live/ProviderLiveMain.hs`,
 `core/hostbootstrap-core/provider-live/ProviderLiveConfig.hs`,
 `core/hostbootstrap-core/provider-live/ProviderLiveRunner.hs`,
@@ -711,12 +721,11 @@ From `core/`,
 `cabal build -fprovider-live hostbootstrap-provider-live-linux-cpu --ghc-options=-Werror` compiles the
 manual Linux/x86_64 component. The `ProviderSpec` source guard rejects raw lifecycle planners, opaque
 provider-authority constructor imports, the private/independent guest executor, and any Direct delete path
-after the prepared stop refusal.
+after the prepared stop refusal. The phase's baseline acceptance below records the confirmed live route.
 
 #### Remaining Work
 
-Build the manual component and run its confirmed live route on the declared native Linux/x86_64 KVM/Incus
-host.
+None.
 
 ## Static Validation Evidence
 
@@ -725,6 +734,11 @@ On 2026-08-08, macOS 26.5 arm64 with GHC 9.12.4 and Cabal 3.16.1.0 passed
 included the provider, backend, alias, reconciliation, compile-fail, provider-live source-boundary, and
 governed-documentation checks. This closes the static portion of the phase gate; it does not substitute for
 the declared native Linux/x86_64 component build or live KVM/Incus run.
+
+On 2026-08-10, Ubuntu 24.04.4 LTS x86_64 with GHC 9.12.4 and Cabal 3.16.1.0 passed
+`cabal test all --ghc-options=-Werror` from `core/`: all 1,710 tests passed in 56.56 seconds, including the
+socket-pathname bound refusal this phase's backend admission adds. The same host passed
+`cabal build -fprovider-live hostbootstrap-provider-live-linux-cpu --ghc-options=-Werror`.
 
 ## Phase-Level Baseline Acceptance
 
@@ -740,14 +754,24 @@ native Linux/x86_64 host with readable/writable `/dev/kvm` and a ready Incus dae
 - absence of the run's exact VM, alias, staging paths, and origin records after teardown.
 
 Record the date, exact command, host/OS/architecture, GHC/Cabal/Incus versions, duration, and result here.
-This phase remains Active and Phase 16 does not begin until that evidence passes.
 
-## Remaining Work
+**2026-08-10 — passed.** Host: Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic, x86_64, `/dev/kvm` readable and
+writable by the invoking user, Incus 6.0.0 with a `dir` storage pool. Toolchain: GHC 9.12.4, Cabal 3.16.1.0.
+Command, from `core/`:
 
-On a native Linux/x86_64 host with readable/writable `/dev/kvm` and a ready Incus daemon, build the
-provider-live component with the phase-gate command, run its explicitly confirmed live test, and record the
-required host/tool versions, duration, result, and residue checks above. Phase 16 does not begin before that
-evidence passes.
+```text
+HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host cabal test -fprovider-live \
+  hostbootstrap-provider-live-linux-cpu --test-show-details=direct --ghc-options=-Werror
+```
+
+Result: `provider-live: PASS — prepared Incus lifecycle/share/alias/restart/delete and mutation-free Direct
+refusal`, 1 of 1 test suites passed, 27.75 seconds wall clock on a repeat run from a clean host. The run
+confirmed the declared Incus sizing by provider readback (`limits.cpu` 2, `limits.memory` 2GiB, root device
+`size` 12GiB), the host-backed share and its guest-visible alias origin, the prepared alias across a stop and
+restart, the conditional alias release, and the identity-conditional delete. The Direct route executed
+exactly four requests — two canonical-root `lstat`/`realpath` probes and two `docker manifest inspect` egress
+probes — and created no provider state. After teardown the run's VM, alias, staging paths, origin records,
+and its whole `/var/tmp` root were absent.
 
 ## Documentation Requirements
 

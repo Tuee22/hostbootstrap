@@ -69,10 +69,9 @@ The repository does not yet enforce that boundary end to end:
 - the Incus/Direct provider adapter now has identity-bound prepared calls, backend-indexed managed
   provider/share authority, and four-clause Incus recovery. Its discovery accepts only raw outcomes,
   parses strict one-line tool/identity/marker reports, polls only `NotReady`, and preserves structured
-  provider conflict across the bound transport. This is implemented boundary behavior, not closure
-  evidence: the
+  provider conflict across the bound transport. The
   [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
-  has a closed static gate and remains Active until its native Linux/x86_64 KVM/Incus gate passes, while the
+  carries that boundary's static and native Linux/x86_64 KVM/Incus closure evidence, while the
   demo route remains work for the
   [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md);
 - structured `LifecycleFailure` is not yet the universal subprocess boundary; and

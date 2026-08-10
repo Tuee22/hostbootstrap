@@ -47,7 +47,7 @@ its row here.
 | 12 | [Step algebra and the project plan](phase-12-step-algebra-and-project-plan.md) | Done | linux-cpu | — |
 | 13 | [Authenticated handoff and child admission](phase-13-authenticated-handoff-and-child-admission.md) | Done | linux-cpu | — |
 | 14 | [Ownership clauses and reservations](phase-14-ownership-clauses-and-reservations.md) | Done | linux-cpu | — |
-| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Active | linux-cpu | 15.22 native Linux/x86_64 provider-live build and KVM/Incus run |
+| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Done | linux-cpu | — |
 | 16 | [Cluster lifecycle and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Active | linux-cpu | 16.2 exact cluster consumer; 16.4 exact direct-Colima consumer; fresh phase gate |
 | 17 | [Recursive lifecycle command](phase-17-recursive-lifecycle-command.md) | Active | linux-cpu | 17.3 forest/frame-index propagation and local/foreign sum; 17.4 operator/authenticated child entries; 17.5 authenticated forward/reverse traversal and live acceptance |
 | 18 | [Recovery and migration](phase-18-recovery-and-migration.md) | Active | linux-cpu | 18.4–18.19 resource records, migration recovery, recovered closure, interruption fixtures |
@@ -56,7 +56,7 @@ its row here.
 | 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Active | linux-cpu | 21.2 blob-leaf arguments; reopened 21.3 role authority/transition/recovery audit; focused suites; fresh gate |
 | 22 | [Service runtime](phase-22-service-runtime.md) | Active | linux-cpu | 22.2/22.3 registry adoption and the deploy step |
 | 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
-| 24 | [The worked demo](phase-24-worked-demo.md) | Active | linux-cpu | 24.3 same-run readback; 24.4 plan-owned profile/root; 24.5 workload/slices; 24.6 alias; 24.7 authenticated derived-image gate |
+| 24 | [The worked demo](phase-24-worked-demo.md) | Active | linux-cpu | 24.3 same-run readback; 24.4 plan-owned profile/root; 24.5 workload/slices; 24.6 alias (also restores the demo build); 24.7 authenticated derived-image gate |
 | 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Active | **apple-silicon** | 25.3 acceptance re-run |
 | 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Active | **nvidia** | 26.3 acceptance re-run |
 | 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | 27.3 acceptance re-run |
@@ -64,24 +64,20 @@ its row here.
 
 ## The current frontier
 
-The lowest-numbered open phase is **15**. Phase 6 owns the validated provider-neutral canonical
+The lowest-numbered open phase is **16**. Phase 6 owns the validated provider-neutral canonical
 `ResourceBudget`, capacity, parsing, verification, sizing, and storage-policy foundation. Phase 7 owns the
 validated configuration-facing cordon facade and public pure `HostBootstrap.Lift.Context`. Phase 8 owns the
-validated generic resolved-tool `HostBootstrap.Lift` fold and effect dispatch. Phases 9–14 are also Done, so
-the current constructive boundary is Phase 15's host-provider lifecycle and lift realization. Its work is
-split into small opaque-descriptor, realization-adoption, discovery, prepared-lifecycle, provider-bound
-execution, alias, node-route, and provider-live adoption sprints. Sprints 15.1–15.21 and the complete static
-gate are closed; the lowest unfinished sprint is 15.22's native Linux/x86_64 provider-live acceptance.
+validated generic resolved-tool `HostBootstrap.Lift` fold and effect dispatch. Phases 9–15 are also Done, so
+the current constructive boundary is Phase 16's cluster and direct-Colima consumers.
 
-**The lower capacity and Lift boundary is closed.** The pure context module carries the
+**The lower capacity, Lift, and provider boundaries are closed.** The pure context module carries the
 Incus/Lima/WSL2 target records, container/config-delivery data, constructors, canonical mount projection, and
 inner transport argv. Generic Lift reexports that vocabulary, resolves only the outer host tool, folds the
-nested command, and imports no provider realization or Registry module. The active host-provider phase owns
-the realization layer that consumes those lower values. Its full static gate is closed, while phase closure
-still requires the declared native Linux/x86_64 KVM/Incus provider-live build and run. The
+nested command, and imports no provider realization or Registry module. The host-provider phase owns the
+realization layer that consumes those lower values; its static gate and its declared native Linux/x86_64
+KVM/Incus provider-live run are both closed, with the dated evidence in that phase document. The
 composition/network phase owns the additive reachability/blob helpers and
-Registry-owned authenticated lift entry. Those phases remain Active until their own source guards and fresh
-gates pass; the numerical frontier is Phase 15.
+Registry-owned authenticated lift entry, and remains Active until its own source guards and fresh gates pass.
 
 **The single indexed project plan is closed.** Phase 12 joins one lifecycle profile,
 scope-correct validated config, canonical root, and non-empty draft stream into the generative

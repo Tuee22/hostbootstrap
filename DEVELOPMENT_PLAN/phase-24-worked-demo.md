@@ -244,7 +244,8 @@ managed alias inside a real guest and confirms receipt-gated cleanup.
 
 #### Remaining Work
 
-All deliverables.
+All deliverables. The demo's guest calls still name a raw guest-shell planner that the provider boundary does
+not expose, so the demo package does not compile until this adoption lands.
 
 ### Sprint 24.7: Authenticated derived-image gate [Planned]
 
@@ -296,9 +297,14 @@ presentation/acknowledgement or durable `buildId` replay refusal across separate
 Sprint 24.3 owns the exact same-run durable write/destroy/up/read assertion. Sprint 24.4 replaces independent
 profile/root terms with the retained plan projection. Sprint 24.5 supplies the concrete workload, overhead,
 partition, and slices consumed by the exact Phase-16 cluster and Colima boundaries. Sprint 24.6 adopts the
-clause-holding guest-alias route. Sprint 24.7 consumes the authenticated build protocol in the real demo
-command/Dockerfile route. The phase closes only after the demo static gate, live `10/10` Harness run, and
-Production `up` / `down` / `destroy` sequence pass on linux-cpu.
+clause-holding guest-alias route, which is also what makes the demo package compile again: its guest calls
+still name a raw guest-shell planner the provider boundary does not expose. Sprint 24.7 consumes the
+authenticated build protocol in the real demo command/Dockerfile route. The phase closes only after the demo
+static gate, live `10/10` Harness run, and Production `up` / `down` / `destroy` sequence pass on linux-cpu.
+
+Because every downstream live gate drives the demo binary, the live halves of the cluster-lifecycle,
+recursive-lifecycle, test-harness, and `test`/`context` phases cannot run before Sprint 24.6 restores that
+build. Those phases still own their own gates; this sprint is what makes them runnable.
 
 ## Documentation Requirements
 

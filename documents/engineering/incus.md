@@ -64,10 +64,9 @@ mutation. A real provider mutation instead consumes the exact prepared call. Opa
 `ManagedProviderHandle` and `ManagedProviderShareHandle` values retain the backend origin without exposing
 generic handle/receipt authority. Under one retained `flock`, the backend publishes and recovers the
 explicit-absence provider/share origins, binds VM UUID plus owner nonce, and revalidates identity before and
-after ready, share, stop, guest execution, and conditional delete. The implementation is not closure
-evidence: the
+after ready, share, stop, guest execution, and conditional delete. The
 [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
-has a closed static gate and remains Active until its native Linux/x86_64 KVM/Incus gate passes. See
+carries the closure evidence: its static gate and its native Linux/x86_64 KVM/Incus gate both pass. See
 [lifecycle state model](../architecture/lifecycle_state_model.md).
 
 ## Lifecycle caveat
@@ -117,9 +116,21 @@ native Linux/x86_64 KVM/Incus run declared by the
 [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md),
 including prepared create/recovery, ready, share/readback, stop/restart, bound guest execution, alias
 acquisition/release, identity-conditional delete, and the Direct no-mutation/refusal path. A macOS run is
-not evidence for that gate. Recursive teardown and end-to-end demo durability remain later phase concerns.
-Status and scheduling belong in
+not evidence for that gate.
+
+That run passed on 2026-08-10 on Ubuntu 24.04.4 LTS x86_64 with Incus 6.0.0, GHC 9.12.4, and Cabal 3.16.1.0;
+the phase document holds the exact command, confirmed observations, and residue checks. Recursive teardown
+and end-to-end demo durability remain later phase concerns. Status and scheduling belong in
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
+
+### Provider naming bounds
+
+Incus opens one virtio-fs control socket per attached share device at
+`<var-path>/devices/<instance>/virtio-fs.<device>.sock`. That is a POSIX unix-domain socket, so the whole
+pathname must fit in `sun_path`. The instance name and the share device name therefore share one budget:
+the share device is named from its binding digest inside a fixed bound, and backend admission refuses an
+instance name that would overflow the remainder. Without both bounds a declaration looks valid and its
+share simply never attaches.
 
 ## Related
 
