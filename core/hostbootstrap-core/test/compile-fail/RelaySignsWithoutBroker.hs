@@ -1,16 +1,16 @@
 module RelaySignsWithoutBroker where
 
 import HostBootstrap.Handoff
+import HostBootstrap.Handoff.Receiver (ReceivedEdge)
 import HostBootstrap.Handoff.Relay
 
--- A relayed link is a channel and a request identity. It is not a broker, and
--- there is no function that turns one into the other: an intermediate frame
--- relays, and only the root signs.
+-- A relayed link comes only from an already verified received edge. It is not
+-- a broker, and there is no function that turns one into the other: an
+-- intermediate frame relays, and only the root signs.
 signFromRelayedLink ::
-    HandoffChannel ->
-    ProjectVerificationKey ->
+    ReceivedEdge scope brokerGeneration ->
     HandoffOffer scope brokerGeneration ->
     HandoffChallenge ->
     IO (Either HandoffError (HandoffGrant scope brokerGeneration))
-signFromRelayedLink channel key =
-    grantHandoff (relayedBrokerLink channel 1 key)
+signFromRelayedLink edge =
+    grantHandoff (relayedBrokerLink edge)

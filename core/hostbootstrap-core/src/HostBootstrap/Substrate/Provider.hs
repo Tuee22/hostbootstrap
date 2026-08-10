@@ -1,10 +1,13 @@
-{- | One pure lift into each host substrate.
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RoleAnnotations #-}
 
-The three metal substrates — Apple Silicon (Lima), native Linux (Incus), and
-Windows (WSL2) — share one VM lifecycle: probe existence, launch sized to the
-budget (cordon #1), reconcile-to-running, wait for readiness, stage files in,
-and tear down (stop or guarded delete). Historically each substrate was
-hand-branched at every one of those IO sites in the consumer binary; this
+{- | One pure provider route into each host substrate.
+
+Apple Silicon (Lima), native Linux (Incus), Windows (WSL2), and the direct host
+share one lifecycle interface: probe existence, provision, reconcile-to-ready,
+stage files, and tear down where the provider supports teardown. Historically
+each substrate was hand-branched at every one of those IO sites in the consumer
+binary; this
 module collapses that to a single pure 'SubstrateProvider' value selected once
 by 'selectSubstrateProvider' (the lifecycle peer of
 'HostBootstrap.Cluster.Cordon.capacityReadPlan' and
@@ -16,14 +19,21 @@ and the probe/transfer records), so the whole surface is unit-testable without
 running a host tool. The one place the substrates genuinely differ — Lima/Incus
 launch with a single sized argv, whereas WSL2's only memory/CPU wall is the
 /global/ @.wslconfig@ utility-VM ceiling that must be applied and made effective
-with @wsl --shutdown@ before the distro boots — is captured by 'spLaunch'
-returning a /list/ of effects: an 'ApplyGlobalWslWall' for the WSL2 case, and no
-wall effect for the others. See @documents/engineering/applied_cordon.md@ and
+with @wsl --shutdown@ before the distro boots — is captured by
+'planProviderProvision' returning a /list/ of effects: an
+'ApplyGlobalWslWall' for the WSL2 case, and no wall effect for the others. See
+@documents/engineering/applied_cordon.md@ and
 @documents/engineering/wsl2.md@.
 -}
 module HostBootstrap.Substrate.Provider (
+    -- * Closed provider dispatch
+    ProviderKind (..),
+    providerKindForSubstrate,
+    providerTopologyKind,
+
     -- * Pure effect vocabulary
     HostEffect (..),
+    DirectHostAction (..),
     Membership (..),
     ExistsProbe (..),
     WaitProbe (..),
@@ -32,12 +42,51 @@ module HostBootstrap.Substrate.Provider (
     ShareReconcile (..),
     HostPathShare (..),
 
-    -- * The one pure lift per substrate
+    -- * The one pure provider route per substrate
     VMHandles (..),
-    SubstrateProvider (..),
+    SubstrateProvider,
+    providerVmId,
+    providerKind,
+    providerLiftContext,
+    providerExistsProbe,
+    providerWaitProbe,
+    providerFileTransfer,
+    selectProviderKind,
     selectSubstrateProvider,
 
+    -- * Discovery-retained lifecycle operations
+    ProviderOperation (..),
+    ProviderError (..),
+    ProviderObservation (..),
+    GuestLockPrimitive (..),
+    GuestStatDialect (..),
+    GuestPythonCapability (..),
+    GuestProviderDiscovery (..),
+    DirectProviderDiscovery (..),
+    ProviderDiscovery (..),
+    ProviderProbeRequest,
+    ProviderProbeRequestView (..),
+    DirectProbe (..),
+    RawProviderOutcome (..),
+    providerProbeRequestView,
+    ProviderGuestExecutor,
+    ProviderCapability,
+    discoverProvider,
+    providerCapabilityKind,
+    providerCapabilityDiscovery,
+    providerCapabilityGeneration,
+    providerCapabilityGuestExecutor,
+    RebootReadyPlan (..),
+    planProviderProvision,
+    planProviderRebootReady,
+    planProviderStop,
+    planProviderDelete,
+    planProviderShare,
+    planProviderAlias,
+
     -- * Pure interpreters over the provider's data
+    foldExistsProbe,
+    foldWaitProbe,
     membersOf,
     shareReconcileEffects,
     stageFileEffects,
@@ -56,8 +105,10 @@ module HostBootstrap.Substrate.Provider (
 )
 where
 
+import Control.Exception (IOException, catch, displayException)
 import Data.Char (isAsciiUpper)
 import Data.List (dropWhileEnd, isPrefixOf)
+import Data.Word (Word64)
 import HostBootstrap.Cluster.Cordon (
     budgetFromResources,
     budgetStorageBytes,
@@ -66,7 +117,8 @@ import HostBootstrap.Cluster.Cordon (
     limaSizingArgs,
     wsl2SizingArgs,
  )
-import HostBootstrap.Context (ProviderKind (..), ResourceEnvelope)
+import HostBootstrap.Context (ResourceEnvelope)
+import qualified HostBootstrap.Context as Context
 import HostBootstrap.HostTool (HostTool (Incus, Lima, Wsl))
 import HostBootstrap.Incus (
     IncusVM (..),
@@ -85,17 +137,88 @@ import HostBootstrap.Lift (
     LiftLayer (..),
     LiftLeaf (..),
     foldLeaf,
+    inLimaVM,
+    inVM,
+    inWsl2VM,
+    localContext,
  )
 import HostBootstrap.Lima (LimaVM (..))
 import qualified HostBootstrap.Lima as Lima
+import HostBootstrap.Readiness (
+    Decision (..),
+    PollError (..),
+    PollPolicy,
+    ProbeConflict (..),
+    ProbeFailure (..),
+    ProbeResult (..),
+    mkPollPolicy,
+    pollStep,
+    seconds,
+ )
+import HostBootstrap.Reconcile (Running)
 import HostBootstrap.Substrate (Substrate, SubstrateName (..), substrateName)
+import HostBootstrap.Substrate.Provider.Internal (
+    DirectProbe (..),
+    ProviderBoundExec,
+    ProviderBoundRoute (..),
+    ProviderGuestExecutor,
+    ProviderProbeRequest,
+    ProviderProbeRequestView (..),
+    RawProviderOutcome (..),
+    bindProviderGuestExecutor,
+    directProbeRequest,
+    guestProbeRequest,
+    hostToolRequest,
+    providerBoundRoute,
+    providerProbeRequestView,
+    provisioningEgressRequest,
+    runProviderBoundExec,
+    waitProviderBoundExec,
+ )
+import HostBootstrap.Substrate.Provider.Reconcile (
+    ManagedProviderHandle,
+    managedProviderGeneration,
+ )
 import HostBootstrap.Wsl2 (Wsl2VM (..))
 import qualified HostBootstrap.Wsl2 as Wsl2
+import Numeric.Natural (Natural)
+import System.Exit (ExitCode (..))
+
+{- | The closed lifecycle-provider vocabulary.
+
+This is intentionally narrower than the topology vocabulary in
+"HostBootstrap.Context": containers, Kubernetes, and external placements are
+not host-frame lifecycle providers. Every value here has one total
+'selectProviderKind' branch.
+-}
+data ProviderKind
+    = ProviderIncus
+    | ProviderLima
+    | ProviderWsl2
+    | ProviderDirectHost
+    deriving (Eq, Show)
+
+-- | Select the lifecycle provider implied by a concrete host substrate.
+providerKindForSubstrate :: Substrate -> ProviderKind
+providerKindForSubstrate sub = case substrateName sub of
+    AppleSilicon -> ProviderLima
+    LinuxCpu -> ProviderIncus
+    LinuxGpu -> ProviderDirectHost
+    WindowsCpu -> ProviderWsl2
+    WindowsGpu -> ProviderWsl2
+
+-- | Project the closed lifecycle kind into the wider topology vocabulary.
+providerTopologyKind :: ProviderKind -> Context.ProviderKind
+providerTopologyKind kind = case kind of
+    ProviderIncus -> Context.IncusVMProvider
+    ProviderLima -> Context.LimaVMProvider
+    ProviderWsl2 -> Context.Wsl2VMProvider
+    ProviderDirectHost -> Context.HostProvider
 
 {- | A single pure host-side effect the lifecycle interpreter runs.
 'ApplyGlobalWslWall' and 'ReleaseGlobalWslWall' are the WSL2 @.wslconfig@ wall (a
-/global/ user file); 'RunHostTool' is the resolved-tool invocation every
-substrate uses.
+/global/ user file); 'RunHostTool' is a resolved VM-provider tool invocation,
+and 'RunDirectHost' makes an already-local host transition explicit.
 
 Neither wall effect carries a pathname.  The wall is the current user's one
 @%UserProfile%\\.wslconfig@, derived by
@@ -113,6 +236,17 @@ data HostEffect
       ReleaseGlobalWslWall [String]
     | -- | run a resolved host tool with these args
       RunHostTool HostTool [String]
+    | -- | perform an explicit lifecycle transition on the already-local host
+      RunDirectHost DirectHostAction
+    deriving (Eq, Show)
+
+{- | Direct-host lifecycle transitions are explicit effects, not silent empty
+lists. The generic interpreter can therefore distinguish "the local host is the
+selected frame" from "the provider forgot to implement this operation".
+-}
+data DirectHostAction
+    = RealizeDirectHost
+    | ReconcileDirectHostReady
     deriving (Eq, Show)
 
 -- | How to read membership of a VM name out of an existence-probe's stdout.
@@ -129,22 +263,27 @@ data Membership
 membership key (a VM id or managed device name) against the parsed output by
 'Membership'.
 -}
-data ExistsProbe = ExistsProbe HostTool [String] Membership
+data ExistsProbe
+    = ExistsProbe HostTool [String] Membership
+    | DirectHostExistsProbe
     deriving (Eq, Show)
 
 {- | A readiness probe: @tool args@ that runs a trivial @true@ in the VM and
 succeeds once the VM answers.
 -}
-data WaitProbe = WaitProbe HostTool [String]
+data WaitProbe
+    = WaitProbe HostTool [String]
+    | DirectHostReadyProbe
     deriving (Eq, Show)
 
-{- | How a host file reaches the guest: a tool push (Lima/Incus), or — for WSL2,
-which has no host→guest copy tool — read in place through the @/mnt@ drive mount.
+{- | How a host file reaches its execution frame: a tool push (Lima/Incus), an
+in-place @/mnt@ drive projection for WSL2, or its unchanged path on direct host.
 -}
 data FileTransfer
     = IncusFileTransfer IncusVM
     | LimaFileTransfer LimaVM
     | Wsl2MountTransfer Wsl2VM
+    | DirectHostTransfer
     deriving (Eq, Show)
 
 {- | The result of planning one file transfer: the host effects to place the file,
@@ -174,7 +313,8 @@ data ShareReconcile = ShareReconcile
 {- | One host-backed directory as seen on both sides of a provider boundary.
 Lima and Incus preserve the absolute path in the guest; WSL2 projects a Windows
 drive path into its DrvFs mount. 'hpsReconcile' captures only an extra
-/post-create/ step; Lima's create-time option is folded into 'spLaunch'.
+/post-create/ step; Lima's create-time option is folded into the provision
+plan.
 -}
 data HostPathShare = HostPathShare
     { hpsHostPath :: FilePath
@@ -195,17 +335,17 @@ data VMHandles = VMHandles
     }
     deriving (Eq, Show)
 
-{- | The one pure lift into a substrate. 'spLaunch' is a function because the
-sized launch depends on the active 'ResourceEnvelope' and an optional host-path
-share; 'spShare' projects a caller-supplied absolute host path into the
-provider-specific pure share plan. The launch 'Left' carries a budget-parse
-error. The teardown 'spDestroy' is 'Left' when the guard prefix refuses the VM
-name.
+{- | The one pure provider route into a substrate.  Provision planning depends
+on the active 'ResourceEnvelope' and an optional host-path share; share
+planning projects a caller-supplied absolute host path into the
+provider-specific pure share plan. A provision 'Left' carries a budget-parse
+error. Delete planning returns 'Left' when the guard prefix refuses the VM name.
 -}
 data SubstrateProvider = SubstrateProvider
     { spVmId :: String
     , spProviderKind :: ProviderKind
-    , spLiftLayer :: LiftLayer
+    , spLiftContext :: LiftContext
+    -- ^ one guest boundary for VM providers; 'localContext' for direct host
     , spExists :: ExistsProbe
     , spLaunch :: ResourceEnvelope -> Maybe HostPathShare -> Either String [HostEffect]
     , spShare :: FilePath -> HostPathShare
@@ -222,16 +362,651 @@ data SubstrateProvider = SubstrateProvider
     , spDestroy :: ResourceEnvelope -> Either String [HostEffect]
     }
 
-{- | Select the one pure lift for a detected substrate. 'Left' only for a
-substrate with no VM provider.
+-- Read-only descriptive projections.  The record constructor and its @sp*@
+-- fields stay private, so callers cannot replace a route, probe, or mutation
+-- planner by record update.
+providerVmId :: SubstrateProvider -> String
+providerVmId = spVmId
+
+providerKind :: SubstrateProvider -> ProviderKind
+providerKind = spProviderKind
+
+providerLiftContext :: SubstrateProvider -> LiftContext
+providerLiftContext = spLiftContext
+
+providerExistsProbe :: SubstrateProvider -> ExistsProbe
+providerExistsProbe = spExists
+
+providerWaitProbe :: SubstrateProvider -> WaitProbe
+providerWaitProbe = spWait
+
+providerFileTransfer :: SubstrateProvider -> FileTransfer
+providerFileTransfer = spTransfer
+
+-- | Lifecycle operations plus the structured guest-route eliminator.
+data ProviderOperation
+    = ProviderProvision
+    | ProviderRebootReady
+    | ProviderStop
+    | ProviderDelete
+    | ProviderShare
+    | ProviderAlias
+    | ProviderGuestRoute
+    deriving (Eq, Show)
+
+{- | Structured provider failure. 'ProviderUnsupported' means the selected
+provider or retained discovery facts cannot supply the requested semantics;
+'ProviderOperationFailure' means an implemented operation rejected its concrete
+input. Neither case is represented by an empty effect list.
 -}
+data ProviderError
+    = ProviderUnsupported
+        { providerErrorKind :: ProviderKind
+        , providerErrorOperation :: ProviderOperation
+        , providerErrorCause :: String
+        }
+    | ProviderOperationFailure
+        { providerErrorKind :: ProviderKind
+        , providerErrorOperation :: ProviderOperation
+        , providerErrorCause :: String
+        }
+    deriving (Eq, Show)
+
+{- | Total result of one provider-owned probe.  These values are descriptive
+views only: discovery never accepts one from its caller and no constructor here
+mints authority.
+-}
+data ProviderObservation value
+    = ProviderObservedReady value
+    | ProviderObservedNotReady String
+    | ProviderObservedUnavailable String
+    | ProviderObservedConflict ProbeConflict
+    | ProviderObservedFailure ProbeFailure
+    deriving (Eq, Show)
+
+data GuestLockPrimitive = GuestFlock FilePath | GuestLockf FilePath
+    deriving (Eq, Show)
+
+data GuestStatDialect = GuestGnuStat FilePath | GuestBsdStat FilePath
+    deriving (Eq, Show)
+
+data GuestPythonCapability = GuestPython3 FilePath
+    deriving (Eq, Show)
+
+-- | The seven observations that exist only for a real guest provider.
+data GuestProviderDiscovery = GuestProviderDiscovery
+    { discoveryDaemon :: ProviderObservation ()
+    , discoveryPermissions :: ProviderObservation ()
+    , discoveryVmCapability :: ProviderObservation ()
+    , discoveryEgress :: ProviderObservation ()
+    , discoveryGuestLock :: ProviderObservation GuestLockPrimitive
+    , discoveryGuestStat :: ProviderObservation GuestStatDialect
+    , discoveryGuestPython :: ProviderObservation GuestPythonCapability
+    }
+    deriving (Eq, Show)
+
+{- | Direct host has exactly its two applicable observations.  There is no
+representable daemon, VM, lock, stat, or guest-Python slot to fill in.
+-}
+data DirectProviderDiscovery = DirectProviderDiscovery
+    { discoveryDirectPermissions :: ProviderObservation ()
+    , discoveryDirectEgress :: ProviderObservation ()
+    }
+    deriving (Eq, Show)
+
+data ProviderDiscovery
+    = ProviderGuestDiscovery GuestProviderDiscovery
+    | ProviderDirectDiscovery DirectProviderDiscovery
+    deriving (Eq, Show)
+
+{- | Post-management discovery evidence for one exact provider resource.
+
+It is deliberately not a mutation-backend argument.  It retains the exact raw
+executor only so a narrower package-owned guest backend can stay on the same
+provider route; public code cannot project an arbitrary argv runner from it.
+-}
+data ProviderCapability scope planId providerId backendId capabilityId
+    = ProviderCapability
+        (ManagedProviderHandle scope planId backendId providerId Running)
+        SubstrateProvider
+        ProviderDiscovery
+        (Maybe (ProviderGuestExecutor scope planId providerId Running backendId capabilityId))
+
+type role ProviderCapability nominal nominal nominal nominal nominal
+
+data ProbePlan value
+    = ProbePlan
+        String
+        (Either String ProviderProbeRequest)
+        (RawProviderOutcome -> ProbeResult value)
+
+data ProviderDiscoveryPlan
+    = GuestDiscoveryPlan
+        (ProbePlan ())
+        (ProbePlan ())
+        (ProbePlan ())
+        (ProbePlan ())
+        [ProbePlan GuestLockPrimitive]
+        (ProbePlan FilePath)
+        (ProbePlan FilePath)
+    | DirectDiscoveryPlan (ProbePlan ()) (ProbePlan ())
+
+{- | Execute only provider-owned closed probe requests against raw outcomes.
+
+The managed handle fixes scope, plan, and provider resource identity before the
+fresh capability identity is introduced.  The injected executor cannot return
+@ProviderObservation@ (or any semantic status); private total parsers and a
+module-owned bounded poll policy are the sole route from raw process output to
+the retained report.
+-}
+discoverProvider ::
+    ManagedProviderHandle scope planId backendId providerId Running ->
+    SubstrateProvider ->
+    ProviderBoundExec scope planId providerId Running backendId ->
+    (forall capabilityId. ProviderCapability scope planId providerId backendId capabilityId -> IO result) ->
+    IO (Either ProviderError result)
+discoverProvider managed provider exec consume =
+    case validateBoundProviderRoute provider (providerBoundRoute exec) of
+        Left failure -> pure (Left failure)
+        Right () -> do
+            discovery <- runDiscoveryPlan exec (providerDiscoveryPlan provider)
+            case discovery of
+                ProviderDirectDiscovery _ ->
+                    Right <$> consume (ProviderCapability managed provider discovery Nothing)
+                ProviderGuestDiscovery _ -> do
+                    let guestExecutor =
+                            bindProviderGuestExecutor $ \argv ->
+                                executeRaw exec (guestProbeRequest argv)
+                    Right <$> consume (ProviderCapability managed provider discovery (Just guestExecutor))
+
+validateBoundProviderRoute :: SubstrateProvider -> ProviderBoundRoute -> Either ProviderError ()
+validateBoundProviderRoute provider boundRoute =
+    case (spProviderKind provider, boundRoute, spTransfer provider) of
+        (ProviderIncus, ProviderBoundIncusRoute boundName boundImage, IncusFileTransfer (IncusVM expectedName expectedImage))
+            | boundName == expectedName && boundImage == expectedImage -> Right ()
+            | otherwise -> mismatch ("Incus route " ++ show (boundName, boundImage)) ("Incus route " ++ show (expectedName, expectedImage))
+        (ProviderDirectHost, ProviderBoundDirectRoute _ _, DirectHostTransfer) -> Right ()
+        _ -> mismatch (show boundRoute) (show (spProviderKind provider, spVmId provider))
+  where
+    mismatch observed expected =
+        Left
+            ProviderOperationFailure
+                { providerErrorKind = spProviderKind provider
+                , providerErrorOperation = ProviderGuestRoute
+                , providerErrorCause =
+                    "the bound provider backend route does not match the selected substrate provider; expected "
+                        ++ expected
+                        ++ ", observed "
+                        ++ observed
+                }
+
+providerCapabilityKind :: ProviderCapability scope planId providerId backendId capabilityId -> ProviderKind
+providerCapabilityKind (ProviderCapability _ provider _ _) = spProviderKind provider
+
+providerCapabilityDiscovery :: ProviderCapability scope planId providerId backendId capabilityId -> ProviderDiscovery
+providerCapabilityDiscovery (ProviderCapability _ _ discovery _) = discovery
+
+providerCapabilityGeneration :: ProviderCapability scope planId providerId backendId capabilityId -> Word64
+providerCapabilityGeneration (ProviderCapability managed _ _ _) = managedProviderGeneration managed
+
+providerCapabilityGuestExecutor ::
+    ProviderCapability scope planId providerId backendId capabilityId ->
+    Either ProviderError (ProviderGuestExecutor scope planId providerId Running backendId capabilityId)
+providerCapabilityGuestExecutor capability@(ProviderCapability _ _ _ guestExecutor) =
+    case guestExecutor of
+        Just executor -> Right executor
+        Nothing -> unsupported ProviderAlias capability "the direct host has no guest execution route"
+
+providerDiscoveryPlan :: SubstrateProvider -> ProviderDiscoveryPlan
+providerDiscoveryPlan provider =
+    case spProviderKind provider of
+        ProviderDirectHost ->
+            DirectDiscoveryPlan
+                (unitPlan "direct-host permissions" (Right (directProbeRequest DirectPermissionProbe)))
+                (unitPlan "direct-host provisioning egress" (Right provisioningEgressRequest))
+        _ ->
+            GuestDiscoveryPlan
+                (unitPlan "provider daemon" (existsRequest provider))
+                (unitPlan "provider permissions" (existsRequest provider))
+                (unitPlan "provider VM capability" (guestRequest provider ["true"]))
+                (unitPlan "provider provisioning egress" (egressRequest provider))
+                [ whichPlan "guest flock" (guestRequest provider ["which", "flock"]) "flock" GuestFlock
+                , whichPlan "guest lockf" (guestRequest provider ["which", "lockf"]) "lockf" GuestLockf
+                ]
+                (whichPlan "guest stat executable" (guestRequest provider ["which", "stat"]) "stat" id)
+                (whichPlan "guest Python 3 executable" (guestRequest provider ["which", "python3"]) "python3" id)
+
+runDiscoveryPlan :: ProviderBoundExec scope planId providerId phase backendId -> ProviderDiscoveryPlan -> IO ProviderDiscovery
+runDiscoveryPlan exec plan = case plan of
+    DirectDiscoveryPlan permissions egress ->
+        ProviderDirectDiscovery
+            <$> (DirectProviderDiscovery <$> runProbePlan exec permissions <*> runProbePlan exec egress)
+    GuestDiscoveryPlan daemon permissions vm egress locks statExecutable pythonExecutable -> do
+        retainedDaemon <- runProbePlan exec daemon
+        case retainedDaemon of
+            ProviderObservedReady () -> do
+                retainedPermissions <- runProbePlan exec permissions
+                case retainedPermissions of
+                    ProviderObservedReady () -> do
+                        retainedVm <- runProbePlan exec vm
+                        case retainedVm of
+                            ProviderObservedReady () -> do
+                                retainedEgress <- runProbePlan exec egress
+                                lock <- runAlternatives exec "guest lock frontend" locks
+                                retainedStatExecutable <- runProbePlan exec statExecutable
+                                statDialect <- case retainedStatExecutable of
+                                    ProviderObservedReady executable ->
+                                        runAlternatives
+                                            exec
+                                            "guest stat dialect"
+                                            [ statPlan "guest GNU stat" (Right (guestProbeRequest [executable, "-c", "%d:%i", "/"])) (GuestGnuStat executable)
+                                            , statPlan "guest BSD stat" (Right (guestProbeRequest [executable, "-f", "%d:%i", "/"])) (GuestBsdStat executable)
+                                            ]
+                                    other -> pure (propagateObservation other)
+                                retainedPythonExecutable <- runProbePlan exec pythonExecutable
+                                python <- case retainedPythonExecutable of
+                                    ProviderObservedReady executable ->
+                                        runProbePlan
+                                            exec
+                                            ( pythonMarkerPlan
+                                                "guest Python 3"
+                                                (Right (guestProbeRequest [executable, "-c", "print('hostbootstrap-python3')"]))
+                                                "hostbootstrap-python3"
+                                                (GuestPython3 executable)
+                                            )
+                                    other -> pure (propagateObservation other)
+                                pure
+                                    ( ProviderGuestDiscovery
+                                        ( GuestProviderDiscovery
+                                            retainedDaemon
+                                            retainedPermissions
+                                            retainedVm
+                                            retainedEgress
+                                            lock
+                                            statDialect
+                                            python
+                                        )
+                                    )
+                            notReadyVm ->
+                                pure
+                                    ( ProviderGuestDiscovery
+                                        ( blockedGuestDiscovery
+                                            retainedDaemon
+                                            retainedPermissions
+                                            notReadyVm
+                                            notReadyVm
+                                        )
+                                    )
+                    unavailablePermissions ->
+                        pure
+                            ( ProviderGuestDiscovery
+                                ( blockedGuestDiscovery
+                                    retainedDaemon
+                                    unavailablePermissions
+                                    unavailablePermissions
+                                    unavailablePermissions
+                                )
+                            )
+            unavailableDaemon ->
+                pure
+                    ( ProviderGuestDiscovery
+                        ( blockedGuestDiscovery
+                            unavailableDaemon
+                            unavailableDaemon
+                            unavailableDaemon
+                            unavailableDaemon
+                        )
+                    )
+
+blockedGuestDiscovery ::
+    ProviderObservation daemon ->
+    ProviderObservation permissions ->
+    ProviderObservation vm ->
+    ProviderObservation egress ->
+    GuestProviderDiscovery
+blockedGuestDiscovery daemon permissions vm egress =
+    GuestProviderDiscovery
+        (propagateObservation daemon)
+        (propagateObservation permissions)
+        (propagateObservation vm)
+        (propagateObservation egress)
+        (propagateObservation vm)
+        (propagateObservation vm)
+        (propagateObservation vm)
+
+propagateObservation :: ProviderObservation source -> ProviderObservation target
+propagateObservation observed = case observed of
+    ProviderObservedReady _ ->
+        ProviderObservedFailure
+            ProbeFailure
+                { failedOperation = "propagate provider discovery observation"
+                , failureCause = "an unexpected ready observation lacked its dependent probe"
+                }
+    ProviderObservedNotReady reason -> ProviderObservedNotReady reason
+    ProviderObservedUnavailable reason -> ProviderObservedUnavailable reason
+    ProviderObservedConflict conflict -> ProviderObservedConflict conflict
+    ProviderObservedFailure failure -> ProviderObservedFailure failure
+
+runAlternatives :: ProviderBoundExec scope planId providerId phase backendId -> String -> [ProbePlan value] -> IO (ProviderObservation value)
+runAlternatives _ label [] = pure (ProviderObservedUnavailable (label ++ " has no supported probe plan"))
+runAlternatives exec label (candidate : rest) = do
+    observed <- runProbePlan exec candidate
+    case observed of
+        ProviderObservedReady value -> pure (ProviderObservedReady value)
+        ProviderObservedUnavailable _
+            | not (null rest) -> runAlternatives exec label rest
+        ProviderObservedNotReady _ -> pure observed
+        ProviderObservedConflict _ -> pure observed
+        ProviderObservedFailure _ -> pure observed
+        ProviderObservedUnavailable _ -> pure observed
+
+runProbePlan :: ProviderBoundExec scope planId providerId phase backendId -> ProbePlan value -> IO (ProviderObservation value)
+runProbePlan _ (ProbePlan _ (Left reason) _) = pure (ProviderObservedUnavailable reason)
+runProbePlan exec (ProbePlan label (Right request) parse) =
+    case providerDiscoveryPoll of
+        Left failure -> pure (ProviderObservedFailure failure)
+        Right policy -> go policy (0 :: Natural)
+  where
+    go policy attempt = do
+        raw <- executeRaw exec request
+        case pollStep policy label attempt (parse raw) of
+            Yield value -> pure (ProviderObservedReady value)
+            Retry delay -> waitProviderBoundExec exec delay >> go policy (attempt + 1)
+            GiveUp pollError -> pure (observationFromPollError pollError)
+
+executeRaw :: ProviderBoundExec scope planId providerId phase backendId -> ProviderProbeRequest -> IO RawProviderOutcome
+executeRaw exec request =
+    runProviderBoundExec exec request `catch` executionFailure
+  where
+    executionFailure failure =
+        pure (RawProviderFailure (displayException (failure :: IOException)))
+
+providerDiscoveryPoll :: Either ProbeFailure PollPolicy
+providerDiscoveryPoll =
+    case seconds 1 >>= mkPollPolicy 60 of
+        Right policy -> Right policy
+        Left failure ->
+            Left
+                ProbeFailure
+                    { failedOperation = "construct provider discovery polling policy"
+                    , failureCause = "invalid closed provider discovery policy: " ++ show failure
+                    }
+
+observationFromPollError :: PollError -> ProviderObservation value
+observationFromPollError pollError = case pollError of
+    PollTimeout _ observation -> ProviderObservedNotReady observation
+    PollUnavailable _ reason -> ProviderObservedUnavailable reason
+    PollConflict _ conflict -> ProviderObservedConflict conflict
+    PollFailed _ failure -> ProviderObservedFailure failure
+
+unitPlan :: String -> Either String ProviderProbeRequest -> ProbePlan ()
+unitPlan label request = ProbePlan label request parseUnit
+
+whichPlan :: String -> Either String ProviderProbeRequest -> String -> (FilePath -> value) -> ProbePlan value
+whichPlan label request basename retain =
+    ProbePlan label request $ \raw -> case raw of
+        RawProviderExit ExitSuccess out err ->
+            case exactSuccessfulLine label out err of
+                Right executable
+                    | exactAbsoluteBasename basename executable -> ProbeReady (retain executable)
+                    | otherwise -> malformed label ("expected one absolute " ++ basename ++ " path, observed " ++ show executable)
+                Left reason -> malformed label reason
+        RawProviderExit (ExitFailure code) out err -> candidateUnavailable label code out err
+        RawProviderFailure reason -> rawExecutionFailure label reason
+
+statPlan :: String -> Either String ProviderProbeRequest -> value -> ProbePlan value
+statPlan label request value =
+    ProbePlan label request $ \raw -> case raw of
+        RawProviderExit ExitSuccess out err ->
+            case exactSuccessfulLine label out err of
+                Right identity
+                    | validDeviceInode identity -> ProbeReady value
+                    | otherwise -> malformed label ("invalid device:inode report " ++ show identity)
+                Left reason -> malformed label reason
+        RawProviderExit (ExitFailure code) out err -> candidateUnavailable label code out err
+        RawProviderFailure reason -> rawExecutionFailure label reason
+
+pythonMarkerPlan :: String -> Either String ProviderProbeRequest -> String -> value -> ProbePlan value
+pythonMarkerPlan label request marker value =
+    ProbePlan label request $ \raw -> case raw of
+        RawProviderExit ExitSuccess out err ->
+            case exactSuccessfulLine label out err of
+                Right observed
+                    | observed == marker -> ProbeReady value
+                    | otherwise -> malformed label ("expected exact marker " ++ show marker ++ ", observed " ++ show observed)
+                Left reason -> malformed label reason
+        RawProviderExit (ExitFailure code) out err -> candidateUnavailable label code out err
+        RawProviderFailure reason -> rawExecutionFailure label reason
+
+exactSuccessfulLine :: String -> String -> String -> Either String String
+exactSuccessfulLine label out err
+    | not (null err) = Left (label ++ " wrote unexpected stderr: " ++ show (firstLine err))
+    | length out > 1024 = malformedLine
+    | '\r' `elem` out = malformedLine
+    | null out || last out /= '\n' = malformedLine
+    | length (filter (== '\n') out) /= 1 = malformedLine
+    | otherwise = Right (init out)
+  where
+    malformedLine = Left (label ++ " returned a non-exact single-line report: " ++ show (firstLine out))
+
+candidateUnavailable :: String -> Int -> String -> String -> ProbeResult value
+candidateUnavailable label code out err =
+    Unavailable
+        ( label
+            ++ " candidate exited "
+            ++ show code
+            ++ candidateDiagnostic out err
+        )
+
+candidateDiagnostic :: String -> String -> String
+candidateDiagnostic out err =
+    case firstLine (out ++ err) of
+        "" -> ""
+        diagnostic -> ": " ++ diagnostic
+
+rawExecutionFailure :: String -> String -> ProbeResult value
+rawExecutionFailure label reason = case providerConflictMarker reason of
+    Just conflict -> ProbeConflicted conflict
+    Nothing ->
+        Failed
+            ProbeFailure
+                { failedOperation = label
+                , failureCause = reason
+                }
+
+providerConflictMarker :: String -> Maybe ProbeConflict
+providerConflictMarker raw = case words raw of
+    ["HB_PROVIDER_CONFLICT", expected, observed, reason]
+        | unwords ["HB_PROVIDER_CONFLICT", expected, observed, reason] == raw
+        , all validConflictToken [expected, observed, reason] ->
+            Just
+                ProbeConflict
+                    { conflictExpected = expected
+                    , conflictObserved = observed
+                    , conflictRemedy = "resolve the provider identity conflict before retrying (" ++ reason ++ ")"
+                    }
+    _ -> Nothing
+
+validConflictToken :: String -> Bool
+validConflictToken value =
+    not (null value)
+        && length value <= 240
+        && all
+            ( \character ->
+                (character >= 'A' && character <= 'Z')
+                    || (character >= 'a' && character <= 'z')
+                    || (character >= '0' && character <= '9')
+                    || character `elem` (":._/=-" :: String)
+            )
+            value
+
+parseUnit :: RawProviderOutcome -> ProbeResult ()
+parseUnit raw = case raw of
+    RawProviderExit ExitSuccess _ _ -> ProbeReady ()
+    _ -> classifyRawFailure "provider probe" raw
+
+classifyRawFailure :: String -> RawProviderOutcome -> ProbeResult value
+classifyRawFailure label raw = case raw of
+    RawProviderFailure reason -> rawExecutionFailure label reason
+    RawProviderExit ExitSuccess out _ -> malformed label ("unexpected successful output " ++ show (firstLine out))
+    RawProviderExit (ExitFailure code) out err
+        | any (`isPrefixOf` lower) ["not ready", "starting", "connection refused", "daemon is not running"] ->
+            NotReady (firstLine combined)
+        | any (`isPrefixOf` lower) ["not found", "unsupported", "no such file"] ->
+            Unavailable (firstLine combined)
+        | otherwise ->
+            Failed
+                ProbeFailure
+                    { failedOperation = label
+                    , failureCause = "exit " ++ show code ++ ": " ++ firstLine combined
+                    }
+      where
+        combined = dropWhile (`elem` [' ', '\t', '\r', '\n']) (out ++ err)
+        lower = map asciiLower combined
+
+malformed :: String -> String -> ProbeResult value
+malformed label reason = Failed (ProbeFailure label reason)
+
+firstLine :: String -> String
+firstLine = takeWhile (`notElem` ['\r', '\n'])
+
+asciiLower :: Char -> Char
+asciiLower character
+    | character >= 'A' && character <= 'Z' = toEnum (fromEnum character + 32)
+    | otherwise = character
+
+validDeviceInode :: String -> Bool
+validDeviceInode value =
+    case break (== ':') value of
+        (device, ':' : inode) -> not (null device) && not (null inode) && all isAsciiDigit device && all isAsciiDigit inode
+        _ -> False
+  where
+    isAsciiDigit digit = digit >= '0' && digit <= '9'
+
+exactAbsoluteBasename :: String -> String -> Bool
+exactAbsoluteBasename basename path =
+    case path of
+        '/' : _ ->
+            all (`notElem` ['\r', '\n']) path
+                && reverse (takeWhile (/= '/') (reverse path)) == basename
+        _ -> False
+
+existsRequest :: SubstrateProvider -> Either String ProviderProbeRequest
+existsRequest provider = case spExists provider of
+    ExistsProbe tool args _ -> Right (hostToolRequest tool args)
+    DirectHostExistsProbe -> Left "a direct provider has no daemon probe"
+
+guestRequest :: SubstrateProvider -> [String] -> Either String ProviderProbeRequest
+guestRequest provider command = case spProviderKind provider of
+    ProviderDirectHost -> Left "the direct host has no guest probe route"
+    _ -> Right (guestProbeRequest command)
+
+egressRequest :: SubstrateProvider -> Either String ProviderProbeRequest
+egressRequest _ = Right provisioningEgressRequest
+
+-- | Reboot/reconcile-to-ready is one operation with a uniform result shape.
+data RebootReadyPlan = RebootReadyPlan
+    { rebootStartEffects :: [HostEffect]
+    , rebootCordonReconcile :: Maybe (ExistsProbe, [HostEffect])
+    , rebootWaitProbe :: WaitProbe
+    }
+    deriving (Eq, Show)
+
+{- | Pure, non-authorizing provision plan. The prepared provider adapter owns
+mutation and consumes no discovery capability.
+-}
+planProviderProvision :: SubstrateProvider -> ResourceEnvelope -> Maybe HostPathShare -> Either ProviderError [HostEffect]
+planProviderProvision provider resources share =
+    mapProviderFailure ProviderProvision provider (spLaunch provider resources share)
+
+-- | Reconcile an existing provider frame to ready, with no provider branch at the call site.
+planProviderRebootReady :: SubstrateProvider -> Either ProviderError RebootReadyPlan
+planProviderRebootReady provider =
+    Right
+        RebootReadyPlan
+            { rebootStartEffects = spStartExisting provider
+            , rebootCordonReconcile = spReconcileCordon provider
+            , rebootWaitProbe = spWait provider
+            }
+
+-- | Stop a provider frame, or return a structured refusal where stop has no meaning.
+planProviderStop :: SubstrateProvider -> ResourceEnvelope -> Either ProviderError [HostEffect]
+planProviderStop provider resources =
+    mapProviderTeardownFailure ProviderStop provider (spStop provider resources)
+
+-- | Delete a provider frame, or return a structured refusal where delete has no meaning.
+planProviderDelete :: SubstrateProvider -> ResourceEnvelope -> Either ProviderError [HostEffect]
+planProviderDelete provider resources =
+    mapProviderTeardownFailure ProviderDelete provider (spDestroy provider resources)
+
+-- | Project a durable host path through the selected provider boundary.
+planProviderShare :: SubstrateProvider -> FilePath -> Either ProviderError HostPathShare
+planProviderShare provider source = Right (spShare provider source)
+
+{- | Plan the common guest alias transition. A direct host has no guest boundary,
+so asking it to mint or consume a guest alias is a structured refusal rather
+than an apparent success.
+-}
+planProviderAlias :: SubstrateProvider -> FilePath -> FilePath -> AliasState -> Either ProviderError AliasAction
+planProviderAlias provider aliasPath target state = do
+    case spProviderKind provider of
+        ProviderDirectHost ->
+            unsupportedProvider
+                ProviderAlias
+                provider
+                "the direct host has no guest boundary and must not create or consume a guest alias"
+        _ -> pure ()
+    mapProviderFailure ProviderAlias provider (planAliasEnsure aliasPath target state)
+
+unsupported :: ProviderOperation -> ProviderCapability scope planId providerId backendId capabilityId -> String -> Either ProviderError a
+unsupported operation capability cause =
+    Left
+        ProviderUnsupported
+            { providerErrorKind = providerCapabilityKind capability
+            , providerErrorOperation = operation
+            , providerErrorCause = cause
+            }
+
+unsupportedProvider :: ProviderOperation -> SubstrateProvider -> String -> Either ProviderError a
+unsupportedProvider operation provider cause =
+    Left
+        ProviderUnsupported
+            { providerErrorKind = spProviderKind provider
+            , providerErrorOperation = operation
+            , providerErrorCause = cause
+            }
+
+mapProviderFailure :: ProviderOperation -> SubstrateProvider -> Either String a -> Either ProviderError a
+mapProviderFailure operation provider result =
+    case result of
+        Right value -> Right value
+        Left cause ->
+            Left
+                ProviderOperationFailure
+                    { providerErrorKind = spProviderKind provider
+                    , providerErrorOperation = operation
+                    , providerErrorCause = cause
+                    }
+
+mapProviderTeardownFailure :: ProviderOperation -> SubstrateProvider -> Either String a -> Either ProviderError a
+mapProviderTeardownFailure operation provider result =
+    case result of
+        Left cause
+            | spProviderKind provider == ProviderDirectHost ->
+                unsupportedProvider operation provider cause
+        _ -> mapProviderFailure operation provider result
+
+-- | Select the provider implied by a detected substrate. Every substrate is covered.
 selectSubstrateProvider :: Substrate -> VMHandles -> Either String SubstrateProvider
-selectSubstrateProvider sub h = case substrateName sub of
-    AppleSilicon -> Right apple
-    LinuxCpu -> Right linux
-    LinuxGpu -> Right linux
-    WindowsCpu -> Right windows
-    WindowsGpu -> Right windows
+selectSubstrateProvider sub handles = Right (selectProviderKind (providerKindForSubstrate sub) handles)
+
+-- | Total dispatch over the closed lifecycle-provider vocabulary.
+selectProviderKind :: ProviderKind -> VMHandles -> SubstrateProvider
+selectProviderKind kind h = case kind of
+    ProviderLima -> apple
+    ProviderIncus -> linux
+    ProviderWsl2 -> windows
+    ProviderDirectHost -> direct
   where
     prefix = vmhGuardPrefix h
 
@@ -239,8 +1014,8 @@ selectSubstrateProvider sub h = case substrateName sub of
         let vm = vmhLima h
          in SubstrateProvider
                 { spVmId = limaName vm
-                , spProviderKind = LimaVMProvider
-                , spLiftLayer = ViaLimaVM vm
+                , spProviderKind = ProviderLima
+                , spLiftContext = inLimaVM vm localContext
                 , spExists = ExistsProbe Lima ["list", "-q"] LinesMember
                 , spLaunch = \env share -> do
                     sizing <- limaSizingArgs env
@@ -260,8 +1035,8 @@ selectSubstrateProvider sub h = case substrateName sub of
         let vm = vmhIncus h
          in SubstrateProvider
                 { spVmId = vmName vm
-                , spProviderKind = IncusVMProvider
-                , spLiftLayer = ViaVM vm
+                , spProviderKind = ProviderIncus
+                , spLiftContext = inVM vm localContext
                 , spExists = ExistsProbe Incus ["list", "--format", "csv", "-c", "n"] LinesMember
                 , spLaunch = \env _ -> do
                     sizing <- incusSizingArgs env
@@ -294,8 +1069,8 @@ selectSubstrateProvider sub h = case substrateName sub of
             distro = Wsl2.wsl2Distro vm
          in SubstrateProvider
                 { spVmId = distro
-                , spProviderKind = Wsl2VMProvider
-                , spLiftLayer = ViaWsl2VM vm
+                , spProviderKind = ProviderWsl2
+                , spLiftContext = inWsl2VM vm localContext
                 , spExists = ExistsProbe Wsl ["--list", "--quiet"] WslQuietMember
                 , spLaunch = \env _ -> do
                     body <- wsl2SizingArgs env
@@ -350,11 +1125,46 @@ selectSubstrateProvider sub h = case substrateName sub of
                     pure [RunHostTool Wsl argv, ReleaseGlobalWslWall body]
                 }
 
+    direct =
+        SubstrateProvider
+            { spVmId = "local-host"
+            , spProviderKind = ProviderDirectHost
+            , spLiftContext = localContext
+            , spExists = DirectHostExistsProbe
+            , spLaunch = \_ _ -> Right [RunDirectHost RealizeDirectHost]
+            , spShare = \source -> HostPathShare source source Nothing
+            , spStartExisting = [RunDirectHost ReconcileDirectHostReady]
+            , spReconcileCordon = Nothing
+            , spWait = DirectHostReadyProbe
+            , spTransfer = DirectHostTransfer
+            , spStop = \_ -> Left "the direct host cannot be stopped by a project lifecycle"
+            , spDestroy = \_ -> Left "the direct host cannot be deleted by a project lifecycle"
+            }
+
     -- incus sizing args are key=value pairs; @root,size=…@ is a device override
     -- (@-d@), the rest are config keys (@-c@).
     toLaunchFlag a
         | "root," `isPrefixOf` a = ["-d", a]
         | otherwise = ["-c", a]
+
+{- | Total eliminator for existence probes. The first branch is the already-local
+direct host; the second receives one resolved-tool probe description. Consumers
+choose how to interpret those two shapes without matching provider constructors.
+-}
+foldExistsProbe :: result -> (HostTool -> [String] -> Membership -> result) -> ExistsProbe -> result
+foldExistsProbe directResult runTool probe =
+    case probe of
+        DirectHostExistsProbe -> directResult
+        ExistsProbe tool args membership -> runTool tool args membership
+
+{- | Total eliminator for readiness probes. Direct readiness and tool-backed VM
+readiness retain one call-site signature without leaking provider dispatch.
+-}
+foldWaitProbe :: result -> (HostTool -> [String] -> result) -> WaitProbe -> result
+foldWaitProbe directResult runTool probe =
+    case probe of
+        DirectHostReadyProbe -> directResult
+        WaitProbe tool args -> runTool tool args
 
 -- | Parse a VM-name list out of an existence-probe's stdout per 'Membership'.
 membersOf :: Membership -> String -> [String]
@@ -372,13 +1182,17 @@ shareReconcileEffects share output =
     case hpsReconcile share of
         Nothing -> []
         Just reconcile ->
-            case srProbe reconcile of
-                ExistsProbe _ _ membership
-                    | srMember reconcile `elem` membersOf membership output -> []
-                    | otherwise -> srWhenMissing reconcile
+            foldExistsProbe
+                []
+                ( \_ _ membership ->
+                    if srMember reconcile `elem` membersOf membership output
+                        then []
+                        else srWhenMissing reconcile
+                )
+                (srProbe reconcile)
 
-{- | Plan one host→guest file transfer (pure). Lima/Incus push to @dst@; WSL2 reads
-@src@ in place through its @/mnt@ drive mount, so it emits no host effect.
+{- | Plan one host→frame file transfer (pure). Lima/Incus push to @dst@; WSL2
+reads @src@ through @/mnt@, and direct host reads the same path in place.
 -}
 stageFileEffects :: FileTransfer -> FilePath -> FilePath -> StagedFile
 stageFileEffects (IncusFileTransfer vm) src dst =
@@ -387,6 +1201,7 @@ stageFileEffects (LimaFileTransfer vm) src dst =
     StagedFile [RunHostTool Lima (Lima.copyToVMArgs vm src dst)] dst True
 stageFileEffects (Wsl2MountTransfer _) src _ =
     StagedFile [] (windowsPathToWslMount src) False
+stageFileEffects DirectHostTransfer src _ = StagedFile [] src False
 
 {- | The resolved-tool invocation that runs @cmd@ inside a VM frame, for the
 single-layer lift the consumer uses to shell into the distro. 'Nothing' for a
@@ -409,13 +1224,12 @@ vmShellArgs layer cmd =
 --
 -- A host-backed durable share is only usable at the Docker boundary through a
 -- stable Docker-visible alias — a symlink from a fixed path to the share. The
--- alias is minted by two lanes: the VM-shell lane (trivial guest probes:
+-- alias is minted by the VM-shell lane (trivial guest probes:
 -- @test -L@, @readlink@, @test -e@ — no compound @set -eu@, no nested @"$(…)"@,
--- so it survives the Windows PowerShell→@wsl@→@bash@ quoting path, § CC) and the
--- direct Linux-GPU lane (@System.Directory@). Both feed the SAME classifier and
--- planners here, so the absent/linked/collision/ownership logic is written ONCE,
--- not re-implemented per lane (it replaces three hand-coded shell/@System.Directory@
--- copies). Every step is readiness-gated by the consumer (§ CC): the alias cannot
+-- so it survives the Windows PowerShell→@wsl@→@bash@ quoting path, § CC).
+-- Direct host has no guest boundary and supplies the canonical host projection
+-- directly, so it never calls this state machine. Every guest step is
+-- readiness-gated by the consumer (§ CC): the alias cannot
 -- be minted before a @Ready DurableShareMounted@ witness proves the share is a
 -- writable directory.
 -- ---------------------------------------------------------------------------

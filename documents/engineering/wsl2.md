@@ -17,6 +17,23 @@ registration path uses:
 wsl --install -d Ubuntu-24.04 --name <project>-vm --no-launch --vhd-size <GB>
 ```
 
+The active lower-boundary separation assigns pure `Wsl2VM` target data and the inner
+`wsl -d <distro> -- ...` renderer to `HostBootstrap.Lift.Context`. `HostBootstrap.Wsl2` reexports them and
+owns distro/lifecycle builders. For compatibility it reexports prerequisite helpers whose implementations
+— diagnostics, output normalization, virtualization classification, and `bcdedit` rendering — are owned by
+`HostBootstrap.Ensure.Wsl2`. The active
+[host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
+and [ensure-reconcilers phase](../../DEVELOPMENT_PLAN/phase-8-ensure-reconcilers.md) pin that dependency
+direction.
+
+The selected `SubstrateProvider` is abstract and carries the complete lower `LiftContext` without exposing
+construction or record update. Common discovery owns closed daemon, permission, VM, egress, and guest
+lock/stat/Python requests, accepts only raw outcomes from its executor, and privately classifies the
+complete result vocabulary. Tool paths, markers, identities, and backend reports must be exact
+single-line results. Its fresh generative capability is post-settlement and indexed to the exact opaque
+managed provider/backend/generation; provider mutation does not consume it. This is the same interface
+used by Incus and Lima rather than a WSL-specific dispatch fold.
+
 It then enters the distro with `wsl -d <distro> -- ...`, stages source, builds/installs the Linux project
 binary, ensures the in-distro Docker daemon, builds the project image, and hands the chain into the
 container frame. `project down` restores the journalled global-wall origin and then runs global
@@ -28,9 +45,13 @@ registration builder and has both a production consumer and tests.
 ## Platform reconciliation
 
 `ensure wsl2` handles WSL/VMP feature and platform readiness. A required Windows reboot is reported to
-the operator; the binary does not reboot the host. Phase 9 readiness authority is now opaque and
-resource-indexed, but this live provider path has not yet adopted the universal prepared-operation
-boundary—see [readiness](../architecture/readiness.md).
+the operator; the binary does not reboot the host. The
+[canonical-quantities-and-reconcile-results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md)'s
+readiness authority is opaque and resource-indexed. The common provider discovery/capability boundary is
+implemented, while the baseline prepared provider mutation backend covers Incus and Direct; native WSL2
+mutation confirmation remains in the
+[Windows-and-WSL2-substrate phase](../../DEVELOPMENT_PLAN/phase-27-windows-and-wsl2-substrate.md). See
+[readiness](../architecture/readiness.md).
 
 The thin Python bootstrap happens before this provider exists. It requires winget and Windows
 PowerShell, but downloads the pinned GHCup executable directly with `Invoke-WebRequest`; winget does not
@@ -65,10 +86,9 @@ restoration requires the live authority, lease, and exact partition projection, 
 revalidated at the call.
 
 The wall is acquired through the host-wall backend, which holds all four
-[ownership invariant](../architecture/ownership_invariant.md) clauses. The superseded route inferred
-ownership from a `.hostbootstrap-demo.bak` pathname: it recorded no *absent* original, so a crash after
-the first write let retry save generated content as the “original”, and concurrent runs could overwrite
-the global setting.
+[ownership invariant](../architecture/ownership_invariant.md) clauses. A backup pathname alone cannot
+prove ownership: it records no absent origin, cannot bind the live object's identity, and cannot exclude
+concurrent cooperating mutations.
 
 The implementation is split so that the ownership logic is not Windows-only:
 
@@ -112,12 +132,12 @@ Lima and Incus release their walls when the project stops: `limactl stop` and `i
 CPU and memory to the host. WSL2 now releases its shared utility-VM wall through two coordinated teardown
 effects.
 
-The managed body no longer pins the wall open. Both idle timeouts previously carried `-1`; they now emit
-six hours in milliseconds for `[general] instanceIdleTimeout` and `[wsl2] vmIdleTimeout`, derived from
-the single `managedWslIdleTimeoutHours` constant in `HostBootstrap.Cluster.Cordon`. Six hours is an order
-of magnitude beyond the longest lifecycle this project runs, so no run can be idle-stopped in the gaps
-between its `wsl -d` steps. These finite timeouts are an interrupted-run backstop: normal teardown does
-not wait for either timeout to expire.
+The managed body uses finite idle timeouts: six hours in milliseconds for
+`[general] instanceIdleTimeout` and `[wsl2] vmIdleTimeout`, derived from
+the single `managedWslIdleTimeoutHours` constant in `HostBootstrap.Cluster.Cordon.Foundation` (and
+reexported by the configuration facade). Six hours is an order of magnitude beyond the longest lifecycle
+this project runs, so no run can be idle-stopped in the gaps between its `wsl -d` steps. These finite
+timeouts are an interrupted-run backstop: normal teardown does not wait for either timeout to expire.
 
 `project down` emits `ReleaseGlobalWslWall` followed by `wsl --shutdown`. The order is load-bearing: the
 utility VM re-reads the file on its next cold boot, so releasing *after* shutdown would publish the
@@ -138,10 +158,20 @@ WSL drvfs already exposes the Windows project directory below `/mnt/<drive>/...`
 needed. The provider waits for that path and reconciles the stable Docker-visible alias
 `/var/tmp/hostbootstrap-demo-data`, which is then carried through kind and the pod.
 
-Direct-host builds use the canonical host path and create no alias. Provider guests, including WSL,
-still use an ordinary shared alias pathname that cannot supply an identity-authoritative cleanup
-receipt; all lanes also lack the required destroy/up/readback proof. See
-[durable state](../architecture/durable_state.md).
+The common prepared alias backend uses the WSL guest facts and hidden guest executor retained by discovery
+for the exact opaque managed WSL provider and share authorities. It admits only retained `GuestFlock`; a
+discovered `GuestLockf` remains descriptive `Unsupported` because the lock namespaces are not
+interchangeable. Its explicit-absence/fresh-nonce `prepared` record lives inside that host-backed drvfs
+target, is fsynced and read back before the alias effect, and is bound to the symlink's exact device/inode
+in `managed`. Conditional release first persists the observation-version-fenced `releasing` record and
+then removes only that exact identity. Crash retries recover each durable state rather than adopting an
+exact-looking pathname.
+
+The worked demo still has to adopt this route in place of its legacy pathname call; that call site cannot
+supply an identity-authoritative cleanup receipt. Direct-host builds use the canonical host path and
+create no alias. All lanes also lack the required destroy/up/readback proof. See
+[durable state](../architecture/durable_state.md) and the
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
 
 ## Lifecycle caveat
 
@@ -151,10 +181,11 @@ should remain outside it; that outcome is not yet live-gated.
 
 ## Validation
 
-The current Windows `project up`/`project down` gate closed the Phase 9 wall-release observable: the
+The current Windows `project up`/`project down` gate exercised the wall-release observable: the
 managed wall was active during bring-up, teardown restored an absent `.wslconfig` origin exactly, and
 the following global shutdown left neither a running distro nor a resident utility VM. Dated command
-and test detail belongs in the Phase 9 development plan.
+and test detail belongs in the
+[Windows-and-WSL2-substrate phase](../../DEVELOPMENT_PLAN/phase-27-windows-and-wsl2-substrate.md).
 
 That result does not close the broader WSL2 provider lifecycle. The demo profile/durable-readback defects,
 prepared-operation adoption, recursive teardown, existing-VHDX reconciliation, and the remaining native

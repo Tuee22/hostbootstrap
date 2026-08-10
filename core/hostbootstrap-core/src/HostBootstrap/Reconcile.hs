@@ -1,6 +1,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RoleAnnotations #-}
 
 {- | Opaque lifecycle/reconciliation state shared by provider implementations.
 
@@ -11,6 +12,7 @@ verified records, and phase evidence are private.
 module HostBootstrap.Reconcile
   ( CanonicalPlanSnapshot,
     canonicalPlanSnapshotFormatVersion,
+    canonicalPlanSnapshotRoot,
     canonicalPlanSnapshotSpecDigest,
     canonicalPlanSnapshotConfigDigest,
     canonicalPlanSnapshotBytes,
@@ -18,6 +20,7 @@ module HostBootstrap.Reconcile
     LifecyclePlan,
     withLifecyclePlan,
     withLifecyclePlanForConfig,
+    lifecyclePlanFromProjectPlan,
     lifecyclePlanDigest,
     lifecyclePlanSnapshot,
     lifecyclePlanSnapshotBytes,
@@ -54,15 +57,12 @@ module HostBootstrap.Reconcile
     plannedResourceKey,
     plannedResourceFrame,
     plannedResourcePlanDigest,
-    withPlannedResource,
-    withPlannedResourceOfKind,
     PlannedEdge,
-    withPlannedEdge,
-    withProviderGuestAliasProjection,
     withNodeResourceOfKind,
     withNodeGuestAliasProjection,
     withNodeObservedResource,
     plannedNodeOperation,
+    plannedNodePhaseOperation,
     withObservedPlannedResource,
     OwnershipReceipt,
     ownershipReceiptOperationKey,
@@ -114,10 +114,15 @@ module HostBootstrap.Reconcile
     planMarkReady,
     planStage,
     planBuild,
+    planProviderBoot,
     planRun,
     planStop,
     planRestart,
     planDestroy,
+    PreparedPhaseTransition,
+    withPreparedPhaseTransition,
+    preparedPhaseTransitionHandle,
+    completePreparedPhaseTransition,
     VerifiedAtPhase,
     PhaseAdvance,
     verifyPhaseTransition,
@@ -138,7 +143,15 @@ import HostBootstrap.Lifecycle.Plan (
   canonicalPlanSnapshotConfigDigest,
   canonicalPlanSnapshotDigest,
   canonicalPlanSnapshotFormatVersion,
+  canonicalPlanSnapshotRoot,
   canonicalPlanSnapshotSpecDigest,
+  compatibilityLifecyclePlanRoot,
+  plannedResourceFamilyKeysKernel,
+  plannedResourcePlanDigestKernel,
+  projectPlanCanonicalSnapshotKernel,
+  projectPlanStepPlanKernel,
+  withCompatibilityNodeGuestAliasProjectionKernel,
+  withCompatibilityNodeResourceOfKindKernel,
  )
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Lifecycle.Execution.Internal (
@@ -166,9 +179,24 @@ import HostBootstrap.Lifecycle.Prepared (
   preparedGateOperation,
   preparedGatePlan,
  )
+import HostBootstrap.ProjectPlan (
+  ClusterResource,
+  DockerResource,
+  DurableAliasResource,
+  DurableShareResource,
+  MinioResource,
+  PlanError (..),
+  PlannedEdge,
+  PlannedResource,
+  PlannedResourceKind (..),
+  PlannedStep,
+  ProjectPlan,
+  ProviderResource,
+  RegistryResource,
+ )
+import qualified HostBootstrap.ProjectPlan as ProjectPlan
 import HostBootstrap.Step
-  ( Step,
-    StepPlan,
+  ( StepPlan,
     frameId,
     operationKeyText,
     stepDependencies,
@@ -176,10 +204,11 @@ import HostBootstrap.Step
     stepIdentity,
     stepOperationKey,
     stepPlanSteps,
-    stepProjectedOperations,
   )
 
 data LifecyclePlan scope planId = LifecyclePlan CanonicalPlanSnapshot StepPlan
+
+type role LifecyclePlan nominal nominal
 
 {- | Open a lifecycle plan for a config-free caller. Production command paths
 must use 'withLifecyclePlanForConfig' with the digest of their exact admitted
@@ -205,9 +234,30 @@ withLifecyclePlanForConfig ::
 withLifecyclePlanForConfig codec configDigest plan consume =
   consume
     ( LifecyclePlan
-        (canonicalPlanSnapshot (projectCodecSpecDigest codec) configDigest plan)
+        ( canonicalPlanSnapshot
+            compatibilityLifecyclePlanRoot
+            (projectCodecSpecDigest codec)
+            configDigest
+            plan
+        )
         plan
     )
+
+{- | Transitional consumer view of the exact admitted project plan.
+
+This bridge preserves the existing @planId@ and retains the plan's exact
+root-bound canonical snapshot and validated graph.  It mints no resource,
+edge, cursor, or command authority. Reconciliation's exact producer consumes
+the 'ProjectPlan' projections directly; this bridge remains non-authorizing
+compatibility for consumers that have not adopted that producer yet.
+-}
+lifecyclePlanFromProjectPlan ::
+  ProjectPlan scope specDigest planId configId cfg ->
+  LifecyclePlan scope planId
+lifecyclePlanFromProjectPlan plan =
+  LifecyclePlan
+    (projectPlanCanonicalSnapshotKernel plan)
+    (projectPlanStepPlanKernel plan)
 
 lifecyclePlanDigest :: LifecyclePlan scope planId -> Text
 lifecyclePlanDigest (LifecyclePlan snapshot _) =
@@ -230,62 +280,63 @@ lifecyclePlanConfigDigest = canonicalPlanSnapshotConfigDigest . lifecyclePlanSna
 lifecyclePlanSteps :: LifecyclePlan scope planId -> StepPlan
 lifecyclePlanSteps (LifecyclePlan _ plan) = plan
 
-{- | Mint the plan-minted execution descriptor for one step of __this__ plan
-(§ U).
+{- | Mint the execution descriptor for one exact projected node of this plan.
 
-This is the sole producer, and it derives every identity on the descriptor from
-the plan rather than from the caller: the plan's own digest, the step's operation
-key and frame, and the operation keys of its exact ordered plan prefix.
-
-It is 'Nothing' for a step this plan does not contain. That branch matters
-because the function is public: without it a caller could hand in a foreign step
-and receive a descriptor stamped with this plan's real digest, an operation key
-the plan never validated, and an empty edge set indistinguishable from a genuine
-first step. An interpreter iterating the plan's own steps never sees 'Nothing'.
+The shared @scope@, @planId@, and @configId@ indices make a node from any other
+admission a type error. Every retained value is then projected through the
+public "HostBootstrap.ProjectPlan" facade: the stable plan and configuration
+digests, node identity, frame, operation key, ordered dependency prefix, and
+declared projected operations. There is no caller-supplied identity and no
+membership branch because a 'PlannedStep' already is this plan's opaque
+forward projection.
 -}
 stepExecutionFor ::
-  LifecyclePlan scope planId ->
+  ProjectPlan scope specDigest planId configId cfg ->
   HostConfig ->
   StepRuntime scope planId ->
-  Step ->
-  Maybe (StepExecution scope planId)
-stepExecutionFor plan cfg runtime step
-  | not planMember = Nothing
-  | otherwise =
-      Just
-        ( mintStepExecution
-            cfg
-            (lifecyclePlanDigest plan)
-            (executionNodeFor steps step)
-            runtime
-        )
+  PlannedStep scope planId configId (cfg scope) ->
+  StepExecution scope planId
+stepExecutionFor plan cfg runtime plannedStep =
+  mintProjectedStepExecution
+    cfg
+    (ProjectPlan.stablePlanSnapshotDigest snapshot)
+    (ProjectPlan.stablePlanSnapshotConfigDigest snapshot)
+    (Text.pack (show (ProjectPlan.plannedStepIdentity plannedStep)))
+    (executionNodeForPlannedStep plannedStep)
+    runtime
   where
-    steps = lifecyclePlanSteps plan
-    planMember =
-      stepIdentity step `elem` map stepIdentity (stepPlanSteps steps)
+    snapshot = ProjectPlan.renderSnapshot plan
 
-{- | The neutral view of one node: its operation key, its frame, the operation
-keys of its exact ordered plan prefix, and the operations it projects. The
-prefix is walked in plan order, and plan identities are unique, so each edge
-resolves to exactly one step. The projections are the plan's own, validated by
-'HostBootstrap.Step.mkStepPlan' to live under this node's key, so a node cannot
-widen the set of gates its action may take.
--}
-executionNodeFor :: StepPlan -> Step -> ExecutionNode
-executionNodeFor plan step =
+-- | The one low-level descriptor constructor path.
+mintProjectedStepExecution ::
+  HostConfig ->
+  Text ->
+  Text ->
+  Text ->
+  ExecutionNode ->
+  StepRuntime scope planId ->
+  StepExecution scope planId
+mintProjectedStepExecution = mintStepExecution
+
+-- | Neutral node view derived only through the public project-plan facade.
+executionNodeForPlannedStep ::
+  PlannedStep scope planId configId config ->
   ExecutionNode
-    { executionNodeOperationKey = Text.pack (operationKeyText (stepOperationKey step)),
-      executionNodeFrame = Text.pack (frameId (stepFrame step)),
+executionNodeForPlannedStep plannedStep =
+  ExecutionNode
+    { executionNodeOperationKey =
+        Text.pack
+          (operationKeyText (ProjectPlan.plannedStepOperationKey plannedStep)),
+      executionNodeFrame = ProjectPlan.plannedStepFrameId plannedStep,
       executionNodeDependencies =
-        [ ( Text.pack (operationKeyText (stepOperationKey candidate)),
-            Text.pack (frameId (stepFrame candidate))
-          )
-        | identity <- stepDependencies plan step,
-          candidate <- stepPlanSteps plan,
-          stepIdentity candidate == identity
+        [ (Text.pack (operationKeyText operationKey), frame)
+        | (operationKey, frame) <-
+            ProjectPlan.plannedStepDependencyOperations plannedStep
         ],
       executionNodeProjectedKeys =
-        map (Text.pack . operationKeyText) (stepProjectedOperations step)
+        map
+          (Text.pack . operationKeyText)
+          (ProjectPlan.plannedStepProjectedOperationKeys plannedStep)
     }
 
 {- | Carry one managed resource this node acquired to the nodes that depend on
@@ -403,6 +454,8 @@ data Destroyed
 data ResourceHandle scope planId id resource ownership phase =
   ResourceHandle Text Word64 Word64
 
+type role ResourceHandle nominal nominal nominal nominal nominal nominal
+
 resourceHandleKey ::
   ResourceHandle scope planId id resource ownership phase ->
   Text
@@ -418,34 +471,15 @@ resourceHandleObservationVersion ::
   Word64
 resourceHandleObservationVersion (ResourceHandle _ _ version) = version
 
-data PlannedResource scope planId id resource frame =
-  PlannedResource Text Text Text
-
-data ProviderResource
-data DurableShareResource
-data DurableAliasResource
-data DockerResource
-data MinioResource
-data RegistryResource
-data ClusterResource
-
-data PlannedResourceKind resource where
-  ProviderResourceKind :: PlannedResourceKind ProviderResource
-  DurableShareResourceKind :: PlannedResourceKind DurableShareResource
-  DockerResourceKind :: PlannedResourceKind DockerResource
-  MinioResourceKind :: PlannedResourceKind MinioResource
-  RegistryResourceKind :: PlannedResourceKind RegistryResource
-  ClusterResourceKind :: PlannedResourceKind ClusterResource
-
 plannedResourceKey ::
   PlannedResource scope planId id resource frame ->
   Text
-plannedResourceKey (PlannedResource _ key _) = key
+plannedResourceKey = ProjectPlan.plannedResourceKey
 
 plannedResourceFrame ::
   PlannedResource scope planId id resource frame ->
   Text
-plannedResourceFrame (PlannedResource _ _ frame) = frame
+plannedResourceFrame = ProjectPlan.plannedResourceFrame
 
 -- | The plan digest this resource was resolved from. The prepare gate is
 -- checked against it, so a gate recorded in another plan's journal cannot
@@ -453,245 +487,12 @@ plannedResourceFrame (PlannedResource _ _ frame) = frame
 plannedResourcePlanDigest ::
   PlannedResource scope planId id resource frame ->
   Text
-plannedResourcePlanDigest (PlannedResource digest _ _) = digest
+plannedResourcePlanDigest = plannedResourcePlanDigestKernel
 
-withPlannedResource ::
-  LifecyclePlan scope planId ->
-  Text ->
-  ( forall id resource frame.
-    PlannedResource scope planId id resource frame ->
-    result
-  ) ->
-  Either ReconcileError result
-withPlannedResource (LifecyclePlan snapshot plan) requestedKey consume =
-  case find ((== Text.unpack requestedKey) . operationKeyText . stepOperationKey) (stepPlanSteps plan) of
-    Nothing ->
-      Left
-        ( Failure
-            ( FailureDetail
-                "resolve planned resource"
-                ("operation key is absent from the validated plan: " <> requestedKey)
-                DoNotRetry
-            )
-        )
-    Just step ->
-      Right
-        ( consume
-            ( PlannedResource
-                (canonicalPlanSnapshotDigest snapshot)
-                requestedKey
-                (Text.pack (frameId (stepFrame step)))
-            )
-        )
-
-withPlannedResourceOfKind ::
-  LifecyclePlan scope planId ->
-  PlannedResourceKind resource ->
-  Text ->
-  ( forall id frame.
-    PlannedResource scope planId id resource frame ->
-    result
-  ) ->
-  Either ReconcileError result
-withPlannedResourceOfKind (LifecyclePlan snapshot plan) resourceKind requestedKey consume
-  | plannedKindAccepts resourceKind requestedKey =
-      case find ((== Text.unpack requestedKey) . operationKeyText . stepOperationKey) (stepPlanSteps plan) of
-        Nothing ->
-          Left
-            ( Failure
-                ( FailureDetail
-                    "resolve planned resource"
-                    ("operation key is absent from the validated plan: " <> requestedKey)
-                    DoNotRetry
-                )
-            )
-        Just step ->
-          Right
-            ( consume
-                (PlannedResource (canonicalPlanSnapshotDigest snapshot) requestedKey (Text.pack (frameId (stepFrame step))))
-            )
-  | otherwise =
-      Left
-        ( Conflict
-            ( ConflictDetail
-                requestedKey
-                ("operation key for " <> plannedKindName resourceKind)
-                "operation key belongs to another resource family"
-                "use the closed plan resource kind associated with this operation"
-            )
-        )
-
-{- | The closed operation key each planned resource family owns.  This is the
-single source of truth for "which validated steps carry a plan-owned resource":
-'plannedKindAccepts' and the dependency-snapshot traversal both read it, so a new
-family cannot be admitted to one and omitted from the other.
--}
-plannedKindKey :: PlannedResourceKind resource -> Text
-plannedKindKey resourceKind =
-  case resourceKind of
-    ProviderResourceKind -> "core:deploy-vm"
-    DurableShareResourceKind -> "core:copy-source"
-    DockerResourceKind -> "core:ensure-docker"
-    MinioResourceKind -> "project:deploy-minio"
-    RegistryResourceKind -> "project:deploy-registry"
-    ClusterResourceKind -> "core:deploy-kind"
-
-data SomePlannedResourceKind where
-  SomePlannedResourceKind :: PlannedResourceKind resource -> SomePlannedResourceKind
-
--- | Every planned resource family, in plan order.
-plannedResourceKinds :: [SomePlannedResourceKind]
-plannedResourceKinds =
-  [ SomePlannedResourceKind ProviderResourceKind,
-    SomePlannedResourceKind DurableShareResourceKind,
-    SomePlannedResourceKind DockerResourceKind,
-    SomePlannedResourceKind MinioResourceKind,
-    SomePlannedResourceKind RegistryResourceKind,
-    SomePlannedResourceKind ClusterResourceKind
-  ]
-
-{- | The operation keys that denote a plan-owned resource.  A validated step
-outside this set — a project's own @ensure@ fragment, a context announcement, a
-build step — mutates no plan resource, so it contributes no dependency edge and
-no managed handle can exist for it.  This is what makes the ordered edge set of
-§ CC a set over /resources/ rather than over every preceding step.
--}
+-- | The closed plan-kernel resource-family set used to filter dependency
+-- descriptors.  Reconciliation consumes it; it cannot extend the relation.
 plannedResourceFamilyKeys :: [Text]
-plannedResourceFamilyKeys =
-  [plannedKindKey resourceKind | SomePlannedResourceKind resourceKind <- plannedResourceKinds]
-
-plannedKindAccepts :: PlannedResourceKind resource -> Text -> Bool
-plannedKindAccepts resourceKind key = plannedKindKey resourceKind == key
-
-plannedKindName :: PlannedResourceKind resource -> Text
-plannedKindName resourceKind =
-  case resourceKind of
-    ProviderResourceKind -> "provider"
-    DurableShareResourceKind -> "durable share"
-    DockerResourceKind -> "Docker daemon"
-    MinioResourceKind -> "MinIO"
-    RegistryResourceKind -> "registry"
-    ClusterResourceKind -> "cluster"
-
-data PlannedEdge scope planId targetId target targetFrame dependencyId dependency dependencyFrame =
-  PlannedEdge Text Text
-
-withPlannedEdge ::
-  LifecyclePlan scope planId ->
-  Text ->
-  Text ->
-  ( forall targetId target targetFrame dependencyId dependency dependencyFrame.
-    PlannedResource scope planId targetId target targetFrame ->
-    PlannedResource scope planId dependencyId dependency dependencyFrame ->
-    PlannedEdge scope planId targetId target targetFrame dependencyId dependency dependencyFrame ->
-    result
-  ) ->
-  Either ReconcileError result
-withPlannedEdge (LifecyclePlan snapshot plan) targetKey dependencyKey consume = do
-  targetStep <-
-    maybe
-      (missing targetKey)
-      Right
-      (find ((== Text.unpack targetKey) . operationKeyText . stepOperationKey) (stepPlanSteps plan))
-  dependencyStep <-
-    maybe
-      (missing dependencyKey)
-      Right
-      (find ((== Text.unpack dependencyKey) . operationKeyText . stepOperationKey) (stepPlanSteps plan))
-  if stepIdentity dependencyStep `elem` stepDependencies plan targetStep
-    then
-      Right
-        ( consume
-            (PlannedResource (canonicalPlanSnapshotDigest snapshot) targetKey (Text.pack (frameId (stepFrame targetStep))))
-            (PlannedResource (canonicalPlanSnapshotDigest snapshot) dependencyKey (Text.pack (frameId (stepFrame dependencyStep))))
-            (PlannedEdge targetKey dependencyKey)
-        )
-    else
-      Left
-        ( Conflict
-            ( ConflictDetail
-                targetKey
-                ("dependency in the validated prefix: " <> dependencyKey)
-                "no such plan edge"
-                "use an edge derived from the finalized step plan"
-            )
-        )
-  where
-    missing key =
-      Left
-        ( Failure
-            ( FailureDetail
-                "resolve planned edge"
-                ("operation key is absent from the validated plan: " <> key)
-                DoNotRetry
-            )
-        )
-
-{- | Derive the provider-guest durable alias as a sealed child resource of the
-validated provider/share prefix.  The alias is intentionally not a caller-owned
-step identity: its stable key is derived from the closed @deploy-vm@ and
-@copy-source@ operation keys, and the only dependency edge exposed by this
-bracket is alias -> durable share.
--}
-withProviderGuestAliasProjection ::
-  LifecyclePlan scope planId ->
-  PlannedResource scope planId providerId ProviderResource providerFrame ->
-  PlannedResource scope planId shareId DurableShareResource shareFrame ->
-  ( forall aliasId.
-    PlannedResource scope planId aliasId DurableAliasResource shareFrame ->
-    PlannedEdge
-      scope
-      planId
-      aliasId
-      DurableAliasResource
-      shareFrame
-      shareId
-      DurableShareResource
-      shareFrame ->
-    result
-  ) ->
-  Either ReconcileError result
-withProviderGuestAliasProjection (LifecyclePlan _ plan) provider share consume
-  | providerKey /= "core:deploy-vm" =
-      wrongAliasKind providerKey "provider operation core:deploy-vm"
-  | shareKey /= "core:copy-source" =
-      wrongAliasKind shareKey "durable-share operation core:copy-source"
-  | otherwise =
-      case (findStep providerKey, findStep shareKey) of
-        (Just providerStep, Just shareStep)
-          | stepIdentity providerStep `elem` stepDependencies plan shareStep ->
-              Right
-                ( consume
-                    (PlannedResource (plannedResourcePlanDigest share) aliasKey (plannedResourceFrame share))
-                    (PlannedEdge aliasKey shareKey)
-                )
-          | otherwise ->
-              Left
-                ( Conflict
-                    ( ConflictDetail
-                        aliasKey
-                        "validated provider -> durable-share prefix"
-                        "durable share is not downstream of the provider"
-                        "derive the projection from the finalized provider/share plan"
-                    )
-                )
-        _ ->
-          Left
-            ( Failure
-                ( FailureDetail
-                    "derive provider guest alias"
-                    "provider or durable-share operation disappeared from the validated plan"
-                    DoNotRetry
-                )
-            )
-  where
-    providerKey = plannedResourceKey provider
-    shareKey = plannedResourceKey share
-    aliasKey = providerKey <> "/" <> shareKey <> "/guest-alias"
-    findStep key =
-      find
-        ((== Text.unpack key) . operationKeyText . stepOperationKey)
-        (stepPlanSteps plan)
+plannedResourceFamilyKeys = plannedResourceFamilyKeysKernel
 
 {- | Resolve a resource __this node may name__ as a planned resource (§ CC):
 either its own, or one member of its exact ordered plan prefix.
@@ -713,47 +514,22 @@ withNodeResourceOfKind ::
     result
   ) ->
   Either ReconcileError result
-withNodeResourceOfKind execution resourceKind requestedKey consume
-  | not (plannedKindAccepts resourceKind requestedKey) =
-      Left
-        ( Conflict
-            ( ConflictDetail
-                requestedKey
-                ("operation key for " <> plannedKindName resourceKind)
-                "operation key belongs to another resource family"
-                "use the closed plan resource kind associated with this operation"
-            )
-        )
-  | otherwise =
-      case [frame | (key, frame) <- nodeResources execution, key == requestedKey] of
-        (frame : _) ->
-          Right
-            ( consume
-                ( PlannedResource
-                    (stepExecutionPlanDigest execution)
-                    requestedKey
-                    frame
-                )
-            )
-        [] ->
-          Left
-            ( Failure
-                ( FailureDetail
-                    "resolve node resource"
-                    ( "operation key is neither this node's own nor in its plan "
-                        <> "dependency prefix: "
-                        <> requestedKey
-                    )
-                    DoNotRetry
-                )
-            )
+withNodeResourceOfKind execution resourceKind requestedKey consume =
+  mapPlanProjection
+    ( withCompatibilityNodeResourceOfKindKernel
+        (stepExecutionPlanDigest execution)
+        (nodeResources execution)
+        resourceKind
+        requestedKey
+        consume
+    )
 
 {- | Derive the provider-guest durable alias from __this node's own__ declared
 projection.
 
-'withProviderGuestAliasProjection' derives the same relating resource from the
-whole plan, which is right for a plan-level caller and unreachable from a step
-action. This is the node's route: the alias key must be one the plan validated as
+'HostBootstrap.ProjectPlan.withProviderGuestAliasProjection' derives the same
+relating resource from the exact project plan. This is the compatibility
+descriptor route: the alias key must be one the plan validated as
 a projection of this node, and the provider must come before the durable share in
 the node's own plan order. Validation already guarantees the declaring node is
 the last resource the key names — the durable share — so the node holds every
@@ -778,58 +554,79 @@ withNodeGuestAliasProjection ::
     result
   ) ->
   Either ReconcileError result
-withNodeGuestAliasProjection execution provider share consume
-  | providerKey /= "core:deploy-vm" =
-      wrongAliasKind providerKey "provider operation core:deploy-vm"
-  | shareKey /= "core:copy-source" =
-      wrongAliasKind shareKey "durable-share operation core:copy-source"
-  | aliasKey `notElem` executionNodeProjectedKeys (stepExecutionNode execution) =
-      Left
-        ( Conflict
-            ( ConflictDetail
-                aliasKey
-                "an operation this node projects"
-                "an operation the plan did not place under this node"
-                "declare the projection on the step that performs it"
-            )
-        )
-  | not (providerKey `precedes` shareKey) =
-      Left
-        ( Conflict
-            ( ConflictDetail
-                aliasKey
-                "validated provider -> durable-share prefix"
-                "durable share is not downstream of the provider"
-                "derive the projection from the finalized provider/share plan"
-            )
-        )
-  | otherwise =
-      Right
-        ( consume
-            (PlannedResource (plannedResourcePlanDigest share) aliasKey (plannedResourceFrame share))
-            (PlannedEdge aliasKey shareKey)
-        )
-  where
-    providerKey = plannedResourceKey provider
-    shareKey = plannedResourceKey share
-    aliasKey = providerKey <> "/" <> shareKey <> "/guest-alias"
-    ordered = map fst (nodeResources execution)
-    precedes earlier later =
-      case break (== earlier) ordered of
-        (_, _ : after) -> later `elem` after
-        (_, []) -> False
-
-wrongAliasKind :: Text -> Text -> Either ReconcileError result
-wrongAliasKind observed expected =
-  Left
-    ( Conflict
-        ( ConflictDetail
-            observed
-            expected
-            "resource belongs to another operation family"
-            "use the closed planned resource kind for the provider guest projection"
-        )
+withNodeGuestAliasProjection execution provider share consume =
+  mapPlanProjection
+    ( withCompatibilityNodeGuestAliasProjectionKernel
+        (stepExecutionPlanDigest execution)
+        (nodeResources execution)
+        (executionNodeProjectedKeys (stepExecutionNode execution))
+        provider
+        share
+        consume
     )
+
+mapPlanProjection :: Either PlanError result -> Either ReconcileError result
+mapPlanProjection = either (Left . planProjectionError) Right
+
+planProjectionError :: PlanError -> ReconcileError
+planProjectionError projectionFailure =
+  case projectionFailure of
+    PlanResourceOperationMissing key ->
+      Failure
+        ( FailureDetail
+            "resolve planned resource"
+            ("operation key is absent from the validated plan: " <> key)
+            DoNotRetry
+        )
+    PlanResourceKindMismatch key expectedKind ->
+      Conflict
+        ( ConflictDetail
+            key
+            ("operation key for " <> expectedKind)
+            "operation key belongs to another resource family"
+            "use the closed plan resource kind associated with this operation"
+        )
+    PlanDependencyEdgeMissing target dependency ->
+      Conflict
+        ( ConflictDetail
+            target
+            ("dependency in the validated prefix: " <> dependency)
+            "no such plan edge"
+            "use an edge derived from the finalized project plan"
+        )
+    PlanResourceBindingMismatch field expected observed ->
+      Conflict
+        ( ConflictDetail
+            field
+            expected
+            observed
+            "use resources projected from the same plan or node"
+        )
+    PlanNodeResourceOutsidePrefix key ->
+      Failure
+        ( FailureDetail
+            "resolve node resource"
+            ( "operation key is neither this node's own nor in its plan "
+                <> "dependency prefix: "
+                <> key
+            )
+            DoNotRetry
+        )
+    PlanProjectedOperationMissing key ->
+      Conflict
+        ( ConflictDetail
+            key
+            "an operation this node projects"
+            "an operation the plan did not place under this node"
+            "declare the projection on the step that performs it"
+        )
+    other ->
+      Failure
+        ( FailureDetail
+            "project plan projection"
+            (Text.pack (show other))
+            DoNotRetry
+        )
 
 {- | Observe one of this node's nameable resources, checking the planned value
 came out of the same interpretation the descriptor names.
@@ -877,7 +674,50 @@ plannedNodeOperation ::
   Either
     ReconcileError
     (OperationDescriptor scope planId id resource Observed Provisioned)
-plannedNodeOperation execution planned handle callDigest
+plannedNodeOperation = plannedNodeDescriptor
+
+{- | Plan a managed phase operation on __this node's own__ resource.
+
+Unlike an acquisition descriptor, this route requires the matching ownership
+receipt and an opaque legal transition minted from the same handle.  The
+descriptor retains the transition's exact @from@/@to@ indices; it therefore
+cannot be substituted for an acquisition descriptor when the prepared phase
+package is minted below.
+-}
+plannedNodePhaseOperation ::
+  StepExecution scope planId ->
+  PlannedResource scope planId id resource frame ->
+  ResourceHandle scope planId id resource Managed fromPhase ->
+  OwnershipReceipt scope planId id resource ->
+  PhaseTransition scope planId id resource fromPhase toPhase ->
+  Text ->
+  Either
+    ReconcileError
+    (OperationDescriptor scope planId id resource fromPhase toPhase)
+plannedNodePhaseOperation execution planned handle receipt transition callDigest = do
+  validateOwnershipReceipt handle receipt
+  validatePhaseTransitionBinding handle transition
+  plannedNodeDescriptor execution planned handle callDigest
+
+plannedNodeDescriptor ::
+  StepExecution scope planId ->
+  PlannedResource scope planId id resource frame ->
+  ResourceHandle scope planId id resource ownership phase ->
+  Text ->
+  Either
+    ReconcileError
+    (OperationDescriptor scope planId id resource fromPhase toPhase)
+plannedNodeDescriptor execution planned handle callDigest
+  | plannedResourcePlanDigest planned /= stepExecutionPlanDigest execution =
+      Left
+        ( Conflict
+            ( ConflictDetail
+                (plannedResourceKey planned)
+                ("a planned resource from plan " <> stepExecutionPlanDigest execution)
+                ("a planned resource from plan " <> plannedResourcePlanDigest planned)
+                "resolve the resource through this node's own descriptor"
+            )
+        )
   | plannedResourceKey planned /= stepExecutionOperationKey execution =
       Left
         ( Conflict
@@ -954,6 +794,8 @@ withObservedPlannedResourceValues planned generation version consume
 
 data OwnershipReceipt scope planId id resource =
   OwnershipReceipt Text Word64 Text
+
+type role OwnershipReceipt nominal nominal nominal nominal
 
 ownershipReceiptOperationKey ::
   OwnershipReceipt scope planId id resource ->
@@ -1050,6 +892,8 @@ data ForeignObservation = ForeignObservation
 data VerifiedForeignOrigin scope planId id resource originId =
   VerifiedForeignOrigin Text Word64 Word64 ForeignObservation
 
+type role VerifiedForeignOrigin nominal nominal nominal nominal nominal
+
 withVerifiedForeignOrigin ::
   ResourceHandle scope planId id resource Unmanaged Observed ->
   ForeignObservation ->
@@ -1069,6 +913,8 @@ withVerifiedForeignOrigin handle observation consume =
 
 data AdoptionAuthority scope planId id resource originId operationKey =
   AdoptionAuthority Text Text
+
+type role AdoptionAuthority nominal nominal nominal nominal nominal nominal
 
 withAdoptionAuthority ::
   LifecyclePlan scope planId ->
@@ -1183,6 +1029,8 @@ completeAdoption handle (VerifiedForeignOrigin originKey originGeneration origin
 data OperationDescriptor scope planId id resource fromPhase toPhase =
   OperationDescriptor Text Text Text [Text]
 
+type role OperationDescriptor nominal nominal nominal nominal nominal nominal
+
 plannedOperation ::
   LifecyclePlan scope planId ->
   PlannedResource scope planId id resource frame ->
@@ -1261,7 +1109,7 @@ plannedGuestAliasOperation ::
         Observed
         Provisioned
     )
-plannedGuestAliasOperation planned (PlannedEdge edgeTarget edgeDependency) handle callDigest
+plannedGuestAliasOperation planned edge handle callDigest
   | plannedResourceKey planned /= resourceHandleKey handle =
       mismatch
         "planned alias"
@@ -1283,6 +1131,8 @@ plannedGuestAliasOperation planned (PlannedEdge edgeTarget edgeDependency) handl
             [edgeDependency]
         )
   where
+    edgeTarget = ProjectPlan.plannedEdgeTargetKey edge
+    edgeDependency = ProjectPlan.plannedEdgeDependencyKey edge
     mismatch field expected observed =
       Left
         ( Conflict
@@ -1302,6 +1152,8 @@ operationDescriptorDependencies (OperationDescriptor _ _ _ dependencies) = depen
 
 data DependencyObservation scope planId dependencyId dependency =
   DependencyObservation Text Word64 Word64
+
+type role DependencyObservation nominal nominal nominal nominal
 
 dependencyObservation ::
   ResourceHandle scope planId dependencyId dependency Managed phase ->
@@ -1330,6 +1182,8 @@ in the bring-up from authorizing a later effect (§ CC).
 newtype DependencyProbe scope planId dependencyId dependency =
   DependencyProbe (IO (Either ReconcileError Word64))
 
+type role DependencyProbe nominal nominal nominal nominal
+
 dependencyProbe ::
   IO (Either ReconcileError Word64) ->
   DependencyProbe scope planId dependencyId dependency
@@ -1341,6 +1195,8 @@ data DependencySnapshotEntry scope planId where
     DependencyProbe scope planId dependencyId dependency ->
     DependencySnapshotEntry scope planId
 
+type role DependencySnapshotEntry nominal nominal
+
 {- | The managed resources this plan has acquired so far, each paired with its
 plan-owned probe.  Only 'completeReconcile' / 'completePreparedUnchanged' can
 produce the @Managed@ handle an entry requires, so an unowned or foreign
@@ -1348,6 +1204,8 @@ resource cannot enter the snapshot.
 -}
 newtype DependencySnapshot scope planId =
   DependencySnapshot [DependencySnapshotEntry scope planId]
+
+type role DependencySnapshot nominal nominal
 
 emptyDependencySnapshot :: DependencySnapshot scope planId
 emptyDependencySnapshot = DependencySnapshot []
@@ -1367,6 +1225,8 @@ of the plan's ordered edge set.
 -}
 data OperationPreconditionSet scope planId id resource =
   OperationPreconditionSet Text Text Text [SomeDependencyObservation scope planId]
+
+type role OperationPreconditionSet nominal nominal nominal nominal
 
 -- | The dependency keys actually sealed, in plan order. Reporting only.
 operationPreconditionKeys ::
@@ -1465,8 +1325,12 @@ withOperationPreconditions
 data PreparedOperation scope planId id resource operationKey callDigest attempt journalVersion =
   PreparedOperation Text Text Text Word64 Word64
 
+type role PreparedOperation nominal nominal nominal nominal nominal nominal nominal nominal
+
 data PreparedPreconditions scope planId id resource operationKey callDigest attempt journalVersion =
   PreparedPreconditions Text Text Text Word64 Word64
+
+type role PreparedPreconditions nominal nominal nominal nominal nominal nominal nominal nominal
 
 {- | Mint the prepared operation/preconditions pair for one plan operation.
 
@@ -1584,6 +1448,8 @@ data SomeDependencyObservation scope planId where
     DependencyObservation scope planId dependencyId dependency ->
     SomeDependencyObservation scope planId
 
+type role SomeDependencyObservation nominal nominal
+
 data ReconcileResult scope planId id resource phase where
   ManagedResult ::
     ResourceHandle scope planId id resource Managed phase ->
@@ -1594,6 +1460,8 @@ data ReconcileResult scope planId id resource phase where
     ResourceHandle scope planId id resource Unmanaged Observed ->
     ForeignObservation ->
     ReconcileResult scope planId id resource phase
+
+type role ReconcileResult nominal nominal nominal nominal nominal
 
 completeReconcile ::
   ResourceHandle scope planId id resource Unclassified Observed ->
@@ -1841,6 +1709,8 @@ advancePersistedJournalRecord record nextPhase
 newtype VerifiedJournalRecord scope planId id resource =
   VerifiedJournalRecord PersistedJournalRecord
 
+type role VerifiedJournalRecord nominal nominal nominal nominal
+
 verifyPersistedJournalRecord ::
   LifecyclePlan scope planId ->
   ResourceHandle scope planId id resource ownership phase ->
@@ -1875,6 +1745,8 @@ verifyPersistedJournalRecord plan handle expectedOperation record
 
 newtype PriorCommitProof scope planId id resource =
   PriorCommitProof (OwnershipReceipt scope planId id resource)
+
+type role PriorCommitProof nominal nominal nominal nominal
 
 withPriorCommitProof ::
   VerifiedJournalRecord scope planId id resource ->
@@ -1959,7 +1831,9 @@ completePreparedUnchanged
         )
 
 data PhaseTransition scope planId id resource fromPhase toPhase =
-  PhaseTransition Text Text
+  PhaseTransition Text Word64 Text Text
+
+type role PhaseTransition nominal nominal nominal nominal nominal nominal
 
 namedPhaseTransition ::
   ResourceHandle scope planId id resource Managed fromPhase ->
@@ -1971,7 +1845,14 @@ namedPhaseTransition handle fromName toName
       Left (Failure (FailureDetail "plan phase transition" "phase names must not be empty" DoNotRetry))
   | fromName == toName =
       Left (Failure (FailureDetail "plan phase transition" "source and target phases must differ" DoNotRetry))
-  | otherwise = Right (PhaseTransition (resourceHandleKey handle <> ":" <> fromName) toName)
+  | otherwise =
+      Right
+        ( PhaseTransition
+            (resourceHandleKey handle)
+            (resourceHandleGeneration handle)
+            fromName
+            toName
+        )
 
 planMarkReady ::
   ResourceHandle scope planId id resource Managed Provisioned ->
@@ -1987,6 +1868,17 @@ planBuild ::
   ResourceHandle scope planId id resource Managed Staged ->
   Either ReconcileError (PhaseTransition scope planId id resource Staged Built)
 planBuild handle = namedPhaseTransition handle "staged" "built"
+
+{- | Boot a freshly provisioned provider allocation into its reachable running
+phase.  The resource kind is deliberately fixed to 'ProviderResource': the
+ordinary staged/built lifecycle for other resources must still pass through
+'planStage', 'planBuild', and 'planRun'.  Provider reconciliation narrows this
+transition further behind its opaque @ProviderStartable Provisioned@ witness.
+-}
+planProviderBoot ::
+  ResourceHandle scope planId id ProviderResource Managed Provisioned ->
+  Either ReconcileError (PhaseTransition scope planId id ProviderResource Provisioned Running)
+planProviderBoot handle = namedPhaseTransition handle "provisioned" "running"
 
 planRun ::
   ResourceHandle scope planId id resource Managed Built ->
@@ -2008,7 +1900,135 @@ planDestroy ::
   Either ReconcileError (PhaseTransition scope planId id resource Stopped Destroyed)
 planDestroy handle = namedPhaseTransition handle "stopped" "destroyed"
 
+{- | One inseparable managed phase preparation.
+
+The constructor is private.  In particular, a caller cannot pair a prepared
+acquisition with a stop/restart/delete observation: the descriptor used by
+'withPreparedPhaseTransition' carries the same exact @from@/@to@ indices as
+the transition retained here.
+-}
+data PreparedPhaseTransition scope planId id resource fromPhase toPhase operationKey callDigest attempt journalVersion =
+  PreparedPhaseTransition
+    (ResourceHandle scope planId id resource Managed fromPhase)
+    (OwnershipReceipt scope planId id resource)
+    (PhaseTransition scope planId id resource fromPhase toPhase)
+    (PreparedOperation scope planId id resource operationKey callDigest attempt journalVersion)
+    (PreparedPreconditions scope planId id resource operationKey callDigest attempt journalVersion)
+
+type role PreparedPhaseTransition nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
+
+{- | Seal a legal managed phase descriptor, its exact receipt/transition, and
+the prepared operation pair into one opaque package.
+-}
+withPreparedPhaseTransition ::
+  ResourceHandle scope planId id resource Managed fromPhase ->
+  OwnershipReceipt scope planId id resource ->
+  PhaseTransition scope planId id resource fromPhase toPhase ->
+  OperationDescriptor scope planId id resource fromPhase toPhase ->
+  OperationPreconditionSet scope planId id resource ->
+  PreparedGate ->
+  ( forall operationKey callDigest attempt journalVersion.
+    PreparedPhaseTransition
+      scope
+      planId
+      id
+      resource
+      fromPhase
+      toPhase
+      operationKey
+      callDigest
+      attempt
+      journalVersion ->
+    result
+  ) ->
+  Either ReconcileError result
+withPreparedPhaseTransition handle receipt transition descriptor preconditions gate consume = do
+  validateOwnershipReceipt handle receipt
+  validatePhaseTransitionBinding handle transition
+  withPreparedOperation descriptor preconditions gate $ \prepared sealed ->
+    consume
+      ( PreparedPhaseTransition
+          handle
+          receipt
+          transition
+          prepared
+          sealed
+      )
+
+-- | The exact managed predecessor handle retained by a prepared phase call.
+preparedPhaseTransitionHandle ::
+  PreparedPhaseTransition
+    scope
+    planId
+    id
+    resource
+    fromPhase
+    toPhase
+    operationKey
+    callDigest
+    attempt
+    journalVersion ->
+  ResourceHandle scope planId id resource Managed fromPhase
+preparedPhaseTransitionHandle (PreparedPhaseTransition handle _ _ _ _) = handle
+
+{- | Settle an authoritative target-phase observation against the inseparable
+prepared package.  The existing receipt is preserved; only its exact managed
+generation may advance.
+-}
+completePreparedPhaseTransition ::
+  PreparedPhaseTransition
+    scope
+    planId
+    id
+    resource
+    fromPhase
+    toPhase
+    operationKey
+    callDigest
+    attempt
+    journalVersion ->
+  Word64 ->
+  Either ReconcileError (PhaseAdvance scope planId id resource toPhase)
+completePreparedPhaseTransition
+  (PreparedPhaseTransition handle receipt transition _prepared _preconditions)
+  observedGeneration = do
+    validateOwnershipReceipt handle receipt
+    validatePhaseTransitionBinding handle transition
+    verifyPhaseTransition handle receipt transition observedGeneration
+
+validatePhaseTransitionBinding ::
+  ResourceHandle scope planId id resource Managed fromPhase ->
+  PhaseTransition scope planId id resource fromPhase toPhase ->
+  Either ReconcileError ()
+validatePhaseTransitionBinding handle (PhaseTransition transitionKey transitionGeneration _ _) =
+  if transitionKey /= resourceHandleKey handle
+    then
+      Left
+        ( Conflict
+            ( ConflictDetail
+                (resourceHandleKey handle)
+                ("transition resource=" <> resourceHandleKey handle)
+                ("transition resource=" <> transitionKey)
+                "plan the phase transition from the exact managed handle"
+            )
+        )
+    else
+      if transitionGeneration /= resourceHandleGeneration handle
+        then
+          Left
+            ( Conflict
+                ( ConflictDetail
+                    (resourceHandleKey handle)
+                    ("transition generation=" <> showText (resourceHandleGeneration handle))
+                    ("transition generation=" <> showText transitionGeneration)
+                    "replan the phase transition from the current managed generation"
+                )
+            )
+        else Right ()
+
 data VerifiedAtPhase scope planId id resource phase = VerifiedAtPhase Text Word64
+
+type role VerifiedAtPhase nominal nominal nominal nominal nominal
 
 data PhaseAdvance scope planId id resource toPhase =
   PhaseAdvance
@@ -2016,17 +2036,25 @@ data PhaseAdvance scope planId id resource toPhase =
     (OwnershipReceipt scope planId id resource)
     (VerifiedAtPhase scope planId id resource toPhase)
 
+type role PhaseAdvance nominal nominal nominal nominal nominal
+
 verifyPhaseTransition ::
   ResourceHandle scope planId id resource Managed fromPhase ->
   OwnershipReceipt scope planId id resource ->
   PhaseTransition scope planId id resource fromPhase toPhase ->
   Word64 ->
   Either ReconcileError (PhaseAdvance scope planId id resource toPhase)
-verifyPhaseTransition handle receipt@(OwnershipReceipt receiptKey receiptGeneration _) (PhaseTransition operation target) observedGeneration
+verifyPhaseTransition handle receipt@(OwnershipReceipt receiptKey receiptGeneration _) transition@(PhaseTransition transitionKey transitionGeneration source target) observedGeneration
   | receiptKey /= resourceHandleKey handle =
       Left (Conflict (ConflictDetail (resourceHandleKey handle) "matching ownership receipt" "receipt resource mismatch" "load the matching receipt"))
   | receiptGeneration /= resourceHandleGeneration handle =
       Left (Conflict (ConflictDetail (resourceHandleKey handle) "matching ownership receipt" "receipt generation mismatch" "load the matching receipt"))
+  | transitionKey /= resourceHandleKey handle || transitionGeneration /= resourceHandleGeneration handle =
+      validatePhaseTransitionBinding handle transition >>
+        Left
+          ( Failure
+              (FailureDetail "verify phase transition" "unreachable transition mismatch" DoNotRetry)
+          )
   | observedGeneration /= resourceHandleGeneration handle =
       Left (Conflict (ConflictDetail (resourceHandleKey handle) (showText (resourceHandleGeneration handle)) (showText observedGeneration) "reprobe the phase transition"))
   | resourceHandleObservationVersion handle == maxBound =
@@ -2040,7 +2068,7 @@ verifyPhaseTransition handle receipt@(OwnershipReceipt receiptKey receiptGenerat
                 (resourceHandleObservationVersion handle + 1)
             )
             receipt
-            (VerifiedAtPhase (operation <> ":" <> target) observedGeneration)
+            (VerifiedAtPhase (transitionKey <> ":" <> source <> ":" <> target) observedGeneration)
         )
 
 withPhaseAdvance ::

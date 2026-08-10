@@ -111,6 +111,10 @@ succeeds against both a warm and a cold store.
 
 None.
 
+## Remaining Work
+
+None.
+
 ## Documentation Requirements
 
 **Architecture docs to create/update:**

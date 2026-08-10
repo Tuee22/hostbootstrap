@@ -1,9 +1,13 @@
+{-# LANGUAGE RoleAnnotations #-}
+
 module HostBootstrap.Lifecycle.Execution.Internal (
     ExecutionNode (..),
     StepExecution,
     mintStepExecution,
     stepExecutionHostConfig,
     stepExecutionPlanDigest,
+    stepExecutionConfigDigest,
+    stepExecutionNodeIdentity,
     stepExecutionOperationKey,
     stepExecutionFrame,
     stepExecutionNode,
@@ -78,8 +82,12 @@ opaque public type from "HostBootstrap.Lifecycle.Execution".
 data StepExecution scope planId = StepExecution
     HostConfig
     Text
+    Text
+    Text
     ExecutionNode
     (StepRuntime scope planId)
+
+type role StepExecution nominal nominal
 
 {- | Package-internal minting seam.  The node is a neutral view derived from the
 exact validated lifecycle plan, and it already carries that node's ordered edge
@@ -93,16 +101,31 @@ entry, which is a strictly later moment than the pure mint.
 mintStepExecution ::
     HostConfig ->
     Text ->
+    Text ->
+    Text ->
     ExecutionNode ->
     StepRuntime scope planId ->
     StepExecution scope planId
 mintStepExecution = StepExecution
 
 stepExecutionHostConfig :: StepExecution scope planId -> HostConfig
-stepExecutionHostConfig (StepExecution cfg _ _ _) = cfg
+stepExecutionHostConfig (StepExecution cfg _ _ _ _ _) = cfg
 
 stepExecutionPlanDigest :: StepExecution scope planId -> Text
-stepExecutionPlanDigest (StepExecution _ digest _ _) = digest
+stepExecutionPlanDigest (StepExecution _ digest _ _ _ _) = digest
+
+-- | The stable digest of the exact configuration admitted with the plan.
+stepExecutionConfigDigest :: StepExecution scope planId -> Text
+stepExecutionConfigDigest (StepExecution _ _ digest _ _ _) = digest
+
+{- | Reporting view of the exact stable node identity retained by the plan.
+
+The identity is rendered before it enters this module so the execution kernel
+does not import "HostBootstrap.Step" and create a @Step -> Execution -> Step@
+module cycle. It is never parsed back into authority.
+-}
+stepExecutionNodeIdentity :: StepExecution scope planId -> Text
+stepExecutionNodeIdentity (StepExecution _ _ _ identity _ _) = identity
 
 stepExecutionOperationKey :: StepExecution scope planId -> Text
 stepExecutionOperationKey = executionNodeOperationKey . stepExecutionNode
@@ -112,11 +135,11 @@ stepExecutionFrame = executionNodeFrame . stepExecutionNode
 
 -- | Package-internal view of the descriptor's exact current node.
 stepExecutionNode :: StepExecution scope planId -> ExecutionNode
-stepExecutionNode (StepExecution _ _ node _) = node
+stepExecutionNode (StepExecution _ _ _ _ node _) = node
 
 -- | Package-internal view of the interpreter state behind the descriptor.
 stepExecutionRuntime :: StepExecution scope planId -> StepRuntime scope planId
-stepExecutionRuntime (StepExecution _ _ _ runtime) = runtime
+stepExecutionRuntime (StepExecution _ _ _ _ _ runtime) = runtime
 
 -- ---------------------------------------------------------------------------
 -- The per-node runtime
@@ -138,6 +161,8 @@ data StepRuntime scope planId
         (IORef [PreparedGate])
         (IORef [PreparedGate])
         (ResourceCarrier scope planId)
+
+type role StepRuntime nominal nominal
 
 -- | Open an empty runtime over the interpretation's carrier.
 newStepRuntime :: ResourceCarrier scope planId -> IO (StepRuntime scope planId)
@@ -242,6 +267,8 @@ interpretation cannot be read out under another even though the erased form
 carries no index of its own.
 -}
 newtype ResourceCarrier scope planId = ResourceCarrier (IORef [CarriedResource])
+
+type role ResourceCarrier nominal nominal
 
 newResourceCarrier :: IO (ResourceCarrier scope planId)
 newResourceCarrier = ResourceCarrier <$> newIORef []

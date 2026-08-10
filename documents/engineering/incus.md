@@ -1,18 +1,23 @@
 # Incus Host Provider
 
 **Status**: Authoritative source
-**Supersedes**: the historical `HostTarget`/`runInTarget` and demo-local provider-readiness paths
+**Supersedes**: N/A
 **Referenced by**: [ensure reconcilers](ensure_reconcilers.md), [applied cordon](applied_cordon.md), [durable state](../architecture/durable_state.md), [lifecycle state model](../architecture/lifecycle_state_model.md)
 
 > **Purpose**: Describe the active Incus provider path, its total capability probe, and the remaining
-> provider-lifecycle limits without presenting deleted predecessor abstractions as current.
+> provider-lifecycle limits.
 
 ## Current Status
 
-Native Linux CPU uses an Incus VM as its provider frame. The project selects a
-`SubstrateProvider` whose `LiftLayer`, launch/stop/destroy effects, shell arguments, file-push arguments,
-optional resource-reconcile action, and host-share reconcile describe Incus. For Incus the optional
-cordon reconcile is absent. Generic provider code interprets those fields:
+Native Linux CPU uses an Incus VM as its provider frame. The lower-boundary separation assigns pure
+`IncusVM` target data and `execVMArgs` to `HostBootstrap.Lift.Context`; `HostBootstrap.Incus` reexports them
+and adds Incus-specific lifecycle probes/builders. The project selects an abstract `SubstrateProvider`
+whose narrow projections retain the complete `LiftContext` and pure lifecycle plans without exposing
+construction or record update. Generic Lift remains below that realization and imports no Incus lifecycle
+module. Real Incus mutation enters through the exact prepared provider backend. The demo's adoption of that
+route remains work for the
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md). For Incus the optional cordon reconcile
+is absent. The prepared route:
 
 - on first creation, launch the named VM with `limits.cpu`, `limits.memory`, and `root,size`;
 - when the named VM already exists, run only `incus start` without comparing or changing those limits;
@@ -22,8 +27,10 @@ cordon reconcile is absent. Generic provider code interprets those fields:
 - hand off the project subcommand with `incus exec`;
 - stop on `project down`, or force-delete the guarded project VM on `project destroy`.
 
-Host-side `incus` is resolved through `HostTool`; commands inside the guest intentionally use the
-guest's own tool lookup.
+Host-side `incus`, `python3`, and `flock` are resolved through `HostTool` and retained as typed absolute
+executables by the provider backend. The backend admits one Linux `flock(2)` namespace; `lockf` is not a
+fallback because its common `fcntl` namespace does not mutually exclude `flock`. Commands inside the guest
+intentionally use the guest's own tool lookup.
 
 Before that provider value is used, `HostBootstrap.Ensure.Incus` converges the native provider and runs
 a total final observation. Its pure `IncusProviderStatus` distinguishes:
@@ -37,16 +44,30 @@ a total final observation. Its pure `IncusProviderStatus` distinguishes:
 Only the final branch can mint the opaque `IncusProviderCapability`. On Linux the reconcile path installs
 the client plus ACL support, initializes/restarts the daemon when needed, establishes immediate socket
 access, installs QEMU/OVMF, preserves the Incus bridge through `DOCKER-USER`, and re-runs the complete
-probe. The former demo-local `ensureIncusProvider` compensation was deleted. Apple uses the same final
-capability observation after converging its Colima-backed Incus provider.
+probe. Apple uses the same final capability observation after converging its Colima-backed Incus provider.
 
-`SubstrateProvider` plus `Lift` is the single provider/dispatch model. The former public
-`HostBootstrap.HostTarget` module, its result-free reboot loop, and the unconsumed reboot/readiness
-helpers were deleted.
+`SubstrateProvider` plus `Lift` is the single provider/dispatch model. Provider lifecycle and readiness
+enter through that boundary; there is no parallel public target or reboot/readiness dispatcher.
 
-The Incus capability is deliberately narrow: it proves the final provider observation made by the
-reconciler, not permanent readiness, ownership of a VM, or authorization for an unrelated mutation.
-Prepared provider operations and receipt-driven teardown still follow the general contract in
+The common provider discovery transition is separate from the ensure reconciler's installation proof. It
+owns the closed host/guest request order, accepts only raw exit status/streams or transport failure from its
+executor, privately classifies the complete ready/not-ready/unavailable/conflict/failure vocabulary, and
+polls only `NotReady` within an opaque bounded policy. Tool paths, markers, identities, and backend reports
+must be exactly one LF-terminated stdout line with empty stderr; malformed arity, extra output, carriage
+returns, and unknown tags are failures. The rank-2 capability is descriptive discovery tied to the exact
+opaque managed Running provider and backend realization, not VM mutation authority. The alias backend may
+derive a guest executor only from that capability.
+
+The Incus ensure capability is deliberately narrow: it proves the final installation/provider observation
+made by the ensure reconciler, not permanent readiness, ownership of a VM, or authorization for an unrelated
+mutation. A real provider mutation instead consumes the exact prepared call. Opaque nominal
+`ManagedProviderHandle` and `ManagedProviderShareHandle` values retain the backend origin without exposing
+generic handle/receipt authority. Under one retained `flock`, the backend publishes and recovers the
+explicit-absence provider/share origins, binds VM UUID plus owner nonce, and revalidates identity before and
+after ready, share, stop, guest execution, and conditional delete. The implementation is not closure
+evidence: the
+[host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
+has a closed static gate and remains Active until its native Linux/x86_64 KVM/Incus gate passes. See
 [lifecycle state model](../architecture/lifecycle_state_model.md).
 
 ## Lifecycle caveat
@@ -59,12 +80,15 @@ Deleting the VM removes nested compute incidentally. See
 
 The host durable root is carried into Incus through a disk device and exposed to Docker through
 `/var/tmp/hostbootstrap-demo-data`; it is not merely guest-root-disk state. The destroy/up/readback
-guarantee remains unvalidated. The guest alias is still created and removed by pathname, so it holds
-none of the four [ownership invariant](../architecture/ownership_invariant.md) clauses and mints no
-receipt. Because every provider guest runs the same Linux image, the backend that closes this is shared
-with Lima and WSL2 rather than Incus-specific: `flock`, a host-side origin record, and `stat -c '%d %i'`
-identity binding. Incus gains clauses 2–4 for the first time when it lands — this is new ground here,
-not a Windows fix arriving late. Open Sprint 11.10 integration item; see
+guarantee remains unvalidated. The demo guest alias is still created and removed by pathname, so it holds
+no receipt at that legacy demo call site. The common clause-holding backend itself is implemented above
+Incus/Lima/WSL2: under the retained guest lock it publishes an explicit-absence origin record inside the
+host-backed durable target with a fresh 256-bit nonce, flushes and reads it back, publishes the alias by a
+no-replace hard link from a nonce staging symlink, binds the symlink's exact device/inode, and releases only
+after re-observing that identity. Crash retries recover the prepared or managed record rather than adopting
+an exact-looking pathname. The [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns
+replacing the legacy demo call site with this prepared route; see
+[ownership invariant](../architecture/ownership_invariant.md) and
 [durable state](../architecture/durable_state.md).
 
 ## Resource wall
@@ -80,15 +104,21 @@ root,size=<GiB>GiB
 These are real per-VM CPU, memory, and storage walls for a newly created VM. Current reconcile-to-running
 does not observe an existing VM's effective limits or resize/refuse it when the declaration changes; it
 starts the existing VM unchanged. The in-VM kind cluster computes a local slice, but that does not repair
-a stale outer wall. Phase 9 supplies the result algebra; Sprints 5.7/11.10 still own its
-provider-authoritative Incus application.
+a stale outer wall. The
+[canonical-quantities-and-reconcile-results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md)
+supplies the lower result/capacity algebra, while the
+[host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
+owns the provider-authoritative Incus realization.
 
 ## Validation
 
-Current unit coverage of argv builders is not a provider closure gate. Closure requires a native Linux
-run proving create/no-op/restart, share readiness, durable readback, recursive teardown ordering, and
-ownership-safe destroy. The total probe table is unit-tested, but a macOS run is not evidence for this
-native-Linux gate. Status and scheduling belong in
+Static coverage of builders and the prepared backend is not a provider closure gate. Closure requires the
+native Linux/x86_64 KVM/Incus run declared by the
+[host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md),
+including prepared create/recovery, ready, share/readback, stop/restart, bound guest execution, alias
+acquisition/release, identity-conditional delete, and the Direct no-mutation/refusal path. A macOS run is
+not evidence for that gate. Recursive teardown and end-to-end demo durability remain later phase concerns.
+Status and scheduling belong in
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
 ## Related

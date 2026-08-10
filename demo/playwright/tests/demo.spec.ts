@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-// The headline e2e (Sprint 13.6): the Halogen SPA (built from the
+// The headline e2e: the Halogen SPA (built from the
 // purescript-bridge types) renders its tabs, and the budget view it fetches
 // from the warp/wai API reports that the demo's pods fit the budget.
 
@@ -27,7 +27,7 @@ test("GET /api/budget returns the fitsBudget view", async ({ request }) => {
   expect(body.cpu).toBe(6);
 });
 
-// The accelerator Add e2e (Sprint 13.17 / 18.5): polymorphic on
+// The accelerator Add e2e: polymorphic on
 // EXPECTED_ACCELERATOR_BACKEND, which `assertE2EInVM` sets to the substrate's
 // backend name ONLY after it has polled the ingress and confirmed a daemon is
 // serving. When set, the UI result must come from the real JIT-built worker —
@@ -62,7 +62,7 @@ test("the Accelerator tab computes via the daemon (or reports no in-process fall
   }
 });
 
-// The polymorphic e2e (Sprint 20.4): the SPA's #message element renders the
+// The polymorphic e2e: the SPA's #message element renders the
 // config-driven message the harness's active variant deployed. EXPECTED_MESSAGE is
 // passed per-variant by `assertE2EInVM`, so the same spec proves both variants
 // ("Hello, world!" and "Hello, Universe!") really are config-driven end to end.

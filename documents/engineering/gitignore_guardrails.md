@@ -47,10 +47,9 @@ Every project that adopts hostbootstrap must keep these out of git:
   pod. Cluster teardown omits it from its removal set, although full
   destroy/up/readback is not yet validated (see
   [../architecture/durable_state.md](../architecture/durable_state.md)).
-* `.test_data/` — the intended test-profile durable root and the location managed
-  by generic self-created-data helpers. The demo's live test planner currently
-  selects Production/`.data`, so this ignore entry is a guardrail and target
-  location, not proof that `test run` avoids production state (see
+* `.test_data/` — the Harness run's owned durable-root parent. Each run uses
+  `.test_data/<runId>`; the ignore entry is only a source-control guardrail and
+  does not itself prove exact plan-owned profile/root projection (see
   [testing.md](testing.md)).
 
 The repo's [`.gitignore`](../../.gitignore) covers all of the above for

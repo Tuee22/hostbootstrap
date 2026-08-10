@@ -1,6 +1,8 @@
+{-# LANGUAGE EmptyDataDecls #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {- | The authenticated cross-frame handoff transport (§ X, § EE, the operator-root-and-command-authority phase).
@@ -53,6 +55,8 @@ module HostBootstrap.Handoff (
     HandoffScope,
     productionHandoffScope,
     harnessHandoffScope,
+    handoffScopeProject,
+    handoffScopeTag,
     productionScopeTag,
     harnessScopeTagFor,
     HandoffPayloadKind (..),
@@ -65,6 +69,7 @@ module HostBootstrap.Handoff (
     handoffSpecDigest,
     handoffPayloadKind,
     handoffScope,
+    handoffStoreIdentity,
     handoffPlanRevision,
     handoffBrokerGeneration,
     handoffParentFrame,
@@ -74,8 +79,36 @@ module HostBootstrap.Handoff (
     handoffPhase,
     handoffTokenCommitment,
     renderHandoffBinding,
-    handoffBindingFromWire,
+    withHandoffBindingFromWire,
     childConfigDigest,
+
+    -- * Recovery-wire projection
+    RecoveryHandoff,
+    RecoveryProjectionBindingInput,
+    requestedRecoveryPlanDigest,
+    requestedRecoveryParentFrame,
+    requestedRecoveryChildFrame,
+    withRecoveryProjectionBindingInput,
+    RecoveryProjectionBinding,
+    mkRecoveryProjectionBinding,
+    mkRecoveryProjectionBindingFromRoute,
+    renderRecoveryProjectionBinding,
+    recoveryProjectionBindingFromWire,
+    recoveryRequestFields,
+    recoveryRequestFromFields,
+    RecoveryWireGrant,
+    recoveryWireGrantSignature,
+    recoveryWireGrantFromSignature,
+    recoveryResponseFields,
+    recoveryResponseFromFields,
+    signRecoveryWire,
+    signAdmittedRecoveryWire,
+    VerifiedRecoveryWire,
+    verifiedRecoveryWireBytes,
+    withVerifiedRecoveryWire,
+    VerifiedRecoveryHandoff,
+    withVerifiedRecoveryHandoff,
+    recoveryWireDigest,
 
     -- * Independently installed project identity
     ProjectSigningKey,
@@ -91,11 +124,17 @@ module HostBootstrap.Handoff (
     RootBroker,
     withRootBroker,
     rootBrokerVerificationKey,
+    BrokerRoute,
+    rootBrokerRoute,
+    verifiedHandoffRoute,
+    brokerRouteVerificationKeyDigest,
+    brokerRouteCurrentFrame,
     BrokerRelay,
     brokerRelay,
-    brokerRelayFromWire,
+    brokerRelayFromRouteWire,
     relayBinding,
     registerHandoffEdge,
+    registerAdmittedHandoffEdge,
 
     -- * Offer, challenge, grant
     HandoffToken,
@@ -125,16 +164,14 @@ module HostBootstrap.Handoff (
     verifiedConfigPayload,
     authenticatedConfigDigest,
     authenticatedConfigBytes,
-    ChildPlanAuthority,
-    childPlanAuthorityBinding,
-    authorizeChildProject,
 
     -- * Failures
     HandoffError (..),
     handoffErrorMessage,
 ) where
 
-import Control.Exception (SomeException, try)
+import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar)
+import Control.Exception (SomeException, evaluate, finally, try)
 import Crypto.Error (CryptoFailable (CryptoFailed, CryptoPassed))
 import qualified Crypto.Hash as Hash
 import qualified Crypto.PubKey.Ed25519 as Ed25519
@@ -150,7 +187,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64, Word8)
 import HostBootstrap.Authority (
-    InstalledProject,
+    InstalledProjectIdentity,
     ProjectVerb,
     RootInvocationAuthority,
     brokerEpochWord,
@@ -160,6 +197,7 @@ import HostBootstrap.Authority (
     rootAuthorityProjectName,
     rootAuthorityVerb,
  )
+import HostBootstrap.Authority.Kernel (rootAuthorityStoreIdentity)
 import HostBootstrap.Config.Vocab (
     Harness,
     HarnessAuthority,
@@ -176,6 +214,8 @@ import HostBootstrap.Protected (
     compareAndSwapProtectedRecord,
     mkRecordKey,
     protectedErrorMessage,
+    protectedStoreIdentity,
+    protectedStoreIdentityText,
     readProtectedRecord,
     withProtectedEntry,
  )
@@ -246,20 +286,22 @@ matching acquired Harness root. Callers never supply a descriptive scope tag.
 -}
 data HandoffScope scope where
     ProductionHandoffScope ::
-        InstalledProject projectId ->
+        InstalledProjectIdentity projectId ->
         HandoffScope (Production projectId)
     HarnessHandoffScope ::
-        InstalledProject projectId ->
+        InstalledProjectIdentity projectId ->
         HarnessAuthority projectId runId ->
         HandoffScope (Harness projectId runId)
 
+type role HandoffScope nominal
+
 -- | Narrow an installed project identity to Production handoff scope.
-productionHandoffScope :: InstalledProject projectId -> HandoffScope (Production projectId)
+productionHandoffScope :: InstalledProjectIdentity projectId -> HandoffScope (Production projectId)
 productionHandoffScope = ProductionHandoffScope
 
 -- | Narrow an acquired Harness root's authority to its exact run scope.
 harnessHandoffScope ::
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     HarnessAuthority projectId runId ->
     HandoffScope (Harness projectId runId)
 harnessHandoffScope = HarnessHandoffScope
@@ -294,10 +336,12 @@ cannot present a grant minted for its peer.
 -}
 data HandoffPayloadKind
     = NarrowedProjectConfig
+    | RecoveryAdapterWire
     deriving (Eq, Ord, Show)
 
 handoffPayloadKindName :: HandoffPayloadKind -> Text
 handoffPayloadKindName NarrowedProjectConfig = "narrowed-project-config"
+handoffPayloadKindName RecoveryAdapterWire = "recovery-adapter-wire"
 
 {- | Public, non-authorizing inputs for a handoff binding.
 
@@ -322,6 +366,8 @@ data HandoffBinding scope brokerGeneration = HandoffBinding
     , handoffPayloadKind :: HandoffPayloadKind
     , handoffScope :: Text
     -- ^ the descriptive scope tag (@Production@ or @Harness \<runId\>@)
+    , handoffStoreIdentity :: Text
+    -- ^ the durable protected-store identity that owns the root broker
     , handoffPlanRevision :: Text
     , handoffBrokerGeneration :: Word64
     , handoffParentFrame :: Text
@@ -333,12 +379,16 @@ data HandoffBinding scope brokerGeneration = HandoffBinding
     }
     deriving (Eq)
 
+type role HandoffBinding nominal nominal
+
 instance Show (HandoffBinding scope brokerGeneration) where
     show binding =
         "HandoffBinding {project = "
             <> show (handoffInstalledProject binding)
             <> ", payloadKind = "
             <> show (handoffPayloadKind binding)
+            <> ", store = "
+            <> show (handoffStoreIdentity binding)
             <> ", parentFrame = "
             <> show (handoffParentFrame binding)
             <> ", childFrame = "
@@ -368,6 +418,7 @@ mkHandoffBinding broker input token = do
             , handoffSpecDigest = requestedSpecDigest input
             , handoffPayloadKind = requestedPayloadKind input
             , handoffScope = brokerScopeTag broker
+            , handoffStoreIdentity = brokerStoreIdentity broker
             , handoffPlanRevision = requestedPlanRevision input
             , handoffBrokerGeneration = brokerEpochValue broker
             , handoffParentFrame = requestedParentFrame input
@@ -444,6 +495,7 @@ renderHandoffBinding binding =
         , field (handoffSpecDigest binding)
         , field (handoffPayloadKindName (handoffPayloadKind binding))
         , field (handoffScope binding)
+        , field (handoffStoreIdentity binding)
         , field (handoffPlanRevision binding)
         , frameWire (ByteString.pack (word64BigEndian (handoffBrokerGeneration binding)))
         , field (handoffParentFrame binding)
@@ -456,30 +508,44 @@ renderHandoffBinding binding =
   where
     field = frameWire . TextEncoding.encodeUtf8
 
-{- | Parse canonical binding bytes back into the value that rendered them.
+{- | Parse canonical binding bytes only under independently obtained scope
+evidence.
 
-Both ends of a real exchange need this, because a binding travels as bytes: the
-receiving child must recover the edge the root actually signed, and the root's
-grant service must recover the edge a relay is asking about.
-
-A parsed binding authorizes nothing — it *names* an edge. Only a signature
-verified against the independently installed key ('verifyHandoff'), or the live
-root broker's own project\/generation\/verb checks ('brokerRelay'), turn a named
-edge into something a frame may act on. The parse is the exact inverse of
-'renderHandoffBinding': a field that could not have come from
-'mkHandoffBinding' — an empty required field, an unknown payload kind, a
-malformed generation, or trailing bytes — is refused here rather than admitted
-as a binding no producer would mint.
+The broker generation read from the wire is introduced only inside the rank-2
+continuation. A caller therefore cannot choose @scope@ or @brokerGeneration@
+phantoms for descriptive bytes and then ask 'verifyHandoff' to authenticate
+that relabelling. The opaque 'HandoffScope' also fixes the expected installed
+project and descriptive scope tag before the parsed value is exposed.
 -}
-handoffBindingFromWire ::
+withHandoffBindingFromWire ::
+    HandoffScope scope ->
+    ByteString ->
+    (forall brokerGeneration. HandoffBinding scope brokerGeneration -> result) ->
+    Either HandoffError result
+withHandoffBindingFromWire scope raw use = do
+    binding <- decodeHandoffBinding raw
+    if handoffInstalledProject binding /= handoffScopeProject scope
+        then Left (HandoffBindingMismatch "the received binding names a different installed project than the fixed handoff scope")
+        else
+            if handoffScope binding /= handoffScopeTag scope
+                then Left (HandoffBindingMismatch "the received binding names a different scope than the fixed handoff scope")
+                else Right (use binding)
+
+{- | Structural decoder used only behind a refinement that already fixes the
+result's authority indices. Keeping it private is essential: a polymorphic
+@ByteString -> HandoffBinding scope brokerGeneration@ would let the caller
+select those phantoms.
+-}
+decodeHandoffBinding ::
     ByteString ->
     Either HandoffError (HandoffBinding scope brokerGeneration)
-handoffBindingFromWire raw = do
+decodeHandoffBinding raw = do
     (project, afterProject) <- bindingTextField raw
     (specDigest, afterSpec) <- bindingTextField afterProject
     (kindName, afterKind) <- bindingTextField afterSpec
     (scope, afterScope) <- bindingTextField afterKind
-    (planRevision, afterRevision) <- bindingTextField afterScope
+    (storeIdentity, afterStore) <- bindingTextField afterScope
+    (planRevision, afterRevision) <- bindingTextField afterStore
     (generationBytes, afterGeneration) <- takeFrame afterRevision
     (parentFrame, afterParent) <- bindingTextField afterGeneration
     (childFrame, afterChild) <- bindingTextField afterParent
@@ -495,6 +561,7 @@ handoffBindingFromWire raw = do
             requireBindingField "installed project" project
             requireBindingField "spec digest" specDigest
             requireBindingField "scope" scope
+            requireBindingField "protected store identity" storeIdentity
             requireBindingField "plan revision" planRevision
             requireBindingField "parent frame" parentFrame
             requireBindingField "child frame" childFrame
@@ -508,6 +575,7 @@ handoffBindingFromWire raw = do
                     , handoffSpecDigest = specDigest
                     , handoffPayloadKind = kind
                     , handoffScope = scope
+                    , handoffStoreIdentity = storeIdentity
                     , handoffPlanRevision = planRevision
                     , handoffBrokerGeneration = generation
                     , handoffParentFrame = parentFrame
@@ -534,7 +602,305 @@ bindingGenerationField bytes
 payloadKindFromName :: Text -> Either HandoffError HandoffPayloadKind
 payloadKindFromName name
     | name == handoffPayloadKindName NarrowedProjectConfig = Right NarrowedProjectConfig
+    | name == handoffPayloadKindName RecoveryAdapterWire = Right RecoveryAdapterWire
     | otherwise = Left (HandoffBindingMismatch ("unknown handoff payload kind " <> name))
+
+-- ---------------------------------------------------------------------------
+-- Recovery projection
+
+-- | Constructor-hidden recovery payload discriminator.
+data RecoveryHandoff
+
+-- | Public coordinates; project, scope, and wire digest are root-derived.
+data RecoveryProjectionBindingInput planDigest parentFrame childFrame = RecoveryProjectionBindingInput
+    { requestedRecoveryPlanDigest :: Text
+    , requestedRecoveryParentFrame :: Text
+    , requestedRecoveryChildFrame :: Text
+    }
+    deriving (Eq, Show)
+
+type role RecoveryProjectionBindingInput nominal nominal nominal
+
+{- | Introduce descriptive recovery coordinates under fresh, unselectable
+plan/frame indices.
+
+The record constructor is private. Text received from a peer therefore cannot
+be labelled as a caller-chosen plan or frame; an eventual Phase 17 producer may
+add a separate constructor that consumes exact plan-derived evidence, while
+this wire-facing bracket remains generative.
+-}
+withRecoveryProjectionBindingInput ::
+    Text ->
+    Text ->
+    Text ->
+    ( forall planDigest parentFrame childFrame.
+      RecoveryProjectionBindingInput planDigest parentFrame childFrame ->
+      result
+    ) ->
+    Either HandoffError result
+withRecoveryProjectionBindingInput planDigest parentFrame childFrame use = do
+    requireBindingField "recovery plan digest" planDigest
+    requireBindingField "recovery parent frame" parentFrame
+    requireBindingField "recovery child frame" childFrame
+    Right
+        ( use
+            RecoveryProjectionBindingInput
+                { requestedRecoveryPlanDigest = planDigest
+                , requestedRecoveryParentFrame = parentFrame
+                , requestedRecoveryChildFrame = childFrame
+                }
+        )
+
+-- | Constructor-hidden identity of one parent-to-child recovery wire.
+data RecoveryProjectionBinding scope brokerGeneration verb planDigest parentFrame childFrame recoveryWireDigest
+    = RecoveryProjectionBinding
+    { recoveryProjectionInstalledProject :: Text
+    , recoveryProjectionScope :: Text
+    , recoveryProjectionStoreIdentity :: Text
+    , recoveryProjectionBrokerGeneration :: Word64
+    , recoveryProjectionVerb :: Text
+    , recoveryProjectionPlanDigest :: Text
+    , recoveryProjectionParentFrame :: Text
+    , recoveryProjectionChildFrame :: Text
+    , recoveryProjectionWireDigest :: Text
+    }
+    deriving (Eq)
+
+type role RecoveryProjectionBinding nominal nominal nominal nominal nominal nominal nominal
+
+-- | Construct an indexed projection inside a rank-2 scope owned by the root.
+mkRecoveryProjectionBinding ::
+    RootBroker scope brokerGeneration verb ->
+    RecoveryProjectionBindingInput planDigest parentFrame childFrame ->
+    ByteString ->
+    ( forall recoveryWireDigest.
+      RecoveryProjectionBinding
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
+      result
+    ) ->
+    Either HandoffError result
+mkRecoveryProjectionBinding broker input wire use = do
+    requireBindingField "recovery plan digest" (requestedRecoveryPlanDigest input)
+    requireBindingField "recovery parent frame" (requestedRecoveryParentFrame input)
+    requireBindingField "recovery child frame" (requestedRecoveryChildFrame input)
+    if ByteString.null wire
+        then Left (HandoffBindingMismatch "the recovery adapter wire must not be empty")
+        else
+            pure
+                ( use
+                    RecoveryProjectionBinding
+                        { recoveryProjectionInstalledProject = brokerProjectName broker
+                        , recoveryProjectionScope = brokerScopeTag broker
+                        , recoveryProjectionStoreIdentity = brokerStoreIdentity broker
+                        , recoveryProjectionBrokerGeneration = brokerEpochValue broker
+                        , recoveryProjectionVerb = brokerVerbName broker
+                        , recoveryProjectionPlanDigest = requestedRecoveryPlanDigest input
+                        , recoveryProjectionParentFrame = requestedRecoveryParentFrame input
+                        , recoveryProjectionChildFrame = requestedRecoveryChildFrame input
+                        , recoveryProjectionWireDigest = recoveryWireDigest wire
+                        }
+                )
+
+{- | Construct a descriptive recovery projection from an already authenticated
+route rather than from the live root broker.
+
+This is the keyless nested-frame constructor. The opaque route fixes project,
+scope, protected-store identity, and broker generation; the closed verb
+evidence must name the route's authenticated runtime verb. The result still
+authorizes nothing until the root signs it.
+-}
+mkRecoveryProjectionBindingFromRoute ::
+    ProjectVerb verb ->
+    BrokerRoute scope brokerGeneration ->
+    RecoveryProjectionBindingInput planDigest parentFrame childFrame ->
+    ByteString ->
+    ( forall recoveryWireDigest.
+      RecoveryProjectionBinding
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
+      result
+    ) ->
+    Either HandoffError result
+mkRecoveryProjectionBindingFromRoute verb route input wire use = do
+    requireBindingField "recovery plan digest" (requestedRecoveryPlanDigest input)
+    requireBindingField "recovery parent frame" (requestedRecoveryParentFrame input)
+    requireBindingField "recovery child frame" (requestedRecoveryChildFrame input)
+    if projectVerbName verb /= routeVerb route
+        then
+            Left
+                ( HandoffBindingMismatch
+                    "the recovery verb evidence does not match the authenticated broker route"
+                )
+        else
+            if ByteString.null wire
+                then Left (HandoffBindingMismatch "the recovery adapter wire must not be empty")
+                else
+                    Right
+                        ( use
+                            RecoveryProjectionBinding
+                                { recoveryProjectionInstalledProject = routeInstalledProject route
+                                , recoveryProjectionScope = routeScopeTag route
+                                , recoveryProjectionStoreIdentity = routeStoreIdentity route
+                                , recoveryProjectionBrokerGeneration = routeBrokerGeneration route
+                                , recoveryProjectionVerb = routeVerb route
+                                , recoveryProjectionPlanDigest = requestedRecoveryPlanDigest input
+                                , recoveryProjectionParentFrame = requestedRecoveryParentFrame input
+                                , recoveryProjectionChildFrame = requestedRecoveryChildFrame input
+                                , recoveryProjectionWireDigest = recoveryWireDigest wire
+                                }
+                        )
+
+-- | Canonical, length-delimited bytes for the exact recovery projection.
+renderRecoveryProjectionBinding ::
+    RecoveryProjectionBinding
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
+    ByteString
+renderRecoveryProjectionBinding binding =
+    ByteString.concat
+        [ field (recoveryProjectionInstalledProject binding)
+        , field (recoveryProjectionScope binding)
+        , field (recoveryProjectionStoreIdentity binding)
+        , frameWire
+            ( ByteString.pack
+                (word64BigEndian (recoveryProjectionBrokerGeneration binding))
+            )
+        , field (recoveryProjectionVerb binding)
+        , field (recoveryProjectionPlanDigest binding)
+        , field (recoveryProjectionParentFrame binding)
+        , field (recoveryProjectionChildFrame binding)
+        , field (recoveryProjectionWireDigest binding)
+        ]
+  where
+    field = frameWire . TextEncoding.encodeUtf8
+
+-- | Parse non-authorizing canonical bytes under the live root's scope.
+recoveryProjectionBindingFromWire ::
+    RootBroker scope brokerGeneration verb ->
+    RecoveryProjectionBindingInput planDigest parentFrame childFrame ->
+    ByteString ->
+    ( forall recoveryWireDigest.
+      RecoveryProjectionBinding
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
+      result
+    ) ->
+    Either HandoffError result
+recoveryProjectionBindingFromWire broker expected raw use = do
+    (project, afterProject) <- bindingTextField raw
+    (scope, afterScope) <- bindingTextField afterProject
+    (storeIdentity, afterStore) <- bindingTextField afterScope
+    (generationBytes, afterGeneration) <- takeFrame afterStore
+    generation <- bindingGenerationField generationBytes
+    (verb, afterVerb) <- bindingTextField afterGeneration
+    (planDigest, afterPlan) <- bindingTextField afterVerb
+    (parentFrame, afterParent) <- bindingTextField afterPlan
+    (childFrame, afterChild) <- bindingTextField afterParent
+    (wireDigest, trailing) <- bindingTextField afterChild
+    if not (ByteString.null trailing)
+        then Left (HandoffWireTrailingBytes (ByteString.length trailing))
+        else do
+            requireBindingField "recovery installed project" project
+            requireBindingField "recovery scope" scope
+            requireBindingField "recovery protected store identity" storeIdentity
+            requireBindingField "recovery verb" verb
+            requireBindingField "recovery plan digest" planDigest
+            requireBindingField "recovery parent frame" parentFrame
+            requireBindingField "recovery child frame" childFrame
+            requireBindingField "recovery wire digest" wireDigest
+            if or
+                [ project /= brokerProjectName broker
+                , scope /= brokerScopeTag broker
+                , storeIdentity /= brokerStoreIdentity broker
+                , generation /= brokerEpochValue broker
+                , verb /= brokerVerbName broker
+                , planDigest /= requestedRecoveryPlanDigest expected
+                , parentFrame /= requestedRecoveryParentFrame expected
+                , childFrame /= requestedRecoveryChildFrame expected
+                ]
+                then Left (HandoffBindingMismatch "the recovery projection does not match the expected root plan and edge")
+                else
+                    Right
+                        ( use
+                            RecoveryProjectionBinding
+                                { recoveryProjectionInstalledProject = project
+                                , recoveryProjectionScope = scope
+                                , recoveryProjectionStoreIdentity = storeIdentity
+                                , recoveryProjectionBrokerGeneration = generation
+                                , recoveryProjectionVerb = verb
+                                , recoveryProjectionPlanDigest = planDigest
+                                , recoveryProjectionParentFrame = parentFrame
+                                , recoveryProjectionChildFrame = childFrame
+                                , recoveryProjectionWireDigest = wireDigest
+                                }
+                        )
+
+-- | Exact request fields: canonical binding, then adapter wire.
+recoveryRequestFields ::
+    RecoveryProjectionBinding
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
+    ByteString ->
+    Either HandoffError [ByteString]
+recoveryRequestFields binding wire
+    | recoveryWireDigest wire /= recoveryProjectionWireDigest binding =
+        Left
+            ( HandoffPayloadDigestMismatch
+                (recoveryProjectionWireDigest binding)
+                (recoveryWireDigest wire)
+            )
+    | otherwise = Right [renderRecoveryProjectionBinding binding, wire]
+
+-- | Decode and validate the exact two fields carried by 'RecoveryRequestTag'.
+recoveryRequestFromFields ::
+    RootBroker scope brokerGeneration verb ->
+    RecoveryProjectionBindingInput planDigest parentFrame childFrame ->
+    [ByteString] ->
+    ( forall recoveryWireDigest.
+      RecoveryProjectionBinding
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
+      ByteString ->
+      result
+    ) ->
+    Either HandoffError result
+recoveryRequestFromFields broker expected [bindingBytes, wire] use =
+    either Left id $
+        recoveryProjectionBindingFromWire broker expected bindingBytes $ \binding ->
+            recoveryRequestFields binding wire >> Right (use binding wire)
+recoveryRequestFromFields _ _ fields _ =
+    Left (HandoffRecoveryFieldCount "request" 2 (length fields))
 
 -- ---------------------------------------------------------------------------
 -- Keys
@@ -627,9 +993,13 @@ installedVerificationKey path = do
 
 {- | The root invocation's signing capability.
 
-Minted only inside 'withRootBroker' from a verified 'RootInvocationAuthority',
-and never returned from it, so the key cannot outlive the invocation that earned
-it or be stored in a value a child receives.
+Constructed only by 'withRootBroker' from a verified
+'RootInvocationAuthority'. The opaque value can be retained by its callback;
+its operational lifetime is therefore enforced by the lock-held runtime guard:
+every durable/signing operation on a retained broker refuses after the bracket,
+and bracket finalization waits for any already-running operation before
+expiring it. Its nominal indices prevent cross-scope, cross-generation, or
+cross-verb coercion; they are not a claim that the value cannot be retained.
 -}
 data RootBroker scope brokerGeneration verb = RootBroker
     { brokerSecret :: Ed25519.SecretKey
@@ -638,8 +1008,16 @@ data RootBroker scope brokerGeneration verb = RootBroker
     , brokerVerbName :: Text
     , brokerProjectName :: Text
     , brokerScopeTag :: Text
+    , brokerStoreIdentity :: Text
     , brokerProtectedStore :: ProtectedStore
+    , brokerLifetime :: MVar BrokerLifetime
     }
+
+data BrokerLifetime
+    = BrokerLifetimeActive
+    | BrokerLifetimeExpired
+
+type role RootBroker nominal nominal nominal
 
 instance Show (RootBroker scope brokerGeneration verb) where
     show broker = "RootBroker <signing> " <> show (brokerEpochValue broker)
@@ -647,6 +1025,51 @@ instance Show (RootBroker scope brokerGeneration verb) where
 -- | The public half a child binary must have installed to verify this broker.
 rootBrokerVerificationKey :: RootBroker scope brokerGeneration verb -> ProjectVerificationKey
 rootBrokerVerificationKey = ProjectVerificationKey . brokerPublic
+
+{- | Opaque identity of one route to a live root broker.
+
+It retains only the root-owned coordinates needed to refine bindings returned
+over a relay and the digest of the independently provisioned verification key.
+It contains neither the signing key nor the protected store. A route can come
+only from the live root or from an already verified parent handoff.
+-}
+data BrokerRoute scope brokerGeneration = BrokerRoute
+    { routeInstalledProject :: Text
+    , routeScopeTag :: Text
+    , routeStoreIdentity :: Text
+    , routeBrokerGeneration :: Word64
+    , routeVerb :: Text
+    , routeVerificationKeyDigest :: ByteString
+    , routeCurrentFrame :: Maybe Text
+    }
+
+type role BrokerRoute nominal nominal
+
+instance Show (BrokerRoute scope brokerGeneration) where
+    show _ = "BrokerRoute <verified root identity>"
+
+-- | Derive the route identity directly from the live root broker.
+rootBrokerRoute :: RootBroker scope brokerGeneration verb -> BrokerRoute scope brokerGeneration
+rootBrokerRoute broker =
+    BrokerRoute
+        { routeInstalledProject = brokerProjectName broker
+        , routeScopeTag = brokerScopeTag broker
+        , routeStoreIdentity = brokerStoreIdentity broker
+        , routeBrokerGeneration = brokerEpochValue broker
+        , routeVerb = brokerVerbName broker
+        , routeVerificationKeyDigest =
+            TextEncoding.encodeUtf8
+                (verificationKeyDigest (rootBrokerVerificationKey broker))
+        , routeCurrentFrame = Nothing
+        }
+
+-- | The installed verification-key digest a child offer advertises.
+brokerRouteVerificationKeyDigest :: BrokerRoute scope brokerGeneration -> ByteString
+brokerRouteVerificationKeyDigest = routeVerificationKeyDigest
+
+-- | The authenticated frame holding a relayed route; absent only at the root.
+brokerRouteCurrentFrame :: BrokerRoute scope brokerGeneration -> Maybe Text
+brokerRouteCurrentFrame = routeCurrentFrame
 
 {- | Run an action with the independently provisioned project signer, narrowed
 to one verified root invocation's project, epoch, and verb.
@@ -665,9 +1088,11 @@ withRootBroker ::
 withRootBroker scope store (ProjectSigningKey secret) root use
     | handoffScopeProject scope /= rootAuthorityProjectName root =
         pure (Left (HandoffBindingMismatch "the scope evidence names a different installed project than the root authority"))
-    | otherwise =
-        Right
-            <$> use
+    | storeIdentity /= rootAuthorityStoreIdentity root =
+        pure (Left (HandoffBindingMismatch "the protected store does not belong to the root authority"))
+    | otherwise = do
+        lifetime <- newMVar BrokerLifetimeActive
+        let broker =
                 RootBroker
                     { brokerSecret = secret
                     , brokerPublic = Ed25519.toPublic secret
@@ -675,8 +1100,273 @@ withRootBroker scope store (ProjectSigningKey secret) root use
                     , brokerVerbName = projectVerbName (rootAuthorityVerb root)
                     , brokerProjectName = rootAuthorityProjectName root
                     , brokerScopeTag = handoffScopeTag scope
+                    , brokerStoreIdentity = storeIdentity
                     , brokerProtectedStore = store
+                    , brokerLifetime = lifetime
                     }
+        result <- use broker `finally` expireRootBroker broker
+        pure (Right result)
+  where
+    storeIdentity = protectedStoreIdentityText (protectedStoreIdentity store)
+
+withActiveRootBroker ::
+    RootBroker scope brokerGeneration verb ->
+    IO (Either HandoffError result) ->
+    IO (Either HandoffError result)
+withActiveRootBroker broker action =
+    modifyMVar (brokerLifetime broker) $ \lifetime -> case lifetime of
+        BrokerLifetimeExpired ->
+            pure (BrokerLifetimeExpired, Left HandoffBrokerExpired)
+        BrokerLifetimeActive -> do
+            result <- action
+            pure (BrokerLifetimeActive, result)
+
+expireRootBroker :: RootBroker scope brokerGeneration verb -> IO ()
+expireRootBroker broker =
+    modifyMVar_ (brokerLifetime broker) (const (pure BrokerLifetimeExpired))
+
+-- ---------------------------------------------------------------------------
+-- Recovery-wire signing
+
+recoveryWireDomain :: ByteString
+recoveryWireDomain = "hostbootstrap/recovery-wire/v1"
+
+-- | Opaque recovery-domain signature; response bytes are not verification.
+newtype RecoveryWireGrant scope brokerGeneration verb planDigest parentFrame childFrame recoveryWireDigest
+    = RecoveryWireGrant ByteString
+    deriving (Eq)
+
+type role RecoveryWireGrant nominal nominal nominal nominal nominal nominal nominal
+
+-- | Exact signature bytes carried by 'RecoveryResponseTag'.
+recoveryWireGrantSignature ::
+    RecoveryWireGrant
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
+    ByteString
+recoveryWireGrantSignature (RecoveryWireGrant signature) = signature
+
+-- | Structurally adopt a response; cryptographic verification remains separate.
+recoveryWireGrantFromSignature ::
+    RecoveryProjectionBinding
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
+    ByteString ->
+    Either
+        HandoffError
+        ( RecoveryWireGrant
+            scope
+            brokerGeneration
+            verb
+            planDigest
+            parentFrame
+            childFrame
+            recoveryWireDigest
+        )
+recoveryWireGrantFromSignature binding signature
+    | ByteString.length signature /= recoverySignatureBytes =
+        Left (HandoffRecoverySignatureLength recoverySignatureBytes (ByteString.length signature))
+    | otherwise = binding `seq` Right (RecoveryWireGrant signature)
+
+recoverySignatureBytes :: Int
+recoverySignatureBytes = 64
+
+-- | The exact one field of 'RecoveryResponseTag'.
+recoveryResponseFields ::
+    RecoveryWireGrant
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
+    [ByteString]
+recoveryResponseFields grant = [recoveryWireGrantSignature grant]
+
+-- | Decode the exact one field carried by 'RecoveryResponseTag'.
+recoveryResponseFromFields ::
+    RecoveryProjectionBinding
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
+    [ByteString] ->
+    Either
+        HandoffError
+        ( RecoveryWireGrant
+            scope
+            brokerGeneration
+            verb
+            planDigest
+            parentFrame
+            childFrame
+            recoveryWireDigest
+        )
+recoveryResponseFromFields binding [signature] = recoveryWireGrantFromSignature binding signature
+recoveryResponseFromFields _ fields =
+    Left (HandoffRecoveryFieldCount "response" 1 (length fields))
+
+-- | Sign under a recovery-only domain after root identity and digest checks.
+signRecoveryWire ::
+    RootBroker scope brokerGeneration verb ->
+    RecoveryProjectionBinding
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
+    ByteString ->
+    IO
+        ( Either
+            HandoffError
+            ( RecoveryWireGrant
+                scope
+                brokerGeneration
+                verb
+                planDigest
+                parentFrame
+                childFrame
+                recoveryWireDigest
+            )
+        )
+signRecoveryWire broker binding wire =
+    withActiveRootBroker broker (signRecoveryWireActive broker binding wire)
+
+{- | Run a recovery-plan admission decision and, only when it admits, sign
+under one uninterrupted broker-lifetime guard.
+
+The nested result keeps a plan refusal distinct from a broker or binding
+failure. Most callers use 'signRecoveryWire'; the relay uses this compound
+operation so an escaped root link cannot run its admission callback after the
+broker bracket has expired.
+-}
+signAdmittedRecoveryWire ::
+    RootBroker scope brokerGeneration verb ->
+    IO (Either rejection ()) ->
+    RecoveryProjectionBinding
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
+    ByteString ->
+    IO
+        ( Either
+            HandoffError
+            ( Either
+                rejection
+                ( RecoveryWireGrant
+                    scope
+                    brokerGeneration
+                    verb
+                    planDigest
+                    parentFrame
+                    childFrame
+                    recoveryWireDigest
+                )
+            )
+        )
+signAdmittedRecoveryWire broker admission binding wire =
+    withActiveRootBroker broker $ do
+        admitted <- admission
+        case admitted of
+            Left rejection -> pure (Right (Left rejection))
+            Right () -> fmap (fmap Right) (signRecoveryWireActive broker binding wire)
+
+signRecoveryWireActive ::
+    RootBroker scope brokerGeneration verb ->
+    RecoveryProjectionBinding
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
+    ByteString ->
+    IO
+        ( Either
+            HandoffError
+            ( RecoveryWireGrant
+                scope
+                brokerGeneration
+                verb
+                planDigest
+                parentFrame
+                childFrame
+                recoveryWireDigest
+            )
+        )
+signRecoveryWireActive broker binding wire
+    | brokerVerbName broker /= "down" && brokerVerbName broker /= "destroy" =
+        pure (Left (HandoffRecoveryVerbInvalid (brokerVerbName broker)))
+    | recoveryProjectionInstalledProject binding /= brokerProjectName broker =
+        pure (Left (HandoffBindingMismatch "the recovery projection names a different installed project than the live root broker"))
+    | recoveryProjectionScope binding /= brokerScopeTag broker =
+        pure (Left (HandoffBindingMismatch "the recovery projection names a different scope than the live root broker"))
+    | recoveryProjectionStoreIdentity binding /= brokerStoreIdentity broker =
+        pure (Left (HandoffBindingMismatch "the recovery projection names a different protected store than the live root broker"))
+    | recoveryProjectionBrokerGeneration binding /= brokerEpochValue broker =
+        pure (Left (HandoffBindingMismatch "the recovery projection names a different broker generation than the live root broker"))
+    | recoveryProjectionVerb binding /= brokerVerbName broker =
+        pure (Left (HandoffBindingMismatch "the recovery projection names a different verb than the live root broker"))
+    | recoveryWireDigest wire /= recoveryProjectionWireDigest binding =
+        pure
+            ( Left
+                ( HandoffPayloadDigestMismatch
+                    (recoveryProjectionWireDigest binding)
+                    (recoveryWireDigest wire)
+                )
+            )
+    | otherwise = do
+        let signature =
+                convert
+                    ( Ed25519.sign
+                        (brokerSecret broker)
+                        (brokerPublic broker)
+                        (recoverySignedMaterial (rootBrokerVerificationKey broker) binding wire)
+                    )
+        -- Do not let the pure cryptographic thunk escape the lifetime lock.
+        _ <- evaluate (ByteString.length signature)
+        pure (Right (RecoveryWireGrant signature))
+
+recoverySignedMaterial ::
+    ProjectVerificationKey ->
+    RecoveryProjectionBinding
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
+    ByteString ->
+    ByteString
+recoverySignedMaterial key binding wire =
+    ByteString.concat
+        [ frameWire recoveryWireDomain
+        , frameWire (TextEncoding.encodeUtf8 (verificationKeyDigest key))
+        , frameWire (renderRecoveryProjectionBinding binding)
+        , frameWire wire
+        ]
 
 {- | What an immediate parent is given: the binding it may carry, and nothing
 else.
@@ -684,9 +1374,11 @@ else.
 There is deliberately no field here from which a signature can be produced. A
 parent relays; the root signs.
 -}
-newtype BrokerRelay scope brokerGeneration =
-    BrokerRelay (HandoffBinding scope brokerGeneration)
+newtype BrokerRelay scope brokerGeneration
+    = BrokerRelay (HandoffBinding scope brokerGeneration)
     deriving (Eq, Show)
+
+type role BrokerRelay nominal nominal
 
 -- | Hand a parent the relay for one edge.
 brokerRelay ::
@@ -704,6 +1396,16 @@ brokerRelay broker binding
             ( HandoffBindingMismatch
                 "the binding names a different broker generation than the live root broker"
             )
+    | handoffStoreIdentity binding /= brokerStoreIdentity broker =
+        Left
+            ( HandoffBindingMismatch
+                "the binding names a different protected store than the live root broker"
+            )
+    | handoffScope binding /= brokerScopeTag broker =
+        Left
+            ( HandoffBindingMismatch
+                "the binding names a different scope than the live root broker"
+            )
     | handoffVerb binding /= brokerVerbName broker =
         Left
             ( HandoffBindingMismatch
@@ -715,19 +1417,51 @@ brokerRelay broker binding
 relayBinding :: BrokerRelay scope brokerGeneration -> HandoffBinding scope brokerGeneration
 relayBinding (BrokerRelay binding) = binding
 
-{- | Adopt an edge the root opened and sent down, at a frame that has no broker.
+{- | Refine an edge returned over a relay against the already authenticated
+route that carried it.
 
-This is the value that makes a middle frame a *relay*. It can carry an edge the
-root opened and offer it onward; it cannot open one, because opening writes a
-durable record only 'registerHandoffEdge' produces, and it cannot authenticate
-one, because a grant is a signature only 'grantHandoff' emits. So the widest
-thing a frame reachable through this constructor can do is transmit — which is
-the whole design: intermediate frames relay, and the root signs.
+When an opening request is available, every caller-controlled binding field is
+also compared with that exact request before the typed relay is constructed.
+For a later grant request, @Nothing@ still checks all root-owned coordinates;
+the root's durable registered-edge record then checks the complete binding and
+token transcript before signing.
 -}
-brokerRelayFromWire ::
+brokerRelayFromRouteWire ::
+    BrokerRoute scope brokerGeneration ->
+    Maybe HandoffBindingInput ->
     ByteString ->
     Either HandoffError (BrokerRelay scope brokerGeneration)
-brokerRelayFromWire = fmap BrokerRelay . handoffBindingFromWire
+brokerRelayFromRouteWire route expected raw = do
+    binding <- decodeHandoffBinding raw
+    requireRouteField
+        "installed project"
+        (handoffInstalledProject binding == routeInstalledProject route)
+    requireRouteField "scope" (handoffScope binding == routeScopeTag route)
+    requireRouteField
+        "protected store"
+        (handoffStoreIdentity binding == routeStoreIdentity route)
+    requireRouteField
+        "broker generation"
+        (handoffBrokerGeneration binding == routeBrokerGeneration route)
+    requireRouteField "verb" (handoffVerb binding == routeVerb route)
+    case expected of
+        Nothing -> pure ()
+        Just input -> do
+            requireRouteField "specification digest" (handoffSpecDigest binding == requestedSpecDigest input)
+            requireRouteField "payload kind" (handoffPayloadKind binding == requestedPayloadKind input)
+            requireRouteField "plan revision" (handoffPlanRevision binding == requestedPlanRevision input)
+            requireRouteField "parent frame" (handoffParentFrame binding == requestedParentFrame input)
+            requireRouteField "child frame" (handoffChildFrame binding == requestedChildFrame input)
+            requireRouteField "child config digest" (handoffChildConfigDigest binding == requestedChildConfigDigest input)
+            requireRouteField "phase" (handoffPhase binding == requestedPhase input)
+    pure (BrokerRelay binding)
+  where
+    requireRouteField _ True = Right ()
+    requireRouteField fieldName False =
+        Left
+            ( HandoffBindingMismatch
+                ("the relayed binding's " <> fieldName <> " does not match its authenticated route or opening request")
+            )
 
 {- | Open one edge the root intends to hand off: mint its one-time token,
 build its canonical binding, and record the edge durably before anyone can ask
@@ -750,7 +1484,37 @@ registerHandoffEdge ::
     RootBroker scope brokerGeneration verb ->
     HandoffBindingInput ->
     IO (Either HandoffError (BrokerRelay scope brokerGeneration, HandoffToken))
-registerHandoffEdge broker input = do
+registerHandoffEdge broker input =
+    withActiveRootBroker broker (registerHandoffEdgeActive broker input)
+
+{- | Run an edge-plan admission decision and its durable registration under
+one uninterrupted broker-lifetime guard.
+
+The nested result preserves the plan's rejection type. The relay uses this
+compound form so an escaped root link refuses before invoking admission IO;
+ordinary root callers use 'registerHandoffEdge'.
+-}
+registerAdmittedHandoffEdge ::
+    RootBroker scope brokerGeneration verb ->
+    IO (Either rejection ()) ->
+    HandoffBindingInput ->
+    IO
+        ( Either
+            HandoffError
+            (Either rejection (BrokerRelay scope brokerGeneration, HandoffToken))
+        )
+registerAdmittedHandoffEdge broker admission input =
+    withActiveRootBroker broker $ do
+        admitted <- admission
+        case admitted of
+            Left rejection -> pure (Right (Left rejection))
+            Right () -> fmap (fmap Right) (registerHandoffEdgeActive broker input)
+
+registerHandoffEdgeActive ::
+    RootBroker scope brokerGeneration verb ->
+    HandoffBindingInput ->
+    IO (Either HandoffError (BrokerRelay scope brokerGeneration, HandoffToken))
+registerHandoffEdgeActive broker input = do
     token <- freshHandoffToken
     case mkHandoffBinding broker input token >>= brokerRelay broker of
         Left failure -> pure (Left failure)
@@ -798,9 +1562,11 @@ grantedEdgeRecord transcriptDigest = "granted:" <> transcriptDigest
 
 {- | An unpredictable, fixed-width one-time token minted by the root side.
 
-There is no textual constructor or byte accessor. The only public operation
-that emits it is 'handoffOfferWire', which frames it for the authenticated
-protocol. Its 'Show' instance is permanently redacted.
+Its constructor is hidden and its 'Show' instance is permanently redacted.
+The public transport accessor and width-checked adopter below intentionally let
+an immediate peer carry the token through framed protocol fields. Secrecy of a
+Haskell constructor is not the one-use guarantee: the root's registered durable
+edge and transcript compare-and-swap enforce that guarantee.
 -}
 newtype HandoffToken = HandoffToken ByteString
     deriving (Eq)
@@ -855,6 +1621,8 @@ data HandoffOffer scope brokerGeneration = HandoffOffer
     , offerToken :: HandoffToken
     }
     deriving (Eq)
+
+type role HandoffOffer nominal nominal
 
 instance Show (HandoffOffer scope brokerGeneration) where
     show offer =
@@ -982,6 +1750,8 @@ consumer cannot alter which binding a grant speaks for.
 newtype HandoffGrant scope brokerGeneration = HandoffGrant ByteString
     deriving (Eq)
 
+type role HandoffGrant nominal nominal
+
 instance Show (HandoffGrant scope brokerGeneration) where
     show _ = "HandoffGrant <signed>"
 
@@ -1014,17 +1784,17 @@ grantHandoff ::
     HandoffOffer scope brokerGeneration ->
     HandoffChallenge ->
     IO (Either HandoffError (HandoffGrant scope brokerGeneration))
-grantHandoff broker offer challenge =
+grantHandoff broker offer challenge = withActiveRootBroker broker $
     case brokerRelay broker binding of
         Left failure -> pure (Left failure)
         Right _ -> do
             entered <-
                 withProtectedEntry (brokerProtectedStore broker) $ \session ->
                     Right <$> consumeRegisteredEdge session binding material
-            pure $ case entered of
-                Left failure -> Left (HandoffStoreFailure failure)
-                Right (Left failure) -> Left failure
-                Right (Right ()) -> Right (issueGrant broker material)
+            case entered of
+                Left failure -> pure (Left (HandoffStoreFailure failure))
+                Right (Left failure) -> pure (Left failure)
+                Right (Right ()) -> Right <$> issueGrant broker material
   where
     binding = handoffOfferBinding offer
     material =
@@ -1037,16 +1807,18 @@ grantHandoff broker offer challenge =
 issueGrant ::
     RootBroker scope brokerGeneration verb ->
     ByteString ->
-    HandoffGrant scope brokerGeneration
-issueGrant broker material =
-    HandoffGrant
-        ( convert
-            ( Ed25519.sign
-                (brokerSecret broker)
-                (brokerPublic broker)
-                material
-            )
-        )
+    IO (HandoffGrant scope brokerGeneration)
+issueGrant broker material = do
+    let signature =
+            convert
+                ( Ed25519.sign
+                    (brokerSecret broker)
+                    (brokerPublic broker)
+                    material
+                )
+    -- The signature must be fully constructed before the lifetime lock opens.
+    _ <- evaluate (ByteString.length signature)
+    pure (HandoffGrant signature)
 
 {- | Exactly what a signature covers, in protocol order.
 
@@ -1080,7 +1852,10 @@ is private, so raw wire cannot be promoted into one.
 data VerifiedHandoff scope brokerGeneration = VerifiedHandoff
     { verifiedBinding :: HandoffBinding scope brokerGeneration
     , verifiedPayload :: ByteString
+    , verifiedProjectKey :: ProjectVerificationKey
     }
+
+type role VerifiedHandoff nominal nominal
 
 instance Show (VerifiedHandoff scope brokerGeneration) where
     show handoff = "VerifiedHandoff " <> show (verifiedBinding handoff)
@@ -1095,6 +1870,188 @@ verifiedHandoffBinding = verifiedBinding
 verifiedHandoffPayload :: VerifiedHandoff scope brokerGeneration -> ByteString
 verifiedHandoffPayload = verifiedPayload
 
+-- | Derive a child frame's root route from the exact handoff it verified.
+verifiedHandoffRoute :: VerifiedHandoff scope brokerGeneration -> BrokerRoute scope brokerGeneration
+verifiedHandoffRoute handoff =
+    BrokerRoute
+        { routeInstalledProject = handoffInstalledProject binding
+        , routeScopeTag = handoffScope binding
+        , routeStoreIdentity = handoffStoreIdentity binding
+        , routeBrokerGeneration = handoffBrokerGeneration binding
+        , routeVerb = handoffVerb binding
+        , routeVerificationKeyDigest =
+            TextEncoding.encodeUtf8
+                (verificationKeyDigest (verifiedProjectKey handoff))
+        , routeCurrentFrame = Just (handoffChildFrame binding)
+        }
+  where
+    binding = verifiedBinding handoff
+
+-- | Opaque verified wire with a rank-2 local @recoveryWireId@.
+data VerifiedRecoveryWire scope brokerGeneration verb planDigest frame recoveryWireDigest recoveryWireId where
+    VerifiedRecoveryWire ::
+        RecoveryProjectionBinding
+            scope
+            brokerGeneration
+            verb
+            planDigest
+            parentFrame
+            frame
+            recoveryWireDigest ->
+        ByteString ->
+        VerifiedRecoveryWire
+            scope
+            brokerGeneration
+            verb
+            planDigest
+            frame
+            recoveryWireDigest
+            recoveryWireId
+
+type role VerifiedRecoveryWire nominal nominal nominal nominal nominal nominal nominal
+
+verifiedRecoveryWireBytes ::
+    VerifiedRecoveryWire
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        frame
+        recoveryWireDigest
+        recoveryWireId ->
+    ByteString
+verifiedRecoveryWireBytes (VerifiedRecoveryWire _ wire) = wire
+
+-- | Verify the exact binding and wire against the independent project key.
+withVerifiedRecoveryWire ::
+    ProjectVerificationKey ->
+    RecoveryProjectionBinding
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        frame
+        recoveryWireDigest ->
+    ByteString ->
+    RecoveryWireGrant
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        frame
+        recoveryWireDigest ->
+    ( forall recoveryWireId.
+      VerifiedRecoveryWire
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        frame
+        recoveryWireDigest
+        recoveryWireId ->
+      result
+    ) ->
+    Either HandoffError result
+withVerifiedRecoveryWire installedKey@(ProjectVerificationKey key) binding wire (RecoveryWireGrant signature) use
+    | recoveryWireDigest wire /= recoveryProjectionWireDigest binding =
+        Left
+            ( HandoffPayloadDigestMismatch
+                (recoveryProjectionWireDigest binding)
+                (recoveryWireDigest wire)
+            )
+    | otherwise = case Ed25519.signature signature of
+        CryptoFailed _ -> Left HandoffRecoverySignatureInvalid
+        CryptoPassed parsed
+            | not
+                ( Ed25519.verify
+                    key
+                    (recoverySignedMaterial installedKey binding wire)
+                    parsed
+                ) ->
+                Left HandoffRecoverySignatureInvalid
+            | otherwise -> Right (use (VerifiedRecoveryWire binding wire))
+
+-- | Opaque join of the one-use edge and independently verified recovery wire.
+data VerifiedRecoveryHandoff scope brokerGeneration planDigest parentFrame childFrame recoveryWireDigest recoveryWireId verb
+    = VerifiedRecoveryHandoff
+        (VerifiedHandoff scope brokerGeneration)
+        ( VerifiedRecoveryWire
+            scope
+            brokerGeneration
+            verb
+            planDigest
+            childFrame
+            recoveryWireDigest
+            recoveryWireId
+        )
+
+type role VerifiedRecoveryHandoff nominal nominal nominal nominal nominal nominal nominal nominal
+
+-- | Join only an exact recovery-kind, exact-verb teardown edge.
+withVerifiedRecoveryHandoff ::
+    ProjectVerb verb ->
+    RecoveryProjectionBinding
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
+    RecoveryWireGrant
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
+    VerifiedHandoff scope brokerGeneration ->
+    ( forall recoveryWireId.
+      VerifiedRecoveryHandoff
+        scope
+        brokerGeneration
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest
+        recoveryWireId
+        verb ->
+      result
+    ) ->
+    Either HandoffError result
+withVerifiedRecoveryHandoff verb projection grant handoff use
+    | handoffPayloadKind binding /= RecoveryAdapterWire =
+        Left (HandoffBindingMismatch "the authenticated payload is not a recovery adapter wire")
+    | handoffVerb binding /= projectVerbName verb =
+        Left (HandoffBindingMismatch "the recovery handoff does not authorize the requested verb")
+    | handoffVerb binding /= "down" && handoffVerb binding /= "destroy" =
+        Left (HandoffRecoveryVerbInvalid (handoffVerb binding))
+    | handoffPhase binding /= "teardown" =
+        Left (HandoffBindingMismatch "the recovery handoff is not in the teardown phase")
+    | not exactProjection =
+        Left (HandoffBindingMismatch "the recovery handoff and projection bindings differ")
+    | otherwise =
+        withVerifiedRecoveryWire (verifiedProjectKey handoff) projection (verifiedHandoffPayload handoff) grant $
+            \wire -> use (VerifiedRecoveryHandoff handoff wire)
+  where
+    binding = verifiedHandoffBinding handoff
+    exactProjection =
+        and
+            [ handoffInstalledProject binding == recoveryProjectionInstalledProject projection
+            , handoffScope binding == recoveryProjectionScope projection
+            , handoffStoreIdentity binding == recoveryProjectionStoreIdentity projection
+            , handoffBrokerGeneration binding
+                == recoveryProjectionBrokerGeneration projection
+            , handoffVerb binding == recoveryProjectionVerb projection
+            , handoffPlanRevision binding == recoveryProjectionPlanDigest projection
+            , handoffParentFrame binding == recoveryProjectionParentFrame projection
+            , handoffChildFrame binding == recoveryProjectionChildFrame projection
+            , handoffChildConfigDigest binding == recoveryProjectionWireDigest projection
+            ]
+
 {- | An opaque witness that exact config bytes were authenticated under a
 binding whose payload kind is 'NarrowedProjectConfig'. This is the narrow seam
 for config admission: it carries neither the handoff token nor a protected-store
@@ -1104,6 +2061,8 @@ data AuthenticatedConfigPayload scope brokerGeneration = AuthenticatedConfigPayl
     { authenticatedBinding :: HandoffBinding scope brokerGeneration
     , authenticatedBytes :: ByteString
     }
+
+type role AuthenticatedConfigPayload nominal nominal
 
 instance Show (AuthenticatedConfigPayload scope brokerGeneration) where
     show payload =
@@ -1174,12 +2133,14 @@ verifyHandoff installedKey@(ProjectVerificationKey key) received expected challe
                             key
                             (signedMaterial installedKey expected (tokenFrame token) challenge)
                             parsed
-                        ) -> Left HandoffSignatureInvalid
+                        ) ->
+                        Left HandoffSignatureInvalid
                     | otherwise ->
                         Right
                             VerifiedHandoff
                                 { verifiedBinding = expected
                                 , verifiedPayload = payload
+                                , verifiedProjectKey = installedKey
                                 }
 
 {- | Split the received wire into its three framed fields. A message with a
@@ -1274,55 +2235,6 @@ tokenRecordKey :: HandoffBinding scope brokerGeneration -> Text
 tokenRecordKey binding = "handoff-token." <> handoffTokenCommitment binding
 
 -- ---------------------------------------------------------------------------
--- Child authority
-
-{- | What a verified handoff earns the child: permission to act at its own
-frame, for the exact verb and phase the root bound.
-
-It deliberately carries no signing key and no root authority. A child that needs
-a grandchild grant must ask the root relay for one; it cannot mint it.
--}
-newtype ChildPlanAuthority scope brokerGeneration =
-    ChildPlanAuthority (HandoffBinding scope brokerGeneration)
-
-instance Show (ChildPlanAuthority scope brokerGeneration) where
-    show (ChildPlanAuthority binding) = "ChildPlanAuthority " <> show binding
-
--- | The authenticated binding this authority acts under.
-childPlanAuthorityBinding ::
-    ChildPlanAuthority scope brokerGeneration ->
-    HandoffBinding scope brokerGeneration
-childPlanAuthorityBinding (ChildPlanAuthority binding) = binding
-
-{- | Turn a verified handoff into child authority, checking that the child is
-acting as the frame the binding actually named.
-
-A frame that received someone else's (genuinely signed) handoff is refused here
-rather than proceeding under a binding that does not describe it.
--}
-authorizeChildProject ::
-    VerifiedHandoff scope brokerGeneration ->
-    -- | the frame this binary is actually running as
-    Text ->
-    ProjectVerb verb ->
-    Either HandoffError (ChildPlanAuthority scope brokerGeneration)
-authorizeChildProject handoff actualFrame verb
-    | handoffChildFrame binding /= actualFrame =
-        Left (HandoffFrameMismatch (handoffChildFrame binding) actualFrame)
-    | handoffVerb binding /= projectVerbName verb =
-        Left
-            ( HandoffBindingMismatch
-                ( "the handoff authorizes "
-                    <> handoffVerb binding
-                    <> ", not "
-                    <> projectVerbName verb
-                )
-            )
-    | otherwise = Right (ChildPlanAuthority binding)
-  where
-    binding = verifiedHandoffBinding handoff
-
--- ---------------------------------------------------------------------------
 -- Digests and failures
 
 {- | The digest a binding carries for its child config payload.
@@ -1334,6 +2246,10 @@ all.
 -}
 childConfigDigest :: ByteString -> Text
 childConfigDigest = digestBytes
+
+-- | Digest of the exact non-secret recovery adapter bytes.
+recoveryWireDigest :: ByteString -> Text
+recoveryWireDigest = digestBytes
 
 digestBytes :: ByteString -> Text
 digestBytes bytes =
@@ -1355,12 +2271,20 @@ data HandoffError
       HandoffTokenConsumed
     | -- | the root never opened this edge, so there is nothing to authenticate
       HandoffEdgeUnregistered
+    | -- | the rank-2 broker bracket has already closed
+      HandoffBrokerExpired
     | HandoffSignatureInvalid
     | -- | expected digest, then the digest of the bytes received
       HandoffPayloadDigestMismatch Text Text
     | -- | the binding names this frame, but the binary is that one
       HandoffFrameMismatch Text Text
     | HandoffBindingMismatch Text
+    | -- | request/response name, exact expected count, observed count
+      HandoffRecoveryFieldCount Text Int Int
+    | -- | exact expected signature width, observed width
+      HandoffRecoverySignatureLength Int Int
+    | HandoffRecoverySignatureInvalid
+    | HandoffRecoveryVerbInvalid Text
     | HandoffSigningKeyInvalid
     | HandoffSigningKeyUnavailable Text
     | HandoffVerificationKeyUnavailable Text
@@ -1382,12 +2306,29 @@ handoffErrorMessage err = case err of
     HandoffTokenInvalid -> "handoff: invalid one-time token"
     HandoffTokenConsumed -> "handoff: one-time token has already authorized another transcript"
     HandoffEdgeUnregistered -> "handoff: the root opened no such edge"
+    HandoffBrokerExpired -> "handoff: the root broker bracket has expired"
     HandoffSignatureInvalid -> "handoff: the grant signature is invalid for this transcript"
     HandoffPayloadDigestMismatch expected actual ->
         "handoff: payload digest " <> Text.unpack actual <> " does not match the bound " <> Text.unpack expected
     HandoffFrameMismatch bound actual ->
         "handoff: the grant binds frame " <> Text.unpack bound <> ", but this binary runs as " <> Text.unpack actual
     HandoffBindingMismatch detail -> "handoff: " <> Text.unpack detail
+    HandoffRecoveryFieldCount message expected actual ->
+        "handoff: recovery "
+            <> Text.unpack message
+            <> " expects "
+            <> show expected
+            <> " fields, saw "
+            <> show actual
+    HandoffRecoverySignatureLength expected actual ->
+        "handoff: recovery response signature must be "
+            <> show expected
+            <> " bytes, saw "
+            <> show actual
+    HandoffRecoverySignatureInvalid ->
+        "handoff: the recovery response signature is invalid for this projection"
+    HandoffRecoveryVerbInvalid verb ->
+        "handoff: recovery admits only down or destroy, not " <> Text.unpack verb
     HandoffSigningKeyInvalid -> "handoff: the installed signing key is malformed"
     HandoffSigningKeyUnavailable detail ->
         "handoff: no usable signing key: " <> Text.unpack detail

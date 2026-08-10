@@ -4,11 +4,11 @@ module EnsureSpec (tests) where
 
 import Control.Exception (try)
 import Data.Either (isLeft)
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import HostBootstrap.Command (allReconcilers)
-import HostBootstrap.Ensure (InstallStep (..), Reconciler (..), decide, runReconciler)
+import HostBootstrap.Ensure (InstallStep (..), Reconciler (..), decide, installAndVerifyWith, runReconciler)
 import qualified HostBootstrap.Ensure.AppleMetal as AppleMetal
 import qualified HostBootstrap.Ensure.Cuda as Cuda
 import qualified HostBootstrap.Ensure.CudaWin as CudaWin
@@ -18,10 +18,14 @@ import qualified HostBootstrap.Ensure.Homebrew as Homebrew
 import qualified HostBootstrap.Ensure.Incus as EIncus
 import qualified HostBootstrap.Ensure.Lima as Lima
 import qualified HostBootstrap.Ensure.Wsl2 as Wsl2
+import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (..))
 import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..))
+import SourceGuard (importsModule)
+import System.Directory (getCurrentDirectory)
 import System.Exit (ExitCode (..))
+import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
@@ -44,9 +48,11 @@ tests =
         [ testGroup "applicability matrix" applicabilityCases
         , testGroup "decide" decideCases
         , testGroup "runReconciler" runCases
+        , testGroup "install-and-verify driver" installDriverCases
         , testGroup "install plans" installPlanCases
         , testGroup "Incus provider capability probe" incusProbeCases
         , testGroup "CUDA nvkind runtime probe" cudaProbeCases
+        , testGroup "WSL2 prerequisite boundary" wslPrerequisiteCases
         ]
 
 applicabilityCases :: [TestTree]
@@ -116,9 +122,90 @@ runCases =
         ran @?= True
     ]
 
+data InstallDriverEvent
+    = Probed Substrate Bool
+    | RanStep Substrate HostTool [String]
+    | Refreshed Substrate
+    deriving (Eq, Show)
+
+installDriverCases :: [TestTree]
+installDriverCases =
+    [ testCase "present dependency is a verified no-op" $ do
+        events <- newIORef []
+        let note event = modifyIORef' events (++ [event])
+            probe cfg = note (Probed (hcSubstrate cfg) True) >> pure True
+            runner cfg tool args = note (RanStep (hcSubstrate cfg) tool args) >> pure (Right (ExitSuccess, "", ""))
+            refresh cfg = note (Refreshed (hcSubstrate cfg)) >> pure cfg
+            plan _ = error "present dependency must not evaluate its install plan"
+        installAndVerifyWith runner refresh "test" probe plan cpuConfig
+        readIORef events >>= (@?= [Probed cpu True])
+    , testCase "absent dependency runs every step, verifies, then a second invocation is a no-op" $ do
+        installed <- newIORef False
+        events <- newIORef []
+        let note event = modifyIORef' events (++ [event])
+            probe cfg = do
+                present <- readIORef installed
+                note (Probed (hcSubstrate cfg) present)
+                pure present
+            runner cfg tool args = do
+                note (RanStep (hcSubstrate cfg) tool args)
+                if tool == Ghcup
+                    then writeIORef installed True
+                    else pure ()
+                pure (Right (ExitSuccess, "", ""))
+            refresh cfg = note (Refreshed (hcSubstrate cfg)) >> pure cfg{hcSubstrate = gpu}
+            steps = [InstallStep Brew ["install", "demo"], InstallStep Ghcup ["install", "demo"]]
+        installAndVerifyWith runner refresh "test" probe (const (Right steps)) cpuConfig
+        installAndVerifyWith runner refresh "test" probe (const (Right steps)) cpuConfig
+        readIORef events
+            >>= ( @?= [ Probed cpu False
+                       , RanStep cpu Brew ["install", "demo"]
+                       , Refreshed cpu
+                       , RanStep gpu Ghcup ["install", "demo"]
+                       , Refreshed gpu
+                       , Probed gpu True
+                       , Probed cpu True
+                       ]
+                )
+    , testCase "post-install verification failure exits after the final probe" $ do
+        events <- newIORef []
+        let note event = modifyIORef' events (++ [event])
+            probe cfg = note (Probed (hcSubstrate cfg) False) >> pure False
+            runner cfg tool args = note (RanStep (hcSubstrate cfg) tool args) >> pure (Right (ExitSuccess, "", ""))
+            refresh cfg = note (Refreshed (hcSubstrate cfg)) >> pure cfg
+            steps = [InstallStep Brew ["install", "demo"]]
+        result <- try (installAndVerifyWith runner refresh "test" probe (const (Right steps)) cpuConfig) :: IO (Either ExitCode ())
+        result @?= Left (ExitFailure 1)
+        readIORef events
+            >>= (@?= [Probed cpu False, RanStep cpu Brew ["install", "demo"], Refreshed cpu, Probed cpu False])
+    , testCase "plan refusal exits before any install or refresh effect" $ do
+        events <- newIORef []
+        let note event = modifyIORef' events (++ [event])
+            probe cfg = note (Probed (hcSubstrate cfg) False) >> pure False
+            runner cfg tool args = note (RanStep (hcSubstrate cfg) tool args) >> pure (Right (ExitSuccess, "", ""))
+            refresh cfg = note (Refreshed (hcSubstrate cfg)) >> pure cfg
+        result <- try (installAndVerifyWith runner refresh "test" probe (const (Left "unsupported host")) cpuConfig) :: IO (Either ExitCode ())
+        result @?= Left (ExitFailure 1)
+        readIORef events >>= (@?= [Probed cpu False])
+    , testCase "failed install step exits without refresh or post-install verification" $ do
+        events <- newIORef []
+        let note event = modifyIORef' events (++ [event])
+            probe cfg = note (Probed (hcSubstrate cfg) False) >> pure False
+            runner cfg tool args = note (RanStep (hcSubstrate cfg) tool args) >> pure (Right (ExitFailure 7, "", "step failed"))
+            refresh cfg = note (Refreshed (hcSubstrate cfg)) >> pure cfg
+            steps = [InstallStep Brew ["install", "demo"]]
+        result <- try (installAndVerifyWith runner refresh "test" probe (const (Right steps)) cpuConfig) :: IO (Either ExitCode ())
+        result @?= Left (ExitFailure 1)
+        readIORef events >>= (@?= [Probed cpu False, RanStep cpu Brew ["install", "demo"]])
+    ]
+
+cpuConfig :: HostConfig
+cpuConfig = HostConfig{hcSubstrate = cpu, hcToolPaths = Map.empty}
+
 {- | The pure, substrate-branched install planners (install-and-verify, § L):
 Homebrew formulae on apple-silicon; apt/ghcup/container-toolkit on linux. The
-IO driver is exercised during real bootstrap runs; these assert the plans.
+driver's control flow is covered above through its injectable effects; these
+assert each reconciler's pure plan.
 -}
 installPlanCases :: [TestTree]
 installPlanCases =
@@ -331,3 +418,50 @@ cudaProbeCases =
         Cuda.nvkindRuntimeProbeReady (Right (ExitSuccess, "", "")) @?= False
         Cuda.nvkindRuntimeProbeReady (Right (ExitFailure 1, "", "runtime misconfigured")) @?= False
     ]
+
+wslPrerequisiteCases :: [TestTree]
+wslPrerequisiteCases =
+    [ testCase "diagnostic classifiers and hypervisor argv live with ensure" $ do
+        Wsl2.wslReportsVirtualizationDisabled
+            (ExitSuccess, "WSL2 is unable to start since virtualization is not enabled", "")
+            @?= True
+        Wsl2.wslReportsVirtualizationDisabled
+            (ExitSuccess, utf16ish "WSL2 is unable to start since virtualization is not enabled", "")
+            @?= True
+        Wsl2.wslReportsNoInstalledDistributions
+            (ExitFailure 1, "Windows Subsystem for Linux has no installed distributions.", "")
+            @?= True
+        Wsl2.normalizeWslText (utf16ish "Ubuntu-24.04") @?= "ubuntu-24.04"
+        Wsl2.bcdeditHypervisorLaunchArgs
+            @?= ["/set", "hypervisorlaunchtype", "auto"]
+    , testCase "Ensure.Wsl2 does not import the later provider realization" $ do
+        cwd <- getCurrentDirectory
+        root <- findRepoRoot cwd >>= maybe (fail ("could not locate repository root from " ++ cwd)) pure
+        source <- readFile (root </> "core/hostbootstrap-core/src/HostBootstrap/Ensure/Wsl2.hs")
+        assertBool
+            "Ensure.Wsl2 imported HostBootstrap.Wsl2"
+            (not (importsModule "HostBootstrap.Wsl2" source))
+    , testCase "dependency import scanner catches decorated multiline imports and ignores lexical controls" $ do
+        let sample =
+                unlines
+                    [ "-- import HostBootstrap.Commented"
+                    , "{- outer {- import HostBootstrap.Nested -} import HostBootstrap.BlockCommented -}"
+                    , "import {-# SOURCE #-}"
+                    , "  safe"
+                    , "  qualified"
+                    , "  \"hostbootstrap-core\""
+                    , "  HostBootstrap.Wsl2"
+                    , "literal = \"import HostBootstrap.StringLiteral\""
+                    ]
+        assertBool "decorated multiline provider import was missed" (importsModule "HostBootstrap.Wsl2" sample)
+        mapM_
+            (\ignored -> assertBool ("lexical control was treated as an import: " ++ ignored) (not (importsModule ignored sample)))
+            [ "HostBootstrap.Commented"
+            , "HostBootstrap.Nested"
+            , "HostBootstrap.BlockCommented"
+            , "HostBootstrap.StringLiteral"
+            ]
+    ]
+
+utf16ish :: String -> String
+utf16ish = concatMap (\character -> [character, '\0'])

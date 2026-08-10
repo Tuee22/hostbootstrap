@@ -43,6 +43,8 @@ module HostBootstrap.Registry
     registryAuthEnvVar,
     dockerAuthStdinWrapper,
     withForwardedRegistryAuth,
+    registryAuthLiftPlan,
+    liftSubcommandWithAuth,
   )
 where
 
@@ -56,6 +58,23 @@ import Data.List (isInfixOf)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import HostBootstrap.Ensure (runToolWithStdin)
+import HostBootstrap.HostConfig (HostConfig)
+import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima, Wsl), toolCommandName)
+import HostBootstrap.Lift
+  ( SelfRef,
+    containerRunArgs,
+    liftSubcommand,
+    shellQuoteArgs,
+  )
+import HostBootstrap.Lift.Context
+  ( LiftContext (..),
+    LiftLayer (..),
+    execVMArgs,
+    shellVMArgs,
+    wsl2Distro,
+    wslExecArgs,
+  )
 import System.Directory
   ( doesFileExist,
     getHomeDirectory,
@@ -65,6 +84,7 @@ import System.Directory
 import System.Directory (getTemporaryDirectory)
 #endif
 import System.Environment (lookupEnv, setEnv, unsetEnv)
+import System.Exit (ExitCode)
 import System.FilePath ((</>))
 #ifndef mingw32_HOST_OS
 import System.Posix.Temp (mkdtemp)
@@ -170,6 +190,48 @@ dockerAuthStdinWrapper inner =
   "__hbcfg=$(mktemp -d); trap 'rm -rf \"$__hbcfg\"' EXIT; "
     ++ "cat > \"$__hbcfg/config.json\"; export DOCKER_CONFIG=\"$__hbcfg\"; "
     ++ inner
+
+-- | Describe the supported VM-to-container registry-auth lift without accepting
+-- or exposing a credential. Only the stable environment-variable name appears
+-- in the nested @docker run@ argv; the opaque payload is supplied later on
+-- @stdin@ by 'liftSubcommandWithAuth'. Unsupported context shapes have no plan.
+registryAuthLiftPlan :: LiftContext -> [String] -> Maybe (HostTool, [String])
+registryAuthLiftPlan context subcommand =
+  case liftLayers context of
+    [ViaLimaVM vm, ViaContainer container] ->
+      forward Lima (shellVMArgs vm) container
+    [ViaVM vm, ViaContainer container] ->
+      forward Incus (execVMArgs vm) container
+    [ViaWsl2VM vm, ViaContainer container] ->
+      forward Wsl (wslExecArgs (wsl2Distro vm)) container
+    _ -> Nothing
+  where
+    forward tool vmShell container =
+      let inner = toolCommandName Docker : containerRunArgs container subcommand
+          script =
+            "export "
+              ++ registryAuthEnvVar
+              ++ "=\"$(cat)\"; exec "
+              ++ shellQuoteArgs inner
+       in Just (tool, vmShell ["bash", "-lc", script])
+
+-- | Execute a registry-aware lift planned by 'registryAuthLiftPlan'. The pure
+-- plan contains only the stable environment-variable name; the opaque payload
+-- remains on @stdin@ at this effect seam.
+liftSubcommandWithAuth ::
+  HostConfig ->
+  Maybe RegistryAuth ->
+  SelfRef ->
+  LiftContext ->
+  [String] ->
+  IO (Either String (ExitCode, String, String))
+liftSubcommandWithAuth cfg Nothing self context subcommand =
+  liftSubcommand cfg self context subcommand
+liftSubcommandWithAuth cfg (Just auth) self context subcommand =
+  case registryAuthLiftPlan context subcommand of
+    Just (tool, args) ->
+      runToolWithStdin cfg tool args (T.unpack (registryConfigPayload auth))
+    Nothing -> liftSubcommand cfg self context subcommand
 
 -- | Run an action with the forwarded Docker Hub credential active for any Docker
 -- pulls the action triggers. Reads 'registryAuthEnvVar' (set by a parent that

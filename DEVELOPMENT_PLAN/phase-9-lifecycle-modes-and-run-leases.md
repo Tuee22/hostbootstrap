@@ -1,168 +1,298 @@
-# Phase 9 — Lifecycle modes, run leases, and profiles
+# Phase 9 — Lifecycle modes and run leases
 
 **Status**: Done
-**Depends on**: Phase 5 (operator, root, and command authority), Phase 7 (Dhall configuration and the
-generic project model)
+**Depends on**: Phase 5 (installed identity, operator verification, and authority kernels), Phase 7
+(Dhall configuration and the generic project model)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`
 
-> **Purpose**: Make a project be in exactly one lifecycle mode at a time, and make every invocation hold a
-> durable, classifiable lease that a crash leaves in a recoverable state.
+> **Purpose**: Establish exact Production and Harness mode, run, lease, snapshot, and lifecycle-profile
+> authority before project-plan construction begins.
 
 ## Phase Objective
 
-Production and a test run must never overlap, and a crashed invocation must leave behind something a
-successor can classify. Both are one protected record apiece: a project-wide **mode** both openers contend
-on, and a per-invocation **lease** that is recorded before a plan exists and bound to one once it does.
+Each installed project holds a protected mode lease whose type identifies Production or one exact Harness
+run. Harness acquisition mints its run identity generatively, and every mode, snapshot, and lease value
+retains that identity through its phantom indices. Binding changes an unbound lease into a bound lease only
+when the verified snapshot has the same scope.
 
-That pair is what replaces an opaque lock: an unbound lease can be closed once it is proved to have recorded
-no effect, and a bound lease names the exact snapshot its invocation reached.
+An opaque `ActiveProjectMode` narrows the project-wide lease to its exact lifecycle scope. The Production
+and Harness lifecycle-profile openers then consume matching root, mode, and unbound-lease evidence through
+separate protected one-use slots. Each opaque profile retains the exact installed-project name,
+protected-store identity, and broker epoch observed at that transition, so downstream plan admission can
+reject evidence assembled from distinct stores even when their project names and epoch numbers happen to
+match. Retaining ordinary Haskell values therefore cannot open a second profile or erase its durable origin.
 
 ## Sprints
 
-### Sprint 9.1: The project-wide mode [Done]
+### Sprint 9.1: Indexed `ProjectModeLease` [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
-`core/hostbootstrap-core/test/AuthoritySpec.hs`
+`core/hostbootstrap-core/test/AuthoritySpec.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
 
 #### Objective
 
-One mode record, two contending openers, exactly one winner.
+Represent the held project mode in the lease type so only the transition for that exact mode can consume
+it.
 
 #### Deliverables
 
-- `ProjectMode` is `ProductionMode` or `HarnessMode runId`; `projectModeName` renders it for refusals.
-- `acquireMode` is a compare-and-swap on one record. Production **retains** an already-held Production mode —
-  which is what makes `down` keep the exclusion — and a harness run may take the mode only when it is absent.
-- Two harness runs, or a harness run against live Production, contend on that exact record and exactly one
-  wins, with the loser refused by a message naming the held mode.
-- `releaseMode` compares the mode before deleting, so one profile cannot release another's.
-- `ProjectModeLease projectId brokerGeneration` is opaque and carries the generation it was taken under.
-- The cross-profile exclusion is proved **across processes**, not only in-process: the root brackets
-  release the exclusive entry once the mode transaction commits, so a competitor reaches the mode
-  compare-and-swap itself and is refused there by the held mode's name.
+- Opaque `ProductionMode` and `HarnessMode runId` types are the only public mode tags.
+- `ProjectModeLease projectId mode brokerGeneration` binds installed project, exact mode, and broker
+  generation in one opaque capability.
+- The protected record uses an internal stable wire sum that decodes only into the matching typed mode
+  transition.
+- Production acquisition retains an already-held Production mode for the same project, while a Harness
+  acquisition contends on the same protected record.
+- The public surface consists of opaque mode witnesses and scope-specific transitions; wire constructors
+  and mutation kernels remain package-private.
 
 #### Validation
 
-`AuthoritySpec` covers the retain branch, the harness exclusion, the cross-profile refusal, and a
-four-process race proving exactly one winner and that a live run's lease is never taken.
-
-The out-of-process cross-profile probe (`--hostbootstrap-mode-profile-probe`) is a real competitor binary
-whose only report is its own outcome — an exit code plus the name it was refused by, never an observation
-of the holder, so no read-only lease observer is exported (§ EE). Both directions are covered: a harness
-competitor against live Production is refused by `production`, and a Production competitor against a live
-run is refused by `harness:<runId>`. A control case runs the same probe against an empty store and requires
-it to *acquire*, so the refusal exit code cannot be satisfied vacuously. `cabal test all
---ghc-options=-Werror` from `core/` passed 938/938 on 2026-08-05 (aarch64-osx, GHC 9.12.4).
+`AuthoritySpec` proves exact-mode acquisition, Production retention, cross-mode refusal, and a
+multi-process contention case with one winner. `CompileFailSpec` proves that a Production lease cannot
+inhabit a Harness mode and that callers cannot construct a mode tag or generic mutation authority. The
+phase gate runs with `-Werror`.
 
 #### Remaining Work
 
 None.
 
-### Sprint 9.2: Plan snapshots and run leases [Done]
+### Sprint 9.2: Generative `RunId runId` [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`
-**Substrates**: linux-cpu
-**Docs to update**: `documents/architecture/lifecycle_state_model.md`
-
-#### Objective
-
-A bound lease always names a snapshot that exists durably.
-
-#### Deliverables
-
-- `persistPlanSnapshot` and `persistCanonicalPlanSnapshot` write an **immutable** snapshot record; repeating
-  the exact bytes is idempotent and does not advance the version, and any attempted replacement is refused.
-- `verifyPlanSnapshot` reads it back and yields `VerifiedPlanSnapshot projectId specDigest planDigest` inside
-  a continuation, so the digests a lease is bound to are the store's rather than a caller's.
-- `UnboundRunLease` authorizes no effect; its only powers are to be bound or to be closed after proof.
-- `bindRunLease` compare-and-swaps the lease onto the verified snapshot and yields `RunLeaseBinding`: a
-  `FreshRunLeaseBinding` with proof that no recovery is owed, or an `ExistingRunLeaseBinding` carrying the
-  recovery classification. An already-bound lease is not an error — it is the abandoned-invocation case.
-- A lease bound to *different* digests is refused: that is snapshot substitution, not resumption.
-
-#### Validation
-
-`AuthoritySpec` covers idempotent persistence, the replacement refusal, both binding branches, and the
-substitution refusal. The bound-snapshot assertion reads the record back through the production decoder
-rather than a second copy of the wire format.
-
-#### Remaining Work
-
-None.
-
-### Sprint 9.3: The lifecycle profile openers [Done]
-
-**Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`,
 `documents/architecture/harness_workflow.md`
 
 #### Objective
 
-Open a profile only from the exact mode and lease that authorize it, inside one transaction.
+Give each Harness acquisition a fresh type identity that cannot be selected or reconstructed by a caller.
 
 #### Deliverables
 
-- `withProductionRoot` and `withHarnessRoot` run the operator check, the precondition recheck, and the mode
-  compare-and-swap **inside one protected entry**, so nothing can slip between the check and ownership.
-- `withHarnessRoot` mints the run identity itself and binds it in a rank-2 continuation, so a value from one
-  run cannot be presented in another.
-- `withProductionLifecycleProfile` and `withHarnessLifecycleProfile` require the exact active mode and a
-  still-unbound lease. A test component receives only the harness opener, so there is no route from harness
-  code to a production profile.
-- `HarnessPreconditions` holds its probe privately and derives the sibling-config half from installed project
-  identity, so a caller cannot inject a successful observation.
-- Production's lease is recorded under one reserved run identity, distinguished structurally from a generated
-  one.
+- `RunId runId` is opaque and exposes only a non-authorizing text projection for diagnostics and stable
+  record keys.
+- The Harness acquisition transition mints `RunId runId` only inside a rank-2 continuation.
+- `HarnessMode runId`, `Harness projectId runId`, the indexed mode lease, and the Harness unbound lease all
+  carry the same generative `runId`.
+- Production uses a structurally distinct lease-identity branch that contains no Harness `RunId runId`.
+- The text projection is diagnostic/key material only and is never accepted as a `RunId runId`
+  constructor input.
 
 #### Validation
 
-`AuthoritySpec` covers both openers, the in-transaction recheck, the wrong-mode refusals, and the compile-fail
-fixture proving a test component cannot reach the production planner.
+`AuthoritySpec` proves distinct Harness acquisitions receive distinct stable identities and that the
+Production identity branch is classified independently. `CompileFailSpec` proves that values from two
+Harness continuations cannot cross-pair and that callers cannot mint `RunId runId`. The phase gate runs
+with `-Werror`.
 
 #### Remaining Work
 
 None.
 
-### Sprint 9.4: Closure evidence and terminal close [Done]
+### Sprint 9.3: Scope-indexed lease binding and `VerifiedPlanSnapshot` [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
 
 #### Objective
 
-Close a project only on proof, and release the mode last.
+Bind a lease only to a protected snapshot verified for the same Production or Harness scope.
 
 #### Deliverables
 
-- `verifyNoProjectResourcesAcquired` is the true-pre-effect verifier: a single effect-shaped record refuses,
-  so partial work can never be relabelled as a refusal that preceded acquisition.
-- `destroySettledClosure` converts a settled-destroy proof plus a complete-session proof into the other
-  branch of `ProjectClosureEvidence`, comparing both against the bound lease's own plan digest.
-- `releaseProductionMode` requires the root half and the matching evidence half to agree; a settled-destroy
-  root cannot be paired with pre-effect evidence.
-- `HarnessCloseRoot` is the harness counterpart of the production close root, with exactly two producers — the
-  live root, and abandoned-run recovery — and it records the project name.
-- `authorizeHarnessClose` persists the Closing epoch before the terminal projection runs;
-  `finalizeHarnessClose` closes the lease and releases the exact mode epoch **last**.
-- `closeHarnessRun` is the short close and accepts only pre-effect evidence; a settled destroy must persist a
-  Closing epoch first — see [rationale.md](rationale.md).
-- `ProductionInvocationCompleted` / `closeCompletedProductionInvocation` end an *invocation* without clearing
-  Production mode, which is what lets `down` retain the exclusion. An uncertain acknowledgment is its own
-  constructor, so the only sound continuation is resuming the same stable close key.
+- `UnboundRunLease scope brokerGeneration` is the sole pre-binding lease capability.
+- `VerifiedPlanSnapshot scope specDigest planDigest` binds the protected snapshot observation to its exact
+  lifecycle scope and digests.
+- `BoundRunLease scope specDigest planDigest brokerGeneration` retains the same scope, both digests, and
+  broker generation.
+- The protected binding transition has this exact surface:
+
+  ```haskell
+  bindRunLease
+    :: UnboundRunLease scope brokerGeneration
+    -> VerifiedPlanSnapshot scope specDigest planDigest
+    -> (BoundRunLease scope specDigest planDigest brokerGeneration -> IO a)
+    -> IO (Either LeaseConflict a)
+  ```
+
+- A successful compare-and-swap enters only the bound-lease continuation; a conflicting protected lease
+  state returns `LeaseConflict` without authority.
+- Fresh root acquisition creates an unbound lease from an absent record, or compare-and-swaps an exact
+  decoded `LeaseUnbound` record for the supported pre-effect retry. A decoded `LeaseBound` record returns
+  `ModeLeaseNotBindable <run> "bound"`, every other non-unbound state is likewise refused, and malformed
+  bytes return `ModeMalformedRecord`; none of these refusal branches enters the root continuation or
+  changes the lease or snapshot record.
 
 #### Validation
 
-`AuthoritySpec` covers each verifier, the root/evidence disagreement, the settled-evidence refusal on the
-short close, the cross-project close refusal, and that mode is released only after the lease closes.
+`AuthoritySpec` proves successful same-scope binding, exact digest retention, conflict behavior, and the
+supported unbound pre-effect retry. It also proves that a second Production root refuses a bound lease
+without entering its continuation while preserving the exact lease and snapshot versions and bytes, and
+that malformed lease bytes receive the typed refusal without mutation. `CompileFailSpec` proves that a
+Production lease cannot bind a Harness snapshot, two Harness run scopes cannot cross-pair, and a snapshot
+for one digest pair cannot yield another pair's bound lease. The phase gate runs with `-Werror`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 9.4: `ActiveProjectMode` narrowing [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Narrow an indexed project-wide mode lease into the exact lifecycle scope authorized by its mode tag.
+
+#### Deliverables
+
+- `ActiveProjectMode scope brokerGeneration` is opaque and retains the active broker generation.
+- Production narrowing has the exact type:
+
+  ```haskell
+  productionActiveMode
+    :: ProjectModeLease projectId ProductionMode brokerGeneration
+    -> ActiveProjectMode (Production projectId) brokerGeneration
+  ```
+
+- Harness narrowing has the exact type:
+
+  ```haskell
+  harnessActiveMode
+    :: ProjectModeLease projectId (HarnessMode runId) brokerGeneration
+    -> ActiveProjectMode (Harness projectId runId) brokerGeneration
+  ```
+
+- These two scope-specific functions are the only producers of active-mode authority.
+
+#### Validation
+
+`CompileFailSpec` proves that Production and Harness active modes cannot substitute for one another, that
+two Harness run indices cannot cross-pair, and that the constructor is inaccessible. `AuthoritySpec`
+checks that each narrowing preserves the broker epoch observed through the originating lease. The phase
+gate runs with `-Werror`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 9.5: Protected one-use Production `LifecycleProfile` slot [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Open a Production lifecycle profile exactly once from matching root scope, active mode, and unbound lease
+authority.
+
+#### Deliverables
+
+- `LifecycleProfile scope` is opaque and grants only the scope named by its phantom index.
+- Its hidden representation retains the exact installed-project name, protected-store identity, and broker
+  epoch observed through the opening lease; downstream evidence leaves need not infer that origin from the
+  scope phantom or from coincidentally equal epoch numbers.
+- The Production opener has the exact type:
+
+  ```haskell
+  withProductionLifecycleProfile
+    :: RootScopeAuthority (Production projectId)
+    -> ActiveProjectMode (Production projectId) brokerGeneration
+    -> UnboundRunLease (Production projectId) brokerGeneration
+    -> (LifecycleProfile (Production projectId) -> a)
+    -> IO (Either AuthorityError a)
+  ```
+
+- The opener compare-and-swaps the unbound lease's protected Production profile slot from available to
+  consumed before entering the continuation.
+- Root scope, active mode, and unbound lease agree on Production scope and broker generation by type.
+- A retained input tuple cannot consume the slot again; the protected transition returns an authority
+  error and yields no profile.
+
+#### Validation
+
+`AuthoritySpec` proves one successful open, refusal of a second open, and a concurrent same-slot race with
+one continuation entry. `CompileFailSpec` proves that Harness evidence and a different broker generation
+cannot inhabit the Production opener. The phase gate runs with `-Werror`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 9.6: Protected one-use Harness `LifecycleProfile` slot [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`,
+`documents/architecture/harness_workflow.md`
+
+#### Objective
+
+Open a Harness lifecycle profile exactly once from evidence for one generative Harness run.
+
+#### Deliverables
+
+- The Harness opener has the exact type:
+
+  ```haskell
+  withHarnessLifecycleProfile
+    :: RootScopeAuthority (Harness projectId runId)
+    -> HarnessAuthority projectId runId
+    -> RunId runId
+    -> ActiveProjectMode (Harness projectId runId) brokerGeneration
+    -> UnboundRunLease (Harness projectId runId) brokerGeneration
+    -> (LifecycleProfile (Harness projectId runId) -> a)
+    -> IO (Either AuthorityError a)
+  ```
+
+- Root scope, Harness authority, run witness, active mode, and unbound lease share the exact `projectId`,
+  `runId`, and broker generation indices.
+- The resulting profile retains the exact installed-project name, protected-store identity, and broker epoch
+  observed through that Harness lease, just as the Production profile does.
+- The opener compare-and-swaps that run's protected Harness profile slot from available to consumed before
+  entering the continuation.
+- A retained evidence tuple cannot consume the slot again or open a profile for another run.
+
+#### Validation
+
+`AuthoritySpec` proves one successful open, refusal of a second open, and a concurrent same-run race with
+one continuation entry. `CompileFailSpec` proves that Production evidence, another Harness run, or another
+broker generation cannot inhabit the opener. The phase gate runs with `-Werror`.
+
+Dated evidence for the phase gate and lease-acquisition contract:
+`cabal test all --ghc-options=-Werror` from `core/` passed 1169/1169 on 2026-08-09 (aarch64-osx,
+GHC 9.12.4), including all 113 public compile-fail boundaries. The same run covered distinct identities
+across successive Harness acquisitions, the bound and malformed Production-root refusal/preservation
+cases, exact lease/snapshot conflicts, and the Production and Harness same-slot concurrent one-winner
+races. The library and test-suite build also passed with `-Werror`.
+
+Origin-retention revalidation on 2026-08-09 (aarch64-osx, GHC 9.12.4) passed the exact gate at 1194/1194,
+including Production and Harness project/store profile projections, an end-to-end two-store/same-project/
+same-epoch refusal before snapshot persistence, and all 123 public compile-fail boundaries.
 
 #### Remaining Work
 
@@ -171,11 +301,17 @@ None.
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
-- `documents/architecture/lifecycle_state_model.md` — modes, leases, snapshots, profiles, and closure.
-- `documents/architecture/harness_workflow.md` — the harness profile's place in the model.
+
+- `documents/architecture/lifecycle_state_model.md` — indexed modes, generative run identity,
+  scope-indexed lease binding, active-mode narrowing, and protected profile slots.
+- `documents/architecture/harness_workflow.md` — Harness run identity and one-use profile admission.
 
 **Engineering docs to create/update:**
-- `documents/engineering/testing.md` — the out-of-process mode and lease races.
+
+- `documents/engineering/testing.md` — protected compare-and-swap races and compile-fail authority
+  fixtures.
 
 **Cross-references to add:**
-- `development_plan_standards.md` § Y and § Z name this phase as the owner of the mode/lease contracts.
+
+- Keep `development_plan_standards.md` § EE and the Phase 9 README status row aligned with these six
+  foundations.

@@ -17,9 +17,23 @@ tested-with: GHC ==9.12.4
 extra-source-files:
     test/compile-fail/*.hs
 
+flag provider-live
+  description: Build the explicitly confirmed native Linux provider lifecycle gate
+  default: False
+  manual: True
+
 common warnings
   default-language: Haskell2010
   ghc-options: -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints
+
+library harness-lifecycle-internal
+  import: warnings
+  visibility: private
+  hs-source-dirs: internal/harness-lifecycle
+  exposed-modules:
+      HostBootstrap.Harness.Lifecycle.Internal
+  build-depends:
+      base >=4.18 && <5
 
 library
   import: warnings
@@ -30,23 +44,32 @@ library
       HostBootstrap.HostTool
       HostBootstrap.HostConfig
       HostBootstrap.Authority
+      HostBootstrap.Authority.ProjectPlan
+      HostBootstrap.ProjectPlan
+      HostBootstrap.ProjectPlan.Construct
+      HostBootstrap.ProjectPlan.Frame
+      HostBootstrap.ProjectPlan.Snapshot
       HostBootstrap.Activation
       HostBootstrap.Build
       HostBootstrap.Detached
       HostBootstrap.Handoff
       HostBootstrap.Handoff.Receiver
       HostBootstrap.Handoff.Relay
+      HostBootstrap.Lifecycle.Closure
       HostBootstrap.Lifecycle.Execution
       HostBootstrap.Lifecycle.Prepared
       HostBootstrap.Lifecycle.Session
       HostBootstrap.Lifecycle.Session.Testing
       HostBootstrap.Protected
+      HostBootstrap.ProjectScope
       HostBootstrap.Readiness
       HostBootstrap.Reconcile
       HostBootstrap.HostPrereqs
       HostBootstrap.Substrate
       HostBootstrap.Substrate.Provider
       HostBootstrap.Substrate.Provider.Alias
+      HostBootstrap.Substrate.Provider.Backend
+      HostBootstrap.Substrate.Provider.Reconcile
       HostBootstrap.Ensure
       HostBootstrap.Ensure.AppleMetal
       HostBootstrap.Ensure.Docker
@@ -67,6 +90,7 @@ library
       HostBootstrap.Wsl2.GlobalWall.Windows
       HostBootstrap.Lifecycle.Mode
       HostBootstrap.Lift
+      HostBootstrap.Lift.Context
       HostBootstrap.Step
       HostBootstrap.Teardown
       HostBootstrap.Chain
@@ -83,6 +107,7 @@ library
       HostBootstrap.Dhall.Gen
       HostBootstrap.Dhall.Hoist
       HostBootstrap.Cluster.Lifecycle
+      HostBootstrap.Cluster.Cordon.Foundation
       HostBootstrap.Cluster.Cordon
       HostBootstrap.Cluster.Budget
       HostBootstrap.Cluster.Reconcile
@@ -97,14 +122,21 @@ library
       HostBootstrap.Service.Program
       HostBootstrap.DocValidator
   other-modules:
+      HostBootstrap.Authority.Kernel
       HostBootstrap.Config.Authority.Internal
       HostBootstrap.Config.Fields.Internal
       HostBootstrap.Config.Install.Native
+      HostBootstrap.Config.Schema.Internal
+      HostBootstrap.Harness.Ownership.Internal
       HostBootstrap.Handoff.Protocol
+      HostBootstrap.Handoff.Receiver.Internal
       HostBootstrap.Lifecycle.Execution.Internal
       HostBootstrap.Lifecycle.Plan
       HostBootstrap.Lifecycle.Prepared.Internal
       HostBootstrap.Lifecycle.Transaction
+      HostBootstrap.ProjectPlan.Child.Internal
+      HostBootstrap.Substrate.Provider.Internal
+      HostBootstrap.Substrate.Provider.Observation.Internal
   build-depends:
       aeson
     , base >=4.18 && <5
@@ -114,6 +146,7 @@ library
     , directory
     , dhall
     , filepath
+    , hostbootstrap-core:harness-lifecycle-internal
     , memory
     , optparse-applicative
     , process
@@ -144,6 +177,7 @@ test-suite hostbootstrap-core-test
   other-modules:
       Fixture
       PrepareFixture
+      SourceGuard
       AuthoritySpec
       HandoffProtocolSpec
       HandoffSpec
@@ -166,11 +200,14 @@ test-suite hostbootstrap-core-test
       CordonSpec
       ProviderSpec
       ProviderAliasSpec
+      ProviderBackendSpec
+      ProviderReconcileSpec
       ClusterReconcileSpec
       ClusterBackendSpec
       DataRootSpec
       GeneratedConfigSpec
       ProjectRootSpec
+      ProjectPlanSpec
       ContextSpec
       LifecycleSpec
       HarnessSpec
@@ -179,6 +216,7 @@ test-suite hostbootstrap-core-test
       Wsl2Spec
       WslGlobalWallSpec
       WslGlobalWallConfigBytesSpec
+      LiftContextSpec
       LiftSpec
       StepSpec
       ChainSpec
@@ -199,13 +237,46 @@ test-suite hostbootstrap-core-test
       base >=4.18 && <5
     , bytestring
     , containers
+    , crypton
+    , memory
     , dhall
     , directory
     , filepath
     , hostbootstrap-core
+    , hostbootstrap-core:harness-lifecycle-internal
     , optparse-applicative
     , process
     , tasty
     , tasty-hunit
     , temporary
     , text
+  if !os(windows)
+    build-depends:
+        unix
+
+test-suite hostbootstrap-provider-live-linux-cpu
+  import: warnings
+  type: exitcode-stdio-1.0
+  hs-source-dirs: provider-live
+  main-is: ProviderLiveMain.hs
+  other-modules:
+      ProviderLiveAliasFixture
+      ProviderLiveConfig
+      ProviderLiveRunner
+  ghc-options: -threaded
+  build-depends:
+      base >=4.18 && <5
+    , dhall
+    , directory
+    , filepath
+    , hostbootstrap-core
+    , process
+    , temporary
+    , text
+    , unix
+  if !flag(provider-live)
+    buildable: False
+  if !os(linux)
+    buildable: False
+  if !arch(x86_64)
+    buildable: False

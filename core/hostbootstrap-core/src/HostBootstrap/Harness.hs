@@ -11,7 +11,10 @@ variant's chosen cases against the shared, already-up environment via 'runMatrix
 (whose per-case 'Seams' are built internally by @assertSeams@), tearing the stack
 down once per variant while preserving production @.data@. The harness is
 parameterized by a 'Seams' record for the live-stack assertions, and the app
-supplies only the case matrix (see @development_plan_standards.md § S, § T@).
+supplies only the case matrix and assertion environment (see
+@development_plan_standards.md § S, § T@).  Lifecycle setup and reversal are
+supplied by the command boundary from the exact Harness-scoped project plan;
+they are not project-owned test-suite callbacks.
 
 The self-created-data removal decision and report aggregation are pure;
 'runMatrix' is the thin IO loop that guarantees teardown. Execution shape comes
@@ -54,6 +57,9 @@ module HostBootstrap.Harness (
     testSuiteCaseIds,
     testSuiteCaseCount,
     allCasesSelector,
+    HarnessLifecycle,
+    runHarnessForward,
+    runHarnessReverse,
     ConfigVariant (..),
     SafetyRefusal (..),
     safetyRefusalMarker,
@@ -84,6 +90,16 @@ import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NE
 import Data.Maybe (mapMaybe)
 import qualified Data.Text as T
+import HostBootstrap.Harness.Lifecycle.Internal (
+    HarnessLifecycle,
+    runHarnessForward,
+    runHarnessReverse,
+ )
+import HostBootstrap.Step (
+    conflictObservationMarker,
+    refusedObservationMarker,
+    unsupportedObservationMarker,
+ )
 import Numeric.Natural (Natural)
 import System.FilePath ((</>))
 
@@ -484,33 +500,25 @@ runMatrix seams cases = Report <$> mapM runOne cases
                 pure (renderCaseId c, either (LifecycleFailed . displayException) id result)
     renderCaseId = T.unpack . caseIdText . caseId
 
-{- | A project's complete, /stack-driven/ test surface
-(development_plan_standards § W, § Z). The harness is **not** a second
-cluster-bring-up path: per distinct test configuration it drives the real
-@project up@ (the same chain interpreter production uses), runs the case
-assertions against that live stack, and tears it down with @project destroy@.
-A project supplies one 'TestSuite' to 'HostBootstrap.CLI.runHostBootstrapCLI';
-the inherited @test run@ verb selects over it ('runSuiteSelection'). The
-existential @env@ hides the per-project assertion environment.
-
-The fields, in order:
+{- | A project's complete assertion surface (development_plan_standards § W,
+§ Z).  The suite owns no lifecycle callback: the command boundary retains one
+exact Harness-scoped project plan per variant and supplies its common forward
+and reverse interpreters through 'ConfigVariant'.  A project supplies only:
 
   1. the two hard fail-fast safety preconditions (§ Z): @Right ()@ to proceed,
      @Left reason@ to refuse before any side effect — built with
      'testSafetyPreconditions';
-  2. /bring up/: given the active stable 'VariantId', drive @project up@ against
-     the variant's already-written @<project>.dhall@, then resolve the assertion
-     @env@ (one @project up@ per variant);
-  3. the 'Case' matrix the assertions cover;
-  4. the per-case assertion against the live stack (reusing the self-reference
-     lift, § U);
-  5. /tear down/: drive @project destroy@ (env-independent — it re-detects the
-     stack and deletes only what this run created, the self-created-only
-     delete-guard, § Z). Because it takes no @env@, 'runSuiteSelection' can run it
-     even when /bring up/ itself failed, so a failed @project up@ never leaks the
-     stack.
+  2. an assertion-environment opener, run after the common forward interpreter
+     has brought the exact variant plan up;
+  3. the 'Case' matrix the assertions cover; and
+  4. the per-case assertion against that live stack; and
+  5. a post-reverse assertion that verifies the exact plan's owned resources
+     are absent after the common reverse interpreter succeeds.
 
-The bare binary ships 'emptySuite' through its explicit bare entrypoint.
+The existential @env@ hides the per-project assertion environment.  Removing
+lifecycle actions from this type is the structural single-representation
+boundary: a 'TestSuite' cannot supply a second top-level bring-up or teardown
+path.  The bare binary ships 'emptySuite' through its explicit bare entrypoint.
 -}
 data TestSuite
     = forall env.
@@ -522,7 +530,7 @@ data TestSuite
         (IO ())
 
 {- | The empty suite the bare @hostbootstrap@ binary ships: no safety obstacle, a
-trivial bring-up over no cases, so @test run all@ renders @0/0 passed@.
+trivial assertion environment over no cases, so @test run all@ renders @0/0 passed@.
 -}
 emptySuite :: TestSuite
 emptySuite = TestSuite (pure (Right ())) (\_ -> pure ()) [] (\_ _ -> pure Pass) (pure ())
@@ -546,13 +554,19 @@ allCasesSelector = "all"
 
 {- | One already-selected test-config variant the command layer supplies to
 'runSuiteSelection': its stable identity, non-empty typed case selection, and
-the rank-2 bracket that writes that variant's generated @<project>.dhall@ before
-bring-up and removes it after teardown.
+the rank-2 bracket that owns the generated @<project>.dhall@ while retaining one
+exact Harness project plan.  The bracket supplies that plan's common lifecycle
+actions and removes the generated config only after the engine has interpreted
+both directions.
 -}
 data ConfigVariant authority = ConfigVariant
     { variantId :: VariantId
     , variantCaseIds :: NonEmpty CaseId
-    , variantWithConfig :: forall a. authority -> IO a -> IO a
+    , variantWithLifecycle ::
+        forall a.
+        authority ->
+        (HarnessLifecycle -> IO a) ->
+        IO a
     }
 
 {- | A post-ensure safety probe discovered pre-existing operator state. Cleanup
@@ -569,34 +583,13 @@ instance Exception SafetyRefusal
 safetyRefusalMarker :: String
 safetyRefusalMarker = "HOSTBOOTSTRAP_SAFETY_REFUSAL:"
 
-{- | The markers a node's non-success observation renders with.
-
-They live here, in the module with no @HostBootstrap@ imports of its own, because
-both ends need them: "HostBootstrap.Step" renders an observation's detail with
-them, and the harness classifies a bring-up failure by them. A shared constant is
-what keeps the row the interpreter printed and the row the report card renders
-from drifting apart.
-
-A conflict, an unsupported backend, and a refusal are all terminal for the chain
-and all different for an operator: one is state to resolve, one is a lane this
-substrate cannot run, one is state this run does not own.
--}
-conflictObservationMarker :: String
-conflictObservationMarker = "conflict:"
-
-unsupportedObservationMarker :: String
-unsupportedObservationMarker = "unsupported:"
-
-refusedObservationMarker :: String
-refusedObservationMarker = "refused:"
-
 {- | Classify one lifecycle failure's cause into the outcome it actually was.
 
 An interpreted chain stops on the first node that did not reach its target state
 and reports that node's own row, so the reason a bring-up failure carries already
-names which of the three it was. Without this the report card flattened all of
-them to @BROKEN@, and a lane the substrate cannot run read the same as a broken
-one.
+names which of the three it was. The marker constants are owned by
+'HostBootstrap.Step.StepObservation' and re-exported here, so rendering and
+classification share one lower-level vocabulary.
 
 'Nothing' is the honest answer for a cause that names none of them: it is an
 ordinary lifecycle failure and the caller renders it as such rather than guessing.
@@ -658,30 +651,27 @@ testSafetyPreconditions productionClusterRunning = do
             else Right ()
 
 {- | Enforce the safety preconditions, then loop over the typed matrix selection
-the command layer supplies — for each variant: generate the run config, bring
-the test stack up (drive @project up@), run the selected case assertions, tear
-it down (drive @project destroy@), and delete the generated config — full
-teardown + spin-up between variants. Selector parsing and total-matrix
-projection occur before this engine. A refused safety precondition is a 'Left'
-and **no stack is brought up and no config is generated**. The per-case loop reuses
-'runMatrix' (the live stack is the shared, already-up env), so the harness owns no
-second bring-up path (§ W).
+the command layer supplies.  For each variant the exact-plan bracket generates
+the run config, invokes the common forward interpreter, opens the suite's
+assertion environment, runs the selected assertions, invokes the common reverse
+interpreter, and finally releases the generated config.  Selector parsing and
+total-matrix projection occur before this engine.  A refused safety precondition
+is a 'Left' and **no plan, config, or lifecycle effect is opened**.  The per-case
+loop reuses 'runMatrix', so the harness owns no second bring-up path (§ W).
 
-Each @(VariantId, case ids, withGeneratedConfig)@ value is supplied by the command layer (it
-holds the project's @tcfg@ and scope-aware restricted assembler): it writes that variant's generated
-run config as the sibling @<project>.dhall@ before bring-up and removes it after
-teardown. The brackets run **after** the safety precondition (which refuses if a
-production config already exists), so the harness only ever generates and removes
-a config of its own making. The safety precondition is checked **once** up front;
-the per-variant reports are aggregated into one 'Report', each row identified by
-its stable variant ID.
+Each 'ConfigVariant' is supplied by the command layer from the project's @tcfg@,
+scope-aware restricted assembler, and one exact Harness 'ProjectPlan'.  Its
+bracket runs after the safety precondition and encloses forward interpretation,
+assertions, reverse interpretation, and generated-config release.  The safety
+precondition is checked once up front; the per-variant reports are aggregated
+into one 'Report', each row identified by its stable variant ID.
 -}
 runSuiteSelection ::
     HarnessRunOwnership authority ->
     TestSuite ->
     [ConfigVariant authority] ->
     IO (Either String Report)
-runSuiteSelection ownership (TestSuite safety bringUp cases assertCase tearDown) variants = do
+runSuiteSelection ownership (TestSuite safety openAssertions cases assertCase assertReversed) variants = do
     safe <- safety
     case safe of
         Left reason -> pure (Left ("test run refused: " ++ reason))
@@ -745,15 +735,19 @@ runSuiteSelection ownership (TestSuite safety bringUp cases assertCase tearDown)
                     )
                 )
             )
-    -- Bring-up is **inside** the guaranteed teardown: a failed @project up@ runs
-    -- the same @project destroy@ and turns into a per-case 'LifecycleFailed' for
-    -- this variant. 'safeRunVariant' still catches anything that escapes, so
-    -- later variants can run.
-    runVariant chosen (ConfigVariant ident _ withGeneratedConfig) ownedAuthority =
-        labelReport ident <$> withGeneratedConfig ownedAuthority (runFrame chosen ident)
-    runFrame chosen ident = do
-        eenv <- trySynchronousIO (bringUp ident)
-        case eenv of
+    -- Forward interpretation is **inside** the exact plan's guaranteed reverse
+    -- path.  A non-refusal failure still drives the same plan's reverse
+    -- projection before the variant reports red.  'safeRunVariant' catches
+    -- anything that escapes, so later variants can run only after the ownership
+    -- bracket has resolved.
+    runVariant chosen (ConfigVariant ident _ withLifecycle) ownedAuthority =
+        labelReport ident
+            <$> withLifecycle
+                ownedAuthority
+                (runFrame chosen ident)
+    runFrame chosen ident lifecycle = do
+        forwarded <- trySynchronousIO (runHarnessForward lifecycle)
+        case forwarded of
             Left err ->
                 case fromException err :: Maybe SafetyRefusal of
                     -- A refusal proven to precede acquisition has an empty
@@ -769,31 +763,39 @@ runSuiteSelection ownership (TestSuite safety bringUp cases assertCase tearDown)
                     -- so the row it produces is that node's own outcome rather
                     -- than one undifferentiated BROKEN (§ Y).
                     Nothing ->
-                        withTeardown
+                        withReverse
+                            lifecycle
                             chosen
                             ( pure
                                 ( allOutcomes
                                     chosen
-                                    (bringUpOutcome (displayException err))
+                                    (forwardOutcome (displayException err))
                                 )
                             )
-            Right env -> withTeardown chosen (runMatrix (assertSeams env) chosen)
-    {- Teardown always runs after acquisition, and its own failure is a
+            Right () ->
+                withReverse lifecycle chosen $ do
+                    eenv <- trySynchronousIO (openAssertions ident)
+                    case eenv of
+                        Left err -> pure (variantBroke chosen err)
+                        Right env -> runMatrix (assertSeams env) chosen
+    {- Reverse interpretation always runs after acquisition.  The suite's
+    post-reverse assertion runs only after that interpreter returns success, so
+    it can verify absence without becoming a lifecycle effect.  Either failure is a
     \*distinct* outcome appended to the variant's rows: cleanup that broke makes
     the variant red with the cause named, rather than a green report hiding
     leaked state (§ Z). The per-case results are preserved, because "the
     assertions passed but the stack did not come down" is exactly what an
     operator needs to read. -}
-    withTeardown chosen body = do
+    withReverse lifecycle chosen body = do
         ran <- trySynchronousIO body
-        torn <- trySynchronousIO tearDown
+        torn <- trySynchronousIO (runHarnessReverse lifecycle >> assertReversed)
         pure $ case (ran, torn) of
             (Right report, Right ()) -> report
             (Right report, Left err) -> addRows report [teardownRow err]
             (Left err, Right ()) -> variantBroke chosen err
             (Left err, Left tornErr) ->
                 addRows (variantBroke chosen err) [teardownRow tornErr]
-    bringUpOutcome cause =
+    forwardOutcome cause =
         case classifyLifecycleReason cause of
             Just classified -> classified
             Nothing -> LifecycleFailed ("bring-up failed: " ++ cause)
@@ -819,9 +821,9 @@ runSuiteSelection ownership (TestSuite safety bringUp cases assertCase tearDown)
         Report [(T.unpack (caseIdText (caseId c)), outcome) | c <- chosen]
     casesFor selected =
         [c | c <- cases, caseId c `elem` NE.toList selected]
-    -- Reuse the per-case loop: the live stack `bringUp` produced is the shared
-    -- env every case asserts against; teardown is the suite-level `project
-    -- destroy`, so the per-case teardown is a no-op.
+    -- Reuse the per-case loop: the common forward interpreter produced the live
+    -- stack shared by every assertion; plan reversal is variant-wide, so the
+    -- per-case teardown is a no-op.
     assertSeams env =
         Seams
             { seamSetup = \_ -> pure env

@@ -107,6 +107,11 @@ Independent cleanup actions are attempted and their failures are aggregated. `do
 `destroy` deletes them. A failed `project up` invokes best-effort root teardown, but a hard process kill can
 still leave state for a later reconcile.
 
+The prepared provider boundary does not reinterpret Direct as a VM. Direct settles only a plan-local
+admission and canonical identity share; provider stop, delete, guest execution, and guest alias are
+structured refusals with no physical-host mutation. Direct-lane cluster/container cleanup therefore
+remains its own plan work rather than provider teardown.
+
 The target is child-to-parent recursion: enter the reachable child while its parent is alive, run the same
 verb there, retain typed results, and stop/delete the parent only on ascent.
 
@@ -119,9 +124,12 @@ The cluster teardown partition excludes the plan's data path from its filesystem
 
 This is a narrow and unit-tested guarantee. Root admission now derives direct-host `.data` from one
 opaque canonical project root, and the Docker handoff consumes a same-root typed host projection.
-Provider guests reconcile `/var/tmp/hostbootstrap-demo-data`; the final plan still has to carry typed
-guest, container, kind/nvkind, and pod projections. Whether those bytes survive the entire destroy/up
-cycle is still unvalidated. See
+The core provider-guest alias route reconciles `/var/tmp/hostbootstrap-demo-data` through exact opaque
+managed provider/share/alias authority and identity-conditional release, but the demo still uses its
+compatibility pathname call site. The final plan still has to carry typed guest, container, kind/nvkind,
+and pod projections, and the
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns that call-site adoption. Whether
+those bytes survive the entire destroy/up cycle is still unvalidated. See
 [durable state](../architecture/durable_state.md).
 
 The status renderer's current wording is `(not removed by cluster teardown)`. It describes membership in
@@ -134,23 +142,28 @@ The library represents:
 | Profile | Data directory | Cluster identity |
 |---|---|---|
 | Production | `.data` | fixed project name |
-| `TestCase caseId` | `.test_data/<caseId>` | `<project>-test-<caseId>` |
+| `HarnessRun runId` | `.test_data/<runId>` | run-scoped Harness name |
 
-The demo live test path currently hardcodes `Production` when it resolves the container plan. Therefore
-the existence of a `TestCase` constructor and pure test-profile unit cases does not establish isolation:
-`test run` currently reaches `.data` and the production cluster identity. This is an open safety defect,
-documented in [harness workflow](../architecture/harness_workflow.md).
+The Harness command admits an exact `ProjectPlan (Harness projectId runId) ...` and owns the generated
+config and `.test_data/<runId>` root. Demo cluster/provider/mount/teardown consumers still receive
+config-derived `RunProfile`/`ClusterProfile` and root terms independently. The
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns replacing those terms with the
+retained exact plan's profile/root projection; see [harness workflow](../architecture/harness_workflow.md).
 
-The target uses an opaque, scope-indexed `LifecycleProfile`. Phase 15's independent gate supplies the
-matching opaque root scope/command authority, but cannot mint a profile. Only Phase 10's protected
+The target uses an opaque, scope-indexed `LifecycleProfile`. The
+[host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
+supplies backend-indexed opaque managed provider/share/alias authority inside an already admitted exact
+plan; it cannot mint a lifecycle profile or command authority. Only the
+[sessions-journal-and-fences phase](../../DEVELOPMENT_PLAN/phase-10-sessions-journal-and-fences.md)'s protected
 mode/lease openers can combine that authority with the exact active Production or Harness mode. Fresh
 plans require the still-unbound lease and produce `LifecycleProfile (Production projectId)` or
 `LifecycleProfile (Harness projectId runId)`. Configful abandoned Production `ProjectUp` instead requires
 the exact bound lease/snapshot/recovery tuple and yields only its indexed
 `RecoveredProductionLifecycleProfile`; Harness/teardown cannot inhabit it. `withProjectPlan` consumes a
-fresh profile and scope-matching config,
-and `containerPlan` projects the cluster name/data root only from that exact plan, so a test cannot
-type-check with `.data` or the production identity. See
+fresh profile and scope-matching config. The exact plan therefore retains the right scoped profile/root
+identity, but the demo's `containerPlan` still accepts a separately config-derived `ClusterProfile` and
+source root. The [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) replaces those
+independent consumer terms with projections from that exact plan. See
 [lifecycle state model](../architecture/lifecycle_state_model.md#lifecycle-profile-authority).
 
 ## Resource limits

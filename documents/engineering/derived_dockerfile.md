@@ -148,8 +148,10 @@ The ordering is load-bearing and every derived project preserves it:
 
 The worked demo Dockerfile follows the current reference ordering and uses a baked descriptive
 image-build config for `check-code`. The target replaces config-derived build authority with a fresh
-ephemeral `BuildInvocationAuthority`; its implementation and validation state remains in the
-development plan.
+ephemeral `BuildInvocationAuthority`. The reusable protocol is implemented by the
+[authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md);
+the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns this reference Dockerfile's
+command/channel adoption and live container evidence.
 
 This is the reference shape; see [derived project standards](derived_project_standards.md)
 for the broader rules every derived project follows.

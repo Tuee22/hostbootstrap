@@ -2,7 +2,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
 
 {- | The in-binary receiver, driven over real pipes.
 
@@ -16,8 +15,8 @@ crosses a container one — @stdin@ inbound, @stdout@ outbound, diagnostics on
 module HandoffReceiverSpec (tests, runReceiverProbe) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
-import qualified Data.ByteString as ByteString
 import Data.ByteString (ByteString)
+import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import Data.Kind (Type)
 import qualified Data.Text as Text
@@ -25,9 +24,10 @@ import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64, Word8)
 import qualified Fixture
 import HostBootstrap.Authority (
-    InstalledProject,
+    InstalledProjectIdentity,
     ProjectVerb (ProjectDestroy, ProjectUp),
-    installedProjectFor,
+    installedProjectName,
+    withInstalledProjectIdentity,
  )
 import HostBootstrap.Config.Vocab (Production)
 import HostBootstrap.Handoff (
@@ -52,7 +52,6 @@ import HostBootstrap.Handoff (
     handoffOfferFrames,
     installedVerificationKey,
     mkHandoffOffer,
-    registerHandoffEdge,
     productionHandoffScope,
     productionScopeTag,
     projectSigningKeyFromBytes,
@@ -60,6 +59,7 @@ import HostBootstrap.Handoff (
     protocolMessage,
     protocolMessageFields,
     protocolMessageTag,
+    registerHandoffEdge,
     rootBrokerVerificationKey,
     stdioHandoffChannel,
     verificationKeyBytes,
@@ -220,9 +220,14 @@ runReceiverProbe [keyPath, projectName, verb, mode, outPath] = do
                 , receiverVerb = Text.pack verb
                 , receiverPayloadKind = NarrowedProjectConfig
                 }
-    outcome <- withReceivedHandoffEdge channel key expectation $ \edge -> do
-        ByteString.writeFile outPath (authenticatedConfigBytes (receivedEdgeConfig edge))
-        pure (if mode == "decline" then Left "the probe was asked to decline" else Right ())
+    admitted <-
+        withInstalledProjectIdentity (Text.pack projectName) $ \project ->
+            withReceivedHandoffEdge (productionHandoffScope project) channel key expectation $ \edge -> do
+                ByteString.writeFile outPath (authenticatedConfigBytes (receivedEdgeConfig edge))
+                pure (if mode == "decline" then Left "the probe was asked to decline" else Right ())
+    outcome <- case admitted of
+        Left failure -> hPutStrLn stderr (show failure) >> exitFailure
+        Right value -> pure value
     case outcome of
         Right () -> exitSuccess
         Left failure -> hPutStrLn stderr (receiverErrorMessage failure) >> exitFailure
@@ -240,7 +245,7 @@ withChildProcess seedByte mode check =
         self <- getExecutablePath
         let keyPath = directory </> "project.pub"
             outPath = directory </> "admitted.bytes"
-        withRoot seedByte directory ProjectUp $ \broker -> do
+        withRoot seedByte directory ProjectUp $ \project broker -> do
             ByteString.writeFile keyPath (verificationKeyBytes (rootBrokerVerificationKey broker))
             offer <- newOffer broker childPayload
             spawned <-
@@ -249,7 +254,7 @@ withChildProcess seedByte mode check =
                         self
                         [ "--hostbootstrap-handoff-receiver-probe"
                         , keyPath
-                        , "hostbootstrap-demo"
+                        , Text.unpack (installedProjectName project)
                         , "up"
                         , mode
                         , outPath
@@ -408,17 +413,17 @@ withPipedExchange ::
     Word8 ->
     ProjectVerb verb ->
     (ReceiverExpectation -> ReceiverExpectation) ->
-    ( forall (brokerGeneration :: Type).
-      RootBroker (Production Fixture.FixtureProject) brokerGeneration verb ->
+    ( forall projectId (brokerGeneration :: Type).
+      RootBroker (Production projectId) brokerGeneration verb ->
       HandoffChannel ->
-      HandoffOffer (Production Fixture.FixtureProject) brokerGeneration ->
+      HandoffOffer (Production projectId) brokerGeneration ->
       IO [(ProtocolTag, [ByteString])]
     ) ->
     (Either ReceiverError ByteString -> [(ProtocolTag, [ByteString])] -> IO ()) ->
     IO ()
 withPipedExchange seedByte verb adjust parentScript check =
     withSystemTempDirectory "hostbootstrap-handoff-receiver" $ \directory ->
-        withRoot seedByte directory verb $ \broker -> do
+        withRoot seedByte directory verb $ \project broker -> do
             (toChildRead, toChildWrite) <- createPipe
             (toParentRead, toParentWrite) <- createPipe
             childChannel <- handoffChannel toChildRead toParentWrite
@@ -428,9 +433,10 @@ withPipedExchange seedByte verb adjust parentScript check =
             _ <-
                 forkIO
                     ( withReceivedHandoffEdge
+                        (productionHandoffScope project)
                         childChannel
                         (rootBrokerVerificationKey broker)
-                        (adjust baseExpectation)
+                        (adjust (baseExpectation project))
                         (\edge -> pure (Right (authenticatedConfigBytes (receivedEdgeConfig edge))))
                         >>= putMVar receivedVar
                     )
@@ -440,10 +446,10 @@ withPipedExchange seedByte verb adjust parentScript check =
             hClose toParentWrite
             check received parent
 
-baseExpectation :: ReceiverExpectation
-baseExpectation =
+baseExpectation :: InstalledProjectIdentity projectId -> ReceiverExpectation
+baseExpectation project =
     ReceiverExpectation
-        { receiverProject = "hostbootstrap-demo"
+        { receiverProject = installedProjectName project
         , receiverScopeTag = productionScopeTag
         , receiverVerb = "up"
         , receiverPayloadKind = NarrowedProjectConfig
@@ -453,33 +459,28 @@ withRoot ::
     Word8 ->
     FilePath ->
     ProjectVerb verb ->
-    ( forall (brokerGeneration :: Type).
-      RootBroker (Production Fixture.FixtureProject) brokerGeneration verb ->
+    ( forall projectId (brokerGeneration :: Type).
+      InstalledProjectIdentity projectId ->
+      RootBroker (Production projectId) brokerGeneration verb ->
       IO ()
     ) ->
     IO ()
 withRoot seedByte directory verb use = do
     signing <- expectRight (projectSigningKeyFromBytes (ByteString.replicate 32 seedByte))
     store <- openProtectedStore (directory </> "authority") >>= expectRight
-    project <- expectRight installedFixtureProject
-    outcome <- withProductionRoot store project verb $ \root -> do
-        brokered <-
-            withRootBroker
-                (productionHandoffScope project)
-                store
-                signing
-                (productionRootAuthority root)
-                use
-        _ <- expectRight brokered
-        pure (Right ())
+    outcome <- Fixture.withFixtureInstalledProject $ \project ->
+        withProductionRoot store project verb $ \root -> do
+            brokered <-
+                withRootBroker
+                    (productionHandoffScope project)
+                    store
+                    signing
+                    (productionRootAuthority root)
+                    (use project)
+            _ <- expectRight brokered
+            pure (Right ())
     _ <- expectRight outcome
     pure ()
-
-installedFixtureProject ::
-    Either String (InstalledProject Fixture.FixtureProject)
-installedFixtureProject =
-    either (Left . show) Right
-        (installedProjectFor @Fixture.FixtureProject @Fixture.ProjectConfig "hostbootstrap-demo")
 
 newOffer ::
     RootBroker scope brokerGeneration verb ->

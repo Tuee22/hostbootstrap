@@ -103,6 +103,11 @@ Make the standard mechanical rather than aspirational.
 `DocValidatorSpec` runs `validateRepo` against the live repository and fails on any violation, then runs
 the negative fixture. Both execute inside the canonical `cabal test all --ghc-options=-Werror`.
 
+Dated evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4), the focused `DocValidatorSpec` passed 2/2,
+and the exact phase gate, `cabal test all --ghc-options=-Werror` from `core/`, passed 1426/1426 cases in
+67.48 seconds. The negative fixture exercised missing, malformed, duplicate, unmatched, and mismatched
+phase-status rows.
+
 #### Remaining Work
 
 None.

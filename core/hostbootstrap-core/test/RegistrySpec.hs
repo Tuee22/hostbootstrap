@@ -7,13 +7,35 @@
 module RegistrySpec (tests) where
 
 import qualified Data.ByteString.Lazy.Char8 as BL
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
+import HostBootstrap.DocValidator (findRepoRoot)
+import HostBootstrap.HostConfig (HostConfig (..))
+import HostBootstrap.HostTool (HostTool (Incus, Lima, Wsl))
+import HostBootstrap.Lift
+  ( ContainerLift (..),
+    IncusVM (..),
+    LimaVM (..),
+    Wsl2VM (..),
+    inContainer,
+    inLimaVM,
+    inVM,
+    inWsl2VM,
+    liftSubcommand,
+    localContext,
+    mkSelfRef,
+  )
 import HostBootstrap.Registry
   ( dockerAuthStdinWrapper,
     dockerHubAuthFromConfig,
+    liftSubcommandWithAuth,
+    registryAuthLiftPlan,
     registryAuthEnvVar,
     registryConfigPayload,
   )
+import HostBootstrap.Substrate (Arch (Amd64), Substrate (..), SubstrateName (LinuxCpu))
+import System.Directory (getCurrentDirectory)
+import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
@@ -36,6 +58,25 @@ hasStr needle haystack = T.isInfixOf needle (T.pack haystack)
 
 present :: BL.ByteString -> Bool
 present = maybe False (const True) . dockerHubAuthFromConfig
+
+authContainer :: ContainerLift
+authContainer =
+  ContainerLift
+    { clImage = "demo:local",
+      clMounts = [],
+      clExtraArgs = ["-e", registryAuthEnvVar],
+      clRemoveAfter = True,
+      clConfigDelivery = Nothing
+    }
+
+authSubcommand :: [String]
+authSubcommand = ["project", "up"]
+
+authScript :: String
+authScript =
+  "export HOSTBOOTSTRAP_REGISTRY_AUTH=\"$(cat)\"; exec "
+    ++ "'docker' 'run' '--rm' '-e' 'HOSTBOOTSTRAP_REGISTRY_AUTH' "
+    ++ "'demo:local' 'project' 'up'"
 
 tests :: TestTree
 tests =
@@ -83,5 +124,95 @@ tests =
               (not (hasStr "HUB-IDENTITY-TOKEN" script) && not (hasStr "ZG9ja2VyOnB1bGw=" script))
         ],
       testCase "the forwarding env var name is stable" $
-        registryAuthEnvVar @?= "HOSTBOOTSTRAP_REGISTRY_AUTH"
+        registryAuthEnvVar @?= "HOSTBOOTSTRAP_REGISTRY_AUTH",
+      testGroup
+        "registry-aware lift planning"
+        [ testCase "Incus carries the exact Docker argv through one VM shell" $
+            registryAuthLiftPlan
+              (inContainer authContainer (inVM (IncusVM "incus-vm" "images:ubuntu/24.04") localContext))
+              authSubcommand
+              @?= Just
+                ( Incus,
+                  ["exec", "incus-vm", "--", "bash", "-lc", authScript]
+                ),
+          testCase "Lima carries the exact Docker argv through its root shell" $
+            registryAuthLiftPlan
+              (inContainer authContainer (inLimaVM (LimaVM "lima-vm") localContext))
+              authSubcommand
+              @?= Just
+                ( Lima,
+                  ["shell", "lima-vm", "--", "sudo", "-H", "bash", "-lc", authScript]
+                ),
+          testCase "WSL2 carries the exact Docker argv through its distro" $
+            registryAuthLiftPlan
+              (inContainer authContainer (inWsl2VM (Wsl2VM "wsl-distro") localContext))
+              authSubcommand
+              @?= Just
+                ( Wsl,
+                  ["-d", "wsl-distro", "--", "bash", "-lc", authScript]
+                ),
+          testCase "the descriptive plan contains no credential payload" $ do
+            let plans =
+                  [ registryAuthLiftPlan
+                      (inContainer authContainer (inVM (IncusVM "incus-vm" "image") localContext))
+                      authSubcommand,
+                    registryAuthLiftPlan
+                      (inContainer authContainer (inLimaVM (LimaVM "lima-vm") localContext))
+                      authSubcommand,
+                    registryAuthLiftPlan
+                      (inContainer authContainer (inWsl2VM (Wsl2VM "wsl-distro") localContext))
+                      authSubcommand
+                  ]
+                rendered = show plans
+            assertBool "plan exposed the Docker Hub auth" (not (hasStr "ZG9ja2VyOnB1bGw=" rendered))
+            assertBool "plan exposed the Docker Hub token" (not (hasStr "HUB-IDENTITY-TOKEN" rendered)),
+          testCase "an unsupported context has no authenticated plan" $
+            registryAuthLiftPlan (inContainer authContainer localContext) authSubcommand
+              @?= Nothing,
+          testCase "Nothing and unsupported authenticated contexts use the ordinary lift" $ do
+            let cfg =
+                  HostConfig
+                    { hcSubstrate = Substrate LinuxCpu Amd64,
+                      hcToolPaths = Map.empty
+                    }
+                self = mkSelfRef "/hostbootstrap-registry-spec-missing" "hostbootstrap"
+                vmOnly = inVM (IncusVM "incus-vm" "image") localContext
+                containerOnly = inContainer authContainer localContext
+            ordinaryVm <- liftSubcommand cfg self vmOnly authSubcommand
+            anonymousVm <- liftSubcommandWithAuth cfg Nothing self vmOnly authSubcommand
+            anonymousVm @?= ordinaryVm
+            case dockerHubAuthFromConfig multiRegistryConfig of
+              Nothing -> assertBool "expected a credential" False
+              Just auth -> do
+                ordinaryContainer <- liftSubcommand cfg self containerOnly authSubcommand
+                authenticatedContainer <-
+                  liftSubcommandWithAuth cfg (Just auth) self containerOnly authSubcommand
+                authenticatedContainer @?= ordinaryContainer
+        ],
+      testCase "registry-aware lifting depends from Registry to lower Lift only" $ do
+        cwd <- getCurrentDirectory
+        root <- findRepoRoot cwd >>= maybe (fail ("could not locate repository root from " ++ cwd)) pure
+        let sourceRoot = root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap"
+        liftSource <- readFile (sourceRoot </> "Lift.hs")
+        registrySource <- readFile (sourceRoot </> "Registry.hs")
+        assertBool
+          "Lift must not import the higher Registry module"
+          (not (importsModule "HostBootstrap.Registry" liftSource))
+        assertBool
+          "Registry must build on the lower Lift module"
+          (importsModule "HostBootstrap.Lift" registrySource)
+        assertBool
+          "the registry-aware helper must not be implemented in Lift"
+          (not (hasStr "liftSubcommandWithAuth" liftSource))
+        assertBool
+          "the registry-aware helper must be implemented in Registry"
+          (hasStr "liftSubcommandWithAuth" registrySource)
     ]
+
+importsModule :: String -> String -> Bool
+importsModule imported = any imports . lines
+  where
+    imports line =
+      case words line of
+        "import" : terms -> imported `elem` terms
+        _ -> False

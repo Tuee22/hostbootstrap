@@ -10,10 +10,8 @@
 This page documents what the base image ships for Haskell.
 
 The base image ships a **single current GHC** selected by GHCup's `recommended` tag, the corresponding
-current recommended Cabal, and a warm Cabal store. The plan retires the previous dual-GHC arrangement
-(formatter-only GHC plus project GHC) because `fourmolu`/`hlint`'s
-`ghc-lib-parser` targets 9.12, so one compiler now serves both formatting and
-project builds.
+current recommended Cabal, and a warm Cabal store. `fourmolu`/`hlint`'s `ghc-lib-parser` targets 9.12, so
+the same compiler serves formatting and project builds.
 
 ## Warm store
 

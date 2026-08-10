@@ -19,6 +19,26 @@ tests =
         [ testCase "every v1 tag round-trips with its exact field shape" $ do
             messages <- traverse makeMessage (zip [1 ..] allTags)
             traverse_ (\message -> decodeProtocolMessage (encodeProtocolMessage message) @?= Right message) messages
+            traverse_
+                ( \(tag, expectedByte) -> do
+                    let expectedFields = fieldCount tag
+                    message <- expectRight (protocolMessage tag 1 (replicate expectedFields "field"))
+                    ByteString.index (encodeProtocolMessage message) 14 @?= expectedByte
+                    protocolMessage tag 1 (replicate (expectedFields - 1) "field")
+                        @?= Left (ProtocolWrongFieldCount tag expectedFields (expectedFields - 1))
+                    protocolMessage tag 1 (replicate (expectedFields + 1) "field")
+                        @?= Left (ProtocolWrongFieldCount tag expectedFields (expectedFields + 1))
+                )
+                stableTagBytes
+        , testCase "the recovery pair has stable v1 tags and exact field shapes" $ do
+            request <- expectRight (protocolMessage RecoveryRequestTag 51 ["projection-binding", "adapter-wire"])
+            response <- expectRight (protocolMessage RecoveryResponseTag 51 ["signature"])
+            ByteString.index (encodeProtocolMessage request) 14 @?= 13
+            ByteString.index (encodeProtocolMessage response) 14 @?= 14
+            protocolMessage RecoveryRequestTag 51 ["missing-wire"]
+                @?= Left (ProtocolWrongFieldCount RecoveryRequestTag 2 1)
+            protocolMessage RecoveryResponseTag 51 ["signature", "self-supplied-key"]
+                @?= Left (ProtocolWrongFieldCount RecoveryResponseTag 1 2)
         , testCase "wrong magic, version, tag, and zero request id are distinct refusals" $ do
             valid <- expectRight (protocolMessage AcceptedTag 7 ["binding-digest"])
             let wire = encodeProtocolMessage valid
@@ -88,6 +108,28 @@ tests =
             case childProtocolSend afterOffer completed of
                 Left (ProtocolInvalidTransition "send" _ CompletedTag) -> pure ()
                 other -> assertFailure ("expected premature-completion refusal, got " <> show other)
+        , testCase "only an admitted child can raise a recovery request and receive its response" $ do
+            offer <- expectRight (protocolMessage OfferTag 61 ["certificate", "binding", "token", "config"])
+            challenge <- expectRight (protocolMessage ChallengeTag 61 ["challenge"])
+            grant <- expectRight (protocolMessage GrantTag 61 ["certificate-digest", "signature"])
+            accepted <- expectRight (protocolMessage AcceptedTag 61 ["binding-digest"])
+            request <- expectRight (protocolMessage RecoveryRequestTag 61 ["projection-binding", "adapter-wire"])
+            response <- expectRight (protocolMessage RecoveryResponseTag 61 ["signature"])
+            wrongResponse <- expectRight (protocolMessage RecoveryResponseTag 62 ["signature"])
+            afterOffer <- expectRight (childProtocolReceive initialChildProtocolState offer)
+            afterChallenge <- expectRight (childProtocolSend afterOffer challenge)
+            afterGrant <- expectRight (childProtocolReceive afterChallenge grant)
+            running <- expectRight (childProtocolSend afterGrant accepted)
+            childProtocolSend running request @?= Right running
+            childProtocolReceive running response @?= Right running
+            childProtocolReceive running wrongResponse
+                @?= Left (ProtocolRequestMismatch 61 62)
+            case childProtocolSend initialChildProtocolState request of
+                Left (ProtocolInvalidTransition "send" _ RecoveryRequestTag) -> pure ()
+                other -> assertFailure ("expected pre-admission recovery-request refusal, got " <> show other)
+            case childProtocolReceive initialChildProtocolState response of
+                Left (ProtocolInvalidTransition "receive" _ RecoveryResponseTag) -> pure ()
+                other -> assertFailure ("expected pre-admission recovery-response refusal, got " <> show other)
         , testCase "protocol rendering and errors never contain field bytes" $ do
             message <- expectRight (protocolMessage OfferTag 41 [secret, secret, secret, secret])
             let rendered = show message <> protocolErrorMessage (ProtocolWrongFieldCount OfferTag 4 1)
@@ -108,7 +150,29 @@ allTags =
     , CompletedTag
     , ActivationSignRequestTag
     , ActivationSignResponseTag
+    , RecoveryRequestTag
+    , RecoveryResponseTag
     , RefusedTag
+    ]
+
+-- The numeric spelling is part of protocol v1. A constructor reorder must not
+-- silently change the wire while leaving a same-version round trip green.
+stableTagBytes :: [(ProtocolTag, Word8)]
+stableTagBytes =
+    [ (OfferRequestTag, 1)
+    , (OfferResponseTag, 2)
+    , (OfferTag, 3)
+    , (ChallengeTag, 4)
+    , (GrantRequestTag, 5)
+    , (GrantResponseTag, 6)
+    , (GrantTag, 7)
+    , (AcceptedTag, 8)
+    , (CompletedTag, 9)
+    , (RefusedTag, 10)
+    , (ActivationSignRequestTag, 11)
+    , (ActivationSignResponseTag, 12)
+    , (RecoveryRequestTag, 13)
+    , (RecoveryResponseTag, 14)
     ]
 
 makeMessage :: (Word, ProtocolTag) -> IO ProtocolMessage
@@ -129,6 +193,8 @@ fieldCount tag = case tag of
     CompletedTag -> 1
     ActivationSignRequestTag -> 1
     ActivationSignResponseTag -> 1
+    RecoveryRequestTag -> 2
+    RecoveryResponseTag -> 1
     RefusedTag -> 2
 
 wireFor :: ProtocolTag -> Word -> [ByteString] -> ByteString

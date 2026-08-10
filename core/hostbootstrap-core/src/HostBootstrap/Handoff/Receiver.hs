@@ -42,8 +42,6 @@ module HostBootstrap.Handoff.Receiver (
     receivedEdgeHandoff,
     receivedEdgeConfig,
     receivedEdgeBinding,
-    receivedEdgeChannel,
-    receivedEdgeRequestId,
 
     -- * The exchange
     withReceivedHandoffEdge,
@@ -61,27 +59,28 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import HostBootstrap.Handoff (
-    AuthenticatedConfigPayload,
     HandoffBinding,
     HandoffError,
     HandoffPayloadKind,
-    VerifiedHandoff,
+    HandoffScope,
+    ProjectVerificationKey,
     authenticatedConfigDigest,
+    challengeBytes,
     frameWire,
     freshChallenge,
-    challengeBytes,
-    handoffBindingFromWire,
+    handoffErrorMessage,
     handoffGrantFromSignature,
     handoffInstalledProject,
     handoffPayloadKind,
     handoffScope,
+    handoffScopeProject,
+    handoffScopeTag,
     handoffVerb,
-    handoffErrorMessage,
     verificationKeyDigest,
     verifiedConfigPayload,
     verifiedHandoffBinding,
     verifyHandoff,
-    ProjectVerificationKey,
+    withHandoffBindingFromWire,
  )
 import HostBootstrap.Handoff.Protocol (
     ChildProtocolState,
@@ -100,6 +99,12 @@ import HostBootstrap.Handoff.Protocol (
     protocolMessageRequestId,
     protocolMessageTag,
  )
+import HostBootstrap.Handoff.Receiver.Internal (
+    ReceivedEdge,
+    mkReceivedEdge,
+    receivedEdgeConfig,
+    receivedEdgeHandoff,
+ )
 
 -- ---------------------------------------------------------------------------
 -- What the receiver knows without a config
@@ -110,19 +115,20 @@ anything.
 It is deliberately small. A child cannot independently know the plan revision,
 the broker generation, or the digest of a config it has not seen — those are
 authenticated by the root's signature over the canonical binding, not by
-guessing them. What it *does* know is which project it is, which scope it was
-launched under, which verb it was invoked as, and that a config is what it
-expects to be handed; anything else is a wrong-edge refusal before a signature
-is even considered.
+guessing them. Installed project and scope are fixed by the opaque
+'HandoffScope' passed separately; this record repeats them only as descriptive
+process expectations and can narrow, never reindex, that evidence. It also
+names the invoked verb and payload kind. Anything else is a wrong-edge refusal
+before a signature is even considered.
 
 The child frame is checked separately by @authorizeChildProject@, once the
 config the binding names has actually been admitted.
 -}
 data ReceiverExpectation = ReceiverExpectation
     { receiverProject :: Text
-    -- ^ the installed project this binary is
+    -- ^ a descriptive assertion narrowed by the opaque scope evidence
     , receiverScopeTag :: Text
-    -- ^ @Production@, or @Harness \<runId\>@ (see @productionScopeTag@)
+    -- ^ a descriptive assertion narrowed by the opaque scope evidence
     , receiverVerb :: Text
     -- ^ the verb this binary was invoked as
     , receiverPayloadKind :: HandoffPayloadKind
@@ -130,66 +136,21 @@ data ReceiverExpectation = ReceiverExpectation
     }
     deriving (Eq, Show)
 
--- ---------------------------------------------------------------------------
--- The received edge
-
-{- | One authenticated edge: the verified handoff and the config-admission
-witness narrowed from it.
-
-Both are minted by verification, so a value of this type cannot exist for
-bytes that did not carry a valid root signature over a fresh challenge.
--}
-data ReceivedEdge scope brokerGeneration = ReceivedEdge
-    { receivedHandoff :: VerifiedHandoff scope brokerGeneration
-    , receivedConfig :: AuthenticatedConfigPayload scope brokerGeneration
-    , receivedChannel :: HandoffChannel
-    , receivedRequest :: Word64
-    }
-
-instance Show (ReceivedEdge scope brokerGeneration) where
-    show edge = "ReceivedEdge " <> show (receivedHandoff edge)
-
--- | The verified handoff, for @authorizeChildProject@.
-receivedEdgeHandoff :: ReceivedEdge scope brokerGeneration -> VerifiedHandoff scope brokerGeneration
-receivedEdgeHandoff = receivedHandoff
-
--- | The config-admission witness, for the scope-correct sibling install.
-receivedEdgeConfig ::
-    ReceivedEdge scope brokerGeneration ->
-    AuthenticatedConfigPayload scope brokerGeneration
-receivedEdgeConfig = receivedConfig
-
 -- | The authenticated binding this edge was signed for.
 receivedEdgeBinding ::
     ReceivedEdge scope brokerGeneration ->
     HandoffBinding scope brokerGeneration
-receivedEdgeBinding = verifiedHandoffBinding . receivedHandoff
-
-{- | The channel this edge arrived on — which is also this frame's only route
-back to the root.
-
-An admitted frame is the parent of the next one, and it holds no signing key, so
-every edge it needs must be opened and granted upstream. Handing the channel to
-the continuation is what lets it relay; nothing about the channel is a
-capability to sign, which is exactly the point.
--}
-receivedEdgeChannel :: ReceivedEdge scope brokerGeneration -> HandoffChannel
-receivedEdgeChannel = receivedChannel
-
--- | The request identity this frame's exchange runs under, which its relayed
--- requests must reuse.
-receivedEdgeRequestId :: ReceivedEdge scope brokerGeneration -> Word64
-receivedEdgeRequestId = receivedRequest
+receivedEdgeBinding = verifiedHandoffBinding . receivedEdgeHandoff
 
 -- ---------------------------------------------------------------------------
 -- The exchange
 
 {- | Run the child half of one handoff exchange, then act under it.
 
-The continuation is rank-2 in the edge's indices, so what it receives cannot be
-unified with a scope or broker generation the child already holds: an
-authenticated edge is evidence about *itself* and cannot be laundered into
-evidence about something else.
+The continuation is rank-2 in the broker generation, while its scope is fixed
+by the independently obtained 'HandoffScope'. An authenticated generation is
+evidence about itself and cannot be laundered into another one; the received
+config can now feed only the codec for that exact known scope.
 
 A continuation that returns 'Left' declines the edge; the reason is sent to the
 parent as a refusal and returned as 'ReceiverDeclined'. An exception it throws
@@ -197,15 +158,16 @@ is announced the same way and then re-thrown, so a parent never sees a child
 that simply stopped talking.
 -}
 withReceivedHandoffEdge ::
+    HandoffScope scope ->
     HandoffChannel ->
     -- | the independently installed verification key — never one the offer supplied
     ProjectVerificationKey ->
     ReceiverExpectation ->
-    (forall scope brokerGeneration. ReceivedEdge scope brokerGeneration -> IO (Either Text result)) ->
+    (forall receivedGeneration. ReceivedEdge scope receivedGeneration -> IO (Either Text result)) ->
     IO (Either ReceiverError result)
-withReceivedHandoffEdge channel key expectation use = do
+withReceivedHandoffEdge scope channel key expectation use = do
     active <- newIORef 0
-    outcome <- runAttempt (exchange channel key expectation active use)
+    outcome <- runAttempt (exchange scope channel key expectation active use)
     case outcome of
         Right value -> pure (Right value)
         Left failure -> do
@@ -213,20 +175,54 @@ withReceivedHandoffEdge channel key expectation use = do
             pure (Left failure)
 
 exchange ::
+    HandoffScope scope ->
     HandoffChannel ->
     ProjectVerificationKey ->
     ReceiverExpectation ->
     IORef Word64 ->
-    (forall scope brokerGeneration. ReceivedEdge scope brokerGeneration -> IO (Either Text result)) ->
+    (forall brokerGeneration. ReceivedEdge scope brokerGeneration -> IO (Either Text result)) ->
     Attempt result
-exchange channel key expectation active use = do
+exchange scope channel key expectation active use = do
     (offer, afterOffer) <- receiveMessage channel initialChildProtocolState
     liftAttempt (writeIORef active (protocolMessageRequestId offer))
     let requestId = protocolMessageRequestId offer
     (payload, token, bindingBytes, offeredKeyDigest) <- offerFields offer
     requireInstalledKey key offeredKeyDigest
-    binding <- fromHandoff (handoffBindingFromWire bindingBytes)
-    checkExpectation expectation binding
+    continued <-
+        fromHandoff
+            ( withHandoffBindingFromWire scope bindingBytes $ \binding ->
+                exchangeBound
+                    scope
+                    channel
+                    key
+                    expectation
+                    active
+                    use
+                    requestId
+                    payload
+                    token
+                    bindingBytes
+                    afterOffer
+                    binding
+            )
+    continued
+
+exchangeBound ::
+    HandoffScope scope ->
+    HandoffChannel ->
+    ProjectVerificationKey ->
+    ReceiverExpectation ->
+    IORef Word64 ->
+    (forall receivedGeneration. ReceivedEdge scope receivedGeneration -> IO (Either Text result)) ->
+    Word64 ->
+    ByteString ->
+    ByteString ->
+    ByteString ->
+    ChildProtocolState ->
+    HandoffBinding scope brokerGeneration ->
+    Attempt result
+exchangeBound scope channel key expectation active use requestId payload token bindingBytes afterOffer binding = do
+    checkExpectation scope expectation binding
     challenge <- liftAttempt freshChallenge
     afterChallenge <-
         sendMessage channel afterOffer ChallengeTag requestId [challengeBytes challenge]
@@ -243,13 +239,7 @@ exchange channel key expectation active use = do
                 (handoffGrantFromSignature signature)
             )
     admitted <- fromHandoff (verifiedConfigPayload verified)
-    let edge =
-            ReceivedEdge
-                { receivedHandoff = verified
-                , receivedConfig = admitted
-                , receivedChannel = channel
-                , receivedRequest = requestId
-                }
+    let edge = mkReceivedEdge verified admitted channel requestId
     afterAccepted <-
         sendMessage
             channel
@@ -299,8 +289,18 @@ requireInstalledKey key offered
 {- | Refuse an edge that does not describe this binary, before any signature
 work.
 -}
-checkExpectation :: ReceiverExpectation -> HandoffBinding scope brokerGeneration -> Attempt ()
-checkExpectation expectation binding = do
+checkExpectation ::
+    HandoffScope scope ->
+    ReceiverExpectation ->
+    HandoffBinding scope brokerGeneration ->
+    Attempt ()
+checkExpectation scope expectation binding = do
+    require
+        (handoffInstalledProject binding == handoffScopeProject scope)
+        ("the offered edge names project " <> handoffInstalledProject binding)
+    require
+        (handoffScope binding == handoffScopeTag scope)
+        ("the offered edge names scope " <> handoffScope binding)
     require
         (handoffInstalledProject binding == receiverProject expectation)
         ("the offered edge names project " <> handoffInstalledProject binding)

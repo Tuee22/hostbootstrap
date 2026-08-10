@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -14,15 +15,57 @@ actually leaves behind.
 -}
 module AuthoritySpec (tests, runEntryProbe, runModeProfileProbe) where
 
+import Control.Exception (finally)
+import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
+import Control.Monad (filterM, replicateM)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
+import qualified Crypto.Hash as Hash
+import qualified Data.ByteArray as ByteArray
+import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
+import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
+import qualified Data.Text.IO as TextIO
 import Data.Word (Word64)
+import Data.List (sort)
 import qualified Fixture
 import HostBootstrap.Authority
+import HostBootstrap.Lifecycle.Closure
+import HostBootstrap.Authority.ProjectPlan (authorizeChildProject, authorizeProjectUp)
 import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
+import HostBootstrap.Config.Fields (ScopeKind (ProductionScope))
+import HostBootstrap.Config.Schema (
+    renderScopedProjectConfigBytes,
+    validatedConfigSpecDigest,
+    withAuthenticatedConfigWire,
+    withValidatedConfig,
+    withVerifiedConfigHandoff,
+ )
 import HostBootstrap.Config.Vocab (Production)
+import qualified HostBootstrap.Context as Context
+import HostBootstrap.DocValidator (findRepoRoot)
+import HostBootstrap.Handoff (
+    HandoffBindingInput (..),
+    HandoffPayloadKind (NarrowedProjectConfig),
+    childConfigDigest,
+    freshChallenge,
+    grantHandoff,
+    handoffChildFrame,
+    handoffOfferWire,
+    handoffPhase,
+    mkHandoffOffer,
+    productionHandoffScope,
+    projectSigningKeyFromBytes,
+    registerHandoffEdge,
+    relayBinding,
+    rootBrokerVerificationKey,
+    verifiedConfigPayload,
+    verifyHandoff,
+    withRootBroker,
+ )
 import HostBootstrap.Lifecycle.Mode
 import HostBootstrap.Lifecycle.Session (
     ProjectJournalState (ClosedProject, ClosingProject),
@@ -37,17 +80,46 @@ import HostBootstrap.Lifecycle.Session (
     verifyAllSessionsClosed,
  )
 import HostBootstrap.Protected
+import HostBootstrap.ProjectPlan (
+    ProjectPlan,
+    renderSnapshot,
+    stablePlanSnapshotDigest,
+ )
+import HostBootstrap.ProjectPlan.Construct (
+    ChildPlanAuthority,
+    childPlanAuthorityBinding,
+    finalizedProjectCodec,
+    projectPlanDrafts,
+    withChildProjectPlan,
+    withFinalizedProjectSpec,
+    withProjectPlan,
+ )
+import HostBootstrap.ProjectPlan.Frame (
+    ProjectFrame,
+    ValidatedContext,
+    projectFrameId,
+    withCurrentFrame,
+ )
+import HostBootstrap.ProjectPlan.Snapshot (
+    BoundPlanSnapshot,
+    PlanDigestBinding,
+    withPersistedPlanSnapshot,
+ )
+import HostBootstrap.ProjectRoot (
+    CanonicalProjectRoot,
+    canonicalProjectRootPath,
+    withCanonicalProjectRoot,
+ )
 import HostBootstrap.Reconcile (
     CanonicalPlanSnapshot,
-    LifecyclePlan,
     canonicalPlanSnapshotBytes,
     canonicalPlanSnapshotDigest,
     canonicalPlanSnapshotSpecDigest,
     lifecyclePlanSnapshot,
-    withLifecyclePlan,
     withLifecyclePlanForConfig,
  )
 import HostBootstrap.Lift (localContext)
+import HostBootstrap.Service (emptyServiceRegistry)
 import HostBootstrap.Step (
     StepFrame (..),
     StepObservation (StepChanged),
@@ -57,14 +129,33 @@ import HostBootstrap.Step (
     descendsVia,
     mkStepPlan,
  )
-import System.Directory (doesFileExist)
+import System.Directory (
+    Permissions (writable),
+    doesDirectoryExist,
+    doesFileExist,
+    getCurrentDirectory,
+    getPermissions,
+    listDirectory,
+    setPermissions,
+ )
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitSuccess, exitWith)
-import System.FilePath ((</>))
+import System.FilePath (makeRelative, takeExtension, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (readProcessWithExitCode)
+#if !defined(mingw32_HOST_OS)
+import System.Posix.IO (closeFd, createPipe)
+import qualified System.Posix.IO.ByteString as PosixByteString
+import System.Posix.Process (
+    ProcessStatus (Exited),
+    exitImmediately,
+    forkProcess,
+    getProcessStatus,
+ )
+#endif
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Unsafe.Coerce (unsafeCoerce)
 
 {- | The out-of-process half of the exclusive-entry case: open the same store
 and attempt its entry without blocking. Exit 0 when the entry was acquired, 3
@@ -102,9 +193,8 @@ runModeProfileProbe storeRoot profile reasonPath = do
     case opened of
         Left _ -> exitWith (ExitFailure 4)
         Right store ->
-            case installedProjectFor @Fixture.FixtureProject @Fixture.ProjectConfig "hostbootstrap-demo" of
-                Left _ -> exitWith (ExitFailure 4)
-                Right project -> report =<< attempt store project
+            Fixture.withFixtureInstalledProject $ \project ->
+                report =<< attempt store project
   where
     attempt store project = case profile of
         "production" ->
@@ -246,136 +336,812 @@ storeCases =
 
 -- Root and command authority ------------------------------------------------------
 
+exactProjectUpAuthorityCases :: [TestTree]
+exactProjectUpAuthorityCases =
+    [ testCase "the exact project-up gate retains frame, broker, verb, and phase and consumes one reservation" $
+        withExactProjectUpFixture Context.HostOrchestrator $
+            \store root verified bound binding lease plan journal frame cursor validated -> do
+                admitted <-
+                    authorizeExactProjectUp
+                        root
+                        verified
+                        bound
+                        binding
+                        lease
+                        plan
+                        journal
+                        frame
+                        cursor
+                        validated
+                authority <- expectRight admitted
+                commandAuthorityFrame authority @?= projectFrameId frame
+                projectVerbName (commandAuthorityVerb authority) @?= "up"
+                lifecyclePhaseName (commandAuthorityPhase authority) @?= "prepare"
+                brokerEpochWord (commandAuthorityEpoch authority)
+                    @?= brokerEpochWord (rootAuthorityEpoch root)
+                hash <- expectInvocationHash (commandAuthorityInvocation authority)
+                recorded <-
+                    withProtectedEntry store $ \session -> do
+                        key <- expectKey ("invocation." <> hash)
+                        observed <- readProtectedRecord session key >>= expectRight
+                        record <- maybe (assertFailure "the reservation record is absent") pure observed
+                        let identity = protectedRecordBytes record
+                            expectedIdentity =
+                                reservationIdentityForTest
+                                    (rootAuthorityProjectName root)
+                                    (protectedStoreIdentityText (sessionStoreIdentity session))
+                                    (planSnapshotPlanDigest verified)
+                                    (projectFrameId frame)
+                                    (rootAuthorityEpoch root)
+                                    ProjectUp
+                                    Prepare
+                        identity @?= expectedIdentity
+                        hash @?= sha256Hex identity
+                        pure (Right ())
+                _ <- expectRight recorded
+                retried <-
+                    authorizeExactProjectUp
+                        root
+                        verified
+                        bound
+                        binding
+                        lease
+                        plan
+                        journal
+                        frame
+                        cursor
+                        validated
+                case retried of
+                    Left AuthorityInvocationConsumed{} -> pure ()
+                    Left failure ->
+                        assertFailure ("expected consumed invocation, got " <> show failure)
+                    Right _ -> assertFailure "an identical exact invocation was reserved twice"
+    , testCase "an exact reservation collision refuses instead of consuming foreign bytes" $
+        withExactProjectUpFixture Context.HostOrchestrator $
+            \store root verified bound binding lease plan journal frame cursor validated -> do
+                first <-
+                    authorizeExactProjectUp
+                        root
+                        verified
+                        bound
+                        binding
+                        lease
+                        plan
+                        journal
+                        frame
+                        cursor
+                        validated
+                invocation <- commandAuthorityInvocation <$> expectRight first
+                hash <- expectInvocationHash invocation
+                changed <-
+                    withProtectedEntry store $ \session -> do
+                        key <- expectKey ("invocation." <> hash)
+                        observed <- readProtectedRecord session key >>= expectRight
+                        record <- maybe (assertFailure "the reservation record is absent") pure observed
+                        _ <-
+                            compareAndSwapProtectedRecord
+                                session
+                                key
+                                (ExpectVersion (protectedRecordVersion record))
+                                "foreign-collision-bytes"
+                                >>= expectRight
+                        pure (Right ())
+                _ <- expectRight changed
+                again <-
+                    authorizeExactProjectUp
+                        root
+                        verified
+                        bound
+                        binding
+                        lease
+                        plan
+                        journal
+                        frame
+                        cursor
+                        validated
+                case again of
+                    Left AuthorityReservationConflict{} -> pure ()
+                    other ->
+                        assertFailure
+                            ("expected a reservation-conflict refusal, got " <> show other)
+    , testCase "concurrent identical exact reservations have one winner" $
+        withExactProjectUpFixture Context.HostOrchestrator $
+            \_store root verified bound binding lease plan journal frame cursor validated -> do
+                start <- newEmptyMVar
+                finished <- newEmptyMVar
+                let attempt = do
+                        takeMVar start
+                        reserved <-
+                            authorizeExactProjectUp
+                                root
+                                verified
+                                bound
+                                binding
+                                lease
+                                plan
+                                journal
+                                frame
+                                cursor
+                                validated
+                        putMVar finished reserved
+                _ <- forkIO attempt
+                _ <- forkIO attempt
+                putMVar start ()
+                putMVar start ()
+                reservations <- replicateM 2 (takeMVar finished)
+                length [() | Right _ <- reservations] @?= 1
+                length [() | Left AuthorityInvocationConsumed{} <- reservations] @?= 1
+#if !defined(mingw32_HOST_OS)
+    , testCase "identical exact reservations have one winner across processes" $
+        withExactProjectUpFixture Context.HostOrchestrator $
+            \_store root verified bound binding lease plan journal frame cursor validated -> do
+                let reserve =
+                        authorizeExactProjectUp
+                            root
+                            verified
+                            bound
+                            binding
+                            lease
+                            plan
+                            journal
+                            frame
+                            cursor
+                            validated
+                    classify reserved = case reserved of
+                        Right _ -> ExitSuccess
+                        Left AuthorityInvocationConsumed{} -> ExitFailure 3
+                        Left _ -> ExitFailure 4
+                (startRead, startWrite) <- createPipe
+                childPid <-
+                    forkProcess $ do
+                        closeFd startWrite
+                        _ <- PosixByteString.fdRead startRead 1
+                        closeFd startRead
+                        reserve >>= exitImmediately . classify
+                closeFd startRead
+                _ <- PosixByteString.fdWrite startWrite (ByteString.singleton 1)
+                closeFd startWrite
+                parent <- reserve
+                childStatus <- getProcessStatus True False childPid
+                let parentWon = case parent of
+                        Right _ -> 1 :: Int
+                        _ -> 0
+                    parentConsumed = case parent of
+                        Left AuthorityInvocationConsumed{} -> 1 :: Int
+                        _ -> 0
+                    childWon = case childStatus of
+                        Just (Exited ExitSuccess) -> 1 :: Int
+                        _ -> 0
+                    childConsumed = case childStatus of
+                        Just (Exited (ExitFailure 3)) -> 1 :: Int
+                        _ -> 0
+                parentWon + childWon @?= 1
+                parentConsumed + childConsumed @?= 1
+#endif
+    , testCase "an advanced cursor makes the retained cursor stale before any invocation is reserved" $
+        withExactProjectUpFixture Context.HostOrchestrator $
+            \store root verified bound binding lease plan journal frame prepare validated -> do
+                advanced <-
+                    withExecuteLifecycleCursor prepare $ \execute -> do
+                        before <- invocationRecordCount store
+                        stale <-
+                            authorizeExactProjectUp
+                                root
+                                verified
+                                bound
+                                binding
+                                lease
+                                plan
+                                journal
+                                frame
+                                prepare
+                                validated
+                        _ <- expectMalformedAuthority stale
+                        after <- invocationRecordCount store
+                        after @?= before
+                        current <-
+                            authorizeExactProjectUp
+                                root
+                                verified
+                                bound
+                                binding
+                                lease
+                                plan
+                                journal
+                                frame
+                                execute
+                                validated
+                        authority <- expectRight current
+                        lifecyclePhaseName (commandAuthorityPhase authority) @?= "execute"
+                _ <- expectRight advanced
+                pure ()
+    , testCase "live lease drift after journal admission refuses before reserving an invocation" $
+        withExactProjectUpFixture Context.HostOrchestrator $
+            \store root verified bound binding lease plan journal frame cursor validated -> do
+                before <- invocationRecordCount store
+                advanceFirstRecordVersionWithPrefix store "lease."
+                refused <-
+                    authorizeExactProjectUp
+                        root
+                        verified
+                        bound
+                        binding
+                        lease
+                        plan
+                        journal
+                        frame
+                        cursor
+                        validated
+                _ <- expectMalformedAuthority refused
+                after <- invocationRecordCount store
+                after @?= before
+    , testCase "prepare, execute, and teardown command authorities retain the cursor phase" $
+        withExactProjectUpFixture Context.HostOrchestrator $
+            \_store root verified bound binding lease plan journal frame prepare validated -> do
+                prepared <-
+                    authorizeExactProjectUp
+                        root
+                        verified
+                        bound
+                        binding
+                        lease
+                        plan
+                        journal
+                        frame
+                        prepare
+                        validated
+                    >>= expectRight
+                lifecyclePhaseName (commandAuthorityPhase prepared) @?= "prepare"
+                executed <-
+                    withExecuteLifecycleCursor prepare $ \execute -> do
+                        authority <-
+                            authorizeExactProjectUp
+                                root
+                                verified
+                                bound
+                                binding
+                                lease
+                                plan
+                                journal
+                                frame
+                                execute
+                                validated
+                                >>= expectRight
+                        lifecyclePhaseName (commandAuthorityPhase authority) @?= "execute"
+                        withTeardownLifecycleCursor execute $ \teardown -> do
+                            terminal <-
+                                authorizeExactProjectUp
+                                    root
+                                    verified
+                                    bound
+                                    binding
+                                    lease
+                                    plan
+                                    journal
+                                    frame
+                                    teardown
+                                    validated
+                                    >>= expectRight
+                            lifecyclePhaseName (commandAuthorityPhase terminal) @?= "teardown"
+                teardownResult <- expectRight executed
+                _ <- expectRight teardownResult
+                pure ()
+    , testCase "a structural leaf placement cannot reserve project-up authority" $
+        withExactProjectUpFixture Context.ClusterService $
+            \store root verified bound binding lease plan journal frame cursor validated -> do
+                before <- invocationRecordCount store
+                refused <-
+                    authorizeExactProjectUp
+                        root
+                        verified
+                        bound
+                        binding
+                        lease
+                        plan
+                        journal
+                        frame
+                        cursor
+                        validated
+                reason <- expectMalformedAuthority refused
+                reason @?= "validated context placement refuses cluster lifecycle commands"
+                after <- invocationRecordCount store
+                after @?= before
+    , testCase "runtime origin checks refuse unsafe two-package root, lease, and cursor substitutions" $
+        withExactProjectUpFixture Context.HostOrchestrator $
+            \storeA rootA verifiedA boundA bindingA leaseA planA journalA frameA cursorA validatedA ->
+                withExactProjectUpFixture Context.HostOrchestrator $
+                    \storeB rootB _verifiedB _boundB _bindingB leaseB _planB _journalB _frameB cursorB _validatedB -> do
+                        beforeA <- invocationRecordCount storeA
+                        beforeB <- invocationRecordCount storeB
+                        ( boundRunLeaseRunText leaseB
+                          , boundRunLeaseSpecDigest leaseB
+                          , boundRunLeasePlanDigest leaseB
+                          )
+                            @?= ( boundRunLeaseRunText leaseA
+                               , boundRunLeaseSpecDigest leaseA
+                               , boundRunLeasePlanDigest leaseA
+                               )
+                        wrongRoot <-
+                            authorizeExactProjectUp
+                                (unsafeCoerce rootB)
+                                verifiedA
+                                boundA
+                                bindingA
+                                leaseA
+                                planA
+                                journalA
+                                frameA
+                                cursorA
+                                validatedA
+                        _ <- expectMalformedAuthority wrongRoot
+                        wrongLease <-
+                            authorizeExactProjectUp
+                                rootA
+                                verifiedA
+                                boundA
+                                bindingA
+                                (unsafeCoerce leaseB)
+                                planA
+                                journalA
+                                frameA
+                                cursorA
+                                validatedA
+                        _ <- expectMalformedAuthority wrongLease
+                        wrongCursor <-
+                            authorizeExactProjectUp
+                                rootA
+                                verifiedA
+                                boundA
+                                bindingA
+                                leaseA
+                                planA
+                                journalA
+                                frameA
+                                (unsafeCoerce cursorB)
+                                validatedA
+                        _ <- expectMalformedAuthority wrongCursor
+                        afterA <- invocationRecordCount storeA
+                        afterB <- invocationRecordCount storeB
+                        (afterA, afterB) @?= (beforeA, beforeB)
+                        exact <-
+                            authorizeExactProjectUp
+                                rootA
+                                verifiedA
+                                boundA
+                                bindingA
+                                leaseA
+                                planA
+                                journalA
+                                frameA
+                                cursorA
+                                validatedA
+                        _ <- expectRight exact
+                        pure ()
+    ]
+
+exactChildProjectAuthorityCases :: [TestTree]
+exactChildProjectAuthorityCases =
+    [ testCase "the authenticated child gate reserves exactly one invocation without root authority" $
+        withExactChildProjectFixture Context.HostOrchestrator $
+            \store childAuthority plan journal frame cursor validated -> do
+                before <- invocationRecordCount store
+                admitted <-
+                    authorizeChildProject
+                        ProjectUp
+                        childAuthority
+                        plan
+                        journal
+                        frame
+                        cursor
+                        validated
+                authority <- expectRight admitted
+                commandAuthorityFrame authority @?= projectFrameId frame
+                projectVerbName (commandAuthorityVerb authority) @?= "up"
+                lifecyclePhaseName (commandAuthorityPhase authority) @?= "prepare"
+                afterFirst <- invocationRecordCount store
+                afterFirst @?= before + 1
+
+                retried <-
+                    authorizeChildProject
+                        ProjectUp
+                        childAuthority
+                        plan
+                        journal
+                        frame
+                        cursor
+                        validated
+                case retried of
+                    Left AuthorityInvocationConsumed{} -> pure ()
+                    Left failure ->
+                        assertFailure
+                            ("expected consumed child invocation, got " <> show failure)
+                    Right _ -> assertFailure "an identical child invocation was reserved twice"
+                afterRetry <- invocationRecordCount store
+                afterRetry @?= afterFirst
+    , testCase "a signed child authority from another retained origin refuses before reservation" $
+        withExactChildProjectFixture Context.HostOrchestrator $
+            \storeA authorityA planA journalA frameA cursorA validatedA ->
+                withExactChildProjectFixture Context.HostOrchestrator $
+                    \storeB authorityB _planB _journalB _frameB _cursorB _validatedB -> do
+                        let storeIdentityA =
+                                protectedStoreIdentityText (protectedStoreIdentity storeA)
+                            storeIdentityB =
+                                protectedStoreIdentityText (protectedStoreIdentity storeB)
+                        assertBool
+                            "the hostile-package fixture uses another retained store origin"
+                            (storeIdentityA /= storeIdentityB)
+                        beforeA <- invocationRecordCount storeA
+                        beforeB <- invocationRecordCount storeB
+                        -- The public type indices make this package substitution
+                        -- impossible for an ordinary caller.  Model hostile
+                        -- packaging explicitly so the retained signed store
+                        -- origin is still proved at runtime before reservation.
+                        refused <-
+                            authorizeChildProject
+                                ProjectUp
+                                (unsafeCoerce authorityB)
+                                planA
+                                journalA
+                                frameA
+                                cursorA
+                                validatedA
+                        reason <- expectMalformedAuthority refused
+                        reason @?= "plan protected store does not match"
+                        afterA <- invocationRecordCount storeA
+                        afterB <- invocationRecordCount storeB
+                        (afterA, afterB) @?= (beforeA, beforeB)
+
+                        exact <-
+                            authorizeChildProject
+                                ProjectUp
+                                authorityA
+                                planA
+                                journalA
+                                frameA
+                                cursorA
+                                validatedA
+                        _ <- expectRight exact
+                        pure ()
+    , testCase "a signed child edge with the wrong retained parent refuses before reservation" $
+        withExactChildProjectFixtureForBinding
+            (Just "wrong-parent-frame")
+            Nothing
+            Nothing
+            Context.HostOrchestrator $
+            \store childAuthority plan journal frame cursor validated -> do
+                before <- invocationRecordCount store
+                refused <-
+                    authorizeChildProject
+                        ProjectUp
+                        childAuthority
+                        plan
+                        journal
+                        frame
+                        cursor
+                        validated
+                reason <- expectMalformedAuthority refused
+                reason @?= "authenticated parent frame does not match"
+                after <- invocationRecordCount store
+                after @?= before
+    , testCase "a signed child edge with the wrong current child frame refuses before reservation" $
+        withExactChildProjectFixtureForBinding
+            Nothing
+            (Just "wrong-child-frame")
+            Nothing
+            Context.HostOrchestrator $
+            \store childAuthority plan journal frame cursor validated -> do
+                before <- invocationRecordCount store
+                refused <-
+                    authorizeChildProject
+                        ProjectUp
+                        childAuthority
+                        plan
+                        journal
+                        frame
+                        cursor
+                        validated
+                reason <- expectMalformedAuthority refused
+                reason @?= "authenticated child frame does not match"
+                after <- invocationRecordCount store
+                after @?= before
+    , testCase "a signed child edge with the wrong lifecycle phase refuses before reservation" $
+        withExactChildProjectFixtureForBinding
+            Nothing
+            Nothing
+            (Just "execute")
+            Context.HostOrchestrator $
+            \store childAuthority plan journal frame cursor validated -> do
+                before <- invocationRecordCount store
+                refused <-
+                    authorizeChildProject
+                        ProjectUp
+                        childAuthority
+                        plan
+                        journal
+                        frame
+                        cursor
+                        validated
+                reason <- expectMalformedAuthority refused
+                reason @?= "cursor lifecycle phase does not match"
+                after <- invocationRecordCount store
+                after @?= before
+    ]
+
 authorityCases :: [TestTree]
 authorityCases =
-    [ testCase "the root gate mints authority for the exact verb" $
+    exactProjectUpAuthorityCases
+        <> exactChildProjectAuthorityCases
+        <> [ testCase "installed identity matches the normalized invoked executable" $ do
+        executable <- getExecutablePath
+        let invoked = normalizeExecutableIdentity executable
+        outcome <-
+            withInstalledProjectIdentity
+                invoked
+                (pure . installedProjectName)
+        outcome @?= Right invoked
+    , testCase "installed identity normalizes the Windows executable suffix" $ do
+        normalizeExecutableIdentity "/installed/authority-project.ExE"
+            @?= "authority-project"
+    , testCase "installed identity refuses a different declared project" $ do
+        executable <- getExecutablePath
+        let invoked = normalizeExecutableIdentity executable
+        outcome <-
+            withInstalledProjectIdentity
+                "declared-project"
+                (pure . installedProjectName)
+        case outcome of
+            Left (AuthorityInvalidIdentity reason) ->
+                assertBool "the refusal names both identities" $
+                    "declared-project" `Text.isInfixOf` reason
+                        && invoked `Text.isInfixOf` reason
+            other -> assertFailure ("expected an executable-identity refusal, got " <> show other)
+    , testCase "installed identity refuses a non-stable project name" $ do
+        outcome <-
+            withInstalledProjectIdentity
+                "not.a.stable.name"
+                (pure . installedProjectName)
+        case outcome of
+            Left (AuthorityInvalidIdentity reason) ->
+                assertBool "the stable-name grammar made the decision" $
+                    "may contain only alphanumerics, '-', and '_'" `Text.isInfixOf` reason
+                        && "not.a.stable.name" `Text.isInfixOf` reason
+            other -> assertFailure ("expected an invalid stable name, got " <> show other)
+    , testCase "installed identity refuses non-ASCII record names" $ do
+        outcome <-
+            withInstalledProjectIdentity
+                "authority-λ"
+                (pure . installedProjectName)
+        case outcome of
+            Left (AuthorityInvalidIdentity reason) ->
+                assertBool "the ASCII stable-name grammar made the decision" $
+                    "may contain only alphanumerics, '-', and '_'" `Text.isInfixOf` reason
+                        && "authority-λ" `Text.isInfixOf` reason
+            other -> assertFailure ("expected a non-ASCII identity refusal, got " <> show other)
+    , testCase "OS-principal evidence names the exact protected store" $
+        withStore $ \store -> do
+            outcome <- withAuthorityEntry store verifyOsPrincipal
+            case outcome of
+                Left failure -> assertFailure (show failure)
+                Right principal ->
+                    assertBool "the evidence retained this store identity" $
+                        protectedStoreIdentityText (protectedStoreIdentity store)
+                            `Text.isInfixOf` Text.pack (show principal)
+    , testCase "OS-principal verification refuses a non-writable store" $
+        withStore $ \store -> do
+            outcome <-
+                withAuthorityEntry store $ \session -> do
+                    let recordsRoot = sessionStoreRoot session </> "records"
+                    original <- getPermissions recordsRoot
+                    let refused = original{writable = False}
+                    (setPermissions recordsRoot refused >> verifyOsPrincipal session)
+                        `finally` setPermissions recordsRoot original
+            case outcome of
+                Left (AuthorityOperatorRefused _) -> pure ()
+                other -> assertFailure ("expected an OS-principal refusal, got " <> show other)
+    , testCase "broker generations advance monotonically" $
         withStore $ \store ->
-            withRoot store ProjectUp $ \_session root -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
+                first <-
+                    withProductionRoot store project ProjectUp $ \root ->
+                        pure (Right (brokerEpochWord (rootAuthorityEpoch (productionRootAuthority root))))
+                second <-
+                    withProductionRoot store project ProjectUp $ \root ->
+                        pure (Right (brokerEpochWord (rootAuthorityEpoch (productionRootAuthority root))))
+                first @?= Right 1
+                second @?= Right 2
+    , testCase "a malformed broker counter refuses instead of reusing a generation" $
+        withStore $ \store ->
+            Fixture.withFixtureInstalledProject $ \project -> do
+                key <-
+                    expectKey
+                        ("broker." <> installedProjectName project <> ".generation")
+                seeded <-
+                    withProtectedEntry store $ \session ->
+                        compareAndSwapProtectedRecord session key ExpectAbsent "not-a-counter"
+                assertBool "the malformed counter was seeded" (isRight seeded)
+                outcome <-
+                    withProductionRoot store project ProjectUp (\_ -> pure (Right ()))
+                case outcome of
+                    Left (ModeAuthorityFailure (AuthorityInvalidIdentity reason)) ->
+                        assertBool "the refusal names the malformed counter" ("malformed" `Text.isInfixOf` reason)
+                    other -> assertFailure ("expected a malformed-counter refusal, got " <> show other)
+    , testCase "an exhausted broker counter refuses instead of wrapping" $
+        withStore $ \store ->
+            Fixture.withFixtureInstalledProject $ \project -> do
+                key <-
+                    expectKey
+                        ("broker." <> installedProjectName project <> ".generation")
+                seeded <-
+                    withProtectedEntry store $ \session ->
+                        compareAndSwapProtectedRecord
+                            session
+                            key
+                            ExpectAbsent
+                            (ByteStringChar8.pack (show (maxBound :: Word64)))
+                assertBool "the exhausted broker counter was seeded" (isRight seeded)
+                outcome <-
+                    withProductionRoot store project ProjectUp (\_ -> pure (Right ()))
+                case outcome of
+                    Left (ModeAuthorityFailure (AuthorityInvalidIdentity reason)) ->
+                        assertBool "the refusal names exhaustion" ("exhausted" `Text.isInfixOf` reason)
+                    other -> assertFailure ("expected an exhausted-counter refusal, got " <> show other)
+    , testCase "broker counters are separated by store" $
+        withStore $ \firstStore ->
+            withStore $ \secondStore ->
+                Fixture.withFixtureInstalledProject $ \project -> do
+                    first <-
+                        withProductionRoot firstStore project ProjectUp $ \root ->
+                            pure
+                                ( Right
+                                    (brokerEpochWord (rootAuthorityEpoch (productionRootAuthority root)))
+                                )
+                    second <-
+                        withProductionRoot secondStore project ProjectUp $ \root ->
+                            pure
+                                ( Right
+                                    (brokerEpochWord (rootAuthorityEpoch (productionRootAuthority root)))
+                                )
+                    first @?= Right 1
+                    second @?= Right 1
+    , testCase "the root gate mints authority for the exact verb and scope" $
+        withStore $ \store ->
+            withRoot store ProjectUp $ \project _session root -> do
                 projectVerbName (rootAuthorityVerb root) @?= "up"
-                rootAuthorityProjectName root @?= "hostbootstrap-demo"
+                rootAuthorityProjectName root @?= installedProjectName project
+                rootScopeAuthority root `seq` pure ()
                 pure (Right ())
+    , testCase "the authority kernel has a closed package-internal importer set" $ do
+        cwd <- getCurrentDirectory
+        root <- findRepoRoot cwd >>= maybe (assertFailure "could not locate the repository root") pure
+        let sourceRoot = root </> "core" </> "hostbootstrap-core" </> "src"
+            kernelPath = sourceRoot </> "HostBootstrap" </> "Authority" </> "Kernel.hs"
+            expected =
+                [ "HostBootstrap/Authority.hs"
+                , "HostBootstrap/Authority/ProjectPlan.hs"
+                , "HostBootstrap/Handoff.hs"
+                , "HostBootstrap/Lifecycle/Closure.hs"
+                , "HostBootstrap/Lifecycle/Mode.hs"
+                , "HostBootstrap/Lifecycle/Session.hs"
+                ]
+        sources <- haskellSources sourceRoot
+        importers <-
+            filterM
+                (fmap (Text.isInfixOf "HostBootstrap.Authority.Kernel") . TextIO.readFile)
+                (filter (/= kernelPath) sources)
+        sort (map (makeRelative sourceRoot) importers) @?= expected
+        facade <- TextIO.readFile (sourceRoot </> "HostBootstrap" </> "Authority.hs")
+        authorityFacadeExports facade
+            @?= Right
+                [ "VerbUp"
+                , "VerbDown"
+                , "VerbDestroy"
+                , "ProjectVerb (..)"
+                , "projectVerbName"
+                , "SomeProjectVerb (..)"
+                , "parseProjectVerb"
+                , "PreparePhase"
+                , "ExecutePhase"
+                , "TeardownPhase"
+                , "LifecyclePhase (..)"
+                , "lifecyclePhaseName"
+                , "InstalledProjectIdentity"
+                , "withInstalledProjectIdentity"
+                , "normalizeExecutableIdentity"
+                , "installedProjectName"
+                , "VerifiedOsPrincipal"
+                , "verifyOsPrincipal"
+                , "BrokerEpoch"
+                , "brokerEpochWord"
+                , "RootInvocationAuthority"
+                , "RootScopeAuthority"
+                , "rootScopeAuthority"
+                , "rootAuthorityVerb"
+                , "rootAuthorityEpoch"
+                , "rootAuthorityProjectName"
+                , "CommandAuthority"
+                , "commandAuthorityVerb"
+                , "commandAuthorityPhase"
+                , "commandAuthorityFrame"
+                , "commandAuthorityEpoch"
+                , "commandAuthorityInvocation"
+                , "commandAuthorityMatchesStore"
+                , "InvocationId"
+                , "invocationIdText"
+                , "AuthorityError (..)"
+                , "authorityErrorMessage"
+                ]
+        compatibilityExists <-
+            doesFileExist
+                (sourceRoot </> "HostBootstrap" </> "Config" </> "InstalledProject.hs")
+        assertBool "the configuration compatibility module is absent" (not compatibilityExists)
+        cabal <- TextIO.readFile (root </> "core" </> "hostbootstrap-core" </> "hostbootstrap-core.cabal")
+        assertBool "the configuration compatibility module is not exposed" $
+            not ("HostBootstrap.Config.InstalledProject" `Text.isInfixOf` cabal)
+        kernel <- TextIO.readFile kernelPath
+        assertBool "the kernel has no caller-fixed installed-identity escape" $
+            not ("installedProjectForKernel" `Text.isInfixOf` kernel)
+        assertBool "the kernel has no configuration dependency" $
+            not ("import HostBootstrap.Config" `Text.isInfixOf` kernel)
+        assertBool "the kernel has no lifecycle-plan dependency" $
+            not ("import HostBootstrap.Reconcile" `Text.isInfixOf` kernel)
+        projectPlanAuthority <-
+            TextIO.readFile
+                (sourceRoot </> "HostBootstrap" </> "Authority" </> "ProjectPlan.hs")
+        assertBool "the caller-selected lifecycle-plan authority gate is absent" $
+            not ("authorizeProjectCommand" `Text.isInfixOf` projectPlanAuthority)
+        assertBool "the Production compatibility authority gate is absent" $
+            not ("authorizeProductionProjectCommand" `Text.isInfixOf` projectPlanAuthority)
     , testCase "a store already bound to another project refuses this one" $
         withStore $ \store -> do
-            firstOutcome <-
-                withAuthorityEntry store $ \session -> do
-                    operator <- verifyOperatorAuthorization session
-                    case operator of
-                        Left failure -> pure (Left failure)
-                        Right authorized ->
-                            withOtherProject "other-project" $ \other ->
-                                withFreshBrokerEpoch session other $ \epoch ->
-                                    withVerifiedRootInvocation
-                                        session
-                                        other
-                                        authorized
-                                        epoch
-                                        ProjectUp
-                                        (\_ -> pure (Right ()))
-            assertBool "the first project binds the store" (isRight firstOutcome)
-            second <-
-                withAuthorityEntry store $ \session -> do
-                    operator <- verifyOperatorAuthorization session
-                    case operator of
-                        Left failure -> pure (Left failure)
-                        Right authorized ->
-                            withProject "hostbootstrap-demo" $ \ours ->
-                                withFreshBrokerEpoch session ours $ \epoch ->
-                                    withVerifiedRootInvocation
-                                        session
-                                        ours
-                                        authorized
-                                        epoch
-                                        ProjectUp
-                                        (\_ -> pure (Right ()))
-            case second of
-                Left (AuthorityStoreNotOurs _ _) -> pure ()
-                other -> assertFailure ("expected a store-binding refusal, got " <> show other)
-    , testCase "one invocation is consumed exactly once" $
-        withStore $ \store ->
-            withRoot store ProjectUp $ \session root ->
-                    withProject "hostbootstrap-demo" $ \project ->
-                        withTestPlan $ \plan -> do
-                            first <-
-                                authorizeProjectCommand
-                                    session
-                                    project
-                                    root
-                                    plan
-                                    Execute
-                                    "host"
-                                    (\authority -> pure (Right (commandAuthorityFrame authority)))
-                            first @?= Right "host"
-                            again <-
-                                authorizeProjectCommand
-                                    session
-                                    project
-                                    root
-                                    plan
-                                    Execute
-                                    "host"
-                                    (\_ -> pure (Right ("second" :: Text)))
-                            case again of
-                                Left (AuthorityInvocationConsumed _) -> pure (Right ())
-                                other ->
-                                    assertFailure
-                                        ("expected a consumed invocation, got " <> show other)
-    , testCase "a distinct phase at the same frame is a distinct invocation" $
-        withStore $ \store ->
-            withRoot store ProjectUp $ \session root ->
-                    withProject "hostbootstrap-demo" $ \project ->
-                        withTestPlan $ \plan -> do
-                            prepare <-
-                                authorizeProjectCommand
-                                    session
-                                    project
-                                    root
-                                    plan
-                                    Prepare
-                                    "host"
-                                    (\_ -> pure (Right ()))
-                            execute <-
-                                authorizeProjectCommand
-                                    session
-                                    project
-                                    root
-                                    plan
-                                    Execute
-                                    "host"
-                                    (\_ -> pure (Right ()))
-                            prepare @?= Right ()
-                            execute @?= Right ()
-                            pure (Right ())
-    , testCase "a frame outside the plan cannot be authorized" $
-        withStore $ \store ->
-            withRoot store ProjectUp $ \session root ->
-                    withProject "hostbootstrap-demo" $ \project ->
-                        withTestPlan $ \plan -> do
-                            outcome <-
-                                authorizeProjectCommand
-                                    session
-                                    project
-                                    root
-                                    plan
-                                    Execute
-                                    "not-a-frame"
-                                    (\_ -> pure (Right ()))
-                            case outcome of
-                                Left (AuthorityUnknownFrame frameName) -> do
-                                    frameName @?= "not-a-frame"
-                                    pure (Right ())
-                                other ->
-                                    assertFailure
-                                        ("expected an unknown-frame refusal, got " <> show other)
+            key <- expectKey "authority.binding"
+            seeded <-
+                withProtectedEntry store $ \session ->
+                    compareAndSwapProtectedRecord
+                        session
+                        key
+                        ExpectAbsent
+                        (TextEncoding.encodeUtf8 "other-project")
+            assertBool "the foreign project binding was seeded" (isRight seeded)
+            Fixture.withFixtureInstalledProject $ \project -> do
+                outcome <- withProductionRoot store project ProjectUp (\_ -> pure (Right ()))
+                case outcome of
+                    Left (ModeAuthorityFailure (AuthorityStoreNotOurs expected observed)) -> do
+                        expected @?= installedProjectName project
+                        observed @?= "other-project"
+                    other -> assertFailure ("expected a store-binding refusal, got " <> show other)
+    , testCase "a malformed authority binding refuses root admission" $
+        withStore $ \store -> do
+            key <- expectKey "authority.binding"
+            seeded <-
+                withProtectedEntry store $ \session ->
+                    compareAndSwapProtectedRecord
+                        session
+                        key
+                        ExpectAbsent
+                        (ByteString.pack [0xff])
+            assertBool "the malformed authority binding was seeded" (isRight seeded)
+            outcome <-
+                Fixture.withFixtureInstalledProject $ \project ->
+                    withProductionRoot store project ProjectUp (\_ -> pure (Right ()))
+            case outcome of
+                Left (ModeAuthorityFailure AuthorityMalformedBinding{}) -> pure ()
+                other -> assertFailure ("expected a malformed-binding refusal, got " <> show other)
     , testCase "the verb vocabulary is closed" $ do
         case parseProjectVerb "up" of
             Right (SomeProjectVerb verb) -> projectVerbName verb @?= "up"
             other -> assertFailure ("expected the up verb, got " <> show other)
+        case parseProjectVerb "down" of
+            Right (SomeProjectVerb verb) -> projectVerbName verb @?= "down"
+            other -> assertFailure ("expected the down verb, got " <> show other)
+        case parseProjectVerb "destroy" of
+            Right (SomeProjectVerb verb) -> projectVerbName verb @?= "destroy"
+            other -> assertFailure ("expected the destroy verb, got " <> show other)
         case parseProjectVerb "deploy" of
             Left (AuthorityUnknownVerb raw) -> raw @?= "deploy"
             other -> assertFailure ("expected an unknown verb, got " <> show other)
     , testCase "a settled-destroy close root comes only from a destroy authority" $
         withStore $ \store ->
-            withRoot store ProjectDestroy $ \_session root -> do
+            withRoot store ProjectDestroy $ \_project _session root -> do
                 productionCloseRootVerb (destroyCloseRoot root) @?= SettledDestroyClose
                 productionCloseRootVerb (preEffectCloseRoot root) @?= PreEffectRefusalClose
                 pure (Right ())
@@ -387,18 +1153,18 @@ modeCases :: [TestTree]
 modeCases =
     [ testCase "production takes the mode and retains it across a second entry" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 first <-
                     withProductionRoot store project ProjectUp $ \root ->
-                        pure (Right (projectModeLeaseMode (productionRootModeLease root)))
-                first @?= Right ProductionMode
+                        pure (Right (projectModeLeaseName (productionRootModeLease root)))
+                first @?= Right "production"
                 again <-
                     withProductionRoot store project ProjectDown $ \root ->
-                        pure (Right (projectModeLeaseMode (productionRootModeLease root)))
-                again @?= Right ProductionMode
+                        pure (Right (projectModeLeaseName (productionRootModeLease root)))
+                again @?= Right "production"
     , testCase "a mismatched mode cannot reach the harness planner or snapshot write" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 production <-
                     withProductionRoot store project ProjectUp $ \_ -> pure (Right ())
                 production @?= Right ()
@@ -433,7 +1199,12 @@ modeCases =
                                     Right keys ->
                                         Right
                                             ( filter
-                                                ( ("snapshot.hostbootstrap-demo." `Text.isPrefixOf`)
+                                                ( ( ( "snapshot."
+                                                        <> installedProjectName project
+                                                        <> "."
+                                                    )
+                                                        `Text.isPrefixOf`
+                                                  )
                                                     . recordKeyText
                                                 )
                                                 keys
@@ -441,9 +1212,13 @@ modeCases =
                         snapshots @?= Right []
     , testCase "the harness bracket refuses when a production config exists" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project ->
+            Fixture.withFixtureInstalledProject $ \project ->
                 withSystemTempDirectory "hostbootstrap-sibling" $ \siblingDirectory -> do
-                    writeFile (siblingDirectory </> "hostbootstrap-demo.dhall") "{=}"
+                    writeFile
+                        ( siblingDirectory
+                            </> Text.unpack (installedProjectName project) <> ".dhall"
+                        )
+                        "{=}"
                     swept <- recoverAbandonedHarnessRuns store project neverResolves neverResolves
                     proof <- either (assertFailure . show) pure swept
                     outcome <-
@@ -459,83 +1234,167 @@ modeCases =
                         other -> assertFailure ("expected a safety refusal, got " <> show other)
     , testCase "a lease cannot be bound without a persisted plan snapshot" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 outcome <-
                     withProductionRoot store project ProjectUp $ \root ->
-                        withProtectedEntry' store $ \session -> do
-                            let run = unboundRunLeaseRun (productionRootUnboundLease root)
-                            observed <-
-                                verifyPlanSnapshot session project run (\_ -> pure (Right ()))
-                            case observed of
-                                Left (ModeSnapshotMissing named) -> do
-                                    named @?= runIdText run
-                                    pure (Right ())
-                                other ->
-                                    assertFailure
-                                        ("expected a missing snapshot, got " <> show other)
+                        let unbound = productionRootUnboundLease root
+                         in do
+                                observed <- verifyPlanSnapshot unbound (\_ -> pure (Right ()))
+                                case observed of
+                                    Left (ModeSnapshotMissing named) -> do
+                                        named @?= unboundRunLeaseRunText unbound
+                                        pure (Right ())
+                                    other ->
+                                        assertFailure
+                                            ("expected a missing snapshot, got " <> show other)
                 outcome @?= Right ()
     , testCase "a fresh binding proves no recovery is owed" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 outcome <-
                     withProductionRoot store project ProjectUp $ \root ->
-                        withProtectedEntry' store $ \session ->
-                            withBoundSnapshot session project root $ \snapshot ->
-                                bindRunLease
-                                    session
-                                    project
-                                    (productionRootUnboundLease root)
-                                    snapshot
-                                    ( \binding -> case binding of
-                                        FreshRunLeaseBinding bound _ ->
-                                            pure (Right (boundRunLeasePlanDigest bound))
-                                        ExistingRunLeaseBinding _ recovery ->
-                                            assertFailure
-                                                ("expected a fresh binding, got " <> show recovery)
-                                    )
+                        withBoundSnapshot root $ \snapshot -> do
+                            planDigest <-
+                                expectRight
+                                    =<< bindRunLease
+                                        (productionRootUnboundLease root)
+                                        snapshot
+                                        (pure . boundRunLeasePlanDigest)
+                            pure (Right planDigest)
                 outcome @?= Right "plan-1"
-    , testCase "rebinding an already-bound lease yields bound-invocation recovery" $
+    , testCase "a second Production root preserves an existing bound lease and snapshot" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
+                let runName = "production"
+                leaseKey <-
+                    expectKey
+                        ( "lease."
+                            <> installedProjectName project
+                            <> "."
+                            <> runName
+                        )
+                snapshotKey <-
+                    expectKey
+                        ( "snapshot."
+                            <> installedProjectName project
+                            <> "."
+                            <> runName
+                        )
+                bound <-
+                    withProductionRoot store project ProjectUp $ \root ->
+                        withBoundSnapshot root $ \snapshot -> do
+                            _ <-
+                                expectRight
+                                    =<< bindRunLease
+                                        (productionRootUnboundLease root)
+                                        snapshot
+                                        (\_ -> pure ())
+                            pure (Right ())
+                bound @?= Right ()
+                beforeLeaseObserved <- expectRight =<< readModeRecord store leaseKey
+                beforeLease <-
+                    maybe (assertFailure "the bound Production lease disappeared") pure beforeLeaseObserved
+                beforeSnapshotObserved <- expectRight =<< readModeRecord store snapshotKey
+                beforeSnapshot <-
+                    maybe (assertFailure "the Production snapshot disappeared") pure beforeSnapshotObserved
+                entries <- newIORef (0 :: Int)
+                refused <-
+                    withProductionRoot store project ProjectUp $ \_ -> do
+                        atomicModifyIORef' entries (\count -> (count + 1, ()))
+                        pure (Right ())
+                case refused of
+                    Left (ModeLeaseNotBindable run state) -> do
+                        run @?= runName
+                        state @?= "bound"
+                    other ->
+                        assertFailure
+                            ("expected a bound-lease root refusal, got " <> show other)
+                readIORef entries >>= (@?= 0)
+                afterLeaseObserved <- expectRight =<< readModeRecord store leaseKey
+                afterLease <-
+                    maybe (assertFailure "the refused root removed the bound lease") pure afterLeaseObserved
+                protectedRecordVersion afterLease @?= protectedRecordVersion beforeLease
+                protectedRecordBytes afterLease @?= protectedRecordBytes beforeLease
+                afterSnapshotObserved <- expectRight =<< readModeRecord store snapshotKey
+                afterSnapshot <-
+                    maybe (assertFailure "the refused root removed the snapshot") pure afterSnapshotObserved
+                protectedRecordVersion afterSnapshot @?= protectedRecordVersion beforeSnapshot
+                protectedRecordBytes afterSnapshot @?= protectedRecordBytes beforeSnapshot
+    , testCase "a Production root preserves and refuses a malformed lease record" $
+        withStore $ \store ->
+            Fixture.withFixtureInstalledProject $ \project -> do
+                leaseKey <-
+                    expectKey
+                        ( "lease."
+                            <> installedProjectName project
+                            <> ".production"
+                        )
+                _ <-
+                    expectRight
+                        =<< withProtectedEntry' store (\session -> do
+                                written <-
+                                    compareAndSwapProtectedRecord
+                                        session
+                                        leaseKey
+                                        ExpectAbsent
+                                        "not-a-lease"
+                                pure
+                                    ( either
+                                        (Left . ModeStoreFailure)
+                                        (const (Right ()))
+                                        written
+                                    )
+                            )
+                beforeObserved <- expectRight =<< readModeRecord store leaseKey
+                before <-
+                    maybe (assertFailure "the malformed Production lease disappeared") pure beforeObserved
+                entries <- newIORef (0 :: Int)
+                refused <-
+                    withProductionRoot store project ProjectUp $ \_ -> do
+                        atomicModifyIORef' entries (\count -> (count + 1, ()))
+                        pure (Right ())
+                case refused of
+                    Left (ModeMalformedRecord key) -> key @?= recordKeyText leaseKey
+                    other ->
+                        assertFailure
+                            ("expected a malformed-lease root refusal, got " <> show other)
+                readIORef entries >>= (@?= 0)
+                afterObserved <- expectRight =<< readModeRecord store leaseKey
+                after <-
+                    maybe (assertFailure "the refused root removed the malformed lease") pure afterObserved
+                protectedRecordVersion after @?= protectedRecordVersion before
+                protectedRecordBytes after @?= protectedRecordBytes before
+    , testCase "rebinding an already-bound lease is not a fresh transition" $
+        withStore $ \store ->
+            Fixture.withFixtureInstalledProject $ \project -> do
                 outcome <-
                     withProductionRoot store project ProjectUp $ \root ->
-                        withProtectedEntry' store $ \session ->
-                            withBoundSnapshot session project root $ \snapshot -> do
-                                let bind = bindRunLease session project (productionRootUnboundLease root) snapshot
-                                first <- bind (\_ -> pure (Right ()))
-                                first @?= Right ()
-                                -- The second binding is *not* an error: it is the
-                                -- abandoned-invocation case, and it must arrive as
-                                -- recovery authority rather than a fresh binding.
-                                bind
-                                    ( \binding -> case binding of
-                                        ExistingRunLeaseBinding _ recovery -> do
-                                            branch <-
-                                                eliminateProductionBoundRecovery
-                                                    session
-                                                    project
-                                                    recovery
-                                            case branch of
-                                                Right (ProductionOpenRevisionRecovery open) -> do
-                                                    openRevisionKind open @?= NormalRevision
-                                                    pure (Right ())
-                                                other ->
-                                                    assertFailure
-                                                        ("expected Open revision recovery, got " <> show other)
-                                        FreshRunLeaseBinding _ _ ->
-                                            assertFailure "the second binding must not be fresh"
-                                    )
+                        withBoundSnapshot root $ \snapshot -> do
+                            let unbound = productionRootUnboundLease root
+                            first <- bindRunLease unbound snapshot (\_ -> pure ())
+                            _ <- expectRight first
+                            second <- bindRunLease unbound snapshot (\_ -> pure ())
+                            case second of
+                                Left _ -> pure (Right ())
+                                Right () -> assertFailure "the second binding must not be fresh"
                 outcome @?= Right ()
     , testCase "a plan snapshot is byte-identically idempotent and immutable" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 outcome <-
                     withProductionRoot store project ProjectUp $ \root ->
-                        withProtectedEntry' store $ \session -> do
-                            let run = unboundRunLeaseRun (productionRootUnboundLease root)
-                            key <- expectKey ("snapshot.hostbootstrap-demo." <> runIdText run)
-                            _ <- expectRight =<< persistPlanSnapshot session project run 1 "spec-1" "plan-1"
-                            firstObserved <- expectRight =<< readProtectedRecord session key
+                        do
+                            let unbound = productionRootUnboundLease root
+                                runName = unboundRunLeaseRunText unbound
+                            key <-
+                                expectKey
+                                    ( "snapshot."
+                                        <> installedProjectName project
+                                        <> "."
+                                        <> runName
+                                    )
+                            _ <- expectRight =<< persistPlanSnapshot unbound 1 "spec-1" "plan-1"
+                            firstObserved <- expectRight =<< readModeRecord store key
                             first <-
                                 maybe
                                     (assertFailure "the first snapshot write was absent")
@@ -543,8 +1402,8 @@ modeCases =
                                     firstObserved
                             -- Repeating the exact bytes is success without a
                             -- replacement write or record-version advance.
-                            _ <- expectRight =<< persistPlanSnapshot session project run 1 "spec-1" "plan-1"
-                            identicalObserved <- expectRight =<< readProtectedRecord session key
+                            _ <- expectRight =<< persistPlanSnapshot unbound 1 "spec-1" "plan-1"
+                            identicalObserved <- expectRight =<< readModeRecord store key
                             identical <-
                                 maybe
                                     (assertFailure "the idempotent snapshot disappeared")
@@ -556,7 +1415,7 @@ modeCases =
                             -- persistence, before lease binding can reinterpret
                             -- the same run as a replacement plan.
                             substituted <-
-                                persistPlanSnapshot session project run 2 "spec-1" "plan-2"
+                                persistPlanSnapshot unbound 2 "spec-1" "plan-2"
                             case substituted of
                                 Left (ModeSnapshotMismatch expected observed) -> do
                                     expected @?= "revision 2, spec spec-1, plan plan-2"
@@ -564,7 +1423,7 @@ modeCases =
                                 other ->
                                     assertFailure
                                         ("expected immutable snapshot refusal, got " <> show other)
-                            unchangedObserved <- expectRight =<< readProtectedRecord session key
+                            unchangedObserved <- expectRight =<< readModeRecord store key
                             unchanged <-
                                 maybe
                                     (assertFailure "the refused snapshot disappeared")
@@ -573,7 +1432,7 @@ modeCases =
                             protectedRecordVersion unchanged @?= protectedRecordVersion first
                             protectedRecordBytes unchanged @?= protectedRecordBytes first
                             verified <-
-                                verifyPlanSnapshot session project run $ \snapshot ->
+                                verifyPlanSnapshot unbound $ \snapshot ->
                                     pure
                                         ( Right
                                             ( planSnapshotRevision snapshot
@@ -586,25 +1445,30 @@ modeCases =
                 outcome @?= Right ()
     , testCase "a canonical snapshot persists exact bytes and refuses config/topology substitution" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 outcome <-
                     withProductionRoot store project ProjectUp $ \root ->
-                        withProtectedEntry' store $ \session -> do
-                            let run = unboundRunLeaseRun (productionRootUnboundLease root)
+                        do
+                            let unbound = productionRootUnboundLease root
+                                runName = unboundRunLeaseRunText unbound
                                 firstSnapshot = canonicalTestSnapshot "config-a"
                                 configReplacement = canonicalTestSnapshot "config-b"
                                 topologyReplacement =
                                     canonicalTestSnapshotFor "config-a" alternateTestStepPlan
-                            key <- expectKey ("snapshot.hostbootstrap-demo." <> runIdText run)
+                            key <-
+                                expectKey
+                                    ( "snapshot."
+                                        <> installedProjectName project
+                                        <> "."
+                                        <> runName
+                                    )
                             _ <-
                                 expectRight
                                     =<< persistCanonicalPlanSnapshot
-                                        session
-                                        project
-                                        run
+                                        unbound
                                         1
                                         firstSnapshot
-                            firstObserved <- expectRight =<< readProtectedRecord session key
+                            firstObserved <- expectRight =<< readModeRecord store key
                             firstRecord <-
                                 maybe
                                     (assertFailure "the canonical snapshot write was absent")
@@ -613,12 +1477,10 @@ modeCases =
                             _ <-
                                 expectRight
                                     =<< persistCanonicalPlanSnapshot
-                                        session
-                                        project
-                                        run
+                                        unbound
                                         1
                                         firstSnapshot
-                            identicalObserved <- expectRight =<< readProtectedRecord session key
+                            identicalObserved <- expectRight =<< readModeRecord store key
                             identicalRecord <-
                                 maybe
                                     (assertFailure "the idempotent canonical snapshot disappeared")
@@ -628,9 +1490,7 @@ modeCases =
                             protectedRecordBytes identicalRecord @?= protectedRecordBytes firstRecord
                             substituted <-
                                 persistCanonicalPlanSnapshot
-                                    session
-                                    project
-                                    run
+                                    unbound
                                     1
                                     configReplacement
                             case substituted of
@@ -640,9 +1500,7 @@ modeCases =
                                         ("expected canonical substitution refusal, got " <> show other)
                             topologySubstituted <-
                                 persistCanonicalPlanSnapshot
-                                    session
-                                    project
-                                    run
+                                    unbound
                                     1
                                     topologyReplacement
                             case topologySubstituted of
@@ -651,7 +1509,7 @@ modeCases =
                                     assertFailure
                                         ("expected topology substitution refusal, got " <> show other)
                             verified <-
-                                verifyPlanSnapshot session project run $ \snapshot ->
+                                verifyPlanSnapshot unbound $ \snapshot ->
                                     pure
                                         ( Right
                                             ( planSnapshotSpecDigest snapshot
@@ -667,7 +1525,7 @@ modeCases =
                                     , Just "config-a"
                                     , Just (canonicalPlanSnapshotBytes firstSnapshot)
                                     )
-                            unchangedObserved <- expectRight =<< readProtectedRecord session key
+                            unchangedObserved <- expectRight =<< readModeRecord store key
                             unchangedRecord <-
                                 maybe
                                     (assertFailure "the refused canonical snapshot disappeared")
@@ -679,11 +1537,12 @@ modeCases =
                 outcome @?= Right ()
     , testCase "a hostile canonical frame length is rejected before allocation" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 outcome <-
                     withProductionRoot store project ProjectUp $ \root ->
-                        withProtectedEntry' store $ \session -> do
-                            let run = unboundRunLeaseRun (productionRootUnboundLease root)
+                        do
+                            let unbound = productionRootUnboundLease root
+                                runName = unboundRunLeaseRunText unbound
                                 hostile =
                                     LazyByteString.toStrict
                                         ( Builder.toLazyByteString
@@ -693,16 +1552,26 @@ modeCases =
                                                 <> Builder.word64BE maxBound
                                             )
                                         )
-                            key <- expectKey ("snapshot.hostbootstrap-demo." <> runIdText run)
+                            key <-
+                                expectKey
+                                    ( "snapshot."
+                                        <> installedProjectName project
+                                        <> "."
+                                        <> runName
+                                    )
                             _ <-
                                 expectRight
-                                    =<< compareAndSwapProtectedRecord
-                                        session
-                                        key
-                                        ExpectAbsent
-                                        hostile
+                                    =<< withProtectedEntry' store (\session -> do
+                                            written <-
+                                                compareAndSwapProtectedRecord
+                                                    session
+                                                    key
+                                                    ExpectAbsent
+                                                    hostile
+                                            pure (either (Left . ModeStoreFailure) (const (Right ())) written)
+                                        )
                             decoded <-
-                                verifyPlanSnapshot session project run (\_ -> pure (Right ()))
+                                verifyPlanSnapshot unbound (\_ -> pure (Right ()))
                             case decoded of
                                 Left (ModeMalformedRecord malformedKey) -> do
                                     malformedKey @?= recordKeyText key
@@ -711,156 +1580,238 @@ modeCases =
                                     assertFailure
                                         ("expected bounded malformed-record refusal, got " <> show other)
                 outcome @?= Right ()
-    , testCase "each scope's recovery eliminator refuses the other's disposition" $
+    , testCase "a Production profile consumes its exact protected slot once" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 outcome <-
-                    withProductionRoot store project ProjectUp $ \root ->
-                        withProtectedEntry' store $ \session -> do
-                            let unbound = productionRootUnboundLease root
-                                run = unboundRunLeaseRun unbound
-                            _ <- expectRight =<< persistPlanSnapshot session project run 1 "spec-1" "plan-1"
-                            _ <-
-                                verifyPlanSnapshot session project run $ \snapshot ->
-                                    bindRunLease session project unbound snapshot (\_ -> pure (Right ()))
-                            -- A Harness Closing epoch is not Production evidence.
-                            _ <- expectRight =<< recordHarnessClosingEpoch session project run 7
-                            production <-
-                                verifyPlanSnapshot session project run $ \snapshot ->
-                                    bindRunLease session project unbound snapshot $ \binding ->
-                                        case binding of
-                                            ExistingRunLeaseBinding _ recovery ->
-                                                Right <$> eliminateProductionBoundRecovery session project recovery
-                                            FreshRunLeaseBinding _ _ ->
-                                                assertFailure "expected an existing binding"
-                            case production of
-                                Right (Left (ModeWrongRecoveryScope scope _)) -> scope @?= "production"
-                                other ->
-                                    assertFailure
-                                        ("production recovery must refuse a closing epoch, got " <> show other)
-                            -- And symmetrically: a Production acknowledgment is
-                            -- not Harness evidence.
-                            _ <-
-                                expectRight
-                                    =<< recordProductionInvocationAcknowledgment
-                                        session
-                                        project
-                                        run
-                                        =<< expectCloseKey "close-1"
-                            harness <-
-                                verifyPlanSnapshot session project run $ \snapshot ->
-                                    bindRunLease session project unbound snapshot $ \binding ->
-                                        case binding of
-                                            ExistingRunLeaseBinding _ recovery ->
-                                                Right <$> eliminateHarnessBoundRecovery session project recovery
-                                            FreshRunLeaseBinding _ _ ->
-                                                assertFailure "expected an existing binding"
-                            case harness of
-                                Right (Left (ModeWrongRecoveryScope scope _)) -> do
-                                    scope @?= "harness"
-                                    pure (Right ())
-                                other ->
-                                    assertFailure
-                                        ("harness recovery must refuse an acknowledgment, got " <> show other)
-                outcome @?= Right ()
-    , testCase "the Open branch reports the recorded migration side of the barrier" $
-        withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
-                outcome <-
-                    withProductionRoot store project ProjectUp $ \root ->
-                        withProtectedEntry' store $ \session -> do
-                            let unbound = productionRootUnboundLease root
-                                run = unboundRunLeaseRun unbound
-                            _ <- expectRight =<< persistPlanSnapshot session project run 1 "spec-1" "plan-1"
-                            _ <-
-                                verifyPlanSnapshot session project run $ \snapshot ->
-                                    bindRunLease session project unbound snapshot (\_ -> pure (Right ()))
-                            _ <-
-                                expectRight
-                                    =<< recordOpenRevisionMigration
-                                        session
-                                        project
-                                        run
-                                        (IncompleteMigration "migration-1")
-                            verifyPlanSnapshot session project run $ \snapshot ->
-                                bindRunLease session project unbound snapshot $ \binding ->
-                                    case binding of
-                                        ExistingRunLeaseBinding _ recovery -> do
-                                            branch <-
-                                                eliminateHarnessBoundRecovery session project recovery
-                                            case branch of
-                                                Right (HarnessOpenRevisionRecovery open) -> do
-                                                    openRevisionKind open
-                                                        @?= IncompleteMigration "migration-1"
-                                                    pure (Right ())
-                                                other ->
-                                                    assertFailure
-                                                        ("expected Open revision recovery, got " <> show other)
-                                        FreshRunLeaseBinding _ _ ->
-                                            assertFailure "expected an existing binding"
-                outcome @?= Right ()
-    , testCase "the recovered production profile needs the Open branch, not an acknowledgment" $
-        withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
-                outcome <-
-                    withProductionRoot store project ProjectUp $ \root ->
-                        withProtectedEntry' store $ \session -> do
-                            let unbound = productionRootUnboundLease root
-                                run = unboundRunLeaseRun unbound
-                            _ <- expectRight =<< persistPlanSnapshot session project run 3 "spec-1" "plan-1"
-                            _ <-
-                                verifyPlanSnapshot session project run $ \snapshot ->
-                                    bindRunLease session project unbound snapshot (\_ -> pure (Right ()))
-                            verifyPlanSnapshot session project run $ \snapshot ->
-                                bindRunLease session project unbound snapshot $ \binding ->
-                                    case binding of
-                                        ExistingRunLeaseBinding bound recovery -> do
-                                            branch <-
-                                                eliminateProductionBoundRecovery session project recovery
-                                            case branch of
-                                                Right (ProductionOpenRevisionRecovery open) -> do
-                                                    let recovered =
-                                                            withRecoveredProductionLifecycleProfile
-                                                                (productionRootAuthority root)
-                                                                (productionRootModeLease root)
-                                                                bound
-                                                                snapshot
-                                                                open
-                                                                recoveredProductionProfilePlanDigest
-                                                    recovered @?= Right "plan-1"
-                                                    pure (Right ())
-                                                other ->
-                                                    assertFailure
-                                                        ("expected Open revision recovery, got " <> show other)
-                                        FreshRunLeaseBinding _ _ ->
-                                            assertFailure "expected an existing binding"
-                outcome @?= Right ()
-    , testCase "a production profile needs the production mode lease" $
-        withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
-                outcome <-
-                    withProductionRoot store project ProjectUp $ \root ->
-                        pure
-                            ( fmap
-                                lifecycleProfileMode
-                                ( withProductionLifecycleProfile
-                                    (productionRootModeLease root)
+                    withProductionRoot store project ProjectUp $ \root -> do
+                        let modeLease = productionRootModeLease root
+                            active = productionActiveMode modeLease
+                            expectedEpoch = brokerEpochWord (projectModeLeaseEpoch modeLease)
+                            expectedProject = installedProjectName project
+                            expectedStore =
+                                protectedStoreIdentityText (protectedStoreIdentity store)
+                            expectedInvocation =
+                                "lifecycle-profile:"
+                                    <> installedProjectName project
+                                    <> ":production"
+                            open =
+                                withProductionLifecycleProfile
+                                    (rootScopeAuthority (productionRootAuthority root))
+                                    active
                                     (productionRootUnboundLease root)
-                                )
-                            )
-                outcome @?= Right ProductionMode
+                        projectModeLeaseName modeLease @?= "production"
+                        brokerEpochWord (activeProjectModeEpoch active) @?= expectedEpoch
+                        first <-
+                            expectRight
+                                =<< open
+                                    ( \profile ->
+                                        ( lifecycleProfileName profile
+                                        , lifecycleProfileEpoch profile
+                                        , lifecycleProfileProjectName profile
+                                        , lifecycleProfileStoreIdentity profile
+                                        )
+                                    )
+                        first @?= ("production", expectedEpoch, expectedProject, expectedStore)
+                        second <- open (const ())
+                        case second of
+                            Left (AuthorityInvocationConsumed invocation) ->
+                                invocation @?= expectedInvocation
+                            other ->
+                                assertFailure
+                                    ("expected the Production profile slot to be consumed, got " <> show other)
+                        pure (Right ())
+                outcome @?= Right ()
+    , testCase "two Production profile openers race to one continuation entry" $
+        withStore $ \store ->
+            Fixture.withFixtureInstalledProject $ \project -> do
+                entries <- newIORef (0 :: Int)
+                outcomes <- newEmptyMVar
+                outcome <-
+                    withProductionRoot store project ProjectUp $ \root -> do
+                        let modeLease = productionRootModeLease root
+                            active = productionActiveMode modeLease
+                            expectedEpoch = brokerEpochWord (projectModeLeaseEpoch modeLease)
+                            open =
+                                withProductionLifecycleProfile
+                                    (rootScopeAuthority (productionRootAuthority root))
+                                    active
+                                    (productionRootUnboundLease root)
+                            worker = do
+                                opened <-
+                                    open $ \profile -> do
+                                        atomicModifyIORef' entries (\count -> (count + 1, ()))
+                                        pure (lifecycleProfileName profile, lifecycleProfileEpoch profile)
+                                settled <- case opened of
+                                    Left failure -> pure (Left failure)
+                                    Right continuation -> Right <$> continuation
+                                putMVar outcomes settled
+                        _ <- forkIO worker
+                        _ <- forkIO worker
+                        raced <- replicateM 2 (takeMVar outcomes)
+                        readIORef entries >>= (@?= 1)
+                        [value | Right value <- raced] @?= [("production", expectedEpoch)]
+                        case [failure | Left failure <- raced] of
+                            [AuthorityInvocationConsumed _] -> pure ()
+                            failures ->
+                                assertFailure
+                                    ("expected one consumed Production opener, got " <> show failures)
+                        pure (Right ())
+                outcome @?= Right ()
+    , testCase "a Harness profile consumes its exact run slot once" $
+        withStore $ \store ->
+            Fixture.withFixtureInstalledProject $ \project -> do
+                outcome <-
+                    withFreshHarnessRoot store project $ \root -> do
+                        let authority = harnessRootHarnessAuthority root
+                            run = harnessRootRunId root
+                            modeLease = harnessRootModeLease root
+                            active = harnessActiveMode modeLease
+                            expectedName = "harness:" <> runIdText run
+                            expectedEpoch = brokerEpochWord (projectModeLeaseEpoch modeLease)
+                            expectedProject = installedProjectName project
+                            expectedStore =
+                                protectedStoreIdentityText (protectedStoreIdentity store)
+                            expectedInvocation =
+                                "lifecycle-profile:"
+                                    <> installedProjectName project
+                                    <> ":"
+                                    <> runIdText run
+                            open =
+                                withHarnessLifecycleProfile
+                                    (rootScopeAuthority (harnessRootAuthority root))
+                                    authority
+                                    run
+                                    active
+                                    (harnessRootUnboundLease root)
+                        projectModeLeaseName modeLease @?= expectedName
+                        brokerEpochWord (activeProjectModeEpoch active) @?= expectedEpoch
+                        first <-
+                            expectRight
+                                =<< open
+                                    ( \profile ->
+                                        ( lifecycleProfileName profile
+                                        , lifecycleProfileEpoch profile
+                                        , lifecycleProfileProjectName profile
+                                        , lifecycleProfileStoreIdentity profile
+                                        )
+                                    )
+                        first @?= (expectedName, expectedEpoch, expectedProject, expectedStore)
+                        second <- open (const ())
+                        case second of
+                            Left (AuthorityInvocationConsumed invocation) ->
+                                invocation @?= expectedInvocation
+                            other ->
+                                assertFailure
+                                    ("expected the Harness profile slot to be consumed, got " <> show other)
+                        pure (Right ())
+                outcome @?= Right ()
+    , testCase "two Harness profile openers race to one continuation entry" $
+        withStore $ \store ->
+            Fixture.withFixtureInstalledProject $ \project -> do
+                entries <- newIORef (0 :: Int)
+                outcomes <- newEmptyMVar
+                outcome <-
+                    withFreshHarnessRoot store project $ \root -> do
+                        let authority = harnessRootHarnessAuthority root
+                            run = harnessRootRunId root
+                            modeLease = harnessRootModeLease root
+                            active = harnessActiveMode modeLease
+                            expectedName = "harness:" <> runIdText run
+                            expectedEpoch = brokerEpochWord (projectModeLeaseEpoch modeLease)
+                            open =
+                                withHarnessLifecycleProfile
+                                    (rootScopeAuthority (harnessRootAuthority root))
+                                    authority
+                                    run
+                                    active
+                                    (harnessRootUnboundLease root)
+                            worker = do
+                                opened <-
+                                    open $ \profile -> do
+                                        atomicModifyIORef' entries (\count -> (count + 1, ()))
+                                        pure (lifecycleProfileName profile, lifecycleProfileEpoch profile)
+                                settled <- case opened of
+                                    Left failure -> pure (Left failure)
+                                    Right continuation -> Right <$> continuation
+                                putMVar outcomes settled
+                        _ <- forkIO worker
+                        _ <- forkIO worker
+                        raced <- replicateM 2 (takeMVar outcomes)
+                        readIORef entries >>= (@?= 1)
+                        [value | Right value <- raced] @?= [(expectedName, expectedEpoch)]
+                        case [failure | Left failure <- raced] of
+                            [AuthorityInvocationConsumed _] -> pure ()
+                            failures ->
+                                assertFailure
+                                    ("expected one consumed Harness opener, got " <> show failures)
+                        pure (Right ())
+                outcome @?= Right ()
+    , testCase "the normal unbound no-resource proof refuses same-run acquisition ownership" $
+        withStore $ \store ->
+            Fixture.withFixtureInstalledProject $ \project -> do
+                outcome <-
+                    withFreshHarnessRoot store project $ \root -> do
+                        let run = runIdText (harnessRootRunId root)
+                        acquisitionKey <-
+                            writeAcquisitionShapedRecord
+                                store
+                                project
+                                run
+                                "normal-unbound"
+                                "malformed-normal-acquisition"
+                        refused <-
+                            verifyNoProjectResourcesAcquired
+                                (harnessRootUnboundLease root)
+                        case refused of
+                            Left (ModeEffectsRecorded recorded) ->
+                                recorded @?= recordKeyText acquisitionKey
+                            other ->
+                                assertFailure
+                                    ("expected the normal unbound proof to refuse, got " <> show other)
+                        persisted <-
+                            withProtectedEntry store $ \session ->
+                                readProtectedRecord session acquisitionKey
+                        fmap (fmap protectedRecordBytes) persisted
+                            @?= Right (Just "malformed-normal-acquisition")
+                        pure (Right ())
+                outcome @?= Right ()
+    , testCase "a journal-only bound run remains classified pre-resource" $
+        withStore $ \store ->
+            Fixture.withFixtureInstalledProject $ \project -> do
+                outcome <-
+                    withFreshHarnessRoot store project $ \root -> do
+                        let run = runIdText (harnessRootRunId root)
+                            unbound = harnessRootUnboundLease root
+                        _ <- expectRight =<< persistPlanSnapshot unbound 1 "spec-1" "plan-1"
+                        verifyPlanSnapshot unbound $ \snapshot -> do
+                            bound <- expectRight =<< bindRunLease unbound snapshot pure
+                            acquisitionKey <-
+                                writeAcquisitionShapedRecord
+                                    store
+                                    project
+                                    run
+                                    "41"
+                                    "journal-with-no-resource-effect"
+                            preResource <- verifyBoundRunHasNoProjectResourcesAcquired bound
+                            _ <- either (assertFailure . show) pure preResource
+                            persisted <-
+                                withProtectedEntry store $ \session ->
+                                    readProtectedRecord session acquisitionKey
+                            fmap (fmap protectedRecordBytes) persisted
+                                @?= Right (Just "journal-with-no-resource-effect")
+                            pure (Right ())
+                outcome @?= Right ()
     , testCase "releasing production mode requires matching closure evidence" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 outcome <-
-                    withProductionRoot store project ProjectDestroy $ \root ->
+                    withProductionRoot store project ProjectDestroy $ \root -> do
+                        evidence <-
+                            verifyNoProjectResourcesAcquired
+                                (productionRootUnboundLease root)
+                        preEffect <- either (assertFailure . show) pure evidence
                         withProtectedEntry' store $ \session -> do
-                            evidence <-
-                                verifyNoProjectResourcesAcquired
-                                    session
-                                    project
-                                    (unboundRunLeaseRun (productionRootUnboundLease root))
-                            preEffect <- either (assertFailure . show) pure evidence
                             mismatched <-
                                 releaseProductionMode
                                     session
@@ -883,16 +1834,14 @@ modeCases =
                 outcome @?= Right ()
     , testCase "production mode is released, so a harness run may then start" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 _ <-
-                    withProductionRoot store project ProjectDestroy $ \root ->
+                    withProductionRoot store project ProjectDestroy $ \root -> do
+                        evidence <-
+                            verifyNoProjectResourcesAcquired
+                                (productionRootUnboundLease root)
+                        preEffect <- either (assertFailure . show) pure evidence
                         withProtectedEntry' store $ \session -> do
-                            evidence <-
-                                verifyNoProjectResourcesAcquired
-                                    session
-                                    project
-                                    (unboundRunLeaseRun (productionRootUnboundLease root))
-                            preEffect <- either (assertFailure . show) pure evidence
                             released <-
                                 releaseProductionMode
                                     session
@@ -910,9 +1859,9 @@ modeCases =
                         ProjectUp
                         (satisfiedPreconditions project)
                         proof
-                        (\root -> pure (Right (projectModeLeaseMode (harnessRootModeLease root))))
+                        (\root -> pure (Right (projectModeLeaseName (harnessRootModeLease root))))
                 case outcome of
-                    Right (HarnessMode _) -> pure ()
+                    Right held | "harness:" `Text.isPrefixOf` held -> pure ()
                     other -> assertFailure ("expected harness mode, got " <> show other)
     ]
 
@@ -922,7 +1871,7 @@ recoveryCases :: [TestTree]
 recoveryCases =
     [ testCase "an abandoned unbound lease is swept and its mode released" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 -- Simulate a killed harness run: the bracket recorded its mode
                 -- and unbound lease and then died without closing either.
                 _ <- abandonHarnessRun store project
@@ -932,7 +1881,7 @@ recoveryCases =
                     Right proof -> closedAbandonedHarnessRunsCount proof @?= 1
     , testCase "a new harness run is refused while an abandoned lease is unresolved" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 _ <- abandonBoundHarnessRun store project
                 swept <- recoverAbandonedHarnessRuns store project neverResolves neverResolves
                 case swept of
@@ -940,7 +1889,7 @@ recoveryCases =
                     other -> assertFailure ("expected required recovery, got " <> show other)
     , testCase "a bound abandoned lease is resolved through the caller's fold" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 _ <- abandonBoundHarnessRun store project
                 swept <-
                     recoverAbandonedHarnessRuns store project neverResolves $ \lease ->
@@ -954,22 +1903,22 @@ recoveryCases =
       -- for the branches that cannot be resolved yet.
       testCase "reopening an abandoned bound run yields destroy-only authority on a fresh generation" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 (run, abandonedEpoch) <- abandonBoundHarnessRun store project
                 swept <-
                     recoverAbandonedHarnessRuns store project neverResolves $ \lease ->
                         withAbandonedHarnessRun store project lease $ \reopened -> do
-                            abandonedHarnessRunId reopened @?= run
+                            runIdText (abandonedHarnessRunId reopened) @?= run
                             -- The exact old snapshot, read back durably rather
                             -- than reconstructed from the current config.
                             let snapshot = abandonedHarnessSnapshot reopened
-                            planSnapshotRun snapshot @?= run
+                            planSnapshotRunText snapshot @?= run
                             planSnapshotSpecDigest snapshot @?= "spec-1"
                             planSnapshotPlanDigest snapshot @?= "plan-1"
                             -- The already-bound lease, not a rebinding: same run,
                             -- same digests.
                             let bound = abandonedHarnessBoundLease reopened
-                            boundRunLeaseRun bound @?= run
+                            boundRunLeaseRunText bound @?= run
                             boundRunLeaseSpecDigest bound @?= "spec-1"
                             boundRunLeasePlanDigest bound @?= "plan-1"
                             -- Recovery may release and never acquire.
@@ -980,14 +1929,14 @@ recoveryCases =
                             -- live run's.
                             let closeRoot = abandonedHarnessCloseRoot reopened
                             harnessCloseRootOrigin closeRoot @?= RecoveredHarnessClose
-                            harnessCloseRootRun closeRoot @?= run
+                            runIdText (harnessCloseRootRun closeRoot) @?= run
                             -- The mode is still the abandoned run's own, and every
                             -- yielded value sits on a strictly fresher broker
                             -- generation, so the dead run's permits are fenced out
                             -- rather than resumed.
                             let modeLease = abandonedHarnessModeLease reopened
                                 reopenedEpoch = brokerEpochWord (projectModeLeaseEpoch modeLease)
-                            projectModeLeaseMode modeLease @?= HarnessMode run
+                            projectModeLeaseName modeLease @?= "harness:" <> run
                             assertBool
                                 ( "generation "
                                     <> show reopenedEpoch
@@ -1002,11 +1951,11 @@ recoveryCases =
                     Left (ModeRecoveryRequired named) ->
                         assertBool
                             ("the refusal names the run: " <> Text.unpack named)
-                            (runIdText run `Text.isInfixOf` named)
+                            (run `Text.isInfixOf` named)
                     other -> assertFailure ("expected required recovery, got " <> show other)
     , testCase "an unbound lease cannot be reopened; only the sweep may close it" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 _ <- abandonHarnessRun store project
                 swept <-
                     recoverAbandonedHarnessRuns
@@ -1034,13 +1983,11 @@ recoveryCases =
       -- so with the exact epoch rather than leave the caller to guess.
       testCase "a persisted closing epoch is reopened as the closing branch" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
-                (run, _) <- abandonBoundHarnessRun store project
-                _ <-
-                    expectRight
-                        =<< withProtectedEntry'
-                            store
-                            (\session -> recordHarnessClosingEpoch session project run 9)
+            Fixture.withFixtureInstalledProject $ \project -> do
+                (run, _) <-
+                    abandonBoundHarnessRunWith store project $ \run ->
+                        withProtectedEntry' store $ \session ->
+                            recordHarnessClosingEpoch session project run 9
                 swept <-
                     recoverAbandonedHarnessRuns store project neverResolves $ \lease ->
                         withAbandonedHarnessRun store project lease $ \reopened ->
@@ -1057,21 +2004,20 @@ recoveryCases =
                     Left (ModeRecoveryRequired named) ->
                         assertBool
                             ("the refusal names the run: " <> Text.unpack named)
-                            (runIdText run `Text.isInfixOf` named)
+                            (run `Text.isInfixOf` named)
                     other -> assertFailure ("expected required recovery, got " <> show other)
-    , {- The close was already authorized: 'authorizeHarnessClose' persists the
-      epoch *before* the terminal projection precisely so the gap is resumable.
-      Recovery therefore finishes that close rather than reopening the run — and
-      it can only finish the exact close the dead run persisted. -}
+    , {- The close was already authorized after settled destroy:
+      'authorizeHarnessClose' persists the epoch before terminal finalization so
+      the remaining gap is resumable. Recovery therefore finishes that close
+      rather than reopening the run — and it can only finish the exact close the
+      dead run persisted. -}
       testCase "a persisted closing epoch is resumed, and only at its own epoch" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
-                (run, _) <- abandonBoundHarnessRun store project
-                _ <-
-                    expectRight
-                        =<< withProtectedEntry'
-                            store
-                            (\session -> recordHarnessClosingEpoch session project run 9)
+            Fixture.withFixtureInstalledProject $ \project -> do
+                (run, _) <-
+                    abandonBoundHarnessRunWith store project $ \run ->
+                        withProtectedEntry' store $ \session ->
+                            recordHarnessClosingEpoch session project run 9
                 swept <-
                     recoverAbandonedHarnessRuns store project neverResolves $ \lease ->
                         withAbandonedHarnessRun store project lease $ \reopened ->
@@ -1101,7 +2047,7 @@ recoveryCases =
                                         withProtectedEntry' store $ \session ->
                                             finalizeHarnessClose session project authorization
                                     closed <- expectRight finalized
-                                    closedHarnessProjectRun closed @?= run
+                                    runIdText (closedHarnessProjectRun closed) @?= run
                                     pure (Right ())
                                 other ->
                                     assertFailure
@@ -1112,7 +2058,7 @@ recoveryCases =
                 closedAbandonedHarnessRunsCount proof @?= 1
     , testCase "a run with no persisted close has nothing to resume" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 _ <- abandonBoundHarnessRun store project
                 swept <-
                     recoverAbandonedHarnessRuns store project neverResolves $ \lease ->
@@ -1139,7 +2085,7 @@ recoveryCases =
       -- opener may reopen.
       testCase "a lease resolved since the sweep observed it cannot be reopened again" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 _ <- abandonBoundHarnessRun store project
                 swept <-
                     recoverAbandonedHarnessRuns store project neverResolves $ \lease -> do
@@ -1163,10 +2109,16 @@ recoveryCases =
                 closedAbandonedHarnessRunsCount proof @?= 1
     , testCase "an unbound lease with a recorded effect refuses the no-effect proof" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 run <- abandonHarnessRun store project
                 effectKey <-
-                    expectKey ("effect.hostbootstrap-demo." <> runIdText run <> ".vm")
+                    expectKey
+                        ( "effect."
+                            <> installedProjectName project
+                            <> "."
+                            <> run
+                            <> ".vm"
+                        )
                 _ <-
                     withProtectedEntry store $ \session ->
                         compareAndSwapProtectedRecord session effectKey ExpectAbsent "created"
@@ -1175,6 +2127,69 @@ recoveryCases =
                     Left (ModeEffectsRecorded _) -> pure ()
                     other ->
                         assertFailure ("expected a recorded-effect refusal, got " <> show other)
+    , testCase "a same-run acquisition row refuses unbound cleanup and remains durable" $
+        withStore $ \store ->
+            Fixture.withFixtureInstalledProject $ \project -> do
+                run <- abandonHarnessRun store project
+                acquisitionKey <-
+                    expectKey
+                        ( "acquisition."
+                            <> installedProjectName project
+                            <> "."
+                            <> run
+                            <> ".not-an-epoch"
+                        )
+                written <-
+                    withProtectedEntry store $ \session ->
+                        compareAndSwapProtectedRecord
+                            session
+                            acquisitionKey
+                            ExpectAbsent
+                            "malformed-acquisition-payload"
+                _ <- either (assertFailure . show) pure written
+                before <- protectedStoreImage store
+                swept <- recoverAbandonedHarnessRuns store project neverResolves neverResolves
+                case swept of
+                    Left (ModeEffectsRecorded recorded) ->
+                        recorded @?= recordKeyText acquisitionKey
+                    other ->
+                        assertFailure
+                            ("expected an acquisition-record refusal, got " <> show other)
+                after <- protectedStoreImage store
+                after @?= before
+                persisted <-
+                    withProtectedEntry store $ \session ->
+                        readProtectedRecord session acquisitionKey
+                fmap (fmap protectedRecordBytes) persisted
+                    @?= Right (Just "malformed-acquisition-payload")
+    , testCase "another run's acquisition row does not block unbound cleanup" $
+        withStore $ \store ->
+            Fixture.withFixtureInstalledProject $ \project -> do
+                run <- abandonHarnessRun store project
+                otherRunKey <-
+                    expectKey
+                        ( "acquisition."
+                            <> installedProjectName project
+                            <> "."
+                            <> run
+                            <> "-other.17"
+                        )
+                written <-
+                    withProtectedEntry store $ \session ->
+                        compareAndSwapProtectedRecord
+                            session
+                            otherRunKey
+                            ExpectAbsent
+                            "unrelated-acquisition"
+                _ <- either (assertFailure . show) pure written
+                swept <- recoverAbandonedHarnessRuns store project neverResolves neverResolves
+                proof <- either (assertFailure . show) pure swept
+                closedAbandonedHarnessRunsCount proof @?= 1
+                persisted <-
+                    withProtectedEntry store $ \session ->
+                        readProtectedRecord session otherRunKey
+                fmap (fmap protectedRecordBytes) persisted
+                    @?= Right (Just "unrelated-acquisition")
     , -- The cross-profile half of the four-process reservation race. Production
       -- has no generative run id and no liveness lock, so its unbound lease is
       -- shaped exactly like an abandoned harness run's. The sweep must not read
@@ -1183,7 +2198,7 @@ recoveryCases =
       -- would also discard the evidence Production's own bound recovery needs.
       testCase "a live production invocation is never swept, and refuses the harness by mode" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 outcome <-
                     withProductionRoot store project ProjectUp $ \_root -> do
                         swept <-
@@ -1233,7 +2248,7 @@ recoveryCases =
       testCase "a competitor harness process is refused by live Production, across processes" $ do
         executable <- getExecutablePath
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 outcome <-
                     withProductionRoot store project ProjectUp $ \_root -> do
                         probed <- probeProfile executable (protectedStoreRoot store) "harness"
@@ -1247,7 +2262,7 @@ recoveryCases =
     , testCase "a competitor production process is refused by a live harness run, across processes" $ do
         executable <- getExecutablePath
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 swept <- recoverAbandonedHarnessRuns store project neverResolves neverResolves
                 proof <- either (assertFailure . show) pure swept
                 outcome <-
@@ -1272,7 +2287,7 @@ closeCases :: [TestTree]
 closeCases =
     [ testCase "the session-completeness proof refuses while any session is open" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 outcome <-
                     withProductionRoot store project ProjectUp $ \root ->
                         withProtectedEntry' store $ \session -> do
@@ -1338,42 +2353,38 @@ closeCases =
             outcome @?= Right ()
     , testCase "closing a production invocation retains production mode" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 closed <-
                     withProductionRoot store project ProjectUp $ \root ->
-                        withProtectedEntry' store $ \session ->
-                            withBoundSnapshot session project root $ \snapshot ->
-                                bindRunLease
-                                    session
-                                    project
-                                    (productionRootUnboundLease root)
-                                    snapshot
-                                    ( \binding -> case binding of
-                                        FreshRunLeaseBinding bound _ -> do
-                                            sessions <-
-                                                expectRight =<< verifyAllSessionsClosedHere session
-                                            key <- expectCloseKey "close-up-1"
-                                            completed <-
-                                                expectRight
-                                                    (completeProductionInvocation bound sessions)
-                                            outcome <-
-                                                closeCompletedProductionInvocation
-                                                    session
-                                                    project
-                                                    (productionRootModeLease root)
-                                                    completed
-                                                    key
-                                            case outcome of
-                                                Right (ProductionInvocationCloseCommitted done) -> do
-                                                    productionInvocationClosedRun done
-                                                        @?= boundRunLeaseRun bound
-                                                    pure (Right ())
-                                                other ->
-                                                    assertFailure
-                                                        ("expected a committed close, got " <> show other)
-                                        ExistingRunLeaseBinding _ _ ->
-                                            assertFailure "expected a fresh binding"
-                                    )
+                        withBoundSnapshot root $ \snapshot -> do
+                            bound <-
+                                expectRight
+                                    =<< bindRunLease
+                                        (productionRootUnboundLease root)
+                                        snapshot
+                                        pure
+                            withProtectedEntry' store $ \session -> do
+                                sessions <-
+                                    expectRight =<< verifyAllSessionsClosedHere session
+                                key <- expectCloseKey "close-up-1"
+                                completed <-
+                                    expectRight
+                                        (completeProductionInvocation bound sessions)
+                                outcome <-
+                                    closeCompletedProductionInvocation
+                                        session
+                                        project
+                                        (productionRootModeLease root)
+                                        completed
+                                        key
+                                case outcome of
+                                    Right (ProductionInvocationCloseCommitted done) -> do
+                                        productionInvocationClosedRun done
+                                            @?= boundRunLeaseRunText bound
+                                        pure (Right ())
+                                    other ->
+                                        assertFailure
+                                            ("expected a committed close, got " <> show other)
                 closed @?= Right ()
                 -- The invocation ended; the PROJECT did not. Production still
                 -- holds the mode, which is what makes `down` keep the exclusion,
@@ -1393,47 +2404,52 @@ closeCases =
                     other ->
                         assertFailure
                             ("a harness run must still be refused, got " <> show other)
-    , testCase "harness terminal close releases the mode last, so the next run may start" $
+    , testCase "a pre-effect proof cannot authorize settled close, and its short close releases mode last" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 proof <- sweep store project
                 outcome <-
                     withHarnessRoot store project ProjectUp (satisfiedPreconditions project) proof $
-                        \root -> withProtectedEntry' store $ \session -> do
+                        \root -> do
                             let run = harnessRootRunId root
+                                unbound = harnessRootUnboundLease root
                             _ <-
                                 expectRight
-                                    =<< persistPlanSnapshot session project run 1 "spec-1" "plan-1"
-                            verifyPlanSnapshot session project run $ \snapshot ->
-                                bindRunLease session project (harnessRootUnboundLease root) snapshot $
-                                    \binding -> case binding of
-                                        FreshRunLeaseBinding bound _ -> do
-                                            sessions <-
-                                                expectRight =<< verifyAllSessionsClosedHere session
-                                            authorized <-
-                                                expectRight
-                                                    =<< authorizeHarnessClose
-                                                        session
-                                                        project
-                                                        (currentHarnessCloseRoot root)
-                                                        (harnessRootModeLease root)
-                                                        bound
-                                                        sessions
-                                                        11
-                                            harnessCloseEpoch authorized @?= 11
-                                            harnessCloseRun authorized @?= run
-                                            -- The origin travels onto the
-                                            -- authorization, so the terminal
-                                            -- record says which way it was reached.
-                                            harnessCloseOrigin authorized @?= LiveHarnessClose
-                                            done <-
-                                                expectRight
-                                                    =<< finalizeHarnessClose session project authorized
-                                            closedHarnessProjectRun done @?= run
-                                            pure (Right ())
-                                        ExistingRunLeaseBinding _ _ ->
-                                            assertFailure "expected a fresh binding"
-                outcome @?= Right ()
+                                    =<< persistPlanSnapshot unbound 1 "spec-1" "plan-1"
+                            verifyPlanSnapshot unbound $ \snapshot -> do
+                                bound <- expectRight =<< bindRunLease unbound snapshot pure
+                                preEffect <-
+                                    expectRight
+                                        =<< verifyBoundRunHasNoProjectResourcesAcquired bound
+                                withProtectedEntry' store $ \session -> do
+                                    sessions <-
+                                        expectRight =<< verifyAllSessionsClosedHere session
+                                    refused <-
+                                        authorizeHarnessClose
+                                            session
+                                            project
+                                            (currentHarnessCloseRoot root)
+                                            (harnessRootModeLease root)
+                                            bound
+                                            sessions
+                                            preEffect
+                                            11
+                                    case refused of
+                                        Left (ModeClosureMismatch expected observed) -> do
+                                            expected @?= "settled destroy"
+                                            observed @?= "pre-effect refusal"
+                                        other ->
+                                            assertFailure
+                                                ("expected settled-close evidence refusal, got " <> show other)
+                                    expectRight
+                                        =<< closeHarnessRun
+                                            session
+                                            project
+                                            (currentHarnessCloseRoot root)
+                                            (harnessRootModeLease root)
+                                            preEffect
+                                    pure (Right (runIdText run))
+                firstRun <- expectRight outcome
                 -- Mode was released only after the lease closed, so a fresh run
                 -- can now take it.
                 swept <- recoverAbandonedHarnessRuns store project neverResolves neverResolves
@@ -1445,43 +2461,11 @@ closeCases =
                         ProjectUp
                         (satisfiedPreconditions project)
                         next
-                        (\_ -> pure (Right ("second run" :: String)))
-                again @?= Right "second run"
-    , -- The @projectId@ index is the config family's, so two projects carrying
-      -- the same family share it and the type alone cannot separate them. That is
-      -- exactly the substitution the close root's recorded project name catches:
-      -- without it, a close root minted for one project closed another's run.
-      testCase "a close root cannot close a run in a different project" $
-        withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
-                proof <- sweep store project
-                outcome <-
-                    withHarnessRoot store project ProjectUp (satisfiedPreconditions project) proof $
-                        \root ->
-                            withProject "hostbootstrap-other" $ \other ->
-                                withProtectedEntry' store $ \session -> do
-                                    evidence <-
-                                        expectRight
-                                            =<< verifyNoProjectResourcesAcquired
-                                                session
-                                                project
-                                                (harnessRootRunId root)
-                                    refused <-
-                                        closeHarnessRun
-                                            session
-                                            other
-                                            (currentHarnessCloseRoot root)
-                                            (harnessRootModeLease root)
-                                            evidence
-                                    case refused of
-                                        Left (ModeClosureMismatch expected observed) -> do
-                                            expected @?= "hostbootstrap-other"
-                                            observed @?= "hostbootstrap-demo"
-                                            pure (Right ())
-                                        other' ->
-                                            assertFailure
-                                                ("expected a project mismatch, got " <> show other')
-                outcome @?= Right ()
+                        (\root -> pure (Right (runIdText (harnessRootRunId root))))
+                secondRun <- expectRight again
+                assertBool
+                    "successive Harness acquisitions have distinct run identities"
+                    (firstRun /= secondRun)
     ]
 
 -- | The plan digest the close cases journal under.
@@ -1506,44 +2490,23 @@ withStore use =
             Left failure -> assertFailure (show failure)
             Right store -> use store
 
-{- | The installed fixture project. Its index is the fixture's own project type,
-exactly as a real binary's is, so a plan built from the fixture codec and an
-authority minted for the fixture project share one @projectId@.
--}
-withProject ::
-    Text ->
-    (InstalledProject Fixture.FixtureProject -> IO result) ->
-    IO result
-withProject name use =
-    case installedProjectFor @Fixture.FixtureProject @Fixture.ProjectConfig name of
-        Left failure -> assertFailure (show failure)
-        Right project -> use project
-
 withRoot ::
     ProtectedStore ->
     ProjectVerb verb ->
-    ( forall session brokerGeneration.
+    ( forall projectId session brokerGeneration.
+      InstalledProjectIdentity projectId ->
       ProtectedSession session ->
-      RootInvocationAuthority (Production Fixture.FixtureProject) brokerGeneration verb ->
+      RootInvocationAuthority (Production projectId) brokerGeneration verb ->
       IO (Either AuthorityError ())
     ) ->
     IO ()
 withRoot store verb use = do
-    outcome <-
-        withAuthorityEntry store $ \session -> do
-            operator <- verifyOperatorAuthorization session
-            case operator of
-                Left failure -> pure (Left failure)
-                Right authorized ->
-                    withProject "hostbootstrap-demo" $ \project ->
-                        withFreshBrokerEpoch session project $ \epoch ->
-                            withVerifiedRootInvocation
-                                session
-                                project
-                                authorized
-                                epoch
-                                verb
-                                (use session)
+    outcome <- Fixture.withFixtureInstalledProject $ \project ->
+        withProductionRoot store project verb $ \root -> do
+            admitted <-
+                withAuthorityEntry store $ \session ->
+                    use project session (productionRootAuthority root)
+            pure (either (Left . ModeAuthorityFailure) Right admitted)
     case outcome of
         Left failure -> assertFailure (show failure)
         Right () -> pure ()
@@ -1570,20 +2533,13 @@ withProtectedEntry' store action = do
     outcome <- withProtectedEntry store (fmap Right . action)
     pure (either (Left . ModeStoreFailure) id outcome)
 
-withTestPlan ::
-    (forall planId. LifecyclePlan (Production Fixture.FixtureProject) planId -> IO result) ->
-    IO result
-withTestPlan use =
-    withProductionProjectCodec @Fixture.FixtureProject @Fixture.ProjectConfig $ \codec ->
-        withLifecyclePlan codec testStepPlan use
-
 canonicalTestSnapshot :: Text -> CanonicalPlanSnapshot
 canonicalTestSnapshot configDigest =
     canonicalTestSnapshotFor configDigest testStepPlan
 
 canonicalTestSnapshotFor :: Text -> StepPlan -> CanonicalPlanSnapshot
 canonicalTestSnapshotFor configDigest plan =
-    withProductionProjectCodec @Fixture.FixtureProject @Fixture.ProjectConfig $ \codec ->
+    withProductionProjectCodec @Fixture.ProjectConfig @Fixture.FixtureProject $ \codec ->
         withLifecyclePlanForConfig codec configDigest plan lifecyclePlanSnapshot
 
 testStepPlan :: StepPlan
@@ -1604,7 +2560,7 @@ alternateTestStepPlan =
         id
         (mkStepPlan [contextInitStep "context" (StepFrame "host" "Host") (const (pure StepChanged))])
 
-satisfiedPreconditions :: InstalledProject projectId -> HarnessPreconditions
+satisfiedPreconditions :: InstalledProjectIdentity projectId -> HarnessPreconditions
 satisfiedPreconditions project =
     harnessPreconditions project "/nonexistent-hostbootstrap-dir" (pure False)
 
@@ -1620,13 +2576,13 @@ reopening's own 'RecoveredHarnessClose' authority.
 -}
 resolveNothingAcquired ::
     ProtectedStore ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     AbandonedHarnessRun projectId oldRunId specDigest planDigest planId brokerGeneration ->
     IO (Either ModeError ())
 resolveNothingAcquired store project reopened = do
     proved <-
-        withProtectedEntry' store $ \session ->
-            verifyNoProjectResourcesAcquired session project (abandonedHarnessRunId reopened)
+        verifyBoundRunHasNoProjectResourcesAcquired
+            (abandonedHarnessBoundLease reopened)
     case proved of
         Left failure -> pure (Left failure)
         Right evidence ->
@@ -1641,7 +2597,7 @@ resolveNothingAcquired store project reopened = do
 {- | Open a harness run and abandon it: the mode and unbound lease are recorded
 and never closed, exactly as a hard kill leaves them.
 -}
-abandonHarnessRun :: ProtectedStore -> InstalledProject projectId -> IO RunId
+abandonHarnessRun :: ProtectedStore -> InstalledProjectIdentity projectId -> IO Text
 abandonHarnessRun store project = do
     proof <- sweep store project
     outcome <-
@@ -1651,13 +2607,59 @@ abandonHarnessRun store project = do
             ProjectUp
             (satisfiedPreconditions project)
             proof
-            (\root -> pure (Right (harnessRootRunId root)))
+            (\root -> pure (Right (runIdText (harnessRootRunId root))))
     either (assertFailure . show) pure outcome
+
+-- | Seed one acquisition-shaped row without relying on its payload codec.
+writeAcquisitionShapedRecord ::
+    ProtectedStore ->
+    InstalledProjectIdentity projectId ->
+    Text ->
+    Text ->
+    ByteString.ByteString ->
+    IO RecordKey
+writeAcquisitionShapedRecord store project run suffix payload = do
+    key <-
+        expectKey
+            ( "acquisition."
+                <> installedProjectName project
+                <> "."
+                <> run
+                <> "."
+                <> suffix
+            )
+    written <-
+        withProtectedEntry store $ \session ->
+            compareAndSwapProtectedRecord session key ExpectAbsent payload
+    _ <- either (assertFailure . show) pure written
+    pure key
+
+-- | Exact key/version/payload image used to prove a refused sweep changed
+-- neither the offending row nor its mode and lease ownership records.
+protectedStoreImage :: ProtectedStore -> IO [(Text, Word64, ByteString.ByteString)]
+protectedStoreImage store = do
+    observed <-
+        withProtectedEntry store $ \session -> do
+            listed <- listProtectedRecords session
+            case listed of
+                Left failure -> pure (Left failure)
+                Right keys -> do
+                    records <- traverse (readProtectedRecord session) keys
+                    pure $ do
+                        present <- sequence records
+                        Right
+                            [ ( recordKeyText key
+                              , recordVersionWord (protectedRecordVersion record)
+                              , protectedRecordBytes record
+                              )
+                            | (key, Just record) <- zip keys present
+                            ]
+    either (assertFailure . show) pure observed
 
 -- | The empty-sweep proof a fresh store always yields.
 sweep ::
     ProtectedStore ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     IO (ClosedAbandonedHarnessRuns projectId)
 sweep store project = do
     swept <- recoverAbandonedHarnessRuns store project neverResolves neverResolves
@@ -1669,9 +2671,17 @@ on a strictly fresher one.
 -}
 abandonBoundHarnessRun ::
     ProtectedStore ->
-    InstalledProject projectId ->
-    IO (RunId, Word64)
-abandonBoundHarnessRun store project = do
+    InstalledProjectIdentity projectId ->
+    IO (Text, Word64)
+abandonBoundHarnessRun store project =
+    abandonBoundHarnessRunWith store project (\_ -> pure (Right ()))
+
+abandonBoundHarnessRunWith ::
+    ProtectedStore ->
+    InstalledProjectIdentity projectId ->
+    (forall runId. RunId runId -> IO (Either ModeError ())) ->
+    IO (Text, Word64)
+abandonBoundHarnessRunWith store project afterBinding = do
     proof <- sweep store project
     outcome <-
         withHarnessRoot
@@ -1680,28 +2690,28 @@ abandonBoundHarnessRun store project = do
             ProjectUp
             (satisfiedPreconditions project)
             proof
-            ( \root ->
-                withProtectedEntry' store $ \session -> do
-                    let run = harnessRootRunId root
-                    persisted <- persistPlanSnapshot session project run 1 "spec-1" "plan-1"
-                    case persisted of
-                        Left failure -> pure (Left failure)
-                        Right () ->
-                            verifyPlanSnapshot session project run $ \snapshot ->
+            ( \root -> do
+                let run = harnessRootRunId root
+                    unbound = harnessRootUnboundLease root
+                persisted <- persistPlanSnapshot unbound 1 "spec-1" "plan-1"
+                case persisted of
+                    Left failure -> pure (Left failure)
+                    Right () ->
+                        verifyPlanSnapshot unbound $ \snapshot -> do
+                            bound <-
                                 bindRunLease
-                                    session
-                                    project
-                                    (harnessRootUnboundLease root)
+                                    unbound
                                     snapshot
                                     ( \_ ->
                                         pure
-                                            ( Right
-                                                ( run
-                                                , brokerEpochWord
-                                                    (projectModeLeaseEpoch (harnessRootModeLease root))
-                                                )
+                                            ( runIdText run
+                                            , brokerEpochWord
+                                                (projectModeLeaseEpoch (harnessRootModeLease root))
                                             )
                                     )
+                            result <- expectRight bound
+                            continued <- afterBinding run
+                            pure (fmap (const result) continued)
             )
     either (assertFailure . show) pure outcome
 
@@ -1724,33 +2734,25 @@ migrationCases :: [TestTree]
 migrationCases =
     [ testCase "the migration profile refuses a recovery-owed binding" $
         withStore $ \store ->
-            withProject "hostbootstrap-demo" $ \project -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
                 outcome <-
                     withProductionRoot store project ProjectUp $ \root ->
-                        withProtectedEntry' store $ \session ->
-                            withBoundSnapshot session project root $ \snapshot -> do
-                                let bind =
-                                        bindRunLease
-                                            session
-                                            project
-                                            (productionRootUnboundLease root)
-                                            snapshot
-                                -- Bind once so the second binding is the
-                                -- abandoned-invocation case.
-                                _ <- expectRight =<< bind (\_ -> pure (Right ()))
-                                bind
-                                    ( \binding -> case binding of
-                                        -- An already-bound lease yields no
-                                        -- NormalActiveRecovery at all, so a
-                                        -- migration cannot even be proposed from
-                                        -- it: the type is the refusal.
-                                        ExistingRunLeaseBinding _ _ -> pure (Right ())
-                                        FreshRunLeaseBinding _ _ ->
-                                            assertFailure "the second binding must not be fresh"
-                                    )
+                        withBoundSnapshot root $ \snapshot -> do
+                            let unbound = productionRootUnboundLease root
+                            -- Bind once so the second binding is the
+                            -- abandoned-invocation case.
+                            _ <- expectRight =<< bindRunLease unbound snapshot (\_ -> pure ())
+                            second <- bindRunLease unbound snapshot (\_ -> pure ())
+                            case second of
+                                -- An already-bound lease yields no
+                                -- NormalActiveRecovery at all, so a migration
+                                -- cannot even be proposed from it.
+                                Left _ -> pure (Right ())
+                                Right () ->
+                                    assertFailure "the second binding must not be fresh"
                 outcome @?= Right ()
     , testCase "a migration onto the same plan digest is refused" $
-        withMigrationProfile $ \project _ profile session -> do
+        withMigrationProfile $ \project _ _bound profile session -> do
             outcome <-
                 withProspectiveMigrationPlan
                     session
@@ -1766,7 +2768,7 @@ migrationCases =
                     pure (Right ())
                 other -> assertFailure ("expected a same-digest refusal, got " <> show other)
     , testCase "a candidate is persisted, read back, and authorizes nothing" $
-        withMigrationProfile $ \project _ profile session ->
+        withMigrationProfile $ \project _ _bound profile session ->
             withProspectiveMigrationPlan session project profile "spec-2" "plan-2" $ \candidate -> do
                 prospectiveSnapshotSpecDigest candidate @?= "spec-2"
                 prospectiveSnapshotPlanDigest candidate @?= "plan-2"
@@ -1776,16 +2778,16 @@ migrationCases =
                     @?= "production.plan-1.plan-2"
                 pure (Right ())
     , testCase "freezing stops the old revision from being bindable" $
-        withMigrationProfile $ \project _ profile session ->
+        withMigrationProfile $ \project _ bound profile session ->
             withProspectiveMigrationPlan session project profile "spec-2" "plan-2" $ \candidate -> do
                 frozen <- expectRight =<< withPlanMigration session project profile candidate
                 stableMigrationKeyText (frozenMigrationKey frozen) @?= "production.plan-1.plan-2"
                 -- The recorded kind says the barrier was not crossed.
-                kind <- readRecordedRevisionKind session project
+                kind <- readRecordedRevisionKind session project bound
                 kind @?= IncompleteMigration "production.plan-1.plan-2"
                 pure (Right ())
     , testCase "the activation compare-and-swap switches the lineage and records it" $
-        withMigrationProfile $ \project epoch profile session ->
+        withMigrationProfile $ \project epoch _oldBound profile session ->
             withProspectiveMigrationPlan session project profile "spec-2" "plan-2" $ \candidate -> do
                 frozen <- expectRight =<< withPlanMigration session project profile candidate
                 (bound, barrier) <-
@@ -1793,11 +2795,11 @@ migrationCases =
                 boundRunLeasePlanDigest bound @?= "plan-2"
                 migrationBarrierOldPlanDigest barrier @?= "plan-1"
                 migrationBarrierNewPlanDigest barrier @?= "plan-2"
-                kind <- readRecordedRevisionKind session project
+                kind <- readRecordedRevisionKind session project bound
                 kind @?= CompletedMigration "production.plan-1.plan-2"
                 pure (Right ())
     , testCase "activation is idempotent, so a crash after the swap converges" $
-        withMigrationProfile $ \project epoch profile session ->
+        withMigrationProfile $ \project epoch _bound profile session ->
             withProspectiveMigrationPlan session project profile "spec-2" "plan-2" $ \candidate -> do
                 frozen <- expectRight =<< withPlanMigration session project profile candidate
                 (_, first) <-
@@ -1809,7 +2811,7 @@ migrationCases =
                 migrationBarrierNewPlanDigest first @?= migrationBarrierNewPlanDigest second
                 pure (Right ())
     , testCase "activating the plan admits the new revision's broker" $
-        withMigrationProfile $ \project epoch profile session ->
+        withMigrationProfile $ \project epoch _oldBound profile session ->
             withProspectiveMigrationPlan session project profile "spec-2" "plan-2" $ \candidate -> do
                 frozen <- expectRight =<< withPlanMigration session project profile candidate
                 (bound, barrier) <-
@@ -1818,13 +2820,13 @@ migrationCases =
                 admissionPlanDigest admission @?= "plan-2"
                 pure (Right ())
     , testCase "completed-migration recovery loads the candidate from the durable key" $
-        withMigrationProfile $ \project epoch profile session ->
+        withMigrationProfile $ \project epoch _oldBound profile session ->
             withProspectiveMigrationPlan session project profile "spec-2" "plan-2" $ \candidate -> do
                 frozen <- expectRight =<< withPlanMigration session project profile candidate
                 (bound, _) <-
                     expectRight =<< commitMigrationActivation session project frozen epoch
                 recovered <-
-                    withCompletedMigrationRecovery session project productionRunId $ \barrier -> do
+                    withCompletedMigrationRecovery session project bound $ \barrier -> do
                         -- Both digests came from the stable key and the lease
                         -- record; no config was consulted.
                         migrationBarrierOldPlanDigest barrier @?= "plan-1"
@@ -1833,12 +2835,12 @@ migrationCases =
                 recovered @?= Right ()
                 pure (Right ())
     , testCase "a run with no completed migration has nothing to recover" $
-        withMigrationProfile $ \project _ _ session -> do
+        withMigrationProfile $ \project _ bound _profile session -> do
             outcome <-
                 withCompletedMigrationRecovery
                     session
                     project
-                    productionRunId
+                    bound
                     (\_ -> pure (Right ()))
             case outcome of
                 Left (ModeWrongRecoveryScope expected observed) -> do
@@ -1848,6 +2850,580 @@ migrationCases =
                 other -> assertFailure ("expected a wrong-scope refusal, got " <> show other)
     ]
 
+authorizeExactProjectUp ::
+    RootInvocationAuthority scope brokerGeneration VerbUp ->
+    VerifiedPlanSnapshot scope specDigest planDigest ->
+    BoundPlanSnapshot scope specDigest planDigest planId ->
+    PlanDigestBinding scope specDigest planDigest planId ->
+    BoundRunLease scope specDigest planDigest brokerGeneration ->
+    ProjectPlan scope specDigest planId configId cfg ->
+    AcquisitionJournal scope planId brokerGeneration ->
+    ProjectFrame scope specDigest planId configId frame ->
+    LifecycleCursor scope planId frame brokerGeneration VerbUp phase ->
+    ValidatedContext scope planId frame ->
+    IO
+        ( Either
+            AuthorityError
+            (CommandAuthority scope planId frame brokerGeneration VerbUp phase)
+        )
+authorizeExactProjectUp root verified bound binding lease plan journal frame cursor validated =
+    authorizeProjectUp
+        root
+        ProjectUp
+        verified
+        bound
+        binding
+        lease
+        plan
+        journal
+        frame
+        cursor
+        validated
+
+{- | Build the exact evidence package consumed by 'authorizeProjectUp'.
+
+The protected store, root/profile, finalized specification, validated config,
+persisted snapshot, bound lease, acquisition journal, frame/context evidence,
+and initial cursor are all real production values. Every phantom is generated
+inside the callback, so runtime-origin tests must use an explicit
+'unsafeCoerce' to model a hostile package substitution.
+-}
+withExactProjectUpFixture ::
+    Context.ContextKind ->
+    ( forall projectId brokerGeneration specDigest planDigest planId configId frame.
+      ProtectedStore ->
+      RootInvocationAuthority (Production projectId) brokerGeneration VerbUp ->
+      VerifiedPlanSnapshot (Production projectId) specDigest planDigest ->
+      BoundPlanSnapshot (Production projectId) specDigest planDigest planId ->
+      PlanDigestBinding (Production projectId) specDigest planDigest planId ->
+      BoundRunLease (Production projectId) specDigest planDigest brokerGeneration ->
+      ProjectPlan
+        (Production projectId)
+        specDigest
+        planId
+        configId
+        Fixture.ProjectConfig ->
+      AcquisitionJournal (Production projectId) planId brokerGeneration ->
+      ProjectFrame (Production projectId) specDigest planId configId frame ->
+      LifecycleCursor
+        (Production projectId)
+        planId
+        frame
+        brokerGeneration
+        VerbUp
+        PreparePhase ->
+      ValidatedContext (Production projectId) planId frame ->
+      IO result
+    ) ->
+    IO result
+withExactProjectUpFixture contextKind use =
+    withSystemTempDirectory "hostbootstrap-exact-project-up" $ \directory -> do
+        store <- openProtectedStore (directory </> "protected") >>= expectRight
+        sharedProjectRoot <- getCurrentDirectory
+        Fixture.withFixtureInstalledProject $ \(project :: InstalledProjectIdentity projectId) -> do
+            rooted <-
+                withCanonicalProjectRoot
+                    (sharedProjectRoot </> "fixture.dhall")
+                    "."
+                    ( \(projectRoot :: CanonicalProjectRoot (Production projectId) rootId) -> do
+                        started <-
+                            withProductionRoot store project ProjectUp $ \productionRoot -> do
+                                let root = productionRootAuthority productionRoot
+                                    unbound = productionRootUnboundLease productionRoot
+                                    value =
+                                        Fixture.defaultProjectConfig
+                                            (installedProjectName project)
+                                            (Text.pack (canonicalProjectRootPath projectRoot))
+                                            contextKind
+                                    supplied = Fixture.context value
+                                    stepPlan = authorityStepPlanFor (Context.currentFrame supplied)
+                                profiled <-
+                                    withProductionLifecycleProfile
+                                        (rootScopeAuthority root)
+                                        (productionActiveMode (productionRootModeLease productionRoot))
+                                        unbound
+                                        ( \profile ->
+                                            withProductionProjectCodec @Fixture.ProjectConfig @projectId $ \baseCodec ->
+                                                withFinalizedProjectSpec
+                                                    ProductionScope
+                                                    baseCodec
+                                                    emptyServiceRegistry
+                                                    (\_ _ -> Right stepPlan)
+                                                    ( \spec -> do
+                                                        validated <-
+                                                            withValidatedConfig
+                                                                (finalizedProjectCodec spec)
+                                                                value
+                                                                ( \_ config -> do
+                                                                    drafts <-
+                                                                        expectRight
+                                                                            (projectPlanDrafts spec projectRoot config)
+                                                                    persistedAction <-
+                                                                        expectRight
+                                                                            ( withProjectPlan
+                                                                                profile
+                                                                                projectRoot
+                                                                                config
+                                                                                drafts
+                                                                                ( \projectPlan ->
+                                                                                    withPersistedPlanSnapshot
+                                                                                        root
+                                                                                        unbound
+                                                                                        projectPlan
+                                                                                        ( \verified bound binding lease _recovery -> do
+                                                                                            framedAction <-
+                                                                                                either (fail . show) pure $
+                                                                                                    withCurrentFrame
+                                                                                                        projectPlan
+                                                                                                        supplied
+                                                                                                        ( \_current frame context ->
+                                                                                                            withAcquisitionJournal
+                                                                                                                root
+                                                                                                                lease
+                                                                                                                bound
+                                                                                                                binding
+                                                                                                                projectPlan
+                                                                                                                ( \journal -> do
+                                                                                                                    cursorResult <-
+                                                                                                                        withLifecycleCursor
+                                                                                                                            journal
+                                                                                                                            frame
+                                                                                                                            ProjectUp
+                                                                                                                            Prepare
+                                                                                                                            ( \cursor ->
+                                                                                                                                use
+                                                                                                                                    store
+                                                                                                                                    root
+                                                                                                                                    verified
+                                                                                                                                    bound
+                                                                                                                                    binding
+                                                                                                                                    lease
+                                                                                                                                    projectPlan
+                                                                                                                                    journal
+                                                                                                                                    frame
+                                                                                                                                    cursor
+                                                                                                                                    context
+                                                                                                                            )
+                                                                                                                    expectRight cursorResult
+                                                                                                                )
+                                                                                                        )
+                                                                                            framedAction >>= expectRight
+                                                                                        )
+                                                                                )
+                                                                            )
+                                                                    persistedAction >>= expectRight
+                                                                )
+                                                        either fail pure validated
+                                                    )
+                                        )
+                                action <- either (fail . show) pure profiled
+                                result <- action
+                                pure (Right result)
+                        expectRight started
+                    )
+            expectRight rooted
+
+{- | Build the child-side evidence package consumed by 'authorizeChildProject'.
+
+The root authority and signing key exist only while constructing and verifying
+the authenticated edge.  The callback receives neither: it gets the
+constructor-hidden child authority from 'withChildProjectPlan' plus the exact
+local plan, journal, frame, cursor, and validated context that the child gate
+must join before reserving an invocation.
+-}
+withExactChildProjectFixture ::
+    Context.ContextKind ->
+    ( forall projectId brokerGeneration specDigest planDigest planId configId parentFrame frame.
+      ProtectedStore ->
+      ChildPlanAuthority
+        (Production projectId)
+        specDigest
+        planDigest
+        brokerGeneration
+        parentFrame
+        frame
+        planId
+        configId
+        VerbUp
+        PreparePhase ->
+      ProjectPlan
+        (Production projectId)
+        specDigest
+        planId
+        configId
+        Fixture.ProjectConfig ->
+      AcquisitionJournal (Production projectId) planId brokerGeneration ->
+      ProjectFrame (Production projectId) specDigest planId configId frame ->
+      LifecycleCursor
+        (Production projectId)
+        planId
+        frame
+        brokerGeneration
+        VerbUp
+        PreparePhase ->
+      ValidatedContext (Production projectId) planId frame ->
+      IO result
+    ) ->
+    IO result
+withExactChildProjectFixture =
+    withExactChildProjectFixtureForBinding Nothing Nothing Nothing
+
+withExactChildProjectFixtureForBinding ::
+    Maybe Text ->
+    Maybe Text ->
+    Maybe Text ->
+    Context.ContextKind ->
+    ( forall projectId brokerGeneration specDigest planDigest planId configId parentFrame frame.
+      ProtectedStore ->
+      ChildPlanAuthority
+        (Production projectId)
+        specDigest
+        planDigest
+        brokerGeneration
+        parentFrame
+        frame
+        planId
+        configId
+        VerbUp
+        PreparePhase ->
+      ProjectPlan
+        (Production projectId)
+        specDigest
+        planId
+        configId
+        Fixture.ProjectConfig ->
+      AcquisitionJournal (Production projectId) planId brokerGeneration ->
+      ProjectFrame (Production projectId) specDigest planId configId frame ->
+      LifecycleCursor
+        (Production projectId)
+        planId
+        frame
+        brokerGeneration
+        VerbUp
+        PreparePhase ->
+      ValidatedContext (Production projectId) planId frame ->
+      IO result
+    ) ->
+    IO result
+withExactChildProjectFixtureForBinding
+    signedParentOverride
+    signedChildOverride
+    signedPhaseOverride
+    contextKind
+    use =
+    withSystemTempDirectory "hostbootstrap-exact-child-project" $ \directory -> do
+        store <- openProtectedStore (directory </> "protected") >>= expectRight
+        sharedProjectRoot <- getCurrentDirectory
+        Fixture.withFixtureInstalledProject $ \(project :: InstalledProjectIdentity projectId) -> do
+            rooted <-
+                withCanonicalProjectRoot
+                    (sharedProjectRoot </> "fixture.dhall")
+                    "."
+                    ( \(projectRoot :: CanonicalProjectRoot (Production projectId) rootId) -> do
+                        started <-
+                            withProductionRoot store project ProjectUp $ \productionRoot -> do
+                                let root = productionRootAuthority productionRoot
+                                    unbound = productionRootUnboundLease productionRoot
+                                    rootValue =
+                                        Fixture.defaultProjectConfig
+                                            (installedProjectName project)
+                                            (Text.pack (canonicalProjectRootPath projectRoot))
+                                            contextKind
+                                    parentContext = Fixture.context rootValue
+                                    supplied =
+                                        Context.deriveVMContext
+                                            parentContext
+                                            (Text.pack (canonicalProjectRootPath projectRoot))
+                                    value = rootValue{Fixture.context = supplied}
+                                    stepPlan =
+                                        childAuthorityStepPlanFor
+                                            (Context.currentFrame parentContext)
+                                            (Context.currentFrame supplied)
+                                profiled <-
+                                    withProductionLifecycleProfile
+                                        (rootScopeAuthority root)
+                                        (productionActiveMode (productionRootModeLease productionRoot))
+                                        unbound
+                                        ( \profile ->
+                                            withProductionProjectCodec @Fixture.ProjectConfig @projectId $ \baseCodec ->
+                                                withFinalizedProjectSpec
+                                                    ProductionScope
+                                                    baseCodec
+                                                    emptyServiceRegistry
+                                                    (\_ _ -> Right stepPlan)
+                                                    ( \spec -> do
+                                                        let codec = finalizedProjectCodec spec
+                                                        validated <-
+                                                            withValidatedConfig
+                                                                codec
+                                                                value
+                                                                ( \_wire parentConfig -> do
+                                                                    parentDrafts <-
+                                                                        expectRight
+                                                                            (projectPlanDrafts spec projectRoot parentConfig)
+                                                                    childAction <-
+                                                                        expectRight
+                                                                            ( withProjectPlan
+                                                                                profile
+                                                                                projectRoot
+                                                                                parentConfig
+                                                                                parentDrafts
+                                                                                ( \referencePlan -> do
+                                                                                    let payload =
+                                                                                            renderScopedProjectConfigBytes
+                                                                                                codec
+                                                                                                value
+                                                                                        input =
+                                                                                            HandoffBindingInput
+                                                                                                { requestedSpecDigest =
+                                                                                                    validatedConfigSpecDigest parentConfig
+                                                                                                , requestedPayloadKind = NarrowedProjectConfig
+                                                                                                , requestedPlanRevision =
+                                                                                                    stablePlanSnapshotDigest
+                                                                                                        (renderSnapshot referencePlan)
+                                                                                                , requestedParentFrame =
+                                                                                                    maybe
+                                                                                                        (Context.currentFrame parentContext)
+                                                                                                        id
+                                                                                                        signedParentOverride
+                                                                                                , requestedChildFrame =
+                                                                                                    maybe
+                                                                                                        (Context.currentFrame supplied)
+                                                                                                        id
+                                                                                                        signedChildOverride
+                                                                                                , requestedChildConfigDigest =
+                                                                                                    childConfigDigest payload
+                                                                                                , requestedPhase =
+                                                                                                    maybe
+                                                                                                        "prepare"
+                                                                                                        id
+                                                                                                        signedPhaseOverride
+                                                                                                }
+                                                                                    signingKey <-
+                                                                                        expectRight
+                                                                                            ( projectSigningKeyFromBytes
+                                                                                                (ByteString.replicate 32 211)
+                                                                                            )
+                                                                                    brokered <-
+                                                                                        withRootBroker
+                                                                                            (productionHandoffScope project)
+                                                                                            store
+                                                                                            signingKey
+                                                                                            root
+                                                                                            ( \broker -> do
+                                                                                                (relay, token) <-
+                                                                                                    expectRight
+                                                                                                        =<< registerHandoffEdge broker input
+                                                                                                offer <-
+                                                                                                    expectRight
+                                                                                                        (mkHandoffOffer relay payload token)
+                                                                                                challenge <- freshChallenge
+                                                                                                grant <-
+                                                                                                    expectRight
+                                                                                                        =<< grantHandoff broker offer challenge
+                                                                                                handoff <-
+                                                                                                    expectRight
+                                                                                                        ( verifyHandoff
+                                                                                                            (rootBrokerVerificationKey broker)
+                                                                                                            (handoffOfferWire offer)
+                                                                                                            (relayBinding relay)
+                                                                                                            challenge
+                                                                                                            grant
+                                                                                                        )
+                                                                                                authenticated <-
+                                                                                                    expectRight
+                                                                                                        (verifiedConfigPayload handoff)
+                                                                                                configAdmission <-
+                                                                                                    withAuthenticatedConfigWire
+                                                                                                        codec
+                                                                                                        authenticated
+                                                                                                        ( \childWire childConfig -> do
+                                                                                                            childDrafts <-
+                                                                                                                expectRight
+                                                                                                                    ( projectPlanDrafts
+                                                                                                                        spec
+                                                                                                                        projectRoot
+                                                                                                                        childConfig
+                                                                                                                    )
+                                                                                                            refined <-
+                                                                                                                expectRight
+                                                                                                                    ( withVerifiedConfigHandoff
+                                                                                                                        ProjectUp
+                                                                                                                        handoff
+                                                                                                                        childWire
+                                                                                                                        childConfig
+                                                                                                                        ( \configHandoff ->
+                                                                                                                            withChildProjectPlan
+                                                                                                                                ProjectUp
+                                                                                                                                configHandoff
+                                                                                                                                childWire
+                                                                                                                                childConfig
+                                                                                                                                childDrafts
+                                                                                                                                ( \childAuthority childPlan _childBinding -> do
+                                                                                                                                    persistedAction <-
+                                                                                                                                        withPersistedPlanSnapshot
+                                                                                                                                            root
+                                                                                                                                            unbound
+                                                                                                                                            childPlan
+                                                                                                                                            ( \_verified bound binding lease _recovery -> do
+                                                                                                                                                framedAction <-
+                                                                                                                                                    either (fail . show) pure $
+                                                                                                                                                        withCurrentFrame
+                                                                                                                                                            childPlan
+                                                                                                                                                            supplied
+                                                                                                                                                            ( \_current frame context ->
+                                                                                                                                                                withAcquisitionJournal
+                                                                                                                                                                    root
+                                                                                                                                                                    lease
+                                                                                                                                                                    bound
+                                                                                                                                                                    binding
+                                                                                                                                                                    childPlan
+                                                                                                                                                                    ( \journal -> do
+                                                                                                                                                                        cursorResult <-
+                                                                                                                                                                            withLifecycleCursor
+                                                                                                                                                                                journal
+                                                                                                                                                                                frame
+                                                                                                                                                                                ProjectUp
+                                                                                                                                                                                Prepare
+                                                                                                                                                                                ( \cursor -> do
+                                                                                                                                                                                    let signed =
+                                                                                                                                                                                            childPlanAuthorityBinding
+                                                                                                                                                                                                childAuthority
+                                                                                                                                                                                    let childMatches =
+                                                                                                                                                                                            handoffChildFrame signed
+                                                                                                                                                                                                == projectFrameId frame
+                                                                                                                                                                                        phaseMatches =
+                                                                                                                                                                                            handoffPhase signed
+                                                                                                                                                                                                == lifecyclePhaseName
+                                                                                                                                                                                                    (lifecycleCursorPhase cursor)
+                                                                                                                                                                                    assertBool
+                                                                                                                                                                                        "the test-only frame refinement observes the intended equality or mismatch"
+                                                                                                                                                                                        ( childMatches
+                                                                                                                                                                                            == maybe True (const False) signedChildOverride
+                                                                                                                                                                                        )
+                                                                                                                                                                                    assertBool
+                                                                                                                                                                                        "the test-only phase refinement observes the intended equality or mismatch"
+                                                                                                                                                                                        ( phaseMatches
+                                                                                                                                                                                            == maybe True (const False) signedPhaseOverride
+                                                                                                                                                                                        )
+                                                                                                                                                                                    -- Phase 17 owns the package-private safe refinement that
+                                                                                                                                                                                    -- aligns authenticated wire indices with freshly opened
+                                                                                                                                                                                    -- frame/cursor indices. This Phase 13 fixture confines its
+                                                                                                                                                                                    -- cast to that final seam, after proving whether each
+                                                                                                                                                                                    -- semantic comparison is intentionally equal or unequal;
+                                                                                                                                                                                    -- the public API remains nominal and rejects the cast.
+                                                                                                                                                                                    use
+                                                                                                                                                                                        store
+                                                                                                                                                                                        (unsafeCoerce childAuthority)
+                                                                                                                                                                                        childPlan
+                                                                                                                                                                                        journal
+                                                                                                                                                                                        frame
+                                                                                                                                                                                        cursor
+                                                                                                                                                                                        context
+                                                                                                                                                                                )
+                                                                                                                                                                        expectRight cursorResult
+                                                                                                                                                                    )
+                                                                                                                                                            )
+                                                                                                                                                framedAction >>= expectRight
+                                                                                                                                            )
+                                                                                                                                    expectRight persistedAction
+                                                                                                                                )
+                                                                                                                        )
+                                                                                                                    )
+                                                                                                            childProgram <- expectRight refined
+                                                                                                            childProgram
+                                                                                                        )
+                                                                                                expectRight configAdmission
+                                                                                            )
+                                                                                    expectRight brokered
+                                                                                )
+                                                                            )
+                                                                    childAction
+                                                                )
+                                                        either fail pure validated
+                                                    )
+                                        )
+                                action <- either (fail . show) pure profiled
+                                result <- action
+                                pure (Right result)
+                        expectRight started
+                    )
+            expectRight rooted
+
+authorityStepPlanFor :: Text -> StepPlan
+authorityStepPlanFor currentFrameName =
+    either
+        (error . show)
+        id
+        ( mkStepPlan
+            [ contextInitStep
+                "initialize authority context"
+                (StepFrame (Text.unpack currentFrameName) "Authority frame")
+                (const (pure StepChanged))
+            ]
+        )
+
+childAuthorityStepPlanFor :: Text -> Text -> StepPlan
+childAuthorityStepPlanFor parentFrameName childFrameName =
+    either
+        (error . show)
+        id
+        ( mkStepPlan
+            [ descendsVia
+                localContext
+                ( deployVMStep
+                    "launch child authority frame"
+                    (StepFrame (Text.unpack parentFrameName) "Parent authority frame")
+                    (const (pure StepChanged))
+                )
+            , contextInitStep
+                "initialize child authority context"
+                (StepFrame (Text.unpack childFrameName) "Child authority frame")
+                (const (pure StepChanged))
+            ]
+        )
+
+invocationRecordCount :: ProtectedStore -> IO Int
+invocationRecordCount store = do
+    keys <- withProtectedEntry store listProtectedRecords >>= expectRight
+    pure
+        ( length
+            [ ()
+            | key <- keys
+            , "invocation." `Text.isPrefixOf` recordKeyText key
+            ]
+        )
+
+advanceFirstRecordVersionWithPrefix :: ProtectedStore -> Text -> IO ()
+advanceFirstRecordVersionWithPrefix store prefix = do
+    advanced <-
+        withProtectedEntry store $ \session -> do
+            listed <- listProtectedRecords session
+            case listed of
+                Left failure -> pure (Left failure)
+                Right keys ->
+                    case filter (Text.isPrefixOf prefix . recordKeyText) keys of
+                        [] -> assertFailure ("no protected record has prefix " <> Text.unpack prefix)
+                        key : _ -> do
+                            observed <- readProtectedRecord session key
+                            case observed of
+                                Left failure -> pure (Left failure)
+                                Right Nothing -> assertFailure "the listed protected record disappeared"
+                                Right (Just record) ->
+                                    compareAndSwapProtectedRecord
+                                        session
+                                        key
+                                        (ExpectVersion (protectedRecordVersion record))
+                                        (protectedRecordBytes record)
+    _ <- expectRight advanced
+    pure ()
+
+expectMalformedAuthority :: Either AuthorityError result -> IO Text
+expectMalformedAuthority outcome = case outcome of
+    Left (AuthorityMalformedBinding reason) -> pure reason
+    Left failure -> assertFailure ("expected a malformed-binding refusal, got " <> show failure)
+    Right _ -> assertFailure "expected a malformed-binding refusal, got command authority"
+
 {- | A live Production @up@ that has bound its plan freshly, presented as the
 migration profile only such a binding can produce.
 
@@ -1856,11 +3432,16 @@ values it revalidates genuinely share a broker generation rather than being
 assembled to look as though they do.
 -}
 withMigrationProfile ::
-    ( forall brokerGeneration oldSpecDigest oldPlanDigest session.
-      InstalledProject Fixture.FixtureProject ->
+    ( forall projectId brokerGeneration oldSpecDigest oldPlanDigest session.
+      InstalledProjectIdentity projectId ->
       BrokerEpoch brokerGeneration ->
+      BoundRunLease
+        (Production projectId)
+        oldSpecDigest
+        oldPlanDigest
+        brokerGeneration ->
       ProjectUpMigrationProfile
-        Fixture.FixtureProject
+        projectId
         oldSpecDigest
         oldPlanDigest
         brokerGeneration ->
@@ -1870,63 +3451,91 @@ withMigrationProfile ::
     IO ()
 withMigrationProfile use =
     withStore $ \store ->
-        withProject "hostbootstrap-demo" $ \project -> do
+        Fixture.withFixtureInstalledProject $ \project -> do
             outcome <-
                 withProductionRoot store project ProjectUp $ \root ->
-                    withProtectedEntry' store $ \session ->
-                        withBoundSnapshot session project root $ \snapshot ->
-                            bindRunLease
-                                session
-                                project
-                                (productionRootUnboundLease root)
+                    withBoundSnapshot root $ \snapshot -> do
+                        bound <-
+                            expectRight
+                                =<< bindRunLease
+                                    (productionRootUnboundLease root)
+                                    snapshot
+                                    pure
+                        case
+                            withProjectUpMigrationProfile
+                                (productionRootAuthority root)
+                                (productionRootModeLease root)
+                                bound
                                 snapshot
-                                ( \binding -> case binding of
-                                    ExistingRunLeaseBinding _ recovery ->
-                                        assertFailure
-                                            ("expected a fresh binding, got " <> show recovery)
-                                    FreshRunLeaseBinding bound active ->
-                                        case
-                                            withProjectUpMigrationProfile
-                                                (productionRootAuthority root)
-                                                (productionRootModeLease root)
-                                                bound
-                                                snapshot
-                                                active
-                                            of
-                                            Left failure -> pure (Left failure)
-                                            Right profile ->
-                                                use
-                                                    project
-                                                    (rootAuthorityEpoch (productionRootAuthority root))
-                                                    profile
-                                                    session
-                                )
+                            of
+                            Left failure -> pure (Left failure)
+                            Right profile ->
+                                withProtectedEntry' store $ \session ->
+                                    use
+                                        project
+                                        (rootAuthorityEpoch (productionRootAuthority root))
+                                        bound
+                                        profile
+                                        session
             outcome @?= Right ()
 
 -- | The recorded migration side of the barrier, read back off the durable record.
 readRecordedRevisionKind ::
     ProtectedSession session ->
-    InstalledProject Fixture.FixtureProject ->
+    InstalledProjectIdentity projectId ->
+    BoundRunLease
+      (Production projectId)
+      specDigest
+      planDigest
+      brokerGeneration ->
     IO OpenRevisionKind
-readRecordedRevisionKind session project = do
-    observed <- readRecordedOpenRevisionKind session project productionRunId
+readRecordedRevisionKind session project bound = do
+    observed <- readRecordedOpenRevisionKind session project bound
     expectRight observed
 
 withBoundSnapshot ::
-    ProtectedSession session ->
-    InstalledProject Fixture.FixtureProject ->
-    ProductionRoot Fixture.FixtureProject brokerGeneration verb ->
+    ProductionRoot projectId brokerGeneration verb ->
     ( forall specDigest planDigest.
-      VerifiedPlanSnapshot Fixture.FixtureProject specDigest planDigest ->
+      VerifiedPlanSnapshot (Production projectId) specDigest planDigest ->
       IO (Either ModeError result)
     ) ->
     IO (Either ModeError result)
-withBoundSnapshot session project root use = do
-    let run = unboundRunLeaseRun (productionRootUnboundLease root)
-    persisted <- persistPlanSnapshot session project run 1 "spec-1" "plan-1"
+withBoundSnapshot root use = do
+    let unbound = productionRootUnboundLease root
+    persisted <- persistPlanSnapshot unbound 1 "spec-1" "plan-1"
     case persisted of
         Left failure -> pure (Left failure)
-        Right () -> verifyPlanSnapshot session project run use
+        Right () -> verifyPlanSnapshot unbound use
+
+withFreshHarnessRoot ::
+    ProtectedStore ->
+    InstalledProjectIdentity projectId ->
+    ( forall runId brokerGeneration.
+      HarnessRoot projectId runId brokerGeneration VerbUp ->
+      IO (Either ModeError result)
+    ) ->
+    IO (Either ModeError result)
+withFreshHarnessRoot store project use = do
+    swept <- recoverAbandonedHarnessRuns store project neverResolves neverResolves
+    case swept of
+        Left failure -> pure (Left failure)
+        Right proof ->
+            withHarnessRoot
+                store
+                project
+                ProjectUp
+                (satisfiedPreconditions project)
+                proof
+                use
+
+readModeRecord ::
+    ProtectedStore ->
+    RecordKey ->
+    IO (Either ModeError (Maybe ProtectedRecord))
+readModeRecord store key =
+    withProtectedEntry' store $ \session -> do
+        observed <- readProtectedRecord session key
+        pure (either (Left . ModeStoreFailure) Right observed)
 
 expectRight :: Show failure => Either failure result -> IO result
 expectRight = either (assertFailure . show) pure
@@ -1941,17 +3550,81 @@ expectKey raw = case mkRecordKey raw of
     Left failure -> assertFailure (show failure)
     Right key -> pure key
 
-{- | A second installed project, for the store-binding refusal. Its index is
-generative, which is the point: it is not this binary's project.
--}
-withOtherProject ::
+expectInvocationHash :: InvocationId -> IO Text
+expectInvocationHash invocation =
+    case Text.stripPrefix "command-" (invocationIdText invocation) of
+        Nothing -> assertFailure "the invocation identity has no command prefix"
+        Just remainder ->
+            case Text.breakOn "#" remainder of
+                (digest, version)
+                    | not (Text.null digest)
+                        && not (Text.null (Text.drop 1 version)) -> pure digest
+                _ -> assertFailure "the invocation identity has no record version"
+
+reservationIdentityForTest ::
     Text ->
-    (forall projectId. InstalledProject projectId -> IO result) ->
-    IO result
-withOtherProject name use =
-    case withInstalledProject name use of
-        Left failure -> assertFailure (show failure)
-        Right action -> action
+    Text ->
+    Text ->
+    Text ->
+    BrokerEpoch brokerGeneration ->
+    ProjectVerb verb ->
+    LifecyclePhase phase ->
+    ByteString.ByteString
+reservationIdentityForTest project storeIdentity planDigest frameName epoch verb phase =
+    ByteString.concat
+        [ field (TextEncoding.encodeUtf8 project)
+        , field (TextEncoding.encodeUtf8 storeIdentity)
+        , field (TextEncoding.encodeUtf8 planDigest)
+        , field (TextEncoding.encodeUtf8 frameName)
+        , field (ByteStringChar8.pack (show (brokerEpochWord epoch)))
+        , field (TextEncoding.encodeUtf8 (projectVerbName verb))
+        , field (TextEncoding.encodeUtf8 (lifecyclePhaseName phase))
+        ]
+  where
+    field bytes =
+        ByteStringChar8.pack (show (ByteString.length bytes))
+            <> ":"
+            <> bytes
+
+sha256Hex :: ByteString.ByteString -> Text
+sha256Hex bytes =
+    Text.pack (concatMap hex (ByteArray.unpack (Hash.hashWith Hash.SHA256 bytes)))
+  where
+    hex byte =
+        [ ByteStringChar8.index "0123456789abcdef" (fromIntegral (byte `div` 16))
+        , ByteStringChar8.index "0123456789abcdef" (fromIntegral (byte `mod` 16))
+        ]
+
+authorityFacadeExports :: Text -> Either Text [Text]
+authorityFacadeExports source = do
+    afterMarker <-
+        maybe
+            (Left "the Authority module header is absent")
+            (Right . Text.drop (Text.length marker))
+            (nonEmptySuffix marker source)
+    let (body, closing) = Text.breakOn "\n) where" afterMarker
+    if Text.null closing
+        then Left "the Authority export list terminator is absent"
+        else
+            Right
+                [ Text.dropWhileEnd (== ',') (Text.strip line)
+                | line <- Text.lines body
+                , not (Text.null (Text.strip line))
+                ]
+  where
+    marker = "module HostBootstrap.Authority ("
+    nonEmptySuffix needle haystack =
+        let suffix = snd (Text.breakOn needle haystack)
+         in if Text.null suffix then Nothing else Just suffix
+
+haskellSources :: FilePath -> IO [FilePath]
+haskellSources directory = do
+    entries <- listDirectory directory
+    let paths = map (directory </>) entries
+    directories <- filterM doesDirectoryExist paths
+    files <- filterM doesFileExist paths
+    nested <- concat <$> mapM haskellSources directories
+    pure ([path | path <- files, takeExtension path == ".hs"] <> nested)
 
 isLeft :: Either failure success -> Bool
 isLeft (Left _) = True

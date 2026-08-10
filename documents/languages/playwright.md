@@ -25,8 +25,8 @@ base-provided package.
 `/root/.npm` is removed after install to keep the image lean.
 
 The `hostbootstrap-demo` worked consumer (`demo/`) runs its end-to-end suite with
-this Playwright runtime through the standardized test harness. The shared
-`project up` stack brings up the kind cluster, loads the already-built
+this Playwright runtime through the standardized test harness. The Harness-scoped plan's common
+current-frame Chain brings up the kind cluster, loads the already-built
 `hostbootstrap-demo:local` project image into it, and deploys the web chart pod
 (the pod's entrypoint is the demo binary, which runs `service run` — the
 `Web` variant — to bind the warp/wai webservice on its configured public port, default `:8080`), so the cluster's
@@ -43,9 +43,11 @@ sets `workers: 1`, serializing those engine projects because the worked demo
 intentionally owns one accelerator daemon/worker session and rejects concurrent
 Add requests with its single-flight busy response.
 
-This execution reuse is not evidence of test isolation: the current demo planner selects the Production
-cluster identity and `.data`. The target harness instantiates the same plan definition under a distinct
-`Harness projectId runId` scope; see [harness workflow](../architecture/harness_workflow.md).
+This execution reuse is not by itself evidence of exact test isolation. The harness instantiates the
+same plan definition under a distinct `Harness projectId runId` scope and owns
+`.test_data/<runId>`, but demo cluster/provider/mount/teardown consumers still derive profile and root
+terms independently from config rather than from that retained plan; see
+[harness workflow](../architecture/harness_workflow.md).
 
 The current `e2e-tabs` spec also opens the Accelerator tab. When the harness has proved a daemon is
 connected, it asserts the real worker's `3.75` result, configured backend, 16-hex artifact hash, and

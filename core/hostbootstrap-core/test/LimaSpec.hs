@@ -1,7 +1,12 @@
 module LimaSpec (tests) where
 
 import Data.Either (isLeft)
+import Data.List (isInfixOf, isPrefixOf)
+import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Lima
+import qualified SourceGuard
+import System.Directory (getCurrentDirectory)
+import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
@@ -14,6 +19,7 @@ tests =
         "LimaSpec"
         [ testGroup "VM argv builders" argvCases
         , testGroup "name-prefix delete-guard" guardCases
+        , testGroup "provider realization boundary" providerBoundaryCases
         ]
 
 argvCases :: [TestTree]
@@ -64,3 +70,44 @@ guardCases =
     , testCase "a non-prefixed instance is refused" $
         assertBool "refuses to delete" (isLeft (deleteVMArgs "other-prefix-" vm))
     ]
+
+providerBoundaryCases :: [TestTree]
+providerBoundaryCases =
+    [ testCase "Lima consumes and reexports exactly the lower target/renderer pair" $ do
+        source <- providerSource "Lima.hs"
+        hostBootstrapImports source @?= ["HostBootstrap.Lift.Context"]
+        fmap withoutCommas (SourceGuard.moduleImportTokens "HostBootstrap.Lift.Context" source)
+            @?= Just ["LimaVM", "(", "..", ")", "shellVMArgs"]
+        exports <-
+            maybe
+                (fail "HostBootstrap.Lima must have an explicit export list")
+                pure
+                (SourceGuard.moduleExportTokens "HostBootstrap.Lima" source)
+        assertBool "LimaVM (..) is not reexported" (["LimaVM", "(", "..", ")"] `isInfixOf` exports)
+        assertBool "shellVMArgs is not reexported" ("shellVMArgs" `elem` exports)
+        SourceGuard.countHaskellTokenSequence ["data", "LimaVM"] source @?= 0
+        SourceGuard.countHaskellTokenSequence ["newtype", "LimaVM"] source @?= 0
+        SourceGuard.countHaskellTokenSequence ["shellVMArgs", "::"] source @?= 0
+        assertNoParallelLift source
+    ]
+
+providerSource :: FilePath -> IO String
+providerSource sourceFile = do
+    cwd <- getCurrentDirectory
+    root <- findRepoRoot cwd >>= maybe (fail ("could not locate repository root from " ++ cwd)) pure
+    readFile (root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap" </> sourceFile)
+
+hostBootstrapImports :: String -> [String]
+hostBootstrapImports = filter ("HostBootstrap." `isPrefixOf`) . SourceGuard.haskellImports
+
+withoutCommas :: [String] -> [String]
+withoutCommas = filter (/= ",")
+
+assertNoParallelLift :: String -> IO ()
+assertNoParallelLift source =
+    mapM_
+        ( \identifier ->
+            SourceGuard.countHaskellIdentifier identifier source
+                @?= 0
+        )
+        ["foldLift", "foldLeaf", "LiftContext", "DispatchLocal", "DispatchTool", "SubstrateProvider"]

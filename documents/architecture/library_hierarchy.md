@@ -17,7 +17,7 @@
   directly.
 - The extension contract admits checked additive **streams**, one merge idiom each: ordered step
   fragments finalized as one `StepPlan`, the **Dhall vocabulary**, the
-  **schema-gen** `ConfigArtifact` registry, the **test seams** `Seams`, and the **service handlers**
+  **schema-gen** `ConfigArtifact` registry, the assertion-only **`TestSuite`**, and the **service handlers**
   (the `ServiceType` variants `service run` resolves). The command surface itself is never a stream.
 - A project's primary contribution is its lift **chain value** plus its service handlers — never a new
   noun verb: the core ships host-management step kinds and the project contributes its own step kinds
@@ -29,8 +29,8 @@
   exactly one declared descent per frame that has a successor, and at most one runnable reverse effect
   per step.
 - The chain shape is the canonical model owned by
-  [composition_methodology](composition_methodology.md); this document defers to it for the chain and
-  the recursive `project up` interpreter and describes only how the streams layer.
+  [composition_methodology](composition_methodology.md); this document defers to it for the current-frame
+  Chain and target recursive `project up` interpreter and describes only how the streams layer.
 
 ## The Three Library Levels
 
@@ -38,7 +38,7 @@ The hierarchy is a chain of pinned Cabal libraries, each importing the one below
 
 | Level | Library | Imports | Adds |
 |-------|---------|---------|------|
-| L0 | `hostbootstrap-core` | — | The host-management base: the fixed `project`/`test`/`service`/`context`/`check-code` command surface, the core host-management `Step` kinds, the `Core.dhall` vocabulary, the `coreArtifacts` registry, the service-handler registry, and the composable-operation algebra + the recursive lift interpreter (see [composition_methodology](composition_methodology.md)). It owns **no default config values**. One scope-aware restricted `psAssemble` is the structural default source for Production init and Harness variants; `psTestInit` separately creates the project's test config. |
+| L0 | `hostbootstrap-core` | — | The host-management base: the fixed `project`/`test`/`service`/`context`/`check-code` command surface, the core host-management `Step` kinds, the `Core.dhall` vocabulary, the `coreArtifacts` registry, the service-handler registry, the pure Lift context, generic resolved-tool Lift, provider realizations, and exact plan/Chain interpreter (see [composition_methodology](composition_methodology.md)). It owns **no default config values**. One scope-aware restricted `psAssemble` is the structural default source for Production init and Harness variants; `psTestInit` separately creates the project's test config. |
 | L1 | `daemon-substrate` | L0 | The daemon run-model surface — the concrete business-logic composition primitives (roles over durable external stores) on top of core. |
 | L2 | `jitML`, `infernix` | L1 | App-level step kinds, vocabulary, and artifacts on top of the daemon substrate. |
 
@@ -48,6 +48,13 @@ layer. The cross-repo levels are referenced by absolute URL, not relative link:
 [jitML](https://github.com/Tuee22/jitML),
 [infernix](https://github.com/Tuee22/infernix), and
 [mcts](https://github.com/Tuee22/mcts).
+
+Inside the L0 package, `harness-lifecycle-internal` is a private Cabal component rather than another
+extension level. It exposes `HostBootstrap.Harness.Lifecycle.Internal` only to the main library and its
+own test suite. The component owns the opaque `HarnessLifecycle` constructor: command code packages the
+common forward/reverse actions retained from one exact Harness plan, while engine tests can construct a
+controlled fixture. A downstream package cannot depend on that private component or manufacture a second
+lifecycle path.
 
 A hostbootstrap project integrates by taking a Cabal dependency on `hostbootstrap-core` (directly or
 through a higher layer) and calling `runHostBootstrapCLI`. Importing a warm-store freeze alone merely
@@ -63,7 +70,8 @@ while each frame's descent is declared on the plan node that owns the boundary. 
 ### Stream 1 — The Lift Chain
 
 The first stream is the project's lift **plan**: ordered `cfg -> [Step]` fragments validated into the
-opaque `StepPlan` that the recursive `project up` interpreter walks frame by frame. `addSteps`
+opaque `StepPlan` whose current-frame projection Chain interprets today and whose target recursive
+`project up` interpreter walks frame by frame. `addSteps`
 contributes new step kinds while preserving lower fragments; the core's
 host-management step kinds (deploy-VM, `ensure`-X, copy-source, build-pb, build-image, context-init,
 deploy-kind, deploy-chart, expose-port) stay in scope unchanged, and host and workload steps
@@ -71,6 +79,18 @@ interleave freely in one chain. This Step algebra is the reuse unit and the work
 The chain is the canonical model — its shape, the recursive/fractal interpreter, and the
 fractal-bootstrap descent are owned by [composition_methodology](composition_methodology.md); this
 stream describes only the additive merge.
+
+The word “lift” in this stream names the project’s composed frame plan; it does not make the
+`HostBootstrap.Lift` module an extension stream. L0 layers that reusable machinery internally: the
+[Dhall-configuration-and-generic-project-model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
+owns pure `HostBootstrap.Lift.Context`, the
+[ensure-reconcilers phase](../../DEVELOPMENT_PLAN/phase-8-ensure-reconcilers.md) owns generic resolved-tool
+Lift, the
+[host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
+owns provider lifecycle realizations, and the
+[composition-and-network-algebra phase](../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md)
+adds reachability/blob/registry helpers above the generic fold. A project adds steps to the plan; it does
+not replace any of those dispatch layers.
 
 The chain is threaded into the generic entrypoint through `ProjectSpec`:
 
@@ -144,15 +164,18 @@ deployment seams. See
 ### Stream 4 — Test-Harness Seams
 
 The fourth stream is the standardized test harness. A project supplies a non-empty `TestSuite` — a five-field
-existential (safety precondition, bring-up, case matrix, per-case assertion, teardown); `ProjectSpec` threads
-that suite into the inherited `test` surface. The `Seams`/`runMatrix` engine is built internally by the harness
-(`assertSeams`), not supplied by the project.
-The harness **drives the real `project up`**: it **generates** the run's `<project>.dhall` functionally
+existential (safety precondition, assertion-environment opener, case matrix, per-case assertion, and
+post-reverse absence assertion); `ProjectSpec` threads that suite into the inherited `test` surface. The
+`Seams`/`runMatrix` engine is built internally by the harness (`assertSeams`), not supplied by the project.
+The harness **drives the real project plan**: it **generates** the run's `<project>.dhall` functionally
 through the Harness request of the project's single restricted `psAssemble`, under fresh run authority
-and the matching mapped codec. It never shells the CLI,
-runs `project up`, asserts in-frame, then `project destroy`; it owns no second cluster-bring-up path. A
-suite may carry **more than one config variant** (the demo's two-message run); the harness stands each up,
-asserts, and tears it down in turn. The standardized-test-harness phase
+and the matching mapped codec, admits one exact `ProjectPlan (Harness projectId runId) ...`, and interprets
+its common Chain forward/reverse projections directly. It never shells the lifecycle CLI, and project
+assertions receive no lifecycle action. A suite may carry **more than one config variant** (the demo's
+two-message run); the harness stands each exact plan up, asserts, and tears it down in turn. The
+terminal reverse must produce settled-destroy closure evidence before the private ownership finalizer may
+close the bound lease/mode; a callback returning successfully is not closure authority. The
+standardized-test-harness phase
 ([test harness and run ownership phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md)) owns the harness.
 
 ### Stream 5 — Service Handlers
@@ -180,8 +203,9 @@ statement of the contract lives in
 The reusable surface is the chain stream and the recursive `project` interpreter this document
 describes, exercised end-to-end on real hardware:
 
-- Stream 1 is the ordered set of additive step fragments resolved to one opaque `StepPlan` walked by the
-  recursive `project up` interpreter and threaded through finalized `ProjectSpec`. Under the generic model
+- Stream 1 is the ordered set of additive step fragments resolved to one opaque `StepPlan`, consumed by
+  the current-frame Chain and intended for the recursive `project up` interpreter, and threaded through
+  finalized `ProjectSpec`. Under the generic model
   (§ BB), fragments are `cfg -> [Step]` over
   a project's own config type `cfg`; the demo instantiates `cfg = ProjectConfig` through the
   substrate-selected `demoChainFor :: Substrate -> ProjectConfig -> [Step]` in
@@ -197,13 +221,16 @@ describes, exercised end-to-end on real hardware:
   belongs in the development plan. Its public representation rejects empty/noncontiguous plans and
   duplicate identities, and requires exactly one declared descent per frame that has a successor;
   teardown is still a checked single-assignment slot, and receipt-driven reverse traversal remains
-  Phase 16.6.
+  with the
+  [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
 - Streams 2, 3, and 4 realize as described: the `Core.dhall` vocabulary import-and-extend idiom, the
-  `coreArtifacts` registry concatenation, and the standardized test-harness `Seams`. Stream 3's
+  `coreArtifacts` registry concatenation, and the standardized assertion-only `TestSuite`. Stream 3's
   static renders surface through the read-only `context` command; child runtime projection is not a
   `ConfigArtifact` stream and is split across the current lifecycle seams.
   Stream 4 surfaces through `test init` and `test run`, which drive the standardized harness over the
-  demo's case matrix; the harness generates each config variant and drives the real `project up`.
+  demo's case matrix; the harness generates each config variant and directly drives its exact
+  Harness-scoped plan. The demo's same-run durable destroy/up/readback case remains open until Stream 4's
+  engine can interpret a declarative two-phase assertion using a fresh lifecycle-invocation generation.
 
 `DEVELOPMENT_PLAN/` owns the closure criteria for the extension-stream contract; reconcile any status claim
 here to it rather than treating this document as a parallel status authority.

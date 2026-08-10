@@ -73,7 +73,7 @@ render st =
     , HH.div [ HP.id "content" ] [ content ]
     ]
   where
-  -- The config-driven served message (Sprint 20.1), rendered in a stable shell
+  -- The config-driven served message, rendered in a stable shell
   -- element the polymorphic Playwright asserts EXPECTED_MESSAGE against. Empty
   -- until the budget view loads.
   message = case st.budget of

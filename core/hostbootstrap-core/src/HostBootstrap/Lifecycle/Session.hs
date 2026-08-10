@@ -1,5 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {- | The protected operation session, fence rotation, and the prepare
@@ -42,6 +44,32 @@ resumes the same proposed epoch rather than proposing a new one, and a permit
 issued under a superseded fence is rejected.
 -}
 module HostBootstrap.Lifecycle.Session (
+    -- * Plan-bound acquisition admission
+    AcquisitionJournal,
+    acquisitionJournalStableScope,
+    acquisitionJournalSnapshotDigest,
+    acquisitionJournalRunLease,
+    acquisitionJournalBrokerGeneration,
+    acquisitionJournalRecordVersion,
+    acquisitionJournalRootVerb,
+    validateAcquisitionJournalBindingKernel,
+    withAcquisitionJournalPhase,
+    openAcquisitionJournalKernel,
+
+    -- * Same-broker frame cursors
+    LifecycleCursor,
+    lifecycleCursorFrame,
+    lifecycleCursorRecordVersion,
+    lifecycleCursorVerb,
+    lifecycleCursorPhase,
+    lifecycleCursorMatchesCommandAuthority,
+    validateCurrentLifecycleCursor,
+    withLifecycleCursor,
+    withCurrentLifecycleCursor,
+    withExecuteLifecycleCursor,
+    withTeardownLifecycleCursor,
+    reserveCurrentLifecycleCommandKernel,
+
     -- * The project journal
     ProjectJournalState (..),
     ProjectPermit,
@@ -138,19 +166,41 @@ module HostBootstrap.Lifecycle.Session (
     admitCurrentBroker,
 
     -- * Failures
+    LifecycleError,
+    lifecycleErrorMessage,
     SessionError (..),
     sessionErrorMessage,
 ) where
 
 import Control.Monad (foldM)
+import qualified Crypto.Hash as Hash
+import qualified Data.ByteArray as ByteArray
 import Data.ByteString (ByteString)
+import qualified Data.ByteString as ByteString
+import qualified Data.ByteString.Char8 as ByteStringChar8
 import Data.List (sort)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import HostBootstrap.Authority (
+    AuthorityError (AuthorityMalformedBinding, AuthorityStoreFailure),
     BrokerEpoch,
+    CommandAuthority,
+    ExecutePhase,
+    LifecyclePhase (..),
+    PreparePhase,
+    ProjectVerb,
+    TeardownPhase,
     brokerEpochWord,
+    lifecyclePhaseName,
+    projectVerbName,
+ )
+import HostBootstrap.Authority.Kernel (
+    CommandReservation,
+    commandAuthorityOriginMatchesKernel,
+    reserveCommandInvocationKernel,
+    withInstalledProjectKernel,
  )
 import HostBootstrap.Lifecycle.Execution (
     StepExecution,
@@ -171,6 +221,10 @@ import HostBootstrap.Lifecycle.Prepared (
 import HostBootstrap.Lifecycle.Prepared.Internal (
     mintPreparedGate,
  )
+import HostBootstrap.Lifecycle.Plan (
+    AcquisitionJournalAdmission,
+    consumeAcquisitionJournalAdmissionKernel,
+ )
 import HostBootstrap.Lifecycle.Transaction (
     TransactionError (..),
     TransactionPermit,
@@ -188,11 +242,16 @@ import HostBootstrap.Lifecycle.Transaction (
     transactionRecordPayload,
     transactionRecordVersion,
  )
+import HostBootstrap.ProjectPlan.Frame (
+    ProjectFrame,
+    projectFrameId,
+ )
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
     ProtectedError,
     ProtectedRecord (protectedRecordBytes, protectedRecordVersion),
     ProtectedSession,
+    ProtectedStore,
     RecordKey,
     RecordVersion,
     recordKeyText,
@@ -201,9 +260,13 @@ import HostBootstrap.Protected (
     mkRecordKey,
     mkRecordName,
     protectedErrorMessage,
+    protectedStoreIdentity,
+    protectedStoreIdentityText,
     readProtectedRecord,
     recordNameIdentity,
     recordVersionWord,
+    sessionStoreIdentity,
+    withProtectedEntry,
  )
 
 -- ---------------------------------------------------------------------------
@@ -221,6 +284,164 @@ data ProjectJournalState
       ClosingProject Word64
     | ClosedProject
     deriving (Eq, Show)
+
+{- | The immutable binding persisted in one dedicated acquisition record.
+
+The local @planId@ is deliberately absent. It is generated afresh when an
+existing snapshot is admitted and exists only as the nominal index on
+'AcquisitionJournal'. The lease record key/version are included as well as its
+decoded content, so a same-content compare-and-swap cannot revive an admission
+made with stale lease evidence.
+-}
+data AcquisitionJournalBinding = AcquisitionJournalBinding
+    { acquisitionBindingStableScope :: Text
+    , acquisitionBindingProject :: Text
+    , acquisitionBindingStore :: Text
+    , acquisitionBindingSnapshotDigest :: Text
+    , acquisitionBindingLeaseRecord :: Text
+    , acquisitionBindingLeaseVersion :: Word64
+    , acquisitionBindingRun :: Text
+    , acquisitionBindingSpecDigest :: Text
+    , acquisitionBindingLeasePlanDigest :: Text
+    , acquisitionBindingBrokerEpoch :: Word64
+    , acquisitionBindingRootVerb :: Text
+    }
+    deriving (Eq, Show)
+
+-- The existential closed 'LifecyclePhase' retained below is intentionally
+-- separate from 'ProjectJournalState'. Fresh acquisition starts at 'Prepare'.
+{- | One exact local view of the durable acquisition journal.
+
+The constructor is hidden and all three indices are nominal.  The retained
+store is the store owned by the admitted bound lease, and the retained rank-2
+validator can recheck the exact live mode, lease, and snapshot in any later
+entry into that store. Neither is projected publicly, while the descriptive
+projections below remain non-authorizing.
+-}
+data AcquisitionJournal scope planId brokerGeneration where
+    AcquisitionJournal ::
+        ProtectedStore ->
+        (forall session. ProtectedSession session -> IO (Either SessionError ())) ->
+        RecordKey ->
+        RecordVersion ->
+        AcquisitionJournalBinding ->
+        LifecyclePhase phase ->
+        AcquisitionJournal scope planId brokerGeneration
+
+type role AcquisitionJournal nominal nominal nominal
+
+instance Show (AcquisitionJournal scope planId brokerGeneration) where
+    show (AcquisitionJournal _ _ _ _ binding phase) =
+        "AcquisitionJournal "
+            <> show (acquisitionBindingStableScope binding)
+            <> " "
+            <> show (acquisitionBindingSnapshotDigest binding)
+            <> " "
+            <> show (acquisitionBindingBrokerEpoch binding)
+            <> " "
+            <> Text.unpack (lifecyclePhaseName phase)
+
+-- | Stable scope identity retained by the protected binding.
+acquisitionJournalStableScope :: AcquisitionJournal scope planId brokerGeneration -> Text
+acquisitionJournalStableScope (AcquisitionJournal _ _ _ _ binding _) =
+    acquisitionBindingStableScope binding
+
+-- | Exact stable snapshot digest bound inside the acquisition record.
+acquisitionJournalSnapshotDigest :: AcquisitionJournal scope planId brokerGeneration -> Text
+acquisitionJournalSnapshotDigest (AcquisitionJournal _ _ _ _ binding _) =
+    acquisitionBindingSnapshotDigest binding
+
+-- | Stable run identity retained from the exact bound run lease.
+acquisitionJournalRunLease :: AcquisitionJournal scope planId brokerGeneration -> Text
+acquisitionJournalRunLease (AcquisitionJournal _ _ _ _ binding _) =
+    acquisitionBindingRun binding
+
+-- | Durable broker epoch retained by the journal binding.
+acquisitionJournalBrokerGeneration :: AcquisitionJournal scope planId brokerGeneration -> Word64
+acquisitionJournalBrokerGeneration (AcquisitionJournal _ _ _ _ binding _) =
+    acquisitionBindingBrokerEpoch binding
+
+-- | Descriptive version of the exact acquisition source retained for every cursor check.
+acquisitionJournalRecordVersion :: AcquisitionJournal scope planId brokerGeneration -> Word64
+acquisitionJournalRecordVersion (AcquisitionJournal _ _ _ version _ _) = recordVersionWord version
+
+-- | Closed root verb retained by the protected acquisition record.
+acquisitionJournalRootVerb :: AcquisitionJournal scope planId brokerGeneration -> Text
+acquisitionJournalRootVerb (AcquisitionJournal _ _ _ _ binding _) =
+    acquisitionBindingRootVerb binding
+
+{- | Package-level pure comparison between a journal's retained acquisition
+binding and the complete origin of the bound lease presented by a later
+authority gate.
+
+The individual protected location and record-key members remain private.  This
+helper grants no authority and performs no store access; it only prevents an
+@unsafeCoerce@-substituted lease with coincident public run/digest fields from
+being treated as the lease that originally opened the journal.
+-}
+validateAcquisitionJournalBindingKernel ::
+    AcquisitionJournal scope planId brokerGeneration ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    Either SessionError ()
+validateAcquisitionJournalBindingKernel
+    (AcquisitionJournal store _ _ _ binding _)
+    stableScope
+    project
+    storeIdentity
+    snapshotDigest
+    leaseRecord
+    leaseVersion
+    run
+    specDigest
+    leasePlanDigest
+    brokerEpoch = do
+        require "stable scope" stableScope (acquisitionBindingStableScope binding)
+        require "project" project (acquisitionBindingProject binding)
+        require "protected store" storeIdentity (acquisitionBindingStore binding)
+        require
+            "journal store"
+            storeIdentity
+            (protectedStoreIdentityText (protectedStoreIdentity store))
+        require "snapshot digest" snapshotDigest (acquisitionBindingSnapshotDigest binding)
+        require "lease record" leaseRecord (acquisitionBindingLeaseRecord binding)
+        requireWord
+            "lease record version"
+            leaseVersion
+            (acquisitionBindingLeaseVersion binding)
+        require "run" run (acquisitionBindingRun binding)
+        require "specification digest" specDigest (acquisitionBindingSpecDigest binding)
+        require "lease plan digest" leasePlanDigest (acquisitionBindingLeasePlanDigest binding)
+        requireWord "broker epoch" brokerEpoch (acquisitionBindingBrokerEpoch binding)
+  where
+    require field expected observed
+        | expected == observed = Right ()
+        | otherwise = Left (SessionAcquisitionBindingMismatch field expected observed)
+    requireWord field expected observed =
+        require field (showWord expected) (showWord observed)
+
+{- | Eliminate the exact closed lifecycle seed decoded from the protected
+acquisition record.
+
+The phase phantom is generated by matching the closed 'LifecyclePhase'
+vocabulary; callers can inspect it but cannot choose or relabel it.  Before a
+frame's cursor row exists this is its initial phase.  After the atomic handoff,
+the acquisition-v1 value remains unchanged and 'withCurrentLifecycleCursor'
+discovers that frame's authoritative current phase instead.
+-}
+withAcquisitionJournalPhase ::
+    AcquisitionJournal scope planId brokerGeneration ->
+    (forall phase. LifecyclePhase phase -> result) ->
+    result
+withAcquisitionJournalPhase (AcquisitionJournal _ _ _ _ _ phase) use = use phase
 
 {- | The sole successor permit for one Open project-journal version.
 
@@ -297,6 +518,1149 @@ runTransaction session planDigest permit kind targets =
     fmap
         (either (Left . transactionFailure) Right)
         (runLifecycleTransaction session planDigest permit kind targets)
+
+{- | Open or resume the dedicated acquisition record after Mode has verified
+the live lease. Its store-local key covers project/run/broker; the strict
+13-field payload collision-checks the full binding and mutable phase.
+Fresh state is 'Prepare', and the exact record key/version and decoded phase are
+retained for the next CAS. No user callback runs in this entry.
+-}
+openAcquisitionJournalKernel ::
+    AcquisitionJournalAdmission ->
+    ProtectedStore ->
+    ProtectedSession session ->
+    (forall liveSession. ProtectedSession liveSession -> IO (Either SessionError ())) ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    Text ->
+    IO (Either SessionError (AcquisitionJournal scope planId brokerGeneration))
+openAcquisitionJournalKernel admission store session validateLive scope project storeId snapshot leaseKey leaseVersion run spec leasePlan epoch verb =
+    case consumeAcquisitionJournalAdmissionKernel admission of
+        ()
+            | not (validAcquisitionBinding expected) -> invalid "binding"
+            | storeId /= actualStore -> mismatch "protected store" storeId actualStore
+            | storeId /= actualSessionStore -> mismatch "protected session store" storeId actualSessionStore
+            | otherwise -> either (pure . Left) openKey (acquisitionKey expected)
+  where
+    expected =
+        AcquisitionJournalBinding scope project storeId snapshot leaseKey leaseVersion run spec leasePlan epoch verb
+    actualStore = protectedStoreIdentityText (protectedStoreIdentity store)
+    actualSessionStore = protectedStoreIdentityText (sessionStoreIdentity session)
+    invalid field = pure (Left (SessionAcquisitionBindingInvalid field))
+    mismatch field wanted actual =
+        pure (Left (SessionAcquisitionBindingMismatch field wanted actual))
+    openKey key = do
+        observed <- readProtectedRecord session key
+        case observed of
+            Left failure -> pure (Left (SessionStoreFailure failure))
+            Right Nothing -> do
+                written <- compareAndSwapProtectedRecord session key ExpectAbsent (encodeAcquisitionRecord expected Prepare)
+                pure
+                    ( either
+                        (Left . SessionStoreFailure)
+                        (\version -> Right (AcquisitionJournal store validateLive key version expected Prepare))
+                        written
+                    )
+            Right (Just record) -> case decodeAcquisitionRecord (protectedRecordBytes record) of
+                Nothing -> pure (Left (SessionRecordCorrupt "acquisition journal"))
+                Just (recorded, SomeLifecyclePhase phase)
+                    | protectedRecordBytes record /= encodeAcquisitionRecord recorded phase ->
+                        pure (Left (SessionRecordCorrupt "acquisition journal"))
+                    | recorded /= expected -> mismatch "durable binding" "exact binding" "different binding"
+                    | otherwise ->
+                        pure
+                            ( Right
+                                ( AcquisitionJournal
+                                    store
+                                    validateLive
+                                    key
+                                    (protectedRecordVersion record)
+                                    recorded
+                                    phase
+                                )
+                            )
+
+acquisitionSchema :: Text
+acquisitionSchema = "acquisition-journal-v1"
+
+acquisitionKey :: AcquisitionJournalBinding -> Either SessionError RecordKey
+acquisitionKey binding =
+    keyFor
+        ( "acquisition."
+            <> acquisitionBindingProject binding
+            <> "."
+            <> acquisitionBindingRun binding
+            <> "."
+            <> showWord (acquisitionBindingBrokerEpoch binding)
+        )
+
+encodeAcquisitionRecord :: AcquisitionJournalBinding -> LifecyclePhase phase -> ByteString
+encodeAcquisitionRecord binding phase =
+    encodeFields
+        [ acquisitionSchema
+        , acquisitionBindingStableScope binding
+        , acquisitionBindingProject binding
+        , acquisitionBindingStore binding
+        , acquisitionBindingSnapshotDigest binding
+        , acquisitionBindingLeaseRecord binding
+        , showWord (acquisitionBindingLeaseVersion binding)
+        , acquisitionBindingRun binding
+        , acquisitionBindingSpecDigest binding
+        , acquisitionBindingLeasePlanDigest binding
+        , showWord (acquisitionBindingBrokerEpoch binding)
+        , acquisitionBindingRootVerb binding
+        , acquisitionPhaseText phase
+        ]
+
+decodeAcquisitionRecord :: ByteString -> Maybe (AcquisitionJournalBinding, SomeLifecyclePhase)
+decodeAcquisitionRecord raw = case decodeFields raw of
+    [schema, scope, project, storeId, snapshot, leaseKey, leaseVersion, run, spec, leasePlan, epoch, verb, phase]
+            | schema == acquisitionSchema -> do
+                version <- readPositiveWord leaseVersion
+                generation <- readPositiveWord epoch
+                parsedPhase <- parseAcquisitionPhase phase
+                let binding = AcquisitionJournalBinding scope project storeId snapshot leaseKey version run spec leasePlan generation verb
+                if validAcquisitionBinding binding then Just (binding, parsedPhase) else Nothing
+    _ -> Nothing
+
+validAcquisitionBinding :: AcquisitionJournalBinding -> Bool
+validAcquisitionBinding binding =
+    acquisitionBindingLeaseVersion binding > 0
+        && acquisitionBindingBrokerEpoch binding > 0
+        && acquisitionBindingSnapshotDigest binding == acquisitionBindingLeasePlanDigest binding
+        && isAcquisitionRootVerb (acquisitionBindingRootVerb binding)
+        && all (not . Text.null) textFields
+  where
+    textFields =
+        [ acquisitionBindingStableScope binding, acquisitionBindingProject binding
+        , acquisitionBindingStore binding, acquisitionBindingSnapshotDigest binding
+        , acquisitionBindingLeaseRecord binding, acquisitionBindingRun binding
+        , acquisitionBindingSpecDigest binding, acquisitionBindingLeasePlanDigest binding
+        ]
+
+isAcquisitionRootVerb :: Text -> Bool
+isAcquisitionRootVerb raw = raw == "up" || raw == "down" || raw == "destroy"
+
+acquisitionPhaseText :: LifecyclePhase phase -> Text
+acquisitionPhaseText = lifecyclePhaseName
+
+data SomeLifecyclePhase where
+    SomeLifecyclePhase :: LifecyclePhase phase -> SomeLifecyclePhase
+
+parseAcquisitionPhase :: Text -> Maybe SomeLifecyclePhase
+parseAcquisitionPhase raw = case raw of
+    "prepare" -> Just (SomeLifecyclePhase Prepare)
+    "execute" -> Just (SomeLifecyclePhase Execute)
+    "teardown" -> Just (SomeLifecyclePhase Teardown)
+    _ -> Nothing
+
+showWord :: Word64 -> Text
+showWord = Text.pack . show
+
+readPositiveWord :: Text -> Maybe Word64
+readPositiveWord raw = readWord raw >>= \value -> if value == 0 then Nothing else Just value
+
+-- ---------------------------------------------------------------------------
+-- Same-broker frame cursors
+
+{- | The immutable durable binding of one frame-local cursor row.
+
+The source acquisition bytes are retained whole, rather than projected into a
+second copy of their fields.  Every open and successor can therefore require
+the exact source key, version, and canonical bytes that originally handed the
+phase to this frame.  The frame is kept out of the record key's filesystem
+alphabet by hashing a length-framed identity, while the full value remains in
+the payload for collision checking.
+-}
+data LifecycleCursorBinding = LifecycleCursorBinding
+    { cursorBindingAcquisitionKey :: RecordKey
+    , cursorBindingAcquisitionVersion :: Word64
+    , cursorBindingAcquisitionBytes :: ByteString
+    , cursorBindingFrame :: Text
+    , cursorBindingVerb :: Text
+    }
+    deriving (Eq, Show)
+
+{- | One exact frame-local lifecycle position under the broker generation that
+opened its source acquisition journal.
+
+The constructor is hidden and all six roles are nominal.  The retained record
+version is the one and only predecessor version accepted by a phase successor;
+an older cursor can therefore lose a race but cannot replay its transition.
+-}
+data LifecycleCursor scope planId frame brokerGeneration verb phase where
+    LifecycleCursor ::
+        ProtectedStore ->
+        RecordKey ->
+        RecordVersion ->
+        ByteString ->
+        LifecycleCursorBinding ->
+        ProjectVerb verb ->
+        LifecyclePhase phase ->
+        LifecycleCursor scope planId frame brokerGeneration verb phase
+
+type role LifecycleCursor nominal nominal nominal nominal nominal nominal
+
+data SomeLifecycleCursor scope planId frame brokerGeneration verb where
+    SomeLifecycleCursor ::
+        LifecyclePhase phase ->
+        LifecycleCursor scope planId frame brokerGeneration verb phase ->
+        SomeLifecycleCursor scope planId frame brokerGeneration verb
+
+instance Show (LifecycleCursor scope planId frame brokerGeneration verb phase) where
+    show (LifecycleCursor _ _ version _ binding verb phase) =
+        "LifecycleCursor "
+            <> show (cursorBindingFrame binding)
+            <> " "
+            <> Text.unpack (projectVerbName verb)
+            <> " "
+            <> Text.unpack (lifecyclePhaseName phase)
+            <> " "
+            <> show (recordVersionWord version)
+
+-- | Descriptive current-frame identity retained by the cursor.
+lifecycleCursorFrame ::
+    LifecycleCursor scope planId frame brokerGeneration verb phase -> Text
+lifecycleCursorFrame (LifecycleCursor _ _ _ _ binding _ _) = cursorBindingFrame binding
+
+-- | Exact protected cursor-row version retained for the next legal successor.
+lifecycleCursorRecordVersion ::
+    LifecycleCursor scope planId frame brokerGeneration verb phase -> Word64
+lifecycleCursorRecordVersion (LifecycleCursor _ _ version _ _ _ _) = recordVersionWord version
+
+-- | Closed root verb retained unchanged throughout this cursor lineage.
+lifecycleCursorVerb ::
+    LifecycleCursor scope planId frame brokerGeneration verb phase -> ProjectVerb verb
+lifecycleCursorVerb (LifecycleCursor _ _ _ _ _ verb _) = verb
+
+-- | Current frame-local phase retained by the exact cursor row.
+lifecycleCursorPhase ::
+    LifecycleCursor scope planId frame brokerGeneration verb phase -> LifecyclePhase phase
+lifecycleCursorPhase (LifecycleCursor _ _ _ _ _ _ phase) = phase
+
+{- | Compare the complete retained broker origin of a cursor and command
+authority.
+
+Nominal indices make an ordinary cross-origin substitution ill typed.  This
+term check additionally refuses a hostile package substitution before an
+effectful interpreter opens any durable state.
+-}
+lifecycleCursorMatchesCommandAuthority ::
+    CommandAuthority scope planId frame brokerGeneration verb phase ->
+    LifecycleCursor scope planId frame brokerGeneration verb phase ->
+    Bool
+lifecycleCursorMatchesCommandAuthority
+    authority
+    (LifecycleCursor cursorStore _ _ _ binding _ _) =
+        case decodeAcquisitionRecord (cursorBindingAcquisitionBytes binding) of
+            Nothing -> False
+            Just (source, SomeLifecyclePhase _) ->
+                let retainedStore = acquisitionBindingStore source
+                    actualCursorStore =
+                        protectedStoreIdentityText (protectedStoreIdentity cursorStore)
+                 in retainedStore == actualCursorStore
+                        && commandAuthorityOriginMatchesKernel
+                            authority
+                            (acquisitionBindingProject source)
+                            retainedStore
+                            (acquisitionBindingBrokerEpoch source)
+
+{- | Revalidate a cursor's exact acquisition source and current durable row
+inside the protected entry that is about to make a dependent transition.
+
+This is deliberately an entry-scoped check: reading the row before acquiring
+the lock and then opening a session afterwards would leave a revocation race.
+-}
+validateCurrentLifecycleCursor ::
+    ProtectedSession session ->
+    LifecycleCursor scope planId frame brokerGeneration verb phase ->
+    IO (Either SessionError ())
+validateCurrentLifecycleCursor session cursor = do
+    source <- requireExactCursorSource session (cursorBinding cursor)
+    case source of
+        Left failure -> pure (Left failure)
+        Right () -> requireExactCurrentLifecycleCursor session cursor
+
+{- | Open or exactly resume one frame-local cursor.
+
+There is one atomic authority handoff.  While the derived cursor row is absent,
+the unchanged acquisition-v1 phase is the initial seed and the absent-to-present
+compare-and-swap copies it into the full frame binding.  Once the row exists,
+its phase is authoritative for that frame; the acquisition phase is no longer
+consulted as a current-position field.  A crash before the compare-and-swap
+therefore resumes from acquisition, and a crash after it resumes from the
+cursor row.  No two-record update or torn phase is possible.
+
+Every path still rereads the exact source acquisition key, version, and
+canonical bytes.  The root verb remains immutable, an existing exact row is
+resumed without a write, and the continuation runs only after the protected
+entry has closed.  Compare-and-swap reservation is at most once; callback
+delivery is deliberately at least once.  An exact retry, a concurrent
+current-row reader, or a retry after the callback throws can receive the same
+durable current cursor again.
+-}
+withLifecycleCursor ::
+    AcquisitionJournal scope planId brokerGeneration ->
+    ProjectFrame scope specDigest planId configId frame ->
+    ProjectVerb verb ->
+    LifecyclePhase phase ->
+    (LifecycleCursor scope planId frame brokerGeneration verb phase -> IO result) ->
+    IO (Either LifecycleError result)
+withLifecycleCursor
+    journal@(AcquisitionJournal store _ _ _ _ _)
+    frame
+    verb
+    phase
+    use =
+        case validateLifecycleCursorRequest journal frame verb of
+            Left failure -> pure (Left failure)
+            Right () -> do
+                opened <-
+                    inLifecycleCursorEntry store $ \session ->
+                        openLifecycleCursorInEntry
+                            session
+                            journal
+                            frame
+                            verb
+                            phase
+                case opened of
+                    Left failure -> pure (Left failure)
+                    Right cursor -> Right <$> use cursor
+
+{- | Discover and resume the authoritative current phase for one exact frame.
+
+Before the first cursor row this reports the acquisition seed; afterwards it
+reports the phase decoded from the exact per-frame row.  The existential phase
+is generated by the closed decoder and delivered with its matching cursor only
+after the protected entry closes, so recovery never has to guess or probe an
+expected phase.
+-}
+withCurrentLifecycleCursor ::
+    AcquisitionJournal scope planId brokerGeneration ->
+    ProjectFrame scope specDigest planId configId frame ->
+    ProjectVerb verb ->
+    ( forall phase.
+      LifecyclePhase phase ->
+      LifecycleCursor scope planId frame brokerGeneration verb phase ->
+      IO result
+    ) ->
+    IO (Either LifecycleError result)
+withCurrentLifecycleCursor
+    journal@(AcquisitionJournal store _ _ _ _ _)
+    frame
+    verb
+    use =
+        case validateLifecycleCursorRequest journal frame verb of
+            Left failure -> pure (Left failure)
+            Right () -> do
+                opened <-
+                    inLifecycleCursorEntry store $ \session ->
+                        openCurrentLifecycleCursorInEntry session Nothing journal frame verb
+                case opened of
+                    Left failure -> pure (Left failure)
+                    Right (SomeLifecycleCursor phase cursor) -> Right <$> use phase cursor
+
+{- | Consume exactly one Prepare cursor version and yield its Execute successor.
+
+The successor is written and read back under one protected entry before the
+entry is released. Callback delivery is at least once: if it throws, recovery
+rediscovers the already-durable Execute row rather than replaying this CAS.
+-}
+withExecuteLifecycleCursor ::
+    LifecycleCursor scope planId frame brokerGeneration verb PreparePhase ->
+    (LifecycleCursor scope planId frame brokerGeneration verb ExecutePhase -> IO result) ->
+    IO (Either LifecycleError result)
+withExecuteLifecycleCursor cursor use =
+    withLifecycleCursorSuccessor cursor Execute use
+
+{- | Consume exactly one Execute cursor version and yield its Teardown successor.
+
+There is intentionally no successor eliminator for Teardown and no
+verb-changing edge within one acquisition invocation.
+-}
+withTeardownLifecycleCursor ::
+    LifecycleCursor scope planId frame brokerGeneration verb ExecutePhase ->
+    (LifecycleCursor scope planId frame brokerGeneration verb TeardownPhase -> IO result) ->
+    IO (Either LifecycleError result)
+withTeardownLifecycleCursor cursor use =
+    withLifecycleCursorSuccessor cursor Teardown use
+
+{- | Atomically reserve one command invocation from an exact, still-current
+frame cursor.
+
+The 'CommandReservation' argument is deliberately type-sealed at this exposed
+module boundary: its type and sole producer remain package-private in
+"HostBootstrap.Authority.Kernel".  The lifecycle authority facade can therefore
+join its plan, root, frame, and context checks before entering this narrow
+bridge, while public callers cannot manufacture the stable reservation
+members.
+
+One protected entry revalidates the live mode, bound lease, and canonical
+snapshot retained by the acquisition opener; proves that the journal is the
+cursor's exact source; rereads the exact current cursor key, version, bytes,
+binding, verb, and phase; and only then consumes the one-use reservation.  A
+stale cursor or any live-evidence drift therefore returns before the invocation
+record can be written.
+-}
+reserveCurrentLifecycleCommandKernel ::
+    forall scope planId frame brokerGeneration verb phase.
+    AcquisitionJournal scope planId brokerGeneration ->
+    LifecycleCursor scope planId frame brokerGeneration verb phase ->
+    CommandReservation scope planId frame brokerGeneration verb phase ->
+    IO
+        ( Either
+            AuthorityError
+            (CommandAuthority scope planId frame brokerGeneration verb phase)
+        )
+reserveCurrentLifecycleCommandKernel
+    journal@(AcquisitionJournal store validateLive _ _ binding _)
+    cursor
+    reservation = do
+        entered <-
+            withProtectedEntry store $ \session -> do
+                outcome <- reserveInEntry session
+                pure (Right outcome)
+        pure $ case entered of
+            Left failure -> Left (AuthorityStoreFailure failure)
+            Right outcome -> outcome
+  where
+    reserveInEntry ::
+        forall session.
+        ProtectedSession session ->
+        IO
+            ( Either
+                AuthorityError
+                (CommandAuthority scope planId frame brokerGeneration verb phase)
+            )
+    reserveInEntry session = do
+        live <- validateLive session
+        case live of
+            Left failure -> pure (Left (sessionAuthorityFailure failure))
+            Right () -> case validateJournalCursorSource journal cursor of
+                Left failure -> pure (Left (sessionAuthorityFailure failure))
+                Right () -> do
+                    source <- requireExactCursorSource session (cursorBinding cursor)
+                    case source of
+                        Left failure -> pure (Left (sessionAuthorityFailure failure))
+                        Right () -> do
+                            current <- requireExactCurrentLifecycleCursor session cursor
+                            case current of
+                                Left failure -> pure (Left (sessionAuthorityFailure failure))
+                                Right () ->
+                                    case
+                                        withInstalledProjectKernel
+                                            (acquisitionBindingProject binding)
+                                            ( \project ->
+                                                reserveCommandInvocationKernel
+                                                    session
+                                                    project
+                                                    reservation
+                                                    (pure . Right)
+                                            )
+                                    of
+                                        Left failure -> pure (Left failure)
+                                        Right reserve -> reserve
+
+cursorBinding ::
+    LifecycleCursor scope planId frame brokerGeneration verb phase ->
+    LifecycleCursorBinding
+cursorBinding (LifecycleCursor _ _ _ _ binding _ _) = binding
+
+validateJournalCursorSource ::
+    AcquisitionJournal scope planId brokerGeneration ->
+    LifecycleCursor scope planId frame brokerGeneration verb phase ->
+    Either SessionError ()
+validateJournalCursorSource
+    (AcquisitionJournal journalStore _ sourceKey sourceVersion sourceBinding sourcePhase)
+    (LifecycleCursor cursorStore cursorKey _ retainedBytes binding verb phase) = do
+        requireCursorBindingText
+            "protected store"
+            (protectedStoreIdentityText (protectedStoreIdentity journalStore))
+            (protectedStoreIdentityText (protectedStoreIdentity cursorStore))
+        requireCursorBindingText
+            "source acquisition key"
+            (recordKeyText sourceKey)
+            (recordKeyText (cursorBindingAcquisitionKey binding))
+        requireCursorBindingWord
+            "source acquisition version"
+            (recordVersionWord sourceVersion)
+            (cursorBindingAcquisitionVersion binding)
+        requireCursorBindingBytes
+            "source acquisition bytes"
+            (encodeAcquisitionRecord sourceBinding sourcePhase)
+            (cursorBindingAcquisitionBytes binding)
+        requireCursorBindingText
+            "source protected store"
+            (acquisitionBindingStore sourceBinding)
+            (protectedStoreIdentityText (protectedStoreIdentity journalStore))
+        requireCursorBindingText
+            "cursor verb"
+            (cursorBindingVerb binding)
+            (projectVerbName verb)
+        expectedKey <- lifecycleCursorKey binding
+        requireCursorBindingText
+            "cursor key"
+            (recordKeyText expectedKey)
+            (recordKeyText cursorKey)
+        requireCursorBindingBytes
+            "retained cursor bytes"
+            (encodeLifecycleCursorRecord binding phase)
+            retainedBytes
+
+requireExactCurrentLifecycleCursor ::
+    ProtectedSession session ->
+    LifecycleCursor scope planId frame brokerGeneration verb phase ->
+    IO (Either SessionError ())
+requireExactCurrentLifecycleCursor
+    session
+    (LifecycleCursor _ key retainedVersion retainedBytes retainedBinding retainedVerb retainedPhase) = do
+        observed <- readProtectedRecord session key
+        pure $ case observed of
+            Left failure -> Left (SessionStoreFailure failure)
+            Right Nothing ->
+                Left
+                    ( SessionCursorBindingMismatch
+                        "cursor row"
+                        (recordKeyText key)
+                        "absent"
+                    )
+            Right (Just record)
+                | protectedRecordVersion record /= retainedVersion ->
+                    Left
+                        ( SessionStaleCursorVersion
+                            (recordVersionWord retainedVersion)
+                            (recordVersionWord (protectedRecordVersion record))
+                        )
+                | protectedRecordBytes record /= retainedBytes ->
+                    Left
+                        ( SessionCursorBindingMismatch
+                            "cursor row bytes"
+                            "exact retained bytes"
+                            "different bytes"
+                        )
+                | otherwise ->
+                    case decodeLifecycleCursorRecord (protectedRecordBytes record) of
+                        Nothing -> Left (SessionRecordCorrupt "lifecycle cursor")
+                        Just (recordedBinding, SomeLifecyclePhase recordedPhase)
+                            | protectedRecordBytes record
+                                /= encodeLifecycleCursorRecord recordedBinding recordedPhase ->
+                                Left (SessionRecordCorrupt "lifecycle cursor")
+                            | recordedBinding /= retainedBinding ->
+                                Left
+                                    ( SessionCursorBindingMismatch
+                                        "durable binding"
+                                        "exact acquisition and frame binding"
+                                        "different binding"
+                                    )
+                            | cursorBindingVerb recordedBinding
+                                /= projectVerbName retainedVerb ->
+                                Left
+                                    ( SessionCursorVerbMismatch
+                                        (cursorBindingVerb recordedBinding)
+                                        (projectVerbName retainedVerb)
+                                    )
+                            | lifecyclePhaseName recordedPhase
+                                /= lifecyclePhaseName retainedPhase ->
+                                Left
+                                    ( SessionCursorPhaseMismatch
+                                        (lifecyclePhaseName recordedPhase)
+                                        (lifecyclePhaseName retainedPhase)
+                                    )
+                            | otherwise -> Right ()
+
+requireCursorBindingText :: Text -> Text -> Text -> Either SessionError ()
+requireCursorBindingText field expected observed
+    | expected == observed = Right ()
+    | otherwise = Left (SessionCursorBindingMismatch field expected observed)
+
+requireCursorBindingWord :: Text -> Word64 -> Word64 -> Either SessionError ()
+requireCursorBindingWord field expected observed =
+    requireCursorBindingText field (showWord expected) (showWord observed)
+
+requireCursorBindingBytes :: Text -> ByteString -> ByteString -> Either SessionError ()
+requireCursorBindingBytes field expected observed
+    | expected == observed = Right ()
+    | otherwise =
+        Left
+            ( SessionCursorBindingMismatch
+                field
+                "exact canonical bytes"
+                "different bytes"
+            )
+
+sessionAuthorityFailure :: SessionError -> AuthorityError
+sessionAuthorityFailure failure = case failure of
+    SessionStoreFailure storeFailure -> AuthorityStoreFailure storeFailure
+    _ -> AuthorityMalformedBinding (Text.pack (sessionErrorMessage failure))
+
+withLifecycleCursorSuccessor ::
+    LifecycleCursor scope planId frame brokerGeneration verb from ->
+    LifecyclePhase to ->
+    (LifecycleCursor scope planId frame brokerGeneration verb to -> IO result) ->
+    IO (Either LifecycleError result)
+withLifecycleCursorSuccessor
+    cursor@(LifecycleCursor store _ _ _ _ _ _)
+    successorPhase
+    use = do
+        advanced <-
+            inLifecycleCursorEntry store $ \session ->
+                advanceLifecycleCursorInEntry session cursor successorPhase
+        case advanced of
+            Left failure -> pure (Left failure)
+            Right successor -> Right <$> use successor
+
+inLifecycleCursorEntry ::
+    ProtectedStore ->
+    (forall session. ProtectedSession session -> IO (Either SessionError result)) ->
+    IO (Either SessionError result)
+inLifecycleCursorEntry store action = do
+    entered <- withProtectedEntry store (fmap Right . action)
+    pure $ case entered of
+        Left failure -> Left (SessionStoreFailure failure)
+        Right result -> result
+
+openLifecycleCursorInEntry ::
+    ProtectedSession session ->
+    AcquisitionJournal scope planId brokerGeneration ->
+    ProjectFrame scope specDigest planId configId frame ->
+    ProjectVerb verb ->
+    LifecyclePhase phase ->
+    IO (Either SessionError (LifecycleCursor scope planId frame brokerGeneration verb phase))
+openLifecycleCursorInEntry
+    session
+    journal
+    frame
+    verb
+    requestedPhase = do
+        opened <-
+            openCurrentLifecycleCursorInEntry
+                session
+                (Just (lifecyclePhaseName requestedPhase))
+                journal
+                frame
+                verb
+        pure $ case opened of
+            Left failure -> Left failure
+            Right
+                ( SomeLifecycleCursor
+                    recordedPhase
+                    (LifecycleCursor store key version bytes binding recordedVerb _)
+                    )
+                    | lifecyclePhaseName recordedPhase
+                        /= lifecyclePhaseName requestedPhase ->
+                        Left
+                            ( SessionCursorPhaseMismatch
+                                (lifecyclePhaseName recordedPhase)
+                                (lifecyclePhaseName requestedPhase)
+                            )
+                    | otherwise ->
+                        Right
+                            ( LifecycleCursor
+                                store
+                                key
+                                version
+                                bytes
+                                binding
+                                recordedVerb
+                                requestedPhase
+                            )
+
+openCurrentLifecycleCursorInEntry ::
+    ProtectedSession session ->
+    Maybe Text ->
+    AcquisitionJournal scope planId brokerGeneration ->
+    ProjectFrame scope specDigest planId configId frame ->
+    ProjectVerb verb ->
+    IO
+        ( Either
+            SessionError
+            (SomeLifecycleCursor scope planId frame brokerGeneration verb)
+        )
+openCurrentLifecycleCursorInEntry
+    session
+    expectedPhase
+    (AcquisitionJournal store _ sourceKey sourceVersion sourceBinding sourcePhase)
+    frame
+    verb
+        | projectVerbName verb /= acquisitionBindingRootVerb sourceBinding =
+            pure
+                ( Left
+                    ( SessionCursorVerbMismatch
+                        (acquisitionBindingRootVerb sourceBinding)
+                        (projectVerbName verb)
+                    )
+                )
+        | otherwise = do
+            let binding = lifecycleCursorBinding sourceKey sourceVersion sourceBinding sourcePhase frame
+            source <- requireExactCursorSource session binding
+            case source of
+                Left failure -> pure (Left failure)
+                Right () -> case lifecycleCursorKey binding of
+                    Left failure -> pure (Left failure)
+                    Right cursorKey -> do
+                        observed <- readProtectedRecord session cursorKey
+                        case observed of
+                            Left failure -> pure (Left (SessionStoreFailure failure))
+                            Right Nothing
+                                | Just requested <- expectedPhase
+                                , requested /= lifecyclePhaseName sourcePhase ->
+                                    pure
+                                        ( Left
+                                            ( SessionCursorPhaseMismatch
+                                                (lifecyclePhaseName sourcePhase)
+                                                requested
+                                            )
+                                        )
+                                | otherwise -> do
+                                    let desiredBytes =
+                                            encodeLifecycleCursorRecord binding sourcePhase
+                                    written <-
+                                        compareAndSwapProtectedRecord
+                                            session
+                                            cursorKey
+                                            ExpectAbsent
+                                            desiredBytes
+                                    case written of
+                                        Left failure -> pure (Left (SessionStoreFailure failure))
+                                        Right version -> do
+                                            verified <-
+                                                verifyLifecycleCursorWrite
+                                                    session
+                                                    cursorKey
+                                                    version
+                                                    desiredBytes
+                                            pure
+                                                ( ( \record ->
+                                                        SomeLifecycleCursor
+                                                            sourcePhase
+                                                            ( LifecycleCursor
+                                                                store
+                                                                cursorKey
+                                                                (protectedRecordVersion record)
+                                                                (protectedRecordBytes record)
+                                                                binding
+                                                                verb
+                                                                sourcePhase
+                                                            )
+                                                  )
+                                                    <$> verified
+                                                )
+                            Right (Just record) ->
+                                resumeCurrentLifecycleCursor
+                                    store
+                                    cursorKey
+                                    record
+                                    binding
+                                    verb
+
+resumeCurrentLifecycleCursor ::
+    ProtectedStore ->
+    RecordKey ->
+    ProtectedRecord ->
+    LifecycleCursorBinding ->
+    ProjectVerb verb ->
+    IO
+        ( Either
+            SessionError
+            (SomeLifecycleCursor scope planId frame brokerGeneration verb)
+        )
+resumeCurrentLifecycleCursor store key record expected verb =
+    pure $ case decodeLifecycleCursorRecord (protectedRecordBytes record) of
+        Nothing -> Left (SessionRecordCorrupt "lifecycle cursor")
+        Just (recorded, SomeLifecyclePhase recordedPhase)
+            | protectedRecordBytes record
+                /= encodeLifecycleCursorRecord recorded recordedPhase ->
+                Left (SessionRecordCorrupt "lifecycle cursor")
+            | recorded /= expected ->
+                Left
+                    ( SessionCursorBindingMismatch
+                        "durable binding"
+                        "exact acquisition and frame binding"
+                        "different binding"
+                    )
+            | otherwise ->
+                Right
+                    ( SomeLifecycleCursor
+                        recordedPhase
+                        ( LifecycleCursor
+                            store
+                            key
+                            (protectedRecordVersion record)
+                            (protectedRecordBytes record)
+                            recorded
+                            verb
+                            recordedPhase
+                        )
+                    )
+
+lifecycleCursorBinding ::
+    RecordKey ->
+    RecordVersion ->
+    AcquisitionJournalBinding ->
+    LifecyclePhase phase ->
+    ProjectFrame scope specDigest planId configId frame ->
+    LifecycleCursorBinding
+lifecycleCursorBinding sourceKey sourceVersion sourceBinding sourcePhase frame =
+    LifecycleCursorBinding
+        { cursorBindingAcquisitionKey = sourceKey
+        , cursorBindingAcquisitionVersion = recordVersionWord sourceVersion
+        , cursorBindingAcquisitionBytes = encodeAcquisitionRecord sourceBinding sourcePhase
+        , cursorBindingFrame = projectFrameId frame
+        , cursorBindingVerb = acquisitionBindingRootVerb sourceBinding
+        }
+
+maxLifecycleCursorFrameBytes :: Int
+maxLifecycleCursorFrameBytes = 4096
+
+maxLifecycleCursorPayloadBytes :: Int
+maxLifecycleCursorPayloadBytes = 65536
+
+validateLifecycleCursorRequest ::
+    AcquisitionJournal scope planId brokerGeneration ->
+    ProjectFrame scope specDigest planId configId frame ->
+    ProjectVerb verb ->
+    Either SessionError ()
+validateLifecycleCursorRequest
+    (AcquisitionJournal _ _ sourceKey sourceVersion sourceBinding sourcePhase)
+    frame
+    verb
+        | projectVerbName verb /= acquisitionBindingRootVerb sourceBinding =
+            Left
+                ( SessionCursorVerbMismatch
+                    (acquisitionBindingRootVerb sourceBinding)
+                    (projectVerbName verb)
+                )
+        | Text.null frameName = Left (SessionCursorBindingInvalid "frame")
+        | ByteString.length frameBytes > maxLifecycleCursorFrameBytes =
+            Left (SessionCursorBindingInvalid "frame length")
+        | maximum (map ByteString.length phasePayloads)
+            > maxLifecycleCursorPayloadBytes =
+            Left (SessionCursorBindingInvalid "payload length")
+        | otherwise = () <$ lifecycleCursorKey binding
+  where
+    binding = lifecycleCursorBinding sourceKey sourceVersion sourceBinding sourcePhase frame
+    frameName = cursorBindingFrame binding
+    frameBytes = TextEncoding.encodeUtf8 frameName
+    phasePayloads =
+        [ encodeLifecycleCursorRecord binding Prepare
+        , encodeLifecycleCursorRecord binding Execute
+        , encodeLifecycleCursorRecord binding Teardown
+        ]
+
+advanceLifecycleCursorInEntry ::
+    ProtectedSession session ->
+    LifecycleCursor scope planId frame brokerGeneration verb from ->
+    LifecyclePhase to ->
+    IO (Either SessionError (LifecycleCursor scope planId frame brokerGeneration verb to))
+advanceLifecycleCursorInEntry
+    session
+    (LifecycleCursor store key retainedVersion retainedBytes binding verb retainedPhase)
+    successorPhase = do
+        source <- requireExactCursorSource session binding
+        case source of
+            Left failure -> pure (Left failure)
+            Right () -> do
+                observed <- readProtectedRecord session key
+                case observed of
+                    Left failure -> pure (Left (SessionStoreFailure failure))
+                    Right Nothing ->
+                        pure
+                            ( Left
+                                ( SessionCursorBindingMismatch
+                                    "cursor row"
+                                    (recordKeyText key)
+                                    "absent"
+                                )
+                            )
+                    Right (Just record)
+                        | protectedRecordVersion record /= retainedVersion ->
+                            pure
+                                ( Left
+                                    ( SessionStaleCursorVersion
+                                        (recordVersionWord retainedVersion)
+                                        (recordVersionWord (protectedRecordVersion record))
+                                    )
+                                )
+                        | protectedRecordBytes record /= retainedBytes ->
+                            pure
+                                ( Left
+                                    ( SessionCursorBindingMismatch
+                                        "cursor row bytes"
+                                        "exact retained bytes"
+                                        "different bytes"
+                                    )
+                                )
+                        | otherwise ->
+                            case decodeLifecycleCursorRecord (protectedRecordBytes record) of
+                                Nothing -> pure (Left (SessionRecordCorrupt "lifecycle cursor"))
+                                Just (recorded, SomeLifecyclePhase recordedPhase)
+                                    | protectedRecordBytes record
+                                        /= encodeLifecycleCursorRecord recorded recordedPhase ->
+                                        pure (Left (SessionRecordCorrupt "lifecycle cursor"))
+                                    | recorded /= binding ->
+                                        pure
+                                            ( Left
+                                                ( SessionCursorBindingMismatch
+                                                    "durable binding"
+                                                    "exact acquisition and frame binding"
+                                                    "different binding"
+                                                )
+                                            )
+                                    | lifecyclePhaseName recordedPhase
+                                        /= lifecyclePhaseName retainedPhase ->
+                                        pure
+                                            ( Left
+                                                ( SessionCursorPhaseMismatch
+                                                    (lifecyclePhaseName recordedPhase)
+                                                    (lifecyclePhaseName retainedPhase)
+                                                )
+                                            )
+                                    | otherwise -> do
+                                        let desiredBytes =
+                                                encodeLifecycleCursorRecord binding successorPhase
+                                        written <-
+                                            compareAndSwapProtectedRecord
+                                                session
+                                                key
+                                                (ExpectVersion retainedVersion)
+                                                desiredBytes
+                                        case written of
+                                            Left failure -> pure (Left (SessionStoreFailure failure))
+                                            Right version -> do
+                                                verified <-
+                                                    verifyLifecycleCursorWrite
+                                                        session
+                                                        key
+                                                        version
+                                                        desiredBytes
+                                                pure
+                                                    ( ( \successorRecord ->
+                                                            LifecycleCursor
+                                                                store
+                                                                key
+                                                                (protectedRecordVersion successorRecord)
+                                                                (protectedRecordBytes successorRecord)
+                                                                binding
+                                                                verb
+                                                                successorPhase
+                                                      )
+                                                        <$> verified
+                                                    )
+
+verifyLifecycleCursorWrite ::
+    ProtectedSession session ->
+    RecordKey ->
+    RecordVersion ->
+    ByteString ->
+    IO (Either SessionError ProtectedRecord)
+verifyLifecycleCursorWrite session key expectedVersion expectedBytes = do
+    observed <- readProtectedRecord session key
+    pure $ case observed of
+        Left failure -> Left (SessionStoreFailure failure)
+        Right Nothing ->
+            Left
+                ( SessionCursorBindingMismatch
+                    "cursor write readback"
+                    (recordKeyText key)
+                    "absent"
+                )
+        Right (Just record)
+            | protectedRecordVersion record /= expectedVersion ->
+                Left
+                    ( SessionStaleCursorVersion
+                        (recordVersionWord expectedVersion)
+                        (recordVersionWord (protectedRecordVersion record))
+                    )
+            | protectedRecordBytes record /= expectedBytes ->
+                Left
+                    ( SessionCursorBindingMismatch
+                        "cursor write readback bytes"
+                        "exact canonical successor bytes"
+                        "different bytes"
+                    )
+            | otherwise -> Right record
+
+requireExactCursorSource ::
+    ProtectedSession session ->
+    LifecycleCursorBinding ->
+    IO (Either SessionError ())
+requireExactCursorSource session binding = do
+    observed <- readProtectedRecord session (cursorBindingAcquisitionKey binding)
+    pure $ case observed of
+        Left failure -> Left (SessionStoreFailure failure)
+        Right Nothing ->
+            Left
+                ( SessionCursorBindingMismatch
+                    "source acquisition record"
+                    (recordKeyText (cursorBindingAcquisitionKey binding))
+                    "absent"
+                )
+        Right (Just record)
+            | recordVersionWord (protectedRecordVersion record)
+                /= cursorBindingAcquisitionVersion binding ->
+                Left
+                    ( SessionCursorBindingMismatch
+                        "source acquisition version"
+                        (showWord (cursorBindingAcquisitionVersion binding))
+                        (showWord (recordVersionWord (protectedRecordVersion record)))
+                    )
+            | protectedRecordBytes record /= cursorBindingAcquisitionBytes binding ->
+                Left
+                    ( SessionCursorBindingMismatch
+                        "source acquisition bytes"
+                        "exact canonical bytes"
+                        "different bytes"
+                    )
+            | not (canonicalAcquisitionRecord (protectedRecordBytes record)) ->
+                Left (SessionRecordCorrupt "source acquisition journal")
+            | otherwise -> Right ()
+
+canonicalAcquisitionRecord :: ByteString -> Bool
+canonicalAcquisitionRecord raw = case decodeAcquisitionRecord raw of
+    Just (binding, SomeLifecyclePhase phase) -> raw == encodeAcquisitionRecord binding phase
+    Nothing -> False
+
+lifecycleCursorSchema :: Text
+lifecycleCursorSchema = "lifecycle-cursor-v1"
+
+lifecycleCursorKey :: LifecycleCursorBinding -> Either SessionError RecordKey
+lifecycleCursorKey binding =
+    keyFor
+        ( "cursor."
+            <> sha256Hex
+                ( encodeLengthFramed
+                    [ TextEncoding.encodeUtf8 "lifecycle-cursor-key-v1"
+                    , TextEncoding.encodeUtf8
+                        (recordKeyText (cursorBindingAcquisitionKey binding))
+                    , TextEncoding.encodeUtf8 (cursorBindingFrame binding)
+                    ]
+                )
+        )
+
+encodeLifecycleCursorRecord ::
+    LifecycleCursorBinding ->
+    LifecyclePhase phase ->
+    ByteString
+encodeLifecycleCursorRecord binding phase =
+    encodeLengthFramed
+        [ TextEncoding.encodeUtf8 lifecycleCursorSchema
+        , TextEncoding.encodeUtf8
+            (recordKeyText (cursorBindingAcquisitionKey binding))
+        , TextEncoding.encodeUtf8
+            (showWord (cursorBindingAcquisitionVersion binding))
+        , cursorBindingAcquisitionBytes binding
+        , TextEncoding.encodeUtf8 (cursorBindingFrame binding)
+        , TextEncoding.encodeUtf8 (cursorBindingVerb binding)
+        , TextEncoding.encodeUtf8 (lifecyclePhaseName phase)
+        ]
+
+decodeLifecycleCursorRecord ::
+    ByteString ->
+    Maybe (LifecycleCursorBinding, SomeLifecyclePhase)
+decodeLifecycleCursorRecord raw
+    | ByteString.length raw > maxLifecycleCursorPayloadBytes = Nothing
+    | otherwise = do
+        fields <- decodeLengthFramedExactly 7 raw
+        case fields of
+            [schemaRaw, sourceKeyRaw, sourceVersionRaw, sourceBytes, frameRaw, verbRaw, phaseRaw] -> do
+                schema <- decodeCursorText schemaRaw
+                if schema /= lifecycleCursorSchema then Nothing else do
+                    sourceKeyText <- decodeCursorText sourceKeyRaw
+                    sourceKey <- either (const Nothing) Just (mkRecordKey sourceKeyText)
+                    sourceVersionText <- decodeCursorText sourceVersionRaw
+                    sourceVersionWord <- readPositiveWord sourceVersionText
+                    frame <- decodeCursorText frameRaw
+                    verb <- decodeCursorText verbRaw
+                    phaseText <- decodeCursorText phaseRaw
+                    phase <- parseAcquisitionPhase phaseText
+                    let binding =
+                            LifecycleCursorBinding
+                                { cursorBindingAcquisitionKey = sourceKey
+                                , cursorBindingAcquisitionVersion = sourceVersionWord
+                                , cursorBindingAcquisitionBytes = sourceBytes
+                                , cursorBindingFrame = frame
+                                , cursorBindingVerb = verb
+                                }
+                    if validLifecycleCursorBinding binding
+                        then Just (binding, phase)
+                        else Nothing
+            _ -> Nothing
+
+validLifecycleCursorBinding :: LifecycleCursorBinding -> Bool
+validLifecycleCursorBinding binding =
+    not (Text.null (cursorBindingFrame binding))
+        && ByteString.length (TextEncoding.encodeUtf8 (cursorBindingFrame binding))
+            <= maxLifecycleCursorFrameBytes
+        && ByteString.length (cursorBindingAcquisitionBytes binding)
+            <= maxLifecycleCursorPayloadBytes
+        && isAcquisitionRootVerb (cursorBindingVerb binding)
+        && case decodeAcquisitionRecord (cursorBindingAcquisitionBytes binding) of
+            Just (sourceBinding, SomeLifecyclePhase sourcePhase) ->
+                cursorBindingAcquisitionBytes binding
+                    == encodeAcquisitionRecord sourceBinding sourcePhase
+                    && cursorBindingVerb binding == acquisitionBindingRootVerb sourceBinding
+            Nothing -> False
+
+encodeLengthFramed :: [ByteString] -> ByteString
+encodeLengthFramed =
+    ByteString.concat
+        . map
+            ( \field ->
+                ByteStringChar8.pack (show (ByteString.length field))
+                    <> ":"
+                    <> field
+            )
+
+decodeLengthFramedExactly :: Int -> ByteString -> Maybe [ByteString]
+decodeLengthFramedExactly expected raw = go expected raw []
+  where
+    go remaining rest fields
+        | remaining == 0 =
+            if ByteString.null rest then Just (reverse fields) else Nothing
+        | ByteString.null rest = Nothing
+        | otherwise = do
+            let (lengthRaw, separatorAndRest) = ByteStringChar8.break (== ':') rest
+            if ByteString.null lengthRaw
+                || ByteString.null separatorAndRest
+                || not (ByteString.all isAsciiDigit lengthRaw)
+                then Nothing
+                else do
+                    fieldLength <- parseFieldLength lengthRaw
+                    let afterSeparator = ByteString.drop 1 separatorAndRest
+                    if ByteString.length afterSeparator < fieldLength
+                        then Nothing
+                        else do
+                            let (field, trailing) =
+                                    ByteString.splitAt fieldLength afterSeparator
+                            go (remaining - 1) trailing (field : fields)
+    isAsciiDigit byte = byte >= 48 && byte <= 57
+    parseFieldLength bytes = case ByteStringChar8.readInteger bytes of
+        Just (value, trailing)
+            | ByteString.null trailing
+                && value >= 0
+                && value <= toInteger (maxBound :: Int) ->
+                Just (fromInteger value)
+        _ -> Nothing
+
+decodeCursorText :: ByteString -> Maybe Text
+decodeCursorText raw = either (const Nothing) Just (TextEncoding.decodeUtf8' raw)
+
+sha256Hex :: ByteString -> Text
+sha256Hex bytes =
+    Text.pack (concatMap hex (ByteArray.unpack (Hash.hashWith Hash.SHA256 bytes)))
+  where
+    hex byte =
+        [ ByteStringChar8.index "0123456789abcdef" (fromIntegral (byte `div` 16))
+        , ByteStringChar8.index "0123456789abcdef" (fromIntegral (byte `mod` 16))
+        ]
 
 {- | Open (or resume) the plan's project journal, returning the permit for its
 current version. Idempotent: an already-open journal is observed, not
@@ -2171,9 +3535,10 @@ gate for **that step's own operation** (§ CC).
 correct for the core's own operations but is not a route a *step action* may
 take: an action holding a descriptor could name any key the plan happens to
 contain, and prepare a node other than its own. This seam removes the choice.
-The plan digest and the operation key are both read off the descriptor, whose
-sole producer is 'HostBootstrap.Reconcile.stepExecutionFor' over a real
-validated plan, so a step can reach exactly one gate — its own.
+The plan digest and the operation key are both read off the descriptor. The
+exact producer is 'HostBootstrap.Reconcile.stepExecutionFor' over one admitted
+project plan and its matching projected node. A step can therefore reach exactly
+one gate — its own.
 
 The @scope@ and @planId@ indices are shared with the 'OperationSession' and the
 'FenceEpoch', so a descriptor from one plan cannot be presented in another
@@ -2323,6 +3688,14 @@ withOperationAdvance (OperationAdvance result permit) use = use result permit
 -- ---------------------------------------------------------------------------
 -- Failures
 
+-- | Lifecycle composition failures currently share Session's closed error
+-- vocabulary. This preserves the target signature without introducing a
+-- second public error data contract.
+type LifecycleError = SessionError
+
+lifecycleErrorMessage :: LifecycleError -> String
+lifecycleErrorMessage = sessionErrorMessage
+
 data SessionError
     = SessionStoreFailure ProtectedError
     | SessionTransactionFailure Text
@@ -2370,6 +3743,20 @@ data SessionError
       SessionRecoveryUnresolved Text
     | -- | the interpretation did not cover the manifest it was taken against
       SessionRecoveryIncomplete Int Int
+    | -- | one required immutable acquisition binding field was absent or zero
+      SessionAcquisitionBindingInvalid Text
+    | -- | field, expected value, observed value
+      SessionAcquisitionBindingMismatch Text Text Text
+    | -- | one cursor binding member is empty or exceeds its canonical bound
+      SessionCursorBindingInvalid Text
+    | -- | field, expected value, observed value
+      SessionCursorBindingMismatch Text Text Text
+    | -- | journal/cursor root verb, then the requested verb
+      SessionCursorVerbMismatch Text Text
+    | -- | authoritative current phase, then the requested phase
+      SessionCursorPhaseMismatch Text Text
+    | -- | retained cursor version, then the current protected version
+      SessionStaleCursorVersion Word64 Word64
     deriving (Eq, Show)
 
 sessionErrorMessage :: SessionError -> String
@@ -2459,3 +3846,40 @@ sessionErrorMessage err = case err of
             <> " of the manifest's "
             <> show manifested
             <> " sessions"
+    SessionAcquisitionBindingInvalid field ->
+        "session: the acquisition journal "
+            <> Text.unpack field
+            <> " binding is invalid"
+    SessionAcquisitionBindingMismatch field expected observed ->
+        "session: the acquisition journal "
+            <> Text.unpack field
+            <> " expected "
+            <> Text.unpack expected
+            <> " but observed "
+            <> Text.unpack observed
+    SessionCursorBindingInvalid field ->
+        "session: the lifecycle cursor "
+            <> Text.unpack field
+            <> " binding is invalid"
+    SessionCursorBindingMismatch field expected observed ->
+        "session: the lifecycle cursor "
+            <> Text.unpack field
+            <> " expected "
+            <> Text.unpack expected
+            <> " but observed "
+            <> Text.unpack observed
+    SessionCursorVerbMismatch expected observed ->
+        "session: the lifecycle cursor verb "
+            <> Text.unpack observed
+            <> " does not match the journal's "
+            <> Text.unpack expected
+    SessionCursorPhaseMismatch expected observed ->
+        "session: the lifecycle cursor phase "
+            <> Text.unpack observed
+            <> " does not match the authoritative "
+            <> Text.unpack expected
+    SessionStaleCursorVersion expected observed ->
+        "session: lifecycle cursor version "
+            <> show expected
+            <> " was superseded by "
+            <> show observed

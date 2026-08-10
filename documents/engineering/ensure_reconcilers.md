@@ -76,8 +76,9 @@ the exact observation or receipt the dependent operation consumes.
 
 ## Current Invocation And Target Plan Operations
 
-The lift chain is the project's identity. `project up` recursively interprets `chain projectCfg :: [Step]`
-from the current frame. `HostBootstrap.Step.ensureStep` can represent a reconcile action as a named row,
+The lift chain is the project's identity. Current `project up` interprets the exact current-frame segment
+of `chain projectCfg :: [Step]`; target recursive traversal authenticates each child entry.
+`HostBootstrap.Step.ensureStep` can represent a reconcile action as a named row,
 but the current demo does not assemble its chain that way:
 
 - `deploy-VM` actions call the selected provider reconciler;
@@ -236,8 +237,9 @@ exception instead aborts the enclosing composite action and therefore `project u
 The reconcilers are intended to carry one contract — install-and-verify, idempotence, wrong-host
 fail-fast, and capability-level provider readiness. The current shared driver provides the
 probe/install/reprobe structure, while the probe table above records where the implementation is weaker
-than that target. Invocation is not yet one representation: the recursive `project up` interpreter walks
-`chain cfg :: [Step]`, but the demo calls reconciler runners from composite actions and also duplicates
+than that target. Invocation is not yet one representation: current-frame Chain walks its projected
+`chain cfg :: [Step]` segment, while target recursive `project up` continues through child frames; the demo
+calls reconciler runners from composite actions and also duplicates
 some guest installation as shell work.
 
 The nine context-free reconcilers are centralized as `allReconcilers` (`docker`, `apple-metal`, `cuda`,
@@ -250,8 +252,7 @@ context-free reconciler in a scripted seam. That remains a library call, not a s
 
 The Apple Silicon, Linux, and Windows reconciler inventory above is implemented and unit-covered. The
 Windows VM-provider reconciler `ensure-wsl2` is implemented; current hardware/lifecycle closure belongs
-in the development plan. The former `ensure-tart` reconciler is dropped from this contract and
-tracked as removed in [design rationale](../../DEVELOPMENT_PLAN/rationale.md).
+in the development plan. The closed registry contains no `ensure-tart` member.
 
 The accelerator build-stack reconcilers are implemented. Current static and hardware closure, including
 native Linux `nvkind` and accelerator lifecycle validation, is owned by

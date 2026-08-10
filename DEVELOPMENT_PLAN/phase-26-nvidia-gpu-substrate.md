@@ -107,13 +107,10 @@ The `10/10` report plus the audited end state, recorded with the host's GPU mode
 
 #### Remaining Work
 
-The frame-indexed teardown descent is behaviour this lane exercises: an operator teardown here crosses a
-real frame boundary into the provider guest, so acceptance is owed against the descent's typed admission
-rather than against a run that predates it.
-
-The recorded acceptance predates the currently-open work in the recursive-lifecycle-command,
-prepared-operations, step-algebra, authenticated-handoff, and recovery phases — most sharply the child-first
-unwind, because this lane is where the metal-to-container descent is real. Acceptance is re-run once those land.
+Run the complete acceptance gate after the recursive-lifecycle-command, prepared-operations,
+step-algebra, authenticated-handoff, recovery, and worked-demo dependencies are closed. The run must
+exercise typed frame-indexed teardown descent across the real metal-to-container boundary, the complete
+current test matrix, and a current GPU/provider observation including the honoured one-GPU request.
 
 ## Documentation Requirements
 

@@ -58,6 +58,27 @@ negativeCase = withSystemTempDirectory "hb-docval" $ \root -> do
   writeFile (root </> "README.md") (unlines ["# hostbootstrap", "see documents/ only"])
   writeFile (root </> "AGENTS.md") (unlines ["# Agents", "**Status**: Governed entry document", "**Supersedes**: N/A", "**Canonical homes**: x", "> **Purpose**: y"])
   writeFile (root </> "CLAUDE.md") (unlines ["# Claude", "**Status**: Governed entry document", "**Supersedes**: N/A", "**Canonical homes**: x", "> **Purpose**: y"])
+  -- The cross-phase table deliberately omits phase 9, duplicates phase 12,
+  -- contains one malformed row, and disagrees with phase 10's local header.
+  -- This proves status harmony cannot pass merely because a table exists.
+  writeFile
+    (root </> "DEVELOPMENT_PLAN" </> "README.md")
+    ( unlines
+        [ "# Development Plan",
+          "",
+          "## Current Phase Status",
+          "",
+          "| # | Phase | Status | Substrate | Open |",
+          "|---|-------|--------|-----------|------|",
+          "| 10 | [Doctrine](phase-10-doctrine.md) | Done | linux-cpu | — |",
+          "| 12 | [Later](phase-12-later.md) | Planned | linux-cpu | — |",
+          "| 12 | [Later duplicate](phase-12-later.md) | Planned | linux-cpu | — |",
+          "| banana | no phase link | Maybe | linux-cpu | — |",
+          "",
+          "## Notes",
+          ""
+        ]
+    )
   -- A phase doc missing its Documentation Requirements section and every § G
   -- header field. Its number is 9, so with no phase-0..8 present the numbering
   -- check also fires on the gap.
@@ -157,6 +178,10 @@ negativeCase = withSystemTempDirectory "hb-docval" $ \root -> do
       "phase numbering is not contiguous from 0",
       "phase document missing '**Depends on**:' header field",
       "phase status is not one of Done|Active|Planned: Blocked",
+      "Current Phase Status table is missing phase 9 row",
+      "duplicate Current Phase Status row for phase number 12",
+      "malformed Current Phase Status row",
+      "phase status mismatch for phase 10: README has Done but the phase header has Blocked",
       "depends on phase 12, which is not strictly lower",
       "phase declares more than one non-baseline substrate",
       "phase narrative reverses earlier work",

@@ -1,0 +1,3 @@
+module OpenRootInvocationAuthority where
+
+import HostBootstrap.Authority (withVerifiedRootInvocation)

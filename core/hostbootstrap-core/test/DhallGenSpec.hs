@@ -19,11 +19,7 @@ import Dhall.Marshal.Decode (Decoder)
 import Dhall.Marshal.Encode (Encoder (declared))
 import Dhall.Parser (Src)
 import qualified Dhall.TypeCheck
-import Fixture (
-    SecretFixtureProject,
-    SecretProjectConfig,
-    withFixtureHarnessAuthority,
- )
+import Fixture (withFixtureHarnessAuthority)
 import HostBootstrap.Config.Schema (writeProjectConfigFile)
 import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.Dhall.Gen (
@@ -265,10 +261,7 @@ secretRefCases =
         assertBool "production decode rejects plaintext" (either (const True) (const False) result)
     , testCase "scoped plaintext requires matching rank-2 harness authority" $ do
         withFixtureHarnessAuthority
-            @SecretFixtureProject
-            @SecretProjectConfig
-            "secret-fixture"
-            $ \runAuthority ->
+            $ \_project runAuthority ->
                 V.secretRefView
                     ( V.testPlaintextSecret
                         (V.harnessConfigAuthority runAuthority)
@@ -288,10 +281,7 @@ secretRefCases =
         let production = V.productionSecretRef (V.ProductionPrompt "password")
         V.productionSecretRefWire production @?= V.ProductionPrompt "password"
         withFixtureHarnessAuthority
-            @SecretFixtureProject
-            @SecretProjectConfig
-            "secret-fixture"
-            $ \runAuthority -> do
+            $ \_project runAuthority -> do
                 let authority = V.harnessConfigAuthority runAuthority
                     harness = V.harnessSecretRef authority (V.HarnessTestPlaintext "fixture")
                 assertBool

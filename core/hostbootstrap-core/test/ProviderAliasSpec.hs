@@ -1,893 +1,1177 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE TypeApplications #-}
 
 module ProviderAliasSpec (tests) where
 
+import Data.Char (isAlphaNum, ord)
+import Data.IORef (modifyIORef', newIORef, readIORef)
+import qualified Data.List.NonEmpty as NonEmpty
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
-import Data.Word (Word64)
 import qualified Fixture
-import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
 import HostBootstrap.Config.Vocab (Production)
-import HostBootstrap.HostConfig (HostConfig)
+import HostBootstrap.HostConfig (HostConfig (..))
+import HostBootstrap.HostTool (AbsExe, HostTool (Flock, Incus, Python3), mkAbsExe)
 import HostBootstrap.Incus (IncusVM (..))
-import HostBootstrap.Lima (LimaVM (..))
-import HostBootstrap.Readiness
-import HostBootstrap.Lifecycle.Prepared (PreparedGate)
-import HostBootstrap.Reconcile
 import HostBootstrap.Lift (localContext)
+import HostBootstrap.Lima (LimaVM (..))
+import qualified HostBootstrap.Lifecycle.Execution as Execution
+import HostBootstrap.Lifecycle.Prepared (PreparedGate)
+import qualified HostBootstrap.ProjectPlan as ProjectPlan
+import HostBootstrap.Reconcile
 import HostBootstrap.Step
-import HostBootstrap.Substrate (Arch (Amd64), Substrate (Substrate), SubstrateName (LinuxCpu))
+import HostBootstrap.Substrate (Arch (Amd64), Substrate (..), SubstrateName (LinuxCpu))
 import HostBootstrap.Substrate.Provider
 import HostBootstrap.Substrate.Provider.Alias
+import HostBootstrap.Substrate.Provider.Backend
+import HostBootstrap.Substrate.Provider.Reconcile
 import HostBootstrap.Wsl2 (Wsl2VM (..))
+import Numeric (showHex)
+import PrepareFixture (gateFor)
+import System.Exit (ExitCode (..))
+import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 #ifndef mingw32_HOST_OS
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
-import Data.List (isInfixOf)
-import qualified Data.Map.Strict as Map
-import HostBootstrap.Authority (installedProjectFor)
-import HostBootstrap.Chain (runChainFromFrame)
-import HostBootstrap.HostConfig (HostConfig (..))
-import HostBootstrap.Lifecycle.Execution (StepExecution, stepExecutionPreparedGate)
-import HostBootstrap.Lift (SelfRef, mkSelfRef)
-import HostBootstrap.Protected (openProtectedStore)
-import System.Directory (createDirectory, doesPathExist, pathIsSymbolicLink)
-import System.Exit (ExitCode (ExitSuccess))
+import Control.Exception (IOException, displayException, try)
+import Data.List (isInfixOf, isPrefixOf)
+import System.Directory (createDirectory, createFileLink, doesPathExist, listDirectory, pathIsSymbolicLink, removeFile)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (readProcessWithExitCode)
 #endif
-import PrepareFixture (gateFor)
-import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
-type FixtureScope = Production Fixture.FixtureProject
+type HostRunner = [String] -> IO RawProviderOutcome
+
+type GuestRunner = [String] -> IO RawProviderOutcome
 
 tests :: TestTree
 tests =
     testGroup
         "ProviderAliasSpec"
-        ( [ testCase "guest alias specs require distinct absolute POSIX paths" $ do
-            assertBool "relative alias rejected" (isLeft (mkGuestAliasSpec "tmp/alias" "/srv/data"))
-            assertBool "relative target rejected" (isLeft (mkGuestAliasSpec "/tmp/alias" "srv/data"))
-            assertBool
-                "an absolute Windows host path is not a POSIX guest path"
-                (isLeft (mkGuestAliasSpec "C:\\hostbootstrap\\alias" "/srv/data"))
-            assertBool "same normalized path rejected" (isLeft (mkGuestAliasSpec "/srv/data/" "/srv/data"))
-            fmap guestAliasPath (mkGuestAliasSpec "/var/tmp/project-data" "/srv/project/data")
-                @?= Right "/var/tmp/project-data"
-        , testCase "provider/share prefix derives one stable alias identity" $
-            projectionSummary
-                @?= Right "core:deploy-vm/core:copy-source/guest-alias"
-        , testCase "prepared create retains its actual operation key in the receipt" $ do
-            result <-
-                withPreparedAliasFixture 13 $ \_ _ prepared -> do
-                    settled <-
-                        settlePreparedGuestAliasCall
-                            Nothing
-                            prepared
-                            (AliasCallCreated 23)
-                    pure $
-                        withReconcileResult
-                            settled
-                            (\_ receipt change -> (change, ownershipReceiptOperationKey receipt))
-                            (\_ _ -> error "created alias must be managed")
-            case result of
-                Right (Changed Created, operationKey) -> do
-                    assertBool
-                        "receipt retains the plan-derived alias operation"
-                        ("core:deploy-vm/core:copy-source/guest-alias:" `Text.isPrefixOf` operationKey)
-                    assertBool "legacy fabricated key is gone" (operationKey /= "ordinary-acquire")
-                other -> assertFailure ("expected managed creation, got " ++ show other)
-        , testCase "an exact-looking alias without prior proof remains foreign" $ do
-            result <-
-                withPreparedAliasFixture 13 $ \_ _ prepared -> do
-                    settled <-
-                        settlePreparedGuestAliasCall
-                            Nothing
-                            prepared
-                            (AliasCallAlreadyExact 23)
-                    pure $
-                        withReconcileResult
-                            settled
-                            (\_ _ _ -> error "appearance alone must not establish ownership")
-                            (\_ foreignState -> foreignIdentity foreignState)
-            result @?= Right "/var/tmp/hostbootstrap-data"
-        , testCase "matching committed proof preserves the receipt for Unchanged" $ do
-            result <-
-                withPreparedAliasFixture 13 unchangedAfterCommit
-            case result of
-                Right (Unchanged, createdKey, unchangedKey) -> createdKey @?= unchangedKey
-                other -> assertFailure ("expected receipt-preserving Unchanged, got " ++ show other)
-        , testCase "readiness from another observation snapshot cannot prepare" $ do
-            result <- withPreparedAliasFixture 14 (\_ _ _ -> Right ())
-            case result of
-                Left (Conflict _) -> pure ()
-                other -> assertFailure ("expected readiness conflict, got " ++ show other)
-        , testCase "unsupported settlement cannot return a handle or receipt" $ do
-            result <-
-                withPreparedAliasFixture 13 $ \_ _ prepared ->
-                    case settlePreparedGuestAliasCall
-                        Nothing
-                        prepared
-                        ( AliasCallUnsupported
-                            (UnsupportedDetail "create guest alias" "protected backend unavailable")
-                        ) of
-                        Left err -> Left err
-                        Right _ -> Right ()
-            case result of
-                Left (Unsupported _) -> pure ()
-                Left other -> assertFailure ("expected Unsupported, got " ++ show other)
-                Right _ -> assertFailure "unsupported settlement unexpectedly returned ownership"
-        , testCase "conditional release requires the managed handle and matching receipt" $ do
-            result <-
-                withPreparedAliasFixture 13 $ \_ _ prepared -> do
-                    settled <-
-                        settlePreparedGuestAliasCall
-                            Nothing
-                            prepared
-                            (AliasCallCreated 23)
-                    withReconcileResult
-                        settled
-                        ( \managed receipt _ ->
-                            withPreparedGuestAliasRelease
-                                aliasSpec
-                                managed
-                                receipt
-                                31
-                                (const ())
-                        )
-                        (\_ _ -> Left (Failure (FailureDetail "test release" "expected managed alias" DoNotRetry)))
-            result @?= Right ()
-        , testCase "backend discovery is Unsupported when the guest lacks the ownership tools" $ do
-            discovered <- discoverStrongAliasBackend testProvider toollessGuestExec
-            case discovered of
-                Left (Unsupported (UnsupportedDetail _ reason)) ->
-                    assertBool
-                        "diagnostic names the missing POSIX ownership tools"
-                        ("POSIX ownership tool" `Text.isInfixOf` reason)
-                Left other -> assertFailure ("expected Unsupported, got " ++ show other)
-                Right _ -> assertFailure "a guest without the tools must not mint a backend"
-        , testCase "backend discovery mints a capability when the guest holds the tools" $ do
-            discovered <- discoverStrongAliasBackend testProvider capabilityGuestExec
-            case discovered of
-                Right _ -> pure ()
-                Left err -> assertFailure ("expected a strong backend, got " ++ show err)
-        , {- A probe that exits zero is not by itself proof: it must NAME the front
-          ends it found, because the bracket is built from that answer. This
-          pins the decoder's fail-closed reading on every platform, rather than
-          leaving it to be exercised incidentally by whichever userland the
-          suite happens to run on. -}
-          testCase "an exit-zero probe that names nothing recognizable mints nothing" $ do
-            let reports payload =
-                    GuestExec (\_ -> pure (GuestCommandResult True payload ""))
-                refuses label payload = do
-                    discovered <- discoverStrongAliasBackend testProvider (reports payload)
-                    case discovered of
-                        Left (Unsupported _) -> pure ()
-                        other ->
-                            assertFailure
-                                (label ++ ": expected Unsupported, got " ++ show (() <$ other))
-            refuses "silent success" ""
-            refuses "only a lock tool" "flock\n"
-            refuses "only a stat flavor" "gnu\n"
-            refuses "an unknown lock tool" "mkdirlock gnu\n"
-            refuses "an unknown stat flavor" "flock plan9\n"
-            refuses "a third word" "flock gnu extra\n"
-        ]
-            ++ posixFilesystemCases
+        ( portableCases
+            ++ posixCases
         )
 
-posixFilesystemCases :: [TestTree]
+portableCases :: [TestTree]
+portableCases =
+    [ testCase "guest alias specs require distinct canonical absolute POSIX paths" $ do
+        assertBool "relative alias rejected" (isLeft (mkGuestAliasSpec "tmp/alias" "/srv/data"))
+        assertBool "relative target rejected" (isLeft (mkGuestAliasSpec "/tmp/alias" "srv/data"))
+        assertBool "Windows path rejected" (isLeft (mkGuestAliasSpec "C:\\alias" "/srv/data"))
+        assertBool "root alias rejected" (isLeft (mkGuestAliasSpec "/" "/srv/data"))
+        assertBool "trailing slash rejected" (isLeft (mkGuestAliasSpec "/srv/alias/" "/srv/data"))
+        assertBool "dot segment rejected" (isLeft (mkGuestAliasSpec "/srv/./alias" "/srv/data"))
+        assertBool "dot-dot segment rejected" (isLeft (mkGuestAliasSpec "/srv/x/../alias" "/srv/data"))
+        assertBool "empty segment rejected" (isLeft (mkGuestAliasSpec "/srv//alias" "/srv/data"))
+        assertBool "same path rejected" (isLeft (mkGuestAliasSpec "/srv/data" "/srv/data"))
+    , testCase "a discovered lockf cannot authorize the flock ownership protocol" $ do
+        calls <- newIORef []
+        let guest argv = do
+                modifyIORef' calls (++ [argv])
+                fallbackGuest argv
+        outcome <-
+            withAliasFixture
+                (aliasPlan "fallback")
+                portableAliasSpec
+                successfulHost
+                guest
+                (\_ _ _ _ -> pure (Right ()))
+        case outcome of
+            Left (Unsupported _) -> pure ()
+            other -> assertFailure ("expected lockf-only Unsupported, got " ++ show other)
+        invoked <- readIORef calls
+        assertBool "lockf remains a descriptive discovery fallback" (["which", "lockf"] `elem` invoked)
+        assertBool "no alias command ran under lockf" (not (any isAliasInvocation invoked))
+    , testCase "raw discovery retains the exact flock, BSD stat, and Python executables" $ do
+        calls <- newIORef []
+        let guest argv = do
+                modifyIORef' calls (++ [argv])
+                bsdGuest argv
+        outcome <-
+            withAliasFixture
+                (aliasPlan "bsd-tools")
+                portableAliasSpec
+                successfulHost
+                guest
+                (\_ backend _ call -> do
+                    result <- runPreparedGuestAliasCall backend call
+                    pure (Right (aliasCallResultView result)))
+        outcome @?= Right (AliasResultCreated 23)
+        invoked <- readIORef calls
+        assertBool "GNU stat unavailability falls through to BSD" (["/opt/hb/stat", "-f", "%d:%i", "/"] `elem` invoked)
+        case filter isAliasInvocation invoked of
+            [argv] -> assertExactRetainedTools argv
+            other -> assertFailure ("expected one alias invocation, got " ++ show other)
+    , testCase "a transport failure is terminal and never falls through" $ do
+        calls <- newIORef []
+        let guest argv = do
+                modifyIORef' calls (++ [argv])
+                if argv == ["which", "flock"]
+                    then pure (RawProviderFailure "locked provider identity changed")
+                    else supportedGuest argv
+        outcome <-
+            withAliasFixture
+                (aliasPlan "transport-failure")
+                portableAliasSpec
+                successfulHost
+                guest
+                (\_ _ _ _ -> pure (Right ()))
+        case outcome of
+            Left (Failure _) -> pure ()
+            other -> assertFailure ("expected terminal discovery Failure, got " ++ show other)
+        invoked <- readIORef calls
+        assertBool "lockf was not tried after a transport failure" (["which", "lockf"] `notElem` invoked)
+    , testCase "Python discovery requires one exact marker" $ do
+        let guest argv
+                | isPythonMarker argv = pure (RawProviderExit ExitSuccess "prefix-hostbootstrap-python3-suffix\n" "")
+                | otherwise = supportedGuest argv
+        outcome <-
+            withAliasFixture
+                (aliasPlan "bad-python-marker")
+                portableAliasSpec
+                successfulHost
+                guest
+                (\_ _ _ _ -> pure (Right ()))
+        case outcome of
+            Left (Failure _) -> pure ()
+            other -> assertFailure ("expected malformed Python marker Failure, got " ++ show other)
+    , testCase "tool discovery rejects extra lines and successful stderr" $ do
+        let extraLine argv
+                | argv == ["which", "flock"] = pure (RawProviderExit ExitSuccess "/opt/hb/flock\n\n" "")
+                | otherwise = supportedGuest argv
+            successfulStderr argv
+                | argv == ["/opt/hb/python3", "-c", "print('hostbootstrap-python3')"] =
+                    pure (RawProviderExit ExitSuccess "hostbootstrap-python3\n" "warning\n")
+                | otherwise = supportedGuest argv
+            oversized argv
+                | argv == ["which", "flock"] = pure (RawProviderExit ExitSuccess ('/' : replicate 1020 'x' ++ "/flock\n") "")
+                | otherwise = supportedGuest argv
+        forDiscoveryFailure "extra discovery line" extraLine
+        forDiscoveryFailure "successful discovery stderr" successfulStderr
+        forDiscoveryFailure "oversized discovery line" oversized
+    , testCase "guest tools are not probed until the managed VM is freshly ready" $ do
+        calls <- newIORef []
+        let guest argv = do
+                modifyIORef' calls (++ [argv])
+                if argv == ["true"]
+                    then pure (RawProviderExit (ExitFailure 1) "" "starting\n")
+                    else supportedGuest argv
+        outcome <-
+            withAliasFixture
+                (aliasPlan "vm-not-ready-order")
+                portableAliasSpec
+                successfulHost
+                guest
+                (\_ _ _ _ -> pure (Right ()))
+        case outcome of
+            Left (Failure _) -> pure ()
+            other -> assertFailure ("expected retained NotReady to refuse Alias admission, got " ++ show other)
+        invoked <- readIORef calls
+        assertBool "the VM probe was attempted" (["true"] `elem` invoked)
+        assertBool "no guest tool probe ran before readiness" (not (any isGuestToolProbe invoked))
+    , testCase "an outer provider conflict remains Conflict through discovery" $ do
+        calls <- newIORef []
+        let guest argv = do
+                modifyIORef' calls (++ [argv])
+                if argv == ["which", "flock"]
+                    then pure (RawProviderFailure "HB_PROVIDER_CONFLICT owner=provider replacement=9 provider-replaced")
+                    else supportedGuest argv
+        outcome <-
+            withAliasFixture
+                (aliasPlan "provider-conflict-discovery")
+                portableAliasSpec
+                successfulHost
+                guest
+                (\_ _ _ _ -> pure (Right ()))
+        case outcome of
+            Left (Conflict _) -> pure ()
+            other -> assertFailure ("expected structured provider Conflict, got " ++ show other)
+        invoked <- readIORef calls
+        assertBool "lockf fallback did not erase Conflict" (["which", "lockf"] `notElem` invoked)
+    , testCase "an outer provider conflict remains an indexed alias Conflict" $ do
+        let guest argv
+                | isAliasInvocation argv = pure (RawProviderFailure "HB_PROVIDER_CONFLICT owner=provider replacement=9 provider-replaced")
+                | otherwise = supportedGuest argv
+        outcome <-
+            withAliasFixture
+                (aliasPlan "provider-conflict-alias")
+                portableAliasSpec
+                successfulHost
+                guest
+                (\_ backend _ call -> do
+                    result <- runPreparedGuestAliasCall backend call
+                    pure (Right (aliasCallResultView result)))
+        case outcome of
+            Right (AliasResultConflict _) -> pure ()
+            other -> assertFailure ("expected AliasResultConflict, got " ++ show other)
+    , testCase "alias result parsing rejects a second verdict and successful stderr" $ do
+        let secondVerdict argv
+                | isAliasInvocation argv = pure (RawProviderExit ExitSuccess "CREATED 1:2\nCONFLICT x y z\n" "")
+                | otherwise = supportedGuest argv
+            successfulStderr argv
+                | isAliasInvocation argv = pure (RawProviderExit ExitSuccess "CREATED 1:2\n" "warning\n")
+                | otherwise = supportedGuest argv
+            oversized argv
+                | isAliasInvocation argv = pure (RawProviderExit ExitSuccess (replicate 1025 'x' ++ "\n") "")
+                | otherwise = supportedGuest argv
+        forAliasResultFailure "second alias verdict" secondVerdict
+        forAliasResultFailure "alias successful stderr" successfulStderr
+        forAliasResultFailure "oversized alias verdict" oversized
+    , testCase "release result parsing rejects a second verdict and successful stderr" $ do
+        let secondVerdict argv
+                | isReleaseInvocation argv = pure (RawProviderExit ExitSuccess "RELEASED 1:2\nRELEASED_ALREADY\n" "")
+                | otherwise = supportedGuest argv
+            successfulStderr argv
+                | isReleaseInvocation argv = pure (RawProviderExit ExitSuccess "RELEASED 1:2\n" "warning\n")
+                | otherwise = supportedGuest argv
+            oversized argv
+                | isReleaseInvocation argv = pure (RawProviderExit ExitSuccess (replicate 1025 'x' ++ "\n") "")
+                | otherwise = supportedGuest argv
+        forReleaseFailure "second release verdict" secondVerdict
+        forReleaseFailure "release successful stderr" successfulStderr
+        forReleaseFailure "oversized release verdict" oversized
+    , testCase "an outer provider conflict remains Conflict through release" $ do
+        let guest argv
+                | isReleaseInvocation argv = pure (RawProviderFailure "HB_PROVIDER_CONFLICT owner=provider replacement=9 provider-replaced")
+                | otherwise = supportedGuest argv
+        outcome <- releaseOutcome "provider-conflict-release" guest
+        case outcome of
+            Left (Conflict _) -> pure ()
+            other -> assertFailure ("expected release Conflict, got " ++ show other)
+    , testCase "provisioning egress Unavailable is descriptive for an already-running alias" $ do
+        let host argv
+                | isEgressRequest argv = pure (RawProviderExit (ExitFailure 1) "" "not found\n")
+                | otherwise = successfulHost argv
+        outcome <-
+            withAliasFixture
+                (aliasPlan "egress-unavailable")
+                portableAliasSpec
+                host
+                supportedGuest
+                (\_ backend _ call -> do
+                    result <- runPreparedGuestAliasCall backend call
+                    pure (Right (aliasCallResultView result)))
+        outcome @?= Right (AliasResultCreated 23)
+    , testCase "a retained daemon failure cannot mint a Strong alias backend" $ do
+        let host argv
+                | isListRequest argv = pure (RawProviderFailure "provider transport failed")
+                | otherwise = successfulHost argv
+        outcome <-
+            withAliasFixture
+                (aliasPlan "daemon-failure")
+                portableAliasSpec
+                host
+                supportedGuest
+                (\_ _ _ _ -> pure (Right ()))
+        case outcome of
+            Left (Failure _) -> pure ()
+            other -> assertFailure ("expected prerequisite Failure, got " ++ show other)
+    , testCase "the alias owner changes with the exact plan digest" $ do
+        first <- capturedOwner (aliasPlan "owner-a")
+        second <- capturedOwner (aliasPlan "owner-b")
+        assertBool "each owner was captured" (not (null first) && not (null second))
+        assertBool "different plans cannot share an alias origin" (first /= second)
+    , testCase "settlement accepts only the indexed result returned for its call" $
+        withAliasFixture
+            (aliasPlan "settlement")
+            portableAliasSpec
+            successfulHost
+            supportedGuest
+            (\_ backend _ call -> do
+                result <- runPreparedGuestAliasCall backend call
+                pure $ do
+                    settled <- settlePreparedGuestAliasCall Nothing call result
+                    pure $
+                        withGuestAliasCallSettlement
+                            settled
+                            (\_ change -> change)
+                            (\_ _ _ _ -> error "created backend result must settle managed"))
+            >>= (@?= Right (Changed Created))
+    , testCase "a stale conditional release version refuses before guest execution" $ do
+        calls <- newIORef (0 :: Int)
+        let guest argv = do
+                modifyIORef' calls (+ 1)
+                supportedGuest argv
+        outcome <-
+            withAliasFixture
+                (aliasPlan "stale-release-fence")
+                portableAliasSpec
+                successfulHost
+                guest
+                (\_ backend _ call -> do
+                    result <- runPreparedGuestAliasCall backend call
+                    case settlePreparedGuestAliasCall Nothing call result of
+                        Left failure -> pure (Left failure)
+                        Right settled ->
+                            withGuestAliasCallSettlement
+                                settled
+                                ( \managed _ -> do
+                                    before <- readIORef calls
+                                    let stale = managedGuestAliasObservationVersion managed + 1
+                                    case withPreparedGuestAliasRelease managed stale (runPreparedGuestAliasRelease backend) of
+                                        Left (Conflict _) -> do
+                                            after <- readIORef calls
+                                            pure
+                                                ( if after == before
+                                                    then Right ()
+                                                    else Left (Failure (FailureDetail "stale release test" "the guest executor ran" DoNotRetry))
+                                                )
+                                        Left failure -> pure (Left failure)
+                                        Right _ -> pure (Left (Failure (FailureDetail "stale release test" "a stale version prepared" DoNotRetry)))
+                                )
+                                (\_ _ _ _ -> pure (Left (Failure (FailureDetail "stale release test" "unexpected foreign alias" DoNotRetry))))
+                )
+        outcome @?= Right ()
+    ]
+
+posixCases :: [TestTree]
 #ifdef mingw32_HOST_OS
-posixFilesystemCases = []
+posixCases = []
 #else
-posixFilesystemCases =
-    [ testCase "the guest backend creates, owns, and conditionally releases the alias" $
-        withRealAlias $ \spec dir backend -> do
-            outcome <- createOwnRelease spec backend
-            case outcome of
-                Right () -> do
-                    stillThere <- doesPathExist (dir </> "alias")
-                    assertBool "the released alias is unlinked" (not stillThere)
-                Left err -> assertFailure ("expected create then release, got " ++ show err)
-    , testCase "release refuses a foreign-replaced alias and leaves it intact" $
-        withRealAlias $ \spec dir backend -> do
-            -- Create + own the alias, then repoint it at a foreign target between
-            -- ownership and release.  Clause 4 re-observes and must refuse the
-            -- unlink, returning a structured conflict and leaving the alias alone.
-            createDirectory (dir </> "other")
-            released <-
-                createThen
+posixCases =
+    [ testCase "the locked guest protocol creates, releases, and confirms already released" $
+        withSystemTempDirectory "hb-alias" $ \directory -> do
+            let target = directory </> "share"
+                alias = directory </> "alias"
+            createDirectory target
+            spec <- either (assertFailure . show) pure (mkGuestAliasSpec alias target)
+            outcome <-
+                withAliasFixture
+                    (aliasPlan "real-create-release")
                     spec
-                    backend
-                    (tamperRepoint (dir </> "alias") (dir </> "other"))
-            case released of
-                Left (Conflict _) -> do
-                    stillLink <- pathIsSymbolicLink (dir </> "alias")
-                    assertBool "the foreign-replaced alias is left intact" stillLink
-                other -> assertFailure ("expected a release conflict, got " ++ show other)
-    , testCase "an occupying non-symlink is reported foreign, never adopted" $
-        withRealAlias $ \spec dir backend -> do
-            writeFile (dir </> "alias") "not our link\n"
-            observation <- reconcileOnce spec backend
-            case observation of
-                AliasCallForeign _ foreignState ->
-                    foreignIdentity foreignState @?= Text.pack (dir </> "alias")
-                other -> assertFailure ("expected a foreign observation, got " ++ show other)
-    , {- The production call site. The chain interpreter opens the gate for the
-      operation the durable-share node declared as its projection, the provider
-      node carries the managed handle the share's own prepared call depends on,
-      and the alias is reconciled from inside the step action against a real
-      guest filesystem — no fixture gate, no fixture plan, no hand-built
-      dependency snapshot. -}
-      testCase "the durable-share node reconciles the alias it claims, through the chain" $
-        withRealAlias $ \spec dir backend -> do
-            settled <- newIORef []
-            outcome <- runAliasChain spec backend settled
+                    successfulHost
+                    localGuest
+                    createAndRelease
             outcome @?= Right ()
-            readIORef settled >>= (@?= [Right (GuestAliasReconciled (Changed Created))])
-            isLink <- pathIsSymbolicLink (dir </> "alias")
-            assertBool "the interpreted chain created the managed alias" isLink
-    , testCase "a node that never carried its dependency cannot prepare the alias" $
-        withRealAlias $ \spec dir backend -> do
-            settled <- newIORef []
-            outcome <- runAliasChainWithoutShare spec backend settled
+            doesPathExist alias >>= assertBool "released alias is absent" . not
+    , testCase "conditional release refuses a foreign replacement" $
+        withSystemTempDirectory "hb-alias" $ \directory -> do
+            let target = directory </> "share"
+                foreignTarget = directory </> "foreign"
+                alias = directory </> "alias"
+            createDirectory target
+            createDirectory foreignTarget
+            spec <- either (assertFailure . show) pure (mkGuestAliasSpec alias target)
+            outcome <-
+                withAliasFixture
+                    (aliasPlan "real-release-conflict")
+                    spec
+                    successfulHost
+                    localGuest
+                    (createTamperAndRelease alias foreignTarget)
             case outcome of
-                Left err ->
-                    assertBool ("the node stops the chain: " ++ err) ("unsupported:" `isInfixOf` err)
-                Right () -> assertFailure "an unprepared alias node was allowed to continue"
-            observed <- readIORef settled
-            case observed of
-                [Left (Failure _)] -> pure ()
-                other -> assertFailure ("expected a reprobe failure, got " ++ show other)
-            created <- doesPathExist (dir </> "alias")
-            assertBool "no alias was created" (not created)
+                Left (Conflict _) -> do
+                    pathIsSymbolicLink alias >>= assertBool "foreign replacement remains"
+                other -> assertFailure ("expected release Conflict, got " ++ show other)
+    , testCase "an existing managed record reports AlreadyExact, never fabricates creation" $
+        withSystemTempDirectory "hb-alias" $ \directory -> do
+            let target = directory </> "share"
+                alias = directory </> "alias"
+            createDirectory target
+            spec <- either (assertFailure . show) pure (mkGuestAliasSpec alias target)
+            outcome <-
+                withAliasFixture
+                    (aliasPlan "real-retry")
+                    spec
+                    successfulHost
+                    localGuest
+                    (\_ backend _ call -> do
+                        first <- runPreparedGuestAliasCall backend call
+                        case settlePreparedGuestAliasCall Nothing call first of
+                            Left failure -> pure (Left failure)
+                            Right _ -> do
+                                second <- runPreparedGuestAliasCall backend call
+                                pure (Right (aliasCallResultView second)))
+            outcome @?= Right (AliasResultAlreadyExact 23)
+    , testCase "a crash after origin publication resumes the same alias generation" $
+        acquireCrashResumeCase
+            "after-origin"
+            "pass  # HB_ALIAS_AFTER_ORIGIN"
+            "os._exit(97)  # HB_ALIAS_AFTER_ORIGIN"
+    , testCase "a partial prepared origin stage is completed before publication" $
+        acquireCrashResumeCase
+            "partial-origin-stage"
+            "create_full(stage, payload, 'prepared-stage')"
+            "fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600); os.write(fd, payload[:17]); os.fsync(fd); os.close(fd); os._exit(97)"
+    , testCase "a crash after alias publication binds the published inode on retry" $
+        acquireCrashResumeCase
+            "after-publish"
+            "pass  # HB_ALIAS_AFTER_PUBLISH"
+            "os._exit(97)  # HB_ALIAS_AFTER_PUBLISH"
+    , testCase "a partial managed transition record is completed on acquisition retry" $
+        acquireCrashResumeCase
+            "partial-managed-transition"
+            "create_full(temporary, payload, state_value + '-temp')"
+            "fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600); os.write(fd, payload[:17]); os.fsync(fd); os.close(fd); os._exit(97)"
+    , testCase "a crash after foreign-stage cleanup resumes the origin unwind" $
+        withSystemTempDirectory "hb-alias" $ \directory -> do
+            let target = directory </> "share"
+                foreignTarget = directory </> "foreign"
+                alias = directory </> "alias"
+            createDirectory target
+            createDirectory foreignTarget
+            createFileLink foreignTarget alias
+            spec <- either (assertFailure . show) pure (mkGuestAliasSpec alias target)
+            guest <-
+                crashOnceReplacing
+                    "reconcile"
+                    "pass  # HB_ALIAS_AFTER_FOREIGN_CLEANUP"
+                    "os._exit(97)  # HB_ALIAS_AFTER_FOREIGN_CLEANUP"
+            outcome <-
+                withAliasFixture
+                    (aliasPlan "foreign-unwind")
+                    spec
+                    successfulHost
+                    guest
+                    crashAndRetryAlias
+            case outcome of
+                Right (AliasResultForeign _ _) -> pure ()
+                other -> assertFailure ("expected resumed foreign observation, got " ++ show other)
+            pathIsSymbolicLink alias >>= assertBool "foreign alias remains untouched"
+            entries <- stateEntries target
+            entries @?= []
+            assertNoAliasStage directory
+    , testCase "an external unlink before release intent is a retained Conflict" $
+        withSystemTempDirectory "hb-alias" $ \directory -> do
+            let target = directory </> "share"
+                alias = directory </> "alias"
+            createDirectory target
+            spec <- either (assertFailure . show) pure (mkGuestAliasSpec alias target)
+            outcome <-
+                withAliasFixture
+                    (aliasPlan "release-unlinked-before-intent")
+                    spec
+                    successfulHost
+                    localGuest
+                    (createUnlinkAndRelease alias)
+            case outcome of
+                Left (Conflict _) -> pure ()
+                other -> assertFailure ("expected release Conflict, got " ++ show other)
+            entries <- stateEntries target
+            assertBool "managed origin survives the refused release" (not (null entries))
+    , testCase "release refuses a different-nonce alias staging residue without mutation" $
+        withSystemTempDirectory "hb-alias" $ \directory -> do
+            let target = directory </> "share"
+                alias = directory </> "alias"
+                residue = alias ++ ".hb-alias-stage-" ++ replicate 64 'a'
+            createDirectory target
+            spec <- either (assertFailure . show) pure (mkGuestAliasSpec alias target)
+            outcome <-
+                withAliasFixture
+                    (aliasPlan "release-stage-residue")
+                    spec
+                    successfulHost
+                    localGuest
+                    (createResidueAndRelease residue target)
+            case outcome of
+                Left (Conflict _) -> pure ()
+                other -> assertFailure ("expected staging-residue Conflict, got " ++ show other)
+            pathIsSymbolicLink alias >>= assertBool "managed alias survives the refused release"
+            pathIsSymbolicLink residue >>= assertBool "foreign staging residue remains untouched"
+            entries <- stateEntries target
+            assertBool "managed origin survives the refused release" (not (null entries))
+    , testCase "a crash after release intent resumes the exact release fence" $
+        releaseCrashResumeCase
+            "after-release-intent"
+            "pass  # HB_ALIAS_AFTER_RELEASE_INTENT"
+            "os._exit(97)  # HB_ALIAS_AFTER_RELEASE_INTENT"
+    , testCase "a partial releasing transition record is completed on release retry" $
+        releaseCrashResumeCase
+            "partial-releasing-transition"
+            "create_full(temporary, payload, state_value + '-temp')"
+            "fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600); os.write(fd, payload[:17]); os.fsync(fd); os.close(fd); os._exit(97)"
+    , testCase "a crash after unlink finishes record deletion without re-unlinking" $
+        releaseCrashResumeCase
+            "after-release-unlink"
+            "pass  # HB_ALIAS_AFTER_RELEASE_UNLINK"
+            "os._exit(97)  # HB_ALIAS_AFTER_RELEASE_UNLINK"
     ]
 #endif
 
-{- | A guest command runner that executes the argv against a POSIX test host's
-real filesystem.  A Windows host path is not a provider guest path, so Windows
-keeps the portable algebra/probe cases while native POSIX hosts exercise the
-four-clause filesystem protocol here.
--}
-#ifndef mingw32_HOST_OS
-localGuestExec :: GuestExec
-localGuestExec = GuestExec runLocal
-  where
-    runLocal [] = pure (GuestCommandResult False "" "empty guest command")
-    runLocal (cmd : args) = do
-        (code, out, err) <- readProcessWithExitCode cmd args ""
-        pure (GuestCommandResult (code == ExitSuccess) out err)
-#endif
-
-{- | Preserve the real ownership-tool discovery probe on POSIX.  Windows has no
-POSIX guest filesystem in this unit-test process, so its capability-mint branch
-uses a deterministic successful guest boundary; native provider gates exercise
-the probe inside the actual guest.
--}
-capabilityGuestExec :: GuestExec
-#ifdef mingw32_HOST_OS
--- Discovery does not accept a bare exit-zero: it requires the probe to /name/
--- the front ends it found, so this stand-in must report a real guest's answer
--- (a util-linux + GNU coreutils Linux guest) rather than an empty stream.
-capabilityGuestExec =
-    GuestExec (\_ -> pure (GuestCommandResult True "flock gnu\n" ""))
-#else
-capabilityGuestExec = localGuestExec
-#endif
-
-{- | A guest that reports every command as failed, standing in for a guest that
-lacks the ownership tools.
--}
-toollessGuestExec :: GuestExec
-toollessGuestExec =
-    GuestExec (\_ -> pure (GuestCommandResult False "" "no ownership tools"))
-
-{- | Set up a real temp directory with a share, a valid alias spec pointing into
-it, and a discovered backend over 'localGuestExec'.
--}
-#ifndef mingw32_HOST_OS
-withRealAlias ::
-    (GuestAliasSpec -> FilePath -> StrongAliasBackend -> IO a) ->
-    IO a
-withRealAlias action =
-    withSystemTempDirectory "hb-alias" $ \dir -> do
-        let share = dir </> "share"
-        createDirectory share
-        spec <-
-            either (assertFailure . ("alias spec: " ++) . show) pure $
-                mkGuestAliasSpec (dir </> "alias") share
-        discovered <- discoverStrongAliasBackend testProvider localGuestExec
-        backend <- either (assertFailure . ("discover: " ++) . show) pure discovered
-        action spec dir backend
-
--- | Prepare an alias reconcile over a real spec and run it once.
-reconcileOnce :: GuestAliasSpec -> StrongAliasBackend -> IO AliasCallObservation
-reconcileOnce spec backend = do
-    outer <-
-        withPreparedAliasFixtureFor spec 13 $ \_ _ prepared ->
-            Right (runPreparedGuestAliasCall backend prepared)
-    either (assertFailure . ("prepare: " ++) . show) id outer
-
-{- | Create + own the alias, run @between@ to perturb the guest state, then
-attempt the conditional release; returns the release outcome.
--}
-createThen ::
-    GuestAliasSpec ->
-    StrongAliasBackend ->
-    IO () ->
+createAndRelease ::
+    ProviderCapability scope planId providerId backendId capabilityId ->
+    StrongAliasBackend scope planId providerId backendId capabilityId ->
+    ManagedProviderHandle scope planId backendId providerId Running ->
+    PreparedGuestAliasCall scope planId providerId backendId capabilityId aliasId shareId operationKey callDigest attempt journalVersion ->
     IO (Either ReconcileError ())
-createThen spec backend between = do
-    outer <-
-        withPreparedAliasFixtureFor spec 13 $ \_ _ prepared ->
-            Right (createSettleThenRelease spec backend between prepared)
-    either (pure . Left) id outer
-
--- | The happy path: create, settle to a managed receipt, release; no tamper.
-createOwnRelease :: GuestAliasSpec -> StrongAliasBackend -> IO (Either ReconcileError ())
-createOwnRelease spec backend = createThen spec backend (pure ())
-
-createSettleThenRelease ::
-    GuestAliasSpec ->
-    StrongAliasBackend ->
-    IO () ->
-    PreparedGuestAliasCall FixtureScope planId aliasId shareId operationKey callDigest attempt journalVersion ->
-    IO (Either ReconcileError ())
-createSettleThenRelease spec backend between prepared = do
-    observation <- runPreparedGuestAliasCall backend prepared
-    case settlePreparedGuestAliasCall Nothing prepared observation of
-        Left err -> pure (Left err)
+createAndRelease _ backend _ call = do
+    result <- runPreparedGuestAliasCall backend call
+    case settlePreparedGuestAliasCall Nothing call result of
+        Left failure -> pure (Left failure)
         Right settled ->
-            withReconcileResult
+            withGuestAliasCallSettlement
                 settled
-                ( \managed receipt _ -> do
-                    between
-                    case withPreparedGuestAliasRelease
-                        spec
-                        managed
-                        receipt
-                        31
-                        (runPreparedGuestAliasRelease backend) of
-                        Left err -> pure (Left err)
-                        Right release -> release
+                ( \managed _ -> do
+                    released <- runRelease backend managed
+                    case released of
+                        Left failure -> pure (Left failure)
+                        Right () -> runRelease backend managed
                 )
-                ( \_ foreignState ->
-                    pure
-                        ( Left
-                            ( Failure
-                                ( FailureDetail
-                                    "create own release"
-                                    ("unexpected foreign at create: " <> foreignIdentity foreignState)
-                                    DoNotRetry
-                                )
-                            )
-                        )
+                (\_ _ _ _ -> pure (Left (Failure (FailureDetail "test alias release" "unexpected foreign alias" DoNotRetry))))
+
+#ifndef mingw32_HOST_OS
+createTamperAndRelease ::
+    FilePath ->
+    FilePath ->
+    ProviderCapability scope planId providerId backendId capabilityId ->
+    StrongAliasBackend scope planId providerId backendId capabilityId ->
+    ManagedProviderHandle scope planId backendId providerId Running ->
+    PreparedGuestAliasCall scope planId providerId backendId capabilityId aliasId shareId operationKey callDigest attempt journalVersion ->
+    IO (Either ReconcileError ())
+createTamperAndRelease alias foreignTarget _ backend _ call = do
+    result <- runPreparedGuestAliasCall backend call
+    case settlePreparedGuestAliasCall Nothing call result of
+        Left failure -> pure (Left failure)
+        Right settled ->
+            withGuestAliasCallSettlement
+                settled
+                ( \managed _ -> do
+                    removeFile alias
+                    createFileLink foreignTarget alias
+                    runRelease backend managed
+                )
+                (\_ _ _ _ -> pure (Left (Failure (FailureDetail "test alias release" "unexpected foreign alias" DoNotRetry))))
+
+createUnlinkAndRelease ::
+    FilePath ->
+    ProviderCapability scope planId providerId backendId capabilityId ->
+    StrongAliasBackend scope planId providerId backendId capabilityId ->
+    ManagedProviderHandle scope planId backendId providerId Running ->
+    PreparedGuestAliasCall scope planId providerId backendId capabilityId aliasId shareId operationKey callDigest attempt journalVersion ->
+    IO (Either ReconcileError ())
+createUnlinkAndRelease alias _ backend _ call = do
+    result <- runPreparedGuestAliasCall backend call
+    case settlePreparedGuestAliasCall Nothing call result of
+        Left failure -> pure (Left failure)
+        Right settled ->
+            withGuestAliasCallSettlement
+                settled
+                ( \managed _ -> do
+                    removeFile alias
+                    runRelease backend managed
+                )
+                (\_ _ _ _ -> pure (Left (Failure (FailureDetail "test alias release" "unexpected foreign alias" DoNotRetry))))
+
+createResidueAndRelease ::
+    FilePath ->
+    FilePath ->
+    ProviderCapability scope planId providerId backendId capabilityId ->
+    StrongAliasBackend scope planId providerId backendId capabilityId ->
+    ManagedProviderHandle scope planId backendId providerId Running ->
+    PreparedGuestAliasCall scope planId providerId backendId capabilityId aliasId shareId operationKey callDigest attempt journalVersion ->
+    IO (Either ReconcileError ())
+createResidueAndRelease residue target _ backend _ call = do
+    result <- runPreparedGuestAliasCall backend call
+    case settlePreparedGuestAliasCall Nothing call result of
+        Left failure -> pure (Left failure)
+        Right settled ->
+            withGuestAliasCallSettlement
+                settled
+                ( \managed _ -> do
+                    createFileLink target residue
+                    runRelease backend managed
+                )
+                (\_ _ _ _ -> pure (Left (Failure (FailureDetail "test alias release" "unexpected foreign alias" DoNotRetry))))
+
+crashAndRetryAlias ::
+    ProviderCapability scope planId providerId backendId capabilityId ->
+    StrongAliasBackend scope planId providerId backendId capabilityId ->
+    ManagedProviderHandle scope planId backendId providerId Running ->
+    PreparedGuestAliasCall scope planId providerId backendId capabilityId aliasId shareId operationKey callDigest attempt journalVersion ->
+    IO (Either ReconcileError AliasCallResultView)
+crashAndRetryAlias _ backend _ call = do
+    first <- runPreparedGuestAliasCall backend call
+    case aliasCallResultView first of
+        AliasResultFailed _ -> do
+            resumed <- runPreparedGuestAliasCall backend call
+            pure (Right (aliasCallResultView resumed))
+        observed ->
+            pure
+                ( Left
+                    ( Failure
+                        (FailureDetail "alias crash fixture" (Text.pack ("checkpoint did not fail: " ++ show observed)) DoNotRetry)
+                    )
                 )
 
--- ---------------------------------------------------------------------------
--- The production call site: the alias reconciled from inside a real chain.
+acquireCrashResumeCase :: String -> String -> String -> IO ()
+acquireCrashResumeCase salt needle replacement =
+    withSystemTempDirectory "hb-alias" $ \directory -> do
+        let target = directory </> "share"
+            alias = directory </> "alias"
+        createDirectory target
+        spec <- either (assertFailure . show) pure (mkGuestAliasSpec alias target)
+        guest <- crashOnceReplacing "reconcile" needle replacement
+        outcome <-
+            withAliasFixture
+                (aliasPlan salt)
+                spec
+                successfulHost
+                guest
+                crashAndRetryAlias
+        outcome @?= Right (AliasResultRepaired 23)
+        pathIsSymbolicLink alias >>= assertBool "the resumed alias is the managed symlink"
+        entries <- stateEntries target
+        length entries @?= 1
+        assertNoAliasStage directory
 
-{- | The frame both nodes of the alias chain run in. It is the innermost frame,
-so the interpretation ends with this segment rather than descending.
--}
-aliasFrame :: StepFrame
-aliasFrame = StepFrame{frameId = "host", frameLabel = "metal"}
-
--- | The operation the durable-share node claims: the relation it completes.
-aliasProjectedOperation :: String
-aliasProjectedOperation = "core:deploy-vm/core:copy-source/guest-alias"
-
-{- | Interpret a two-node chain: the provider node acquires and carries its
-managed handle, then the durable-share node prepares its own operation against
-that carried dependency and reconciles the alias it claims.
--}
-runAliasChain ::
-    GuestAliasSpec ->
-    StrongAliasBackend ->
-    IORef [Either ReconcileError GuestAliasSettlement] ->
-    IO (Either String ())
-runAliasChain spec backend sink =
-    interpretAliasChain
-        [ deployVMStep "acquire the provider" aliasFrame acquireProviderAction
-        , projectsOperation
-            aliasProjectedOperation
-            (copySourceStep "mount the durable share" aliasFrame (shareAction spec backend sink))
-        ]
-
-{- | The same chain with the provider node acquiring nothing, so the durable
-share has no carried dependency to seal. The share node then cannot prepare its
-own operation and never reaches the alias.
--}
-runAliasChainWithoutShare ::
-    GuestAliasSpec ->
-    StrongAliasBackend ->
-    IORef [Either ReconcileError GuestAliasSettlement] ->
-    IO (Either String ())
-runAliasChainWithoutShare spec backend sink =
-    interpretAliasChain
-        [ deployVMStep "acquire nothing" aliasFrame (const (pure StepChanged))
-        , projectsOperation
-            aliasProjectedOperation
-            (copySourceStep "mount the durable share" aliasFrame (shareAction spec backend sink))
-        ]
-
-interpretAliasChain :: [Step] -> IO (Either String ())
-interpretAliasChain steps =
-    withSystemTempDirectory "hb-alias-chain" $ \directory -> do
-        opened <- openProtectedStore (directory </> "authority")
-        store <- either (assertFailure . show) pure opened
-        project <-
-            either
-                (assertFailure . show)
-                pure
-                (installedProjectFor @Fixture.FixtureProject @Fixture.ProjectConfig "hostbootstrap-demo")
-        plan <- either (assertFailure . show) pure (mkStepPlan steps)
-        run <-
-            withProductionProjectCodec @Fixture.FixtureProject @Fixture.ProjectConfig $ \codec ->
-                withLifecyclePlan codec plan $ \lifecycle ->
-                    pure
-                        ( runChainFromFrame
-                            aliasHostConfig
-                            aliasSelfRef
-                            (frameId aliasFrame)
-                            store
-                            project
-                            lifecycle
-                        )
-        run
-
-aliasHostConfig :: HostConfig
-aliasHostConfig =
-    HostConfig{hcSubstrate = Substrate LinuxCpu Amd64, hcToolPaths = Map.empty}
-
-aliasSelfRef :: SelfRef
-aliasSelfRef = mkSelfRef "/proc/self/exe" "/usr/local/bin/hostbootstrap-demo"
-
-{- | Acquire the provider through the gate the interpreter opened for this node's
-own operation, and carry the managed handle so the node that depends on it can
-seal it.
--}
-acquireProviderAction :: StepExecution scope planId -> IO StepObservation
-acquireProviderAction execution = do
-    gate <- stepExecutionPreparedGate execution
-    case gate of
-        Nothing -> pure (StepUnsupported "the interpreter opened no gate for this node")
-        Just opened ->
-            case acquire opened of
-                Left err -> pure (StepUnsupported (Text.pack (show err)))
-                Right carry -> carry >> pure StepChanged
-  where
-    acquire opened =
-        joinReconcile $
-            withNodeResourceOfKind execution ProviderResourceKind "core:deploy-vm" $ \planned ->
-                joinReconcile $
-                    withNodeObservedResource execution planned 5 7 $ \observed -> do
-                        descriptor <- plannedNodeOperation execution planned observed "provider:create"
-                        preconditionSet <- zeroDependencyPreconditions descriptor
-                        joinReconcile $
-                            withPreparedOperation descriptor preconditionSet opened $
-                                \prepared preconditions -> do
-                                    reconciled <-
-                                        completeReconcile observed prepared preconditions (BackendCreated 5)
-                                    withReconcileResult
-                                        reconciled
-                                        (\managed _ _ -> Right (carryManagedResource execution managed))
-                                        ( \_ _ ->
-                                            Left
-                                                ( Failure
-                                                    ( FailureDetail
-                                                        "acquire provider"
-                                                        "unexpected foreign provider"
-                                                        DoNotRetry
+releaseCrashResumeCase :: String -> String -> String -> IO ()
+releaseCrashResumeCase salt needle replacement =
+    withSystemTempDirectory "hb-alias" $ \directory -> do
+        let target = directory </> "share"
+            alias = directory </> "alias"
+        createDirectory target
+        spec <- either (assertFailure . show) pure (mkGuestAliasSpec alias target)
+        guest <- crashOnceReplacing "release" needle replacement
+        outcome <-
+            withAliasFixture
+                (aliasPlan salt)
+                spec
+                successfulHost
+                guest
+                ( \_ backend _ call -> do
+                    result <- runPreparedGuestAliasCall backend call
+                    case settlePreparedGuestAliasCall Nothing call result of
+                        Left failure -> pure (Left failure)
+                        Right settled ->
+                            withGuestAliasCallSettlement
+                                settled
+                                ( \managed _ -> do
+                                    interrupted <- runRelease backend managed
+                                    case interrupted of
+                                        Left (Failure _) -> runRelease backend managed
+                                        Left failure -> pure (Left failure)
+                                        Right () ->
+                                            pure
+                                                ( Left
+                                                    ( Failure
+                                                        (FailureDetail "alias release crash fixture" "checkpoint did not interrupt release" DoNotRetry)
                                                     )
                                                 )
-                                        )
-
-{- | Mount the durable share against the carried provider, carry the share, then
-reconcile the alias this node claims. -}
-shareAction ::
-    GuestAliasSpec ->
-    StrongAliasBackend ->
-    IORef [Either ReconcileError GuestAliasSettlement] ->
-    StepExecution scope planId ->
-    IO StepObservation
-shareAction spec backend sink execution = do
-    gate <- stepExecutionPreparedGate execution
-    case gate of
-        Nothing -> pure (StepUnsupported "the interpreter opened no gate for this node")
-        Just opened -> do
-            mounted <- acquireShare execution opened
-            case mounted of
-                Left err -> do
-                    modifyIORef' sink (++ [Left err])
-                    pure (StepUnsupported (Text.pack (show err)))
-                Right () -> do
-                    settled <-
-                        reconcileNodeGuestAlias
-                            execution
-                            backend
-                            spec
-                            (23, 29)
-                            (pure (Right 19))
-                    modifyIORef' sink (++ [settled])
-                    pure $ case settled of
-                        Right (GuestAliasReconciled _) -> StepChanged
-                        Right (GuestAliasForeignRetained _) ->
-                            StepConflict "the managed alias" "a foreign object" "remove it"
-                        Left err -> StepUnsupported (Text.pack (show err))
-
-{- | Prepare and settle the durable share's own operation. Its plan prefix names
-the provider, so the traversal seals the provider handle the earlier node carried
-and refuses when nothing was carried. -}
-acquireShare ::
-    StepExecution scope planId ->
-    PreparedGate ->
-    IO (Either ReconcileError ())
-acquireShare execution opened = do
-    adopted <-
-        withCarriedManagedResource execution "core:deploy-vm" $ \managedProvider ->
-            withDependencySnapshotEntry
-                managedProvider
-                (dependencyProbe (pure (Right 17)))
-                emptyDependencySnapshot
-    case adopted of
-        Left err -> pure (Left err)
-        Right snapshot ->
-            joinIO $
-                withNodeResourceOfKind execution DurableShareResourceKind "core:copy-source" $ \planned ->
-                    joinIO $
-                        withNodeObservedResource execution planned 11 13 $ \observed ->
-                            case plannedNodeOperation execution planned observed "share:mount" of
-                                Left err -> pure (Left err)
-                                Right descriptor -> do
-                                    sealed <- withOperationPreconditions descriptor snapshot
-                                    case sealed >>= settle observed descriptor of
-                                        Left err -> pure (Left err)
-                                        Right carry -> Right <$> carry
-  where
-    settle observed descriptor preconditionSet =
-        joinReconcile $
-            withPreparedOperation descriptor preconditionSet opened $
-                \prepared preconditions -> do
-                    reconciled <-
-                        completeReconcile observed prepared preconditions (BackendCreated 11)
-                    withReconcileResult
-                        reconciled
-                        (\managed _ _ -> Right (carryManagedResource execution managed))
-                        ( \_ _ ->
-                            Left
-                                ( Failure
-                                    ( FailureDetail
-                                        "mount durable share"
-                                        "unexpected foreign share"
-                                        DoNotRetry
-                                    )
                                 )
-                        )
+                                (\_ _ _ _ -> pure (Left (Failure (FailureDetail "alias release crash fixture" "unexpected foreign alias" DoNotRetry))))
+                )
+        outcome @?= Right ()
+        doesPathExist alias >>= assertBool "the resumed release leaves the alias absent" . not
+        entries <- stateEntries target
+        entries @?= []
+        assertNoAliasStage directory
 
-{- | Repoint the alias at a foreign target, standing in for a peer that replaces
-the managed link between ownership and release.
--}
-tamperRepoint :: FilePath -> FilePath -> IO ()
-tamperRepoint alias foreignTarget = do
-    _ <-
-        readProcessWithExitCode
-            "sh"
-            ["-c", "rm -f \"$1\" && ln -s \"$2\" \"$1\"", "hb", alias, foreignTarget]
-            ""
-    pure ()
+crashOnceReplacing :: String -> String -> String -> IO GuestRunner
+crashOnceReplacing mode needle replacement = do
+    armed <- newIORef True
+    pure $ \argv ->
+        if mode `elem` argv
+            then do
+                shouldCrash <- readIORef armed
+                if shouldCrash
+                    then do
+                        let rewritten = map (replaceFirst needle replacement) argv
+                        if rewritten == argv
+                            then pure (RawProviderFailure ("missing alias checkpoint: " ++ needle))
+                            else do
+                                modifyIORef' armed (const False)
+                                localGuest rewritten
+                    else localGuest argv
+            else localGuest argv
+
+replaceFirst :: String -> String -> String -> String
+replaceFirst needle replacement = go
+  where
+    go remaining
+        | needle `isPrefixOf` remaining = replacement ++ drop (length needle) remaining
+    go [] = []
+    go (character : rest) = character : go rest
+
+stateEntries :: FilePath -> IO [FilePath]
+stateEntries target = do
+    let stateDirectory = target </> ".hostbootstrap-alias-origin-v1"
+    exists <- doesPathExist stateDirectory
+    if exists then listDirectory stateDirectory else pure []
+
+assertNoAliasStage :: FilePath -> IO ()
+assertNoAliasStage directory = do
+    entries <- listDirectory directory
+    assertBool "no alias staging link remains" (not (any (".hb-alias-stage-" `isInfixOf`) entries))
 #endif
 
-aliasSpec :: GuestAliasSpec
-aliasSpec =
-    either
-        (error . show)
-        id
-        (mkGuestAliasSpec "/var/tmp/hostbootstrap-data" "/srv/hostbootstrap/data")
+runRelease ::
+    StrongAliasBackend scope planId providerId backendId capabilityId ->
+    ManagedGuestAliasHandle scope planId providerId backendId capabilityId aliasId shareId phase ->
+    IO (Either ReconcileError ())
+runRelease backend managed =
+    case
+        withPreparedGuestAliasRelease
+            managed
+            (managedGuestAliasObservationVersion managed)
+            (runPreparedGuestAliasRelease backend)
+    of
+        Left failure -> pure (Left failure)
+        Right action -> action
 
-unchangedAfterCommit ::
-    LifecyclePlan FixtureScope planId ->
-    ResourceHandle
-        FixtureScope
-        planId
-        aliasId
-        DurableAliasResource
-        Unclassified
-        Observed ->
-    PreparedGuestAliasCall
-        FixtureScope
-        planId
-        aliasId
-        shareId
-        operationKey
-        callDigest
-        attempt
-        journalVersion ->
-    Either ReconcileError (ChangeView, Text.Text, Text.Text)
-unchangedAfterCommit plan handle prepared = do
-    created <-
-        settlePreparedGuestAliasCall
-            Nothing
-            prepared
-            (AliasCallCreated 23)
-    withReconcileResult
-        created
-        ( \_ receipt _ -> do
-            let operationKey = ownershipReceiptOperationKey receipt
-                record =
-                    PersistedJournalRecord
-                        { persistedPlanDigest = lifecyclePlanDigest plan
-                        , persistedFrameKey = "provider-guest"
-                        , persistedResourceKey = resourceHandleKey handle
-                        , persistedGeneration = resourceHandleGeneration handle
-                        , persistedOperation = "reconcile guest alias"
-                        , persistedOperationKey = operationKey
-                        , persistedRecordVersion = 41
-                        , persistedPhase = Committed
-                        }
-            verified <-
-                verifyPersistedJournalRecord
-                    plan
-                    handle
-                    "reconcile guest alias"
-                    record
-            joinReconcile $
-                withPriorCommitProof verified $ \proof -> do
-                    unchanged <-
-                        settlePreparedGuestAliasCall
-                            (Just proof)
-                            prepared
-                            (AliasCallAlreadyExact 23)
-                    pure $
-                        withReconcileResult
-                            unchanged
-                            ( \_ unchangedReceipt change ->
-                                (change, operationKey, ownershipReceiptOperationKey unchangedReceipt)
-                            )
-                            (\_ _ -> error "matching prior commit must remain managed")
-        )
-        (\_ _ -> Left (Failure (FailureDetail "test unchanged" "created alias became foreign" DoNotRetry)))
+capturedOwner :: StepPlan -> IO String
+capturedOwner plan = do
+    owners <- newIORef []
+    let guest argv
+            | isAliasInvocation argv = do
+                case ownerFromArgv argv of
+                    Just owner -> modifyIORef' owners (++ [owner])
+                    Nothing -> pure ()
+                pure (RawProviderExit ExitSuccess "CREATED 1:2\n" "")
+            | otherwise = supportedGuest argv
+    outcome <-
+        withAliasFixture
+            plan
+            portableAliasSpec
+            successfulHost
+            guest
+            (\_ backend _ call -> do
+                result <- runPreparedGuestAliasCall backend call
+                pure (Right (aliasCallResultView result)))
+    case outcome of
+        Left failure -> assertFailure (show failure)
+        Right _ -> pure ()
+    readIORef owners >>= \case
+        [owner] -> pure owner
+        observed -> assertFailure ("expected one owner, got " ++ show observed)
 
-projectionSummary :: Either ReconcileError Text.Text
-projectionSummary =
-    withTestLifecyclePlan $ \plan ->
-        joinReconcile $
-            withPlannedResourceOfKind plan ProviderResourceKind "core:deploy-vm" $ \provider ->
-                joinReconcile $
-                    withPlannedResourceOfKind plan DurableShareResourceKind "core:copy-source" $ \share ->
-                        withProviderGuestAliasProjection plan provider share $ \alias _ ->
-                            plannedResourceKey alias
-
-withPreparedAliasFixture ::
-    Word64 ->
-    ( forall planId aliasId shareId operationKey callDigest attempt journalVersion.
-      LifecyclePlan FixtureScope planId ->
-      ResourceHandle
-        FixtureScope
-        planId
-        aliasId
-        DurableAliasResource
-        Unclassified
-        Observed ->
-      PreparedGuestAliasCall
-        FixtureScope
-        planId
-        aliasId
-        shareId
-        operationKey
-        callDigest
-        attempt
-        journalVersion ->
-      Either ReconcileError summary
-    ) ->
-    IO (Either ReconcileError summary)
-withPreparedAliasFixture = withPreparedAliasFixtureFor aliasSpec
-
-withPreparedAliasFixtureFor ::
+withAliasFixture ::
+    StepPlan ->
     GuestAliasSpec ->
-    Word64 ->
-    ( forall planId aliasId shareId operationKey callDigest attempt journalVersion.
-      LifecyclePlan FixtureScope planId ->
-      ResourceHandle
-        FixtureScope
-        planId
-        aliasId
-        DurableAliasResource
-        Unclassified
-        Observed ->
+    HostRunner ->
+    GuestRunner ->
+    ( forall projectId planId backendId providerId capabilityId aliasId shareId operationKey callDigest attempt journalVersion.
+      ProviderCapability (Production projectId) planId providerId backendId capabilityId ->
+      StrongAliasBackend (Production projectId) planId providerId backendId capabilityId ->
+      ManagedProviderHandle (Production projectId) planId backendId providerId Running ->
       PreparedGuestAliasCall
-        FixtureScope
+        (Production projectId)
         planId
+        providerId
+        backendId
+        capabilityId
         aliasId
         shareId
         operationKey
         callDigest
         attempt
         journalVersion ->
-      Either ReconcileError summary
+      IO (Either ReconcileError summary)
     ) ->
     IO (Either ReconcileError summary)
-withPreparedAliasFixtureFor spec shareObservationVersion consume = do
-    providerGate <- gateFor testPlanDigest "core:deploy-vm"
-    shareGate <- gateFor testPlanDigest "core:copy-source"
-    aliasGate <- gateFor testPlanDigest "core:deploy-vm/core:copy-source/guest-alias"
-    joinIO (fixtureAction providerGate shareGate aliasGate)
+withAliasFixture plan aliasSpec host guest consume =
+    case mkIncusBackendSpec "test-vm" "images:ubuntu/24.04" backendHostConfig "/test/provider-state" 4 "8GiB" "40GiB" of
+        Left failure -> pure (Left failure)
+        Right spec -> do
+            discovered <-
+                discoverStrongProviderBackend (fixtureBackendExec host guest) spec $ \backend ->
+                    Fixture.withFixtureProjectPlan plan $ \projectPlan ->
+                        prepareProject backend projectPlan
+            pure (joinReconcile discovered)
   where
-    fixtureAction providerGate shareGate aliasGate =
-        withTestLifecyclePlan $ \plan ->
-            joinReconcile $
-                withPlannedResourceOfKind plan ProviderResourceKind "core:deploy-vm" $ \provider ->
-                    joinReconcile $
-                        withPlannedResourceOfKind plan DurableShareResourceKind "core:copy-source" $ \share ->
-                            joinReconcile $
-                                withManagedProvider providerGate plan provider $ \managedProvider ->
-                                    Right
-                                        ( aliasAction
+    prepareProject backend projectPlan =
+        case NonEmpty.toList (ProjectPlan.forward projectPlan) of
+            [providerNode, shareNode] -> do
+                carrier <- Execution.newResourceCarrier
+                providerRuntime <- Execution.newStepRuntime carrier
+                shareRuntime <- Execution.newStepRuntime carrier
+                let providerExecution = stepExecutionFor projectPlan backendHostConfig providerRuntime providerNode
+                    shareExecution = stepExecutionFor projectPlan backendHostConfig shareRuntime shareNode
+                    providerKey = Execution.stepExecutionOperationKey providerExecution
+                    shareKey = Execution.stepExecutionOperationKey shareExecution
+                    binding = providerBackendBinding backend
+                providerGate <- executionGate providerExecution
+                readyGate <- executionGate providerExecution
+                shareGate <- executionGate shareExecution
+                aliasGate <- gateFor (Execution.stepExecutionPlanDigest shareExecution) aliasOperation
+                joinIO $
+                    withNodeResourceOfKind providerExecution ProviderResourceKind providerKey $ \plannedProvider ->
+                        joinIO $
+                            withNodeObservedResource providerExecution plannedProvider 17 7 $ \observedProvider ->
+                                joinIO $
+                                    withPreparedProviderProvision
+                                        providerExecution
+                                        binding
+                                        plannedProvider
+                                        observedProvider
+                                        providerGate
+                                        ( provisionProvider
+                                            backend
+                                            projectPlan
+                                            providerExecution
+                                            shareExecution
+                                            plannedProvider
+                                            shareKey
+                                            readyGate
                                             shareGate
                                             aliasGate
-                                            plan
-                                            provider
-                                            share
-                                            managedProvider
+                                        )
+            nodes -> pure (Left (Failure (FailureDetail "alias fixture" (Text.pack ("expected two nodes, got " ++ show (length nodes))) DoNotRetry)))
+
+    provisionProvider backend projectPlan providerExecution shareExecution plannedProvider shareKey readyGate shareGate aliasGate preparedProvision = do
+        rawResult <- runProviderProvisionCall backend preparedProvision
+        case settleProviderProvision Nothing preparedProvision rawResult of
+            Left failure -> pure (Left failure)
+            Right settled ->
+                withProviderProvisionSettlement
+                    settled
+                    ( \provisioned _ -> do
+                        let preparedReady =
+                                withPreparedProviderReady
+                                    providerExecution
+                                    plannedProvider
+                                    provisioned
+                                    (providerStartableAfterProvision provisioned)
+                                    readyGate
+                                    (\call -> do
+                                        result <- runProviderReadyCall backend call
+                                        pure (settleProviderReady call result))
+                        booted <- joinIO preparedReady
+                        case booted of
+                            Left failure -> pure (Left failure)
+                            Right advance ->
+                                withProviderPhaseAdvance advance $ \running ->
+                                    openBound backend projectPlan shareExecution plannedProvider shareKey shareGate aliasGate running
+                    )
+                    (\_ _ _ _ -> pure (Left (Failure (FailureDetail "alias fixture" "unexpected foreign provider" DoNotRetry))))
+
+    openBound backend projectPlan shareExecution plannedProvider shareKey shareGate aliasGate running =
+        case withProviderBoundExec backend running $ \bound ->
+            discoverProvider running testProvider bound $ \capability ->
+                case discoverStrongAliasBackend capability of
+                    Left failure -> pure (Left failure)
+                    Right aliasBackend ->
+                        prepareShare backend projectPlan shareExecution plannedProvider shareKey shareGate aliasGate capability aliasBackend running of
+            Left failure -> pure (Left failure)
+            Right discoverAction -> do
+                discovered <- discoverAction
+                pure $ case discovered of
+                    Left providerFailure -> Left (providerError providerFailure)
+                    Right result -> result
+
+    prepareShare backend projectPlan shareExecution plannedProvider shareKey shareGate aliasGate capability aliasBackend running =
+        joinIO $
+            withNodeResourceOfKind shareExecution DurableShareResourceKind shareKey $ \plannedShare ->
+                joinIO $
+                    withNodeObservedResource shareExecution plannedShare 11 13 $ \observedShare -> do
+                        shareSpec <- pure (mkProviderShareSpec "/srv/hostbootstrap/data" "/srv/hostbootstrap/data")
+                        case shareSpec of
+                            Left failure -> pure (Left failure)
+                            Right declaredShare ->
+                                flattenIO $
+                                    withPreparedProviderShare
+                                        shareExecution
+                                        plannedShare
+                                        observedShare
+                                        running
+                                        (dependencyProbe (pure (Right 17)))
+                                        declaredShare
+                                        shareGate
+                                        ( settleShare
+                                            backend
+                                            projectPlan
+                                            shareExecution
+                                            plannedProvider
+                                            plannedShare
+                                            aliasGate
+                                            capability
+                                            aliasBackend
+                                            running
                                         )
 
-    aliasAction shareGate aliasGate plan provider share managedProvider =
-        withManagedShare shareGate plan share managedProvider $ \managedShare ->
-            joinIO $
-                withProviderGuestAliasProjection plan provider share $ \alias edge ->
-                    joinIO $
-                        withObservedPlannedResource plan alias 23 29 $ \aliasHandle ->
-                            case shareSnapshot share managedShare of
-                                Left err -> pure (Left err)
-                                Right snapshot ->
-                                    flattenIO $
-                                        withPreparedGuestAliasCall
-                                            alias
-                                            edge
-                                            aliasHandle
-                                            snapshot
-                                            spec
-                                            aliasGate
-                                            (consume plan aliasHandle)
+    settleShare backend _projectPlan shareExecution plannedProvider plannedShare aliasGate capability aliasBackend running preparedShare = do
+        result <- runProviderShareCall backend preparedShare
+        case settleProviderShare Nothing preparedShare result of
+            Left failure -> pure (Left failure)
+            Right settled ->
+                withProviderShareSettlement
+                    settled
+                    (\managedShare _ -> prepareAlias shareExecution plannedProvider plannedShare aliasGate capability aliasBackend running managedShare)
+                    (\_ _ _ _ -> pure (Left (Failure (FailureDetail "alias fixture" "unexpected foreign share" DoNotRetry))))
+    prepareAlias shareExecution plannedProvider plannedShare aliasGate capability aliasBackend running managedShare =
+        joinIO $
+            withNodeGuestAliasProjection shareExecution plannedProvider plannedShare $ \plannedAlias edge ->
+                joinIO $
+                    withNodeObservedResource shareExecution plannedAlias 23 29 $ \observedAlias ->
+                        flattenIO $
+                            withPreparedGuestAliasCall
+                                aliasBackend
+                                running
+                                managedShare
+                                plannedAlias
+                                edge
+                                observedAlias
+                                (dependencyProbe (pure (Right 19)))
+                                aliasSpec
+                                aliasGate
+                                (consume capability aliasBackend running)
 
-    -- The plan's dependency snapshot for the alias operation: the managed
-    -- durable share, registered with the plan-owned readiness probe the
-    -- traversal runs at prepare time.
-    shareSnapshot share managedShare =
-        case withBackendProbe
-            DurableShareProbe
-            share
-            11
-            19
-            shareObservationVersion
-            (const (pure (ProbeReady ())))
-            ( \probe ->
-                withDependencySnapshotEntry
-                    managedShare
-                    (planDependencyProbe rolloutPoll "durable share" managedShare probe stubHostConfig)
-                    emptyDependencySnapshot
-            ) of
-            Left constructionError ->
-                Left
-                    ( Failure
-                        ( FailureDetail
-                            "construct durable-share probe"
-                            (Text.pack (show constructionError))
-                            DoNotRetry
-                        )
-                    )
-            Right snapshot -> Right snapshot
-
-stubHostConfig :: HostConfig
-stubHostConfig = error "the injected probe does not inspect HostConfig"
-
-withManagedProvider ::
-    PreparedGate ->
-    LifecyclePlan FixtureScope planId ->
-    PlannedResource FixtureScope planId providerId ProviderResource providerFrame ->
-    ( ResourceHandle
-        FixtureScope
-        planId
-        providerId
-        ProviderResource
-        Managed
-        Provisioned ->
-      result
-    ) ->
-    Either ReconcileError result
-withManagedProvider gate plan planned consume =
-    joinReconcile $
-        withObservedPlannedResource plan planned 5 7 $ \observed -> do
-            descriptor <- plannedOperation plan planned observed "provider:create"
-            preconditionSet <- zeroDependencyPreconditions descriptor
-            joinReconcile $
-                withPreparedOperation descriptor preconditionSet gate $ \prepared preconditions -> do
-                    reconciled <-
-                        completeReconcile
-                            observed
-                            prepared
-                            preconditions
-                            (BackendCreated 5)
-                    withReconcileResult
-                        reconciled
-                        (\managed _ _ -> Right (consume managed))
-                        (\_ _ -> Left (Failure (FailureDetail "test provider" "unexpected foreign provider" DoNotRetry)))
-
-withManagedShare ::
-    PreparedGate ->
-    LifecyclePlan FixtureScope planId ->
-    PlannedResource FixtureScope planId shareId DurableShareResource shareFrame ->
-    ResourceHandle
-        FixtureScope
-        planId
-        providerId
-        ProviderResource
-        Managed
-        Provisioned ->
-    ( ResourceHandle
-        FixtureScope
-        planId
-        shareId
-        DurableShareResource
-        Managed
-        Provisioned ->
-      IO (Either ReconcileError result)
-    ) ->
-    IO (Either ReconcileError result)
-withManagedShare gate plan planned managedProvider consume =
-    joinIO $
-        withObservedPlannedResource plan planned 11 13 $ \observed ->
-            case plannedOperation plan planned observed "share:mount" of
-                Left err -> pure (Left err)
-                Right descriptor -> do
-                    sealed <- withOperationPreconditions descriptor providerSnapshot
-                    case sealed of
-                        Left err -> pure (Left err)
-                        Right preconditionSet ->
-                            joinIO $
-                                withPreparedOperation descriptor preconditionSet gate $
-                                    \prepared preconditions ->
-                                        case completeReconcile observed prepared preconditions (BackendCreated 11) of
-                                            Left err -> pure (Left err)
-                                            Right reconciled ->
-                                                withReconcileResult
-                                                    reconciled
-                                                    (\managed _ _ -> consume managed)
-                                                    (\_ _ -> pure (Left (Failure (FailureDetail "test durable share" "unexpected foreign share" DoNotRetry))))
-  where
-    providerSnapshot =
-        withDependencySnapshotEntry
-            managedProvider
-            (dependencyProbe (pure (Right 17)))
-            emptyDependencySnapshot
-
-testPlan :: StepPlan
-testPlan =
-    either
-        (error . show)
-        id
-        ( mkStepPlan
-            [ descendsVia localContext (deployVMStep "provider" (StepFrame "host" "Host") (const (pure StepChanged)))
-            , copySourceStep "durable share" (StepFrame "provider" "Provider") (const (pure StepChanged))
-            ]
+providerError :: ProviderError -> ReconcileError
+providerError failure =
+    Unsupported
+        ( UnsupportedDetail
+            "discover provider capability"
+            (Text.pack (show failure))
         )
 
-testPlanDigest :: Text.Text
-testPlanDigest = withTestLifecyclePlan lifecyclePlanDigest
+executionGate :: Execution.StepExecution scope planId -> IO PreparedGate
+executionGate execution =
+    gateFor
+        (Execution.stepExecutionPlanDigest execution)
+        (Execution.stepExecutionOperationKey execution)
 
-withTestLifecyclePlan ::
-    (forall planId. LifecyclePlan FixtureScope planId -> result) ->
-    result
-withTestLifecyclePlan consume =
-    withProductionProjectCodec @Fixture.FixtureProject @Fixture.ProjectConfig $ \codec ->
-        withLifecyclePlan codec testPlan consume
+fixtureBackendExec :: HostRunner -> GuestRunner -> ProviderBackendExec
+fixtureBackendExec host guest =
+    ProviderBackendExec
+        { runProviderBackendExec = \request -> case providerBackendRequestView request of
+            ProviderBackendProcess _ argv
+                | Just "provision" <- providerMode argv -> pure (successfulReport "CREATED provider-17")
+                | Just "ready" <- providerMode argv -> pure (successfulReport "READY")
+                | Just "share" <- providerMode argv -> pure (successfulReport "SHARE_ATTACHED")
+                | Just "guest" <- providerMode argv ->
+                    case guestExtra argv of
+                        Nothing -> pure (RawProviderFailure "malformed locked guest request")
+                        Just inner -> guest inner >>= pure . guestWire
+                | isOwnershipProbe argv -> pure (successfulReport "PROVED flock")
+                | otherwise -> host argv
+        , waitProviderBackendExec = \_ -> pure ()
+        }
+
+providerMode :: [String] -> Maybe String
+providerMode argv = firstPresent ["provision", "ready", "share", "guest"]
+  where
+    firstPresent [] = Nothing
+    firstPresent (candidate : rest)
+        | candidate `elem` argv = Just candidate
+        | otherwise = firstPresent rest
+
+guestExtra :: [String] -> Maybe [String]
+guestExtra argv = case dropWhile (/= "guest") argv of
+    "guest" : boundFields -> Just (drop 8 boundFields)
+    _ -> Nothing
+
+guestWire :: RawProviderOutcome -> RawProviderOutcome
+guestWire outcome = case outcome of
+    RawProviderFailure reason -> RawProviderFailure reason
+    RawProviderExit code out err ->
+        RawProviderExit
+            ExitSuccess
+            ("GUEST " ++ show (exitNumber code) ++ " " ++ hexField out ++ " " ++ hexField err ++ "\n")
+            ""
+
+exitNumber :: ExitCode -> Int
+exitNumber ExitSuccess = 0
+exitNumber (ExitFailure code) = code
+
+hexField :: String -> String
+hexField "" = "-"
+hexField value = concatMap hexCharacter value
+  where
+    hexCharacter character =
+        case showHex (ord character) "" of
+            [digit] -> ['0', digit]
+            digits -> digits
+
+successfulReport :: String -> RawProviderOutcome
+successfulReport report = RawProviderExit ExitSuccess (report ++ "\n") ""
+
+successfulHost :: HostRunner
+successfulHost _ = pure (RawProviderExit ExitSuccess "" "")
+
+supportedGuest :: GuestRunner
+supportedGuest argv = case argv of
+    ["true"] -> pure (RawProviderExit ExitSuccess "" "")
+    ["which", "flock"] -> pure (RawProviderExit ExitSuccess "/opt/hb/flock\n" "")
+    ["which", "stat"] -> pure (RawProviderExit ExitSuccess "/opt/hb/stat\n" "")
+    ["/opt/hb/stat", "-c", "%d:%i", "/"] -> pure (RawProviderExit ExitSuccess "1:2\n" "")
+    ["which", "python3"] -> pure (RawProviderExit ExitSuccess "/opt/hb/python3\n" "")
+    ["/opt/hb/python3", "-c", "print('hostbootstrap-python3')"] -> pure (RawProviderExit ExitSuccess "hostbootstrap-python3\n" "")
+    _ | isAliasInvocation argv -> pure (RawProviderExit ExitSuccess "CREATED 1:2\n" "")
+    _ -> pure (RawProviderExit (ExitFailure 127) "" "unsupported fixture command\n")
+
+fallbackGuest :: GuestRunner
+fallbackGuest argv = case argv of
+    ["which", "flock"] -> pure (RawProviderExit (ExitFailure 1) "" "")
+    ["which", "lockf"] -> pure (RawProviderExit ExitSuccess "/opt/hb/lockf\n" "")
+    ["which", "stat"] -> pure (RawProviderExit ExitSuccess "/opt/hb/stat\n" "")
+    ["/opt/hb/stat", "-c", "%d:%i", "/"] -> pure (RawProviderExit (ExitFailure 1) "" "")
+    ["/opt/hb/stat", "-f", "%d:%i", "/"] -> pure (RawProviderExit ExitSuccess "1:2\n" "")
+    ["which", "python3"] -> pure (RawProviderExit ExitSuccess "/opt/hb/python3\n" "")
+    ["/opt/hb/python3", "-c", "print('hostbootstrap-python3')"] -> pure (RawProviderExit ExitSuccess "hostbootstrap-python3\n" "")
+    ["true"] -> pure (RawProviderExit ExitSuccess "" "")
+    _ | isAliasInvocation argv -> pure (RawProviderExit ExitSuccess "CREATED 1:2\n" "")
+    _ -> pure (RawProviderExit (ExitFailure 127) "" "unsupported fixture command\n")
+
+bsdGuest :: GuestRunner
+bsdGuest argv = case argv of
+    ["which", "flock"] -> pure (RawProviderExit ExitSuccess "/opt/hb/flock\n" "")
+    ["which", "stat"] -> pure (RawProviderExit ExitSuccess "/opt/hb/stat\n" "")
+    ["/opt/hb/stat", "-c", "%d:%i", "/"] -> pure (RawProviderExit (ExitFailure 1) "" "")
+    ["/opt/hb/stat", "-f", "%d:%i", "/"] -> pure (RawProviderExit ExitSuccess "1:2\n" "")
+    ["which", "python3"] -> pure (RawProviderExit ExitSuccess "/opt/hb/python3\n" "")
+    ["/opt/hb/python3", "-c", "print('hostbootstrap-python3')"] -> pure (RawProviderExit ExitSuccess "hostbootstrap-python3\n" "")
+    ["true"] -> pure (RawProviderExit ExitSuccess "" "")
+    _ | isAliasInvocation argv -> pure (RawProviderExit ExitSuccess "CREATED 1:2\n" "")
+    _ -> pure (RawProviderExit (ExitFailure 127) "" "unsupported fixture command\n")
+
+forDiscoveryFailure :: String -> GuestRunner -> IO ()
+forDiscoveryFailure label guest = do
+    outcome <-
+        withAliasFixture
+            (aliasPlan (fixtureSalt label))
+            portableAliasSpec
+            successfulHost
+            guest
+            (\_ _ _ _ -> pure (Right ()))
+    case outcome of
+        Left (Failure _) -> pure ()
+        other -> assertFailure ("expected discovery Failure for " ++ label ++ ", got " ++ show other)
+
+forAliasResultFailure :: String -> GuestRunner -> IO ()
+forAliasResultFailure label guest = do
+    outcome <-
+        withAliasFixture
+            (aliasPlan (fixtureSalt label))
+            portableAliasSpec
+            successfulHost
+            guest
+            ( \_ backend _ call -> do
+                result <- runPreparedGuestAliasCall backend call
+                pure (Right (aliasCallResultView result))
+            )
+    case outcome of
+        Right (AliasResultFailed _) -> pure ()
+        other -> assertFailure ("expected alias result Failure for " ++ label ++ ", got " ++ show other)
+
+forReleaseFailure :: String -> GuestRunner -> IO ()
+forReleaseFailure label guest = do
+    outcome <- releaseOutcome label guest
+    case outcome of
+        Left (Failure _) -> pure ()
+        other -> assertFailure ("expected release Failure for " ++ label ++ ", got " ++ show other)
+
+releaseOutcome :: String -> GuestRunner -> IO (Either ReconcileError ())
+releaseOutcome label guest =
+    withAliasFixture
+        (aliasPlan (fixtureSalt label))
+        portableAliasSpec
+        successfulHost
+        guest
+        ( \_ backend _ call -> do
+            result <- runPreparedGuestAliasCall backend call
+            case settlePreparedGuestAliasCall Nothing call result of
+                Left failure -> pure (Left failure)
+                Right settled ->
+                    withGuestAliasCallSettlement
+                        settled
+                        (\managed _ -> runRelease backend managed)
+                        (\_ _ _ _ -> pure (Left (Failure (FailureDetail "release result fixture" "unexpected foreign alias" DoNotRetry))))
+        )
+
+fixtureSalt :: String -> String
+fixtureSalt = ("failure-" ++) . map replace
+  where
+    replace character
+        | isAlphaNum character = character
+        | otherwise = '-'
+
+isGuestToolProbe :: [String] -> Bool
+isGuestToolProbe ["true"] = False
+isGuestToolProbe _ = True
+
+isOwnershipProbe :: [String] -> Bool
+isOwnershipProbe argv = case reverse argv of
+    "flock" : _ -> True
+    _ -> False
+
+isListRequest :: [String] -> Bool
+isListRequest ("list" : _) = True
+isListRequest _ = False
+
+isEgressRequest :: [String] -> Bool
+isEgressRequest ("image" : "info" : _) = True
+isEgressRequest _ = False
+
+isPythonMarker :: [String] -> Bool
+isPythonMarker (_ : "-c" : "print('hostbootstrap-python3')" : []) = True
+isPythonMarker _ = False
+
+isAliasInvocation :: [String] -> Bool
+isAliasInvocation argv = isReconcileInvocation argv || isReleaseInvocation argv
+
+isReconcileInvocation :: [String] -> Bool
+isReconcileInvocation = elem "reconcile"
+
+isReleaseInvocation :: [String] -> Bool
+isReleaseInvocation = elem "release"
+
+ownerFromArgv :: [String] -> Maybe String
+ownerFromArgv argv = case dropWhile (/= "reconcile") argv of
+    "reconcile" : _alias : _target : _record : owner : _ -> Just owner
+    _ -> Nothing
+
+assertExactRetainedTools :: [String] -> IO ()
+assertExactRetainedTools argv = do
+    take 1 argv @?= ["/opt/hb/flock"]
+    assertBool "exact Python path retained" ("/opt/hb/python3" `elem` argv)
+    reverse (take 3 (reverse argv)) @?= ["/opt/hb/stat", "-f", "%d:%i"]
+    assertBool "no bare lock command" ("flock" `notElem` argv)
+    assertBool "no bare Python command" ("python3" `notElem` argv)
+    assertBool "no bare stat command" ("stat" `notElem` argv)
+
+#ifndef mingw32_HOST_OS
+localGuest :: GuestRunner
+localGuest ["which", "flock"] = pure (RawProviderExit ExitSuccess "/test/bin/flock\n" "")
+localGuest ("/test/bin/flock" : "-x" : lock : executable : argv) =
+    runLocal executable (["-c", flockDriver, lock, executable] ++ argv)
+localGuest [] = pure (RawProviderFailure "empty guest command")
+localGuest (executable : argv) = runLocal executable argv
+
+-- Exercise the real flock(2) namespace without depending on a host-installed
+-- flock(1).  The inheritable descriptor holds the lock across exec into the
+-- exact alias helper process.  Portable tests separately assert that only the
+-- retained Flock front end can authorize this route.
+flockDriver :: String
+flockDriver =
+    unlines
+        [ "import fcntl"
+        , "import os"
+        , "import sys"
+        , "lock_path, command, *arguments = sys.argv[1:]"
+        , "descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)"
+        , "fcntl.flock(descriptor, fcntl.LOCK_EX)"
+        , "os.set_inheritable(descriptor, True)"
+        , "os.execv(command, [command] + arguments)"
+        ]
+
+runLocal :: FilePath -> [String] -> IO RawProviderOutcome
+runLocal executable argv = do
+    outcome <- try (readProcessWithExitCode executable argv "")
+    pure $ case outcome of
+        Left failure -> RawProviderFailure (displayException (failure :: IOException))
+        Right (code, out, err) -> RawProviderExit code out err
+#endif
+
+backendHostConfig :: HostConfig
+backendHostConfig =
+    HostConfig
+        { hcSubstrate = Substrate LinuxCpu Amd64
+        , hcToolPaths =
+            Map.fromList
+                [ (Incus, mustAbs "/test/bin/incus")
+                , (Python3, mustAbs "/test/bin/python3")
+                , (Flock, mustAbs "/test/bin/flock")
+                ]
+        }
+
+mustAbs :: FilePath -> AbsExe
+mustAbs path = either error id (mkAbsExe path)
 
 testProvider :: SubstrateProvider
 testProvider =
     either
-        (error . ("selectSubstrateProvider failed: " ++))
+        (error . ("select provider: " ++))
         id
         ( selectSubstrateProvider
             (Substrate LinuxCpu Amd64)
@@ -899,16 +1183,34 @@ testProvider =
                 }
         )
 
+portableAliasSpec :: GuestAliasSpec
+portableAliasSpec = either (error . show) id (mkGuestAliasSpec "/var/tmp/hb-alias" "/srv/hb-share")
+
+aliasOperation :: Text.Text
+aliasOperation = "core:deploy-vm/core:copy-source/guest-alias"
+
+aliasPlan :: String -> StepPlan
+aliasPlan salt =
+    either
+        (error . show)
+        id
+        ( mkStepPlan
+            [ descendsVia localContext (deployVMStep ("provider-" ++ salt) (StepFrame "host" "Host") (const (pure StepChanged)))
+            , projectsOperation
+                (Text.unpack aliasOperation)
+                (copySourceStep ("share-" ++ salt) (StepFrame "provider" "Provider") (const (pure StepChanged)))
+            ]
+        )
+
+isLeft :: Either left right -> Bool
+isLeft (Left _) = True
+isLeft (Right _) = False
+
 joinReconcile :: Either ReconcileError (Either ReconcileError value) -> Either ReconcileError value
 joinReconcile = either Left id
 
 joinIO :: Either ReconcileError (IO (Either ReconcileError value)) -> IO (Either ReconcileError value)
 joinIO = either (pure . Left) id
 
-flattenIO ::
-    IO (Either ReconcileError (Either ReconcileError value)) ->
-    IO (Either ReconcileError value)
-flattenIO = fmap joinReconcile
-
-isLeft :: Either left right -> Bool
-isLeft = either (const True) (const False)
+flattenIO :: IO (Either ReconcileError (IO (Either ReconcileError value))) -> IO (Either ReconcileError value)
+flattenIO action = action >>= joinIO

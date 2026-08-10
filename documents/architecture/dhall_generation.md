@@ -80,8 +80,9 @@ mutation-authority gate. `test run` reads `<project>.test.dhall` and installs/re
 `HostBootstrap.Harness.GeneratedConfig`, which holds the four § EE ownership clauses over that file:
 a found config is refused before any mutation, and cleanup unlinks only on an exact re-observed identity
 and payload. The refusal is the post-sweep one derived from installed project identity, so an
-interrupted run's own config is reclaimed rather than blocking the next run. Verified receipts for the
-remaining lifecycle resources are still Phase 10.9/16.6 work.
+interrupted run's own config is reclaimed rather than blocking the next run. Durable verification and
+rehydration of the complete lifecycle resource set belongs to the
+[recovery and migration phase](../../DEVELOPMENT_PLAN/phase-18-recovery-and-migration.md).
 Only the existing-frame commands
 `project up|down|destroy`, `service run`, and `check-code` use the sibling project-config command gate.
 The exact current-versus-target matrix lives in
@@ -94,8 +95,9 @@ The binary-generated role has two relevant forms:
 1. **Standalone artifact tier** — typed examples such as the numeric budget/pod artifact whose
    `fitsWithin` assertion is meaningful because both operands are present.
 2. **Project-owned test override** — one executable-sibling `<project>.test.dhall`. In the demo it
-   carries a redundant suite-name list plus resource overrides; compiled Haskell owns cases and config
-   variants. The live demo planner currently selects Production/`.data`, not `.test_data`.
+   carries resource overrides and declarative message variants; compiled Haskell owns case bodies, while
+   `demoTestMatrix` projects every compiled case across the decoded variants. Each run is admitted under
+   exact Harness scope and owns `.test_data/<runId>`.
 
 These are artifacts the binary emits; `hostbootstrap-core` does not hand-author project-specific
 instances. The binary emits validated-codec schemas for registered artifacts and the project-owned
@@ -118,10 +120,9 @@ config from `psAssemble (HarnessAssembly authority tcfg draft)`, and `test init`
 the project-owned `tcfg` through `psTestInit`. The generic type therefore enforces one structural
 project-config assembly path.
 
-The shared permissive `InitArgs` representation is current implementation, not the finished contract.
-The development plan assigns opaque writer-specific init requests and the explicit overwrite-policy
-type to Phase 17 Sprint 17.4, and smart construction of compatible role/class authority to Phase 15
-Sprint 15.9. A project
+The shared permissive `InitArgs` representation is the current parser contract. Role additions pass
+through the closed `roleAdditionAllowed` relation and `addRole` validating smart constructor; incompatible
+primary-role additions are refused during assembly. A project
 may carry its own typed Parameters-layer fields on `cfg`: the demo's mandatory `message : Text` (its
 `psAssemble` default `"Hello, world!"`) is one such field, rendered into the root `<project>.dhall` and read
 by the `Web` service.
@@ -141,14 +142,15 @@ raw resource envelope. The smaller cluster slice is computed locally for cluster
 projected into service/daemon configs. VM/container payloads are written at the child's
 executable-sibling location before dispatch. Trusted projection narrows the generated context's allowed
 command classes so a service config is not intended to launch host VMs and a container config is not
-intended to perform host orchestration. Phase 9.10 owns exact resource slices and Phase 19.8 owns
-role-specific parameter payloads. Current declarations are still
-constructible/widenable data: current `addRole` unions an added role's command classes and capabilities
-while retaining the primary context kind. `service run` separately rejects a non-leaf primary kind, but
-`project up` checks only `ClusterLifecycleCommand`, so an orchestration-widened `Daemon` or
-`ImageBuildContainer` can incorrectly pass. Phase 15.9 makes those incompatible combinations
-unrepresentable with opaque role-specific authorities and smart constructors. Its transport target frames
-the narrowed config wire plus a separate opaque `HandoffToken` issued by the validated parent's
+intended to perform host orchestration. `addRole` is a validating smart constructor over a closed
+role-addition relation, `service run` rejects a non-leaf primary kind, and lifecycle validation re-derives
+placement from the complete topology instead of trusting a declared command-class list. The
+[worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns the concrete workload, partition,
+and exact frame resource slices; the
+[service runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md) owns the narrowed service
+request consumed by a registered handler. The
+[authenticated handoff and child admission phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
+frames the narrowed config wire plus a separate opaque `HandoffToken` issued by the validated parent's
 profile-specific broker under the exact
 `BoundRunLease scope specDigest planDigest brokerGeneration` on a private duplex session. No token or permit exists
 while the lease is still unbound. The binary receiver
@@ -181,8 +183,8 @@ evaluates with no network access, both in-process via the Haskell `dhall` librar
 layers embed it via `let C = ./Core.dhall` and extend it; they never redefine the L0 types (the Dhall
 stream of the extension-stream contract—see [library_hierarchy](library_hierarchy.md)). An exhaustive
 test derives every type-valued export from the normalized record and requires a named Haskell codec
-whose schema is judgmentally equal. Execution shape is deliberately absent from the vocabulary:
-Sprint 10.10 removed the unconsumed parallel union so lifecycle steps remain the sole representation.
+whose schema is judgmentally equal. Execution shape is deliberately absent from the vocabulary;
+lifecycle steps are its sole representation.
 
 ## The Load-Bearing Nuance: Validated Types, Hand-Written Functions
 
@@ -219,9 +221,12 @@ nuance of the model:
 
 This split defines the lower-layer drift control: type expressions share a validated witness, while the
 part that cannot be reflected (functions) is pinned by evaluation tests. Current decode/validation uses
-opaque scalar constructors and one project-owned budget; Sprint 9.10 adds exact provider admission and
-constructive partition evidence. The target resolved workload fit is
-enforced by `fitsBudget` before effects once the complete topology-derived set exists. See
+opaque scalar constructors and one project-owned budget. The
+[step algebra and project plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)
+admits the exact plan-owned generic budget; the
+[worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns its concrete workload, overhead,
+partition, and slices. The resolved workload fit is enforced by `fitsBudget` before effects once that
+complete topology-derived set exists. See
 [config_generation](../engineering/config_generation.md) for the `ConfigArtifact` registry and the
 current child-projection seams that realize this, and
 [resource_budgeting](../engineering/resource_budgeting.md) for the budget the assertion guards.
@@ -231,7 +236,7 @@ current child-projection seams that realize this, and
 The built binary exposes the Dhall surface through the `project` chain. The default `project init`
 invocation renders a fresh root config from the project's Production assembly defaults (core ships none); its
 current `--role` / repeatable `--also-role` / `--output` / `--force` / `--if-missing` surface supports
-explicit role and write-policy modes pending the typed replacement. Child projection is implemented, but
+explicit role and write-policy modes. Child projection is implemented, but
 its current operation ownership is split: composite bootstrap owns the VM config, the plan-declared
 descent plus handoff owns the container payload, and deployment actions own service/daemon ConfigMaps;
 the `context-init` action body only announces the handoff. Dockerfiles separately bake the narrow
@@ -244,7 +249,7 @@ while `fitsWithin` and `split` remain evaluation-tested.
 The parameters/context/witness data model and its current-versus-target authority distinction are defined
 in `binary_context_config`.
 
-A single `project up` on Incus/Linux interprets the VM-backed branch of
+A target recursive `project up` on Incus/Linux interprets the VM-backed branch of
 `demoChainFor :: Substrate -> ProjectConfig -> [Step]` across the three-frame fractal descent and stands up
 the live persistent stack: the cordoned kind cluster, the in-cluster registry, the project image pushed to
 that registry, and the web chart pod serving

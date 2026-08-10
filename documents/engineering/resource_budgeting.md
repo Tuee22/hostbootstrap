@@ -10,50 +10,55 @@
 
 ## TL;DR
 
-- Phase 9 admits one opaque `ValidatedBudget` only when the selected provider can represent every
-  dimension exactly. Its user-visible byte values and the sole `EffectiveBudget` are equal, so no builder
-  can silently round a hard ceiling upward. The demo now has one project-owned `resources` value;
-  `BinaryContext` has no duplicate envelope, and lifecycle sizing reads the project value. Child-config
-  helpers still preserve that full value rather than carrying a proved per-frame slice.
+- The [canonical-quantities-and-reconcile-results
+  phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md) owns exposed,
+  provider-neutral `HostBootstrap.Cluster.Cordon.Foundation`: opaque canonical-unit `ResourceBudget`,
+  exact parsing/refusal, capacity reads/checks, exact-budget sizing renderers, and storage policy. That
+  phase separately owns the generic readiness and reconcile vocabulary. The
+  [Dhall-configuration-and-generic-project-model
+  phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md) owns the public
+  `HostBootstrap.Cluster.Cordon` facade that reexports the foundation and adapts
+  `Config.Vocab.Resources`/`ResourceEnvelope`, its preflight wrappers, and descriptive `fitsBudget`. The
+  [step-algebra-and-project-plan
+  phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md) owns the exact generic Budget
+  admission boundary: one `ProjectPlan`, matching provider/cluster `PlannedResource`s, and its
+  `DerivedTopology`. It accepts no compatibility `Reconcile.LifecyclePlan`, caller-supplied plan digest,
+  frame, resource identity, or topology graph.
+- `ValidatedBudget`, provider capability, workload fit, partition, slice, reservation, prepared call, and
+  live wall carry one nominal plan lineage. Raw provider/cluster observations remain deliberately
+  plan-independent data; prepared and settled packages plus managed/live authority retain the plan indices.
+  The [cluster-lifecycle-and-cordoning
+  phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) owns exact cluster and direct-Colima
+  consumer adoption. The [worked-demo
+  phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns the concrete demo workload, overhead, partition,
+  and slices.
 - On provider-backed lanes, the target effective wall is cordon #1. A `BudgetPartition` exists only after
-  proving every positive cluster slice plus explicit provider/VM overhead fits within that wall and meets
-  all provider/node minima. Lima and Incus use per-VM walls. **WSL2 has no per-distro CPU/memory wall**:
-  its one shared utility-VM ceiling is protected by the four
-  [ownership invariant](../architecture/ownership_invariant.md) clauses, while the VHDX is a separate
-  per-distro slice; a foreign or incompatible concurrent declaration returns `Conflict` rather than
-  overwriting `.wslconfig`. On `project down`, WSL restores the journalled origin and then performs a
-  global shutdown, promptly releasing the utility VM's wall; its finite idle timeouts are an interrupted-run
-  backstop. See [wsl2](wsl2.md) § Wall release. The pure algebra now rejects backend-inexact byte
-  quantities rather than rounding them upward and represents WSL live authority only with its global
-  lease. Current Lima/Incus sizing is creation-only, WSL rewrites global settings without resizing an
-  existing VHDX, and provider integrations have not uniformly adopted the authority. The budget is never
-  added to itself — see
-  [design rationale](../../DEVELOPMENT_PLAN/rationale.md),
-  [wsl2](wsl2.md), and [applied_cordon](applied_cordon.md).
-- A test config may override the budget. The demo projects that resource override into its generated
-  config, but currently resolves a **Production** cluster plan; test-profile isolation is an open defect.
-- The project binary verifies capacity before the relevant VM launch or cluster creation, then applies
-  the available cordon—a dedicated VM (Lima for the Apple pristine demo, Incus on the Linux CPU lane,
-  WSL2 on Windows) or a kind/nvkind-node cap. The only budget-capped one-shot container seam is
-  definition/test-only and the production project-container lift supplies no CPU/memory limit. Direct
-  Apple Colima now has a prepared, exact, project-profile adapter; command-plan integration remains
-  downstream. Direct Linux GPU performs uncapped outer host build/container work and caps only the later
-  nvkind nodes.
-- A cluster with multiple node containers receives the cluster envelope **once**: lifecycle splits CPU,
-  memory, and storage evenly (flooring each share) and applies the CPU/memory cap to every node. The
-  `nvkind` direct GPU topology is one control-plane plus one GPU worker, so neither node receives the
-  full envelope.
-- Selected CPU, memory, replicas, ports, and timeouts have private constructors and total smart
-  constructors. The sole project resource value passes positive budget validation and selected-provider
-  exactness before the Phase 9 partition evidence can exist. The intended resolved
-  concurrent-pod gate is not wired into lifecycle bring-up: `fitsBudget` is unit-tested and used by a
-  static demo API view whose `demoPods` lists only the web example. Storage has a real free-space
-  preflight and provider VM walls, but
-  **bare Linux has no runtime storage quota or image-GC cap**. Applied detail lives in
-  [applied_cordon](applied_cordon.md).
-- Downstream binaries do not read the host config directly; they consume resources in their own sibling
-  `<project>.dhall`. Current projection copies the parent's full project budget; the target projects an exact
-  plan/frame-indexed slice.
+  proving every positive slice plus explicit overhead fits within that wall and meets provider/node minima.
+  Lima and Incus use per-VM walls. **WSL2 has no per-distro CPU/memory wall**: its one shared utility-VM
+  ceiling is protected by the four [ownership invariant](../architecture/ownership_invariant.md) clauses,
+  while the VHDX is a separate per-distro slice. An incompatible concurrent declaration returns `Conflict`
+  rather than overwriting `.wslconfig`; `project down` restores the journalled origin and performs global
+  shutdown. See [wsl2](wsl2.md) § Wall release.
+- The demo has one project-owned `resources` value and `BinaryContext` has no duplicate envelope. Child-config
+  projection currently copies the full scoped `ProjectConfig.resources`; the [worked-demo
+  phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) replaces full-budget consumer forwarding with exact
+  slices. A test config may override the budget and now selects a Harness cluster/root, but those consumers
+  still derive an independent `ClusterProfile` from config. That phase replaces the duplicate profile/root
+  input with the retained plan projection.
+- The project binary verifies capacity before the relevant VM launch or cluster creation and applies the
+  available provider or kind/nvkind-node cordon. Current Lima/Incus sizing is creation-only. Bare Linux has
+  no runtime storage quota or image-GC cap. Direct Linux GPU outer host work is uncapped and only the later
+  nvkind nodes receive CPU/memory walls.
+- The current direct-Apple Colima adapter is prepared and project-specific, but its profile opener still
+  accepts compatibility `Reconcile.LifecyclePlan` plus independent `BinaryContext`. The
+  [cluster-lifecycle-and-cordoning
+  phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) replaces those terms with the exact
+  plan/provider/topology/partition/reservation package. It never uses the shared `default` profile and does
+  not activate a global Docker context.
+- A multi-node cluster receives the cluster envelope once; current lifecycle divides CPU, memory, and storage
+  over its nodes and applies the CPU/memory cap to each. `fitsBudget` is tested, but no live bring-up yet
+  supplies the demo's complete non-empty concurrent workload set. That concrete projection belongs to the
+  [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
 
 ## Current Status
 
@@ -67,10 +72,9 @@ on WSL2. See the [generic_project_model.md](../architecture/generic_project_mode
 [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md), and
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).
 
-Concretely, the former core default budget `4/8/20` (now only a test fixture) could not bootstrap the
-demo — the demo's `deploy-VM` gate requires `6/10/80` (`demoFullLifecycleResources`) — so under phase-19
-the default lives in the project-owned `psAssemble` and the demo's Production/Harness assembly returns
-its real budget. See
+Core has no runtime default budget. The illustrative `4/8/20` value remains only in fixtures and cannot
+bootstrap the demo: its `deploy-VM` gate requires `6/10/80` (`demoFullLifecycleResources`). The
+project-owned `psAssemble` supplies that value for Production and Harness assembly. See
 [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md).
 
 The Linux GPU path extends the runtime controls without changing this model. A normal kind plan
@@ -83,29 +87,34 @@ That all-node split is not proof that the parent-to-cluster partition is valid. 
 `clusterSliceOfBudget` uses `max` floors; below the full-lifecycle root floor it can return CPU equal to
 the parent and memory/storage larger than the parent. The ordinary root gate masks those inputs, and
 opaque `Resources` now prevents bypass through direct construction, but the live path still does not
-consume Phase 9's `ResourceSlice`. That value can be eliminated only from a `BudgetPartition` proving
-positivity, provider/node minima, and
+consume the exact generic `ResourceSlice`. That value can be eliminated only from a `BudgetPartition`
+proving positivity, provider/node minima, and
 `sum concurrent slices + explicit overhead <= EffectiveBudget`.
 
-On direct Apple Docker paths, `HostBootstrap.Ensure.Colima` now accepts only a plan-bound project profile
-plus Phase 9's prepared exact wall call. It observes Colima JSONL state before mutation, accepts only
-matching Docker runtime/CPU/memory/disk state, refuses a conflicting same-name profile, starts with
-`--activate=false`, and routes Docker through `--context colima-<project>`. The former config-free
-default-profile reconciler is removed from `allReconcilers`. The final recursive command plan and
-generation-conditional cleanup remain downstream work.
+On direct Apple Docker paths, `HostBootstrap.Ensure.Colima` observes Colima JSONL state before mutation,
+accepts only matching Docker runtime/CPU/memory/disk state, refuses a conflicting same-name profile, starts
+with `--activate=false`, and routes Docker through `--context colima-<project>`. It is not a config-free
+reconciler and does not appear in `allReconcilers`. Its current profile admission still takes compatibility
+`Reconcile.LifecyclePlan` and independent `BinaryContext`; the [cluster-lifecycle-and-cordoning
+phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) replaces that route with the exact
+provider resource/topology/partition/reservation package and adds cross-plan guards.
 
-The demo now has one resource authority: private `ProjectConfig.resources` constructors and total smart
+The demo has one descriptive resource value: private `ProjectConfig.resources` constructors and total smart
 constructors feed every VM and cluster sizing path. `BinaryContext` carries no resource envelope.
-`childContextWith` preserves the full parent project value, so cluster-service and daemon configs do not
-yet receive the smaller cluster slice that the demo computes locally for `clusterCreate`.
+`childContextWith` preserves the full scoped parent config value, so cluster-service and daemon configs do
+not yet receive the smaller exact slice that the demo computes locally for `clusterCreate`.
 
-Phase 9.10 implements pure provider-capability admission: it either rejects an inexact declaration or
-mints one `ProviderWallSpec` and equal `EffectiveBudget`. Constructive `BudgetPartition` then mints exact
-per-plan, per-frame slices before any wall acquisition. A journal-before-call reservation and matching
-prepared call are required before provider arguments are exposed; only successful observation mints
-live wall authority, and uncertain acquisition mints none. WSL supplies the durable shared-wall
-journal/CAS backend; uniform provider consumption of this authority remains downstream work. Raw config
-text or an independently recomputed floor is never an effect input.
+The generic pure algebra rejects an inexact declaration before jointly minting one `ProviderWallSpec` and
+equal `EffectiveBudget`. Constructive `BudgetPartition` then mints per-plan, per-frame slices before any wall
+acquisition. The [step-algebra-and-project-plan
+phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md) owns closure and validation of the
+exact `ProjectPlan`/resource/topology admission boundary.
+A journal-before-call reservation and matching prepared call are required before provider arguments are
+exposed; a raw wall observation remains plan-independent, only settlement can mint plan-indexed live wall
+authority, and uncertain acquisition mints none. WSL supplies the durable shared-wall journal/CAS backend.
+Exact cluster and Colima consumption remains with the [cluster-lifecycle-and-cordoning
+phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md); the concrete demo partition remains
+with the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
 
 ## The Budget Field
 
@@ -130,11 +139,12 @@ the [Current Status](#current-status) note and
   `StorageCordonUnsupported BareLinuxQuotaAndImageGcUnavailable` result because it is not yet a runtime
   cap on bare Linux.
 
-The target project binary validates this field once and projects the appropriate envelope before crossing
-a VM, container, daemon, or cluster-service boundary. Current demo lifecycle instead consumes the
-separate raw context envelope, and child projection copies that envelope unchanged; the locally computed
-cluster slice is not carried into cluster-service/daemon configs. The Python bootstrapper reads neither
-field and builds no Lima/Incus/Colima sizing argv. See
+The target project binary validates this field once under the exact project plan and projects the matching
+slice before crossing a VM, container, daemon, or cluster-service boundary. Current demo lifecycle copies
+the full `ProjectConfig.resources` value through child configuration and locally recomputes a cluster slice;
+`BinaryContext` has no resource envelope. The smaller exact slice is not carried into cluster-service/daemon
+consumers. The Python bootstrapper reads no project resource field and builds no Lima/Incus/Colima sizing
+argv. See
 [python_haskell_boundary](../architecture/python_haskell_boundary.md) and
 [binary_context_config](../architecture/binary_context_config.md).
 
@@ -177,6 +187,12 @@ observation. It does not circularly require that post-effect authority for the c
 unknown reservation/acquire/apply result exposes only recoverable same-spec state until exact reprobe
 settles it.
 
+The observation crossing the backend boundary is intentionally not plan evidence. A raw
+`WallAcquireObservation` or storage-wall observation contains only measured backend facts;
+`settleProviderWallCall` / `settleStorageWallCall` must consume it together with the exact prepared call before
+an indexed live/applied value exists. Cluster observation follows the same rule. This keeps probes reusable
+without allowing a same-shaped observation to authorize another plan.
+
 Later reconcile and dependent mutation permits accept no raw quantities or same-shaped slice from another
 lineage: they require both the exact same-`wallSpecId` partition projection and the live authority, and
 revalidate its epoch/fence. On WSL the `ProviderWallReservation ... reservationId fence` retains the
@@ -185,7 +201,7 @@ consumes that reservation and jointly returns the epoch-indexed `WslGlobalWallLe
 live authority; the capability, spec, partition, or `EffectiveBudget` by itself cannot edit or restore
 `.wslconfig`.
 
-Today `HostBootstrap.Cluster.Cordon.parseQuantity` is shared by preflight and argument builders. It
+`HostBootstrap.Cluster.Cordon.Foundation.parseQuantity` is shared by preflight and argument builders. It
 preserves exact whole-byte values, and provider admission rejects memory/storage a selected whole-GiB
 backend cannot represent exactly. The current defenses are:
 
@@ -197,20 +213,23 @@ backend cannot represent exactly. The current defenses are:
   host capacity — total RAM on Apple/Windows, `MemAvailable` on Linux); it is reserve-free because it
   gates the in-VM cluster slice, which is already the reserved subset, while the METAL host preflight
   (`preflightHostBudget`/`verifyHostBudget`) applies the ~4 GiB host-OS reserve. The target workload ring
-  derives the full non-empty concurrent set from the exact plan and requires `fitsBudget` before the
-  first effect; that call is not present today.
-- **Runtime ring (partial)** — creation-time Lima/Incus/WSL sizing, a prepared exact per-project Colima
-  wall adapter, and kind/nvkind-node CPU/memory caps. Existing resources are not uniformly re-cordoned,
-  command-plan integration is incomplete, direct Linux GPU outer effects remain uncapped, and storage is
-  incomplete on bare Linux.
+  derives the full non-empty concurrent set from the exact plan and requires `fitsBudget` before the first
+  effect. The [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns that currently absent
+  call.
+- **Runtime ring (partial)** — creation-time Lima/Incus/WSL sizing, a prepared project-specific Colima
+  compatibility adapter, and kind/nvkind-node CPU/memory caps. The [cluster-lifecycle-and-cordoning
+  phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) owns exact cluster/Colima
+  adoption. Existing resources are not uniformly re-cordoned, direct Linux GPU outer effects remain uncapped,
+  and storage is incomplete on bare Linux.
 
 The applied mechanics, canonical parser, and missing bare-Linux storage wall are documented in
 [applied_cordon](applied_cordon.md).
 
 ## Verify Capacity
 
-Before cordoning, the project binary checks that the active context's declared envelope can be satisfied
-locally. If the host cannot satisfy `cpu` / `memory` / `storage`, it fails fast with a one-line diagnostic
+Before cordoning, the project binary checks that the scoped project configuration's declared budget can be
+satisfied locally. If the host cannot satisfy `cpu` / `memory` / `storage`, it fails fast with a one-line
+diagnostic
 naming the shortfall and exits non-zero. **The METAL host preflight now gates on `host RAM ≥ budget +
 reserve` (a 4 GiB host-OS reserve)**, so a budget that fits under *total* host RAM but would leave the host
 itself short (e.g. a 13 GiB budget on a 16 GiB host) is refused by `preflightHostBudget`/`verifyHostBudget`;
@@ -245,9 +264,11 @@ observable only; broader lifecycle closure belongs in the development plan. See
 
 The demo has implemented a top-level decode ring: below-floor `Resources`, malformed-unit `Quantity`,
 out-of-range port/timeout, or invalid replica values are rejected during Dhall extraction, and public
-construction uses the same total smart constructors. Phase 9 admission rejects non-positive budgets and
-selected-provider inexact quantities. Pod-set fit cannot be encoded by those scalar types. The target lifecycle check is
-`fitsBudget` over a topology-derived non-empty set; today no bring-up call provides that set. See
+construction uses the same total smart constructors. The [canonical-quantities-and-reconcile-results
+phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md)'s admission rejects
+non-positive budgets, and provider admission rejects selected-provider inexact quantities. Pod-set fit cannot
+be encoded by those scalar types. The target lifecycle check is `fitsBudget` over a topology-derived non-empty
+set; the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns the absent concrete call. See
 [applied_cordon](applied_cordon.md) and
 [development_plan_standards.md § O](../../DEVELOPMENT_PLAN/development_plan_standards.md).
 
@@ -260,7 +281,7 @@ below only in the stated places; the project binary applies them, never the Pyth
 
 | Substrate | Cordoning mechanism |
 |-----------|---------------------|
-| `apple-silicon` | For the pristine demo environment, a newly created dedicated Lima VM is sized only after exact whole-GiB admission; an existing VM's sizing is not compared or reconciled. Direct Apple Docker has a prepared project-profile Colima adapter that observes/reconciles exact CPU, memory, disk, and Docker runtime state and uses the named Docker context without global activation. Recursive command integration and conditional cleanup remain downstream. |
+| `apple-silicon` | For the pristine demo environment, a newly created dedicated Lima VM is sized only after exact whole-GiB admission; an existing VM's sizing is not compared or reconciled. Direct Apple Docker has a prepared project-profile Colima compatibility adapter that observes/reconciles exact CPU, memory, disk, and Docker runtime state and uses the named Docker context without global activation. The [cluster-lifecycle-and-cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) replaces its `LifecyclePlan`/`BinaryContext` profile boundary with the exact project-plan package and adds conditional cleanup authority. |
 | `linux-cpu` | A newly created Incus VM receives CPU/memory/storage limits only for exact admitted quantities; existing VM sizing is not reconciled. The later kind-node CPU/memory cap is applied during cluster bring-up. Storage has no runtime cap if a path runs directly on bare Linux. |
 | `linux-gpu` | The outer host-native build and project-container handoff are direct and uncapped. The later nvkind cluster envelope is split across `control-plane` and GPU `worker`, and `docker update --cpus --memory --memory-swap` is applied fail-closed to both nodes. Bare-Linux storage is not capped. |
 | `windows-cpu` / `windows-gpu` | WSL2 memory/CPU use the **global** `%UserProfile%\.wslconfig` `[wsl2]` ceiling; storage is a per-distro VHDX cap applied only at registration. The backend journal records exact original bytes or absence and refuses foreign replacement. `project down` restores that origin and then performs global `wsl --shutdown`, releasing the utility VM balloon; finite idle timeouts backstop an interrupted run. A running distro is not necessarily shut down during reconcile, and an existing VHDX is not resized. See [wsl2](wsl2.md). |

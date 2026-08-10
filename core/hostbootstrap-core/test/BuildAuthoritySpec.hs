@@ -1,4 +1,6 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {- | Build-invocation authority for the in-Dockerfile gate.
@@ -9,11 +11,15 @@ description and the locally measured reality must agree.
 -}
 module BuildAuthoritySpec (tests) where
 
+import Crypto.Error (CryptoFailable (CryptoFailed, CryptoPassed))
+import Data.ByteArray (convert)
 import qualified Data.ByteString as ByteString
+import Data.ByteString (ByteString)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Crypto.PubKey.Ed25519 as Ed25519
 import HostBootstrap.Build
-import HostBootstrap.Handoff (ProjectVerificationKey, installedVerificationKey)
+import HostBootstrap.Handoff (frameWire)
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -24,10 +30,53 @@ tests :: TestTree
 tests =
     testGroup
         "BuildAuthoritySpec"
-        [ testGroup "source measurement" measurementTests
+        [ testGroup "provisioned keys" keyTests
+        , testGroup "source measurement" measurementTests
         , testGroup "the coordinator channel" channelTests
         , testGroup "verification" verificationTests
         ]
+
+-- ---------------------------------------------------------------------------
+-- Provisioned identity
+
+keyTests :: [TestTree]
+keyTests =
+    [ testCase "signing and verification keys are provisioned through separate files" $
+        withSystemTempDirectory "hostbootstrap-build-keys" $ \root -> do
+            let signingPath = root </> "coordinator.key"
+                verificationPath = root </> "coordinator.pub"
+            ByteString.writeFile signingPath fixtureSigningSeed
+            signingKey <- expectIO =<< installedBuildSigningKey signingPath
+            let provisionedVerificationKey = buildSigningVerificationKey signingKey
+            ByteString.writeFile
+                verificationPath
+                (buildVerificationKeyBytes provisionedVerificationKey)
+            installedVerificationKey <- expectIO =<< installedBuildVerificationKey verificationPath
+            buildVerificationKeyBytes installedVerificationKey
+                @?= buildVerificationKeyBytes provisionedVerificationKey
+    , testCase "a malformed signing seed is refused" $
+        case buildSigningKeyFromBytes "short" of
+            Left (BuildSigningKeyInvalid _) -> pure ()
+            other -> assertFailure ("expected an invalid signing key, got " <> show other)
+    , testCase "a malformed installed verification key is refused" $
+        withSystemTempDirectory "hostbootstrap-build-keys" $ \root -> do
+            let path = root </> "coordinator.pub"
+            ByteString.writeFile path "short"
+            outcome <- installedBuildVerificationKey path
+            case outcome of
+                Left (BuildVerificationKeyInvalid _) -> pure ()
+                other -> assertFailure ("expected an invalid verification key, got " <> show other)
+    , testCase "missing provisioned keys are typed refusals" $
+        withSystemTempDirectory "hostbootstrap-build-keys" $ \root -> do
+            signing <- installedBuildSigningKey (root </> "missing.key")
+            case signing of
+                Left (BuildSigningKeyUnavailable _) -> pure ()
+                other -> assertFailure ("expected an unavailable signing key, got " <> show other)
+            verification <- installedBuildVerificationKey (root </> "missing.pub")
+            case verification of
+                Left (BuildVerificationKeyUnavailable _) -> pure ()
+                other -> assertFailure ("expected an unavailable verification key, got " <> show other)
+    ]
 
 -- ---------------------------------------------------------------------------
 -- Measurement
@@ -54,6 +103,19 @@ measurementTests =
             after <- expectIO =<< measureSourceDigest root
             -- Path and contents are both bound, so relocating bytes is visible.
             assertBool "the digest moved" (before /= after)
+    , testCase "distinct non-ASCII filenames do not collide" $
+        withSystemTempDirectory "hostbootstrap-build-unicode" $ \root -> do
+            let first = root </> "first"
+                second = root </> "second"
+            createDirectoryIfMissing True first
+            createDirectoryIfMissing True second
+            -- These code points have the same low eight bits. Char8 path
+            -- encoding therefore collapsed them even though UTF-8 does not.
+            ByteString.writeFile (first </> "\x4e00.hs") "same contents"
+            ByteString.writeFile (second </> "\x4f00.hs") "same contents"
+            firstDigest <- expectIO =<< measureSourceDigest first
+            secondDigest <- expectIO =<< measureSourceDigest second
+            assertBool "the Unicode path bytes remain distinct" (firstDigest /= secondDigest)
     , testCase "an absent source root is a refusal, not an empty-tree digest" $
         withSystemTempDirectory "hostbootstrap-build" $ \directory -> do
             outcome <- measureSourceDigest (directory </> "not-here")
@@ -105,67 +167,129 @@ verificationTests :: [TestTree]
 verificationTests =
     [ testCase "an authenticated build yields the frame and its two phase authorities" $
         withFixture $ \fixture -> do
-            verified <- verifyFixture fixture (fixtureChannel fixture)
-            (frame, authority) <- expectIO verified
-            imageBuildFrameName frame @?= "image-build-container-0"
-            buildAuthorityBuildId authority @?= "build-7"
-            buildCommandAuthorityPhase (authorizeCheckCode frame authority) @?= CheckCodePhase
-            buildCommandAuthorityPhase (authorizeBuildPhase frame authority) @?= BuildPhase
+            verified <-
+                verifyFixture fixture (fixtureChannel fixture) $ \frame authority -> do
+                    imageBuildFrameName frame @?= "image-build-container-0"
+                    buildAuthorityBuildId authority @?= "build-7"
+                    checkAuthority <- expectIO =<< authorizeCheckCode frame authority
+                    buildAuthority <- expectIO =<< authorizeBuildPhase frame authority
+                    buildCommandAuthorityPhase checkAuthority @?= CheckCodePhase
+                    buildCommandAuthorityPhase buildAuthority @?= BuildPhase
+            _ <- expectIO verified
+            pure ()
+    , testCase "each narrow build phase is at most once on one returned authority" $
+        withFixture $ \fixture -> do
+            verified <-
+                verifyFixture fixture (fixtureChannel fixture) $ \frame authority -> do
+                    _ <- expectIO =<< authorizeCheckCode frame authority
+                    duplicate <- authorizeCheckCode frame authority
+                    case duplicate of
+                        Left (BuildPhaseAlreadyAuthorized CheckCodePhase) -> pure ()
+                        other -> assertFailure ("expected a consumed phase, got " <> show other)
+            _ <- expectIO verified
+            pure ()
     , testCase "a grant for another project is refused" $
         withFixture $ \fixture -> do
-            let tampered = rebind fixture (\b -> b{buildProjectName = "other-project"})
-            outcome <- verifyFixture fixture tampered
+            tampered <- rebind fixture (\b -> b{buildProjectName = "other-project"})
+            outcome <- verifyFixture fixture tampered ignoreVerified
             expectMismatch "project" outcome
     , testCase "a grant naming a different config digest is refused" $
         withFixture $ \fixture -> do
-            let tampered = rebind fixture (\b -> b{buildConfigDigest = "0000"})
-            outcome <- verifyFixture fixture tampered
+            tampered <- rebind fixture (\b -> b{buildConfigDigest = "0000"})
+            outcome <- verifyFixture fixture tampered ignoreVerified
             expectMismatch "config digest" outcome
+    , testCase "a grant naming another finalized spec is refused" $
+        withFixture $ \fixture -> do
+            tampered <- rebind fixture (\b -> b{buildSpecDigest = "spec-other"})
+            outcome <- verifyFixture fixture tampered ignoreVerified
+            expectMismatch "spec digest" outcome
+    , testCase "a grant naming another coordinator binary is refused" $
+        withFixture $ \fixture -> do
+            outcome <-
+                verifyBuildInvocation
+                    (fixtureKey fixture)
+                    (fixtureProject fixture)
+                    (fixtureSpecDigest fixture)
+                    (fixtureConfigDigest fixture)
+                    "coordinator-other"
+                    (fixtureSource fixture)
+                    (fixtureBuilder fixture)
+                    (fixtureChannel fixture)
+                    ignoreVerified
+            expectMismatch "coordinator binary" outcome
     , testCase "a grant describing different sources is refused" $
         withFixture $ \fixture -> do
             -- The grant is genuinely signed; it simply claims a source digest
             -- that is not what the build context actually contains.
-            let tampered = rebind fixture (\b -> b{buildSourceDigest = "deadbeef"})
-            outcome <- verifyFixture fixture tampered
+            tampered <- rebind fixture (\b -> b{buildSourceDigest = "deadbeef"})
+            outcome <- verifyFixture fixture tampered ignoreVerified
             expectMismatch "source digest" outcome
     , testCase "sources edited after signing are refused" $
         withFixture $ \fixture -> do
             ByteString.writeFile (fixtureSource fixture </> "src" </> "Main.hs") "main = evil"
-            outcome <- verifyFixture fixture (fixtureChannel fixture)
+            outcome <- verifyFixture fixture (fixtureChannel fixture) ignoreVerified
             expectMismatch "source digest" outcome
     , testCase "a grant minted for another builder cannot authorize this one" $
         withFixture $ \fixture -> do
-            let tampered = rebind fixture (\b -> b{buildBuilderDigest = "not-this-builder"})
-            outcome <- verifyFixture fixture tampered
+            tampered <- rebind fixture (\b -> b{buildBuilderDigest = "not-this-builder"})
+            outcome <- verifyFixture fixture tampered ignoreVerified
             expectMismatch "builder binary" outcome
     , testCase "another coordinator's key does not authenticate this grant" $
-        withFixture $ \fixture ->
-            withBuildCoordinator (fixtureCoordinatorDigest fixture) $ \other -> do
-                let path = fixtureRoot fixture </> "other.pub"
-                ByteString.writeFile path (buildCoordinatorKey other)
-                loaded <- installedVerificationKey path
-                key <- expectIO loaded
-                outcome <-
-                    verifyBuildInvocation
-                        key
-                        (fixtureProject fixture)
-                        (fixtureConfigDigest fixture)
-                        (fixtureSource fixture)
-                        (fixtureBuilder fixture)
-                        (fixtureChannel fixture)
-                case outcome of
-                    Left (BuildSignatureInvalid _) -> pure ()
-                    other' -> assertFailure ("expected a signature refusal, got " <> show other')
+        withFixture $ \fixture -> do
+            otherSigningKey <- expectIO (buildSigningKeyFromBytes otherSigningSeed)
+            let path = fixtureRoot fixture </> "other.pub"
+            ByteString.writeFile
+                path
+                (buildVerificationKeyBytes (buildSigningVerificationKey otherSigningKey))
+            key <- expectIO =<< installedBuildVerificationKey path
+            outcome <-
+                verifyBuildInvocation
+                    key
+                    (fixtureProject fixture)
+                    (fixtureSpecDigest fixture)
+                    (fixtureConfigDigest fixture)
+                    (fixtureCoordinatorDigest fixture)
+                    (fixtureSource fixture)
+                    (fixtureBuilder fixture)
+                    (fixtureChannel fixture)
+                    ignoreVerified
+            case outcome of
+                Left (BuildSignatureInvalid _) -> pure ()
+                other -> assertFailure ("expected a signature refusal, got " <> show other)
     , testCase "a coordinator refuses to sign a binding attributed to another coordinator" $
-        withFixture $ \fixture ->
-            withBuildCoordinator "some-other-coordinator" $ \other ->
-                case signBuildGrant other (channelBinding (fixtureChannel fixture)) of
+        withFixture $ \fixture -> do
+            otherSigningKey <- expectIO (buildSigningKeyFromBytes otherSigningSeed)
+            withBuildCoordinator otherSigningKey "some-other-coordinator" $ \other -> do
+                outcome <- signBuildGrant other (channelBinding (fixtureChannel fixture))
+                case outcome of
                     Left (BuildIdentityMismatch what _ _) -> what @?= "coordinator"
                     other' -> assertFailure ("expected a coordinator refusal, got " <> show other')
+    , testCase "the exact hostbootstrap/build/v1 domain authenticates" $
+        withFixture $ \fixture -> do
+            channel <- externallySignedChannel fixture "hostbootstrap/build/v1"
+            outcome <- verifyFixture fixture channel ignoreVerified
+            _ <- expectIO outcome
+            pure ()
+    , testCase "a signature under another protocol domain is refused" $
+        withFixture $ \fixture -> do
+            channel <- externallySignedChannel fixture "hostbootstrap/build/v0"
+            outcome <- verifyFixture fixture channel ignoreVerified
+            case outcome of
+                Left (BuildSignatureInvalid _) -> pure ()
+                other -> assertFailure ("expected a domain-separated signature refusal, got " <> show other)
+    , testCase "an existentially retained coordinator expires after its callback" $ do
+        signingKey <- expectIO (buildSigningKeyFromBytes fixtureSigningSeed)
+        escaped <-
+            withBuildCoordinator signingKey "coordinator-digest" $
+                pure . EscapedBuildCoordinator
+        case escaped of
+            EscapedBuildCoordinator coordinator -> do
+                outcome <- signBuildGrant coordinator expiryBinding
+                outcome @?= Left BuildCoordinatorExpired
     , testCase "an empty build id is refused" $
         withFixture $ \fixture -> do
-            let tampered = rebind fixture (\b -> b{buildIdentifier = ""})
-            outcome <- verifyFixture fixture tampered
+            tampered <- rebind fixture (\b -> b{buildIdentifier = ""})
+            outcome <- verifyFixture fixture tampered ignoreVerified
             case outcome of
                 Left (BuildChannelMalformed _) -> pure ()
                 other -> assertFailure ("expected a malformed refusal, got " <> show other)
@@ -188,26 +312,38 @@ data Fixture = Fixture
     , fixtureSource :: FilePath
     , fixtureBuilder :: FilePath
     , fixtureProject :: Text
+    , fixtureSpecDigest :: Text
     , fixtureConfigDigest :: Text
     , fixtureCoordinatorDigest :: Text
     , fixtureBuilderDigest :: Text
-    , fixtureKey :: ProjectVerificationKey
+    , fixtureKey :: BuildVerificationKey
     , fixtureChannel :: BuildChannel
-    , fixtureResign :: BuildBinding -> BuildChannel
+    , fixtureResign :: BuildBinding -> IO BuildChannel
     }
 
-{- | A real source tree, a real builder file, a real coordinator keypair, and a
-genuinely signed channel describing all of them.
+{- | A real source tree, a real builder file, separately installed long-lived
+signing/verification keys, and a genuinely signed channel describing all of
+them. The verification key is derived and installed before the coordinator
+bracket is created.
 -}
 withFixture :: (Fixture -> IO ()) -> IO ()
 withFixture use =
     withSystemTempDirectory "hostbootstrap-build" $ \root -> do
         let source = root </> "context"
             builder = root </> "hostbootstrap-demo"
+            signingKeyPath = root </> "coordinator.key"
+            verificationKeyPath = root </> "coordinator.pub"
         writeSourceTree source
         ByteString.writeFile builder "ELF-ish builder bytes"
+        ByteString.writeFile signingKeyPath fixtureSigningSeed
         sourceDigest <- expectIO =<< measureSourceDigest source
         builderDigest <- expectIO =<< measureBinaryDigest builder
+        signingKey <- expectIO =<< installedBuildSigningKey signingKeyPath
+        let provisionedVerificationKey = buildSigningVerificationKey signingKey
+        ByteString.writeFile
+            verificationKeyPath
+            (buildVerificationKeyBytes provisionedVerificationKey)
+        verificationKey <- expectIO =<< installedBuildVerificationKey verificationKeyPath
         let coordinatorDigest = "coordinator-digest"
             binding =
                 BuildBinding
@@ -220,48 +356,98 @@ withFixture use =
                     , buildBuilderDigest = builderDigest
                     , buildFrameName = "image-build-container-0"
                     }
-        withBuildCoordinator coordinatorDigest $ \coordinator -> do
-            let sign b = case signBuildGrant coordinator b of
-                    Left failure -> error ("fixture could not sign: " <> show failure)
-                    Right grant -> BuildChannel{channelBinding = b, channelGrant = grant}
-                keyPath = root </> "project.pub"
-            ByteString.writeFile keyPath (buildCoordinatorKey coordinator)
-            key <- expectIO =<< installedVerificationKey keyPath
+        withBuildCoordinator signingKey coordinatorDigest $ \coordinator -> do
+            let sign b = do
+                    grant <- expectIO =<< signBuildGrant coordinator b
+                    pure BuildChannel{channelBinding = b, channelGrant = grant}
+            channel <- sign binding
             use
                 Fixture
                     { fixtureRoot = root
                     , fixtureSource = source
                     , fixtureBuilder = builder
                     , fixtureProject = "hostbootstrap-demo"
+                    , fixtureSpecDigest = "spec-1"
                     , fixtureConfigDigest = "config-1"
                     , fixtureCoordinatorDigest = coordinatorDigest
                     , fixtureBuilderDigest = builderDigest
-                    , fixtureKey = key
-                    , fixtureChannel = sign binding
+                    , fixtureKey = verificationKey
+                    , fixtureChannel = channel
                     , fixtureResign = sign
                     }
 
 -- | Re-sign a modified binding, so the tampered case is a *genuine* signature
 -- over a false description rather than a broken signature.
-rebind :: Fixture -> (BuildBinding -> BuildBinding) -> BuildChannel
+rebind :: Fixture -> (BuildBinding -> BuildBinding) -> IO BuildChannel
 rebind fixture edit = fixtureResign fixture (edit (channelBinding (fixtureChannel fixture)))
+
+{- | Build a channel using the fixture's provisioned seed but an independently
+spelled protocol domain. This pins the public v1 signature domain rather than
+merely checking that this module's signer and verifier agree with each other.
+-}
+externallySignedChannel :: Fixture -> ByteString -> IO BuildChannel
+externallySignedChannel fixture domain = do
+    secret <- case Ed25519.secretKey fixtureSigningSeed of
+        CryptoFailed err -> assertFailure ("fixture signing seed was invalid: " <> show err)
+        CryptoPassed value -> pure value
+    let binding = channelBinding (fixtureChannel fixture)
+        material = frameWire domain <> frameWire (renderBuildBinding binding)
+        signature :: ByteString
+        signature = convert (Ed25519.sign secret (Ed25519.toPublic secret) material)
+        path = fixtureRoot fixture </> "external-channel.bin"
+    ByteString.writeFile
+        path
+        (renderBuildBinding binding <> frameWire signature)
+    expectIO =<< readBuildChannel path
+
+data EscapedBuildCoordinator where
+    EscapedBuildCoordinator :: BuildCoordinator coordinatorId -> EscapedBuildCoordinator
+
+expiryBinding :: BuildBinding
+expiryBinding =
+    BuildBinding
+        { buildProjectName = "hostbootstrap-demo"
+        , buildSpecDigest = "spec-1"
+        , buildConfigDigest = "config-1"
+        , buildIdentifier = "build-expired"
+        , buildSourceDigest = "source"
+        , buildCoordinatorDigest = "coordinator-digest"
+        , buildBuilderDigest = "builder"
+        , buildFrameName = "image-build-container-0"
+        }
+
+fixtureSigningSeed :: ByteString
+fixtureSigningSeed = ByteString.pack [0 .. 31]
+
+otherSigningSeed :: ByteString
+otherSigningSeed = ByteString.pack [32 .. 63]
 
 verifyFixture ::
     Fixture ->
     BuildChannel ->
-    IO
-        ( Either
-            BuildError
-            (ImageBuildFrame () () () (), BuildInvocationAuthority () () () () () ())
-        )
-verifyFixture fixture channel =
+    ( forall projectId specDigest configId frame buildId sourceDigest builderBinaryDigest.
+      ImageBuildFrame projectId specDigest configId frame ->
+      BuildInvocationAuthority projectId specDigest configId buildId sourceDigest builderBinaryDigest ->
+      IO result
+    ) ->
+    IO (Either BuildError result)
+verifyFixture fixture channel use =
     verifyBuildInvocation
         (fixtureKey fixture)
         (fixtureProject fixture)
+        (fixtureSpecDigest fixture)
         (fixtureConfigDigest fixture)
+        (fixtureCoordinatorDigest fixture)
         (fixtureSource fixture)
         (fixtureBuilder fixture)
         channel
+        use
+
+ignoreVerified ::
+    ImageBuildFrame projectId specDigest configId frame ->
+    BuildInvocationAuthority projectId specDigest configId buildId sourceDigest builderBinaryDigest ->
+    IO ()
+ignoreVerified _ _ = pure ()
 
 withSourceTree :: (FilePath -> IO ()) -> IO ()
 withSourceTree use =

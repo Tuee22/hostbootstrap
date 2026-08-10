@@ -17,12 +17,7 @@ module HostBootstrap.Lima (
 where
 
 import Data.List (isPrefixOf)
-
--- | A Lima-backed Linux VM, identified by its Lima instance name.
-newtype LimaVM = LimaVM
-    { limaName :: String
-    }
-    deriving (Eq, Show)
+import HostBootstrap.Lift.Context (LimaVM (..), shellVMArgs)
 
 -- | Start a named Ubuntu 24.04 Lima VM sized to the project budget.
 startVMArgs :: LimaVM -> [String] -> [String]
@@ -41,15 +36,6 @@ writableMountArgs source = ["--mount-only", source ++ ":w"]
 -- teardown stops the VM (it does not destroy it; that is @project destroy@).
 stopVMArgs :: LimaVM -> [String]
 stopVMArgs vm = ["stop", limaName vm]
-
--- | Execute a command inside the Lima VM as root.
---
--- Lima shells into the guest as the host user on current releases. The demo's
--- pristine Linux frame is rooted under @/root@, matching the Incus and WSL2
--- paths, so every provider lift enters the guest through passwordless sudo with
--- @HOME@ set to root's home.
-shellVMArgs :: LimaVM -> [String] -> [String]
-shellVMArgs vm cmd = ["shell", limaName vm, "--", "sudo", "-H"] ++ cmd
 
 -- | Copy a host file into the Lima VM.
 copyToVMArgs :: LimaVM -> FilePath -> FilePath -> [String]

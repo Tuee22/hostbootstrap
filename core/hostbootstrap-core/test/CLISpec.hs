@@ -2,15 +2,21 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
 module CLISpec (runSchemaFixture, tests) where
 
 import Control.Exception (finally, throwIO, try)
+import qualified Data.ByteString as ByteString
+import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Char8 as ByteStringChar8
+import qualified Data.ByteString.Lazy as LazyByteString
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TIO
+import Data.Word (Word64)
 import qualified Fixture
 import HostBootstrap.CLI (
     ProjectSpec,
@@ -36,7 +42,14 @@ import HostBootstrap.Context (ContextKind (HostOrchestrator))
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf, autoCodecWitness, requireCodecWitness)
 import HostBootstrap.DocValidator (findRepoRoot)
-import HostBootstrap.Authority (authorityErrorMessage, installedProjectFor)
+import HostBootstrap.Authority (
+    InstalledProjectIdentity,
+    authorityErrorMessage,
+    installedProjectName,
+    normalizeExecutableIdentity,
+    withInstalledProjectIdentity,
+ )
+import qualified HostBootstrap.Authority as Authority
 import HostBootstrap.Harness (
     Case (Case),
     CaseId,
@@ -46,25 +59,63 @@ import HostBootstrap.Harness (
     TestSuite (TestSuite),
     mkCaseId,
  )
+import HostBootstrap.Lifecycle.Execution (stepExecutionPlanDigest)
 import HostBootstrap.Lifecycle.Mode (
-    mkRunId,
+    ProductionRoot,
+    inspectPlanSnapshot,
     modeErrorMessage,
-    planSnapshotPlanDigest,
-    planSnapshotRevision,
-    planSnapshotSpecDigest,
-    verifyPlanSnapshot,
+    planSnapshotViewPlanDigest,
+    planSnapshotViewRevision,
+    planSnapshotViewSpecDigest,
+    productionActiveMode,
+    productionRootAuthority,
+    productionRootModeLease,
+    productionRootUnboundLease,
+    withAcquisitionJournal,
+    withExecuteLifecycleCursor,
+    withLifecycleCursor,
+    withProductionLifecycleProfile,
+    withProductionRoot,
  )
-import HostBootstrap.ProjectRoot (CanonicalProjectRoot)
+import HostBootstrap.ProjectPlan (
+    ProjectPlan,
+    renderSnapshot,
+    stablePlanSnapshotBytes,
+    stablePlanSnapshotConfigDigest,
+    stablePlanSnapshotDigest,
+    stablePlanSnapshotRoot,
+    stablePlanSnapshotSpecDigest,
+ )
+import HostBootstrap.ProjectPlan.Construct (
+    finalizedProjectCodec,
+    projectPlanDrafts,
+    withFinalizedProjectSpec,
+    withProjectPlan,
+ )
+import HostBootstrap.ProjectPlan.Frame (withCurrentFrame)
+import HostBootstrap.ProjectPlan.Snapshot (withPersistedPlanSnapshot)
+import HostBootstrap.ProjectRoot (
+    CanonicalProjectRoot,
+    canonicalProjectRootPath,
+    withCanonicalProjectRoot,
+ )
 import HostBootstrap.Protected (
-    ProtectedRecord (protectedRecordBytes),
+    Expectation (ExpectAbsent, ExpectVersion),
+    ProtectedRecord (protectedRecordBytes, protectedRecordVersion),
     ProtectedSession,
+    ProtectedStore,
     RecordKey,
+    compareAndDeleteProtectedRecord,
+    compareAndSwapProtectedRecord,
     listProtectedRecords,
+    mkRecordKey,
     openProtectedStore,
     protectedErrorMessage,
     readProtectedRecord,
     recordKeyText,
+    recordVersionWord,
     tryProtectedEntry,
+    withProtectedEntry,
  )
 import HostBootstrap.RoleLifecycle (
     DeclaredEffects (NoEffects, WithEffect),
@@ -81,10 +132,11 @@ import HostBootstrap.Service (
     withFinalizedServiceRegistry,
  )
 import HostBootstrap.Step (ProjectStepId, ReversePolicy (ProjectManagedReverse), Step, StepFrame (..), StepObservation (..), StepPlanError (DuplicateStepIdentities), TeardownAction (DeleteFrame, StopFrame), TeardownOutcome (TeardownReleased), deployVMStep, projectStep, projectStepId, reversedBy, stepLabel, stepPlanSteps)
-import System.Directory (doesDirectoryExist, doesFileExist, doesPathExist, getCurrentDirectory, removeFile)
-import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv, withArgs, withProgName)
+import System.Directory (doesFileExist, doesPathExist, getCurrentDirectory, removeFile)
+import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv, withArgs)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), die)
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
 import System.Process (readProcessWithExitCode)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -98,7 +150,7 @@ builderWith ::
     TestSuite ->
     IO () ->
     [ConfigArtifact] ->
-    ProjectSpecBuilder Fixture.FixtureProject Fixture.ProjectConfig Fixture.TestConfig
+    ProjectSpecBuilder Fixture.ProjectConfig Fixture.TestConfig
 builderWith suite check arts =
     projectSpec suite check arts Fixture.testConfigCodec fixtureTestInit fixtureAssemble
 
@@ -106,21 +158,21 @@ specWith ::
     TestSuite ->
     IO () ->
     [ConfigArtifact] ->
-    ProjectSpec Fixture.FixtureProject Fixture.ProjectConfig Fixture.TestConfig
+    ProjectSpec Fixture.ProjectConfig Fixture.TestConfig
 specWith suite check arts =
     finalized (addSteps sampleChain (builderWith suite check arts))
 
 finalized ::
-    ProjectSpecBuilder Fixture.FixtureProject Fixture.ProjectConfig Fixture.TestConfig ->
-    ProjectSpec Fixture.FixtureProject Fixture.ProjectConfig Fixture.TestConfig
+    ProjectSpecBuilder Fixture.ProjectConfig Fixture.TestConfig ->
+    ProjectSpec Fixture.ProjectConfig Fixture.TestConfig
 finalized = either (error . show) id . finalizeProjectSpec
 
 fixtureTestInit :: a -> Fixture.TestConfig
 fixtureTestInit _ = Fixture.defaultTestConfig (Fixture.Resources 4 "8GiB" "20GiB")
 
 fixtureAssemble ::
-    forall scope.
-    AssemblyRequest Fixture.FixtureProject Fixture.TestConfig T.Text scope ->
+    forall projectId scope.
+    AssemblyRequest projectId Fixture.TestConfig T.Text scope ->
     ConfigAssembly scope (Fixture.ProjectConfig scope)
 fixtureAssemble request =
     case request of
@@ -130,11 +182,14 @@ fixtureAssemble request =
             pureConfigAssembly (Fixture.defaultProjectConfig "cli" "/workspace/demo" HostOrchestrator)
 
 runHostBootstrapCLI ::
-    String ->
-    ProjectSpec Fixture.FixtureProject Fixture.ProjectConfig Fixture.TestConfig ->
+    ProjectSpec Fixture.ProjectConfig Fixture.TestConfig ->
     IO ()
-runHostBootstrapCLI name spec =
-    withProgName name (CLI.runHostBootstrapCLI name spec)
+runHostBootstrapCLI spec = do
+    projectName <- executableProjectName
+    CLI.runHostBootstrapCLI (T.unpack projectName) spec
+
+executableProjectName :: IO T.Text
+executableProjectName = normalizeExecutableIdentity <$> getExecutablePath
 
 tests :: TestTree
 tests =
@@ -146,12 +201,12 @@ tests =
                 Left EmptyProjectTestSuite -> pure ()
                 other -> assertFailure ("expected EmptyProjectTestSuite, got " ++ either show (const "Right ProjectSpec") other)
         , testCase "runtime executable identity must match the declared project" $ do
+            actualProject <- executableProjectName
             result <-
                 try
-                    ( withProgName "actual-project" $
-                        CLI.runHostBootstrapCLI
-                            "declared-project"
-                            (specWith passingSuite (pure ()) [])
+                    ( CLI.runHostBootstrapCLI
+                        (T.unpack (actualProject <> "-declared-mismatch"))
+                        (specWith passingSuite (pure ()) [])
                     ) ::
                     IO (Either ExitCode ())
             result @?= Left (ExitFailure 1)
@@ -181,7 +236,7 @@ tests =
             projectServiceVariantNames layered @?= ["web", "accelerator"]
         , testCase "an empty registry has structured Production and Harness schema families" $ do
             let schemas =
-                    withProductionProjectCodec @Fixture.FixtureProject @Fixture.ProjectConfig $ \baseCodec ->
+                    withProductionProjectCodec @Fixture.ProjectConfig @Fixture.FixtureProject $ \baseCodec ->
                         withFinalizedServiceRegistry
                             ProductionScope
                             baseCodec
@@ -217,9 +272,18 @@ tests =
             let spec = finalized (addSteps sampleChain (builderWith passingSuite (pure ()) []))
                 harnessCfg :: Fixture.ProjectConfig (V.Harness Fixture.FixtureProject HarnessPlanRun)
                 harnessCfg = Fixture.defaultProjectConfig "cli-harness-plan" "." HostOrchestrator
-            plan <-
-                Fixture.withFixtureProjectRoot $ \root ->
-                    either (assertFailure . show) pure (projectStepPlan spec root harnessCfg)
+            plan <- withSystemTempDirectory "hostbootstrap-cli-harness-plan" $ \directory -> do
+                rooted <-
+                    withCanonicalProjectRoot
+                        (directory </> "fixture.dhall")
+                        "."
+                        ( \root ->
+                            either
+                                (assertFailure . show)
+                                pure
+                                (projectStepPlan spec root harnessCfg)
+                        )
+                either (assertFailure . show) pure rooted
             map stepLabel (stepPlanSteps plan) @?= ["launch the VM"]
         , testCase "artifact fragments compose associatively without erasure" $ do
             let budgetCodec = requireCodecWitness "CLISpec.Budget" (autoCodecWitness @V.Budget)
@@ -266,40 +330,40 @@ tests =
                 other -> assertFailure ("expected duplicate step rejection, got " ++ either show (const "validated") other)
         , testCase "check-code runs the project-supplied hook" $ do
             ran <- newIORef False
-            withProjectConfig "cli-check-hook" $ do
+            withProjectConfig $ do
                 result <-
-                    try (withArgs ["check-code"] (runHostBootstrapCLI "cli-check-hook" (specWith passingSuite (writeIORef ran True) []))) ::
+                    try (withArgs ["check-code"] (runHostBootstrapCLI (specWith passingSuite (writeIORef ran True) []))) ::
                         IO (Either ExitCode ())
                 result @?= Right ()
                 readIORef ran >>= (@?= True)
         , testCase "check-code exits non-zero when the hook fails" $
-            withProjectConfig "cli-check-fail" $ do
+            withProjectConfig $ do
                 result <-
-                    try (withArgs ["check-code"] (runHostBootstrapCLI "cli-check-fail" (specWith passingSuite (die "seeded check failure") []))) ::
+                    try (withArgs ["check-code"] (runHostBootstrapCLI (specWith passingSuite (die "seeded check failure") []))) ::
                         IO (Either ExitCode ())
                 result @?= Left (ExitFailure 1)
         , testCase "test run fails fast without a test.dhall" $
-            withProjectConfig "cli-test-notdhall" $ do
+            withProjectConfig $ do
                 result <-
-                    try (withArgs ["test", "run", "all"] (runHostBootstrapCLI "cli-test-notdhall" (specWith passingSuite (pure ()) []))) ::
+                    try (withArgs ["test", "run", "all"] (runHostBootstrapCLI (specWith passingSuite (pure ()) []))) ::
                         IO (Either ExitCode ())
                 result @?= Left (ExitFailure 1)
         , testCase "test init writes a test config without a pre-existing project config" $ do
-            cfgPath <- Schema.siblingProjectConfigPath "cli-test-init"
-            let testPath = takeDirectory cfgPath </> "cli-test-init.test.dhall"
+            projectName <- executableProjectName
+            testPath <- Schema.siblingTestConfigPath projectName
             ( do
                     result <-
-                        try (withArgs ["test", "init"] (runHostBootstrapCLI "cli-test-init" (specWith passingSuite (pure ()) []))) ::
+                        try (withArgs ["test", "init"] (runHostBootstrapCLI (specWith passingSuite (pure ()) []))) ::
                             IO (Either ExitCode ())
                     result @?= Right ()
                 )
                 `finally` removeFile testPath
         , testCase "test init refuses an existing test config unless replacement is requested" $ do
-            cfgPath <- Schema.siblingProjectConfigPath "cli-test-replace"
-            let testPath = takeDirectory cfgPath </> "cli-test-replace.test.dhall"
-                spec = specWith passingSuite (pure ()) []
+            projectName <- executableProjectName
+            testPath <- Schema.siblingTestConfigPath projectName
+            let spec = specWith passingSuite (pure ()) []
                 initWith args =
-                    try (withArgs ("test" : "init" : args) (runHostBootstrapCLI "cli-test-replace" spec)) ::
+                    try (withArgs ("test" : "init" : args) (runHostBootstrapCLI spec)) ::
                         IO (Either ExitCode ())
             ( do
                     first <- initWith []
@@ -321,14 +385,15 @@ tests =
                 )
                 `finally` removeFile testPath
         , testCase "test init then test run exits non-zero when a case fails (config is generated then removed)" $ do
-            cfgPath <- Schema.siblingProjectConfigPath "cli-test-fail"
-            let testPath = takeDirectory cfgPath </> "cli-test-fail.test.dhall"
+            projectName <- executableProjectName
+            cfgPath <- Schema.siblingProjectConfigPath projectName
+            testPath <- Schema.siblingTestConfigPath projectName
             ( do
                     _ <-
-                        try (withArgs ["test", "init"] (runHostBootstrapCLI "cli-test-fail" (specWith failingSuite (pure ()) []))) ::
+                        try (withArgs ["test", "init"] (runHostBootstrapCLI (specWith failingSuite (pure ()) []))) ::
                             IO (Either ExitCode ())
                     result <-
-                        try (withArgs ["test", "run", "all"] (runHostBootstrapCLI "cli-test-fail" (specWith failingSuite (pure ()) []))) ::
+                        try (withArgs ["test", "run", "all"] (runHostBootstrapCLI (specWith failingSuite (pure ()) []))) ::
                             IO (Either ExitCode ())
                     result @?= Left (ExitFailure 1)
                     doesFileExist cfgPath >>= (@?= False)
@@ -338,67 +403,302 @@ tests =
                     doesPathExist (cfgPath ++ ".hostbootstrap-test-owner") >>= (@?= False)
                 )
                 `finally` removeFile testPath
-        , testCase "test run binds the exact Harness plan snapshot before entering the live body" $ do
-            cfgPath <- Schema.siblingProjectConfigPath "cli-test-bound-plan"
+        , testCase "test run interprets one exact Harness plan through forward and reverse" $ do
+            projectName <- executableProjectName
+            cfgPath <- Schema.siblingProjectConfigPath projectName
+            testPath <- Schema.siblingTestConfigPath projectName
             stateRoot <- getCurrentDirectory
-            let testPath = takeDirectory cfgPath </> "cli-test-bound-plan.test.dhall"
-                storeRoot =
+            let storeRoot =
                     stateRoot
                         </> ".hostbootstrap"
                         </> "authority"
-                        </> "cli-test-bound-plan"
-            observed <- newIORef Nothing
-            let suite =
+                        </> T.unpack projectName
+            observed <- newIORef []
+            events <- newIORef ([] :: [String])
+            forwardPlanDigests <- newIORef []
+            postReverseConfigPresence <- newIORef []
+            let frame = StepFrame "host-orchestrator-0" "metal"
+                exactHarnessChain :: FixtureFragment
+                exactHarnessChain _ _ =
+                    [ reversedBy
+                        ( \_ _ -> do
+                            modifyIORef' events (++ ["reverse"])
+                            pure TeardownReleased
+                        )
+                        ( projectStep
+                            (fixtureProjectStepId "exact-harness-probe")
+                            ProjectManagedReverse
+                            "record exact Harness interpretation"
+                            frame
+                            ( \execution -> do
+                                modifyIORef' events (++ ["forward"])
+                                modifyIORef' forwardPlanDigests (++ [stepExecutionPlanDigest execution])
+                                pure StepChanged
+                            )
+                        )
+                    ]
+                suite =
                     TestSuite
                         (pure (Right ()))
                         ( \_ -> do
                             generatedConfigPresent <- doesFileExist cfgPath
-                            records <- observeBoundHarnessPlan storeRoot "cli-test-bound-plan"
-                            writeIORef observed (Just (generatedConfigPresent, records))
+                            records <- observeBoundHarnessPlan storeRoot projectName
+                            modifyIORef' observed (++ [(generatedConfigPresent, records)])
                             pure ()
                         )
                         [Case (fixtureCaseId "ok") 1 False]
                         (\_ _ -> pure Pass)
-                        (pure ())
-                spec = specWith suite (pure ()) []
+                        ( do
+                            generatedConfigPresent <- doesFileExist cfgPath
+                            modifyIORef' postReverseConfigPresence (++ [generatedConfigPresent])
+                        )
+                spec =
+                    finalized $
+                        addSteps exactHarnessChain (builderWith suite (pure ()) [])
             ( do
                     initialized <-
-                        try (withArgs ["test", "init"] (runHostBootstrapCLI "cli-test-bound-plan" spec)) ::
+                        try (withArgs ["test", "init"] (runHostBootstrapCLI spec)) ::
                             IO (Either ExitCode ())
                     initialized @?= Right ()
                     ran <-
-                        try (withArgs ["test", "run", "all"] (runHostBootstrapCLI "cli-test-bound-plan" spec)) ::
+                        try (withArgs ["test", "run", "all"] (runHostBootstrapCLI spec)) ::
                             IO (Either ExitCode ())
                     ran @?= Right ()
-                    readIORef observed >>= \case
-                        Just (True, Right (runName, specDigest, planDigest)) -> do
+                    observations <- readIORef observed
+                    length observations @?= 2
+                    exact <-
+                        mapM
+                            ( \case
+                                (True, Right result) -> pure result
+                                other ->
+                                    assertFailure
+                                        ("the live body did not observe a generated config plus exact Harness records: " ++ show other)
+                            )
+                            observations
+                    mapM_
+                        ( \(runName, specDigest, planDigest, image) -> do
                             assertBool
                                 "the bound lease uses the acquired generative run"
                                 ("run-" `T.isPrefixOf` runName)
                             assertBool "the snapshot carries a spec digest" (not (T.null specDigest))
                             assertBool
-                                "the lifecycle plan digest is derived from the spec and step plan"
+                                "the exact plan digest is derived from the spec and step plan"
                                 (specDigest `T.isPrefixOf` planDigest)
-                        other ->
-                            assertFailure
-                                ("the live body did not observe a generated config plus bound snapshot: " ++ show other)
+                            let acquisition =
+                                    recordsWithPrefix
+                                        ("acquisition." <> projectName <> "." <> runName <> ".")
+                                        image
+                                invocation =
+                                    recordsWithPrefix "invocation." image
+                                cursors =
+                                    filter
+                                        (recordImageContains runName)
+                                        (recordsWithPrefix "cursor." image)
+                            length acquisition @?= 1
+                            length cursors @?= 1
+                            assertBool
+                                "the acquisition journal retains the exact Harness run"
+                                (all (recordImageContains runName) acquisition)
+                            assertBool
+                                "the lifecycle cursor retains its exact run through the acquisition source"
+                                (all (recordImageContains runName) cursors)
+                            brokerEpoch <-
+                                case acquisition of
+                                    [record] ->
+                                        case drop 10 (recordImageFields record) of
+                                            epoch : _ -> pure epoch
+                                            _ -> assertFailure "the acquisition journal omitted its broker epoch"
+                                    _ -> assertFailure "the exact acquisition journal was not unique"
+                            let framed value =
+                                    T.pack
+                                        ( show
+                                            ( ByteString.length
+                                                (TextEncoding.encodeUtf8 value)
+                                            )
+                                        )
+                                        <> ":"
+                                        <> value
+                                exactInvocations =
+                                    filter
+                                        ( \record ->
+                                            recordImageContains (framed planDigest) record
+                                                && recordImageContains (framed brokerEpoch) record
+                                                && recordImageContains (framed "host-orchestrator-0") record
+                                        )
+                                        invocation
+                            length exactInvocations @?= 1
+                            assertBool
+                                "the command invocation retains the exact Harness plan"
+                                (all (recordImageContains (framed planDigest)) exactInvocations)
+                            assertBool
+                                "the command invocation retains the installed project authority"
+                                (all (recordImageContains (framed projectName)) exactInvocations)
+                        )
+                        exact
+                    digests <- readIORef forwardPlanDigests
+                    digests @?= map (\(_, _, planDigest, _) -> planDigest) exact
+                    readIORef events >>= (@?= ["forward", "reverse", "forward", "reverse"])
+                    readIORef postReverseConfigPresence >>= (@?= [True, True])
+                    doesFileExist cfgPath >>= (@?= False)
+                )
+                `finally` removeFile testPath
+        , testCase "a true pre-effect Harness refusal skips reverse and admits the successor variant" $ do
+            projectName <- executableProjectName
+            cfgPath <- Schema.siblingProjectConfigPath projectName
+            testPath <- Schema.siblingTestConfigPath projectName
+            forwardCalls <- newIORef (0 :: Int)
+            reverseCalls <- newIORef (0 :: Int)
+            let refusalChain :: FixtureFragment
+                refusalChain _ _ =
+                    [ reversedBy
+                        (\_ _ -> modifyIORef' reverseCalls (+ 1) >> pure TeardownReleased)
+                        ( projectStep
+                            (fixtureProjectStepId "harness-pre-effect-refusal")
+                            ProjectManagedReverse
+                            "refuse before acquisition"
+                            (StepFrame "host-orchestrator-0" "metal")
+                            ( \_ -> do
+                                modifyIORef' forwardCalls (+ 1)
+                                throwIO (SafetyRefusal "pre-existing operator state")
+                            )
+                        )
+                    ]
+                spec = finalized (addSteps refusalChain (builderWith passingSuite (pure ()) []))
+            ( do
+                    initialized <-
+                        try (withArgs ["test", "init"] (runHostBootstrapCLI spec)) ::
+                            IO (Either ExitCode ())
+                    initialized @?= Right ()
+                    ran <-
+                        try (withArgs ["test", "run", "all"] (runHostBootstrapCLI spec)) ::
+                            IO (Either ExitCode ())
+                    ran @?= Left (ExitFailure 1)
+                    -- Both fixture variants reaching the forward action proves
+                    -- the first BoundFallback close released its exact Harness
+                    -- mode before the successor variant was admitted.
+                    readIORef forwardCalls >>= (@?= 2)
+                    readIORef reverseCalls >>= (@?= 0)
+                    doesFileExist cfgPath >>= (@?= False)
+                )
+                `finally` removeFile testPath
+        , testCase "a late Harness refusal reverses each acquired variant exactly once" $ do
+            projectName <- executableProjectName
+            cfgPath <- Schema.siblingProjectConfigPath projectName
+            testPath <- Schema.siblingTestConfigPath projectName
+            stateRoot <- getCurrentDirectory
+            let storeRoot =
+                    stateRoot
+                        </> ".hostbootstrap"
+                        </> "authority"
+                        </> T.unpack projectName
+            acquired <- newIORef (0 :: Int)
+            refused <- newIORef (0 :: Int)
+            reversed <- newIORef (0 :: Int)
+            postReverseChecks <- newIORef (0 :: Int)
+            effectRecords <- newIORef []
+            let recordAcquisition = do
+                    observed <- observeBoundHarnessPlan storeRoot projectName
+                    (runName, _, _, _) <- either assertFailure pure observed
+                    key <-
+                        either (assertFailure . show) pure $
+                            mkRecordKey
+                                ( "effect."
+                                    <> projectName
+                                    <> "."
+                                    <> runName
+                                    <> ".late-refusal"
+                                )
+                    store <-
+                        openProtectedStore storeRoot
+                            >>= either (assertFailure . T.unpack . protectedErrorMessage) pure
+                    version <-
+                        withProtectedEntry store
+                            (\session -> compareAndSwapProtectedRecord session key ExpectAbsent "acquired")
+                            >>= either (assertFailure . T.unpack . protectedErrorMessage) pure
+                    modifyIORef' effectRecords (++ [(key, version)])
+                    modifyIORef' acquired (+ 1)
+                    pure StepChanged
+                releaseAcquisition _ _ = do
+                    records <- readIORef effectRecords
+                    (key, version) <- case records of
+                        [] -> assertFailure "reverse ran without the acquired effect record"
+                        current : rest -> writeIORef effectRecords rest >> pure current
+                    store <-
+                        openProtectedStore storeRoot
+                            >>= either (assertFailure . T.unpack . protectedErrorMessage) pure
+                    deleted <-
+                        withProtectedEntry store $ \session ->
+                            compareAndDeleteProtectedRecord session key (ExpectVersion version)
+                    either (assertFailure . T.unpack . protectedErrorMessage) pure deleted
+                    modifyIORef' reversed (+ 1)
+                    pure TeardownReleased
+                lateRefusalChain :: FixtureFragment
+                lateRefusalChain _ _ =
+                    [ reversedBy
+                        releaseAcquisition
+                        ( projectStep
+                            (fixtureProjectStepId "harness-acquired-before-refusal")
+                            ProjectManagedReverse
+                            "acquire before a later refusal"
+                            (StepFrame "host-orchestrator-0" "metal")
+                            (const recordAcquisition)
+                        )
+                    , projectStep
+                        (fixtureProjectStepId "harness-late-refusal")
+                        ProjectManagedReverse
+                        "refuse after acquisition"
+                        (StepFrame "host-orchestrator-0" "metal")
+                        ( \_ -> do
+                            modifyIORef' refused (+ 1)
+                            pure (StepRefused "late acquired refusal")
+                        )
+                    ]
+                suite =
+                    TestSuite
+                        (pure (Right ()))
+                        (\_ -> pure ())
+                        [Case (fixtureCaseId "ok") 1 False]
+                        (\_ _ -> pure Pass)
+                        (modifyIORef' postReverseChecks (+ 1))
+                spec = finalized (addSteps lateRefusalChain (builderWith suite (pure ()) []))
+            ( do
+                    initialized <-
+                        try (withArgs ["test", "init"] (runHostBootstrapCLI spec)) ::
+                            IO (Either ExitCode ())
+                    initialized @?= Right ()
+                    ran <-
+                        try (withArgs ["test", "run", "all"] (runHostBootstrapCLI spec)) ::
+                            IO (Either ExitCode ())
+                    ran @?= Left (ExitFailure 1)
+                    readIORef acquired >>= (@?= 2)
+                    readIORef refused >>= (@?= 2)
+                    readIORef reversed >>= (@?= 2)
+                    -- The post-reverse hook is reached only when exact reverse,
+                    -- operation-session settlement, and the terminal-close
+                    -- authorization/settlement handoff all succeed; the owned
+                    -- root performs final lease/mode close immediately after
+                    -- this callback returns. A merely invoked reverse callback
+                    -- is not enough.
+                    readIORef postReverseChecks >>= (@?= 2)
+                    readIORef effectRecords >>= (@?= [])
                     doesFileExist cfgPath >>= (@?= False)
                 )
                 `finally` removeFile testPath
         , testCase "test run refuses to overwrite an existing sibling project config" $ do
-            cfgPath <- Schema.siblingProjectConfigPath "cli-test-existing"
-            let testPath = takeDirectory cfgPath </> "cli-test-existing.test.dhall"
-                spec = specWith passingSuite (pure ()) []
+            projectName <- executableProjectName
+            cfgPath <- Schema.siblingProjectConfigPath projectName
+            testPath <- Schema.siblingTestConfigPath projectName
+            let spec = specWith passingSuite (pure ()) []
             ( do
                     _ <-
-                        try (withArgs ["test", "init"] (runHostBootstrapCLI "cli-test-existing" spec)) ::
+                        try (withArgs ["test", "init"] (runHostBootstrapCLI spec)) ::
                             IO (Either ExitCode ())
                     Schema.writeProjectConfigFile
                         Fixture.projectConfigCodec
                         cfgPath
-                        (Fixture.defaultProjectConfig "cli-test-existing" "/workspace/demo" HostOrchestrator)
+                        (Fixture.defaultProjectConfig projectName "/workspace/demo" HostOrchestrator)
                     result <-
-                        try (withArgs ["test", "run", "all"] (runHostBootstrapCLI "cli-test-existing" spec)) ::
+                        try (withArgs ["test", "run", "all"] (runHostBootstrapCLI spec)) ::
                             IO (Either ExitCode ())
                     result @?= Left (ExitFailure 1)
                 )
@@ -406,7 +706,7 @@ tests =
         , testCase "service schema lists variants without a config" $ do
             let spec = specWithServices Nothing [("web", pure ())]
             result <-
-                try (withArgs ["service", "schema"] (runHostBootstrapCLI "cli-svc-schema" spec)) ::
+                try (withArgs ["service", "schema"] (runHostBootstrapCLI spec)) ::
                     IO (Either ExitCode ())
             result @?= Right ()
         , testCase "bare context schema command output matches its exact snapshot" $ do
@@ -430,36 +730,36 @@ tests =
                 ("no surface text names a suite, saw " ++ T.unpack output)
                 (not ("SUITE" `T.isInfixOf` output) && not ("suite" `T.isInfixOf` output))
         , testCase "test run refuses an unknown case by naming the compiled set" $ do
-            cfgPath <- Schema.siblingProjectConfigPath "cli-test-unknown"
-            let testPath = takeDirectory cfgPath </> "cli-test-unknown.test.dhall"
+            projectName <- executableProjectName
+            testPath <- Schema.siblingTestConfigPath projectName
             ( do
                     _ <-
-                        try (withArgs ["test", "init"] (runHostBootstrapCLI "cli-test-unknown" (specWith passingSuite (pure ()) []))) ::
+                        try (withArgs ["test", "init"] (runHostBootstrapCLI (specWith passingSuite (pure ()) []))) ::
                             IO (Either ExitCode ())
                     result <-
-                        try (withArgs ["test", "run", "no-such-case"] (runHostBootstrapCLI "cli-test-unknown" (specWith passingSuite (pure ()) []))) ::
+                        try (withArgs ["test", "run", "no-such-case"] (runHostBootstrapCLI (specWith passingSuite (pure ()) []))) ::
                             IO (Either ExitCode ())
                     result @?= Left (ExitFailure 1)
                 )
                 `finally` removeFile testPath
         , testCase "service run fails fast on a non-service-role config" $
-            withProjectConfig "cli-svc-role" $ do
+            withProjectConfig $ do
                 let spec = specWithServices (Just "web") [("web", pure ())]
                 result <-
-                    try (withArgs ["service", "run"] (runHostBootstrapCLI "cli-svc-role" spec)) ::
+                    try (withArgs ["service", "run"] (runHostBootstrapCLI spec)) ::
                         IO (Either ExitCode ())
                 result @?= Left (ExitFailure 1)
         , testCase "service run rejects a forged multi-role orchestrator even when ServiceCommand is granted" $
-            withMultiRoleHostServiceConfig "cli-svc-multirole" $ do
+            withMultiRoleHostServiceConfig $ do
                 handlerRan <- newIORef False
                 let spec = specWithServices (Just "web") [("web", writeIORef handlerRan True)]
                 result <-
-                    try (withArgs ["service", "run"] (runHostBootstrapCLI "cli-svc-multirole" spec)) ::
+                    try (withArgs ["service", "run"] (runHostBootstrapCLI spec)) ::
                         IO (Either ExitCode ())
                 result @?= Left (ExitFailure 1)
                 readIORef handlerRan >>= (@?= False)
         , testCase "service run dispatches exactly the selected variant from a multi-handler registry" $
-            withServiceProjectConfig "cli-svc-dispatch" $ do
+            withServiceProjectConfig $ do
                 webRan <- newIORef False
                 acceleratorRan <- newIORef False
                 let spec =
@@ -469,66 +769,80 @@ tests =
                             , ("accelerator", writeIORef acceleratorRan True)
                             ]
                 result <-
-                    try (withArgs ["service", "run"] (runHostBootstrapCLI "cli-svc-dispatch" spec)) ::
+                    try (withArgs ["service", "run"] (runHostBootstrapCLI spec)) ::
                         IO (Either ExitCode ())
                 result @?= Right ()
                 readIORef webRan >>= (@?= False)
                 readIORef acceleratorRan >>= (@?= True)
         , testCase "service run rejects a legacy positional variant" $
-            withServiceProjectConfig "cli-svc-positional" $ do
+            withServiceProjectConfig $ do
                 let spec = specWithServices (Just "web") [("web", pure ())]
                 result <-
-                    try (withArgs ["service", "run", "web"] (runHostBootstrapCLI "cli-svc-positional" spec)) ::
+                    try (withArgs ["service", "run", "web"] (runHostBootstrapCLI spec)) ::
                         IO (Either ExitCode ())
                 result @?= Left (ExitFailure 1)
         , testCase "service run fails fast for an empty registry" $
-            withServiceProjectConfig "cli-svc-empty" $ do
+            withServiceProjectConfig $ do
                 let spec = specWithServices (Just "accelerator") []
                 result <-
-                    try (withArgs ["service", "run"] (runHostBootstrapCLI "cli-svc-empty" spec)) ::
+                    try (withArgs ["service", "run"] (runHostBootstrapCLI spec)) ::
                         IO (Either ExitCode ())
                 result @?= Left (ExitFailure 1)
         , testCase "service run fails fast for an unknown variant" $
-            withServiceProjectConfig "cli-svc-unknown" $ do
+            withServiceProjectConfig $ do
                 let spec = specWithServices (Just "accelerator") [("web", pure ())]
                 result <-
-                    try (withArgs ["service", "run"] (runHostBootstrapCLI "cli-svc-unknown" spec)) ::
+                    try (withArgs ["service", "run"] (runHostBootstrapCLI spec)) ::
                         IO (Either ExitCode ())
                 result @?= Left (ExitFailure 1)
         , testCase "service run refuses a service-role config with no configured variant" $
-            withServiceProjectConfig "cli-svc-unconfigured" $ do
+            withServiceProjectConfig $ do
                 let spec = specWithServices Nothing [("web", pure ())]
                 result <-
-                    try (withArgs ["service", "run"] (runHostBootstrapCLI "cli-svc-unconfigured" spec)) ::
+                    try (withArgs ["service", "run"] (runHostBootstrapCLI spec)) ::
                         IO (Either ExitCode ())
                 result @?= Left (ExitFailure 1)
         , testCase "the fixed service surface has no down command" $
-            withServiceProjectConfig "cli-svc-no-down" $ do
+            withServiceProjectConfig $ do
                 let spec = specWithServices Nothing [("web", pure ())]
                 result <-
-                    try (withArgs ["service", "down"] (runHostBootstrapCLI "cli-svc-no-down" spec)) ::
+                    try (withArgs ["service", "down"] (runHostBootstrapCLI spec)) ::
                         IO (Either ExitCode ())
                 result @?= Left (ExitFailure 1)
         , testCase "context render fails fast on an unknown artifact" $ do
             result <-
-                try (withArgs ["context", "render", "--artifact", "missing"] (runHostBootstrapCLI "cli-render-missing" (specWith passingSuite (pure ()) []))) ::
+                try (withArgs ["context", "render", "--artifact", "missing"] (runHostBootstrapCLI (specWith passingSuite (pure ()) []))) ::
                     IO (Either ExitCode ())
             result @?= Left (ExitFailure 1)
         , testCase "context render sees project artifacts from the spec" $ do
             let budgetCodec = requireCodecWitness "CLISpec.Budget" (autoCodecWitness @V.Budget)
                 arts = [artifactOf "localBudget" budgetCodec (V.Budget 1 2 3)]
             result <-
-                try (withArgs ["context", "render", "--artifact", "localBudget"] (runHostBootstrapCLI "cli-render-local" (specWith passingSuite (pure ()) arts))) ::
+                try (withArgs ["context", "render", "--artifact", "localBudget"] (runHostBootstrapCLI (specWith passingSuite (pure ()) arts))) ::
                     IO (Either ExitCode ())
             result @?= Right ()
-        , testCase "project up --dry-run renders the chain through the context gate" $
-            withProjectConfig "cli-project-dryrun" $ do
-                result <-
-                    try (withArgs ["project", "up", "--dry-run"] (runHostBootstrapCLI "cli-project-dryrun" (specWith passingSuite (pure ()) []))) ::
-                        IO (Either ExitCode ())
-                result @?= Right ()
+        , testCase "project up --dry-run renders the exact plan without snapshot persistence or node effects" $
+            withIsolatedProjectConfig $ \paths -> do
+                let marker = isolatedCanonicalRoot paths </> "dry-run-effect"
+                    markerVariable = "HOSTBOOTSTRAP_CLI_DRY_RUN_MARKER"
+                previous <- lookupEnv markerVariable
+                output <-
+                    (setEnv markerVariable marker >> schemaFixtureOutput "project-dry-run")
+                        `finally` maybe (unsetEnv markerVariable) (setEnv markerVariable) previous
+                output @?= "1. [host-orchestrator-0] deploy-vm — launch the VM\n"
+                doesPathExist marker >>= (@?= False)
+                image <- readProtectedStoreImage (isolatedStoreRoot paths)
+                lease <- expectSingleRecord ("lease." <> isolatedProjectName paths <> ".production") image
+                case recordImageFields lease of
+                    ["unbound", epoch] ->
+                        assertBool "the dry-run lease retains a positive broker epoch" (epoch /= "0")
+                    fields -> assertFailure ("expected an unbound dry-run lease, observed " ++ show fields)
+                assertRecordCount "snapshot." 0 image
+                assertRecordCount "acquisition." 0 image
+                assertRecordCount "cursor." 0 image
+                assertRecordCount "invocation." 0 image
         , testCase "project up safety refusal skips automatic project teardown" $
-            withProjectConfig "cli-project-safety" $ do
+            withIsolatedProjectConfig $ \_paths -> do
                 teardownCalls <- newIORef (0 :: Int)
                 let frame = StepFrame "host-orchestrator-0" "metal"
                     refusingChain :: FixtureFragment
@@ -545,38 +859,131 @@ tests =
                         ]
                     spec = finalized (addSteps refusingChain (builderWith passingSuite (pure ()) []))
                 result <-
-                    try (withArgs ["project", "up"] (runHostBootstrapCLI "cli-project-safety" spec)) ::
+                    try (withArgs ["project", "up"] (runHostBootstrapCLI spec)) ::
                         IO (Either ExitCode ())
                 result @?= Left (ExitFailure 1)
                 readIORef teardownCalls >>= (@?= 0)
-        , testCase "project up runs behind the independent root gate, not context class membership" $
-            withProjectConfig "cli-project-rootgate" $ do
-                let spec =
+        , testCase "fresh project up persists and binds one exact plan before its first effect" $
+            withIsolatedProjectConfig $ \paths -> do
+                effects <- newIORef (0 :: Int)
+                atEffect <- newIORef Nothing
+                let observingChain :: FixtureFragment
+                    observingChain _ _ =
+                        [ projectStep
+                            (fixtureProjectStepId "fresh-admission")
+                            ProjectManagedReverse
+                            "observe fresh admission"
+                            (StepFrame "host-orchestrator-0" "metal")
+                            ( \_ -> do
+                                modifyIORef' effects (+ 1)
+                                readProtectedStoreImage (isolatedStoreRoot paths)
+                                    >>= writeIORef atEffect . Just
+                                pure StepChanged
+                            )
+                        ]
+                    spec =
                         finalized $
-                            addSteps sampleChain $
+                            addSteps observingChain $
                                 builderWith passingSuite (pure ()) []
                 result <-
-                    try (withArgs ["project", "up"] (runHostBootstrapCLI "cli-project-rootgate" spec)) ::
+                    try (withArgs ["project", "up"] (runHostBootstrapCLI spec)) ::
                         IO (Either ExitCode ())
                 result @?= Right ()
-                -- The gate is observable: it opens the project's own protected
-                -- authority store under the canonical root and reserves a one-use
-                -- invocation record there. Before the recursive-lifecycle-command phase wired it, nothing in
-                -- production reached `Authority.withVerifiedRootInvocation` at all.
-                configPath <- Schema.siblingProjectConfigPath "cli-project-rootgate"
-                let storeRoot =
-                        takeDirectory configPath
-                            </> ".hostbootstrap"
-                            </> "authority"
-                            </> "cli-project-rootgate"
-                present <- doesDirectoryExist storeRoot
-                assertBool ("the authority store was not created at " ++ storeRoot) present
+                readIORef effects >>= (@?= 1)
+                readIORef atEffect >>= \case
+                    Nothing -> assertFailure "the fresh plan effect never observed its durable admission"
+                    Just image -> do
+                        snapshot <- expectSingleRecord ("snapshot." <> isolatedProjectName paths <> ".production") image
+                        assertBool "the exact snapshot is present before the effect" (not (ByteString.null (let (_, _, bytes) = snapshot in bytes)))
+                        lease <- expectSingleRecord ("lease." <> isolatedProjectName paths <> ".production") image
+                        case recordImageFields lease of
+                            ["bound", epoch, specDigest, planDigest] -> do
+                                assertBool "the bound lease retains a positive broker epoch" (epoch /= "0")
+                                assertBool "the bound lease carries a specification digest" (not (T.null specDigest))
+                                assertBool "the bound lease carries a plan digest" (not (T.null planDigest))
+                            fields -> assertFailure ("expected a bound fresh lease, observed " ++ show fields)
+                        assertRecordCount "acquisition." 1 image
+                        assertRecordCount "cursor." 1 image
+                        assertRecordCount "invocation." 1 image
+                finalImage <- readProtectedStoreImage (isolatedStoreRoot paths)
+                cursor <- expectSingleRecord "cursor." finalImage
+                assertBool "the completed fresh invocation advances its cursor to teardown" (recordImageContains "teardown" cursor)
+        , testCase "project up resumes an exact persisted snapshot whose lease is still unbound" $
+            withIsolatedProjectConfig $ \paths -> do
+                effects <- newIORef (0 :: Int)
+                let retryChain :: FixtureFragment
+                    retryChain _ _ =
+                        [ projectStep
+                            (fixtureProjectStepId "persisted-unbound-retry")
+                            ProjectManagedReverse
+                            "resume the partially persisted invocation"
+                            (StepFrame "host-orchestrator-0" "metal")
+                            (\_ -> modifyIORef' effects (+ 1) >> pure StepChanged)
+                        ]
+                    spec = finalized (addSteps retryChain (builderWith passingSuite (pure ()) []))
+                snapshotBefore <- seedPersistedUnbound paths spec
+                before <- readProtectedStoreImage (isolatedStoreRoot paths)
+                leaseBefore <- expectSingleRecord ("lease." <> isolatedProjectName paths <> ".production") before
+                case recordImageFields leaseBefore of
+                    ["unbound", _epoch] -> pure ()
+                    fields -> assertFailure ("expected the seeded lease to remain unbound, observed " ++ show fields)
+                assertRecordCount "acquisition." 0 before
+                assertRecordCount "cursor." 0 before
+                assertRecordCount "invocation." 0 before
+                result <-
+                    try (withArgs ["project", "up"] (runHostBootstrapCLI spec)) ::
+                        IO (Either ExitCode ())
+                result @?= Right ()
+                readIORef effects >>= (@?= 1)
+                after <- readProtectedStoreImage (isolatedStoreRoot paths)
+                snapshotAfter <- expectSingleRecord ("snapshot." <> isolatedProjectName paths <> ".production") after
+                snapshotAfter @?= snapshotBefore
+                leaseAfter <- expectSingleRecord ("lease." <> isolatedProjectName paths <> ".production") after
+                case recordImageFields leaseAfter of
+                    ["bound", _epoch, _specDigest, _planDigest] -> pure ()
+                    fields -> assertFailure ("expected the retry to bind the retained lease, observed " ++ show fields)
+                assertRecordCount "acquisition." 1 after
+                assertRecordCount "cursor." 1 after
+                assertRecordCount "invocation." 1 after
+        , testCase "project up recovers one bound Open invocation from its Execute cursor" $
+            withIsolatedProjectConfig $ \paths -> do
+                effects <- newIORef (0 :: Int)
+                let recoveryChain :: FixtureFragment
+                    recoveryChain _ _ =
+                        [ projectStep
+                            (fixtureProjectStepId "bound-open-recovery")
+                            ProjectManagedReverse
+                            "resume the bound open invocation"
+                            (StepFrame "host-orchestrator-0" "metal")
+                            (\_ -> modifyIORef' effects (+ 1) >> pure StepChanged)
+                        ]
+                    spec = finalized (addSteps recoveryChain (builderWith passingSuite (pure ()) []))
+                before <- seedBoundExecute paths spec
+                snapshotBefore <- expectSingleRecord ("snapshot." <> isolatedProjectName paths <> ".production") before
+                leaseBefore <- expectSingleRecord ("lease." <> isolatedProjectName paths <> ".production") before
+                acquisitionBefore <- expectSingleRecord "acquisition." before
+                cursorBefore@(_, cursorVersionBefore, _) <- expectSingleRecord "cursor." before
+                assertBool "the recovery seed stops at Execute" (recordImageContains "execute" cursorBefore)
+                assertRecordCount "invocation." 0 before
+                result <-
+                    try (withArgs ["project", "up"] (runHostBootstrapCLI spec)) ::
+                        IO (Either ExitCode ())
+                result @?= Right ()
+                readIORef effects >>= (@?= 1)
+                after <- readProtectedStoreImage (isolatedStoreRoot paths)
+                expectSingleRecord ("snapshot." <> isolatedProjectName paths <> ".production") after >>= (@?= snapshotBefore)
+                expectSingleRecord ("lease." <> isolatedProjectName paths <> ".production") after >>= (@?= leaseBefore)
+                expectSingleRecord "acquisition." after >>= (@?= acquisitionBefore)
+                cursorAfter@(_, cursorVersionAfter, _) <- expectSingleRecord "cursor." after
+                cursorVersionAfter @?= cursorVersionBefore + 1
+                assertBool "the recovered invocation advances the same cursor to teardown" (recordImageContains "teardown" cursorAfter)
+                assertRecordCount "invocation." 1 after
         , -- `project down` is the plan's own reverse projection, so the effect it
           -- runs is the one the acquiring step declared — not a whole-project
           -- hook beside the plan (§ W). The chain here owns no `deploy-kind`, so
           -- the core cluster adapter contributes nothing and only this node runs.
           testCase "project down runs the reverse the acquiring step declared" $
-            withProjectConfig "cli-project-down-nested" $ do
+            withIsolatedProjectConfig $ \_paths -> do
                 observed <- newIORef ([] :: [TeardownAction])
                 let reversedChain :: FixtureFragment
                     reversedChain _ _ =
@@ -586,7 +993,7 @@ tests =
                         ]
                     spec = finalized (addSteps reversedChain (builderWith passingSuite (pure ()) []))
                 result <-
-                    try (withArgs ["project", "down"] (runHostBootstrapCLI "cli-project-down-nested" spec)) ::
+                    try (withArgs ["project", "down"] (runHostBootstrapCLI spec)) ::
                         IO (Either ExitCode ())
                 result @?= Right ()
                 -- `down` stops a provider frame; `destroy` deletes it. That one
@@ -594,16 +1001,17 @@ tests =
                 readIORef observed >>= (@?= [StopFrame])
                 writeIORef observed []
                 destroyResult <-
-                    try (withArgs ["project", "destroy"] (runHostBootstrapCLI "cli-project-down-nested" spec)) ::
+                    try (withArgs ["project", "destroy"] (runHostBootstrapCLI spec)) ::
                         IO (Either ExitCode ())
                 destroyResult @?= Right ()
                 readIORef observed >>= (@?= [DeleteFrame])
         , testCase "chain steps see the snapshot admitted at project up, not a replaced sibling" $
-            withProjectConfig "cli-project-toctou" $ do
-                path <- Schema.siblingProjectConfigPath "cli-project-toctou"
+            withIsolatedProjectConfig $ \paths -> do
+                let projectName = isolatedProjectName paths
+                    path = isolatedConfigPath paths
                 seen <- newIORef ([] :: [(T.Text, T.Text)])
                 let frame = StepFrame "host-orchestrator-0" "metal"
-                    admitted = Fixture.defaultProjectConfig "cli-project-toctou" "." HostOrchestrator
+                    admitted = Fixture.defaultProjectConfig projectName "." HostOrchestrator
                     replaced = admitted{Fixture.dockerfile = "replaced-mid-run.Dockerfile"}
                     -- Step one replaces @<project>.dhall@ underneath the running
                     -- chain; step two records both what its injected snapshot
@@ -634,16 +1042,70 @@ tests =
                         finalized $
                             addSteps toctouChain (builderWith passingSuite (pure ()) [])
                 result <-
-                    try (withArgs ["project", "up"] (runHostBootstrapCLI "cli-project-toctou" spec)) ::
+                    try (withArgs ["project", "up"] (runHostBootstrapCLI spec)) ::
                         IO (Either ExitCode ())
                 result @?= Right ()
                 -- The step kept the admitted snapshot even though a reload at
                 -- that same instant would have returned different bytes.
                 readIORef seen
                     >>= (@?= [(Fixture.dockerfile admitted, "replaced-mid-run.Dockerfile")])
+        , testCase "Production command source has one exact plan route and no compatibility escape" $ do
+            cwd <- getCurrentDirectory
+            repoRoot <- findRepoRoot cwd >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
+            let packageRoot = repoRoot </> "core" </> "hostbootstrap-core"
+                sourceRoot = packageRoot </> "src" </> "HostBootstrap"
+            commandSource <- TIO.readFile (sourceRoot </> "Command.hs")
+            reconcileSource <- TIO.readFile (sourceRoot </> "Reconcile.hs")
+            teardownSource <- TIO.readFile (sourceRoot </> "Teardown.hs")
+            cabalSource <- TIO.readFile (packageRoot </> "hostbootstrap-core.cabal")
+            let projectStart = "projectCommandGroup ::"
+                projectEnd = "-- | Whether the current binary frame owns"
+                fromProject = snd (T.breakOn projectStart commandSource)
+                productionSlice = fst (T.breakOn projectEnd fromProject)
+                normalized = T.unwords (T.words productionSlice)
+                require fragment =
+                    assertBool
+                        ("Production command lost its exact route: " ++ T.unpack fragment)
+                        (fragment `T.isInfixOf` normalized)
+                forbid label source fragment =
+                    assertBool
+                        (label ++ " still contains compatibility shape " ++ T.unpack fragment)
+                        (not (fragment `T.isInfixOf` source))
+            assertBool "could not isolate projectCommandGroup" (not (T.null fromProject) && projectEnd `T.isInfixOf` fromProject)
+            mapM_
+                require
+                [ "withProjectPlan profile root validated drafts"
+                , "withRecoveredProductionProjectPlan profile root verified bound binding recoveredConfig recoveredDrafts"
+                , "case withCurrentFrame plan ctx"
+                , "SnapshotVerificationError (ModeWrongMode \"production\" \"absent\") -> True"
+                , "SnapshotVerificationError (ModeLeaseNotBindable \"production\" \"unbound\") -> True"
+                , "withCurrentLifecycleCursor journal frame Authority.ProjectUp"
+                , "ProjectAuthority.authorizeProjectUp"
+                , "runChainFromFrame cfg self store plan authority executeCursor"
+                , "Teardown.teardownPlan plan currentFrame verb"
+                ]
+            T.count "withProjectPlan profile root validated drafts" normalized @?= 1
+            T.count "withRecoveredProductionProjectPlan profile root verified bound binding recoveredConfig recoveredDrafts" normalized @?= 1
+            mapM_
+                (forbid "Production command" productionSlice)
+                [ "projectPlanStepPlan"
+                , "withLifecyclePlan"
+                , "LifecyclePlan"
+                , "StepPlan"
+                , "HostBootstrap.Chain.Compatibility"
+                , "compatibilityStepExecutionFor"
+                , "withCompatibilityTeardownPlan"
+                ]
+            assertBool "Command must import the public Chain facade" ("import HostBootstrap.Chain (" `T.isInfixOf` commandSource)
+            forbid "Command" commandSource "HostBootstrap.Chain.Compatibility"
+            forbid "Reconcile" reconcileSource "compatibilityStepExecutionFor"
+            forbid "Teardown" teardownSource "withCompatibilityTeardownPlan"
+            forbid "Teardown" teardownSource "compatibilityReverseStepFor"
+            forbid "Cabal" cabalSource "HostBootstrap.Chain.Compatibility"
+            doesFileExist (sourceRoot </> "Chain" </> "Compatibility.hs") >>= (@?= False)
         , testCase "project up fails fast without a sibling context" $ do
             result <-
-                try (withArgs ["project", "up", "--dry-run"] (runHostBootstrapCLI "cli-project-nocfg" (specWith passingSuite (pure ()) []))) ::
+                try (withArgs ["project", "up", "--dry-run"] (runHostBootstrapCLI (specWith passingSuite (pure ()) []))) ::
                     IO (Either ExitCode ())
             result @?= Left (ExitFailure 1)
         ]
@@ -651,7 +1113,7 @@ tests =
 specWithServices ::
     Maybe String ->
     [(String, IO ())] ->
-    ProjectSpec Fixture.FixtureProject Fixture.ProjectConfig Fixture.TestConfig
+    ProjectSpec Fixture.ProjectConfig Fixture.TestConfig
 specWithServices selected handlers =
     finalized $
         addServices
@@ -663,7 +1125,7 @@ specWithServices selected handlers =
 fixtureServiceRegistry ::
     Maybe String ->
     [(String, IO ())] ->
-    ServiceRegistry (Fixture.ProjectConfig (V.Production Fixture.FixtureProject))
+    ServiceRegistry Fixture.ProjectConfig
 fixtureServiceRegistry selected handlers =
     either (error . show) id $
         serviceRegistry
@@ -682,9 +1144,9 @@ fixtureServiceRegistry selected handlers =
 derive project-relative paths from it without ever seeing its phantoms.
 -}
 type FixtureFragment =
-    forall configScope rootScope rootId.
-    CanonicalProjectRoot rootScope rootId ->
-    Fixture.ProjectConfig configScope ->
+    forall scope rootId.
+    CanonicalProjectRoot scope rootId ->
+    Fixture.ProjectConfig scope ->
     [Step]
 
 -- A compile-time-only generative run index for the scope-polymorphic planner
@@ -699,6 +1161,297 @@ sampleChain _ _ =
 fixtureProjectStepId :: String -> ProjectStepId
 fixtureProjectStepId = either error id . projectStepId
 
+{- | One CLI invocation gets its own absolute canonical root and therefore its
+own protected Production store.  The executable-sibling config path is fixed
+by the real CLI contract, but no durable authority row is shared with another
+case.
+-}
+data IsolatedProductionPaths = IsolatedProductionPaths
+    { isolatedProjectName :: T.Text
+    , isolatedConfigPath :: FilePath
+    , isolatedCanonicalRoot :: FilePath
+    , isolatedStoreRoot :: FilePath
+    }
+
+withIsolatedProjectConfig :: (IsolatedProductionPaths -> IO result) -> IO result
+withIsolatedProjectConfig use =
+    withSystemTempDirectory "hostbootstrap-cli-production" $ \configuredRoot -> do
+        projectName <- executableProjectName
+        configPath <- Schema.siblingProjectConfigPath projectName
+        rooted <-
+            withCanonicalProjectRoot
+                configPath
+                configuredRoot
+                (pure . canonicalProjectRootPath)
+        canonicalRoot <- either (assertFailure . show) pure rooted
+        let config =
+                Fixture.defaultProjectConfig
+                    projectName
+                    (T.pack canonicalRoot)
+                    HostOrchestrator
+            cleanup = do
+                present <- doesFileExist configPath
+                if present then removeFile configPath else pure ()
+        ( do
+                Schema.writeProjectConfigFile Fixture.projectConfigCodec configPath config
+                use
+                    IsolatedProductionPaths
+                        { isolatedProjectName = projectName
+                        , isolatedConfigPath = configPath
+                        , isolatedCanonicalRoot = canonicalRoot
+                        , isolatedStoreRoot =
+                            canonicalRoot
+                                </> ".hostbootstrap"
+                                </> "authority"
+                                </> T.unpack projectName
+                        }
+            )
+            `finally` cleanup
+
+type ProtectedRecordImage = (T.Text, Word64, ByteString.ByteString)
+
+readProtectedStoreImage :: FilePath -> IO [ProtectedRecordImage]
+readProtectedStoreImage storeRoot = do
+    store <- openProtectedStore storeRoot >>= either (assertFailure . show) pure
+    entered <-
+        withProtectedEntry store $ \session -> do
+            keys <- listProtectedRecords session >>= either (assertFailure . show) pure
+            rows <-
+                mapM
+                    ( \key -> do
+                        observed <- readProtectedRecord session key >>= either (assertFailure . show) pure
+                        record <-
+                            maybe
+                                (assertFailure ("protected record disappeared: " ++ T.unpack (recordKeyText key)))
+                                pure
+                                observed
+                        pure
+                            ( recordKeyText key
+                            , recordVersionWord (protectedRecordVersion record)
+                            , protectedRecordBytes record
+                            )
+                    )
+                    keys
+            pure (Right rows)
+    either (assertFailure . show) pure entered
+
+recordsWithPrefix :: T.Text -> [ProtectedRecordImage] -> [ProtectedRecordImage]
+recordsWithPrefix prefix = filter (T.isPrefixOf prefix . recordImageKey)
+  where
+    recordImageKey (key, _, _) = key
+
+assertRecordCount :: T.Text -> Int -> [ProtectedRecordImage] -> IO ()
+assertRecordCount prefix expected image =
+    length (recordsWithPrefix prefix image) @?= expected
+
+expectSingleRecord :: T.Text -> [ProtectedRecordImage] -> IO ProtectedRecordImage
+expectSingleRecord prefix image =
+    case recordsWithPrefix prefix image of
+        [record] -> pure record
+        observed ->
+            assertFailure
+                ( "expected one protected record with prefix "
+                    ++ T.unpack prefix
+                    ++ ", observed "
+                    ++ show (map (\(key, _, _) -> key) observed)
+                )
+
+recordImageFields :: ProtectedRecordImage -> [T.Text]
+recordImageFields (_, _, bytes) =
+    map (T.pack . ByteStringChar8.unpack) (ByteStringChar8.split '\t' bytes)
+
+recordImageContains :: T.Text -> ProtectedRecordImage -> Bool
+recordImageContains needle (_, _, bytes) =
+    TextEncoding.encodeUtf8 needle `ByteString.isInfixOf` bytes
+
+expectRight :: (Show failure) => Either failure result -> IO result
+expectRight = either (assertFailure . show) pure
+
+{- | Admit the exact finalized Production plan the CLI will reconstruct from
+the same static spec and on-disk config.  The callback cannot retain any of the
+fresh local identities.
+-}
+withExactSeedPlan ::
+    IsolatedProductionPaths ->
+    ProjectSpec Fixture.ProjectConfig Fixture.TestConfig ->
+    ( forall projectId brokerGeneration specDigest planId configId rootId.
+      ProtectedStore ->
+      InstalledProjectIdentity projectId ->
+      ProductionRoot projectId brokerGeneration Authority.VerbUp ->
+      CanonicalProjectRoot (V.Production projectId) rootId ->
+      ProjectPlan
+        (V.Production projectId)
+        specDigest
+        planId
+        configId
+        Fixture.ProjectConfig ->
+      Context.BinaryContext ->
+      IO result
+    ) ->
+    IO result
+withExactSeedPlan paths spec use = do
+    store <- openProtectedStore (isolatedStoreRoot paths) >>= either (assertFailure . show) pure
+    installed <-
+        withInstalledProjectIdentity (isolatedProjectName paths) $ \(project :: InstalledProjectIdentity projectId) -> do
+            rooted <-
+                withCanonicalProjectRoot
+                    (isolatedConfigPath paths)
+                    (isolatedCanonicalRoot paths)
+                    ( \(root :: CanonicalProjectRoot (V.Production projectId) rootId) -> do
+                        started <-
+                            withProductionRoot store project Authority.ProjectUp $ \productionRoot -> do
+                                let rootAuthority = productionRootAuthority productionRoot
+                                    unbound = productionRootUnboundLease productionRoot
+                                profiled <-
+                                    withProductionLifecycleProfile
+                                        (Authority.rootScopeAuthority rootAuthority)
+                                        (productionActiveMode (productionRootModeLease productionRoot))
+                                        unbound
+                                        ( \profile ->
+                                            withProductionProjectCodec @Fixture.ProjectConfig @projectId $ \baseCodec ->
+                                                withFinalizedProjectSpec
+                                                    ProductionScope
+                                                    baseCodec
+                                                    emptyServiceRegistry
+                                                    (projectStepPlan spec)
+                                                    ( \finalizedSpec -> do
+                                                        let value =
+                                                                Fixture.defaultProjectConfig
+                                                                    (installedProjectName project)
+                                                                    (T.pack (isolatedCanonicalRoot paths))
+                                                                    HostOrchestrator
+                                                        validated <-
+                                                            Schema.withValidatedConfig
+                                                                (finalizedProjectCodec finalizedSpec)
+                                                                value
+                                                                ( \_wire config -> do
+                                                                    drafts <- expectRight (projectPlanDrafts finalizedSpec root config)
+                                                                    planAction <-
+                                                                        expectRight
+                                                                            ( withProjectPlan
+                                                                                profile
+                                                                                root
+                                                                                config
+                                                                                drafts
+                                                                                ( \plan ->
+                                                                                    use
+                                                                                        store
+                                                                                        project
+                                                                                        productionRoot
+                                                                                        root
+                                                                                        plan
+                                                                                        (Fixture.context value)
+                                                                                )
+                                                                            )
+                                                                    planAction
+                                                                )
+                                                        either assertFailure pure validated
+                                                    )
+                                        )
+                                action <- either (assertFailure . T.unpack . authorityErrorMessage) pure profiled
+                                Right <$> action
+                        expectRight started
+                    )
+            expectRight rooted
+    either (assertFailure . T.unpack . authorityErrorMessage) pure installed
+
+writeExactStableSnapshot ::
+    ProtectedStore ->
+    InstalledProjectIdentity projectId ->
+    ProjectPlan scope specDigest planId configId cfg ->
+    IO ProtectedRecordImage
+writeExactStableSnapshot store project plan = do
+    let stable = renderSnapshot plan
+        keyText = "snapshot." <> installedProjectName project <> ".production"
+        key = either (error . show) id (mkRecordKey keyText)
+        canonicalBytes = stablePlanSnapshotBytes stable
+        encodeBytes bytes =
+            Builder.word64BE (fromIntegral (ByteString.length bytes))
+                <> Builder.byteString bytes
+        encodeText = encodeBytes . TextEncoding.encodeUtf8
+        payload =
+            LazyByteString.toStrict
+                ( Builder.toLazyByteString
+                    ( Builder.byteString "HOSTBOOTSTRAP-SNAPSHOT"
+                        <> Builder.word64BE 1
+                        <> Builder.word64BE 1
+                        <> encodeText (stablePlanSnapshotSpecDigest stable)
+                        <> encodeText (stablePlanSnapshotDigest stable)
+                        <> Builder.word8 1
+                        <> encodeText (stablePlanSnapshotConfigDigest stable)
+                        <> encodeBytes canonicalBytes
+                    )
+                )
+    written <-
+        withProtectedEntry store $ \session ->
+            compareAndSwapProtectedRecord session key ExpectAbsent payload
+    _ <- expectRight written
+    image <- readProtectedStoreImage (isolatedStoreForPlan stable)
+    expectSingleRecord keyText image
+  where
+    -- Stable snapshots expose the canonical root used by the command.  The
+    -- store path is therefore derived from that authority, never from cwd.
+    isolatedStoreForPlan stable =
+        stablePlanSnapshotRoot stable
+            </> ".hostbootstrap"
+            </> "authority"
+            </> T.unpack (installedProjectName project)
+
+seedPersistedUnbound ::
+    IsolatedProductionPaths ->
+    ProjectSpec Fixture.ProjectConfig Fixture.TestConfig ->
+    IO ProtectedRecordImage
+seedPersistedUnbound paths spec =
+    withExactSeedPlan paths spec $ \store project _productionRoot _root plan _context ->
+        writeExactStableSnapshot store project plan
+
+seedBoundExecute ::
+    IsolatedProductionPaths ->
+    ProjectSpec Fixture.ProjectConfig Fixture.TestConfig ->
+    IO [ProtectedRecordImage]
+seedBoundExecute paths spec =
+    withExactSeedPlan paths spec $ \_store _project productionRoot _root plan context -> do
+        let rootAuthority = productionRootAuthority productionRoot
+            unbound = productionRootUnboundLease productionRoot
+        persisted <-
+            withPersistedPlanSnapshot
+                rootAuthority
+                unbound
+                plan
+                ( \_verified bound binding lease _normalRecovery -> do
+                    framed <-
+                        expectRight
+                            ( withCurrentFrame plan context $ \_current frame _validated -> do
+                                journaled <-
+                                    withAcquisitionJournal
+                                        rootAuthority
+                                        lease
+                                        bound
+                                        binding
+                                        plan
+                                        ( \journal -> do
+                                            prepared <-
+                                                withLifecycleCursor
+                                                    journal
+                                                    frame
+                                                    Authority.ProjectUp
+                                                    Authority.Prepare
+                                                    ( \prepareCursor -> do
+                                                        executed <-
+                                                            withExecuteLifecycleCursor
+                                                                prepareCursor
+                                                                (const (pure ()))
+                                                        expectRight executed
+                                                    )
+                                            expectRight prepared
+                                        )
+                                expectRight journaled
+                            )
+                    framed
+                )
+        _ <- expectRight persisted
+        readProtectedStoreImage (isolatedStoreRoot paths)
+
 {- | Inspect the protected records from inside the suite body. At this point the
 production command path must already have written one immutable revision-1
 snapshot and bound the exact acquired run lease to those same digests.
@@ -706,7 +1459,7 @@ snapshot and bound the exact acquired run lease to those same digests.
 observeBoundHarnessPlan ::
     FilePath ->
     T.Text ->
-    IO (Either String (T.Text, T.Text, T.Text))
+    IO (Either String (T.Text, T.Text, T.Text, [ProtectedRecordImage]))
 observeBoundHarnessPlan storeRoot projectName = do
     opened <- openProtectedStore storeRoot
     case opened of
@@ -722,7 +1475,7 @@ observeBoundHarnessPlan storeRoot projectName = do
   where
     inspect ::
         ProtectedSession session ->
-        IO (Either String (T.Text, T.Text, T.Text))
+        IO (Either String (T.Text, T.Text, T.Text, [ProtectedRecordImage]))
     inspect session = do
         listed <- listProtectedRecords session
         case listed of
@@ -738,8 +1491,13 @@ observeBoundHarnessPlan storeRoot projectName = do
                     Left failure -> pure (Left failure)
                     Right observed ->
                         case [bound | Just bound <- observed] of
-                            [(runName, specDigest, planDigest)] ->
-                                inspectSnapshot session runName specDigest planDigest
+                            [(runName, specDigest, planDigest)] -> do
+                                snapshot <- inspectSnapshot session runName specDigest planDigest
+                                image <- traverse (readImage session) keys
+                                pure $ do
+                                    (exactRun, exactSpec, exactPlan) <- snapshot
+                                    exactImage <- sequence image
+                                    Right (exactRun, exactSpec, exactPlan, exactImage)
                             other ->
                                 pure
                                     ( Left
@@ -747,6 +1505,21 @@ observeBoundHarnessPlan storeRoot projectName = do
                                             ++ show other
                                         )
                                     )
+    readImage ::
+        ProtectedSession session ->
+        RecordKey ->
+        IO (Either String ProtectedRecordImage)
+    readImage session key = do
+        observed <- readProtectedRecord session key
+        pure $ case observed of
+            Left failure -> Left (T.unpack (protectedErrorMessage failure))
+            Right Nothing -> Left ("protected record disappeared: " ++ T.unpack (recordKeyText key))
+            Right (Just record) ->
+                Right
+                    ( recordKeyText key
+                    , recordVersionWord (protectedRecordVersion record)
+                    , protectedRecordBytes record
+                    )
     readLease ::
         ProtectedSession session ->
         T.Text ->
@@ -767,8 +1540,8 @@ observeBoundHarnessPlan storeRoot projectName = do
                             )
                         )
                 _ -> Right Nothing
-    {- Read the persisted snapshot back through the **production** decoder
-    ('Mode.verifyPlanSnapshot') rather than re-parsing the record bytes here.
+    {- Read the persisted snapshot back through the production snapshot-view
+    decoder ('Mode.inspectPlanSnapshot') rather than re-parsing the record bytes here.
     The record is a versioned, length-framed wire, and a second hand-written
     parser in the test is exactly what drifts when that framing changes: this
     assertion previously split the payload on tabs and could no longer match any
@@ -781,34 +1554,29 @@ observeBoundHarnessPlan storeRoot projectName = do
         T.Text ->
         IO (Either String (T.Text, T.Text, T.Text))
     inspectSnapshot session runName specDigest planDigest =
-        case
-            ( installedProjectFor @Fixture.FixtureProject @Fixture.ProjectConfig projectName
-            , mkRunId runName
-            )
-            of
-            (Left failure, _) -> pure (Left (T.unpack (authorityErrorMessage failure)))
-            (_, Left failure) -> pure (Left (T.unpack (modeErrorMessage failure)))
-            (Right project, Right run) -> do
-                verified <-
-                    verifyPlanSnapshot session project run $ \snapshot ->
-                        pure
-                            ( Right
-                                ( planSnapshotRevision snapshot
-                                , planSnapshotSpecDigest snapshot
-                                , planSnapshotPlanDigest snapshot
+        do
+            admitted <-
+                withInstalledProjectIdentity projectName $ \project -> do
+                    inspected <- inspectPlanSnapshot session project runName
+                    pure $ case inspected of
+                        Left failure -> Left (T.unpack (modeErrorMessage failure))
+                        Right snapshot
+                            | planSnapshotViewRevision snapshot == 1
+                            , planSnapshotViewSpecDigest snapshot == specDigest
+                            , planSnapshotViewPlanDigest snapshot == planDigest ->
+                                Right (runName, specDigest, planDigest)
+                        Right snapshot ->
+                            Left
+                                ( "the bound lease and revision-1 snapshot disagree: "
+                                    ++ show
+                                        ( planSnapshotViewRevision snapshot
+                                        , planSnapshotViewSpecDigest snapshot
+                                        , planSnapshotViewPlanDigest snapshot
+                                        )
                                 )
-                            )
-                pure $ case verified of
-                    Left failure -> Left (T.unpack (modeErrorMessage failure))
-                    Right (1, recordedSpec, recordedPlan)
-                        | recordedSpec == specDigest
-                        , recordedPlan == planDigest ->
-                            Right (runName, specDigest, planDigest)
-                    Right observedSnapshot ->
-                        Left
-                            ( "the bound lease and revision-1 snapshot disagree: "
-                                ++ show observedSnapshot
-                            )
+            pure $ case admitted of
+                Left failure -> Left (T.unpack (authorityErrorMessage failure))
+                Right result -> result
     recordFields :: ProtectedRecord -> [T.Text]
     recordFields =
         map (T.pack . ByteStringChar8.unpack)
@@ -846,9 +1614,9 @@ fixtureCaseId value = either (error . show) id (mkCaseId value)
 {- | Write a fixture project config at the executable sibling path for a
 gate-needing command, then remove it.
 -}
-withProjectConfig :: String -> IO () -> IO ()
-withProjectConfig rawProjectName action = do
-    let projectName = T.pack rawProjectName
+withProjectConfig :: IO () -> IO ()
+withProjectConfig action = do
+    projectName <- executableProjectName
     path <- Schema.siblingProjectConfigPath projectName
     let cfg = Fixture.defaultProjectConfig projectName "." HostOrchestrator
     (Schema.writeProjectConfigFile Fixture.projectConfigCodec path cfg >> action) `finally` removeFile path
@@ -862,10 +1630,10 @@ what this fixture models. The test it feeds proves the second line of defence:
 even when the class is present, the leaf-placement gate still refuses
 @service run@ on a non-leaf primary.
 -}
-withMultiRoleHostServiceConfig :: String -> IO () -> IO ()
-withMultiRoleHostServiceConfig rawProjectName action = do
-    let projectName = T.pack rawProjectName
-        baseCfg = Fixture.defaultProjectConfig projectName "." HostOrchestrator
+withMultiRoleHostServiceConfig :: IO () -> IO ()
+withMultiRoleHostServiceConfig action = do
+    projectName <- executableProjectName
+    let baseCfg = Fixture.defaultProjectConfig projectName "." HostOrchestrator
         forged =
             (Fixture.context baseCfg)
                 { Context.allowedCommandClasses =
@@ -878,10 +1646,10 @@ withMultiRoleHostServiceConfig rawProjectName action = do
     path <- Schema.siblingProjectConfigPath projectName
     (Schema.writeProjectConfigFile Fixture.projectConfigCodec path cfg >> action) `finally` removeFile path
 
-withServiceProjectConfig :: String -> IO () -> IO ()
-withServiceProjectConfig rawProjectName action = do
-    let projectName = T.pack rawProjectName
-        witnessName = "HOSTBOOTSTRAP_CURRENT_FRAME"
+withServiceProjectConfig :: IO () -> IO ()
+withServiceProjectConfig action = do
+    projectName <- executableProjectName
+    let witnessName = "HOSTBOOTSTRAP_CURRENT_FRAME"
         parentCfg = Fixture.defaultProjectConfig projectName "." HostOrchestrator
         cfg = parentCfg{Fixture.context = Context.deriveHostDaemonContext (Fixture.context parentCfg) "."}
         frame = T.unpack (Context.currentFrame (Fixture.context cfg))
@@ -906,25 +1674,40 @@ parent test captures this process's stdout, avoiding Tasty's own progress
 renderer while still exercising the literal command parser and action.
 -}
 runSchemaFixture :: String -> IO ()
-runSchemaFixture fixture =
+runSchemaFixture fixture = do
+    projectName <- executableProjectName
     case fixture of
         "bare" ->
             withArgs ["context", "schema"] $
-                withProgName "hostbootstrap" (CLI.runBareHostBootstrapCLI "hostbootstrap")
+                CLI.runBareHostBootstrapCLI (T.unpack projectName)
         "consumer" -> do
             let budgetCodec = requireCodecWitness "CLISpec.Budget" (autoCodecWitness @V.Budget)
                 arts = [artifactOf "localBudget" budgetCodec (V.Budget 1 2 3)]
             withArgs ["context", "schema"] $
-                runHostBootstrapCLI "cli-schema-consumer" (specWith passingSuite (pure ()) arts)
+                runHostBootstrapCLI (specWith passingSuite (pure ()) arts)
         "service" -> do
             let spec = specWithServices Nothing [("web", pure ())]
             withArgs ["service", "schema"] $
-                runHostBootstrapCLI "cli-schema-service" spec
+                runHostBootstrapCLI spec
+        "project-dry-run" -> do
+            marker <-
+                lookupEnv "HOSTBOOTSTRAP_CLI_DRY_RUN_MARKER"
+                    >>= maybe (die "missing dry-run effect marker") pure
+            let probingChain :: FixtureFragment
+                probingChain _ _ =
+                    [ deployVMStep
+                        "launch the VM"
+                        (StepFrame "host-orchestrator-0" "metal")
+                        (\_ -> writeFile marker "effect ran\n" >> pure StepChanged)
+                    ]
+                spec = finalized (addSteps probingChain (builderWith passingSuite (pure ()) []))
+            withArgs ["project", "up", "--dry-run"] $
+                runHostBootstrapCLI spec
         -- @--help@ prints to stdout and exits successfully, so the rendered
         -- surface text is captured the same way a schema snapshot is.
         "test-run-help" ->
             withArgs ["test", "run", "--help"] $
-                runHostBootstrapCLI "cli-test-help" (specWith passingSuite (pure ()) [])
+                runHostBootstrapCLI (specWith passingSuite (pure ()) [])
         _ -> die ("unknown schema fixture " ++ show fixture)
 
 assertGolden :: FilePath -> T.Text -> IO ()

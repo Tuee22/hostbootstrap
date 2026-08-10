@@ -46,6 +46,42 @@ demo Cabal build/test with -Werror
 Any failure stops before registry mutation. The in-image Fourmolu/HLint sample check verifies the
 rolling tools themselves and does not replace source preflight.
 
+## Authenticated derived-image gates
+
+`HostBootstrap.Build` defines the authority protocol for a derived image's attesting gate. A separately
+provisioned, long-lived Build signing identity is distinct from the handoff project key and the runtime
+Activation key. One active coordinator bracket signs a canonical binding containing the installed project
+identity, finalized spec and Production-config digests, build identifier, measured source-context digest,
+coordinator-binary identity, exact builder-binary identity, and image-build frame. The intended build-engine
+consumer delivers that binding and signature through a mounted secret/session file; an absent channel is an
+explicit refusal and never falls back to the descriptive image-build config.
+
+Inside the build, the reusable verifier uses an independently installed public key, independently supplied
+project/spec/config/coordinator identities, and fresh measurements of the caller-supplied source-root and
+builder paths. It authenticates those selected bytes but does not intrinsically establish that the paths name
+the build engine's actual context and the running executable. Successful verification invokes a rank-2
+continuation with the matching opaque `ImageBuildFrame` and `BuildInvocationAuthority`; callers do not choose
+or retain their phantom identities. Each returned authority can authorize `CheckCodePhase` and `BuildPhase` at
+most once each, and
+those phase authorities cannot authorize lifecycle commands. A second verification of the same signed file
+would create separate in-memory phase state; this protocol layer therefore does not claim global channel
+consumption. Build grants authenticate the length-framed binding
+under the dedicated `hostbootstrap/build/v1` domain. The verification key is provisioned before a coordinator
+opens; it is not exported from the active coordinator or accepted from the channel. The coordinator's public
+signing operation holds its live-state lock through signature construction, and an escaped coordinator refuses
+after the bracket closes.
+
+This protocol is distinct from an ordinary developer invocation of `check-code`. The developer path
+remains sibling-config-gated and non-attesting. The current derived Dockerfile still uses that path
+until the build backend supplies the secret channel and the command/Dockerfile integration consumes the
+rank-2 build authority. That seam must derive the source root from the actual engine context, derive the
+builder path from the running executable, and either acknowledge one presentation or durably consume the
+signed `buildId` so a fresh verifier call cannot replay the channel. That concrete consumer integration belongs
+to the active [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md), not to the
+[authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)'s
+protocol definition. A baked `image-build-container` config alone is not authenticated build evidence and
+must not be reported as such.
+
 ## Rolling selection and evidence
 
 The published tag is the consumer discovery reference and intentionally moves. The source tree contains

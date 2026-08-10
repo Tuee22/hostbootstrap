@@ -14,8 +14,10 @@
   (`toolCommandName Lima = "limactl"`).
 - `ensure lima` installs the provider with Homebrew when `limactl` is absent. It runs as part of the
   `deploy-VM` bring-up inside `project up`.
-- `HostBootstrap.Lima` owns pure argv builders for `limactl start`, `limactl shell`, `limactl copy`,
-  `limactl list`, guarded `limactl delete`, and `limactl stop` (the stop-without-delete capability).
+- The active lower-boundary separation assigns the pure `LimaVM` target and inner `limactl shell` renderer
+  to `HostBootstrap.Lift.Context`. `HostBootstrap.Lima` reexports them and owns lifecycle builders for
+  `limactl start`, `limactl copy`, `limactl list`, guarded `limactl delete`, and `limactl stop` (the
+  stop-without-delete capability).
 - The VM lifecycle is driven by the core `deploy-VM` step kind plus the project teardown: `project up`
   brings the named instance up, `project down` stops it without deleting, and `project destroy` deletes
   the instance **and its disk**. Host durable `.data` is mounted from outside that disk.
@@ -32,7 +34,15 @@ Lima is the Apple Silicon VM provider for the pristine Linux host. The chain pro
 `ubuntu-24.04` instance, stages the working tree into the guest, builds the project binary in the VM,
 ensures Docker in the VM, builds the project image, and runs the workload against the VM's Docker daemon.
 Each of those is a [`Step`](../architecture/composition_methodology.md), and the Lima provider supplies
-the VM-level steps of that chain.
+the VM-level steps of that chain. Its selected `SubstrateProvider` is abstract and carries the complete
+lower `LiftContext` without exposing construction or record update. The
+[host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
+implements common discovery as closed daemon, permission, VM, egress, and guest-tool requests over raw
+outcomes. Private parsers require strict single-line tool/marker/identity reports and bound retry to
+`NotReady`. Discovery runs after provider settlement when guest facts are needed; its generative capability
+is descriptive and indexed to the exact opaque managed provider/backend/generation, never mutation
+authority. Native Lima confirmation remains in the
+[Apple-Silicon-substrate phase](../../DEVELOPMENT_PLAN/phase-25-apple-silicon-substrate.md).
 
 The pure command shapes are:
 
@@ -71,8 +81,11 @@ bring-up, stop, and teardown:
 
 - `deploy-VM` runs the sized template start only when the instance is absent. For an existing instance it
   runs the unsized start and waits for the VM to answer a shell before the chain proceeds. Current code
-  does not observe/resize/refuse a stale CPU, memory, or disk wall. Phase 9 supplies the reconcile result
-  algebra; Sprints 5.7/11.10 still own its provider-authoritative Lima application.
+  does not observe/resize/refuse a stale CPU, memory, or disk wall. The
+  [canonical-quantities-and-reconcile-results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md)
+  supplies the lower result/capacity algebra, while the
+  [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
+  owns the provider-authoritative Lima realization.
 - `project down` is the **stop-without-delete** path. It halts the VM so the host reclaims CPU and
   memory, but preserves the instance and its disk; a subsequent `project up` brings the same instance
   back.
@@ -86,14 +99,15 @@ remain unvalidated; see [durable state](../architecture/durable_state.md).
 
 A host directory reaches the Lima guest through the same host-path share primitive the other lanes use.
 Lima declares its **host-side share** as the create-time mount argument on `limactl start` (its
-`HostPathShare` has no post-create `ShareReconcile`); the **guest-side alias** — the stable Docker-visible symlink to the share — is the
-**same** alias state vocabulary used by the other lane. Mount polling precedes alias reconciliation, but
-the live path still threads non-authorizing `ObservedReady`, and the alias is created and removed by
-pathname, so it holds none of the four
-[ownership invariant](../architecture/ownership_invariant.md) clauses and mints no receipt. The backend
-that closes this is shared with Incus and WSL2 — all three guests run the same Linux image — so Lima
-gains clauses 2–4 from the same change. See
-[readiness](../architecture/readiness.md) and [durable state](../architecture/durable_state.md).
+`HostPathShare` has no post-create `ShareReconcile`); the **guest-side alias** — the stable Docker-visible
+symlink to the share — uses the common prepared alias boundary. That core boundary accepts only the exact
+opaque managed provider/share authorities, admits retained guest `flock` rather than a non-interoperating
+`lockf` namespace, and recovers `prepared`/`managed`/`releasing` origin states before
+identity-conditional release. The demo's current Lima call site still threads compatibility readiness and
+creates/removes the alias by pathname, so that call site mints no receipt. Replacing it belongs to the
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md). See
+[ownership invariant](../architecture/ownership_invariant.md), [readiness](../architecture/readiness.md),
+and [durable state](../architecture/durable_state.md).
 
 The `deploy-VM` step kind is the reuse unit, not a Lima-specific command: the same kind is interpreted
 with Incus builders on native Linux (see [incus](incus.md)). A project does not re-implement VM
@@ -121,9 +135,11 @@ Linux VM (see [wsl2](wsl2.md)).
 
 ## Current Status
 
-`HostTool Lima`, the `HostBootstrap.Lima` argv builders (including the prefix-guarded delete), and
+`HostTool Lima`, the lower target/inner transport renderer, the `HostBootstrap.Lima` lifecycle builders
+(including the prefix-guarded delete), and
 `ensure lima` are exercised by the core tests. The Apple Silicon VM lifecycle runs through the core
-`deploy-VM` step kind and the recursive `project up` interpreter:
+`deploy-VM` step kind and current-frame Chain; the target recursive `project up` interpreter continues
+through authenticated child entries:
 
 - `project up` starts the Lima instance, enters it through passwordless `sudo -H`, stages the working tree into the guest, builds the project
   binary host-native in the VM, ensures Docker in the VM, builds the project image, and hands `project
@@ -139,7 +155,8 @@ A disposable Apple validation on 2026-07-26 exercised the exact production comma
 instance: 2 CPUs, 4 GiB memory, 20 GiB disk, VZ, containerd disabled, one writable host share, guest DNS
 egress, already-running no-op, stop/start recovery, and exact deletion. The disposable instance and
 mount directory were removed, and no pre-existing Lima instance was present. This evidence covers the
-Lima lifecycle slice only; it does not prove the still-open alias ownership clauses or another provider.
+Lima lifecycle slice only; it does not prove the common prepared alias backend through a real Lima guest,
+the demo's adoption of that backend, or another provider.
 
 ## See Also
 

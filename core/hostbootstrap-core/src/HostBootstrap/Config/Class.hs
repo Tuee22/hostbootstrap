@@ -1,10 +1,9 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 
@@ -89,11 +88,12 @@ Core decodes/encodes @cfg scope@ via the installed Production or Harness
 'ProjectCodec' and otherwise touches it solely through 'cfgContext', so the
 core has no knowledge of project fields and cannot change a config's scope.
 -}
-class ProjectCfg projectId (cfg :: Type -> Type) | cfg -> projectId where
+class ProjectCfg (cfg :: Type -> Type) where
     {- | Install the production wire codec and its scope-preserving admission
     under a fresh specification identity.
     -}
     withProductionProjectCodec ::
+        forall projectId result.
         ( forall specDigest.
           ProjectCodec (Production projectId) specDigest cfg ->
           result
@@ -105,6 +105,7 @@ class ProjectCfg projectId (cfg :: Type -> Type) | cfg -> projectId where
     into @cfg (Harness projectId runId)@.
     -}
     withHarnessProjectCodec ::
+        forall projectId runId result.
         HarnessConfigAuthority projectId runId ->
         ( forall specDigest.
           ProjectCodec (Harness projectId runId) specDigest cfg ->
@@ -242,6 +243,8 @@ data ProjectCodec scope specDigest cfg = ProjectCodec
     , installedCodecRender :: cfg scope -> Text
     , installedCodecRenderHoisted :: [NamedUnion] -> cfg scope -> Text
     }
+
+type role ProjectCodec nominal nominal nominal
 
 {- | Install a codec under a fresh specification identity. The rank-2 digest
 index cannot be selected or reused by the caller.

@@ -14,7 +14,7 @@
   host-native into `./.build/`, and executes it.
 
 Canonical architecture and engineering guidance lives under [documents/](documents/README.md).
-Implementation state, reopened work, acceptance criteria, and dated evidence live under
+Implementation state, open work, acceptance criteria, and dated evidence live under
 [DEVELOPMENT_PLAN/](DEVELOPMENT_PLAN/README.md). This README is intentionally an orientation layer, not
 a second design or status authority.
 
@@ -24,18 +24,20 @@ Every consumer ships one project binary over a fixed command tree. Projects cont
 steps, test cases, generated artifacts, and service handlers through `ProjectSpec`; they do not add
 verbs.
 
-The implemented forward representation is an opaque validated `StepPlan`. `project up` interprets that
-plan recursively: when it reaches another frame, the parent provisions the frame, builds or installs the
-project binary there, projects a narrower sibling `<project>.dhall`, and invokes the child's own
-`project up`. The Python bootstrapper is the outer, metal-frame instance of that same
-provision → build-pb → handoff pattern.
+The authored forward representation is an opaque validated `StepPlan`. Production dispatch admits it into
+one exact plan and interprets the authorized current-frame segment. That plan declares how a parent
+provisions another frame, builds or installs the project binary there, projects a narrower sibling
+`<project>.dhall`, and invokes the child's own `project up`. Nested lifecycle entry currently fails closed;
+authenticated recursive traversal remains in the active lifecycle phases. The Python bootstrapper is the
+outer, metal-frame instance of the same provision → build-pb → handoff pattern.
 
 `ProjectSpec`, `Step`, and `StepPlan` are opaque. Builder finalization rejects empty/duplicate,
 non-contiguous, shadowed, or replacement-lossy contributions and preserves the exact accepted forward
-order; every step carries a reverse policy, operation key, and validated dependency prefix. Frame-context
-and teardown are still separate checked single-assignment contributions. The downstream target is one
-opaque `ProjectPlan scope specDigest planId configId cfg` whose resource graph, frame placement, forward
-operations, child handoffs, and reverse traversal are derived together. See
+order; every step carries a reverse policy, operation key, and validated dependency prefix. Production
+dispatch retains or reconstructs one opaque `ProjectPlan scope specDigest planId configId cfg` through
+rendering, persistence, journal/cursor admission, authorization, exact Chain interpretation, and
+current-frame reverse projection. Authenticated child handoff, proof-complete recursive traversal, exact
+teardown authorization, and receipt-bound release remain downstream work. See
 [composition methodology](documents/architecture/composition_methodology.md) and the canonical
 [lifecycle state model](documents/architecture/lifecycle_state_model.md).
 
@@ -49,11 +51,13 @@ The demo's main substrate paths are:
 | Native Linux GPU | Direct host path | Docker project container → nvkind |
 
 The sibling `<project>.dhall` contains project parameters plus descriptive frame context and witnesses;
-it never contains the chain. Current gates validate useful mismatches, but decoded context is not yet
-opaque authority. The target separates description from project-, scope-, plan-, frame-, verb-, phase-,
-config-, revision-, instance-, and operation-indexed authority. Cross-process config handoff, delayed recovery,
-controller restarts, and build checks each use distinct authenticated gates; config text or a stable
-resource name cannot mint authority.
+it never contains the chain. Decoded context remains descriptive by design and never becomes authority.
+The implemented lower gate independently verifies executable-bound installed identity, OS access to the
+exact protected store, broker generation, root scope, and one-use reservation. Lifecycle gates then join
+that foundation to project-, plan-, frame-, verb-, phase-, config-, revision-, instance-, and
+operation-indexed evidence. Cross-process config handoff, delayed recovery, controller restarts, and build
+checks each use distinct authenticated gates; config text or a stable resource name cannot mint
+authority.
 
 ## Ownership Boundary
 
@@ -138,11 +142,11 @@ Every Haskell project binary exposes the fixed tree:
 | Command | Current behavior |
 |---|---|
 | `project init` | Write the project-owned sibling config; current shared init flags are broader than the target typed request |
-| `project up` | Recursively interpret the forward chain; `--dry-run` renders it |
+| `project up` | Interpret the exact current-frame Chain; nested entry currently fails closed, while `--dry-run` renders the admitted plan |
 | `project down` | Current-frame cleanup plus stop-mode project hook; typed recursive reverse traversal is open |
 | `project destroy` | Current-frame cleanup plus delete-mode project hook; typed recursive reverse traversal is open |
 | `test init` | Write `<project>.test.dhall` without requiring a project config |
-| `test run <case-id>\|all` | Generate each current variant, drive the real `project up`, assert, then attempt destroy |
+| `test run <case-id>\|all` | Generate each variant, directly drive its exact Harness current-frame forward/reverse around assertions, then close only after settled destroy |
 | `service init\|schema\|run` | Initialize/inspect service config or run one config-selected leaf service |
 | `context inspect\|path\|show\|schema\|render` | Read-only context/config introspection |
 | `check-code` | Run the inherited project quality gate |
@@ -176,9 +180,9 @@ pipx install --force /path/to/hostbootstrap
 builds the project image, creates kind/nvkind, deploys MinIO and the anonymous HTTP in-cluster registry,
 pushes the image, deploys the web and accelerator services, and verifies exposure. In current manifests,
 the registry, web, and MinIO host mappings are not all loopback-only, and MinIO defaults are
-source-hardcoded; the target security repair is plan-owned.
+source-hardcoded; the target boundary is plan-owned.
 The current S3 route also permits Distribution to redirect the host Docker client to cluster-only
-`minio.default.svc`, so a repeated push can fail even when `/v2/` is Ready. The reopened target binds
+`minio.default.svc`, so a repeated push can fail even when `/v2/` is Ready. The target binds
 client scope, exposure, backend, and delivery in one opaque plan; this topology can select only registry
 proxy delivery. See [network reachability](documents/architecture/network_reachability.md) and the
 [in-cluster registry guide](documents/engineering/in_cluster_registry.md).
@@ -187,7 +191,7 @@ The stable `/var/tmp/hostbootstrap-demo-data` pathname is a provider-guest proje
 host-backed durable root, not a portable direct-host path or the canonical store. The target resolves
 descriptive `sourceRoot` once into opaque canonical-root authority: direct-host Docker binds the actual
 absolute `<project-root>/.data`, while WSL2, Incus, and Lima may reconcile their own typed guest alias.
-That direct-host repair is reopened as Sprint 5.6.1; the target harness uses `.test_data/<runId>`. See
+The Harness profile uses `.test_data/<runId>`. See
 [durable state](documents/architecture/durable_state.md).
 
 From `demo/`, the normal consumer flow is:
@@ -236,9 +240,13 @@ hostbootstrap run -- test init
 hostbootstrap run -- test run all
 ```
 
-Current safety checks refuse an existing sibling project config or detected production cluster, but the
-demo planner still resolves Production/`.data`, some provider/Docker preparation precedes refusal, and
-ownership receipts/recursive teardown are incomplete. Run the long gate only on a
+Current safety checks refuse an existing sibling project config or detected production cluster. Each
+variant assembles a Harness-scoped config, retains one exact Harness `ProjectPlan` through generated
+config ownership, and invokes the common current-frame Chain and reverse interpreters directly; assertion code has
+no top-level lifecycle subprocess route and durable state is isolated under `.test_data/<runId>`.
+Recursive child teardown and the engine-owned same-run recreate transition remain open, so the demo's
+`durable-readback` case deliberately reports failure until the
+[worked-demo phase](DEVELOPMENT_PLAN/phase-24-worked-demo.md) closes its same-run lifecycle assertion. Run the long gate only on a
 disposable host with no production demo state. On Windows the gate also holds the project's full
 CPU/memory budget in the shared WSL2 utility VM while it runs; normal `project down` restores the
 journalled `.wslconfig` origin and then shuts that VM down globally to release the wall (see

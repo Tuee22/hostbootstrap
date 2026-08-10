@@ -3,7 +3,7 @@
 **Status**: Active
 **Depends on**: Phase 17 (the recursive lifecycle command)
 **Substrates**: linux-cpu
-**Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus live interruption runs on linux-cpu
+**Gate**: `cabal test all --ghc-options=-Werror` from `core/`
 
 > **Purpose**: Let the next invocation resolve whatever a killed predecessor left, without ever adopting state
 > it cannot attribute.
@@ -50,9 +50,9 @@ live-Production exclusion, and a four-process race proving a live run's lease is
 
 None.
 
-### Sprint 18.2: Reopening a bound abandoned run [Active]
+### Sprint 18.2: Reopening a bound abandoned run [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`
 **Substrates**: linux-cpu
@@ -60,99 +60,38 @@ None.
 
 #### Objective
 
-Give a bound abandoned run a typed reopening with destroy-only authority.
+Classify and reopen one sweep-proved bound run under fresh, destroy-only recovery authority.
 
 #### Deliverables
 
-- `withAbandonedHarnessRun` rechecks the lease is still bound to the digests the sweep observed, reads the old
-  snapshot back, classifies the durable invocation record — all before minting any authority — then allocates a
-  **fresh** broker generation and retains the mode and lease onto it.
-- It yields the old snapshot, the already-bound lease, the run's own mode, a `VerbDestroy`-only root, the
-  recovery classification, and a `RecoveredHarnessClose` close root, and nothing else: no fresh profile, no
-  harness authority, no unbound lease to rebind.
-- `classifyAbandonedBoundRun` is reachable only from a sweep-minted lease and reads the digests off the record.
-- An ordinary open revision whose records prove the run acquired **nothing** is resolved: it reclaims both owned
-  objects and closes the lease and mode under the reopening's own authority.
-- A persisted `Closing` epoch is **resumed**, not refused. `authorizeHarnessClose` persists the epoch before the
-  terminal projection precisely so the gap is recoverable, so recovery finishes that close rather than reopening
-  the run: `resumeHarnessClose` is the only route to a close authorization that does not persist a new epoch,
-  it re-reads the durable disposition and admits exactly the epoch the dead run recorded, and it needs no fresh
-  all-sessions-closed proof because the close it resumes already consumed one. A run with no persisted close, or
-  a different epoch, is refused.
-- An **incomplete** migration is resolved the same way, and for the same reason. Its recorded kind is a durable
-  observation that the activation barrier was never crossed, so there is no new revision to follow through and
-  the staging is discarded rather than resumed. What makes that safe is `verifyNoProjectResourcesAcquired`, not
-  the classification: a staging that acquired anything wrote an effect record and the proof refuses it on either
-  side of the barrier.
-- A **completed** migration is **resumed**. Its activation compare-and-swap committed, so the project's live
-  revision is the new one and the only correct continuation is to follow that activation through — a
-  resumption, not a close. The reopening yields everything that resumption needs, as one consistent set taken
-  inside its own protected entry:
-  - the **authority broker** it allocated, so every retained record and the resumption itself run under one
-    generation;
-  - the **old-permit fence set**. `fenceOldPermits` completes the stable initial-fence protocol idempotently
-    when a kill left it unsettled, enumerates the exact operation keys that can still receive authority
-    *before* rotating, and only then supersedes the epoch — so a delayed backend call from the dead run fails
-    the prepare gate's equality check instead of landing as though it were current. An operation already
-    settled or terminal holds no authority and is not a member;
-  - the **verified session/operation manifest**. `verifySessionManifest` enumerates the session set and the
-    operation set independently, from their own key spaces, and then *checks* the pairing — so an orphan
-    operation, a duplicate session, and a declared membership that disagrees with the store are three named
-    refusals rather than an unnoticed divergence. A zero-operation Open session is a required member;
-  - the **protected recorded-session interpreter**. `interpretRecordedSessions` handles every operation by its
-    recorded disposition, compare-and-swap rebinds each still-Open session record onto the fresh generation
-    *while it is still Open*, and only then closes it. Committed and terminal work is left byte-for-byte
-    alone; a pre-call or observed-absent operation is recorded terminal at `RecoveryAbandoned`; an
-    unrecognised phase refuses the whole interpretation rather than being swept.
-  - `CurrentBrokerSessionAdmission` is minted only from all three together, and re-proves every session Closed
-    at the store version it mints on.
-- The resumption is `withCompletedMigrationRecovery` → `activateMigratedPlan`. The superseded revision is read
-  out of the durable stable migration key, never inferred from the current config, so an operator who edited or
-  deleted the config between the crash and the sweep cannot change which revision gets activated.
-- The lease and the run's persisted snapshot are *expected* to disagree across a committed barrier: the
-  snapshot record is immutable by construction, so the activation could not have rewritten it even in
-  principle. The reopening treats that one divergence as evidence the barrier was crossed. Every other
-  divergence is still a substitution and still refuses.
+- `withAbandonedHarnessRun` rechecks the sweep-minted bound lease, immutable snapshot, mode, and durable
+  invocation classification before allocating a fresh broker generation.
+- Its rank-2 continuation retains the old snapshot, bound lease and mode, destroy-only root, recovery kind,
+  close root, broker, old-permit fence set, verified session/operation manifest, recorded-session
+  interpretation, and current-broker session admission as one consistent package.
+- `Closing` resumes only its recorded epoch. An ordinary or incomplete-migration revision closes only after
+  `verifyNoProjectResourcesAcquired`; a completed migration follows the stable migration key rather than
+  current config.
+- Fence rotation enumerates authority-bearing operation keys before superseding the epoch; manifest verification
+  pairs the independent complete session and operation sets, including zero-operation sessions.
+- Recorded-session interpretation rebinds Open sessions to the fresh generation, settles each recognized
+  disposition, leaves committed and terminal work unchanged, and refuses an unknown phase.
+- Snapshot/lease divergence is admitted only for the durable completed-migration barrier; every other mismatch
+  remains a substitution refusal.
 
 #### Validation
 
-`AuthoritySpec` covers the yielded shape, the fresh generation, the unbound refusal, the closed-lease recheck,
-the typed `Closing` branch, the resolvable branch's full settlement, and the resumed close: the wrong epoch is an
-epoch mismatch, a run with no persisted close has nothing to resume, and the resumed close settles the run so
-the sweep's own recheck then sees an empty set.
-
-`SessionSpec`'s `abandoned-run admission` group covers the four new pieces against a real protected store, with
-every case abandoning a session the way a kill does — stopping between two durable writes and reopening the
-store. It covers the fence set's enumeration and rotation, that a settled operation is not a member, the
-idempotent completion of an unsettled fence protocol, the manifest's pairing, the required zero-operation
-member, the orphan-operation and membership-mismatch refusals, the interpreter settling pre-call work and
-closing the session so a fresh one then opens, committed work being left alone, the unrecognised-phase refusal,
-an interrupted effect settling as abandoned, and evidence taken over one plan being unusable for another.
-
-`HarnessSpec` covers the migration branches through the **production ownership bracket** rather than its
-pieces — the run is abandoned the way a killed one is, and what is observed is whether the next run is admitted.
-An incomplete migration is swept and the successor starts; a **completed one is now resumed and the successor
-also starts**; and an incomplete migration that recorded an effect still blocks it, which is what shows the
-proof rather than the classification is the gate.
+`AuthoritySpec`, `SessionSpec`, and `HarnessSpec` cover the yielded shape, close resumption, no-effect
+settlement, all recovery kinds, exact-set session interpretation, wrong bindings and epochs, and successor
+admission through the production ownership bracket.
 
 #### Remaining Work
 
-Two items, and both are about a run that acquired something rather than about the classification.
+None.
 
-Child-first teardown at a recovery boundary is open: a resumed run whose records show it acquired resources
-still refuses by name, because releasing them needs the recursive teardown forest driven from a recovery
-boundary, which is a different capability from closing a lease.
+### Sprint 18.3: The durable migration barrier [Done]
 
-That boundary is admitted by the same recovery wire the recursive teardown descent uses — a nested
-teardown and a nested recovery are one edge, so they share one tag rather than each minting a private
-one. The tag, its `RecoveryProjectionBinding`, and its `VerifiedRecoveryWire` belong to the
-[authenticated-handoff phase](phase-13-authenticated-handoff-and-child-admission.md), which owns every v1
-protocol tag; what this phase owns is deriving the signed non-secret adapter wire from the bound snapshot
-and consuming it at the recovery boundary, where the old config may be edited or absent.
-
-### Sprint 18.3: Migration and interruption gates [Active]
-
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`
 **Substrates**: linux-cpu
@@ -160,69 +99,550 @@ and consuming it at the recovery boundary, where the old config may be edited or
 
 #### Objective
 
-Resume the correct side of the migration activation barrier.
+Persist and classify both sides of the migration activation barrier.
 
 #### Deliverables
 
-- `recordOpenRevisionMigration` makes which side of the barrier a revision is on a **durable observation**
-  rather than an inference from the current config.
-- The **migration profile builders** exist and each has exactly one producer:
-  - `withProjectUpMigrationProfile` revalidates the exact Production `ProjectUp` root, the active mode under
-    the same broker generation, the old bound lease, the verified snapshot, and — the load-bearing one —
-    `NormalActiveRecovery`. A migration may only start from a binding that was *fresh*, so an abandoned
-    invocation's revision has to be recovered before anything is carried forward from it. It carries no plan.
-  - `withProspectiveMigrationPlan` persists one candidate under a fresh **stable migration key**, reads it back
-    authoritatively, and yields a `ProspectivePlanSnapshot` that authorizes nothing. A crash here is harmless
-    by construction: the live revision is untouched and the store gains only an unreferenced record. A
-    migration onto the same plan digest is refused. The key is a pure function of the run and both digests, so
-    a retried migration converges on it rather than proposing a second one.
-  - `withPlanMigration` loads the candidate back under its own key, records the run as an **incomplete**
-    revision, and only then compare-and-swaps the lease from `bound` to `frozen`. That ordering is what makes
-    the window recoverable: a crash between the record and the freeze leaves a run whose recorded kind says the
-    barrier was not crossed. Freezing is what stops old-revision preparation — a frozen lease is not bindable,
-    so old- and new-bound authority cannot coexist.
-- The **activation transition** is `commitMigrationActivation` → `activateMigratedPlan`:
-  - the compare-and-swap replaces the frozen state with a lease bound to the *candidate's* digests, and only
-    after it commits is the run recorded a **completed** migration. A crash before the swap leaves a frozen
-    lease and an incomplete record, so recovery discards the staging; a crash after it leaves a new-bound lease
-    and a completed record, so recovery resumes activation. Re-running against the same frozen capability
-    observes the already-bound candidate and finishes the record rather than refusing, so the dangerous middle
-    state converges instead of stranding.
-  - `activateMigratedPlan` settles the **old** revision's recorded sessions first and only then admits the new
-    revision's broker, so the committed-new activation window cannot open a session. The admission it returns
-    is the new revision's, minted from that plan's own complete session and operation sets.
-- `withCompletedMigrationRecovery` is the configless post-CAS path. It is reachable only from a run whose
-  recorded kind is `CompletedMigration`, and it recovers the superseded revision from the durable stable key
-  rather than from any config. Only the *old* plan index is bound generatively — that is the revision recovery
-  can name from nothing else — while the new one is the caller's own bound lease, still compared at the term
-  level before anything is admitted.
-- A recovered `Production` `up` reaches only `RecoveredProductionLifecycleProfile`, which can rebuild the same
-  plan identity and nothing else — no fresh profile, no harness scope, no teardown authority.
+- `withProjectUpMigrationProfile` revalidates the Production `ProjectUp` root, active mode, old bound lease,
+  verified snapshot, broker generation, and `NormalActiveRecovery`; it carries no plan.
+- `withProspectiveMigrationPlan` records a non-authorizing digest candidate under the stable migration key and
+  reads it back; the same-plan case refuses and retry converges on the same key.
+- `withPlanMigration` records `IncompleteMigration` before compare-and-swapping the lease from bound to frozen,
+  so a pre-barrier crash retains the old lineage and cannot prepare through the frozen lease.
+- `commitMigrationActivation` switches the frozen lineage to the candidate-bound lease, records
+  `CompletedMigration`, and idempotently completes the record after a post-swap crash.
+- `withCompletedMigrationRecovery` selects only the completed branch and recovers the superseded digest from
+  the stable key; `RecoveredProductionLifecycleProfile` cannot become a fresh or teardown profile.
 
 #### Validation
 
-`AuthoritySpec`'s `plan migration` group covers the protocol in the order the protocol runs, each case naming
-the state a crash at that point would leave: an already-bound lease yields no `NormalActiveRecovery` so a
-migration cannot be proposed from it at all; a same-digest migration is refused; a candidate is persisted, read
-back, and carries the derived stable key; freezing records the incomplete side of the barrier; the
-compare-and-swap switches the lineage and records the completed side; a second commit against the same frozen
-capability converges rather than refusing; activation admits the new revision's broker; and completed-migration
-recovery loads both digests from the durable key and drives the activation through, while a run with no
-completed migration has nothing to recover.
-
-`SessionSpec` covers the recorded-session machinery the activation transition consumes.
+`AuthoritySpec` covers profile admission, stable candidate identity, same-plan refusal, incomplete freeze,
+completed lineage switch, idempotent commit, both crash classifications, and configless digest recovery.
+`SessionSpec` covers the recorded-session evidence retained beside the barrier.
 
 #### Remaining Work
 
-The **configful forward** path is open: `withProspectiveMigrationPlan` takes the candidate's digests rather
-than consuming a scope-correct new config plus non-empty plan drafts, and `withCompletedMigrationPlan` — the
-rebuild that may only proceed when the supplied config renders the persisted bytes — is not built. What exists
-is the digest-level spine and the configless recovery half, which is what the sweep's resumption needs.
+None.
 
-The complete `VerifiedResourceRecordSet` rehydration is also open, so activation proves prior-session
-settlement but not yet the complete resource-record set beside it.
+### Sprint 18.4: Verified resource-record bundles [Planned]
 
-The native interruption runs that confirm resumption on a real lane are owed to the linux-cpu acceptance phase.
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
+`core/hostbootstrap-core/test/ResourceRecordSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Bind each durable resource disposition to the exact plan, frame, operation, generation, and ownership
+evidence recovery needs.
+
+#### Deliverables
+
+- Opaque `VerifiedResourceRecordBundle` is the sole verified view of one canonical resource record.
+- The canonical bytes carry the plan digest, frame and resource keys, generation, ownership operation key,
+  record version, phase, adapter revision, and disposition; protected verification checks every binding.
+- Its eliminator yields a receipt only for an owned member and a verified tombstone only for a released member;
+  malformed versions and any substitution refuse.
+
+#### Validation
+
+`ResourceRecordSpec` pins canonical round trips and every wrong-binding refusal. `CompileFailSpec` pins the
+hidden constructor and the separation between owned receipts and released tombstones.
+
+#### Remaining Work
+
+All deliverables in this sprint.
+
+### Sprint 18.5: Resource settlement recording [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Write the verified bundle source at the one settlement boundary that changes a managed resource's durable
+disposition.
+
+#### Deliverables
+
+- The settlement boundary writes ordinary or adopted ownership with the matching journal commit; release keeps
+  the stable member and writes its tombstone instead of deleting it.
+- Repair and phase transitions carry the receipt identity while advancing phase/version, and the carrier keeps
+  the stable frame/resource/operation binding the writer needs.
+- Same-settlement retry converges on byte-identical state; a conflicting member or version refuses.
+
+#### Validation
+
+`ChainSpec` and `ReconcileSpec` cover owned, adopted, released, repaired, and phase-transition records,
+idempotent retry, and kills on both sides of the protected settlement write.
+
+#### Remaining Work
+
+All deliverables in this sprint.
+
+### Sprint 18.6: The complete resource-record set [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/test/ResourceRecordSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Prove that recovery and migration hold exactly the resource members declared by the bound snapshot.
+
+#### Deliverables
+
+- Opaque `VerifiedResourceRecordSet` is minted only by a protected exact-set fold over the bound snapshot and
+  resource key space; versioned snapshot decoding defines membership.
+- Missing, duplicate, extra, unknown, wrong-bound or disposition-inconsistent members refuse, and the set
+  carries a canonical `recordSetDigest` over sorted bundles.
+- Raw records, caller-selected lists, unknown snapshot versions, and evidence for another snapshot cannot enter
+  the fold.
+
+#### Validation
+
+`ResourceRecordSpec` covers every completeness refusal, ordering-independent digest stability, immutable
+read-back, and evidence from one snapshot being unusable for another.
+
+#### Remaining Work
+
+All deliverables in this sprint.
+
+### Sprint 18.7: Broker-bound resource rehydration [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+`core/hostbootstrap-core/test/ResourceRecordSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Rebind the complete durable set to fresh local identities and the recovery broker without recreating
+authority from raw bytes.
+
+#### Deliverables
+
+- Opaque `RehydratedResourceSet` binds the verified set, snapshot plan digest, record-set digest, and fresh
+  broker generation, after re-verifying every journal and receipt or tombstone at one store version.
+- The owned eliminator alone yields the rebound handle/receipt; the released eliminator alone yields the
+  tombstone. Any stale or unresolved member refuses the whole set.
+- Raw receipts and persisted bytes cannot mint handles, teardown steps, session admission, or rollover
+  authority.
+
+#### Validation
+
+`ResourceRecordSpec` covers successful owned and released rebinding, every stale-store refusal, all-or-nothing
+failure, and fresh broker separation. `CompileFailSpec` pins that raw receipt bytes have no recovery edge.
+
+#### Remaining Work
+
+All deliverables in this sprint.
+
+### Sprint 18.8: Scope-correct prospective migration [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Build and persist the prospective revision from the scope-correct config and non-empty plan draft before the
+old revision freezes.
+
+#### Deliverables
+
+- `withProspectiveMigrationPlan` consumes the exact migration profile and old-bound package together with the
+  scope-correct codec, verified config wire, validated config, and non-empty draft.
+- The bracket creates one local candidate plan, digest binding, and non-authorizing
+  `ProspectivePlanSnapshot`, then fsyncs and authoritatively reads back their exact canonical bytes and binding.
+- Same-plan, empty-draft, read-back, or config/draft mismatch refuses before freeze; a pre-freeze crash leaves
+  only the stable, unreferenced candidate record.
+
+#### Validation
+
+`AuthoritySpec` covers the scope-correct success path, byte-identical read-back, every mismatch, same-plan and
+empty-draft refusal, and a crash after candidate persistence with the old revision still active.
+
+#### Remaining Work
+
+All deliverables in this sprint.
+
+### Sprint 18.9: Configful completed-plan reconstruction [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Rebuild configful forward state only when the supplied config and draft render the exact persisted candidate.
+
+#### Deliverables
+
+- `withCompletedMigrationPlan` loads the prospective snapshot named by the completed migration's stable key;
+  no caller supplies candidate bytes or chooses either digest.
+- The bracket consumes the exact new-bound recovery profile, scope-correct codec and config, and non-empty
+  draft, yielding migration-local plan/binding authority only after exact canonical equality.
+- Every metadata or byte mismatch, missing/malformed/unknown candidate, and authority substitution refuses while
+  retaining the committed lease and mode.
+
+#### Validation
+
+`AuthoritySpec` covers exact reconstruction and changed config, changed draft, wrong implementation revision,
+wrong stable key, missing record, malformed record, and unknown-version refusals.
+
+#### Remaining Work
+
+All deliverables in this sprint.
+
+### Sprint 18.10: Complete-set migration freeze [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Freeze the old revision only while holding its exact session, operation, preparation, and resource sets.
+
+#### Deliverables
+
+- `withPlanMigration` derives the complete old `VerifiedResourceRecordSet` internally and records its digest
+  with the same stable migration key that freezes the lease and revokes session admission.
+- Session opening and freeze contend on the same revision version; freeze settles only after every independently
+  enumerated session is Closed and every prepared operation is drained or authoritatively fenced.
+- The exact-set fold stages each owned or released member once; incomplete/inconsistent sets retain the old
+  revision, while retry converges only for the same stable key, candidate, and set digest.
+
+#### Validation
+
+`AuthoritySpec` and `SessionSpec` cover session/freeze races, prepared-operation drainage, every exact-set
+refusal, retry convergence, and kills before and after the atomic freeze.
+
+#### Remaining Work
+
+All deliverables in this sprint.
+
+### Sprint 18.11: Frozen migration recovery [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Resume or cancel the exact frozen old-active migration after a pre-commit process death.
+
+#### Deliverables
+
+- `withRecoveredMigrationPlanSnapshot` is reachable only from `IncompleteMigration` with the matching frozen
+  lease; it loads the prospective snapshot and resource-set digest named by the durable stable key.
+- A fresh rank-2 migration identity rebuilds only byte-identical supplied config/drafts, while typed
+  down/destroy cancellation consumes the inactive staging set and restores only the old-bound lineage.
+- Missing, changed, or unknown candidate/set state retains the freeze; neither recovery branch opens a session,
+  issues preparation authority, or creates a second candidate.
+
+#### Validation
+
+`AuthoritySpec` covers post-freeze resume and cancellation, edited/deleted config, every stable-key/snapshot/set
+substitution, retry convergence, and absence of preparation authority before commit.
+
+#### Remaining Work
+
+All deliverables in this sprint.
+
+### Sprint 18.12: Complete-set migration commit [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Switch revision lineage only by consuming the frozen lease and the exact staged resource set together.
+
+#### Deliverables
+
+- `commitMigrationActivation` consumes the frozen lease, stable-keyed candidate proof, and exact staged set;
+  none can be selected independently.
+- One protected compare-and-swap archives the old active records, switches lineage old-to-new, binds the new
+  lease, and records the barrier with the same set digest; owned receipts and released tombstones retain their
+  dispositions.
+- Either crash side classifies wholly as incomplete-old-active or completed-new-bound, retry converges, and old
+  and new preparation authority never coexist.
+
+#### Validation
+
+`AuthoritySpec` covers the atomic lineage switch, owned and released members, every frozen/candidate/set
+substitution, both crash sides, and idempotent completion.
+
+#### Remaining Work
+
+All deliverables in this sprint.
+
+### Sprint 18.13: Complete-set migrated activation [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Admit the new revision only from its local plan binding and the complete set carried across the barrier.
+
+#### Deliverables
+
+- `activateMigratedPlan` consumes the exact barrier, new-bound lease and active revision, local plan and
+  persisted binding, and complete rehydrated set before exposing journal or preparation authority.
+- It rechecks that every old session is Closed and no old prepared operation remains before minting the new
+  revision's `CurrentBrokerSessionAdmission`; no commit-to-activation kill can issue a prepared operation.
+- Configful and configless completion share the same set digest and postcondition; any plan, broker, lineage,
+  completeness, or disposition mismatch refuses before a session opens.
+
+#### Validation
+
+`AuthoritySpec` and `SessionSpec` cover both activation producers, every binding refusal, old-session and
+prepared-operation exclusion, and kill injection between commit and admission.
+
+#### Remaining Work
+
+All deliverables in this sprint.
+
+### Sprint 18.14: Snapshot-derived recovery frames [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Recovery.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/test/RecoverySpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Recover executable teardown frames from the bound non-secret snapshot and complete resource set without
+reconstructing normal child config.
+
+#### Deliverables
+
+- Opaque `RecoveredProjectFrame` binds one decoded frame, its parent edge, teardown projection, plan digest,
+  and exact `RehydratedResourceSet` membership.
+- Completed configless recovery loads the exact prospective snapshot named by its stable key and supplies that
+  snapshot plus the complete set to `withRecoveredProjectFrame`; it never stops at parsed digest text.
+- `withRecoveredProjectFrame` accepts only the bound verified snapshot and complete rehydrated set, and resolves
+  adapters through the project-owned closed table; old config is never read and unknown versions refuse.
+- Resource eliminators expose only the owned handle/receipt or released tombstone at the forest's exact point;
+  raw bytes, frame text, receipts, and adapter names cannot construct the frame.
+
+#### Validation
+
+`RecoverySpec` covers root and nested frames with the config present, edited, and absent; unknown versions and
+adapters; wrong resource membership; and owned/released elimination. `CompileFailSpec` pins the hidden frame
+constructor.
+
+#### Remaining Work
+
+All deliverables in this sprint.
+
+### Sprint 18.15: Recovery-wire boundary admission [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Recovery.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
+`core/hostbootstrap-core/test/RecoverySpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`,
+`documents/architecture/harness_workflow.md`
+
+#### Objective
+
+Use the authenticated-handoff phase's recovery wire as the sole nested entry from a recovered parent frame.
+
+#### Deliverables
+
+- The root builds `RecoveryProjectionBindingInput` from the bound snapshot's plan and exact edge, encodes the
+  recovered set digest in the adapter bytes, and alone calls `mkRecoveryProjectionBinding`.
+- `withVerifiedRecoveryWire` verifies those exact bytes and grant; `withVerifiedRecoveryHandoff` joins the
+  binding to the typed down/destroy handoff, which the descent entry consumes with the forest authorization
+  point. Immediate parents receive no signing key.
+- Replay or any plan/edge/frame/digest/payload/verb/phase mismatch refuses before dispatch; the boundary has no
+  config handoff and no route to `ProjectUp`.
+
+#### Validation
+
+`RecoverySpec` pins the exact round trip and every wrong-binding or replay refusal across a real process
+boundary. `CompileFailSpec` pins that config handoff and recovery handoff are not interchangeable.
+
+#### Remaining Work
+
+All deliverables in this sprint.
+
+### Sprint 18.16: Child-first abandoned-run teardown [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Recovery.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/harness_workflow.md`,
+`documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Resolve a bound abandoned run that acquired resources by driving its recovered forest to terminal closure.
+
+#### Deliverables
+
+- The acquired-resource branch of `withAbandonedHarnessRun` opens the recovered frame-indexed forest from the
+  bound snapshot and complete rehydrated set.
+- The driver consumes one verified recovery handoff for each foreign cursor and settles every child before its
+  parent, using exact recovered resources and no backend call for a released member.
+- Only settled destroy plus all sessions Closed authorizes harness closure and reclamation; every unresolved
+  outcome retains the lease, mode, snapshot, and records.
+
+#### Validation
+
+`HarnessSpec` and `RecoverySpec` cover multi-frame child-before-parent release, released tombstones, failures
+that retain ownership, successful settled closure, repeated recovery, and config deletion between kill and
+recovery.
+
+#### Remaining Work
+
+All deliverables in this sprint.
+
+### Sprint 18.17: Production lifecycle ownership adoption [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/test/LifecycleSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`,
+`documents/architecture/harness_workflow.md`
+
+#### Objective
+
+Retain the Production mode, canonical snapshot, binding, and bound invocation lease across the recursive
+lifecycle command.
+
+#### Deliverables
+
+- The production command entry uses the composite Production root bracket rather than minting command authority
+  beside lifecycle ownership.
+- Plan construction persists and authoritatively verifies the exact canonical snapshot before `bindRunLease`
+  yields the bound package and normal-active recovery evidence with identical indices through every frame.
+- True-pre-effect refusal uses its dedicated close; every later failure remains recoverable, and no callback can
+  retain an unbound lease or substitute snapshot/broker identity.
+
+#### Validation
+
+`LifecycleSpec` and `AuthoritySpec` cover the composite entry, snapshot read-back, exact lease binding,
+true-pre-effect close, recoverable post-bind failure, and every scope/plan/broker substitution.
+
+#### Remaining Work
+
+All deliverables in this sprint.
+
+### Sprint 18.18: Settled Production destroy closure [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/test/LifecycleSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Consume the recursive destroy proof at the Production closure boundary and nowhere else.
+
+#### Deliverables
+
+- Reverse projection returns its typed terminal result to the production ownership bracket instead of
+  discarding `DestroySettled` after reporting.
+- A completed destroy independently proves all sessions Closed, then `destroySettledClosure` combines that
+  proof with the lease so only the destroy root and `ProjectClosureEvidence SettledDestroyClose` can call
+  `releaseProductionMode`.
+- Down, partial destroy, retained resources, or open sessions cannot release; retry observes the durable
+  terminal state without minting a second invocation close or mode release.
+
+#### Validation
+
+`LifecycleSpec` and `AuthoritySpec` cover settled destroy closure, down and partial-destroy refusal, wrong-lease
+and open-session refusal, retry convergence, and absence of a second close or mode release.
+
+#### Remaining Work
+
+All deliverables in this sprint.
+
+### Sprint 18.19: Deterministic interruption fixtures [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/test/RecoveryInterruptionSpec.hs`,
+`core/hostbootstrap-core/test/Spec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Expose deterministic process-death boundaries for every recovery transition the host-static gate exercises.
+
+#### Deliverables
+
+- A subprocess fixture publishes a durable ready sentinel and can be killed after owned-resource settlement,
+  migration freeze, migration commit, destroy settlement, or persisted `Closing`.
+- The successor opens the same protected store and verifies exact-once convergence, old-permit refusal,
+  child-first release, terminal lease/mode state, and no duplicate effect after real process termination.
+- Fixtures use managed temporary artifacts and captured output, create no `.log` or authority bypass, and fail
+  loudly on protocol errors, missing sentinels, or unexpected exits.
+- The top-level Tasty group is named `recovery-interruption`, giving the later linux-cpu gate one stable,
+  targeted test selector.
+
+#### Validation
+
+`cabal test all --ghc-options=-Werror` from `core/` runs the complete deterministic fixture matrix and all
+negative protocol cases. The later [test-harness phase](phase-19-test-harness-and-run-ownership.md) reruns it
+on linux-cpu from `core/` with
+`cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern recovery-interruption'`;
+that acceptance is not part of this phase's closure gate.
+
+#### Remaining Work
+
+All deliverables in this sprint.
+
+## Phase Remaining Work
+
+Sprints 18.4–18.19. Phase 18 closes when they pass the host-static gate and its governed documentation aligns;
+the later test-harness phase owns live linux-cpu infrastructure confirmation.
 
 ## Documentation Requirements
 

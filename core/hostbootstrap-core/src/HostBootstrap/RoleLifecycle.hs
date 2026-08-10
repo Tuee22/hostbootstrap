@@ -8,6 +8,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {- | The phase-indexed role lifecycle engine (the composition-and-network-algebra phase).
@@ -150,7 +151,9 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import HostBootstrap.Activation (
+    MeasuredInstance (..),
     VerifiedRuntimeRoleActivation,
+    activationErrorMessage,
     activationFrame,
     activationInstance,
     activationPermittedEffects,
@@ -159,18 +162,22 @@ import HostBootstrap.Activation (
     activationRolePlanDigest,
     activationService,
     instanceIdentityText,
+    validateActivationStoreOrigin,
  )
 import HostBootstrap.Handoff (frameWire)
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
-    ProtectedError,
+    ProtectedError (ProtectedVersionMismatch),
     ProtectedSession,
     ProtectedStore,
+    ProtectedStoreIdentity,
     compareAndSwapProtectedRecord,
     mkRecordKey,
     protectedErrorMessage,
     protectedRecordBytes,
+    protectedStoreIdentity,
     readProtectedRecord,
+    sessionStoreIdentity,
     withRunLiveness,
  )
 
@@ -281,6 +288,8 @@ another.
 -}
 data VerifiedRolePlanDraft scope planDigest frame revision instanceId rolePlanDigest
     = VerifiedRolePlanDraft [RoleResourceRequest] Text
+
+type role VerifiedRolePlanDraft nominal nominal nominal nominal nominal nominal
 
 {- | Check a project draft against the activation, with **no durable mutation**.
 
@@ -486,6 +495,8 @@ observed at, so consumption is a compare-and-swap against that exact version.
 data ReservedRoleAdmission scope planDigest frame revision instanceId
     = ReservedRoleAdmission Text Expectation
 
+type role ReservedRoleAdmission nominal nominal nominal nominal nominal
+
 instance Show (ReservedRoleAdmission scope planDigest frame revision instanceId) where
     show (ReservedRoleAdmission key _) = "ReservedRoleAdmission " <> Text.unpack key
 
@@ -495,24 +506,35 @@ reservedRoleAdmissionKey (ReservedRoleAdmission key _) = key
 {- | The total classification of one admission attempt.
 
 A predecessor record for the same instance is never silently overwritten: an
-existing record is recovery-required state, and a lost acknowledgement is its own
-'RoleAdmissionUnknown' rather than an error.
+existing record is recovery-required state.  'RoleAdmissionUnknown' reports a
+protected-store operation that returned without enough evidence to classify the
+reservation; it does not rehydrate a reservation.  Likewise, an asynchronous
+interruption can escape after the durable write, and a later attempt reports the
+existing row rather than reopening it.  Phase 21 owns the crash/lost-
+acknowledgement resume protocol.  A session from a different protected store is
+deterministically 'RoleAdmissionRefused' before any durable operation is
+attempted.
 -}
 data RoleAdmissionOutcome scope planDigest frame revision instanceId
     = RoleAdmissionReserved (ReservedRoleAdmission scope planDigest frame revision instanceId)
     | -- | the admission key, then the predecessor record's own text
       RoleAdmissionRecoveryRequired Text Text
-    | -- | the reservation write's outcome is not known
+    | -- | a deterministic precondition refusal; no durable operation ran
+      RoleAdmissionRefused Text
+    | -- | a protected-store failure left reservation status unclassified; not resume evidence
       RoleAdmissionUnknown Text
 
 {- | Atomically reserve the instance's one-use lifecycle admission.
 
-The key binds the parent plan digest, the frame, the immutable rollout revision,
-and the **measured** instance, so a genuine restart (a different container
-restart count, or a fresh host invocation nonce) gets its own admission while a
-duplicated activation does not.  The reserved value records the verified
-role-plan digest, so a resumption cannot silently change the plan the admission
-was taken for.
+The fixed-size key is a domain-separated SHA-256 digest over canonical framed
+coordinates: the exact parent plan digest, frame, immutable rollout revision,
+and **measured** instance.  No descriptive character is discarded, and
+arbitrarily long valid coordinates cannot exceed the protected store's key
+limit.  A genuine restart (a different container restart count, or a fresh host
+invocation nonce) therefore gets its own admission while a duplicated
+activation does not.  The reserved value records the verified role-plan digest,
+so a future Phase 21 resumption cannot silently change the plan the admission
+was taken for.  This function itself never reopens an existing reservation.
 -}
 withRoleLifecycleAdmission ::
     ProtectedSession session ->
@@ -520,31 +542,34 @@ withRoleLifecycleAdmission ::
     VerifiedRolePlanDraft scope planDigest frame revision instanceId rolePlanDigest ->
     IO (RoleAdmissionOutcome scope planDigest frame revision instanceId)
 withRoleLifecycleAdmission session activation (VerifiedRolePlanDraft _ digest) =
-    case mkRecordKey rawKey of
-        Left failure -> pure (RoleAdmissionUnknown (protectedErrorMessage failure))
-        Right key -> do
-            observed <- readProtectedRecord session key
-            case observed of
+    case validateActivationStoreOrigin session activation of
+        Left failure -> pure (RoleAdmissionRefused (Text.pack (activationErrorMessage failure)))
+        Right () ->
+            case mkRecordKey rawKey of
                 Left failure -> pure (RoleAdmissionUnknown (protectedErrorMessage failure))
-                Right (Just record) ->
-                    pure
-                        ( RoleAdmissionRecoveryRequired
-                            rawKey
-                            (TextEncoding.decodeUtf8Lenient (protectedRecordBytes record))
-                        )
-                Right Nothing -> do
-                    written <-
-                        compareAndSwapProtectedRecord
-                            session
-                            key
-                            ExpectAbsent
-                            (TextEncoding.encodeUtf8 ("reserved " <> digest))
-                    pure $ case written of
-                        Left failure ->
-                            RoleAdmissionUnknown (rawKey <> ": " <> protectedErrorMessage failure)
-                        Right version ->
-                            RoleAdmissionReserved
-                                (ReservedRoleAdmission rawKey (ExpectVersion version))
+                Right key -> do
+                    observed <- readProtectedRecord session key
+                    case observed of
+                        Left failure -> pure (RoleAdmissionUnknown (protectedErrorMessage failure))
+                        Right (Just record) ->
+                            pure
+                                ( RoleAdmissionRecoveryRequired
+                                    rawKey
+                                    (TextEncoding.decodeUtf8Lenient (protectedRecordBytes record))
+                                )
+                        Right Nothing -> do
+                            written <-
+                                compareAndSwapProtectedRecord
+                                    session
+                                    key
+                                    ExpectAbsent
+                                    (TextEncoding.encodeUtf8 ("reserved " <> digest))
+                            pure $ case written of
+                                Left failure ->
+                                    RoleAdmissionUnknown (rawKey <> ": " <> protectedErrorMessage failure)
+                                Right version ->
+                                    RoleAdmissionReserved
+                                        (ReservedRoleAdmission rawKey (ExpectVersion version))
   where
     rawKey = roleAdmissionKey activation
 
@@ -552,15 +577,30 @@ roleAdmissionKey ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId ->
     Text
 roleAdmissionKey activation =
-    Text.filter legalKeyCharacter $
-        "role-admission."
-            <> activationPlanDigest activation
-            <> "."
-            <> activationFrame activation
-            <> "."
-            <> activationRevision activation
-            <> "."
-            <> instanceIdentityText (activationInstance activation)
+    "role-admission."
+        <> sha256Hex
+            ( ByteString.concat
+                ( [ field "hostbootstrap/role-admission/v1"
+                  , field (activationPlanDigest activation)
+                  , field (activationFrame activation)
+                  , field (activationRevision activation)
+                  ]
+                    <> measuredInstanceFields (activationInstance activation)
+                )
+            )
+  where
+    field = frameWire . TextEncoding.encodeUtf8
+
+    measuredInstanceFields instance' = case instance' of
+        KubernetesInstance uid restartCount ->
+            [ field "kubernetes"
+            , field uid
+            , field (Text.pack (show restartCount))
+            ]
+        HostServiceInstance nonce ->
+            [ field "host-service"
+            , field nonce
+            ]
 
 legalKeyCharacter :: Char -> Bool
 legalKeyCharacter character =
@@ -575,21 +615,26 @@ has no reverse projection, mints no root authority, and does not claim to
 recompute the parent's plan digest.
 -}
 data RolePlan scope specDigest planId configId secretDigest frame revision instanceId
-    = RolePlan Text Text Text [RoleResourceRequest]
+    = RolePlan Text Text Text [RoleResourceRequest] ProtectedStoreIdentity
 
 rolePlanFrame :: RolePlan scope specDigest planId configId secretDigest frame revision instanceId -> Text
-rolePlanFrame (RolePlan frame _ _ _) = frame
+rolePlanFrame (RolePlan frame _ _ _ _) = frame
 
 rolePlanRevision :: RolePlan scope specDigest planId configId secretDigest frame revision instanceId -> Text
-rolePlanRevision (RolePlan _ revision _ _) = revision
+rolePlanRevision (RolePlan _ revision _ _ _) = revision
 
 rolePlanInstance :: RolePlan scope specDigest planId configId secretDigest frame revision instanceId -> Text
-rolePlanInstance (RolePlan _ _ instanceText _) = instanceText
+rolePlanInstance (RolePlan _ _ instanceText _ _) = instanceText
 
 -- | The resource names the plan will acquire, for diagnostics only.
 rolePlanResourceNames ::
     RolePlan scope specDigest planId configId secretDigest frame revision instanceId -> [Text]
-rolePlanResourceNames (RolePlan _ _ _ requests) = map roleResourceName requests
+rolePlanResourceNames (RolePlan _ _ _ requests _) = map roleResourceName requests
+
+rolePlanStoreOrigin ::
+    RolePlan scope specDigest planId configId secretDigest frame revision instanceId ->
+    ProtectedStoreIdentity
+rolePlanStoreOrigin (RolePlan _ _ _ _ origin) = origin
 
 {- | The proof that this narrowed role plan belongs to the parent lifecycle plan
 the broker signed.  It states "my @rolePlanDigest@ was signed under that
@@ -634,7 +679,13 @@ The compare-and-swap is against the version the reservation was observed at, so
 two holders of the same reservation value have exactly one winner and the loser
 sees 'RoleAdmissionAlreadyConsumed'.  The plan, binding, placement, and the sole
 @Prereq@ cursor are minted together inside a rank-2 continuation, so a caller
-cannot choose the plan identity, keep the cursor, or reserve a second one.
+cannot choose the plan identity, keep the cursor, or reserve a second one.  The
+activation's retained protected-store origin is checked before the
+compare-and-swap, so a valid reservation from one store cannot consume a
+same-shaped row in another.  If the reservation is consumed and the continuation
+or its acknowledgement is then lost, a retry refuses as already consumed; this
+API deliberately does not rehydrate the plan.  Phase 21 owns that resume
+protocol.
 -}
 withRuntimeRolePlan ::
     ProtectedSession session ->
@@ -655,35 +706,45 @@ withRuntimeRolePlan
     (VerifiedRolePlanDraft requests digest)
     (ReservedRoleAdmission rawKey expectation)
     use =
-        case parsePermittedEffects (activationPermittedEffects activation) of
-            Left failure -> pure (Left failure)
-            Right effects -> case mkRecordKey rawKey of
-                Left failure -> pure (Left (RoleAdmissionStoreFailure failure))
-                Right key -> do
-                    consumed <-
-                        compareAndSwapProtectedRecord
-                            session
-                            key
-                            expectation
-                            (TextEncoding.encodeUtf8 ("consumed " <> digest))
-                    case consumed of
-                        Left _ -> pure (Left (RoleAdmissionAlreadyConsumed rawKey))
-                        Right _ ->
-                            Right
-                                <$> use
-                                    ( RolePlan
-                                        (activationFrame activation)
-                                        (activationRevision activation)
-                                        (instanceIdentityText (activationInstance activation))
-                                        requests
-                                    )
-                                    (RolePlanDigestBinding (activationPlanDigest activation) digest)
-                                    ( VerifiedServicePlacement
-                                        (activationService activation)
-                                        effects
-                                        (leaseRequirementOf effects)
-                                    )
-                                    (RoleCursor Prereq)
+        case validateActivationStoreOrigin session activation of
+            Left failure ->
+                pure
+                    ( Left
+                        (RoleAdmissionStoreOriginMismatch (Text.pack (activationErrorMessage failure)))
+                    )
+            Right () ->
+                case parsePermittedEffects (activationPermittedEffects activation) of
+                    Left failure -> pure (Left failure)
+                    Right effects -> case mkRecordKey rawKey of
+                        Left failure -> pure (Left (RoleAdmissionStoreFailure failure))
+                        Right key -> do
+                            consumed <-
+                                compareAndSwapProtectedRecord
+                                    session
+                                    key
+                                    expectation
+                                    (TextEncoding.encodeUtf8 ("consumed " <> digest))
+                            case consumed of
+                                Left ProtectedVersionMismatch{} ->
+                                    pure (Left (RoleAdmissionAlreadyConsumed rawKey))
+                                Left failure -> pure (Left (RoleAdmissionStoreFailure failure))
+                                Right _ ->
+                                    Right
+                                        <$> use
+                                            ( RolePlan
+                                                (activationFrame activation)
+                                                (activationRevision activation)
+                                                (instanceIdentityText (activationInstance activation))
+                                                requests
+                                                (sessionStoreIdentity session)
+                                            )
+                                            (RolePlanDigestBinding (activationPlanDigest activation) digest)
+                                            ( VerifiedServicePlacement
+                                                (activationService activation)
+                                                effects
+                                                (leaseRequirementOf effects)
+                                            )
+                                            (RoleCursor Prereq)
 
 -- ---------------------------------------------------------------------------
 -- Retained resources
@@ -833,7 +894,9 @@ When the signed ceiling requires it, the whole Acquire→Drain bracket is held
 inside 'withRunLiveness' — the § EE clause-1 primitive, a kernel lock the OS
 releases on process death.  A live exclusive predecessor is refused *before* the
 first acquisition, so the refusal carries 'VerifiedNoRoleResources'; a dead one
-never blocks, because the kernel already released its lock.
+never blocks, because the kernel already released its lock.  Before either the
+liveness operation or a project callback can run, the supplied store must match
+the origin retained privately by the role plan.
 -}
 runRoleLifecycle ::
     ProtectedStore ->
@@ -842,25 +905,32 @@ runRoleLifecycle ::
     RoleCursor scope planId frame instanceId PrereqPhase ->
     RoleEngine ->
     IO RoleExitReport
-runRoleLifecycle store plan placement _cursor engine =
-    case placementLeaseRequirement placement of
-        NoExclusiveEffects -> drive
-        RequiresGenerationLease -> do
-            held <- withRunLiveness store leaseName drive
-            pure $ case held of
-                Left failure ->
-                    exitWithNoRoleResources
-                        (noRoleResources plan)
-                        ("the exclusive generation lease is unavailable: " <> protectedErrorMessage failure)
-                Right Nothing ->
-                    exitWithNoRoleResources
-                        (noRoleResources plan)
-                        ( "another live instance holds the exclusive generation lease for "
-                            <> placementService placement
-                            <> " in frame "
-                            <> rolePlanFrame plan
-                        )
-                Right (Just report) -> report
+runRoleLifecycle store plan placement _cursor engine
+    | protectedStoreIdentity store /= rolePlanStoreOrigin plan =
+        pure
+            ( exitWithNoRoleResources
+                (noRoleResources plan)
+                "the role plan belongs to a different protected store"
+            )
+    | otherwise =
+        case placementLeaseRequirement placement of
+            NoExclusiveEffects -> drive
+            RequiresGenerationLease -> do
+                held <- withRunLiveness store leaseName drive
+                pure $ case held of
+                    Left failure ->
+                        exitWithNoRoleResources
+                            (noRoleResources plan)
+                            ("the exclusive generation lease is unavailable: " <> protectedErrorMessage failure)
+                    Right Nothing ->
+                        exitWithNoRoleResources
+                            (noRoleResources plan)
+                            ( "another live instance holds the exclusive generation lease for "
+                                <> placementService placement
+                                <> " in frame "
+                                <> rolePlanFrame plan
+                            )
+                    Right (Just report) -> report
   where
     leaseName =
         Text.filter legalKeyCharacter
@@ -970,7 +1040,7 @@ runRoleLifecycle store plan placement _cursor engine =
 planRequests ::
     RolePlan scope specDigest planId configId secretDigest frame revision instanceId ->
     [RoleResourceRequest]
-planRequests (RolePlan _ _ _ requests) = requests
+planRequests (RolePlan _ _ _ requests _) = requests
 
 {- | The empty-rollback proof, available only where the engine can show nothing
 was acquired.  It is private, so project code cannot manufacture it.
@@ -999,6 +1069,7 @@ data RoleLifecycleError
     | -- | the service, then the declared effect its signed ceiling does not permit
       RoleEffectNotPermitted Text Text
     | RoleAdmissionAlreadyConsumed Text
+    | RoleAdmissionStoreOriginMismatch Text
     | RoleAdmissionStoreFailure ProtectedError
     deriving (Eq, Show)
 
@@ -1021,6 +1092,7 @@ roleLifecycleErrorMessage failure = case failure of
             <> ", which its signed ceiling does not permit"
     RoleAdmissionAlreadyConsumed key ->
         "role lifecycle: lifecycle admission " <> Text.unpack key <> " is already consumed"
+    RoleAdmissionStoreOriginMismatch detail -> "role lifecycle: " <> Text.unpack detail
     RoleAdmissionStoreFailure detail ->
         "role lifecycle: " <> Text.unpack (protectedErrorMessage detail)
 

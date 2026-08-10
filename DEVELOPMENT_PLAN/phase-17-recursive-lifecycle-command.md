@@ -35,8 +35,9 @@ Authorize a lifecycle verb from a verified invocation, not from the config.
 
 #### Deliverables
 
-- `project up|down|destroy` each run behind `verifyOperatorAuthorization` → `withVerifiedRootInvocation` →
-  `authorizeProjectCommand`.
+- `project up|down|destroy` each run behind `verifyOperatorAuthorization` →
+  `withVerifiedRootInvocation`; the resulting exact root authority enters only the verb-specific
+  lifecycle gate that owns the matching evidence package.
 - The decoded context is descriptive input to the plan, never the thing that permits the verb.
 - `project init` writes a project's initial config and is the only lifecycle verb that does not require a plan.
 
@@ -49,7 +50,7 @@ three verbs ran through the gate on native linux-cpu.
 
 None.
 
-### Sprint 17.2: Recursive forward interpretation [Done]
+### Sprint 17.2: Current-frame forward interpretation [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
@@ -59,29 +60,30 @@ None.
 
 #### Objective
 
-Drive the plan's forward ordering across frames.
+Drive one authorized frame's exact forward ordering and derive its declared descent boundary.
 
 #### Deliverables
 
-- `runChainFromFrame` reads the frame context off the plan, so the interpreter descends where the plan says and
-  nowhere else.
+- `runChainFromFrame` reads the frame context off the plan and selects only that frame's non-empty segment;
+  `DerivedTopology` identifies a declared child boundary but grants no child admission.
 - Each node's action receives its plan-minted execution descriptor.
-- Descent at a frame boundary hands the child its config through the announcing node, so the row that announces
-  a child and the bytes the child reads are the same fact.
+- The descent declaration retains the exact child config through the announcing node, so the row that
+  announces a child and the bytes an authenticated child entry consumes are the same fact.
 - A node's failure stops its own subtree and is reported structurally.
 
 #### Validation
 
-`ChainSpec` covers the descent order, the per-node descriptor, and the failure containment.
+`ChainSpec` covers current-frame order, typed descent selection, the per-node descriptor, and failure
+containment. Authenticated process entry and cross-frame continuation remain open below.
 
 #### Remaining Work
 
 None.
 
-### Sprint 17.3: Recursive child-first unwind [Active]
+### Sprint 17.3: Frame-indexed reverse projection [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`,
 `core/hostbootstrap-core/test/TeardownSpec.hs`
 **Substrates**: linux-cpu
@@ -89,73 +91,141 @@ None.
 
 #### Objective
 
-Make each verb clean the frames the current binary can reach, deepest first.
+Propagate the exact frame already retained by the plan-derived reverse projection through every recursive
+forest state and authorization branch.
 
 #### Deliverables
 
-- `project down` and `project destroy` descend into the next frame — invoking the **same verb** there through
-  the descent the plan itself declares — and settle that frame's nodes from that invocation, so a deeper frame
-  is released by the binary that can see it rather than released implicitly with its parent. The child runs the
-  same loop over its own segment and recurses further itself.
-- The teardown **forest** is what the verbs drive, so its child-first ordering and its destroy-only pre-descent
-  reachability step govern actual effects. The reachability step is satisfied by reaching the child frame:
-  invoking the child binary is what demonstrates the stopped provider is reachable again.
-- `driveTeardownForest` owns the loop, because the forest is what knows the ordering, the outstanding set, and
-  that a failed node is terminal for the run. A verb supplies one node's effect and one node's row and nothing
-  else; a node the forest re-offers after a failure ends the run with every outstanding node named.
-- A node runs the reverse its own forward step declared, read off the cursor rather than resolved beside the
-  plan. `teardownCursorRun`, `teardownCursorPolicy`, and `teardownCursorKey` are what make the forest
-  drivable without a second lookup that could disagree with the projection.
-- The projection is **frame-indexed**. `TeardownPlan`, `TeardownForest`, and `TeardownCursor` each carry a
-  `frame` phantom, and the sole forest producer consumes a `CurrentFrame scope planId frame` witness
-  derived from the `LifecyclePlan` together with the validated binary context — so a forest is bound to
-  the frame that opened it rather than merely accompanied by its name.
+- Sprint 12.26 has already made `TeardownPlan scope planId frame verb` the exact plan-derived,
+  current-frame projection and made `openTeardownForest` consume that projection alone. This sprint does
+  not derive or request a second `CurrentFrame` witness.
+- `TeardownForest` and every progress, authorization, cursor, and completion value propagate the
+  projection's existing `frame` phantom, so the recursive state remains bound to the frame that opened it
+  rather than merely accompanied by its name.
 - Whether an offered node belongs to this frame is a **closed sum with a total eliminator**: a local
   cursor is the only value the local reverse runner accepts, and a foreign cursor's sole continuation is
   the descent. The forest carries every frame's levels, because one memoized descent settles the deeper
   ones; what makes the boundary hold is the index, not the forest's contents.
-- The two entries are distinct types (§ X). An **operator-initiated** `down`/`destroy` validates at the
-  topology root and nowhere else. A **descent-initiated** one runs in a nested frame and is admitted only
-  by verifying the recovery wire its parent minted from this forest's own authorization point, so it is
-  unreachable from `argv`, an environment variable, or a flag. A lifecycle verb names no command class as
-  a source constant chosen per call site.
-- A failed `up` unwinds through the same call, so there is one release path rather than a cleanup beside it.
-- Each node's outcome becomes a structured row: released, retained, refused, or failed.
+- A forest opened at a nested frame schedules only that frame and its descendants; an ancestor is never
+  reclassified as another inward descent.
+- `openTeardownForest` continues to consume only the already frame-indexed projection; no recursive caller
+  may supply a frame name or duplicate descriptive witness beside it.
+- A local node runs the reverse its own forward step declared, read off the local cursor rather than resolved
+  beside the plan. `teardownCursorRun`, `teardownCursorPolicy`, and `teardownCursorKey` accept only that local
+  cursor.
 - `settledDestroyEvidence` is the only route from a completed forest to `DestroySettled`, and it matches on the
   verb index inside the module — a `down` yields nothing. A run that never visited a deeper frame's nodes has a
   forest that cannot complete, so it cannot mint the proof for nodes it never visited.
 
 #### Validation
 
-`TeardownSpec` covers the projection and the forest in isolation, and the production driver directly: the order
-every node is offered in (pre-descent, then deepest frame, then outwards), one row per node, a failing node
-ending the run with its blocked chain named and no spin, a foreign settlement not blocking completion, and a
-`down` run being unable to mint settled-destroy evidence while a `destroy` run mints it for the plan's own
-digest.
+`TeardownSpec` covers root, VM, and container openings over a real multi-frame fixture: local work is the only
+work exposed to the local runner, the foreign branch names only a descent, and no nested opening exposes an
+ancestor. `CompileFailSpec` pins that a local cursor indexed by one frame is not accepted by another.
 
 #### Remaining Work
 
-The frame index, the two entries, and the live half of the phase gate.
+Frame-index propagation beyond `TeardownPlan`, the local/descent sum, focused scheduling, and compile-fail
+proof.
 
-The forest, its ordering, and the per-node rows are built. What the descent still needs is the typed
-boundary: the `frame` phantom and its `CurrentFrame` witness, the local/foreign cursor sum, and the
-descent entry that admits a nested verb by verifying the recovery wire the
-[authenticated-handoff phase](phase-13-authenticated-handoff-and-child-admission.md) owns. Until those
-land the descent has no admission a nested frame accepts, so `project destroy` settles the frames one
-binary can reach and reports the rest outstanding.
+### Sprint 17.4: Operator and authenticated descent lifecycle entries [Planned]
 
-The § HH proof obligations are part of this sprint: a compile-fail fixture pinning that a cursor indexed
-by one frame is not accepted in another, and a second pinning that the descent entry has no constructor
-without a verified wire. `TeardownSpec` gains a fixture whose levels carry frames with different legal
-command classes, because a projection driven over synthetic single-frame levels cannot exercise a frame
-boundary at all.
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Context.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/binary_context_config.md`
 
-Dated evidence: `cabal test all --ghc-options=-Werror` from `core/` passes on 2026-08-08 (aarch64-osx,
-GHC 9.12.4). The declared live `project up`/`down`/`destroy` lane is owed.
+#### Objective
 
-Consuming the `DestroySettled` proof as `ProjectClosureEvidence SettledDestroyClose` needs a bound run lease
-and the all-sessions-closed proof, which the lifecycle verbs do not open — that is the
-[recovery phase](phase-18-recovery-and-migration.md)'s, not this one's.
+Give operator and nested lifecycle invocations different, non-interchangeable admission types.
+
+#### Deliverables
+
+- A lifecycle-specific validated context binds project/binary identity, topology, orchestration placement, and
+  runtime witnesses without selecting a command class from descriptive config.
+- Operator `up`, `down`, and `destroy` entries are constructible only at the topology root through the
+  verified operator/root authority chain and the root `CurrentFrame`.
+- A forward descent entry is constructible only from the exact verified config handoff, child-plan authority,
+  verb, plan digest, parent/child edge, and current child frame supplied by the
+  [authenticated-handoff phase](phase-13-authenticated-handoff-and-child-admission.md). It yields the child's
+  local plan-bound command admission; a config payload or process invocation alone grants nothing.
+- A descent teardown entry is constructible only from the typed verb and exact
+  `VerifiedRecoveryHandoff` produced by the
+  [authenticated-handoff phase](phase-13-authenticated-handoff-and-child-admission.md).
+- Each descent producer rechecks its plan digest, parent/child edge, verb, lifecycle phase, wire digest, and
+  current child frame before yielding its opaque entry.
+- A nested `project up|down|destroy` reached from `argv` alone refuses before effects; no flag, environment
+  variable, config class, or caller-chosen source constant selects the nested entry.
+- The live descent entry owns construction and lifetime of its duplex `HandoffChannel`; ordinary project code
+  cannot retain a raw channel beside the verified `ReceivedEdge` and bypass the repository-sealed requester
+  path. This strengthens the § HH in-repository boundary without pretending to cryptographically constrain an
+  external process; exact root plan admission remains the final authorization.
+- The teardown verb index is the same closed `ProjectVerb` index the command authority uses, so an authorized
+  `down` cannot drive the destroy projection.
+
+#### Validation
+
+Command-entry tests cover operator and authenticated forward/reverse descent success plus every wrong-binding
+refusal. `CompileFailSpec` pins that the descent-entry constructors are hidden and no producer exists without
+the matching verified handoff evidence.
+
+#### Remaining Work
+
+The operator/descent entry families, including authenticated forward child admission, transport ownership
+that removes the retained raw-channel bypass from ordinary project code, and their proof fixtures.
+
+### Sprint 17.5: Authenticated recursive interpretation and unwind [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lift.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/composition_methodology.md`,
+`documents/engineering/composition_patterns.md`
+
+#### Objective
+
+Drive forward and reverse traversal through authenticated child entries and settle every reachable frame.
+
+#### Deliverables
+
+- `project up` reaches a declared boundary only by opening the plan-bound handoff edge, running the duplex
+  exchange, and invoking the child's exact authenticated forward entry; the child then interprets its own
+  current-frame segment and repeats the same protocol for any declared descendant.
+- `project down` and `project destroy` descend through the plan-declared edge, invoke the same typed verb in
+  the child, and settle that child's nodes before the parent node.
+- The recovery protocol owns the child's `stdout`; diagnostics and structured teardown rows use `stderr` while
+  the duplex exchange is active.
+- `driveTeardownForest` owns ordering, outstanding work, and terminal failure; a verb supplies only one local
+  effect, one authenticated descent, and one report row.
+- The destroy-only pre-descent reachability step succeeds only through reaching and admitting the exact child
+  frame.
+- A failed `project up` invokes the same authenticated destroy projection, so there is one release route.
+- Every node reports released, retained, refused, or failed, and an unresolved deeper frame prevents settled
+  destroy evidence.
+
+#### Validation
+
+`TeardownSpec` drives the real command entry across a process boundary, including wrong/replayed recovery
+wires and failure containment. The phase gate then runs live `project up`, `project down`, and
+`project destroy` on linux-cpu and records the dated result.
+
+#### Remaining Work
+
+Authenticated forward and reverse duplex call-site adoption, channel ownership that keeps raw transport out
+of ordinary project code, and the live half of the phase gate.
+
+Consuming `DestroySettled` as `ProjectClosureEvidence SettledDestroyClose` needs a bound run lease and the
+all-sessions-closed proof. The [recovery phase](phase-18-recovery-and-migration.md) owns that later boundary.
+
+## Remaining Work
+
+Propagate the reverse projection's existing frame index through the teardown forest, implement the closed
+local/descent sum, add the operator and authenticated child entry families for all three lifecycle verbs,
+make those entries own their raw duplex channels, and adopt them in the recursive forward and reverse call
+sites. The complete static gate and
+live linux-cpu `project up`, `project down`, and `project destroy` gate then validate the phase.
 
 ## Documentation Requirements
 

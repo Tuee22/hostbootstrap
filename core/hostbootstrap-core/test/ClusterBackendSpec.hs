@@ -219,24 +219,29 @@ exposureCases =
                 Left (Failure _) -> pure ()
                 other ->
                     assertFailure ("expected a port refusal, got " ++ showEither other)
-    , testCase "an exact loopback binding settles" $
-        case withExposure 30080 (\prepared -> settleLoopbackExposure prepared (ObservedPortBinding "127.0.0.1" "30080")) of
+    , testCase "an exact loopback binding settles" $ do
+        outcome <- withExposure 30080 (\prepared -> settleLoopbackExposure prepared (ObservedPortBinding "127.0.0.1" "30080"))
+        case outcome of
             Right () -> pure ()
             other -> assertFailure ("expected a settled exposure, got " ++ showEither other)
-    , testCase "a wildcard binding is a Conflict, not a warning" $
-        case withExposure 30080 (\prepared -> settleLoopbackExposure prepared (ObservedPortBinding "0.0.0.0" "30080")) of
+    , testCase "a wildcard binding is a Conflict, not a warning" $ do
+        outcome <- withExposure 30080 (\prepared -> settleLoopbackExposure prepared (ObservedPortBinding "0.0.0.0" "30080"))
+        case outcome of
             Left (Conflict detail) -> conflictObserved detail @?= "0.0.0.0:30080"
             other -> assertFailure ("expected a wildcard conflict, got " ++ showEither other)
-    , testCase "a different published port is a Conflict" $
-        case withExposure 30080 (\prepared -> settleLoopbackExposure prepared (ObservedPortBinding "127.0.0.1" "31080")) of
+    , testCase "a different published port is a Conflict" $ do
+        outcome <- withExposure 30080 (\prepared -> settleLoopbackExposure prepared (ObservedPortBinding "127.0.0.1" "31080"))
+        case outcome of
             Left (Conflict _) -> pure ()
             other -> assertFailure ("expected a port conflict, got " ++ showEither other)
-    , testCase "an unparseable published port is a Failure, never an assumed match" $
-        case withExposure 30080 (\prepared -> settleLoopbackExposure prepared (ObservedPortBinding "127.0.0.1" "")) of
+    , testCase "an unparseable published port is a Failure, never an assumed match" $ do
+        outcome <- withExposure 30080 (\prepared -> settleLoopbackExposure prepared (ObservedPortBinding "127.0.0.1" ""))
+        case outcome of
             Left (Failure _) -> pure ()
             other -> assertFailure ("expected a parse failure, got " ++ showEither other)
-    , testCase "the rendered mapping is the loopback triple" $
-        case withExposure 30080 (Right . preparedLoopbackExposureMapping) of
+    , testCase "the rendered mapping is the loopback triple" $ do
+        outcome <- withExposure 30080 (Right . preparedLoopbackExposureMapping)
+        case outcome of
             Right mapping -> mapping @?= ("127.0.0.1", 30080, 30080)
             other -> assertFailure ("expected a mapping, got " ++ showEither other)
     ]
@@ -418,15 +423,13 @@ withExposure ::
       PreparedLoopbackExposure scope planId clusterId clusterFrame ->
       Either ReconcileError result
     ) ->
-    Either ReconcileError result
-withExposure port consume = do
-    exposure <- mkLoopbackExposure port port
-    joinEither $
-        withPlannedClusterFixture $ \planned ->
-            withPreparedLoopbackExposure planned exposure consume
-
-joinEither :: Either error (Either error value) -> Either error value
-joinEither = either Left id
+    IO (Either ReconcileError result)
+withExposure port consume =
+    case mkLoopbackExposure port port of
+        Left err -> pure (Left err)
+        Right exposure ->
+            withPlannedClusterFixture $ \planned ->
+                withPreparedLoopbackExposure planned exposure id >>= consume
 
 showEither :: (Show value) => Either ReconcileError value -> String
 showEither = either show show

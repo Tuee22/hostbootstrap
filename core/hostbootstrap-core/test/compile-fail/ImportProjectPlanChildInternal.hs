@@ -1,0 +1,3 @@
+module ImportProjectPlanChildInternal where
+
+import HostBootstrap.ProjectPlan.Child.Internal

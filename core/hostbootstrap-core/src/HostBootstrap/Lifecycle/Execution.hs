@@ -3,8 +3,10 @@
 A project step receives a 'StepExecution' only from the trusted chain
 interpreter.  The descriptor carries the host-tool configuration needed by an
 ordinary action together with the exact plan, operation, and frame identities
-under which that action runs.  Its @scope@ and @planId@ indices prevent values
-from distinct lifecycle plans being cross-paired by typed consumers.
+under which that action runs. It also retains reporting views of the admitted
+configuration digest and stable node identity. Its nominal @scope@ and
+@planId@ indices prevent values from distinct lifecycle plans being
+cross-paired by typed consumers.
 
 There is intentionally no public constructor or minting function.  The neutral
 plan-node representation also remains package-internal, so a downstream project
@@ -21,6 +23,8 @@ module HostBootstrap.Lifecycle.Execution (
     StepExecution,
     stepExecutionHostConfig,
     stepExecutionPlanDigest,
+    stepExecutionConfigDigest,
+    stepExecutionNodeIdentity,
     stepExecutionOperationKey,
     stepExecutionFrame,
     stepExecutionDependencyKeys,
@@ -49,9 +53,11 @@ import HostBootstrap.Lifecycle.Execution.Internal (
     newResourceCarrier,
     newStepRuntime,
     readCarriedResources,
+    stepExecutionConfigDigest,
     stepExecutionFrame,
     stepExecutionHostConfig,
     stepExecutionNode,
+    stepExecutionNodeIdentity,
     stepExecutionOperationKey,
     stepExecutionPlanDigest,
     stepExecutionRuntime,

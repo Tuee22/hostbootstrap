@@ -53,6 +53,7 @@ module HostBootstrap.Protected (
     withRunLiveness,
     sessionStoreIdentity,
     sessionStoreRoot,
+    verifyProtectedStoreWritable,
 
     -- * Records
     RecordKey,
@@ -237,6 +238,29 @@ sessionStoreIdentity (ProtectedSession store) = storeIdentity store
 -- | The store's absolute root, for the operator check that must inspect it.
 sessionStoreRoot :: ProtectedSession session -> FilePath
 sessionStoreRoot (ProtectedSession store) = storeRoot store
+
+{- | Ask the operating system whether the current principal can create and
+remove a file in the exact records directory this session protects.
+
+The probe runs inside the store's exclusive entry, uses an exclusive temporary
+name, and removes it on normal and catchable-exceptional exit. Opening the
+directory or inspecting a portable permissions record is not equivalent on
+Windows, where the effective ACL decision is made only by the attempted file
+operation.
+-}
+verifyProtectedStoreWritable ::
+    ProtectedSession session ->
+    IO (Either ProtectedError ())
+verifyProtectedStoreWritable (ProtectedSession store) = do
+    outcome <-
+        try $
+            bracket
+                (IO.openBinaryTempFile recordsRoot ".hostbootstrap-write-probe")
+                (\(path, handle) -> hClose handle `finally` removeFile path)
+                (const (pure ()))
+    pure (either (Left . ioFailure "verify write access to the protected record store") Right outcome)
+  where
+    recordsRoot = storeRoot store </> recordsDirectory
 
 {- | Run an action under the store's OS-released exclusive lock (clause 1). The
 lock spans the whole observe/mutate/settle bracket, and the kernel releases it

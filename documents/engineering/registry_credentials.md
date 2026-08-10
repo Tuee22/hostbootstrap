@@ -49,7 +49,7 @@ currently makes impossible.
 | `discoverHostRegistryAuth :: IO (Maybe RegistryAuth)` | Reads `$DOCKER_CONFIG/config.json` (or `~/.docker/config.json`). Filters auth keys by a `docker.io` substring and inline credential presence; this may overmatch non-Hub hostnames. `Nothing` on read/parse/no-match failure. |
 | `dockerAuthStdinWrapper :: String -> String` | Wraps a shell command so it reads `stdin` into `mktemp -d/config.json` and registers an exit trap. The returned command string embeds no secret, but the file can survive an untrappable kill/crash. |
 | `withForwardedRegistryAuth :: IO a -> IO a` | Consumes the forwarded environment value into a temporary `DOCKER_CONFIG`, unsets the variable in the current process, and removes the directory on normal/exceptional `bracket` exit. Same-privilege/container inspection before consumption and uncatchable termination remain outside that guarantee. |
-| `liftSubcommandWithAuth` (`HostBootstrap.Lift`) | Pipes the payload to the VM shell and uses `-e HOSTBOOTSTRAP_REGISTRY_AUTH` (the name only) on `docker run`. The value is absent from constructed `argv`, but exists in the shell/container environment and may be visible through process or Docker inspection. |
+| `liftSubcommandWithAuth` (owner: `HostBootstrap.Registry`) | Pipes the payload to the VM shell and uses `-e HOSTBOOTSTRAP_REGISTRY_AUTH` (the name only) on `docker run`. The value is absent from constructed `argv`, but exists in the shell/container environment and may be visible through process or Docker inspection. The active [composition-and-network-algebra phase](../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md) validates this policy-bearing ownership and the guarded direction in which Registry imports generic Lift while Lift imports no credential type. |
 
 ## How forwarding crosses each boundary
 
@@ -68,10 +68,16 @@ image layer; “no durable state” depends on cleanup completing:
   Docker inspection until consumption. The in-container binary's `withForwardedRegistryAuth`
   consumes it once at startup into a transient `DOCKER_CONFIG`, so the `deploy-kind` step's `kind` node-
   image pull and the in-container `docker run` probes authenticate, then attempts normal/exceptional
-  cleanup through `bracket`. The core lift seam
-  `liftSubcommandWithAuth` supports the same shape for a container reached directly through a VM: it
+  cleanup through `bracket`. The Registry-owned consumer of the generic lift seam,
+  `liftSubcommandWithAuth`, supports the same shape for a container reached directly through a VM: it
   pipes the payload on `stdin` to the VM shell, which imports it with
   `export HOSTBOOTSTRAP_REGISTRY_AUTH="$(cat)"` and `exec`s a `docker run -e HOSTBOOTSTRAP_REGISTRY_AUTH`.
+
+The source boundary is one-way: `HostBootstrap.Registry` may import the lower `HostBootstrap.Lift` and its
+generic quoting helper; generic Lift imports neither Registry nor `RegistryAuth`. That dependency boundary
+is implemented and pinned by a source guard. The
+[composition-and-network-algebra phase](../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md)
+keeps the exact blob-leaf argument coverage and complete phase gate open.
 
 This is the current forwarding idiom: the host binary knows it is
 the outermost frame and holds the credential; each nested binary knows it may receive a forwarded

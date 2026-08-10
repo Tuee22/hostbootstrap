@@ -164,7 +164,7 @@ Enter the service through the activation package rather than beside it.
 - The deploy step signs one activation manifest per pod-template revision and installs the immutable
   digest-addressed config, secret, and manifest objects the role reads.
 - `service run` measures its own binary, its mounted role wire, and its private bundle digests plus its instance
-  identity, verifies the activation against the independently installed project key, and enters the phase machine.
+  identity, verifies the activation against the independently installed Activation key, and enters the phase machine.
 - A verification failure refuses to start rather than starting unverified.
 
 #### Validation
@@ -203,7 +203,7 @@ landed is the relayed activation-signing operation that closes that gap:
   receiver half needs no separate machinery.
 - `adoptRelayedActivationGrant` lets the relayed half hold its own answer. It is safe because an
   `ActivationGrant` is not authority: the only consumer is `verifyRuntimeRoleActivation`, which checks it
-  against the independently installed project key, so adopting arbitrary bytes yields a grant that fails
+  against the independently installed Activation key, so adopting arbitrary bytes yields a grant that fails
   verification rather than one that authorizes anything.
 
 What remains is the **deploy-step adoption** that consumes it: signing one manifest per pod-template revision,

@@ -13,8 +13,10 @@ material lives here. Conventions are defined in
 [documentation_standards.md](documentation_standards.md).
 
 The model is **the validated lift plan is the project**. A project binary (`pb`) finalizes ordered
-additive step fragments into one opaque `StepPlan`; `project up` is a recursive interpreter that runs
-the current frame's steps then hands `pb project up` to the next frame. The canonical home of this model is
+additive step fragments into one opaque `StepPlan`. The target plan interpretation is recursive `project up`: interpret
+the current frame, then authenticate and hand `pb project up` to the next frame. The current exact Chain
+implements the current-frame segment and descent declaration; authenticated cross-frame continuation is
+still open. The canonical home of this model is
 [architecture/composition_methodology.md](architecture/composition_methodology.md); every other doc
 defers to it rather than re-deriving it. The command surface is summarized in
 [Command Surface](#command-surface).
@@ -26,24 +28,26 @@ defers to it rather than re-deriving it. The command surface is summarized in
   extends, its validation boundary, and the
   `project`/`test`/`service`/`context`/`check-code` command tree project binaries build on.
 - [architecture/composition_methodology.md](architecture/composition_methodology.md) — the **canonical
-  home of the composition model**: the current opaque `StepPlan` forward ordering, `project up` as the
-  recursive/fractal interpreter of the self-reference lift across `Local | InVM | InContainer`, and the
-  target opaque plan deriving forward order, topology, and reverse receipt-driven traversal together,
+  home of the composition model**: the opaque `StepPlan` forward ordering, exact current-frame Chain,
+  the target authenticated recursive/fractal interpreter of the self-reference lift across
+  `Local | InVM | InContainer`, and the opaque project plan deriving forward order, topology, and reverse
+  traversal together,
   fractal bootstrap (the Python bootstrapper is the metal-frame instance of provision → build-pb →
   handoff), and the deploy ≡ business-logic unification (one algebra for deployment and runtime business
   logic).
-- [architecture/generic_project_model.md](architecture/generic_project_model.md) — the implemented
-  generic project model (§ BB, phase 19): `hostbootstrap-core` owns no hardcoded defaults and is
+- [architecture/generic_project_model.md](architecture/generic_project_model.md) — the generic project
+  model (§ BB): `hostbootstrap-core` owns no hardcoded defaults and is
   parameterized over a project's scope-indexed config family
-  (`ProjectSpec projectId cfg tcfg`). One restricted `psAssemble` is the structural default source for
+  (`ProjectSpec cfg tcfg`). One identity-polymorphic restricted `psAssemble` is the structural default source for
   Production init and per-variant Harness generation; `psTestInit` separately builds `tcfg`. The harness
   generates the run's `<project>.dhall` from a thin `<project>.test.dhall` override. `SecretRef scope`
   supports secrets-strict configs, requires exact Harness config authority for plaintext, and exposes
   no plaintext alternative in the Production schema.
 - [architecture/binary_context_config.md](architecture/binary_context_config.md) — the "know your
   place" binary-context contract: a sibling `<project>.dhall` is parameters + context + witness, the
-  read-only `context` command introspects and visualizes the frame, the current descriptive mismatch
-  checks, and the target opaque authority that prevents callers from widening their own capabilities.
+  read-only `context` command introspects and visualizes the frame, the complete descriptive topology and
+  exact-witness checks, the implemented lower installed/store/root/reservation authority boundary, and the later
+  proof-complete command gates that prevent callers from widening their own capabilities.
 - [architecture/python_haskell_boundary.md](architecture/python_haskell_boundary.md) — what the
   thin Python bootstrapper owns versus `hostbootstrap-core`, and the default-to-Haskell rule.
 - [architecture/build_and_run_model.md](architecture/build_and_run_model.md) — the host-native
@@ -58,24 +62,23 @@ defers to it rather than re-deriving it. The command surface is summarized in
   announcement), the generated Dhall
   vocabulary, the three-vocabulary layering, and the validated-codec schema surface.
 - [architecture/run_models.md](architecture/run_models.md) — the four execution-shape names
-  (`OneShot`, `HostNative`, `HostDaemon`, `Cluster`), the currently unwired selector and exported Dhall
-  vocabulary, and the target removal of that parallel representation in favor of the concrete chain.
+  (`OneShot`, `HostNative`, `HostDaemon`, `Cluster`) as consequences of the one exact project plan, with no
+  parallel execution selector or Dhall representation.
 - [architecture/harness_workflow.md](architecture/harness_workflow.md) — the per-case `runMatrix` loop,
-  the implemented compiled-case/resource-override split, the unenforced root-gate claim, the current
-  Production-profile test defect, and the sealed harness-authority target.
+  compiled-case/config-variant split, exact Harness-plan lifecycle, assertion-only `TestSuite`, generated
+  config and run ownership, and the still-open engine-owned same-run recreate assertion.
 - [architecture/durable_state.md](architecture/durable_state.md) — the **canonical home of the
   durable-state contract**: one canonical host-root authority, typed substrate projections,
-  provider-local guest aliases, direct-host canonical-path bypass, and the still-open strong
-  provider-alias ownership and
-  destroy/up/readback proof.
+  provider-local guest aliases, direct-host canonical-path bypass, the clause-holding guest-alias backend
+  with its still-open demo adoption, and the destroy/up/readback proof.
 - [architecture/ownership_invariant.md](architecture/ownership_invariant.md) — the **canonical home of
   the ownership invariant**: the four Locked-Origin Identity Ownership clauses (exclusive entry, durable
   origin record, identity binding, conditional release), their per-substrate realization, and the exact
   guarantee they do and do not provide. Replaces the platform-primitive rule that no substrate could
   satisfy.
-- [architecture/readiness.md](architecture/readiness.md) — current retrying probes and the open defects
-  after opaque, resource-indexed witnesses and validated polling landed: live adapters still need the
-  plan-owned prepared-operation pair and a backend holding the four ownership clauses.
+- [architecture/readiness.md](architecture/readiness.md) — opaque resource-indexed witnesses, validated
+  polling, the implemented closed raw provider-discovery boundary, and the remaining live adapters that
+  have not yet adopted plan-owned prepared operations.
 - [architecture/lifecycle_state_model.md](architecture/lifecycle_state_model.md) — the canonical target
   for ownership-/phase-indexed handles, opaque resource capabilities, total observations, explicit
   idempotent reconcile outcomes, one-use session/fence permits, project-mode exclusion, exhaustive
@@ -95,7 +98,8 @@ defers to it rather than re-deriving it. The command surface is summarized in
 - [engineering/schema.md](engineering/schema.md) — the project-local `<project>.dhall` schema that
   every project binary reads beside itself.
 - [engineering/secrets.md](engineering/secrets.md) — the implemented `SecretRef` vocabulary and the
-  `test-secrets` seam through which a secrets-strict consumer injects test values (§ BB, phase 19);
+  `test-secrets` seam through which a secrets-strict consumer injects test values (§ BB and the
+  [test-harness-and-run-ownership phase](../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md));
   `TestPlaintext` remains representable, production exclusion is currently project code-check policy,
   and core never resolves secrets.
 - [engineering/dhall_topology.md](engineering/dhall_topology.md) — the three-tier Dhall model, the
@@ -125,8 +129,9 @@ defers to it rather than re-deriving it. The command surface is summarized in
 - [engineering/applied_cordon.md](engineering/applied_cordon.md) — budget-as-ceiling enforcement: the
   one canonical parser, the implemented typed scalar/capacity boundaries, the target topology-derived
   pod-set fit, and the open bare-Linux storage wall.
-- [engineering/incus.md](engineering/incus.md) — the active `SubstrateProvider`/`LiftLayer` Incus path,
-  VM/share/exec lifecycle, total daemon/permission/VM-capability/egress observation, and sizing limits.
+- [engineering/incus.md](engineering/incus.md) — the opaque provider descriptor's Incus path, its
+  prepared four-clause VM/share backend, closed raw discovery, VM/share/exec lifecycle, and sizing limits;
+  its static gate is closed and its native Linux/x86_64 KVM/Incus gate remains open.
 - [engineering/lima.md](engineering/lima.md) — the Lima VM provider used by the worked demo on Apple
   Silicon for a real pristine Linux VM, with the same deploy/stop/destroy VM lifecycle steps.
 - [engineering/wsl2.md](engineering/wsl2.md) — the Windows WSL2 host-provider VM, the peer of
@@ -153,7 +158,8 @@ defers to it rather than re-deriving it. The command surface is summarized in
   interrupted-cleanup risks remain explicit.
 - [engineering/testing.md](engineering/testing.md) — the standardized `runMatrix` harness, the
   `test init` / `test run <case-id>|all` surface, compiled case ownership, unenforced root-gate claim,
-  Production-profile demo defect, and supported fast-suite entry points.
+  exact Harness-plan command boundary, independent profile/root consumer gap, supported fast-suite entry points, and authority-kernel
+  compile-fail/import/concurrency evidence.
 - [engineering/in_cluster_registry.md](engineering/in_cluster_registry.md) — the in-cluster registry a downstream project pushes to.
 - [engineering/derived_project_standards.md](engineering/derived_project_standards.md) — the rules
   every derived project follows, including the extension-stream contract whose stream 1 is the lift chain.
@@ -181,9 +187,10 @@ defers to it rather than re-deriving it. The command surface is summarized in
 ## Command Surface
 
 The fixed core command surface is exactly five user-facing verbs: `project`, `test`, `service`, `context`,
-and `check-code`. There are no hidden commands. `ensure` is a reconciler library, not a command.
-`project up` recursively interprets the project's opaque validated `StepPlan`: it runs the current frame and
-hands `pb project up` to the next. Current `project down`/`destroy` do **not** mirror that recursive
+and `check-code`. There are no hidden commands. `ensure` is a reconciler library, not a command. The target
+`project up` recursively interprets the project's opaque validated plan: it runs the current frame and
+authenticates `pb project up` in the next. Current Chain interpretation stops after the exact current-frame
+segment and declared descent because nested entry fails closed. Current `project down`/`destroy` do **not** mirror recursive
 dispatch; they run the verb's reverse projection of the one plan — the current frame's cluster where
 applicable, plus the reverse each acquiring node declared, which may
 stop or remove a provider. Child-to-parent lifecycle interpretation remains a target. Durable host
@@ -198,20 +205,20 @@ stop or remove a provider. Child-to-parent lifecycle interpretation remains a ta
   composite `build-pb` action and container projection/delivery happens through the descent that
   `context-init` step declares plus the handoff.
   Reconcilers are invoked from larger provider/build actions rather than independent `ensure-*` rows.
-  Frame-context and teardown
-  callbacks remain independently supplied and can drift; the target is one opaque validated
-  `ProjectPlan scope specDigest planId configId cfg` whose topology and verb-indexed, receipt-driven reverse
-  traversal retain the same lifecycle
-  scope and are derived from the same steps.
+  Production retains or reconstructs one opaque validated
+  `ProjectPlan scope specDigest planId configId cfg`; its topology, current-frame forward execution, and
+  verb-indexed reverse projection retain the same lifecycle scope and derive from the same steps.
+  Receipt-driven recursive reverse traversal remains downstream work.
 - **`context` is read-only introspection.** Its `inspect`/`path`/`show`/`schema`/`render` subcommands
   introspect and visualize the current frame, including schema and render output.
 - **`test init` / `test run <case-id>|all`** drive the standardized harness over compiled Haskell cases
-  and generated config variants. The parser currently does not enforce the documented root gate, and the
-  demo's live planner incorrectly selects Production/`.data`; see
+  and generated config variants. Each variant retains one exact Harness-scoped plan and its isolated
+  `.test_data/<runId>` root through common forward/reverse interpretation; the same-run durable recreate
+  assertion remains open; see
   [harness workflow](architecture/harness_workflow.md).
 - **The demo contributes its `Web` service variant** (run by `service run` in the chart pod; the build-time
-  bridge folds into the build-image step); the former `vm` / `incus` / `web` verbs are removed (the surface
-  is fixed) and their provider IO runs as chain steps.
+  bridge folds into the build-image step). The command surface is fixed, so VM, Incus, web, and other
+  provider work runs as chain steps rather than project-specific verbs.
 
 See [composition_methodology.md](architecture/composition_methodology.md) for the model and
 [`DEVELOPMENT_PLAN/`](../DEVELOPMENT_PLAN/) for the authoritative phase status.

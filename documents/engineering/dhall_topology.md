@@ -10,18 +10,19 @@
 
 ## TL;DR
 
-- The plan shape is **code**: ordered step fragments are finalized into an opaque validated `StepPlan`,
-  owned by the project binary and interpreted recursively by `project up`. It is not in any `.dhall`.
+- The plan shape is **code**: ordered step fragments are finalized into an opaque validated `StepPlan`
+  owned by the project binary. Current Chain interprets its exact current-frame segment; target recursive
+  `project up` traverses authenticated child entries. The shape is not in any `.dhall`.
 - `.dhall` carries **parameters + context + witness**, never the shape. The sibling `<project>.dhall`
   parameterizes the chain (budgets, ports, replicas, optional structural flags) and declares the
   topology frame the binary occupies.
 - The `topologyFrames` list (frames plus parent references) is the **map of the recursive descent**:
   each frame is one segment of the `project up` chain, and the same data names where every binary copy
   sits in that descent.
-- Each binary copy checks the selected ancestry and every supplied runtime witness. Checked mismatches
-  fail fast, but an omitted required witness, duplicate/cyclic/disconnected graph, or inconsistent
-  `parentChain` is not comprehensively rejected. The fields are still constructible data, not opaque
-  authority; Phase 15.9 closes both validation and widening/forgery gaps.
+- Each binary copy validates the complete topology graph, requires the exact closed witness set for its
+  placement, and checks those witnesses against the runtime. Missing/extra/duplicate witnesses,
+  duplicate/cyclic/disconnected graphs, and an inconsistent `parentChain` fail closed. The fields remain
+  constructible descriptive data rather than command authority; effectful gates independently admit them.
 - Children never reach back to read the parent's host file, but current child configs are not
   least-privilege projections: they adjust descriptive context while retaining the full demo project
   record and parent resource envelope. Projection/delivery is split across composite bootstrap, the
@@ -64,9 +65,10 @@ context               the declared command/capability/resource context for that 
 witnesses             local checks that prove the process is actually in that frame
 ```
 
-The `topologyFrames` list — frames plus `topologyParentId` references — is the map of the recursive
-descent. Each frame is one segment of the `project up` chain: `project up` interprets the current
-frame's steps, then hands off `pb project up` into the next frame, where the child copy reads its own
+The `topologyFrames` list — frames plus `topologyParentId` references — is the map of the target recursive
+descent. Each frame is one segment of the `project up` chain: current Production interprets the current
+frame's steps and refuses at a nested entry; the target authenticates and hands `pb project up` into the
+next frame, where the child copy reads its own
 sibling `<project>.dhall` and continues. The frame list is open-ended, so a project represents
 `host -> VM -> container -> kind cluster -> pod` or any other provider-backed descent without the core
 library learning every provider in advance. The core checks the common frame graph and command gate;
@@ -123,9 +125,12 @@ raw resource envelope. The locally calculated cluster slice is not carried into 
 Children do not reach back to read the parent's host file, but their copied payload is still overbroad.
 
 The target role-specific projection contains only the service role, its exact plan/frame resource slice,
-and the service settings it needs. Phase 15.9 makes authority/witness narrowing opaque; Phase 9.10 owns
-the resource slice; Phase 19.8 removes host-only fields from leaf parameter types. Negative tests prove a
-service leaf cannot contain Docker-build, VM-orchestration, or host deploy inputs. See
+and the service settings it needs. The
+[Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
+owns complete topology/witness validation and the closed role-addition relation; the
+[worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns the concrete resource slice; and
+the [service runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md) owns the narrowed handler
+request. Negative tests prove a service leaf cannot contain Docker-build, VM-orchestration, or host deploy inputs. See
 [config_generation](config_generation.md) for the current split seams and target unified operation.
 
 - **WRONG**: make a service pod read the host's `<project>.dhall` directly so it can see fields such as
@@ -166,11 +171,10 @@ binary's current frame and parameters, and the rich and test artifacts are owned
 ## Current Status
 
 The project binary owns default local config generation (via `project init`), pure child projection
-helpers, and command gating through the sibling `<project>.dhall`. The context description is topology-aware:
-runtime configs carry provider-backed `topologyFrames`, a `currentFrame`, and locally checked supplied
-witnesses. The binary checks selected ancestry and supplied evidence before command side effects, but
-whole-graph and required-witness completeness remain Phase 15.9 work. These fields are descriptive and
-not yet opaque authority. The core command surface is
+helpers, and command gating through the sibling `<project>.dhall`. Runtime configs carry provider-backed
+`topologyFrames`, a `currentFrame`, and locally checked witnesses. The binary validates the whole graph and
+the exact required-witness set before command side effects. These fields are descriptive rather than
+opaque authority. The core command surface is
 `context`/`project`/`test`/`service`/`check-code`, and the demo drives its lifecycle through the recursive
 `project` chain — `demoChainFor :: Substrate -> ProjectConfig -> [Step]` in
 `demo/src/HostBootstrapDemo/Commands.hs` — interpreted by `project up`. The demo also contributes its
@@ -183,18 +187,18 @@ producing child configs, and `context` providing read-only introspection. A sing
 stands up the live persistent stack — a cordoned kind cluster, the in-cluster registry, the
 project image pushed to that registry, and the web chart pod serving `localhost:30080` — and
 `project down` / `project destroy` tear it back down. The topology data and per-frame fail-fast above
-are the substrate the chain interpreter builds on. `test run all`
-**drives the same `project up`** under a test-written config (one `project up` per distinct test config),
-asserts the live stack, and tears it down — it reuses the chain rather than standing up a separate per-case
-cluster. Child configs are generated from passed parameters, some **forwarded from the parent** context's
+are the substrate the chain interpreter builds on. Current `test run all` retains one exact Harness plan
+per distinct test config and directly wraps common current-frame forward/reverse interpretation around
+assertions — it does not shell `project up`, and it reuses the plan algebra rather than standing up a
+separate per-case cluster. Child configs are generated from passed parameters, some **forwarded from the parent** context's
 `<project>.dhall`. See
 [composition_methodology](../architecture/composition_methodology.md) for the model and
 `DEVELOPMENT_PLAN/` for phase status.
 
 ## See also
 
-- [composition_methodology](../architecture/composition_methodology.md) — canonical home of the chain,
-  the recursive `project up` interpreter, and the fractal-bootstrap model.
+- [composition_methodology](../architecture/composition_methodology.md) — canonical home of the current-frame
+  Chain, target recursive `project up`, and fractal-bootstrap model.
 - [config_generation](config_generation.md) — current child-projection/delivery seams and the target
   unified operation.
 - [binary_context_config](../architecture/binary_context_config.md) — how a binary decides whether a

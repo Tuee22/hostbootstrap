@@ -5,8 +5,8 @@
 **Substrates**: windows
 **Gate**: live `hostbootstrap run -- test run all` reporting `10/10 passed` on a native Windows host
 
-> **Purpose**: Add the Windows realizations — the WSL2 provider, the native host-wall backend, and the CUDA
-> worker on Windows — and confirm the whole build on that substrate.
+> **Purpose**: Add the Windows-only native host-wall backend and CUDA worker, exercise the lower WSL2
+> provider realization, and confirm the whole build on that substrate.
 
 ## Phase Objective
 
@@ -29,7 +29,7 @@ all.
 
 ## Sprints
 
-### Sprint 27.1: The WSL2 provider realization [Done]
+### Sprint 27.1: WSL2 provider acceptance [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Wsl2.hs`,
@@ -40,7 +40,8 @@ all.
 
 #### Objective
 
-Implement the provider interface for a WSL2 distro.
+Confirm the Phase 15 (host providers and the self-reference lift) WSL2 lifecycle realization against the
+native Windows/WSL host surface.
 
 #### Deliverables
 
@@ -51,6 +52,9 @@ Implement the provider interface for a WSL2 distro.
   wall change take effect.
 - The guest alias uses the shared clause-holding backend; all three provider guests run the same Linux image, so
   one backend serves every lane.
+- The target record and inner `wsl -d ... --` renderer come from the lower lift-context phase, prerequisite
+  diagnostics come from the ensure-reconcilers phase, and the provider lifecycle builders come from the
+  host-providers phase; this sprint confirms rather than redefines those boundaries.
 
 #### Validation
 
@@ -114,20 +118,15 @@ Confirm the current build on this substrate.
 
 #### Validation
 
-The `10/10` report plus the audited end state. Dated evidence: the complete Windows core suite passes, and a live
-Windows `test run all` reported a full pass at the then-current matrix size, with the applied wall validated on a
-live distro.
+The `10/10` report plus the audited end state, recorded together with the current matrix size and live applied
+wall observation on the WSL distro.
 
 #### Remaining Work
 
-The frame-indexed teardown descent is behaviour this lane exercises: an operator teardown here crosses a
-real frame boundary into the WSL distro, so acceptance is owed against the descent's typed admission
-rather than against a run that predates it.
-
-The recorded evidence also predates the current matrix size and the currently-open work in the
-recursive-lifecycle-command, prepared-operations, step-algebra, authenticated-handoff, and recovery phases. A
-current provider-lifecycle observation on this substrate is owed: the existing snapshot validates the recorded
-WSL lane and the native adapter, not the whole provider lifecycle at the current shape.
+Run the complete acceptance gate after the recursive-lifecycle-command, prepared-operations, step-algebra,
+authenticated-handoff, recovery, and worked-demo dependencies are closed. The run must exercise typed
+frame-indexed teardown descent across the real WSL boundary, the complete current test matrix, and a current
+provider-lifecycle observation including wall restoration before shutdown.
 
 ## Documentation Requirements
 

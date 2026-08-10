@@ -1,16 +1,19 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
 module SchemaSpec (tests) where
 
 import Control.Exception (SomeException, try)
+import qualified Data.ByteString as BS
 import Data.List (isInfixOf)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Dhall
 import Fixture (
     DeployConfig (..),
+    FixtureProject,
     ProjectConfig (..),
     Resources (..),
     SecretFixtureProject,
@@ -25,11 +28,14 @@ import Fixture (
     renderProjectConfig,
     renderTestConfig,
     withFixtureHarnessAuthority,
+    withFixtureInstalledProject,
  )
+import HostBootstrap.Authority (ProjectVerb (ProjectUp))
 import HostBootstrap.Config.Class (
     ProjectCfg (..),
     configInput,
     decodeProjectCodecWithSettings,
+    projectCodecSpecDigest,
     projectCodecSchemaText,
     pureConfigAssembly,
     readConfigInput,
@@ -40,9 +46,13 @@ import HostBootstrap.Config.Schema (
     parseConfigRole,
     projectConfigSnapshotHash,
     renderProjectConfigSnapshotLog,
+    renderScopedProjectConfigBytes,
     validateProjectConfigForProject,
+    validatedConfigDigest,
+    validatedConfigSpecDigest,
     validatedConfigValue,
     verifiedConfigDigest,
+    withAuthenticatedConfigWire,
     withAssembledHarnessConfig,
     withValidatedConfig,
     writeProjectConfigFile,
@@ -59,6 +69,29 @@ import HostBootstrap.Context (
     commandAllowed,
  )
 import HostBootstrap.DocValidator (findRepoRoot)
+import HostBootstrap.Handoff (
+    AuthenticatedConfigPayload,
+    HandoffBindingInput (..),
+    HandoffError (..),
+    HandoffPayloadKind (NarrowedProjectConfig),
+    childConfigDigest,
+    frameWire,
+    freshChallenge,
+    grantHandoff,
+    handoffOfferFrames,
+    handoffOfferWire,
+    mkHandoffOffer,
+    productionHandoffScope,
+    projectSigningKeyFromBytes,
+    registerHandoffEdge,
+    relayBinding,
+    rootBrokerVerificationKey,
+    verifiedConfigPayload,
+    verifyHandoff,
+    withRootBroker,
+ )
+import HostBootstrap.Lifecycle.Mode (productionRootAuthority, withProductionRoot)
+import HostBootstrap.Protected (openProtectedStore)
 import System.Directory (doesFileExist, getCurrentDirectory, getTemporaryDirectory, removeFile)
 import System.FilePath ((</>))
 import System.IO (hClose, openTempFile)
@@ -198,6 +231,48 @@ tests =
             commandAllowed (context daemon) DaemonCommand @?= True
             commandAllowed (context daemon) ServiceCommand @?= True
             commandAllowed (context host) DaemonCommand @?= False
+        , testCase "ordinary admission retains the digest of the exact canonical config" $
+            withProductionProjectCodec @ProjectConfig @FixtureProject $ \codec -> do
+                let cfg =
+                        defaultProjectConfig
+                            "hostbootstrap-demo"
+                            "/workspace/demo"
+                            HostOrchestrator ::
+                            ProjectConfig (V.Production FixtureProject)
+                    payload = renderScopedProjectConfigBytes codec cfg
+                    digest = childConfigDigest payload
+                admitted <-
+                    withValidatedConfig codec cfg $ \wire validated -> do
+                        verifiedConfigDigest wire @?= digest
+                        validatedConfigSpecDigest validated @?= projectCodecSpecDigest codec
+                        validatedConfigDigest validated @?= digest
+                        validatedConfigValue validated @?= cfg
+                admitted @?= Right ()
+        , testCase "authenticated admission retains its exact digest and refuses byte substitution" $
+            withProductionProjectCodec @ProjectConfig @FixtureProject $ \renderCodec -> do
+                let renderedCfg =
+                        defaultProjectConfig
+                            "hostbootstrap-demo"
+                            "/workspace/demo"
+                            HostOrchestrator ::
+                            ProjectConfig (V.Production FixtureProject)
+                    payload = renderScopedProjectConfigBytes renderCodec renderedCfg
+                    digest = childConfigDigest payload
+                withAuthenticatedFixtureConfig payload $
+                    \(authenticated :: AuthenticatedConfigPayload (V.Production projectId) brokerGeneration) ->
+                        withProductionProjectCodec @ProjectConfig @projectId $ \codec -> do
+                            let cfg =
+                                    defaultProjectConfig
+                                        "hostbootstrap-demo"
+                                        "/workspace/demo"
+                                        HostOrchestrator ::
+                                        ProjectConfig (V.Production projectId)
+                            admitted <-
+                                withAuthenticatedConfigWire codec authenticated $ \wire validated -> do
+                                    verifiedConfigDigest wire @?= digest
+                                    validatedConfigDigest validated @?= digest
+                                    validatedConfigValue validated @?= cfg
+                            admitted @?= Right ()
         , testCase "daemon snapshot log includes config metadata without secret content" $ do
             let daemon = defaultProjectConfig "demo" "/workspace/demo" Daemon
                 hash = projectConfigSnapshotHash "password = \"secret\""
@@ -233,8 +308,8 @@ tests =
                         SecretProjectConfig
                             (V.Production SecretFixtureProject)
             withProductionProjectCodec
-                @SecretFixtureProject
                 @SecretProjectConfig
+                @SecretFixtureProject
                 ( \codec -> do
                     assertBool
                         "production project schema has no plaintext alternative"
@@ -255,13 +330,9 @@ tests =
                     admission @?= Right ()
                     injected <-
                         withFixtureHarnessAuthority
-                            @SecretFixtureProject
-                            @SecretProjectConfig
-                            "secret-fixture"
-                            ( \(authority :: V.HarnessAuthority SecretFixtureProject runId) ->
+                            ( \_project authority ->
                                 pure $
                                     withHarnessProjectCodec
-                                        @SecretFixtureProject
                                         @SecretProjectConfig
                                         (V.harnessConfigAuthority authority)
                                         ( \harnessCodec ->
@@ -296,12 +367,8 @@ tests =
                 )
         , testCase "matching harness authority admits plaintext and mints verified scoped config" $
             withFixtureHarnessAuthority
-                @SecretFixtureProject
-                @SecretProjectConfig
-                "secret-fixture"
-                ( \(authority :: V.HarnessAuthority SecretFixtureProject runId) ->
+                ( \_project authority ->
                     withHarnessProjectCodec
-                        @SecretFixtureProject
                         @SecretProjectConfig
                         (V.harnessConfigAuthority authority)
                         ( \codec -> do
@@ -409,3 +476,90 @@ expectRight result =
     case result of
         Right value -> pure value
         Left err -> assertFailure err
+
+withAuthenticatedFixtureConfig ::
+    BS.ByteString ->
+    ( forall projectId brokerGeneration.
+      AuthenticatedConfigPayload
+        (V.Production projectId)
+        brokerGeneration ->
+      IO result
+    ) ->
+    IO result
+withAuthenticatedFixtureConfig payload use =
+    withFixtureInstalledProject $ \installedIdentity ->
+        withSystemTempDirectory "hostbootstrap-schema-authenticated-config" $ \directory -> do
+            signing <- expectRightShow (projectSigningKeyFromBytes (BS.replicate 32 37))
+            store <- expectRightIOShow (openProtectedStore (directory </> "authority"))
+            rooted <-
+                withProductionRoot store installedIdentity ProjectUp $ \root -> do
+                    brokered <-
+                        withRootBroker
+                            (productionHandoffScope installedIdentity)
+                            store
+                            signing
+                            (productionRootAuthority root)
+                            (\broker -> authenticateAndUse broker)
+                    result <- expectRightShow brokered
+                    pure (Right result)
+            expectRightShow rooted
+  where
+    authenticateAndUse broker = do
+        (relay, token) <-
+            expectRightIOShow
+                (registerHandoffEdge broker (authenticatedBindingInput payload))
+        let binding = relayBinding relay
+        offer <- expectRightShow (mkHandoffOffer relay payload token)
+        challenge <- freshChallenge
+        grant <- expectRightIOShow (grantHandoff broker offer challenge)
+        let (_, tokenBytes, bindingBytes) = handoffOfferFrames offer
+            substitutedWire =
+                frameWire (payload <> " ")
+                    <> frameWire tokenBytes
+                    <> frameWire bindingBytes
+        case
+            verifyHandoff
+                (rootBrokerVerificationKey broker)
+                substitutedWire
+                binding
+                challenge
+                grant of
+            Left (HandoffPayloadDigestMismatch expectedDigest actualDigest) ->
+                assertBool
+                    "substituted bytes have a different digest"
+                    (expectedDigest /= actualDigest)
+            other ->
+                assertFailure
+                    ("expected byte-substitution refusal, got " <> show other)
+        verified <-
+            expectRightShow
+                ( verifyHandoff
+                    (rootBrokerVerificationKey broker)
+                    (handoffOfferWire offer)
+                    binding
+                    challenge
+                    grant
+                )
+        authenticated <- expectRightShow (verifiedConfigPayload verified)
+        use authenticated
+
+authenticatedBindingInput :: BS.ByteString -> HandoffBindingInput
+authenticatedBindingInput payload =
+    HandoffBindingInput
+        { requestedSpecDigest = "schema-spec-digest"
+        , requestedPayloadKind = NarrowedProjectConfig
+        , requestedPlanRevision = "schema-plan-revision"
+        , requestedParentFrame = "host-orchestrator-0"
+        , requestedChildFrame = "vm-project-container-1"
+        , requestedChildConfigDigest = childConfigDigest payload
+        , requestedPhase = "schema-admission"
+        }
+
+expectRightShow :: (Show error) => Either error value -> IO value
+expectRightShow result =
+    case result of
+        Right value -> pure value
+        Left failure -> assertFailure (show failure)
+
+expectRightIOShow :: (Show error) => IO (Either error value) -> IO value
+expectRightIOShow action = action >>= expectRightShow

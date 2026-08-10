@@ -14,35 +14,38 @@
 
 - `hostbootstrap-core` is a **library of pure shapes + the lift algebra + the harness**. It owns **no
   default config values** and **no fixed config type** — the project supplies both.
-- The finalized extension contract is opaque `ProjectSpec projectId cfg tcfg`, generic over the project's config family
+- The finalized extension contract is opaque `ProjectSpec cfg tcfg`, generic over the project's config family
   `cfg :: Type -> Type` (its `<project>.dhall`) and test-config type `tcfg` (its
-  `<project>.test.dhall`). `ProjectCfg projectId cfg` exposes only `cfgContext` and installs distinct
-  Production and authority-closed Harness `ProjectCodec`s. A closed typed service registry is jointly
+  `<project>.test.dhall`). `ProjectCfg cfg` exposes only `cfgContext` and installs identity-generative
+  Production and authority-closed Harness `ProjectCodec`s. A scope-polymorphic closed typed service registry is jointly
   finalized with the full codec under one canonical `specDigest`; each opaque `RoleCodec` reflects a
   wire containing mandatory `FrameworkValidation` plus only that service's fields. `service run`
   verifies one canonical sibling snapshot, structurally selects exactly one request, and closes the
   handler over its typed role fields and safe `LocalContextView`; neither a string selector nor the full
-  `cfg` reaches the handler. Effect-indexed, one-use `SelectedService` execution remains Sprint 18.6.
+  `cfg` reaches the handler. Effect-indexed, one-use `SelectedService` execution remains
+  [service-runtime-phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md) work.
 - `psAssemble` is the sole project-config default-bearing assembler. Its closed request distinguishes
   Production init from one exact generative Harness run, and its restricted effect permits only
   declared reads. `psTestInit` separately constructs the project's `tcfg`; the demo's Web ports and
   accelerator timeout are explicit assembled fields preserved through child projection, with no fallback
   literals or duplicated optional service payload.
 - Raw `ProjectSpec`, `Step`, `StepKind`, `ProjectStepId`, role-request, and role-parameter constructors
-  are hidden. Builder contributions append; teardown is a checked single-assignment slot.
+  are hidden. Builder contributions append; every step carries its own descent and reverse effect, so
+  there is no lifecycle slot beside the plan.
   `mkStepPlan` preserves exact declaration order and rejects empty plans, duplicate typed
-  identities, conflicting frame labels, non-contiguous `A → B → A` returns, invalid post-handoff
-  placement, and any frame that does not declare exactly one descent (none, for the innermost) before
-  any step interpreter is returned.
+  identities, conflicting frame labels, non-contiguous `A → B → A` returns, a post-handoff suffix that
+  does not unwind deepest participating frame first, and any frame that does not declare exactly one
+  descent (none, for the innermost) before any admitted project plan is returned.
 - `<project>.test.dhall` is a **thin override**; `TestCfg` validates the executable cases and pure
   `VariantDraft`s into an opaque total `TestMatrix`. The harness **generates** each run's `<project>.dhall`
-  through the scope-aware restricted assembler, runs the real `project up`, then unlinks the generated
-  config only while its bound kernel identity **and** its recorded payload both still match; anything
-  else remains in place and is reported. That guard is
-  `HostBootstrap.Harness.GeneratedConfig`, which holds all four § EE ownership clauses over the file —
-  not the cooperative sidecar it replaced. A verified ownership *receipt* for the rest of the
-  lifecycle's resources is still open.
-- `SecretRef scope` replaces raw secret `Text` with references and core never resolves secrets.
+  through the scope-aware restricted assembler, retains one exact Harness-scoped `ProjectPlan`, and drives
+  the common Chain forward/reverse interpreters directly. Its five-field `TestSuite` is assertion-only.
+  The generated config is unlinked only while its bound kernel identity **and** recorded payload both
+  still match; anything else remains in place and is reported. That guard is
+  `HostBootstrap.Harness.GeneratedConfig`, which holds all four § EE ownership clauses over the file rather
+  than relying on a cooperative pathname sidecar. A verified ownership *receipt* for the rest of the lifecycle's
+  resources and the engine-owned same-run destroy/up cycle are still open.
+- `SecretRef scope` carries references rather than raw secret `Text`, and core never resolves secrets.
   `TestPlaintext` requires exact `HarnessConfigAuthority projectId runId`; the Production schema has no
   plaintext constructor. Root assembly is scope-safe now. One-time child handoff and child plan
   authority remain downstream lifecycle work.
@@ -50,20 +53,23 @@
 ## Current Status
 
 The generic scope-indexed config boundary, typed test-matrix foundation, and opaque project/step/service
-specification are implemented. These
-contracts do not restore the former core-owned config type. `hostbootstrap-core` owns no
+specification are implemented. `hostbootstrap-core` owns no
 `defaultResources` / `defaultDeployConfig` / `defaultProjectConfig` and no fixed `ProjectConfig` type;
-projects finalize `ProjectSpec projectId cfg tcfg` from additive builder contributions, one
+projects finalize `ProjectSpec cfg tcfg` from additive builder contributions, one
 `psAssemble`, and `psTestInit`. Production commands
-accept only `cfg (Production projectId)`. Each selected test variant opens a fresh Harness authority,
+open the executable-verified `InstalledProjectIdentity projectId` once and accept only
+`cfg (Production projectId)`. Each selected test variant retains that same project identity and opens a fresh Harness authority,
 assembles only `cfg (Harness projectId runId)`, validates it through the matching mapped codec, writes
-that run's `<project>.dhall`, drives the real `project up`, then removes the generated config on teardown
-only while the recorded bytes still match. Project and core step identities are disjoint, the validated
-`StepPlan` is the sole render/apply/frame-order input, and typed service definitions bind projection,
-role codec, and handler without a separately supplied selector. Validated opaque `CaseId`/`VariantId` values, pure
-`VariantDraft`s, and the total non-empty matrix relation replace the former string-labeled, possibly
-empty result. The
-superseded concrete-config and pre-existing-config flows are listed in
+that run's `<project>.dhall`, admits one exact Harness plan, interprets it forward and reverse directly,
+then removes the generated config only while the recorded bytes still match. Project and core step
+identities are disjoint. Production
+dispatch admits the authored `StepPlan` into one exact `ProjectPlan`, retaining or reconstructing that
+value across rendering, persistence/binding, journal/cursor admission, `authorizeProjectUp`, public Chain,
+and current-frame reverse projection. Harness uses those same common boundaries under the distinct
+`Harness projectId runId` scope and never self-invokes a Production lifecycle. Typed service definitions bind projection, role codec, and handler
+without a separately supplied selector. Validated opaque `CaseId`/`VariantId` values, pure
+`VariantDraft`s, and the total non-empty matrix relation are the sole result representation. Rejected
+concrete-config and pre-existing-config alternatives are explained in
 [design rationale](../../DEVELOPMENT_PLAN/rationale.md). The canonical
 contract statement is [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).
 
@@ -120,7 +126,8 @@ set makes it available to the service-projection plan and Web handler without ex
 > This re-couples core to a demo concern, makes the message optional at decode time, and is deleted by the
 > very phase that moves `cfg` out of core.
 >
-> **RIGHT (implemented field boundary; effect program remains Sprint 18.6)** — `message` is a typed
+> **RIGHT (implemented field boundary; effect program remains
+> [service-runtime-phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md) work)** — `message` is a typed
 > mandatory project field whose consumer set includes the Web
 > projection and handler:
 >
@@ -149,7 +156,7 @@ set makes it available to the service-projection plan and Web handler without ex
 > `configId`. `roleField` is total because the schema row proves that mandatory field is visible to Web;
 > the handler receives neither `DemoConfig` nor a config-reading effect.
 
-## The extension contract: `ProjectSpec projectId cfg tcfg`
+## The extension contract: `ProjectSpec cfg tcfg`
 
 ```haskell
 projectSpec
@@ -158,18 +165,18 @@ projectSpec
   -> [ConfigArtifact]
   -> CodecWitness tcfg
   -> (InitArgs -> tcfg)
-  -> (forall scope.
+  -> (forall projectId scope.
         AssemblyRequest projectId tcfg (TestVariant tcfg) scope
         -> ConfigAssembly scope (cfg scope))
-  -> ProjectSpecBuilder projectId cfg tcfg
+  -> ProjectSpecBuilder cfg tcfg
 
-addSteps       :: (forall rootScope rootId. CanonicalProjectRoot rootScope rootId -> cfg (Production projectId) -> [Step]) -> ProjectSpecBuilder projectId cfg tcfg -> ProjectSpecBuilder projectId cfg tcfg
-addArtifacts   :: [ConfigArtifact] -> ProjectSpecBuilder projectId cfg tcfg -> ProjectSpecBuilder projectId cfg tcfg
-addServices    :: ServiceRegistry (cfg (Production projectId)) -> ProjectSpecBuilder projectId cfg tcfg -> ProjectSpecBuilder projectId cfg tcfg
+addSteps       :: (forall scope rootId. CanonicalProjectRoot scope rootId -> cfg scope -> [Step]) -> ProjectSpecBuilder cfg tcfg -> ProjectSpecBuilder cfg tcfg
+addArtifacts   :: [ConfigArtifact] -> ProjectSpecBuilder cfg tcfg -> ProjectSpecBuilder cfg tcfg
+addServices    :: ServiceRegistry cfg -> ProjectSpecBuilder cfg tcfg -> ProjectSpecBuilder cfg tcfg
 
 finalizeProjectSpec
-  :: ProjectSpecBuilder projectId cfg tcfg
-  -> Either ProjectSpecError (ProjectSpec projectId cfg tcfg)
+  :: ProjectSpecBuilder cfg tcfg
+  -> Either ProjectSpecError (ProjectSpec cfg tcfg)
 
 class TestCfg tcfg where
   type TestVariant tcfg
@@ -184,12 +191,19 @@ and `StepKind` constructors are hidden. Step/artifact/input/service contribution
 order; duplicate identities are structured errors. Frame-context and teardown projections are explicit
 single-assignment slots: absence or a second assignment prevents finalization. Each decoded Production
 config is projected to one opaque `StepPlan`; validation preserves exact declaration order or rejects the
-plan before effects. The later lifecycle target replaces the remaining separately supplied
-teardown callback with the receipt-aware
-`ProjectPlan scope specDigest planId configId cfg` defined in
+plan before effects. Production plan admission binds that graph as
+`ProjectPlan scope specDigest planId configId cfg`, defined in
 [composition methodology](composition_methodology.md#single-representation-the-chain-is-the-representation):
-one non-empty validated step sequence, with topology derived from it and reverse work derived from the
-ownership receipts acquired while interpreting it.
+one non-empty validated step sequence, with topology and current-frame reverse work derived from it. The
+declared reverse callbacks remain non-authorizing until receipt-aware lifecycle traversal supplies exact
+release authority.
+
+The static specification cannot choose an installed project identity. `runHostBootstrapCLI` verifies the
+declared name against the actual executable basename through `withInstalledProjectIdentity`, then keeps the
+resulting generative `InstalledProjectIdentity projectId` inside its continuation while it instantiates the
+Production codec, service registry, assembler, plan, command tree, and every Harness run.
+`HostBootstrap.Config.InstalledProject` is not an exposed module, and neither a config
+family nor project source declares a marker type that fixes `projectId`.
 
 The project config is a family `cfg :: Type -> Type`. Production init/decode/dispatch uses only
 `cfg (Production projectId)`; Harness projection requires opaque
@@ -204,33 +218,55 @@ config/secret inputs; it exposes neither general `IO` nor lifecycle/backend muta
 harness run, `withAssembledHarnessConfig` consumes its `HarnessAuthority`, scope-correct
 `ProjectCodec scope specDigest cfg`, and assembled value, then canonical-renders, hashes, and strictly
 re-decodes it while jointly yielding the root-local verified wire identity and
-`ValidatedConfig scope specDigest configId (cfg scope)`.
-Later `ProjectPlan scope specDigest planId configId cfg` construction requires
+`ValidatedConfig scope specDigest configId (cfg scope)`. That validated value retains the canonical digest
+derived from those same bytes; `validatedConfigDigest` observes it without accepting a second caller-supplied
+digest.
+`ProjectPlan scope specDigest planId configId cfg` construction requires
 `ValidatedConfig scope specDigest configId (cfg scope)` and a
 `NonEmpty (PlanDraft scope specDigest (cfg scope))`. Child projection preserves the exact scope and stable plan
 revision but, because the narrowed child bytes differ, mints a fresh child `configId` linked to the
 parent by an opaque `ProjectionBinding`; it does not reuse an exact-byte parent identity. A
 secrets-strict config uses `SecretRef scope`, whose `TestPlaintext` constructor requires the matching
 harness authority; the reflected Production Dhall schema has no plaintext alternative. A harness Dhall
-payload decodes only to untrusted `HarnessConfigWire`. Grant verification through
-`ProjectCodec (Harness projectId runId) specDigest cfg` checks its exact digest and bytes and jointly mints
-`VerifiedConfigWire (Harness projectId runId) childConfigDigest childConfigId`, the exact
-`VerifiedHandoff ... ConfigHandoff childConfigId verb phase`, a
-child-local `HarnessConfigAuthority projectId runId`, and
+payload decodes only to untrusted `HarnessConfigWire`. At a recursive child boundary, grant verification
+yields only transport-level `VerifiedHandoff (Harness projectId runId) brokerGeneration`. Exact-byte
+verification through `ProjectCodec (Harness projectId runId) specDigest cfg` separately mints
+`VerifiedConfigWire (Harness projectId runId) childConfigDigest childConfigId`, a child-local
+`HarnessConfigAuthority projectId runId`, and
 `ValidatedConfig (Harness projectId runId) specDigest childConfigId
 (cfg (Harness projectId runId))`.
-Those values do not directly authorize dispatch: `withChildProjectPlan` consumes them with the closed
-verb and `NonEmpty (PlanDraft (Harness projectId runId) specDigest
+`Config.Schema.withVerifiedConfigHandoff` checks the signed payload kind, wire/config and specification
+digests, closed verb, and lifecycle phase and alone yields fully indexed `VerifiedConfigHandoff` inside a
+rank-2 continuation. Those values do not directly authorize dispatch:
+`ProjectPlan.Construct.withChildProjectPlan` consumes that refinement with the same wire/config and
+`NonEmpty (PlanDraft (Harness projectId runId) specDigest
 (cfg (Harness projectId runId)))` and jointly yields a fresh child
 `ProjectPlan (Harness projectId runId) specDigest childPlanId childConfigId cfg`,
 `PlanDigestBinding (Harness projectId runId) specDigest planDigest childPlanId`, and exact
-`ChildPlanAuthority`; only `authorizeChildProject` consumes that narrow
-authority. The child does not need the root's non-serializable authority before verification. There is
+opaque `ChildPlanAuthority`; only `Authority.ProjectPlan.authorizeChildProject` consumes that narrow
+authority with the matching journal/frame/cursor/context. The child does not need the root's
+non-serializable authority before verification. The
+[authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
+owns this substrate; the
+[recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) owns its
+Production descent and child acquisition integration. There is
 no raw-wire promotion, direct scoped `FromDhall`,
 unscoped record update, or coercion from a harness config to Production. The detailed secret boundary is defined in
 [secrets](../engineering/secrets.md).
 
-Every field a project supplies is pure or project-owned. `ProjectCfg projectId cfg` requires only
+Bound Production restart has one deliberately narrow specification-brand refinement. Repeating the same
+project finalization and config validation after a crash creates a new local `candidateSpecDigest` even when
+its stable text describes the exact protected specification. Independent finalizations remain non-pairable
+by ordinary types. Only `withRecoveredProductionProjectPlanInputs` may re-admit the candidate's
+non-authorizing `ValidatedConfig` under the specification phantom fixed by the recovered profile: its hidden
+token is issued after exact profile/finalized-codec digest agreement, the hidden config kernel independently
+checks the config's retained specification, and the public bridge also checks its canonical config digest.
+The bridge preserves the existing `configId`, digest, and decoded value and regenerates drafts through the
+candidate `FinalizedProjectSpec`'s private builder. The resulting recovered-spec config/drafts still grant no
+authority; `withRecoveredProductionProjectPlan` yields a fixed-identity plan only when the exact canonical
+root, bytes, digest, and origin reproduce the verified bound snapshot.
+
+Every field a project supplies is pure or project-owned. `ProjectCfg cfg` requires only
 `cfgContext :: cfg scope -> BinaryContext`; the raw context updater is gone. Scope-correct
 `ProjectCodec scope specDigest cfg`, verified wire identity, and
 `ValidatedConfig scope specDigest configId (cfg scope)` govern root-local admission. Later child
@@ -244,7 +280,8 @@ parent/local admission can project only
 and verified secret-bundle digest. That request inseparably contains
 `RoleParams specDigest configId secretDigest fields service`. Current `service run` verifies one
 canonical sibling snapshot and keeps the selected handler action closed over those role fields plus a
-safe `LocalContextView`; the full config does not cross the handler boundary. Sprint 18.6 replaces that
+safe `LocalContextView`; the full config does not cross the handler boundary. The
+[service-runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md) replaces that
 remaining raw `IO` action with an exact one-use service command authority and matching closed
 `ServiceProgram`, packaged internally as
 `SelectedService scope specDigest planId configId secretDigest frame revision instanceId ServePhase
@@ -284,13 +321,25 @@ test run      : executable [CaseId] + tcfg --projectTestMatrix--> opaque total T
                   --typed selection--> [VariantDraft payload]
                   --fresh HarnessAuthority + psAssemble HarnessAssembly--> cfg Harness
                   --matching ProjectCodec canonical validation-->
-                  --write--> <project>.dhall --project up--> assert --project destroy-->
+                  --own/write--> <project>.dhall --admit exact Harness ProjectPlan-->
+                  --common forward--> assertion-only TestSuite --common reverse-->
+                  --settled-destroy evidence--> terminal Harness close-->
                   compare-and-delete generated <project>.dhall   (keep <project>.test.dhall)
 ```
 
-Core also has a self-created `.test_data` ownership helper, but the demo's live plan currently selects
-Production/`.data`; the presence of that generic helper does not make the demo run isolated. See
-[harness workflow](harness_workflow.md).
+The five `TestSuite` fields are the safety precondition, assertion-environment opener, case matrix,
+per-case assertion, and post-reverse absence assertion. None receives lifecycle actions. Core's private
+`harness-lifecycle-internal` Cabal component lets `HostBootstrap.Command` construct the opaque lifecycle
+from the retained plan and lets core test that engine ordering without making a constructor available to a
+consumer package.
+
+The generated demo config and exact Harness plan carry the run-scoped cluster identity and
+`.test_data/<runId>` root. Demo consumers still accept independently config-derived profile/root terms;
+the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns projecting those arguments
+from the retained plan. The configured
+`durable-readback` case remains deliberately non-passing until the engine can allocate a
+fresh same-run lifecycle-invocation generation and interpret write → nonterminal destroy → exact up →
+read before the final settled destroy authorizes terminal close. See [harness workflow](harness_workflow.md).
 
 `ConfigAssembly` can read only declared inputs — for example a project-specific
 `test-secrets.dhall` — and otherwise has no arbitrary `IO`, process, write, backend, or lifecycle escape.
@@ -298,7 +347,8 @@ Harness assembly receives one already-validated pure `VariantDraft` and returns 
 `cfg`; it cannot create, omit, duplicate, or relabel variants. `TestCfg.projectTestMatrix` owns the pure typed projection,
 and `mkTestMatrix` rejects empty registries/rows, duplicate IDs/rows/pairs, unknown references, and
 orphan variants before mutation.
-The demo currently declares two drafts with stable IDs `hello-world` and `hello-universe` (Sprint 20.3).
+The demo declares its drafts in `TestConfig.testVariants`; `demoTestMatrix` validates and projects the
+configured stable IDs (currently `hello-world` and `hello-universe`) into the typed total matrix.
 The expected served message is read from the generated config after bring-up, rather than conflating an
 assertion value with the stable variant identity. A
 secrets-strict consumer reads `test-secrets.dhall` through the declared-input capability and can

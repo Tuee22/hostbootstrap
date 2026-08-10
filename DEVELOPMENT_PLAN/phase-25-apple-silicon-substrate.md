@@ -3,18 +3,20 @@
 **Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: apple-silicon
-**Gate**: live `hostbootstrap run -- test run all` reporting `10/10 passed` on an Apple Silicon host
+**Gate**: live `hostbootstrap run -- test run all` reporting `10/10 passed` on an Apple Silicon host, plus a
+focused live exact-plan direct-Colima adapter lane
 
-> **Purpose**: Add the Apple realizations — the Lima provider and the Metal accelerator — and confirm the whole
-> build on that substrate.
+> **Purpose**: Add the Apple-only Metal accelerator realization, exercise the lower Lima provider realization,
+> and confirm the whole build on that substrate.
 
 ## Phase Objective
 
 This is an **acceptance phase** (§ II). Nothing depends on it, so a machine without Apple Silicon stops at the
 worked-demo phase rather than being blocked. It carries exactly one substrate beyond the baseline.
 
-It has two jobs: supply the realizations only this substrate has, and confirm on real hardware the behaviours
-the baseline lane cannot exercise — because a run on one architecture and provider validates only that lane.
+It has two jobs: supply the accelerator realization only this substrate has, and confirm on real hardware
+the lower Phase 15 (host providers and the self-reference lift) Lima provider and every behavior the
+baseline lane cannot exercise — because a run on one architecture and provider validates only that lane.
 
 ## What this phase confirms
 
@@ -23,7 +25,9 @@ listing them here is what keeps a static closure from silently dropping live cov
 
 - the sealed invocation-shape boundary, on the one lane where a host-resident daemon must survive its launcher;
 - the Lima provider's full lifecycle: provision at the declared budget, reboot-to-ready, the durable share mount,
-  the guest alias, and VM deletion on every teardown;
+  the guest alias, stop on `down`, and VM deletion on terminal `destroy`;
+- the exact plan-owned direct-Colima profile/wall adapter against the native Colima surface, including
+  same-name conflict refusal and non-activation of the shared `default` profile;
 - the guest-alias ownership clauses executing on a BSD host userland, with the locking primitive and `stat`
   dialect taken from the discovery probe rather than assumed;
 - host-native accelerator placement behind a local-only node port, rather than an in-cluster service address;
@@ -31,7 +35,7 @@ listing them here is what keeps a static closure from silently dropping live cov
 
 ## Sprints
 
-### Sprint 25.1: The Lima provider realization [Done]
+### Sprint 25.1: Lima provider acceptance [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lima.hs`,
@@ -41,20 +45,25 @@ listing them here is what keeps a static closure from silently dropping live cov
 
 #### Objective
 
-Implement the provider interface for Lima.
+Confirm the Phase 15 (host providers and the self-reference lift) Lima lifecycle realization against its
+Apple host surface.
 
 #### Deliverables
 
 - Provisioning applies the project's declared sizing; the VM is created at budget rather than at a default.
 - Reboot-to-ready observes readiness; the durable host-path share is mounted through the per-substrate primitive.
-- Teardown deletes the VM on every path, so a run does not leave an instance behind.
+- `down` stops the VM and `destroy` deletes it; terminal Harness cleanup drives the destroy path, so a completed
+  run does not leave an instance behind.
 - The guest alias uses the shared clause-holding backend, with its userland facts read off the probe.
+- The target record and inner `limactl shell` renderer come from the lower lift-context phase, while the
+  provider lifecycle builders come from the host-providers phase; this sprint confirms rather than
+  redefines either boundary.
 
 #### Validation
 
 `LimaSpec` covers the argument shapes and each operation. Dated live evidence: the Apple/Lima lifecycle lane
-reported `10/10`, exercising `ensure lima`, `vm up` at budget, the durable share, the guest alias, and VM
-deletion on every teardown.
+reported `10/10`, exercising `ensure lima`, `vm up` at budget, the durable share, the guest alias, and terminal
+VM deletion.
 
 #### Remaining Work
 
@@ -107,25 +116,22 @@ Confirm the current build on this substrate.
 - Audit the end state: both run leases closed, no mode, config, or data-root record left, the generated sibling
   config gone, the per-run data directory empty with its parent preserved, the durable root intact, and the VM
   removed.
-- Record the observed duration; the envelope is 60–80 minutes over four bring-ups and four destroys, not the
-  25–50 minutes an earlier estimate assumed.
+- Record the observed duration against a 60–80 minute envelope over four bring-ups and four destroys.
+- Run the focused exact-plan direct-Colima adapter lane against native Colima and record its profile derivation,
+  conflict-refusal, `default`-profile non-activation, and cleanup results.
 - The in-container `check-code` runs on each bring-up, which is the only place `fourmolu` and `hlint` execute.
 
 #### Validation
 
-The `10/10` report plus the audited end state. Dated evidence: recorded on Apple M1 Max, macOS 25.5.0 arm64,
-GHC 9.12.4, Lima provider, from a pristine host — `10/10 passed` in ~73 minutes, with both leases closed, no
-surviving records, the generated config gone, the durable root intact, and the Lima instance removed.
+The `10/10` report, audited end state, and focused live exact-plan direct-Colima result, recorded together with
+the host, OS, architecture, compiler, provider, and duration.
 
 #### Remaining Work
 
-The frame-indexed teardown descent is behaviour this lane exercises: an operator teardown here crosses a
-real frame boundary into the provider guest, so acceptance is owed against the descent's typed admission
-rather than against a run that predates it.
-
-The recorded acceptance predates the currently-open work in the recursive-lifecycle-command,
-prepared-operations, step-algebra, authenticated-handoff, and recovery phases. Acceptance is re-run once those
-land, because each changes behaviour this lane exercises.
+Run the complete acceptance gate after the recursive-lifecycle-command, prepared-operations, step-algebra,
+authenticated-handoff, recovery, and worked-demo dependencies are closed. The run must exercise typed
+frame-indexed teardown descent across the real provider boundary, terminal Harness destroy, and the focused
+exact-plan direct-Colima adapter lane.
 
 ## Documentation Requirements
 

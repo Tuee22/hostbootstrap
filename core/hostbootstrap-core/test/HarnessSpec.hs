@@ -11,10 +11,12 @@ import Data.List (isInfixOf, isPrefixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
+import qualified Fixture
 import qualified HostBootstrap.Authority as Authority
 import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Harness
+import HostBootstrap.Harness.Lifecycle.Internal (testingHarnessLifecycle)
 import HostBootstrap.Step (
     StepObservation (StepConflict, StepRefused, StepUnsupported),
     observationDetail,
@@ -29,17 +31,16 @@ import HostBootstrap.Harness.Ownership (
     withOwnedHarnessRoot,
  )
 import HostBootstrap.Lifecycle.Mode (
-    ModeError (ModeRecoveryRequired, ModeStoreFailure),
+    ModeError (ModeStoreFailure),
     OpenRevisionKind (CompletedMigration, IncompleteMigration),
     RunId,
-    RunLeaseBinding (ExistingRunLeaseBinding, FreshRunLeaseBinding),
     VerifiedIncompleteRunLease,
     bindRunLease,
     harnessPreconditions,
     harnessRootHarnessAuthority,
     harnessRootRunId,
     harnessRootUnboundLease,
-    modeErrorMessage,
+    leaseConflictMessage,
     persistPlanSnapshot,
     recordOpenRevisionMigration,
     recoverAbandonedHarnessRuns,
@@ -239,11 +240,29 @@ suiteCases =
             , (StepUnsupported "no backend", Unsupported "unsupported: no backend")
             , (StepRefused "not ours", Refused "refused: not ours")
             ]
-    , testCase "`all` runs the whole matrix (rows labeled by variant)" $ do
-        outcome <- runSuiteSelection passthroughOwnership twoCaseSuite [variant ["a", "b"] "v0"]
+    , testCase "one selected variant opens one lifecycle for all of its cases" $ do
+        lifecycleEntries <- newIORef (0 :: Int)
+        forwardCalls <- newIORef (0 :: Int)
+        reverseCalls <- newIORef (0 :: Int)
+        let selected =
+                ConfigVariant
+                    (vid "v0")
+                    (nonEmptyCaseIds ["a", "b"])
+                    ( \_ body -> do
+                        modifyIORef' lifecycleEntries (+ 1)
+                        body
+                            ( testingHarnessLifecycle
+                                (modifyIORef' forwardCalls (+ 1))
+                                (modifyIORef' reverseCalls (+ 1))
+                            )
+                    )
+        outcome <- runSuiteSelection passthroughOwnership twoCaseSuite [selected]
         case outcome of
             Right (Report rs) -> map fst rs @?= ["[v0] a", "[v0] b"]
             Left err -> assertFailure ("expected Right, got Left " ++ err)
+        readIORef lifecycleEntries >>= (@?= 1)
+        readIORef forwardCalls >>= (@?= 1)
+        readIORef reverseCalls >>= (@?= 1)
     , testCase "a named case runs only that case" $ do
         outcome <- runSuiteSelection passthroughOwnership twoCaseSuite [variant ["b"] "v0"]
         case outcome of
@@ -265,14 +284,22 @@ suiteCases =
                 ConfigVariant
                     (vid label)
                     (cid "a" :| [])
-                    (\runName body -> record ("config:" ++ T.unpack label ++ ":" ++ T.unpack runName) >> body)
+                    ( \runName body -> do
+                        record ("config:" ++ T.unpack label ++ ":" ++ T.unpack runName)
+                        body
+                            ( testingHarnessLifecycle
+                                (record ("up:" ++ T.unpack label))
+                                (record "down")
+                            )
+                            `finally` record ("config-release:" ++ T.unpack label ++ ":" ++ T.unpack runName)
+                    )
             suite =
                 TestSuite
                     (pure (Right ()))
-                    (\ident -> record ("up:" ++ T.unpack (variantIdText ident)) >> pure ident)
+                    pure
                     [fixtureCase "a"]
                     (\ident _ -> record ("assert:" ++ T.unpack (variantIdText ident)) >> pure Pass)
-                    (record "down")
+                    (record "verified")
         outcome <- runSuiteSelection ownership suite [ownedVariant "v0", ownedVariant "v1"]
         seen <- reverse <$> readIORef events
         case outcome of
@@ -286,12 +313,16 @@ suiteCases =
                 , "up:v0"
                 , "assert:v0"
                 , "down"
+                , "verified"
+                , "config-release:v0:run-1"
                 , "release:run-1"
                 , "own:run-2"
                 , "config:v1:run-2"
                 , "up:v1"
                 , "assert:v1"
                 , "down"
+                , "verified"
+                , "config-release:v1:run-2"
                 , "release:run-2"
                 ]
     , testCase "an ownership refusal is isolated to its variant" $ do
@@ -323,18 +354,28 @@ suiteCases =
         let record e = modifyIORef' events (e :)
             -- v0's bring-up throws; v1's succeeds. v0 must still tear down, fail its
             -- case, and NOT abort v1.
+            selectedVariant label =
+                ConfigVariant
+                    (vid label)
+                    (cid "a" :| [])
+                    ( \_ body ->
+                        body
+                            ( testingHarnessLifecycle
+                                ( if label == "v0"
+                                    then record "up:v0-boom" >> ioError (userError "project up kaboom")
+                                    else record ("up:" ++ T.unpack label)
+                                )
+                                (record "down")
+                            )
+                    )
             suite =
                 TestSuite
                     (pure (Right ()))
-                    ( \label ->
-                        if label == vid "v0"
-                            then record "up:v0-boom" >> ioError (userError "project up kaboom")
-                            else record ("up:" ++ T.unpack (variantIdText label)) >> pure label
-                    )
+                    pure
                     [fixtureCase "a"]
                     (\label _ -> record ("assert:" ++ T.unpack (variantIdText label)) >> pure Pass)
-                    (record "down")
-        outcome <- runSuiteSelection passthroughOwnership suite [variant ["a"] "v0", variant ["a"] "v1"]
+                    (pure ())
+        outcome <- runSuiteSelection passthroughOwnership suite [selectedVariant "v0", selectedVariant "v1"]
         seen <- reverse <$> readIORef events
         case outcome of
             Right (Report rs) -> do
@@ -347,6 +388,7 @@ suiteCases =
         seen @?= ["up:v0-boom", "down", "up:v1", "assert:v1", "down"]
     , testCase "a failed teardown fails that variant instead of hiding a leak" $ do
         downCount <- newIORef (0 :: Int)
+        verifiedCount <- newIORef (0 :: Int)
         let tearDown = do
                 modifyIORef' downCount (+ 1)
                 count <- readIORef downCount
@@ -357,8 +399,13 @@ suiteCases =
                     pure
                     [fixtureCase "a"]
                     (\_ _ -> pure Pass)
-                    tearDown
-        outcome <- runSuiteSelection passthroughOwnership suite [variant ["a"] "v0", variant ["a"] "v1"]
+                    (modifyIORef' verifiedCount (+ 1))
+            selectedVariant label =
+                ConfigVariant
+                    (vid label)
+                    (cid "a" :| [])
+                    (\_ body -> body (testingHarnessLifecycle (pure ()) tearDown))
+        outcome <- runSuiteSelection passthroughOwnership suite [selectedVariant "v0", selectedVariant "v1"]
         case outcome of
             Right (Report rs) -> do
                 -- The assertions themselves passed; the *teardown* is what broke,
@@ -375,6 +422,9 @@ suiteCases =
                 lookup "[v1] teardown" rs @?= Nothing
                 allPassed (Report rs) @?= False
             Left err -> assertFailure ("expected Right, got Left " ++ err)
+        -- The assertion-only absence check runs after a successful common
+        -- reverse, never as a fallback when that interpreter itself failed.
+        readIORef verifiedCount >>= (@?= 1)
     , testCase "ownership finalizer failures retain the successful report and name the failed stage" $ do
         let checkFailure failure expectedRow expectedReason = do
                 let ownership =
@@ -418,14 +468,21 @@ suiteCases =
                 ConfigVariant
                     (vid label)
                     (cid "a" :| [])
-                    (\_ body -> record ("config:" ++ T.unpack label) >> body)
+                    ( \_ body -> do
+                        record ("config:" ++ T.unpack label)
+                        body
+                            ( testingHarnessLifecycle
+                                (record ("up:" ++ T.unpack label))
+                                (record "down")
+                            )
+                    )
             suite =
                 TestSuite
                     (pure (Right ()))
-                    (\ident -> record ("up:" ++ T.unpack (variantIdText ident)) >> pure ident)
+                    pure
                     [fixtureCase "a"]
                     (\ident _ -> record ("assert:" ++ T.unpack (variantIdText ident)) >> pure Pass)
-                    (record "down")
+                    (pure ())
         outcome <-
             runSuiteSelection
                 ownership
@@ -455,13 +512,18 @@ suiteCases =
         let suite =
                 TestSuite
                     (pure (Right ()))
-                    (\_ -> throwIO (SafetyRefusal "pre-existing managed VM"))
+                    pure
                     [fixtureCase "a"]
                     (\_ _ -> pure Pass)
-                    (modifyIORef' teardownCalls (+ 1))
+                    (pure ())
             withConfig _runName body = do
                 modifyIORef' configEntries (+ 1)
-                body `finally` modifyIORef' configExits (+ 1)
+                body
+                    ( testingHarnessLifecycle
+                        (throwIO (SafetyRefusal "pre-existing managed VM"))
+                        (modifyIORef' teardownCalls (+ 1))
+                    )
+                    `finally` modifyIORef' configExits (+ 1)
         outcome <- runSuiteSelection passthroughOwnership suite [ConfigVariant (vid "v0") (cid "a" :| []) withConfig]
         case outcome of
             Right (Report rs) ->
@@ -472,6 +534,33 @@ suiteCases =
         readIORef teardownCalls >>= (@?= 0)
         readIORef configEntries >>= (@?= 1)
         readIORef configExits >>= (@?= 1)
+    , testCase "a refusal after acquisition still reverses the exact lifecycle" $ do
+        teardownCalls <- newIORef (0 :: Int)
+        let reason = "refused: a later node found foreign state after an earlier acquisition"
+            suite =
+                TestSuite
+                    (pure (Right ()))
+                    pure
+                    [fixtureCase "a"]
+                    (\_ _ -> pure Pass)
+                    (pure ())
+            acquiredThenRefused =
+                ConfigVariant
+                    (vid "v0")
+                    (cid "a" :| [])
+                    ( \_ body ->
+                        body
+                            ( testingHarnessLifecycle
+                                (throwIO (LifecycleFailure reason))
+                                (modifyIORef' teardownCalls (+ 1))
+                            )
+                    )
+        outcome <- runSuiteSelection passthroughOwnership suite [acquiredThenRefused]
+        case outcome of
+            Right (Report rs) ->
+                lookup "[v0] a" rs @?= Just (Refused reason)
+            Left err -> assertFailure ("expected Right, got Left " ++ err)
+        readIORef teardownCalls >>= (@?= 1)
     , testCase "a bring-up LifecycleFailure renders its cause, never a bare ExitFailure 1" $ do
         -- The peer of the SafetyRefusal case (development_plan_standards § CC): a
         -- lifecycle step that throws a structured 'LifecycleFailure' must reach the
@@ -481,11 +570,22 @@ suiteCases =
             suite =
                 TestSuite
                     (pure (Right ()))
-                    (\_ -> throwIO (LifecycleFailure cause))
+                    pure
                     [fixtureCase "a"]
                     (\_ _ -> pure Pass)
                     (pure ())
-        outcome <- runSuiteSelection passthroughOwnership suite [variant ["a"] "v0"]
+            failingVariant =
+                ConfigVariant
+                    (vid "v0")
+                    (cid "a" :| [])
+                    ( \_ body ->
+                        body
+                            ( testingHarnessLifecycle
+                                (throwIO (LifecycleFailure cause))
+                                (pure ())
+                            )
+                    )
+        outcome <- runSuiteSelection passthroughOwnership suite [failingVariant]
         case outcome of
             Right (Report rs) ->
                 case lookup "[v0] a" rs of
@@ -507,7 +607,11 @@ suiteCases =
             (\_ _ -> pure Pass)
             (pure ())
     variant :: [T.Text] -> T.Text -> ConfigVariant T.Text
-    variant cases label = ConfigVariant (vid label) (nonEmptyCaseIds cases) (\_ body -> body)
+    variant cases label =
+        ConfigVariant
+            (vid label)
+            (nonEmptyCaseIds cases)
+            (\_ body -> body (testingHarnessLifecycle (pure ()) (pure ())))
 
 {- | The engine's ownership seam under test: the exclusive-run bracket is
 supplied by the command layer, so these cases exercise selection, isolation, and
@@ -519,6 +623,16 @@ passthroughOwnership =
     HarnessRunOwnership $ \body ->
         fmap (\result -> Right (result, Nothing)) (body "fixture-run")
 
+withProtectedRunOwnership ::
+    FilePath ->
+    FilePath ->
+    FilePath ->
+    (HarnessRunOwnership T.Text -> IO result) ->
+    IO result
+withProtectedRunOwnership stateRoot siblingDirectory dataParent use =
+    Fixture.withFixtureInstalledProject $ \project ->
+        use (protectedRunOwnership project stateRoot siblingDirectory dataParent)
+
 {- | The out-of-process half of the concurrency case: attempt one full harness
 run reservation against the same state root and HOLD it while the body runs, so
 competitors overlap the winner rather than queueing behind it.
@@ -527,27 +641,26 @@ Exit 0 when the run was acquired, 3 when it was refused. The refusal reason is
 printed so the racing test can report which exclusion fired.
 -}
 runHarnessAcquireProbe :: FilePath -> FilePath -> IO ()
-runHarnessAcquireProbe stateRoot reasonPath = do
-    let ownership =
-            protectedRunOwnership
-                "hostbootstrap-demo"
-                stateRoot
-                (stateRoot </> "nonexistent-sibling-dir")
-                (stateRoot </> ".test_data")
-    outcome <-
-        runWithOwnedRun ownership $ \_ ->
-            -- Hold the reservation long enough that every competitor's attempt
-            -- overlaps it. A reservation only one process can see at a time is
-            -- not the property under test.
-            threadDelay 3000000
-    case outcome of
-        Right ((), Nothing) -> exitSuccess
-        Right ((), Just failure) -> do
-            writeFile reasonPath (show failure)
-            exitWith (ExitFailure 4)
-        Left reason -> do
-            writeFile reasonPath reason
-            exitWith (ExitFailure 3)
+runHarnessAcquireProbe stateRoot reasonPath =
+    withProtectedRunOwnership
+        stateRoot
+        (stateRoot </> "nonexistent-sibling-dir")
+        (stateRoot </> ".test_data")
+        $ \ownership -> do
+            outcome <-
+                runWithOwnedRun ownership $ \_ ->
+                    -- Hold the reservation long enough that every competitor's attempt
+                    -- overlaps it. A reservation only one process can see at a time is
+                    -- not the property under test.
+                    threadDelay 3000000
+            case outcome of
+                Right ((), Nothing) -> exitSuccess
+                Right ((), Just failure) -> do
+                    writeFile reasonPath (show failure)
+                    exitWith (ExitFailure 4)
+                Left reason -> do
+                    writeFile reasonPath reason
+                    exitWith (ExitFailure 3)
 
 {- | The abandonment half: take the whole typed run, install its generated
 config, announce readiness, and then block forever so the parent can hard-kill
@@ -557,23 +670,22 @@ this process. A hard kill is the point — an in-process exception still runs
 runHarnessAbandonProbe :: FilePath -> FilePath -> IO ()
 runHarnessAbandonProbe stateRoot readyPath = do
     prepared <-
-        either (\failure -> die (T.unpack (Authority.authorityErrorMessage failure))) pure $
-            Authority.withInstalledProject "hostbootstrap-demo" $ \project ->
-                withCanonicalProjectRoot stateRoot stateRoot $ \canonicalRoot -> do
-                    let ownership =
-                            protectedProjectRunOwnership
-                                project
-                                canonicalRoot
-                                stateRoot
-                                (stateRoot </> ".test_data")
-                    runWithOwnedRun ownership $ \owned -> do
-                        installed <- acquireOwnedRunConfig owned "-- generated by the abandoned run\n"
-                        case installed of
-                            Left reason -> die reason
-                            Right _ -> do
-                                writeFile readyPath (ownedHarnessConfigPath owned)
-                                threadDelay 600000000
-    outcome <- prepared
+        Fixture.withFixtureInstalledProject $ \project ->
+            withCanonicalProjectRoot stateRoot stateRoot $ \canonicalRoot -> do
+                let ownership =
+                        protectedProjectRunOwnership
+                            project
+                            canonicalRoot
+                            stateRoot
+                            (stateRoot </> ".test_data")
+                runWithOwnedRun ownership $ \owned -> do
+                    installed <- acquireOwnedRunConfig owned "-- generated by the abandoned run\n"
+                    case installed of
+                        Left reason -> die reason
+                        Right _ -> do
+                            writeFile readyPath (ownedHarnessConfigPath owned)
+                            threadDelay 600000000
+    outcome <- either (die . show) pure prepared
     die ("the abandon probe was expected to be killed, not to finish: " ++ show outcome)
 
 {- | Run one case against a fresh temporary state root with the /typed/
@@ -582,6 +694,7 @@ config path is derived from installed project identity rather than supplied.
 -}
 withTypedOwnership ::
     ( forall projectId.
+      T.Text ->
       FilePath ->
       HarnessRunOwnership (OwnedHarnessRoot projectId) ->
       IO ()
@@ -590,18 +703,18 @@ withTypedOwnership ::
 withTypedOwnership action =
     withSystemTempDirectory "hostbootstrap-typed-run" $ \root -> do
         prepared <-
-            either (assertFailure . show) pure $
-                Authority.withInstalledProject "hostbootstrap-demo" $ \project ->
-                    withCanonicalProjectRoot root root $ \canonicalRoot ->
-                        action
+            Fixture.withFixtureInstalledProject $ \project ->
+                withCanonicalProjectRoot root root $ \canonicalRoot ->
+                    action
+                        (Authority.installedProjectName project)
+                        root
+                        ( protectedProjectRunOwnership
+                            project
+                            canonicalRoot
                             root
-                            ( protectedProjectRunOwnership
-                                project
-                                canonicalRoot
-                                root
-                                (root </> ".test_data")
-                            )
-        either (assertFailure . show) pure =<< prepared
+                            (root </> ".test_data")
+                        )
+        either (assertFailure . show) pure prepared
 
 {- | Leave one __abandoned bound__ run in the store the production ownership
 bracket will sweep, carrying the given migration side of the activation barrier,
@@ -629,9 +742,8 @@ withAbandonedMigrationRecording ::
 withAbandonedMigrationRecording kind recordEffect body =
     withSystemTempDirectory "hostbootstrap-abandoned-migration" $ \root -> do
         prepared <-
-            either (assertFailure . show) pure $
-                Authority.withInstalledProject "hostbootstrap-demo" $ \project ->
-                    withCanonicalProjectRoot root root $ \canonicalRoot -> do
+            Fixture.withFixtureInstalledProject $ \project ->
+                withCanonicalProjectRoot root root $ \canonicalRoot -> do
                         -- The exact store the ownership bracket sweeps: derived
                         -- from the *canonical* root and namespaced by installed
                         -- project identity, as `protectedProjectRunOwnership`
@@ -652,14 +764,14 @@ withAbandonedMigrationRecording kind recordEffect body =
                                 root
                                 (root </> ".test_data")
                             )
-        either (assertFailure . show) pure =<< prepared
+        either (assertFailure . show) pure prepared
 
 {- | Take a harness run all the way to a bound lease and then walk away from it,
 recording the migration side of the barrier it was on.
 -}
 abandonBoundRunWithMigration ::
     ProtectedStore ->
-    Authority.InstalledProject projectId ->
+    Authority.InstalledProjectIdentity projectId ->
     OpenRevisionKind ->
     Bool ->
     IO ()
@@ -673,23 +785,23 @@ abandonBoundRunWithMigration store project kind recordEffect = do
             Authority.ProjectUp
             (harnessPreconditions project "/nonexistent-hostbootstrap-dir" (pure False))
             proof
-            ( \harnessRoot -> inModeEntry store $ \session -> do
+            ( \harnessRoot -> do
                 let run = harnessRootRunId harnessRoot
-                persisted <- persistPlanSnapshot session project run 1 "spec-1" "plan-1"
+                    unbound = harnessRootUnboundLease harnessRoot
+                persisted <- persistPlanSnapshot unbound 1 "spec-1" "plan-1"
                 case persisted of
                     Left failure -> pure (Left failure)
                     Right () -> do
                         bound <-
-                            verifyPlanSnapshot session project run $ \snapshot ->
-                                bindRunLease
-                                    session
-                                    project
-                                    (harnessRootUnboundLease harnessRoot)
-                                    snapshot
-                                    (\_ -> pure (Right ()))
+                            verifyPlanSnapshot unbound $ \snapshot -> do
+                                outcome <- bindRunLease unbound snapshot (\_ -> pure ())
+                                either
+                                    (assertFailure . T.unpack . leaseConflictMessage)
+                                    (const (pure (Right ())))
+                                    outcome
                         case bound of
                             Left failure -> pure (Left failure)
-                            Right () -> do
+                            Right () -> inModeEntry store $ \session -> do
                                 marked <- recordOpenRevisionMigration session project run kind
                                 case marked of
                                     Left failure -> pure (Left failure)
@@ -703,8 +815,8 @@ abandonBoundRunWithMigration store project kind recordEffect = do
 @verifyNoProjectResourcesAcquired@ refuses on. -}
 recordRunEffect ::
     ProtectedSession session ->
-    Authority.InstalledProject projectId ->
-    RunId ->
+    Authority.InstalledProjectIdentity projectId ->
+    RunId runId ->
     IO (Either ModeError ())
 recordRunEffect session project run = do
     key <-
@@ -758,75 +870,65 @@ ownershipCases =
         selfCreatedTestDataRemoval True testDataRoot @?= []
     , testCase "typed ownership carries one exact project/root/store authority tuple" $
         withSystemTempDirectory "hostbootstrap-typed-ownership" $ \root -> do
-            action <-
-                either
-                    (assertFailure . show)
-                    pure
-                    ( Authority.withInstalledProject "hostbootstrap-demo" $ \project ->
-                        withCanonicalProjectRoot root root $ \canonicalRoot -> do
-                            let expectedStore =
+            projectName <- Fixture.fixtureExecutableName
+            rooted <-
+                Fixture.withFixtureInstalledProject $ \project ->
+                    withCanonicalProjectRoot root root $ \canonicalRoot -> do
+                        let expectedStore =
+                                root
+                                    </> ".hostbootstrap"
+                                    </> "authority"
+                                    </> T.unpack projectName
+                            ownership =
+                                protectedProjectRunOwnership
+                                    project
+                                    canonicalRoot
                                     root
-                                        </> ".hostbootstrap"
-                                        </> "authority"
-                                        </> "hostbootstrap-demo"
-                                ownership =
-                                    protectedProjectRunOwnership
-                                        project
-                                        canonicalRoot
-                                        root
-                                        (root </> ".test_data")
-                            runWithOwnedRun ownership $ \owned ->
-                                withOwnedHarnessRoot owned $ \store ownedProject harnessRoot -> do
-                                    protectedStoreRoot store @?= expectedStore
-                                    Authority.installedProjectName ownedProject
-                                        @?= "hostbootstrap-demo"
-                                    V.harnessRunName (harnessRootHarnessAuthority harnessRoot)
-                                        @?= runIdText (harnessRootRunId harnessRoot)
-                    )
-            rooted <- action
+                                    (root </> ".test_data")
+                        runWithOwnedRun ownership $ \owned ->
+                            withOwnedHarnessRoot owned $ \store ownedProject harnessRoot _closeControl -> do
+                                protectedStoreRoot store @?= expectedStore
+                                Authority.installedProjectName ownedProject @?= projectName
+                                V.harnessRunName (harnessRootHarnessAuthority harnessRoot)
+                                    @?= runIdText (harnessRootRunId harnessRoot)
             outcome <- either (assertFailure . show) pure rooted
             outcome @?= Right ((), Nothing)
     , testCase "the text-only ownership wrapper keeps its explicit unqualified test store" $
         withSystemTempDirectory "hostbootstrap-text-ownership" $ \root -> do
-            let ownership =
-                    protectedRunOwnership
-                        "hostbootstrap-demo"
-                        root
-                        root
-                        (root </> ".test_data")
-            outcome <- runWithOwnedRun ownership (\_ -> pure ())
-            outcome @?= Right ((), Nothing)
+            projectName <- Fixture.fixtureExecutableName
+            withProtectedRunOwnership root root (root </> ".test_data") $ \ownership ->
+                runWithOwnedRun ownership (\_ -> pure ()) >>= (@?= Right ((), Nothing))
             doesDirectoryExist (root </> ".hostbootstrap" </> "authority")
                 >>= (@?= True)
             doesDirectoryExist
                 ( root
                     </> ".hostbootstrap"
                     </> "authority"
-                    </> "hostbootstrap-demo"
+                    </> T.unpack projectName
                 )
                 >>= (@?= False)
     , testCase "the owned durable root is a per-run generation under .test_data" $
         withSystemTempDirectory "hostbootstrap-test-data" $ \root -> do
             let parent = root </> ".test_data"
-                ownership = protectedRunOwnership "hostbootstrap-demo" root root parent
-            -- Observed from inside the bracket: the generation only exists while
-            -- the run holds it.
-            observed <-
-                runWithOwnedRun ownership $ \_ -> do
-                    generations <- listDirectory parent
-                    kinds <-
-                        mapM (\name -> doesDirectoryExist (parent </> name)) generations
-                    pure (generations, kinds)
-            case observed of
-                Left err -> assertFailure ("the run was refused: " ++ err)
-                Right ((generations, kinds), Nothing) -> do
-                    -- Exactly one generation exists while the run holds it, and
-                    -- it is named by the run's generative id, not by `.data` or
-                    -- the shared parent (§ Z).
-                    length generations @?= 1
-                    kinds @?= [True]
-                Right (_, Just failure) ->
-                    assertFailure ("the run cleanup failed: " ++ show failure)
+            withProtectedRunOwnership root root parent $ \ownership -> do
+                -- Observed from inside the bracket: the generation only exists while
+                -- the run holds it.
+                observed <-
+                    runWithOwnedRun ownership $ \_ -> do
+                        generations <- listDirectory parent
+                        kinds <-
+                            mapM (\name -> doesDirectoryExist (parent </> name)) generations
+                        pure (generations, kinds)
+                case observed of
+                    Left err -> assertFailure ("the run was refused: " ++ err)
+                    Right ((generations, kinds), Nothing) -> do
+                        -- Exactly one generation exists while the run holds it, and
+                        -- it is named by the run's generative id, not by `.data` or
+                        -- the shared parent (§ Z).
+                        length generations @?= 1
+                        kinds @?= [True]
+                    Right (_, Just failure) ->
+                        assertFailure ("the run cleanup failed: " ++ show failure)
     , {- The sweep's bound branch, driven through the *production* ownership
       bracket rather than its pieces. An incomplete migration never crossed the
       activation barrier, so once the run's own records prove it acquired
@@ -878,111 +980,111 @@ ownershipCases =
     , testCase "an owned run releases its generation and keeps the .test_data parent" $
         withSystemTempDirectory "hostbootstrap-test-data" $ \root -> do
             let parent = root </> ".test_data"
-                ownership = protectedRunOwnership "hostbootstrap-demo" root root parent
-            outcome <-
-                try (runWithOwnedRun ownership (\_ -> throwIO (userError "seeded failure"))) ::
-                    IO
-                        ( Either
-                            SomeException
-                            (Either String ((), Maybe HarnessRunCleanupFailure))
-                        )
-            assertBool "body exception propagated" (either (const True) (const False) outcome)
-            -- The generation is gone; the shared parent is scaffolding the run
-            -- never owned, so it is neither bound to a receipt nor removed.
-            doesDirectoryExist parent >>= (@?= True)
-            listDirectory parent >>= (@?= [])
+            withProtectedRunOwnership root root parent $ \ownership -> do
+                outcome <-
+                    try (runWithOwnedRun ownership (\_ -> throwIO (userError "seeded failure"))) ::
+                        IO
+                            ( Either
+                                SomeException
+                                (Either String ((), Maybe HarnessRunCleanupFailure))
+                            )
+                assertBool "body exception propagated" (either (const True) (const False) outcome)
+                -- The generation is gone; the shared parent is scaffolding the run
+                -- never owned, so it is neither bound to a receipt nor removed.
+                doesDirectoryExist parent >>= (@?= True)
+                listDirectory parent >>= (@?= [])
     , testCase "an asynchronous body cancellation still runs ownership finalizers" $
         withSystemTempDirectory "hostbootstrap-test-data" $ \root -> do
             let parent = root </> ".test_data"
-                ownership = protectedRunOwnership "hostbootstrap-demo" root root parent
-            entered <- newEmptyMVar
-            completed <- newEmptyMVar
-            worker <-
-                forkIO $ do
-                    outcome <-
-                        try
-                            ( runWithOwnedRun ownership $ \_ -> do
-                                putMVar entered ()
-                                threadDelay 60000000
-                            ) ::
-                            IO
-                                ( Either
-                                    SomeException
-                                    (Either String ((), Maybe HarnessRunCleanupFailure))
-                                )
-                    putMVar completed outcome
-            takeMVar entered
-            throwTo worker ThreadKilled
-            outcome <- takeMVar completed
-            assertBool
-                "the asynchronous exception is rethrown after cleanup"
-                (either (const True) (const False) outcome)
-            doesDirectoryExist parent >>= (@?= True)
-            listDirectory parent >>= (@?= [])
-            -- The mode and lease closed too, so a successor is admitted rather
-            -- than finding unresolved ownership after the thread cancellation.
-            successor <- runWithOwnedRun ownership (\_ -> pure ())
-            successor @?= Right ((), Nothing)
+            withProtectedRunOwnership root root parent $ \ownership -> do
+                entered <- newEmptyMVar
+                completed <- newEmptyMVar
+                worker <-
+                    forkIO $ do
+                        outcome <-
+                            try
+                                ( runWithOwnedRun ownership $ \_ -> do
+                                    putMVar entered ()
+                                    threadDelay 60000000
+                                ) ::
+                                IO
+                                    ( Either
+                                        SomeException
+                                        (Either String ((), Maybe HarnessRunCleanupFailure))
+                                    )
+                        putMVar completed outcome
+                takeMVar entered
+                throwTo worker ThreadKilled
+                outcome <- takeMVar completed
+                assertBool
+                    "the asynchronous exception is rethrown after cleanup"
+                    (either (const True) (const False) outcome)
+                doesDirectoryExist parent >>= (@?= True)
+                listDirectory parent >>= (@?= [])
+                -- The mode and lease closed too, so a successor is admitted rather
+                -- than finding unresolved ownership after the thread cancellation.
+                successor <- runWithOwnedRun ownership (\_ -> pure ())
+                successor @?= Right ((), Nothing)
     , testCase "the production bracket reports a replaced data root and keeps the lease unresolved" $
         withSystemTempDirectory "hostbootstrap-test-data" $ \root -> do
             let parent = root </> ".test_data"
-                ownership = protectedRunOwnership "hostbootstrap-demo" root root parent
-            outcome <-
-                runWithOwnedRun ownership $ \_ -> do
-                    generations <- listDirectory parent
-                    case generations of
-                        [generation] -> do
-                            let ownedPath = parent </> generation
-                            removeDirectory ownedPath
-                            createDirectory ownedPath
-                        _ -> assertFailure ("expected one owned generation, got " ++ show generations)
-            case outcome of
-                Right ((), Just (HarnessDataRootCleanupFailed reason)) ->
-                    assertBool
-                        ("the identity conflict is reported: " ++ reason)
-                        ("identity" `isInfixOf` reason)
-                other ->
-                    assertFailure
-                        ("expected a data-root cleanup failure, got " ++ show other)
-            entered <- newIORef False
-            successor <-
-                runWithOwnedRun ownership $ \_ -> do
-                    modifyIORef' entered (const True)
-            case successor of
-                Left reason ->
-                    assertBool
-                        ("the successor names unresolved ownership: " ++ reason)
-                        ("still owns state" `isInfixOf` reason)
-                Right result ->
-                    assertFailure
-                        ("a successor must not acquire the unresolved lease: " ++ show result)
-            readIORef entered >>= (@?= False)
+            withProtectedRunOwnership root root parent $ \ownership -> do
+                outcome <-
+                    runWithOwnedRun ownership $ \_ -> do
+                        generations <- listDirectory parent
+                        case generations of
+                            [generation] -> do
+                                let ownedPath = parent </> generation
+                                removeDirectory ownedPath
+                                createDirectory ownedPath
+                            _ -> assertFailure ("expected one owned generation, got " ++ show generations)
+                case outcome of
+                    Right ((), Just (HarnessDataRootCleanupFailed reason)) ->
+                        assertBool
+                            ("the identity conflict is reported: " ++ reason)
+                            ("identity" `isInfixOf` reason)
+                    other ->
+                        assertFailure
+                            ("expected a data-root cleanup failure, got " ++ show other)
+                entered <- newIORef False
+                successor <-
+                    runWithOwnedRun ownership $ \_ -> do
+                        modifyIORef' entered (const True)
+                case successor of
+                    Left reason ->
+                        assertBool
+                            ("the successor names unresolved ownership: " ++ reason)
+                            ("still owns state" `isInfixOf` reason)
+                    Right result ->
+                        assertFailure
+                            ("a successor must not acquire the unresolved lease: " ++ show result)
+                readIORef entered >>= (@?= False)
     , testCase "a run interrupted mid-body does not block the next run" $
         withSystemTempDirectory "hostbootstrap-test-data" $ \root -> do
             let parent = root </> ".test_data"
-                ownership = protectedRunOwnership "hostbootstrap-demo" root root parent
-            -- The first run dies inside the body: its mode and lease records are
-            -- left behind exactly as a hard kill leaves them.
-            _ <-
-                try (runWithOwnedRun ownership (\_ -> throwIO (userError "killed"))) ::
-                    IO
-                        ( Either
-                            SomeException
-                            (Either String ((), Maybe HarnessRunCleanupFailure))
-                        )
-            -- The next run's sweep classifies and closes that abandoned lease
-            -- rather than refusing with an unrecoverable lock directory.
-            second <- runWithOwnedRun ownership (\_ -> pure ("second run" :: String))
-            second @?= Right ("second run", Nothing)
-            -- The abandoned predecessor's generation was reclaimed by that
-            -- sweep, so no orphan generation accumulates across runs.
-            listDirectory parent >>= (@?= [])
+            withProtectedRunOwnership root root parent $ \ownership -> do
+                -- The first run dies inside the body: its mode and lease records are
+                -- left behind exactly as a hard kill leaves them.
+                _ <-
+                    try (runWithOwnedRun ownership (\_ -> throwIO (userError "killed"))) ::
+                        IO
+                            ( Either
+                                SomeException
+                                (Either String ((), Maybe HarnessRunCleanupFailure))
+                            )
+                -- The next run's sweep classifies and closes that abandoned lease
+                -- rather than refusing with an unrecoverable lock directory.
+                second <- runWithOwnedRun ownership (\_ -> pure ("second run" :: String))
+                second @?= Right ("second run", Nothing)
+                -- The abandoned predecessor's generation was reclaimed by that
+                -- sweep, so no orphan generation accumulates across runs.
+                listDirectory parent >>= (@?= [])
     , -- The live 2026-08-03 Apple Silicon reproduction: a run killed mid-variant
       -- left its own generated <project>.dhall behind, and the next run refused
       -- on that file *before* the sweep could resolve it. Both the config and
       -- the bound lease then had to be cleared by hand.
       testCase "an interrupted run's generated config is reclaimed, not left to refuse the next run" $
-        withTypedOwnership $ \root ownership -> do
+        withTypedOwnership $ \_projectName root ownership -> do
             let parent = root </> ".test_data"
                 readyPath = root </> "abandon-ready"
             self <- getExecutablePath
@@ -1006,8 +1108,8 @@ ownershipCases =
             doesFileExist configPath >>= (@?= False)
             listDirectory parent >>= (@?= [])
     , testCase "an operator's production config still refuses the run, and survives it" $
-        withTypedOwnership $ \root ownership -> do
-            let configPath = root </> "hostbootstrap-demo.dhall"
+        withTypedOwnership $ \projectName root ownership -> do
+            let configPath = root </> T.unpack projectName ++ ".dhall"
             writeFile configPath "-- an operator's production config\n"
             refused <- runWithOwnedRun ownership (\_ -> pure ())
             case refused of
@@ -1023,42 +1125,33 @@ ownershipCases =
       -- hand the sweep did run, correctly classified the leftover as *bound*,
       -- and refused the whole matrix — but nothing could act on that refusal.
       testCase "an abandoned bound run that acquired nothing is closed by the next run's sweep" $
-        withTypedOwnership $ \root ownership -> do
+        withTypedOwnership $ \_projectName root ownership -> do
             let parent = root </> ".test_data"
             _ <-
                 try
                     ( runWithOwnedRun ownership $ \owned ->
-                        withOwnedHarnessRoot owned $ \store project harnessRoot -> do
-                            let run = harnessRootRunId harnessRoot
+                        withOwnedHarnessRoot owned $ \_store _project harnessRoot _closeControl -> do
+                            let unbound = harnessRootUnboundLease harnessRoot
                             bound <-
-                                withProtectedEntry store $ \session -> do
+                                do
                                     persisted <-
                                         persistPlanSnapshot
-                                            session
-                                            project
-                                            run
+                                            unbound
                                             1
                                             "specdigestfixture"
                                             "plandigestfixture"
-                                    fmap Right $ case persisted of
+                                    case persisted of
                                         Left failure -> pure (Left failure)
                                         Right () ->
-                                            verifyPlanSnapshot session project run $ \snapshot ->
-                                                bindRunLease
-                                                    session
-                                                    project
-                                                    (harnessRootUnboundLease harnessRoot)
-                                                    snapshot
-                                                    ( \binding -> pure $ case binding of
-                                                        FreshRunLeaseBinding _ _ -> Right ()
-                                                        ExistingRunLeaseBinding _ _ ->
-                                                            Left (ModeRecoveryRequired (runIdText run))
-                                                    )
+                                            verifyPlanSnapshot unbound $ \snapshot -> do
+                                                outcome <- bindRunLease unbound snapshot (\_ -> pure ())
+                                                either
+                                                    (assertFailure . T.unpack . leaseConflictMessage)
+                                                    (const (pure (Right ())))
+                                                    outcome
                             case bound of
                                 Left failure -> assertFailure (show failure)
-                                Right (Left failure) ->
-                                    assertFailure (T.unpack (modeErrorMessage failure))
-                                Right (Right ()) -> pure ()
+                                Right () -> pure ()
                             -- Bound, then killed: the state the reproduction had
                             -- to resolve by deleting four protected records.
                             throwIO (userError "killed after binding the plan")
@@ -1079,13 +1172,13 @@ ownershipCases =
       -- run, with nothing able to resolve it. A run therefore settles its own
       -- config record exactly as it settles its data root.
       testCase "a run that never releases its generated config settles both the file and the record" $
-        withTypedOwnership $ \root ownership -> do
-            let configPath = root </> "hostbootstrap-demo.dhall"
+        withTypedOwnership $ \projectName root ownership -> do
+            let configPath = root </> T.unpack projectName ++ ".dhall"
                 records =
                     root
                         </> ".hostbootstrap"
                         </> "authority"
-                        </> "hostbootstrap-demo"
+                        </> T.unpack projectName
                         </> "records"
             _ <-
                 try
@@ -1147,18 +1240,18 @@ ownershipCases =
     , testCase "consecutive runs own disjoint generations" $
         withSystemTempDirectory "hostbootstrap-test-data" $ \root -> do
             let parent = root </> ".test_data"
-                ownership = protectedRunOwnership "hostbootstrap-demo" root root parent
-                observe = runWithOwnedRun ownership (\_ -> listDirectory parent)
-            first <- observe
-            second <- observe
-            case (first, second) of
-                (Right ([one], Nothing), Right ([two], Nothing)) ->
-                    assertBool
-                        "each run names its own generation"
-                        (one /= two)
-                _ ->
-                    assertFailure
-                        ("each run must own exactly one generation: " ++ show (first, second))
+            withProtectedRunOwnership root root parent $ \ownership -> do
+                let observe = runWithOwnedRun ownership (\_ -> listDirectory parent)
+                first <- observe
+                second <- observe
+                case (first, second) of
+                    (Right ([one], Nothing), Right ([two], Nothing)) ->
+                        assertBool
+                            "each run names its own generation"
+                            (one /= two)
+                    _ ->
+                        assertFailure
+                            ("each run must own exactly one generation: " ++ show (first, second))
     ]
 
 representationCases :: [TestTree]
@@ -1187,6 +1280,158 @@ representationCases =
         let deadField = "test" <> "Suites"
         assertBool "demo TestConfig has no dead suite list" (not (deadField `T.isInfixOf` demoConfig))
         assertBool "generic fixture TestConfig has no dead suite list" (not (deadField `T.isInfixOf` fixture))
+    , testCase "the repository TestSuite owns no lifecycle callback or self-invocation route" $ do
+        cwd <- getCurrentDirectory
+        root <- findRepoRoot cwd >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
+        let packageRoot = root </> "core" </> "hostbootstrap-core"
+            sourceRoot = packageRoot </> "src" </> "HostBootstrap"
+            privateLifecycleRoot =
+                packageRoot
+                    </> "internal"
+                    </> "harness-lifecycle"
+                    </> "HostBootstrap"
+        harness <- TIO.readFile (sourceRoot </> "Harness.hs")
+        command <- TIO.readFile (sourceRoot </> "Command.hs")
+        internal <- TIO.readFile (privateLifecycleRoot </> "Harness" </> "Lifecycle" </> "Internal.hs")
+        ownership <- TIO.readFile (sourceRoot </> "Harness" </> "Ownership.hs")
+        ownershipInternal <- TIO.readFile (sourceRoot </> "Harness" </> "Ownership" </> "Internal.hs")
+        cabal <- TIO.readFile (packageRoot </> "hostbootstrap-core.cabal")
+        demo <- TIO.readFile (root </> "demo" </> "src" </> "HostBootstrapDemo" </> "Commands.hs")
+        let mainLibrary = snd (T.breakOn "\nlibrary\n" cabal)
+            exposedSection = fst (T.breakOn "  other-modules:" mainLibrary)
+            ownershipExports = fst (T.breakOn ") where" ownership)
+        assertBool "HarnessLifecycle stays abstract at the public facade" (not ("HarnessLifecycle (..)" `T.isInfixOf` harness))
+        assertBool "the raw lifecycle constructor stays out of the facade" (not ("    harnessLifecycle," `T.isInfixOf` harness))
+        assertBool "the raw lifecycle constructor exists only at the private-component boundary" ("harnessLifecycle = HarnessLifecycle" `T.isInfixOf` internal)
+        assertBool "the constructor module is absent from the public library" (not ("HostBootstrap.Harness.Lifecycle.Internal" `T.isInfixOf` exposedSection))
+        assertBool "the constructor component is explicitly private" ("library harness-lifecycle-internal" `T.isInfixOf` cabal && "visibility: private" `T.isInfixOf` cabal)
+        assertBool "the close-control module is not exposed" (not ("HostBootstrap.Harness.Ownership.Internal" `T.isInfixOf` exposedSection))
+        assertBool "the public ownership facade exposes no raw close action slot" (not ("stageOwnedHarnessClose" `T.isInfixOf` ownershipExports))
+        mapM_
+            ( \mutator ->
+                assertBool
+                    ("the close-control mutator escaped through public Ownership: " ++ T.unpack mutator)
+                    (not (mutator `T.isInfixOf` ownershipExports))
+            )
+            [ "beginOwnedHarnessBinding"
+            , "armOwnedHarnessBoundClose"
+            , "markOwnedHarnessClosePending"
+            , "settleOwnedHarnessClose"
+            , "consumeOwnedHarnessClose"
+            ]
+        assertBool "the private close control retains a fail-closed binding state" ("OwnedHarnessCloseBinding" `T.isInfixOf` ownershipInternal)
+        assertBool "there is no public unit-test lifecycle module" (not ("HostBootstrap.Harness.Testing" `T.isInfixOf` cabal))
+        assertBool "production command code cannot use the unit-test lifecycle alias" (not ("testingHarnessLifecycle" `T.isInfixOf` command))
+        mapM_
+            ( \forbidden ->
+                assertBool
+                    ("TestSuite still owns a top-level lifecycle shape: " ++ T.unpack forbidden)
+                    (not (forbidden `T.isInfixOf` harness))
+            )
+            [ "variantWithConfig"
+            , "LifecyclePlan"
+            , "withLifecyclePlan"
+            , "runSelfOrDie"
+            , "[\"project\", \"up\"]"
+            , "[\"project\", \"destroy\"]"
+            ]
+        mapM_
+            ( \forbidden ->
+                assertBool
+                    ("demo TestSuite still owns a lifecycle callback: " ++ T.unpack forbidden)
+                    (not (forbidden `T.isInfixOf` demo))
+            )
+            [ "demoTestUp"
+            , "demoTestDown"
+            , "runSelfOrDie"
+            , "withHarnessMutationGuard"
+            , "[\"project\", \"up\"]"
+            , "[\"project\", \"destroy\"]"
+            ]
+    , testCase "Harness command retains one exact plan and has no compatibility escape" $ do
+        cwd <- getCurrentDirectory
+        root <- findRepoRoot cwd >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
+        command <- TIO.readFile (root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap" </> "Command.hs")
+        let start = "runTestRun selector = do"
+            ending = "defaultInitArgs :: InitArgs"
+            fromHarness = snd (T.breakOn start command)
+            harnessSlice = fst (T.breakOn ending fromHarness)
+            normalized = T.unwords (T.words harnessSlice)
+            require fragment =
+                assertBool
+                    ("Harness command lost its exact-plan route: " ++ T.unpack fragment)
+                    (fragment `T.isInfixOf` normalized)
+            forbid fragment =
+                assertBool
+                    ("Harness command still contains compatibility shape " ++ T.unpack fragment)
+                    (not (fragment `T.isInfixOf` harnessSlice))
+            appearsBefore earlier later source =
+                case T.breakOn earlier source of
+                    (_, rest)
+                        | T.null rest -> False
+                        | otherwise -> later `T.isInfixOf` T.drop (T.length earlier) rest
+        assertBool
+            "could not isolate the Harness command route"
+            (not (T.null fromHarness) && ending `T.isInfixOf` fromHarness)
+        mapM_
+            require
+            [ "selectTestMatrix selector matrix"
+            , "variantWithLifecycle"
+            , "withHarnessFinalizedProjectSpec"
+            , "withHarnessLifecycleProfile"
+            , "withProjectPlan profile runRoot validated drafts"
+            , "withCurrentFrame plan"
+            , "beginOwnedHarnessBinding closeControl"
+            , "withPersistedPlanSnapshot rootAuthority unbound plan"
+            , "armOwnedHarnessBoundClose closeControl lease"
+            , "acquireOwnedRunConfig"
+            , "runExactProjectUp"
+            , "runExactDestroyProjection"
+            , "destroySettledClosure"
+            , "authorizeHarnessClose"
+            , "markOwnedHarnessClosePending closeControl"
+            , "settleOwnedHarnessClose closeControl"
+            , "useLifecycle (harnessLifecycle forwardAction reverseAction)"
+            , "`finally` removeGeneratedConfig"
+            ]
+        T.count "withProjectPlan profile runRoot validated drafts" normalized @?= 1
+        assertBool
+            "test selection must precede exact plan construction"
+            (appearsBefore "selectTestMatrix selector matrix" "withProjectPlan profile runRoot validated drafts" normalized)
+        assertBool
+            "the generated config must exist before exact lifecycle interpretation"
+            (appearsBefore "acquireOwnedRunConfig" "useLifecycle (harnessLifecycle forwardAction reverseAction)" normalized)
+        assertBool
+            "the fail-closed binding sentinel must precede durable plan binding"
+            (appearsBefore "beginOwnedHarnessBinding closeControl" "withPersistedPlanSnapshot rootAuthority unbound plan" normalized)
+        assertBool
+            "the exact bound fallback must be armed before generated-config work"
+            (appearsBefore "armOwnedHarnessBoundClose closeControl lease" "acquireOwnedRunConfig" normalized)
+        assertBool
+            "ordinary exact destroy must settle before terminal close authorization"
+            (appearsBefore "runExactDestroyProjection" "authorizeHarnessClose" normalized)
+        assertBool
+            "settled-destroy closure evidence must precede terminal close authorization"
+            (appearsBefore "destroySettledClosure" "authorizeHarnessClose" normalized)
+        assertBool
+            "persisted close authorization must precede the private pending state"
+            (appearsBefore "authorizeHarnessClose" "markOwnedHarnessClosePending closeControl" normalized)
+        mapM_
+            forbid
+            [ "variantWithConfig"
+            , "projectPlanStepPlan"
+            , "LifecyclePlan"
+            , "withLifecyclePlan"
+            , "withProfiledLifecyclePlan"
+            , "persistPlanSnapshot"
+            , "verifyPlanSnapshot"
+            , "bindRunLease"
+            , "runSelfOrDie"
+            , "withProductionLifecycleProfile"
+            , "HostBootstrap.Chain.Compatibility"
+            , "stageOwnedHarnessClose"
+            , "finalizeHarnessClose"
+            ]
     ]
 
 cid :: T.Text -> CaseId

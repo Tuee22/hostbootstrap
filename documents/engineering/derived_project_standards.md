@@ -21,8 +21,8 @@
 This is the single page a derived project's author reads before writing their `docker/Dockerfile`,
 `cabal.project`, and project binary. It is the union of the doctrine docs under
 [`engineering/`](.), in the form of rules with one-line explanations and a link to the authoritative
-source. The model these rules instantiate — the chain-is-the-project, the recursive `project up`
-interpreter, fractal bootstrap — is defined once in
+source. The model these rules instantiate — the chain-is-the-project, the exact current-frame Chain and
+target recursive `project up` interpreter, fractal bootstrap — is defined once in
 [composition_methodology](../architecture/composition_methodology.md); this page defers to it and never
 re-derives it.
 
@@ -41,17 +41,17 @@ from additive fragments:
 
 ```haskell
 addSteps appSteps builder
-finalizeProjectSpec builder :: Either ProjectSpecError (ProjectSpec projectId cfg tcfg)
+finalizeProjectSpec builder :: Either ProjectSpecError (ProjectSpec cfg tcfg)
 ```
 
-where `appSteps :: cfg (Production projectId) -> [Step]`. Core validates the combined exact order into
+where `appSteps :: CanonicalProjectRoot scope rootId -> cfg scope -> [Step]`. Core validates the combined exact order into
 an opaque `StepPlan`
 (see [composition methodology](../architecture/composition_methodology.md#single-representation-the-chain-is-the-representation)):
 host-management step kinds the core ships (deploy-VM, ensure-X, copy-source, build-pb, build-image,
 context-init, deploy-kind, deploy-chart, expose-port) interleave freely with the project's own step kinds
-(deploy-minio, deploy-registry, push-image, accelerator-daemon placement, …). `project up` interprets
-the resolved plan from the current frame
-and hands off `pb project up` into the next frame; `project up --dry-run` renders the chain plan without
+(deploy-minio, deploy-registry, push-image, accelerator-daemon placement, …). Current `project up`
+interprets the resolved plan's exact current-frame segment and fails closed at a nested entry; the target
+authenticates and hands off `pb project up` into the next frame. `project up --dry-run` renders the chain plan without
 executing it. The `.dhall` carries **parameters + context + witness**, never the shape — each binary
 verifies it is in the frame its `.dhall` describes, or fails fast.
 
@@ -103,8 +103,9 @@ no Python-owned `hostbootstrap.dhall`; resource, context, and witness settings l
 root config. In the current demo, child config projection/delivery occurs in composite
 bootstrap, the descent the `context-init` row declares, and deployment actions; that row's action body
 is only an announcement. Under the
-implemented generic project model a project supplies a `ProjectSpec projectId cfg tcfg`; core ships no
-defaults. One restricted `psAssemble` is the structural default source for Production init and Harness
+implemented generic project model a project supplies a `ProjectSpec cfg tcfg`; core ships no defaults and
+the static spec supplies no installed-identity marker. `runHostBootstrapCLI` verifies the executable and
+retains its generative identity while instantiating the config family. One restricted `psAssemble` is the structural default source for Production init and Harness
 variant generation, while `psTestInit` constructs the distinct test config. The typed service registry
 and full codec are jointly finalized under one digest; demo Web/Accelerator role projection is total
 from explicit assembled fields and has no fallback literals (see
@@ -125,10 +126,10 @@ build pb + image in the VM, then carry the project-container child config on the
 `context-init` step declares), while native Linux GPU uses a two-frame host→direct-container→nvkind
 path.
 Both continue through MinIO, registry, image push, chart, NodePort, and accelerator placement as selected
-for that lane. `project up` interprets the chosen chain to stand up the persistent stack; `context`
-visualizes the composition; and `test run all` **drives that same `project up`**
-under a test config (one per distinct test config), asserting the live stack with `demoTestSuite` and tearing it
-down with `project destroy` — reusing the chain, not a separate per-case cluster.
+for that lane. `project up` interprets the chosen current-frame segment; `context` visualizes the
+composition. For each test config, `test run all` retains its exact Harness plan and directly wraps the
+common current-frame forward/reverse boundaries around `demoTestSuite` assertions — reusing the plan
+algebra, not shelling `project up` or building a separate per-case cluster.
 
 ## The three-level library hierarchy
 
@@ -297,9 +298,8 @@ The implemented binary surface is the `project` chain, and the core command tree
 `test`, `service`, `context`, and `check-code`. Hardware evidence and closure status belong in the
 development plan:
 
-- opaque validated `StepPlan` is recursively interpreted by `project up`. Current `down`/`destroy` perform
-  the verb's reverse projection reaching only this frame; recursive child-to-parent teardown remains a
-  target.
+- opaque validated `StepPlan` is consumed by the exact current-frame Chain. Current Production refuses a
+  nested entry; recursive forward descent and child-to-parent teardown remain target work.
 - `context` is read-only introspection: `inspect` renders the lift composition with the current frame
   marked, `show` decodes a selected project-local config, `path` prints its canonical filename, and
   `schema`/`render` expose the separate static `ConfigArtifact` registry. The validated-codec
@@ -327,14 +327,14 @@ The target registry step is contributed from an opaque finalized plan that joint
 verified exposure, backing endpoint, and blob delivery. A consumer must not pass raw endpoints or
 choose `storage.redirect.disable` independently; see
 [network reachability](../architecture/network_reachability.md).
-`test run all` drives that same chain, but the demo currently resolves its cluster with the Production
-profile and `.data`; see [harness workflow](../architecture/harness_workflow.md).
+`test run all` drives the corresponding Harness-scoped current-frame plan directly, but the demo currently
+resolves its cluster with the Production profile and `.data`; see [harness workflow](../architecture/harness_workflow.md).
 `DEVELOPMENT_PLAN/` owns the phase status; this page describes the model and the worked `demo/` consumer
 that realizes it.
 
 ## See also
 
-* [composition_methodology](../architecture/composition_methodology.md) — the canonical model: chain-is-the-project, the recursive `project up` interpreter, fractal bootstrap
+* [composition_methodology](../architecture/composition_methodology.md) — the canonical model: chain-is-the-project, current-frame Chain, target recursive `project up`, and fractal bootstrap
 * [authoring_project_binaries](authoring_project_binaries.md) — how a consumer authors its `chain` and step actions
 * [library_hierarchy](../architecture/library_hierarchy.md) — the extension-stream contract (stream 1 = the lift chain)
 * [base_image.md](base_image.md) — what the base image ships, including the warm core closure

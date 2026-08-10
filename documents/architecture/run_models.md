@@ -1,7 +1,7 @@
 # Execution-Shape Taxonomy
 
 **Status**: Authoritative source
-**Supersedes**: the detached harness selector and configurable Dhall execution union removed by Sprint 10.10
+**Supersedes**: N/A
 **Referenced by**: [documents index](../README.md), [composition methodology](composition_methodology.md), [test harness and run ownership phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md)
 
 > **Purpose**: Define four useful names for behavior already expressed by lifecycle steps while
@@ -11,19 +11,38 @@
 
 - `OneShot`, `HostNative`, `HostDaemon`, and `Cluster` are useful names for four execution shapes.
 - They are documentation/reporting labels, not Haskell dispatch values or Dhall configuration.
-- opaque validated `StepPlan` is the only current executable representation; the later
-  `ProjectPlan` strengthens that same representation rather than introducing another selector.
+- One admitted `ProjectPlan scope specDigest planId configId cfg` is the public Chain representation.
+  `StepPlan` remains its opaque authoring and validation input, not a public execution boundary.
 
 ## Current Status
 
-Sprint 10.10 removed the detached Haskell selector, its selector-only topology/key types, the
-definition-only one-shot and budget helpers that had no production call path, and the corresponding
-Dhall union. A structural test checks both `HostBootstrap.Harness` and `Core.dhall` for that removed
-parallel surface.
+No detached Haskell selector, selector-only topology/key type, or configurable Dhall execution union exists.
+A structural test checks both `HostBootstrap.Harness` and `Core.dhall` for that single-representation
+boundary.
 
-The real demo path contributes `demoChainFor :: Substrate -> ProjectConfig -> [Step]`; final plan
-projection validates its exact order and `project up` interprets only the resulting `StepPlan`. No
-project or test config carries a second execution-mode literal.
+The real demo path contributes
+`demoChainFor :: Substrate -> CanonicalProjectRoot scope rootId -> ProjectConfig scope -> [Step]`. Plan
+admission validates that authored sequence and retains it as the exact non-empty `forward` projection of
+one `ProjectPlan`. Public `HostBootstrap.Chain.renderChain` renders that full projection, while
+`runChainFromFrame` interprets only its non-empty current-frame segment. No project or test config carries
+a second execution-mode literal.
+
+Production dispatch retains or reconstructs one exact `ProjectPlan` and uses it for dry rendering,
+snapshot persistence/binding, journal/cursor admission, `authorizeProjectUp`, and public Chain
+interpretation. Its current-frame reverse verbs derive work from that same exact representation. Harness
+dispatch now does the same inside each generated-config ownership bracket: it admits one
+`ProjectPlan (Harness projectId runId) ...`, packages that plan's common forward and reverse actions in an
+opaque `HarnessLifecycle`, and lets the engine invoke those actions directly. No Harness lifecycle action
+re-enters the CLI or a Production plan. These are call-site boundaries around one authored graph, not
+alternate execution selectors. Nested
+lifecycle entry fails closed until authenticated child admission and proof-complete traversal land; exact
+`down`/`destroy` authorization belongs to
+[the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
+
+The [step-algebra-and-project-plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)
+owns the common plan/Chain foundation and Production command call site. The
+[test-harness-and-run-ownership phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md)
+owns the Harness command consumer and assertion engine.
 
 Current status and cleanup ownership live in
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
@@ -41,10 +60,19 @@ This table is a taxonomy. It does not imply that a separate value controls those
 
 ## Single-Representation Rule
 
-The current forward representation is the opaque validated plan:
+`StepPlan` validates the authored graph:
 
 ```haskell
 mkStepPlan :: [Step] -> Either StepPlanError StepPlan
+```
+
+Admission then binds that graph to the exact scope, specification, configuration, root, and generative plan
+identity. The public forward representation is:
+
+```haskell
+forward
+  :: ProjectPlan scope specDigest planId configId cfg
+  -> NonEmpty (PlannedStep scope planId configId (cfg scope))
 ```
 
 The plan's rows determine:
@@ -54,32 +82,50 @@ The plan's rows determine:
 - whether work is host-native, containerized, daemonized, or clustered;
 - the order in which those operations run.
 
-A current `Step` carries no resource envelope. General lifecycle actions may reload or close over
-config/context values, while resource slicing is separately supplied, so step identity and applied
-budget can disagree. The target opaque `ProjectPlan` derives each operation's exact `ResourceSlice` alongside its
-frame/dependencies/effect set; only then does the single representation determine resources.
+Each `PlannedStep` retains the admitted node identity, frame, operation key, ordered dependency prefix,
+projected operations, and action. Plan-owned resource and edge projections retain the same `scope` and
+`planId`. Execution therefore derives these values from the admitted plan rather than asking a caller to
+reconstruct a node or supply a parallel resource selection.
 
 A second configurable execution selector could contradict those facts. For example, a Dhall value
 could say `Cluster` while the chain contains only a one-shot container, or a detached classifier could
 say `HostNative` while the interpreter still executes a container step. Keeping both values would
 violate the single-representation contract.
 
-Raw step/plan constructors are hidden. Validation rejects an empty plan, duplicate typed identities,
-conflicting labels, noncontiguous frame returns, and invalid post-handoff order before effects; render,
-frame selection, and apply consume the same `StepPlan`. Provider context and teardown are still separate
-checked single-assignment callbacks, so the later `ProjectPlan`/receipt cleanup remains open.
+Raw step and plan constructors are hidden. Validation rejects an empty plan, duplicate typed identities,
+conflicting labels, noncontiguous frame returns, and any post-handoff suffix that does not unwind from
+deeper participating frames toward the root before effects.
+`renderChain` consumes the full `forward` projection of the admitted `ProjectPlan`; it neither opens a
+second plan nor reads the hidden raw step representation.
 
-The target therefore treats the four names as derived documentation/reporting labels, not configuration
+`runChainFromFrame` consumes that same `ProjectPlan`, a matching
+`CommandAuthority scope planId frame brokerGeneration VerbUp ExecutePhase`, and a matching
+`LifecycleCursor scope planId frame brokerGeneration VerbUp ExecutePhase`. It verifies their retained
+frame, verb, and phase terms, checks the authority's retained protected-store origin, and compares the
+cursor's retained acquisition project/store/broker origin to that authority before opening durable state.
+It then selects a `NonEmpty` current-frame node segment and keeps the same plan indices
+through execution descriptors, prepared operations, and the resource carrier. A step action's raw
+`StepObservation` remains non-authorizing and plan-independent; `runPlannedStep` immediately wraps it
+under the projected scope, plan, and configuration indices as opaque nominal
+`PlannedStepObservation scope planId configId`, which is what Chain classifies, reports, and settles. The
+authority's retained broker epoch and invocation identity name the operation session; the interpreter
+allocates neither a second broker generation nor a caller-selected command identity. Every protected
+entry also rereads the cursor's exact acquisition source and current durable row under that same entry;
+an Execute cursor advanced to Teardown cannot authorize a later session, prepare, settlement, or close.
+Recursive handoff derives the next frame and lift context from this plan's `DerivedTopology`, rather than
+from a caller-supplied frame graph.
+
+The taxonomy therefore treats the four names as derived documentation/reporting labels, not configuration
 or a second dispatch input:
 
 ```text
 cfg + detected substrate
         │
         ▼
-one validated chain/plan
+one admitted ProjectPlan
         │
-        ├─ interpreter consumes the plan
-        └─ renderer may classify its concrete steps for display
+        ├─ renderer consumes the complete forward projection
+        └─ interpreter consumes its authorized current-frame projection
 ```
 
 If a future typed classifier is needed, it must consume the exact plan the interpreter will execute and
@@ -103,7 +149,8 @@ framework view. Demo handlers do not reopen the sibling config.
 The demo accelerator uses both placements depending on substrate. Its placement follows the configured
 service and lifecycle steps.
 
-Sprint 18.6 replaces the remaining raw handler action with an internal existential
+The [service-runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md) replaces the remaining raw
+handler action with an internal existential
 `SelectedService scope specDigest planId configId secretDigest frame revision instanceId ServePhase
 fields`. A validated
 parent projects only a role-specific descriptive wire; the child verifies those exact mounted bytes
@@ -136,42 +183,43 @@ be observed on a path that skips drain.
 
 ## Harness Relationship
 
-The harness drives the real project chain:
+The harness drives the real project lifecycle:
 
 ```text
-generate run config
-  -> project up
+own and generate run config
+  -> interpret exact Harness plan forward
   -> assert compiled cases
-  -> project destroy
+  -> interpret that plan's reverse projection
+  -> close only from settled-destroy evidence
 ```
 
-It does not need a separate run-model dispatch to bring up a parallel test topology. Current
-Production/`.data`, ownership, and recursive-teardown defects are documented in
+It does not need a separate run-model dispatch to bring up a parallel test topology. `TestSuite` contains
+only safety and assertion behavior; the private lifecycle constructor is available to the command and core
+test components, not to downstream projects. The configured `durable-readback` case remains honestly red
+until the engine owns a fresh same-run lifecycle-invocation generation for its intermediate
+destroy→up cycle. That open case and the remaining recursive-teardown/receipt gaps are documented in
 [harness workflow](harness_workflow.md); the presence of the four-name taxonomy does not close them.
 
-## Completed Cleanup
+## Single-representation guard
 
-Sprint 10.10:
-
-1. removed the unconsumed Haskell selector/key/topology surface;
-2. removed the corresponding union from `Core.dhall` and its admitted Haskell vocabulary codec;
-3. removed definition/test-only helpers that had no typed-plan consumer; and
-4. added exact vocabulary coverage plus a structural source test guarding the single-representation
-   boundary.
+The source/API boundary admits no runtime selector or selector-only topology/key surface, `Core.dhall`
+contains no execution-shape union, and exact vocabulary coverage plus a structural source test guard that
+single representation.
 
 ## Validation
 
 - A source/API test proves there is no unconsumed runtime selector or configurable Dhall execution
   literal.
-- Plan/interpreter tests prove each supported topology is expressed by concrete steps and the same plan
-  is rendered and executed.
-- The harness continues to invoke the real `project up`, with no second per-model bring-up path.
+- Plan/interpreter tests prove each supported topology is expressed by concrete steps, the full exact
+  projection is rendered, and an authority/cursor-matched current-frame projection is executed.
+- Production and Harness dispatch have no alternate plan/interpreter boundary. Harness retains one exact
+  plan through generated-config ownership, and public Chain remains exact-plan-only.
 - The Haskell quality gate and documentation validator pass.
 
 ## See Also
 
-- [composition methodology](composition_methodology.md) — the current chain ordering and target opaque
-  lifecycle plan.
+- [composition methodology](composition_methodology.md) — the current exact plan projections and chain
+  ordering.
 - [harness workflow](harness_workflow.md) — the test transaction and its current gaps.
 - [cluster lifecycle](../engineering/cluster_lifecycle.md) — concrete kind/nvkind operations.
 - [build and run model](build_and_run_model.md) — host-native and container build paths.

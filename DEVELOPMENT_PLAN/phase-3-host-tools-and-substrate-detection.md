@@ -34,7 +34,8 @@ No invocation resolves through `$PATH`.
 #### Deliverables
 
 - `HostTool` is a closed enumeration of every external tool core may invoke, including the host-provider
-  tools (`incus`, `lima`, `colima`, `wsl`) and the accelerator toolchains.
+  tools (`incus`, `lima`, `colima`, `wsl`), the provider ownership prerequisites (`python3`, `flock`,
+  `lockf`), and the accelerator toolchains.
 - Each tool resolves to an `AbsExe` — an absolute path — recorded in typed `HostConfig`.
 - `buildHostConfig` performs resolution once; no library or project code calls a bare command name.
 - A tool that cannot be resolved is a typed refusal naming the tool, not a runtime `ENOENT`.
@@ -137,7 +138,9 @@ None.
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/ProjectRoot.hs`,
-`core/hostbootstrap-core/test/ProjectRootSpec.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
+`core/hostbootstrap-core/test/ProjectRootSpec.hs`,
+`core/hostbootstrap-core/test/compile-fail/CrossScopeProjectRoot.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/durable_state.md`
 
@@ -149,13 +152,20 @@ Derive one canonical root for a project's durable state.
 
 - `CanonicalProjectRoot` is an opaque, validated absolute root; a caller cannot supply an arbitrary path as
   "the project root".
+- Root admission retains the surrounding config/lifecycle `scope` and mints only a fresh `rootId`; the sibling
+  config admission therefore yields `CanonicalProjectRoot configScope rootId`, never an independently scoped
+  root that a later plan must reconcile by convention.
 - Every durable projection — state, build outputs, protected store — is derived from it, so two call sites
   cannot disagree about where a project's state lives.
 - The root is host-durable and is never inside a provider frame.
 
 #### Validation
 
-`ProjectRootSpec` covers derivation, validation, and the durable projections.
+`ProjectRootSpec` covers derivation, validation, and the durable projections. `CrossScopeProjectRoot.hs`
+proves a root admitted with one config scope cannot be consumed as another.
+
+Dated evidence for the phase gate: `cabal test all --ghc-options=-Werror` from `core/` passed 1047/1047
+on 2026-08-08 (aarch64-osx, GHC 9.12.4).
 
 #### Remaining Work
 

@@ -1,15 +1,27 @@
 module HarnessLeaseAsProduction where
 
-import HostBootstrap.Config.Vocab (Harness)
+import HostBootstrap.Authority (AuthorityError, RootScopeAuthority)
 import HostBootstrap.Lifecycle.Mode
+import HostBootstrap.ProjectScope (Harness, Production)
 
--- A harness run's lease cannot open the Production profile: the scope index on
--- the lease is the whole point, so a test component has no route to Production.
-harnessLease :: UnboundRunLease (Harness projectId runId) brokerGeneration
-harnessLease = undefined
+data Project
+data Run
+data BrokerGeneration
 
-modeLease :: ProjectModeLease projectId brokerGeneration
-modeLease = undefined
+openProduction ::
+    RootScopeAuthority (Production Project) ->
+    ActiveProjectMode (Production Project) BrokerGeneration ->
+    UnboundRunLease (Production Project) BrokerGeneration ->
+    IO (Either AuthorityError ())
+openProduction root active lease =
+    withProductionLifecycleProfile root active lease (const ())
 
-productionFromHarness :: Either ModeError (LifecycleProfile (Harness projectId runId))
-productionFromHarness = withProductionLifecycleProfile modeLease harnessLease
+-- A Harness root, active mode, and unbound lease cannot open the Production
+-- profile. The mismatch is structural, before any protected slot is consumed.
+productionFromHarness ::
+    RootScopeAuthority (Harness Project Run) ->
+    ActiveProjectMode (Harness Project Run) BrokerGeneration ->
+    UnboundRunLease (Harness Project Run) BrokerGeneration ->
+    IO (Either AuthorityError ())
+productionFromHarness root active lease =
+    openProduction root active lease

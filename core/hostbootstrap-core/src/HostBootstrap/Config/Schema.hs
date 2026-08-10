@@ -1,5 +1,7 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {- | The project-local @<project>.dhall@ filename logic and the **generic**
@@ -46,11 +48,17 @@ module HostBootstrap.Config.Schema (
     VerifiedConfigWire,
     verifiedConfigDigest,
     ValidatedConfig,
+    validatedConfigSpecDigest,
+    validatedConfigDigest,
     validatedConfigValue,
     withValidatedConfig,
     ConfigWireAdmissionError (..),
     configWireAdmissionErrorMessage,
     withAuthenticatedConfigWire,
+    VerifiedConfigHandoff,
+    verifiedConfigHandoffBinding,
+    verifiedConfigHandoffPhase,
+    withVerifiedConfigHandoff,
     withAssembledHarnessConfig,
     SiblingConfigInstallResult (..),
     SiblingConfigInstallError (..),
@@ -80,14 +88,20 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import Data.Word (Word64)
 import qualified Dhall
+import HostBootstrap.Authority (
+    LifecyclePhase (Execute, Prepare, Teardown),
+    ProjectVerb,
+    projectVerbName,
+ )
 import GHC.IO.Handle.Lock (LockMode (ExclusiveLock), hLock)
-import HostBootstrap.Authority (InstalledProject, installedProjectName)
+import HostBootstrap.Authority (InstalledProjectIdentity, installedProjectName)
 import HostBootstrap.Config.Class (
     ConfigAssembly,
     ConfigInput,
     ProjectCfg (..),
     ProjectCodec,
     decodeProjectCodecWithSettings,
+    projectCodecSpecDigest,
     renderProjectCodecHoisted,
     runConfigAssembly,
  )
@@ -100,11 +114,28 @@ import HostBootstrap.Dhall.Gen (
  )
 import HostBootstrap.Handoff (
     AuthenticatedConfigPayload,
+    HandoffBinding,
+    HandoffError (HandoffBindingMismatch),
+    HandoffPayloadKind (NarrowedProjectConfig),
+    VerifiedHandoff,
     authenticatedConfigBytes,
     authenticatedConfigDigest,
     childConfigDigest,
+    handoffChildConfigDigest,
+    handoffPayloadKind,
+    handoffPhase,
+    handoffSpecDigest,
+    handoffVerb,
+    verifiedHandoffBinding,
  )
 import HostBootstrap.Config.Install.Native (linkNoReplace)
+import HostBootstrap.Config.Schema.Internal
+    ( ValidatedConfig
+    , mintValidatedConfigKernel
+    , validatedConfigDigest
+    , validatedConfigSpecDigest
+    , validatedConfigValue
+    )
 import HostBootstrap.ProjectRoot (
     CanonicalProjectRoot,
     ProjectRootError (..),
@@ -306,21 +337,11 @@ config identity. The constructor and generative identity indices are private.
 newtype VerifiedConfigWire scope configDigest configId
     = VerifiedConfigWire Text
 
+type role VerifiedConfigWire nominal nominal nominal
+
 -- | The digest of the exact canonical bytes that were verified.
 verifiedConfigDigest :: VerifiedConfigWire scope configDigest configId -> Text
 verifiedConfigDigest (VerifiedConfigWire digest) = digest
-
-{- | A config value admitted by the matching installed project codec. Its scope,
-specification identity, and fresh config identity cannot be changed by callers.
--}
-newtype ValidatedConfig scope specDigest configId config
-    = ValidatedConfig config
-
--- | Read the validated value without weakening any of its phantom identities.
-validatedConfigValue ::
-    ValidatedConfig scope specDigest configId config ->
-    config
-validatedConfigValue (ValidatedConfig value) = value
 
 {- | Canonically render, hash, strictly re-decode, and re-render one scoped
 config through the installed project codec. Only a byte-stable round trip enters
@@ -360,11 +381,13 @@ withValidatedConfig projectCodec value use = do
             | otherwise ->
                 Right
                     <$> mintValidatedConfig
+                        (projectCodecSpecDigest projectCodec)
                         digest
                         roundTripped
                         use
 
 mintValidatedConfig ::
+    Text ->
     Text ->
     config ->
     ( forall configDigest configId.
@@ -373,8 +396,10 @@ mintValidatedConfig ::
       result
     ) ->
     result
-mintValidatedConfig digest value use =
-    use (VerifiedConfigWire digest) (ValidatedConfig value)
+mintValidatedConfig specDigest digest value use =
+    use
+        (VerifiedConfigWire digest)
+        (mintValidatedConfigKernel specDigest digest value)
 
 -- | Failures while turning authenticated transport bytes into a local config.
 -- No constructor retains or renders the payload, a signature, or a token.
@@ -433,11 +458,88 @@ withAuthenticatedConfigWire projectCodec authenticated use
                     | otherwise ->
                         Right
                             <$> mintValidatedConfig
+                                (projectCodecSpecDigest projectCodec)
                                 (authenticatedConfigDigest authenticated)
                                 value
                                 use
   where
     payload = authenticatedConfigBytes authenticated
+
+{- | A config-kind handoff refined by the exact locally verified config.
+
+The transport-level 'VerifiedHandoff' proves the signature and one-use edge,
+but its wire parser intentionally does not let a caller choose phantom
+identities for runtime text.  This refinement checks the signed specification,
+configuration digest, verb, and closed phase against opaque local evidence and
+introduces the signed plan/frame identities only inside a rank-2 continuation.
+-}
+data VerifiedConfigHandoff scope planDigest brokerGeneration parentFrame childFrame configId verb phase where
+    VerifiedConfigHandoff ::
+        VerifiedHandoff scope brokerGeneration ->
+        LifecyclePhase phase ->
+        VerifiedConfigHandoff
+            scope planDigest brokerGeneration parentFrame childFrame configId verb phase
+
+type role VerifiedConfigHandoff nominal nominal nominal nominal nominal nominal nominal nominal
+
+instance Show (VerifiedConfigHandoff scope planDigest brokerGeneration parentFrame childFrame configId verb phase) where
+    show (VerifiedConfigHandoff handoff phase) =
+        "VerifiedConfigHandoff "
+            <> show (verifiedHandoffBinding handoff)
+            <> " "
+            <> show phase
+
+-- | The authenticated transport binding retained by this config refinement.
+verifiedConfigHandoffBinding ::
+    VerifiedConfigHandoff
+        scope planDigest brokerGeneration parentFrame childFrame configId verb phase ->
+    HandoffBinding scope brokerGeneration
+verifiedConfigHandoffBinding (VerifiedConfigHandoff handoff _) =
+    verifiedHandoffBinding handoff
+
+-- | The closed lifecycle phase authenticated by the handoff.
+verifiedConfigHandoffPhase ::
+    VerifiedConfigHandoff
+        scope planDigest brokerGeneration parentFrame childFrame configId verb phase ->
+    LifecyclePhase phase
+verifiedConfigHandoffPhase (VerifiedConfigHandoff _ phase) = phase
+
+{- | Join the verified edge to the exact config wire and decoded value.
+
+No raw text or caller-selected phantom participates.  The signed runtime
+coordinates become generative indices, while @configId@ is inherited from the
+constructor-hidden wire and validated config supplied together.
+-}
+withVerifiedConfigHandoff ::
+    ProjectVerb verb ->
+    VerifiedHandoff scope brokerGeneration ->
+    VerifiedConfigWire scope configDigest configId ->
+    ValidatedConfig scope specDigest configId config ->
+    ( forall planDigest parentFrame childFrame phase.
+      VerifiedConfigHandoff
+        scope planDigest brokerGeneration parentFrame childFrame configId verb phase ->
+      result
+    ) ->
+    Either HandoffError result
+withVerifiedConfigHandoff verb handoff wire config use
+    | handoffPayloadKind binding /= NarrowedProjectConfig =
+        mismatch "the authenticated payload is not a project config"
+    | handoffChildConfigDigest binding /= verifiedConfigDigest wire =
+        mismatch "the handoff and verified config wire digests differ"
+    | handoffChildConfigDigest binding /= validatedConfigDigest config =
+        mismatch "the handoff and validated config digests differ"
+    | handoffSpecDigest binding /= validatedConfigSpecDigest config =
+        mismatch "the handoff and validated config specification digests differ"
+    | handoffVerb binding /= projectVerbName verb =
+        mismatch "the handoff does not authorize the requested project verb"
+    | otherwise = case handoffPhase binding of
+        "prepare" -> Right (use (VerifiedConfigHandoff handoff Prepare))
+        "execute" -> Right (use (VerifiedConfigHandoff handoff Execute))
+        "teardown" -> Right (use (VerifiedConfigHandoff handoff Teardown))
+        _ -> mismatch "the handoff names an unknown lifecycle phase"
+  where
+    binding = verifiedHandoffBinding handoff
+    mismatch = Left . HandoffBindingMismatch
 
 -- | Result of installing authenticated bytes at the current binary's sibling
 -- config path.  An identical incumbent is a successful idempotent replay of
@@ -467,7 +569,7 @@ siblingConfigInstallErrorMessage failure = case failure of
 -- | Production scopes can install only beside the exact installed project
 -- whose generative identity appears in the payload scope.
 installAuthenticatedProductionSiblingConfig ::
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     AuthenticatedConfigPayload (Production projectId) brokerGeneration ->
     IO (Either SiblingConfigInstallError SiblingConfigInstallResult)
 installAuthenticatedProductionSiblingConfig project =
@@ -477,14 +579,14 @@ installAuthenticatedProductionSiblingConfig project =
 -- identity while deriving the destination solely from the installed project
 -- and the current executable.
 installAuthenticatedHarnessSiblingConfig ::
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     AuthenticatedConfigPayload (Harness projectId runId) brokerGeneration ->
     IO (Either SiblingConfigInstallError SiblingConfigInstallResult)
 installAuthenticatedHarnessSiblingConfig project =
     installAuthenticatedSiblingConfig project . authenticatedConfigBytes
 
 installAuthenticatedSiblingConfig ::
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     BS.ByteString ->
     IO (Either SiblingConfigInstallError SiblingConfigInstallResult)
 installAuthenticatedSiblingConfig project payload = do
@@ -628,7 +730,7 @@ withAssembledHarnessConfig allowed authority codec assembly use = do
 project/binary identity. Generic: reaches the context via 'cfgContext'.
 -}
 validateProjectConfigForProject ::
-    (ProjectCfg projectId cfg) =>
+    (ProjectCfg cfg) =>
     Text ->
     cfg configScope ->
     Either String (cfg configScope)
@@ -653,7 +755,7 @@ validateProjectConfigForProject expected cfg
 runtime context.
 -}
 withSiblingProjectConfigContext ::
-    (ProjectCfg projectId cfg) =>
+    (ProjectCfg cfg) =>
     ProjectCodec configScope specDigest cfg ->
     Text ->
     Context.CommandClass ->
@@ -670,8 +772,8 @@ receives fresh wire/config identities and cannot let a raw config bypass
 verification.
 -}
 withSiblingValidatedProjectConfigContext ::
-    forall projectId cfg configScope specDigest result.
-    (ProjectCfg projectId cfg) =>
+    forall cfg configScope specDigest result.
+    (ProjectCfg cfg) =>
     ProjectCodec configScope specDigest cfg ->
     Text ->
     Context.CommandClass ->
@@ -705,17 +807,17 @@ replaced after admission therefore cannot change what the running plan is
 executing; the next invocation validates a new snapshot under a new @configId@.
 -}
 withSiblingValidatedProjectConfigRoot ::
-    forall projectId cfg configScope specDigest result.
-    (ProjectCfg projectId cfg) =>
+    forall cfg configScope specDigest result.
+    (ProjectCfg cfg) =>
     ProjectCodec configScope specDigest cfg ->
     Text ->
     Context.CommandClass ->
     [Context.Capability] ->
-    ( forall configDigest configId rootScope rootId.
+    ( forall configDigest configId rootId.
       VerifiedConfigWire configScope configDigest configId ->
       ValidatedConfig configScope specDigest configId (cfg configScope) ->
       BinaryContext ->
-      CanonicalProjectRoot rootScope rootId ->
+      CanonicalProjectRoot configScope rootId ->
       IO result
     ) ->
     IO result
@@ -731,13 +833,13 @@ canonical root authority minted during that same admission. Lifecycle callers
 use this seam so the root is not reconstructed from the descriptive context.
 -}
 withSiblingProjectConfigRoot ::
-    forall projectId cfg configScope specDigest a.
-    (ProjectCfg projectId cfg) =>
+    forall cfg configScope specDigest a.
+    (ProjectCfg cfg) =>
     ProjectCodec configScope specDigest cfg ->
     Text ->
     Context.CommandClass ->
     [Context.Capability] ->
-    (forall rootScope rootId. cfg configScope -> BinaryContext -> CanonicalProjectRoot rootScope rootId -> IO a) ->
+    (forall rootId. cfg configScope -> BinaryContext -> CanonicalProjectRoot configScope rootId -> IO a) ->
     IO a
 withSiblingProjectConfigRoot codec projectName cls caps action = do
     path <- siblingProjectConfigPath projectName

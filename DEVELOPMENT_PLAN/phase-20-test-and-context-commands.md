@@ -12,7 +12,7 @@
 Every sprint below is `Done` and the static half of the gate passes. What the phase still owes is its own
 declared **live linux-cpu sequence**: `test init`, `test run`, and `context` run against a real host. The
 overwrite policy and the case-selector surface are exactly what that sequence exercises, so it is owed against
-their current shape rather than an earlier one.
+their exact current shape.
 
 ## Phase Objective
 

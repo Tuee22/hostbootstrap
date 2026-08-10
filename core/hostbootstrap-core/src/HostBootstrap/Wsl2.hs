@@ -1,4 +1,5 @@
--- | Pure WSL2 provider argv builders and output classification helpers.
+-- | Pure WSL2 lifecycle builders. Prerequisite diagnostics are compatibility
+-- reexports of the lower "HostBootstrap.Ensure.Wsl2" definitions.
 module HostBootstrap.Wsl2
   ( Wsl2VM (..),
     bcdeditHypervisorLaunchArgs,
@@ -17,26 +18,14 @@ module HostBootstrap.Wsl2
 where
 
 import Data.Char (toLower)
-import Data.List (isInfixOf, isPrefixOf)
-import System.Exit (ExitCode (..))
-
-newtype Wsl2VM = Wsl2VM {wsl2Distro :: String}
-  deriving (Eq, Show)
-
-wslReportsVirtualizationDisabled :: (ExitCode, String, String) -> Bool
-wslReportsVirtualizationDisabled (_, out, err) =
-  "virtualization is not enabled" `isInfixOf` text
-    || "wsl2 is unable to start" `isInfixOf` text
-  where
-    text = normalizeWslText (out ++ "\n" ++ err)
-
-wslReportsNoInstalledDistributions :: (ExitCode, String, String) -> Bool
-wslReportsNoInstalledDistributions (_, out, err) =
-  "has no installed distributions" `isInfixOf` normalizeWslText (out ++ "\n" ++ err)
-
-normalizeWslText :: String -> String
-normalizeWslText =
-  map toLower . filter (/= '\0')
+import Data.List (isPrefixOf)
+import HostBootstrap.Ensure.Wsl2
+  ( bcdeditHypervisorLaunchArgs,
+    normalizeWslText,
+    wslReportsNoInstalledDistributions,
+    wslReportsVirtualizationDisabled,
+  )
+import HostBootstrap.Lift.Context (Wsl2VM (..), wslExecArgs)
 
 -- | Tokenise @wsl --list --quiet@ output into distro names for a membership
 -- test. Strips the UTF-16 NUL padding and splits on whitespace, but preserves
@@ -65,17 +54,9 @@ wslDistroStates raw =
 wslRunningDistros :: String -> [String]
 wslRunningDistros = map fst . filter ((== "running") . snd) . wslDistroStates
 
-bcdeditHypervisorLaunchArgs :: [String]
-bcdeditHypervisorLaunchArgs =
-  ["/set", "hypervisorlaunchtype", "auto"]
-
 wslInstallArgs :: String -> String -> [String]
 wslInstallArgs distro vhdSize =
   ["--install", "-d", "Ubuntu-24.04", "--name", distro, "--no-launch", "--vhd-size", vhdSize]
-
-wslExecArgs :: String -> [String] -> [String]
-wslExecArgs distro inner =
-  ["-d", distro, "--"] ++ inner
 
 wslTerminateArgs :: String -> [String]
 wslTerminateArgs distro =

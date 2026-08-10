@@ -88,6 +88,9 @@ enumCases =
                 , Sudo
                 , XcodeSelect
                 , Incus
+                , Python3
+                , Flock
+                , Lockf
                 , Df
                 , Kill
                 , Ps

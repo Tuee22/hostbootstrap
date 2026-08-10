@@ -1,5 +1,8 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 module ContextSpec (tests) where
 
@@ -8,6 +11,12 @@ import Data.IORef (newIORef, readIORef, writeIORef)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Fixture
+import HostBootstrap.Authority
+    ( InstalledProjectIdentity
+    , ProjectVerb (ProjectUp)
+    , normalizeExecutableIdentity
+    , rootScopeAuthority
+    )
 import HostBootstrap.CLI (
     ProjectSpec,
     addSteps,
@@ -16,12 +25,64 @@ import HostBootstrap.CLI (
  )
 import qualified HostBootstrap.CLI as CLI
 import qualified HostBootstrap.Config.Schema as Schema
-import HostBootstrap.Config.Class (AssemblyRequest (..), pureConfigAssembly)
+import HostBootstrap.Config.Class
+    ( AssemblyRequest (..)
+    , ProjectCfg (withProductionProjectCodec)
+    , pureConfigAssembly
+    )
+import HostBootstrap.Config.Vocab (Production)
 import HostBootstrap.Context
 import HostBootstrap.Harness (Case (Case), CaseResult (Pass), TestSuite (TestSuite), mkCaseId)
-import HostBootstrap.Step (StepFrame (StepFrame), StepObservation (StepChanged), deployVMStep)
+import HostBootstrap.Lifecycle.Mode
+    ( ModeError (ModeAuthorityFailure)
+    , productionActiveMode
+    , productionRootAuthority
+    , productionRootModeLease
+    , productionRootUnboundLease
+    , withProductionLifecycleProfile
+    , withProductionRoot
+    )
+import HostBootstrap.Lift (localContext)
+import HostBootstrap.ProjectPlan
+    ( ProjectPlan
+    , planDraftsFromValidatedBuilder
+    )
+import HostBootstrap.ProjectPlan.Construct (withProjectPlan)
+import HostBootstrap.ProjectPlan.Frame
+    ( FrameError (..)
+    , currentFrameId
+    , projectFrameId
+    , validatedContextValue
+    , withCurrentFrame
+    )
+import HostBootstrap.ProjectRoot
+    ( CanonicalProjectRoot
+    , canonicalProjectRootPath
+    , withCanonicalProjectRoot
+    )
+import HostBootstrap.Protected
+    ( ProtectedRecord
+    , ProtectedStore
+    , listProtectedRecords
+    , openProtectedStore
+    , readProtectedRecord
+    , recordKeyText
+    , withProtectedEntry
+    )
+import HostBootstrap.Step
+    ( StepFrame (StepFrame)
+    , StepObservation (StepChanged)
+    , Step
+    , StepPlan
+    , buildImageStep
+    , contextInitStep
+    , deployVMStep
+    , descendsVia
+    , ensureStep
+    , mkStepPlan
+    )
 import System.Directory (removeFile)
-import System.Environment (withArgs, withProgName)
+import System.Environment (getExecutablePath, withArgs)
 import System.Exit (ExitCode (ExitFailure))
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -74,7 +135,7 @@ decodes back), and the suite is a trivial passing one (these tests never run
 -}
 fixtureSpec ::
     String ->
-    ProjectSpec Fixture.FixtureProject Fixture.ProjectConfig Fixture.TestConfig
+    ProjectSpec Fixture.ProjectConfig Fixture.TestConfig
 fixtureSpec progName =
     either (error . show) id $
         finalizeProjectSpec $
@@ -101,15 +162,19 @@ fixtureSpec progName =
                     )
 
 runHostBootstrapCLI ::
-    String ->
-    ProjectSpec Fixture.FixtureProject Fixture.ProjectConfig Fixture.TestConfig ->
+    ProjectSpec Fixture.ProjectConfig Fixture.TestConfig ->
     IO ()
-runHostBootstrapCLI name spec =
-    withProgName name (CLI.runHostBootstrapCLI name spec)
+runHostBootstrapCLI spec = do
+    projectName <- executableProjectName
+    CLI.runHostBootstrapCLI (T.unpack projectName) spec
 
-runBareHostBootstrapCLI :: String -> IO ()
-runBareHostBootstrapCLI name =
-    withProgName name (CLI.runBareHostBootstrapCLI name)
+runBareHostBootstrapCLI :: IO ()
+runBareHostBootstrapCLI = do
+    projectName <- executableProjectName
+    CLI.runBareHostBootstrapCLI (T.unpack projectName)
+
+executableProjectName :: IO T.Text
+executableProjectName = normalizeExecutableIdentity <$> getExecutablePath
 
 passingSuite :: TestSuite
 passingSuite =
@@ -712,24 +777,26 @@ tests =
                 result @?= Left (ExitFailure 1)
         , testCase "normal CLI commands fail fast when the sibling context is absent" $ do
             result <-
-                try (withArgs ["check-code"] (runBareHostBootstrapCLI "definitely-missing-context")) ::
+                try (withArgs ["check-code"] runBareHostBootstrapCLI) ::
                     IO (Either ExitCode ())
             result @?= Left (ExitFailure 1)
         , testCase "normal CLI commands run when the sibling project config authorizes them" $ do
-            let projectName = "demo-cli-context"
+            projectName <- executableProjectName
             path <- Schema.siblingProjectConfigPath projectName
             let cfg = Fixture.defaultProjectConfig projectName "." HostOrchestrator
+                spec = fixtureSpec (T.unpack projectName)
             ( do
                     Schema.writeProjectConfigFile Fixture.projectConfigCodec path cfg
                     result <-
-                        try (withArgs ["check-code"] (runHostBootstrapCLI (T.unpack projectName) (fixtureSpec (T.unpack projectName)))) ::
+                        try (withArgs ["check-code"] (runHostBootstrapCLI spec)) ::
                             IO (Either ExitCode ())
                     result @?= Right ()
                 )
                 `finally` removeFile path
         , testCase "project init writes a project-local config before sibling context gating" $
             withSystemTempDirectory "hostbootstrap-config-init" $ \dir -> do
-                let path = dir </> "demo.dhall"
+                projectName <- executableProjectName
+                let path = dir </> T.unpack projectName <> ".dhall"
                 withArgs
                     [ "project"
                     , "init"
@@ -750,17 +817,20 @@ tests =
                     , "--ha-replicas"
                     , "3"
                     ]
-                    (runHostBootstrapCLI "demo" (fixtureSpec "demo"))
+                    (runHostBootstrapCLI (fixtureSpec (T.unpack projectName)))
                 decoded <- Fixture.decodeProjectConfigFile path
                 let Fixture.ProjectConfig cfgDockerfile cfgResources cfgContext cfgDeploy = decoded
                 cfgDockerfile @?= "demo/docker/Dockerfile"
                 cfgResources @?= Fixture.Resources 6 "10GiB" "80GiB"
                 cfgDeploy @?= Fixture.DeployConfig 3
+                project cfgContext @?= projectName
+                binary cfgContext @?= projectName
                 contextKind cfgContext @?= ImageBuildContainer
                 sourceRoot cfgContext @?= "/workspace/demo"
         , testCase "project init supplies the project defaults for omitted knobs" $
             withSystemTempDirectory "hostbootstrap-config-init-defaults" $ \dir -> do
-                let path = dir </> "demo.dhall"
+                projectName <- executableProjectName
+                let path = dir </> T.unpack projectName <> ".dhall"
                 withArgs
                     [ "project"
                     , "init"
@@ -769,7 +839,7 @@ tests =
                     , "--source-root"
                     , "/workspace/demo"
                     ]
-                    (runHostBootstrapCLI "demo" (fixtureSpec "demo"))
+                    (runHostBootstrapCLI (fixtureSpec (T.unpack projectName)))
                 decoded <- Fixture.decodeProjectConfigFile path
                 let Fixture.ProjectConfig cfgDockerfile cfgResources _ cfgDeploy = decoded
                 -- The fixture's projectInit defaults: cpu 4 / 8GiB / 20GiB,
@@ -779,7 +849,8 @@ tests =
                 cfgDeploy @?= Fixture.DeployConfig 1
         , testCase "project init --if-missing writes when absent and is a no-op when present" $
             withSystemTempDirectory "hostbootstrap-config-init-if-missing" $ \dir -> do
-                let path = dir </> "demo.dhall"
+                projectName <- executableProjectName
+                let path = dir </> T.unpack projectName <> ".dhall"
                     initArgs root =
                         [ "project"
                         , "init"
@@ -790,16 +861,327 @@ tests =
                         , root
                         ]
                 -- Absent: --if-missing writes the default config.
-                withArgs (initArgs "/workspace/demo") (runHostBootstrapCLI "demo" (fixtureSpec "demo"))
+                withArgs
+                    (initArgs "/workspace/demo")
+                    (runHostBootstrapCLI (fixtureSpec (T.unpack projectName)))
                 before <- TIO.readFile path
                 Fixture.ProjectConfig _ _ ctx0 _ <- Fixture.decodeProjectConfigFile path
                 sourceRoot ctx0 @?= "/workspace/demo"
                 -- Present: --if-missing is a no-op even with a different source-root, so the
                 -- user-owned file is left byte-for-byte untouched.
-                withArgs (initArgs "/somewhere/else") (runHostBootstrapCLI "demo" (fixtureSpec "demo"))
+                withArgs
+                    (initArgs "/somewhere/else")
+                    (runHostBootstrapCLI (fixtureSpec (T.unpack projectName)))
                 after <- TIO.readFile path
                 after @?= before
+        , frameAdmissionTests
         ]
+
+frameAdmissionTests :: TestTree
+frameAdmissionTests =
+    testGroup
+        "plan-local current frame"
+        [ testCase "admits the exact root prefix and jointly exposes semantic evidence" $
+            withFramePlan hostFrameContext twoFramePlan $ \plan ->
+                withCurrentFrame plan hostFrameContext
+                    ( \current projectFrame validated ->
+                        ( currentFrameId current
+                        , projectFrameId projectFrame
+                        , validatedContextValue validated
+                        )
+                    )
+                    @?= Right
+                        ( "host-orchestrator-0"
+                        , "host-orchestrator-0"
+                        , hostFrameContext
+                        )
+        , testCase "admits the exact deeper topology prefix at its endpoint" $
+            withFramePlan vmFrameContext twoFramePlan $ \plan ->
+                withCurrentFrame plan vmFrameContext
+                    ( \current projectFrame validated ->
+                        ( currentFrameId current
+                        , projectFrameId projectFrame
+                        , currentFrame (validatedContextValue validated)
+                        )
+                    )
+                    @?= Right
+                        ( "vm-orchestrator-1"
+                        , "vm-orchestrator-1"
+                        , "vm-orchestrator-1"
+                        )
+        , testCase "rejects context other than the exact plan-retained config context" $
+            withFramePlan hostFrameContext twoFramePlan $ \plan -> do
+                let supplied = hostFrameContext{binary = "other-binary"}
+                case withCurrentFrame plan supplied (\_ _ _ -> ()) of
+                    Left (FrameConfigContextMismatch expected observed) -> do
+                        expected @?= hostFrameContext
+                        observed @?= supplied
+                    other ->
+                        assertFailure
+                            ("expected exact config-context mismatch, got " <> show other)
+        , testCase "wraps the total context-topology validator's refusal" $ do
+            let duplicate =
+                    case topologyFrames hostFrameContext of
+                        [rootFrame] ->
+                            hostFrameContext
+                                { topologyFrames = [rootFrame, rootFrame]
+                                }
+                        _ -> error "host frame fixture invariant violated"
+            withFramePlan duplicate twoFramePlan $ \plan ->
+                withCurrentFrame plan duplicate (\_ _ _ -> ())
+                    @?= Left
+                        ( FrameContextTopologyError
+                            (ContextTopologyDuplicateFrame "host-orchestrator-0")
+                        )
+        , testCase "rejects a current frame absent from the validated context topology" $ do
+            let absent = hostFrameContext{currentFrame = "absent"}
+            withFramePlan absent twoFramePlan $ \plan ->
+                withCurrentFrame plan absent (\_ _ _ -> ())
+                    @?= Left
+                        ( FrameContextTopologyError
+                            (ContextCurrentFrameMissing "absent")
+                        )
+        , testCase "rejects a context current kind that disagrees with its topology frame" $ do
+            let wrongKind = hostFrameContext{contextKind = VMOrchestrator}
+            withFramePlan wrongKind twoFramePlan $ \plan ->
+                withCurrentFrame plan wrongKind (\_ _ _ -> ())
+                    @?= Left
+                        ( FrameContextTopologyError
+                            ( ContextCurrentFrameKindMismatch
+                                "host-orchestrator-0"
+                                VMOrchestrator
+                                HostOrchestrator
+                            )
+                        )
+        , testCase "rejects context frame identifiers outside the plan prefix" $ do
+            let renamed =
+                    case topologyFrames hostFrameContext of
+                        [rootFrame] ->
+                            hostFrameContext
+                                { topologyFrames =
+                                    [rootFrame{topologyFrameId = "other-root"}]
+                                , currentFrame = "other-root"
+                                }
+                        _ -> error "host frame fixture invariant violated"
+            withFramePlan renamed twoFramePlan $ \plan ->
+                withCurrentFrame plan renamed (\_ _ _ -> ())
+                    @?= Left
+                        ( FrameTopologyIdsMismatch
+                            ["host-orchestrator-0"]
+                            ["other-root"]
+                        )
+        , testCase "rejects valid context parent edges outside the plan prefix" $
+            withFramePlan branchedContainerContext threeFramePlan $ \plan ->
+                withCurrentFrame plan branchedContainerContext (\_ _ _ -> ())
+                    @?= Left
+                        ( FrameTopologyParentEdgesMismatch
+                            [ ("host-orchestrator-0", "vm-orchestrator-1")
+                            , ("vm-orchestrator-1", "vm-project-container-2")
+                            ]
+                            [ ("host-orchestrator-0", "vm-orchestrator-1")
+                            , ("host-orchestrator-0", "vm-project-container-2")
+                            ]
+                        )
+        , testCase "rejects a current frame that is not the topology-prefix endpoint" $
+            withFramePlan nonEndpointContext threeFramePlan $ \plan ->
+                withCurrentFrame plan nonEndpointContext (\_ _ _ -> ())
+                    @?= Left
+                        ( FrameCurrentFrameEndpointMismatch
+                            "vm-project-container-2"
+                            "vm-orchestrator-1"
+                        )
+        , testCase "admission performs no protected-store transition" $
+            withFramePlanAndStore hostFrameContext twoFramePlan $ \store plan -> do
+                before <- observeProtectedStore store
+                withCurrentFrame plan hostFrameContext
+                    (\current _ _ -> currentFrameId current)
+                    @?= Right "host-orchestrator-0"
+                after <- observeProtectedStore store
+                after @?= before
+        ]
+
+hostFrameContext :: BinaryContext
+hostFrameContext =
+    hostOrchestratorContext "demo" "demo" "/workspace/demo"
+
+vmFrameContext :: BinaryContext
+vmFrameContext =
+    deriveVMContext hostFrameContext "/workspace/demo-vm"
+
+containerFrameContext :: BinaryContext
+containerFrameContext =
+    deriveContainerContext vmFrameContext "/workspace/demo-container"
+
+branchedContainerContext :: BinaryContext
+branchedContainerContext =
+    containerFrameContext
+        { topologyFrames = map reparentContainer (topologyFrames containerFrameContext)
+        , parentChain =
+            [ ContextFrame
+                { frameKind = HostOrchestrator
+                , frameBinary = "demo"
+                }
+            ]
+        }
+  where
+    reparentContainer frame
+        | topologyFrameId frame == "vm-project-container-2" =
+            frame{topologyParentId = "host-orchestrator-0"}
+        | otherwise = frame
+
+nonEndpointContext :: BinaryContext
+nonEndpointContext =
+    containerFrameContext
+        { contextKind = VMOrchestrator
+        , roleName = "vm-orchestrator"
+        , parentChain =
+            [ ContextFrame
+                { frameKind = HostOrchestrator
+                , frameBinary = "demo"
+                }
+            ]
+        , currentFrame = "vm-orchestrator-1"
+        }
+
+twoFramePlan :: StepPlan
+twoFramePlan =
+    expectFrameStepPlan
+        [ descendsVia
+            localContext
+            ( contextInitStep
+                "context"
+                (StepFrame "host-orchestrator-0" "Host")
+                (const (pure StepChanged))
+            )
+        , ensureStep
+            "ghc"
+            "ensure ghc"
+            (StepFrame "vm-orchestrator-1" "VM")
+            (const (pure StepChanged))
+        ]
+
+threeFramePlan :: StepPlan
+threeFramePlan =
+    expectFrameStepPlan
+        [ descendsVia
+            localContext
+            ( contextInitStep
+                "context"
+                (StepFrame "host-orchestrator-0" "Host")
+                (const (pure StepChanged))
+            )
+        , descendsVia
+            localContext
+            ( ensureStep
+                "ghc"
+                "ensure ghc"
+                (StepFrame "vm-orchestrator-1" "VM")
+                (const (pure StepChanged))
+            )
+        , buildImageStep
+            "build image"
+            (StepFrame "vm-project-container-2" "Container")
+            (const (pure StepChanged))
+        ]
+
+expectFrameStepPlan :: [Step] -> StepPlan
+expectFrameStepPlan = either (error . show) id . mkStepPlan
+
+withFramePlan ::
+    BinaryContext ->
+    StepPlan ->
+    ( forall scope specDigest planId configId.
+      ProjectPlan scope specDigest planId configId Fixture.ProjectConfig ->
+      IO result
+    ) ->
+    IO result
+withFramePlan context plan use =
+    withFramePlanAndStore context plan (\_store admittedPlan -> use admittedPlan)
+
+withFramePlanAndStore ::
+    BinaryContext ->
+    StepPlan ->
+    ( forall scope specDigest planId configId.
+      ProtectedStore ->
+      ProjectPlan scope specDigest planId configId Fixture.ProjectConfig ->
+      IO result
+    ) ->
+    IO result
+withFramePlanAndStore context plan use =
+    withSystemTempDirectory "hostbootstrap-current-frame" $ \directory -> do
+        store <-
+            openProtectedStore (directory </> "protected")
+                >>= either (fail . show) pure
+        Fixture.withFixtureInstalledProject $
+            \(installed :: InstalledProjectIdentity projectId) -> do
+                rooted <-
+                    withCanonicalProjectRoot
+                        (directory </> "fixture.dhall")
+                        directory
+                        ( \(root :: CanonicalProjectRoot (Production projectId) rootId) ->
+                            withProductionRoot store installed ProjectUp $ \productionRoot -> do
+                                opened <-
+                                    withProductionLifecycleProfile
+                                        (rootScopeAuthority (productionRootAuthority productionRoot))
+                                        (productionActiveMode (productionRootModeLease productionRoot))
+                                        (productionRootUnboundLease productionRoot)
+                                        ( \profile ->
+                                            withProductionProjectCodec @Fixture.ProjectConfig @projectId $ \codec -> do
+                                                let value =
+                                                        ( Fixture.defaultProjectConfig
+                                                            (project context)
+                                                            (T.pack (canonicalProjectRootPath root))
+                                                            HostOrchestrator
+                                                        )
+                                                            { Fixture.context = context
+                                                            }
+                                                admitted <-
+                                                    Schema.withValidatedConfig codec value $ \_wire config -> do
+                                                        drafts <-
+                                                            either (fail . show) pure
+                                                                ( planDraftsFromValidatedBuilder
+                                                                    root
+                                                                    config
+                                                                    (\_ _ -> Right plan)
+                                                                )
+                                                        action <-
+                                                            either (fail . show) pure
+                                                                ( withProjectPlan
+                                                                    profile
+                                                                    root
+                                                                    config
+                                                                    drafts
+                                                                    (use store)
+                                                                )
+                                                        action
+                                                either fail pure admitted
+                                        )
+                                case opened of
+                                    Left failure ->
+                                        pure (Left (ModeAuthorityFailure failure))
+                                    Right action -> Right <$> action
+                        )
+                admitted <- either (fail . show) pure rooted
+                either (fail . show) pure admitted
+
+observeProtectedStore :: ProtectedStore -> IO [(T.Text, Maybe ProtectedRecord)]
+observeProtectedStore store = do
+    observed <-
+        withProtectedEntry store $ \session -> do
+            listed <- listProtectedRecords session
+            case listed of
+                Left failure -> pure (Left failure)
+                Right keys -> do
+                    records <-
+                        traverse
+                            ( \key ->
+                                fmap
+                                    (fmap (\record -> (recordKeyText key, record)))
+                                    (readProtectedRecord session key)
+                            )
+                            keys
+                    pure (sequence records)
+    either (fail . show) pure observed
 
 withContextFile :: String -> (FilePath -> IO a) -> IO a
 withContextFile body action =

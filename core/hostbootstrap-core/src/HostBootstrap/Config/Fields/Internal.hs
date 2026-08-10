@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE RoleAnnotations #-}
 
 module HostBootstrap.Config.Fields.Internal (
     WireKind (..),
@@ -69,8 +70,12 @@ data RoleCodec scope specDigest fields service = RoleCodec
     , internalRoleWireCodec :: CodecWitness (RuntimeRoleWire fields)
     }
 
+type role RoleCodec nominal nominal nominal nominal
+
 newtype RoleParams specDigest configId secretDigest fields service
     = RoleParams fields
+
+type role RoleParams nominal nominal nominal nominal nominal
 
 data ValidatedServiceRequest specDigest configId secretDigest fields service
     = ValidatedServiceRequest
@@ -78,11 +83,15 @@ data ValidatedServiceRequest specDigest configId secretDigest fields service
         Text
         (RoleParams specDigest configId secretDigest fields service)
 
+type role ValidatedServiceRequest nominal nominal nominal nominal nominal
+
 data FrameworkEnvelopeCodec scope specDigest cfg = FrameworkEnvelopeCodec
     { internalFullProjectCodec :: ProjectCodec scope specDigest cfg
     , internalFullScopeKind :: ScopeKind
     , internalFullView :: cfg scope -> LocalContextView
     }
+
+type role FrameworkEnvelopeCodec nominal nominal nominal
 
 localContextView :: Context.BinaryContext -> LocalContextView
 localContextView ctx =

@@ -1,5 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {- | The broker-signed runtime role activation (§ X, the operator-root-and-command-authority phase).
@@ -19,26 +20,42 @@ measuring the concrete instance (a pod UID plus its container restart count, or
 a protected OS invocation nonce for a host daemon) and hashing the wire and
 private-channel bytes actually mounted.
 
-Verification therefore refuses a changed ConfigMap or Secret, another project's
-key, a stale revision, a different binary or spec, and — because the measured
-instance is bound into the result — a value retained from one instance cannot
-run as another. The manifest carries only *digests*: no cleartext secret is
-representable in it.
+Verification therefore refuses a changed ConfigMap or private bundle, a wrong
+independently provisioned activation key, a stale revision, a different binary
+or spec, and — because the measured instance is bound into the result — a value
+retained from one instance cannot run as another.  The dedicated private-bundle
+field is an opaque canonical SHA-256 digest computed from bytes.  The remaining
+@Text@ fields are descriptive identities and locators supplied by later typed
+projections; they are not a blanket type-level proof that arbitrary text is
+secret-free.
 
-the composition-and-network-algebra phase consumes 'VerifiedRuntimeRoleActivation' together with the one-use
-'LifecycleAdmission' this module reserves, and owns the role plan, cursor, and
-phase machine built on top.
+The composition-and-network-algebra phase consumes
+'VerifiedRuntimeRoleActivation', validates that its durable session has the
+same protected-store origin, and owns the sole one-use lifecycle admission,
+role plan, cursor, and phase machine built on top.
 -}
 module HostBootstrap.Activation (
     -- * The signed manifest
+    ActivationSecretDigest,
+    activationSecretDigestFromBytes,
+    activationSecretDigestText,
     ActivationManifest (..),
     renderActivationManifest,
     activationManifestFromWire,
 
+    -- * Independently provisioned activation identity
+    ActivationSigningKey,
+    activationSigningKeyFromBytes,
+    ActivationVerificationKey,
+    activationVerificationKeyFromBytes,
+    activationSigningVerificationKey,
+    activationVerificationKeyBytes,
+
     -- * The broker that signs it
+    ActivationSigningPolicy,
+    activationSigningPolicy,
     ActivationBroker,
     withActivationBroker,
-    activationBrokerKey,
     ActivationGrant,
     activationGrantSignature,
     signActivationManifest,
@@ -62,46 +79,68 @@ module HostBootstrap.Activation (
     activationConfigDigest,
     activationSecretDigest,
     activationRolePlanDigest,
+    validateActivationStoreOrigin,
     verifyRuntimeRoleActivation,
-
-    -- * One-use lifecycle admission
-    LifecycleAdmission,
-    lifecycleAdmissionKey,
-    reserveLifecycleAdmission,
 
     -- * Failures
     ActivationError (..),
     activationErrorMessage,
 ) where
 
+import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, withMVar)
+import Control.Exception (bracket, evaluate)
 import Crypto.Error (CryptoFailable (CryptoFailed, CryptoPassed))
+import qualified Crypto.Hash as Hash
 import qualified Crypto.PubKey.Ed25519 as Ed25519
-import Crypto.Random (getRandomBytes)
+import Data.Bits (shiftR, (.&.))
 import Data.ByteArray (convert)
+import qualified Data.ByteArray as ByteArray
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
+import qualified Data.ByteString.Char8 as ByteStringChar8
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import HostBootstrap.Authority (RootInvocationAuthority)
 import HostBootstrap.Handoff (
-    ProjectVerificationKey,
     frameWire,
     takeHandoffFrame,
-    verificationKeyBytes,
  )
 import HostBootstrap.Protected (
-    Expectation (ExpectAbsent),
-    ProtectedError,
     ProtectedSession,
-    compareAndSwapProtectedRecord,
-    mkRecordKey,
-    protectedErrorMessage,
+    ProtectedStore,
+    ProtectedStoreIdentity,
+    protectedStoreIdentity,
+    protectedStoreIdentityText,
+    sessionStoreIdentity,
  )
 
 -- ---------------------------------------------------------------------------
 -- The manifest
+
+{- | Canonical identity of the exact private-bundle bytes.
+
+The constructor is hidden.  Local measurements enter only through
+'activationSecretDigestFromBytes'; the wire decoder accepts only the one
+lower-case 64-hex SHA-256 spelling.  This excludes a cleartext password or an
+arbitrary descriptive label from the manifest's dedicated secret-content
+coordinate without pretending that every other descriptive @Text@ is a secret
+type.
+-}
+newtype ActivationSecretDigest = ActivationSecretDigest Text
+    deriving (Eq, Ord)
+
+instance Show ActivationSecretDigest where
+    show _ = "ActivationSecretDigest <sha256>"
+
+-- | Measure the exact private-bundle bytes.
+activationSecretDigestFromBytes :: ByteString -> ActivationSecretDigest
+activationSecretDigestFromBytes = ActivationSecretDigest . sha256Hex
+
+-- | The canonical, non-secret SHA-256 identity.
+activationSecretDigestText :: ActivationSecretDigest -> Text
+activationSecretDigestText (ActivationSecretDigest digest) = digest
 
 {- | Everything the root broker can honestly bind before a workload exists.
 
@@ -110,9 +149,10 @@ immutable rollout revision and the controller-template-level indices; the
 concrete pod UID or invocation nonce is measured at startup and paired with this
 manifest by 'verifyRuntimeRoleActivation'.
 
-Every secret-shaped field is a **digest**. A cleartext secret is not
-representable in this type, so it cannot reach a manifest, a pod template, or a
-diagnostic rendering of one.
+The private bundle itself is absent.  Its dedicated field is an opaque digest,
+so cleartext bundle bytes cannot be placed there.  Other descriptive fields
+remain ordinary identifiers and locators whose typed production belongs to the
+later runtime phases.
 -}
 data ActivationManifest = ActivationManifest
     { manifestScope :: Text
@@ -122,7 +162,7 @@ data ActivationManifest = ActivationManifest
     , manifestFrame :: Text
     , manifestRevision :: Text
     , manifestConfigDigest :: Text
-    , manifestSecretDigest :: Text
+    , manifestSecretDigest :: ActivationSecretDigest
     , manifestService :: Text
     , manifestRolePlanDigest :: Text
     , manifestPermittedEffects :: [Text]
@@ -143,7 +183,7 @@ renderActivationManifest manifest =
         , field (manifestFrame manifest)
         , field (manifestRevision manifest)
         , field (manifestConfigDigest manifest)
-        , field (manifestSecretDigest manifest)
+        , field (activationSecretDigestText (manifestSecretDigest manifest))
         , field (manifestService manifest)
         , field (manifestRolePlanDigest manifest)
         , frameWire (ByteString.concat (map field (manifestPermittedEffects manifest)))
@@ -155,39 +195,130 @@ renderActivationManifest manifest =
 -- ---------------------------------------------------------------------------
 -- The broker
 
+{- | Long-lived activation signer provisioned at the root.
+
+This is deliberately distinct from the handoff and build signing identities.
+The constructor and seed bytes are hidden; provisioning validates the seed
+before a root invocation can construct a broker.
+-}
+newtype ActivationSigningKey = ActivationSigningKey Ed25519.SecretKey
+
+instance Show ActivationSigningKey where
+    show _ = "ActivationSigningKey <redacted>"
+
+-- | Validate a provisioned 32-byte Ed25519 activation-signing seed.
+activationSigningKeyFromBytes :: ByteString -> Either ActivationError ActivationSigningKey
+activationSigningKeyFromBytes raw = case Ed25519.secretKey raw of
+    CryptoFailed err -> Left (ActivationSigningKeyInvalid (Text.pack (show err)))
+    CryptoPassed key -> Right (ActivationSigningKey key)
+
+{- | Long-lived activation verifier installed independently at each runtime.
+
+It is selected before broker construction and never obtained from an
+'ActivationBroker', manifest, grant, or relay response.
+-}
+newtype ActivationVerificationKey = ActivationVerificationKey Ed25519.PublicKey
+    deriving (Eq)
+
+instance Show ActivationVerificationKey where
+    show _ = "ActivationVerificationKey <installed>"
+
+-- | Validate independently provisioned Ed25519 public-key bytes.
+activationVerificationKeyFromBytes :: ByteString -> Either ActivationError ActivationVerificationKey
+activationVerificationKeyFromBytes raw = case Ed25519.publicKey raw of
+    CryptoFailed err -> Left (ActivationVerificationKeyInvalid (Text.pack (show err)))
+    CryptoPassed key -> Right (ActivationVerificationKey key)
+
+-- | Derive the public half during trusted provisioning, before a broker exists.
+activationSigningVerificationKey :: ActivationSigningKey -> ActivationVerificationKey
+activationSigningVerificationKey (ActivationSigningKey secret) =
+    ActivationVerificationKey (Ed25519.toPublic secret)
+
+-- | Canonical public bytes for independent runtime installation.
+activationVerificationKeyBytes :: ActivationVerificationKey -> ByteString
+activationVerificationKeyBytes (ActivationVerificationKey key) = convert key
+
+{- | The exact manifests one root invocation has admitted for signing.
+
+The policy is intentionally a closed canonical-byte allowlist, not a predicate:
+there is no permissive callback a caller can accidentally install.  The root
+constructs it from the role projections it is about to deploy, and the broker
+will sign no other value.  The role-plan/project-plan integration that produces
+those projections remains owned by the later runtime phases; this type does not
+pretend that 'ActivationManifest' fields already live in a @ProjectPlan@.
+-}
+newtype ActivationSigningPolicy = ActivationSigningPolicy [ByteString]
+
+instance Show ActivationSigningPolicy where
+    show (ActivationSigningPolicy manifests) =
+        "ActivationSigningPolicy " <> show (length manifests) <> " manifests"
+
+-- | Validate and close a non-empty exact-manifest signing policy.
+activationSigningPolicy :: [ActivationManifest] -> Either ActivationError ActivationSigningPolicy
+activationSigningPolicy manifests = do
+    if null manifests
+        then Left (ActivationManifestInvalid "the signing policy is empty")
+        else pure ()
+    traverse_ validateManifest manifests
+    let rendered = map renderActivationManifest manifests
+    if hasDuplicate rendered
+        then Left (ActivationManifestInvalid "the signing policy contains a duplicate manifest")
+        else Right (ActivationSigningPolicy rendered)
+  where
+    hasDuplicate [] = False
+    hasDuplicate (value : rest) = value `elem` rest || hasDuplicate rest
+
+    traverse_ _ [] = Right ()
+    traverse_ action (value : rest) = action value >> traverse_ action rest
+
 {- | The root broker's activation-signing capability.
 
-A separate keypair from the cross-frame handoff broker, minted from the same
-verified root invocation. Keeping the two apart means a captured handoff grant
-can never be presented as an activation manifest, and vice versa, without
-relying on the two protocols' canonical encodings never colliding.
+The provisioned activation identity is separate from the cross-frame handoff
+identity, and the signature also has its own domain.  The broker is usable only
+while 'withActivationBroker' is active: every signer holds the live-state lock
+through signature construction, and the bracket finalizer acquires that same
+lock before expiring the broker.  An escaped value therefore yields only
+'ActivationBrokerExpired'.
 -}
 data ActivationBroker scope brokerGeneration verb = ActivationBroker
     { brokerSecret :: Ed25519.SecretKey
     , brokerPublic :: Ed25519.PublicKey
+    , brokerSigningPolicy :: ActivationSigningPolicy
+    , brokerLive :: MVar Bool
     }
+
+type role ActivationBroker nominal nominal nominal
 
 instance Show (ActivationBroker scope brokerGeneration verb) where
     show _ = "ActivationBroker <signing>"
 
--- | The public half a runtime must have installed to verify this broker.
-activationBrokerKey :: ActivationBroker scope brokerGeneration verb -> ByteString
-activationBrokerKey = convert . brokerPublic
+{- | Narrow one provisioned signer to a verified root invocation and a closed
+manifest policy.
 
-{- | Run an action with a fresh activation-signing keypair, minted from a
-verified root invocation and never returned from the continuation.
+The callback may retain the opaque value, but the finalizer expires its only
+public signing operation before this function returns or propagates an
+exception.
 -}
 withActivationBroker ::
+    ActivationSigningKey ->
     RootInvocationAuthority scope brokerGeneration verb ->
+    ActivationSigningPolicy ->
     (ActivationBroker scope brokerGeneration verb -> IO result) ->
     IO result
-withActivationBroker root use = do
+withActivationBroker (ActivationSigningKey secret) root policy use = do
     root `seq` pure ()
-    seed <- getRandomBytes 32 :: IO ByteString
-    secret <- case Ed25519.secretKey seed of
-        CryptoFailed err -> ioError (userError ("activation key generation failed: " <> show err))
-        CryptoPassed value -> pure value
-    use ActivationBroker{brokerSecret = secret, brokerPublic = Ed25519.toPublic secret}
+    live <- newMVar True
+    bracket
+        ( pure
+            ActivationBroker
+                { brokerSecret = secret
+                , brokerPublic = Ed25519.toPublic secret
+                , brokerSigningPolicy = policy
+                , brokerLive = live
+                }
+        )
+        (\_ -> modifyMVar_ live (const (pure False)))
+        use
 
 -- | The broker's signature over one manifest.
 newtype ActivationGrant = ActivationGrant ByteString
@@ -206,36 +337,75 @@ travels back as bytes; without it the relayed half could not hold its own answer
 It is safe for the same reason the wire is: __an 'ActivationGrant' is not
 authority__. It is a signature, and the only thing that consumes one is
 'verifyRuntimeRoleActivation', which checks it against the independently
-installed project verification key over the manifest's own domain-separated
+installed activation verification key over the manifest's own domain-separated
 material. Adopting arbitrary bytes here therefore yields a grant that fails
 verification, not a grant that authorizes anything.
 -}
 adoptRelayedActivationGrant :: ByteString -> ActivationGrant
 adoptRelayedActivationGrant = ActivationGrant
 
-{- | Sign an activation manifest. Refuses a manifest with an empty revision or
-an empty effect row identity, so an unbound rollout cannot be signed.
+{- | Sign an activation manifest only when the root's closed policy admitted
+the exact canonical bytes.  This is an authorization decision, so validation
+alone is deliberately insufficient.
 -}
 signActivationManifest ::
     ActivationBroker scope brokerGeneration verb ->
     ActivationManifest ->
-    Either ActivationError ActivationGrant
-signActivationManifest broker manifest
-    | Text.null (manifestRevision manifest) =
-        Left (ActivationManifestInvalid "the rollout revision is empty")
-    | Text.null (manifestService manifest) =
-        Left (ActivationManifestInvalid "the service identity is empty")
-    | otherwise =
-        Right
-            ( ActivationGrant
-                ( convert
-                    ( Ed25519.sign
-                        (brokerSecret broker)
-                        (brokerPublic broker)
-                        (signedMaterial manifest)
-                    )
+    IO (Either ActivationError ActivationGrant)
+signActivationManifest broker manifest =
+    withMVar (brokerLive broker) $ \live ->
+        if not live
+            then pure (Left ActivationBrokerExpired)
+            else case validateManifest manifest of
+                Left failure -> pure (Left failure)
+                Right () ->
+                    if renderActivationManifest manifest `notElem` admitted
+                        then pure (Left ActivationManifestNotAdmitted)
+                        else Right <$> signManifest broker manifest
+  where
+    ActivationSigningPolicy admitted = brokerSigningPolicy broker
+
+signManifest ::
+    ActivationBroker scope brokerGeneration verb ->
+    ActivationManifest ->
+    IO ActivationGrant
+signManifest broker manifest = do
+    let signature =
+            convert
+                ( Ed25519.sign
+                    (brokerSecret broker)
+                    (brokerPublic broker)
+                    (signedMaterial manifest)
                 )
-            )
+    -- Force the strict signature bytes while the live-state MVar is held.
+    -- Otherwise the pure cryptographic thunk could be evaluated after cleanup.
+    _ <- evaluate (ByteString.length signature)
+    pure (ActivationGrant signature)
+
+validateManifest :: ActivationManifest -> Either ActivationError ()
+validateManifest manifest = do
+    require "scope" (manifestScope manifest)
+    require "plan digest" (manifestPlanDigest manifest)
+    require "spec digest" (manifestSpecDigest manifest)
+    require "binary digest" (manifestBinaryDigest manifest)
+    require "frame" (manifestFrame manifest)
+    require "rollout revision" (manifestRevision manifest)
+    require "config digest" (manifestConfigDigest manifest)
+    require "service identity" (manifestService manifest)
+    require "role-plan digest" (manifestRolePlanDigest manifest)
+    require "secret channel" (manifestSecretChannel manifest)
+    if any Text.null (manifestPermittedEffects manifest)
+        then Left (ActivationManifestInvalid "an effect identity is empty")
+        else pure ()
+    if hasDuplicate (manifestPermittedEffects manifest)
+        then Left (ActivationManifestInvalid "the effect row contains a duplicate identity")
+        else pure ()
+  where
+    require fieldName value
+        | Text.null value = Left (ActivationManifestInvalid ("the " <> fieldName <> " is empty"))
+        | otherwise = Right ()
+    hasDuplicate [] = False
+    hasDuplicate (value : rest) = value `elem` rest || hasDuplicate rest
 
 -- | Domain-separated signing material.
 signedMaterial :: ActivationManifest -> ByteString
@@ -264,7 +434,8 @@ activationManifestFromWire raw = do
     (frame, afterFrame) <- textField afterBinary
     (revision, afterRevision) <- textField afterFrame
     (configDigest, afterConfig) <- textField afterRevision
-    (secretDigest, afterSecret) <- textField afterConfig
+    (secretDigestText, afterSecret) <- textField afterConfig
+    secretDigest <- canonicalSecretDigest secretDigestText
     (service, afterService) <- textField afterSecret
     (rolePlanDigest, afterRolePlan) <- textField afterService
     (effectRow, afterEffects) <- frameField afterRolePlan
@@ -309,6 +480,20 @@ activationManifestFromWire raw = do
             (value, rest) <- textField bytes
             fmap (value :) (effectList rest)
 
+canonicalSecretDigest :: Text -> Either ActivationError ActivationSecretDigest
+canonicalSecretDigest digest
+    | Text.length digest == 64 && Text.all isLowerHex digest =
+        Right (ActivationSecretDigest digest)
+    | otherwise =
+        Left
+            ( ActivationManifestInvalid
+                "the secret digest is not canonical lower-case SHA-256 hex"
+            )
+  where
+    isLowerHex character =
+        ('0' <= character && character <= '9')
+            || ('a' <= character && character <= 'f')
+
 -- ---------------------------------------------------------------------------
 -- Measurement
 
@@ -342,8 +527,8 @@ data RuntimeMeasurement = RuntimeMeasurement
     { measuredBinaryDigest :: Text
     , -- | the hash of the role-wire bytes actually mounted
       measuredConfigDigest :: Text
-    , -- | the hash of the private-channel bytes actually read
-      measuredSecretDigest :: Text
+    , -- | the canonical hash computed from private-channel bytes actually read
+      measuredSecretDigest :: ActivationSecretDigest
     , measuredInstance :: MeasuredInstance
     }
     deriving (Eq, Show)
@@ -355,18 +540,21 @@ data RuntimeMeasurement = RuntimeMeasurement
 
 Opaque and produced only by 'verifyRuntimeRoleActivation'. It carries the signed
 manifest, the measured instance it was paired with, and the protected
-secret-channel locator as one value: a caller cannot take the effect row from
-one activation and the instance from another, and cannot obtain the locator
-without the activation that authorized it.
+secret-channel locator and protected-store origin as one value: a caller cannot
+take the effect row from one activation and the instance from another, cannot
+obtain the locator without the activation that authorized it, and cannot move a
+verified activation to a second durable store.
 
 It confers no lifecycle authority on its own. It cannot construct a
 `ProjectPlan`, a generic command authority, or a root authority.
 -}
 data VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId
-    = VerifiedRuntimeRoleActivation ActivationManifest MeasuredInstance
+    = VerifiedRuntimeRoleActivation ActivationManifest MeasuredInstance ProtectedStoreIdentity
+
+type role VerifiedRuntimeRoleActivation nominal nominal nominal nominal nominal nominal nominal
 
 instance Show (VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId) where
-    show (VerifiedRuntimeRoleActivation manifest instance') =
+    show (VerifiedRuntimeRoleActivation manifest instance' _) =
         "VerifiedRuntimeRoleActivation "
             <> Text.unpack (manifestRevision manifest)
             <> " "
@@ -374,29 +562,29 @@ instance Show (VerifiedRuntimeRoleActivation scope planDigest specDigest binaryD
 
 activationRevision ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId -> Text
-activationRevision (VerifiedRuntimeRoleActivation manifest _) = manifestRevision manifest
+activationRevision (VerifiedRuntimeRoleActivation manifest _ _) = manifestRevision manifest
 
 activationInstance ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId ->
     MeasuredInstance
-activationInstance (VerifiedRuntimeRoleActivation _ instance') = instance'
+activationInstance (VerifiedRuntimeRoleActivation _ instance' _) = instance'
 
 activationService ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId -> Text
-activationService (VerifiedRuntimeRoleActivation manifest _) = manifestService manifest
+activationService (VerifiedRuntimeRoleActivation manifest _ _) = manifestService manifest
 
 -- | The effect row this activation permits. the service-runtime phase revalidates it before
 -- minting the service command authority; it is not itself effect authority.
 activationPermittedEffects ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId -> [Text]
-activationPermittedEffects (VerifiedRuntimeRoleActivation manifest _) =
+activationPermittedEffects (VerifiedRuntimeRoleActivation manifest _ _) =
     manifestPermittedEffects manifest
 
 -- | The protected locator for the run-private bundle, reachable only through a
 -- verified activation.
 activationSecretChannel ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId -> Text
-activationSecretChannel (VerifiedRuntimeRoleActivation manifest _) = manifestSecretChannel manifest
+activationSecretChannel (VerifiedRuntimeRoleActivation manifest _ _) = manifestSecretChannel manifest
 
 {- | The signed parent lifecycle-plan digest. the composition-and-network-algebra phase keys the role's durable
 lifecycle admission on it and binds the narrowed role plan back to it; the child
@@ -404,172 +592,231 @@ never recomputes it from its least-authority wire.
 -}
 activationPlanDigest ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId -> Text
-activationPlanDigest (VerifiedRuntimeRoleActivation manifest _) = manifestPlanDigest manifest
+activationPlanDigest (VerifiedRuntimeRoleActivation manifest _ _) = manifestPlanDigest manifest
 
 activationSpecDigest ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId -> Text
-activationSpecDigest (VerifiedRuntimeRoleActivation manifest _) = manifestSpecDigest manifest
+activationSpecDigest (VerifiedRuntimeRoleActivation manifest _ _) = manifestSpecDigest manifest
 
 activationFrame ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId -> Text
-activationFrame (VerifiedRuntimeRoleActivation manifest _) = manifestFrame manifest
+activationFrame (VerifiedRuntimeRoleActivation manifest _ _) = manifestFrame manifest
 
 activationConfigDigest ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId -> Text
-activationConfigDigest (VerifiedRuntimeRoleActivation manifest _) = manifestConfigDigest manifest
+activationConfigDigest (VerifiedRuntimeRoleActivation manifest _ _) = manifestConfigDigest manifest
 
 activationSecretDigest ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId -> Text
-activationSecretDigest (VerifiedRuntimeRoleActivation manifest _) = manifestSecretDigest manifest
+activationSecretDigest (VerifiedRuntimeRoleActivation manifest _ _) =
+    activationSecretDigestText (manifestSecretDigest manifest)
 
 {- | The signed digest of the narrowed role-plan projection. 'verifyRolePlanDraft'
 compares the project's own draft against it before any durable mutation.
 -}
 activationRolePlanDigest ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId -> Text
-activationRolePlanDigest (VerifiedRuntimeRoleActivation manifest _) = manifestRolePlanDigest manifest
+activationRolePlanDigest (VerifiedRuntimeRoleActivation manifest _ _) = manifestRolePlanDigest manifest
 
-{- | Verify a signed manifest against locally measured reality.
+{- | Confirm that a protected session belongs to the same durable store that
+participated in activation verification.
 
-The expected revision is supplied by the caller from the controller/pointer it
-actually read, so a manifest for a superseded rollout is refused rather than
-silently accepted. The verification key is installed independently of the
-manifest.
+The activation constructor and retained origin remain hidden.  Lifecycle code
+can therefore perform this check without accepting a caller-supplied identity
+or gaining a way to forge or inspect the verified package.
+-}
+validateActivationStoreOrigin ::
+    ProtectedSession session ->
+    VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId ->
+    Either ActivationError ()
+validateActivationStoreOrigin session (VerifiedRuntimeRoleActivation _ _ origin)
+    | sessionStoreIdentity session == origin = Right ()
+    | otherwise =
+        Left
+            ( ActivationStoreOriginMismatch
+                (protectedStoreIdentityText origin)
+                (protectedStoreIdentityText (sessionStoreIdentity session))
+            )
+
+{- | Verify a signed manifest against an independently selected exact manifest,
+locally measured reality, and the protected store that will own its admission.
+
+The continuation is rank-2: none of the seven activation identities is selected
+by the caller or can escape the verification that generated it.  The expected
+manifest comes from the workload/controller projection, not from the received
+grant; exact comparison prevents replaying a different admitted service, frame,
+effect row, or secret channel merely because its measured digests happen to
+match.  The verification key and protected-store origin are also installed
+independently of the manifest.
 -}
 verifyRuntimeRoleActivation ::
-    -- | the independently installed project key
-    ProjectVerificationKey ->
-    -- | the rollout revision this process was started for
-    Text ->
+    -- | the independently installed activation key
+    ActivationVerificationKey ->
+    -- | the protected store that must later own lifecycle admission
+    ProtectedStore ->
+    -- | the exact independently selected workload manifest
+    ActivationManifest ->
+    -- | the received signed manifest
     ActivationManifest ->
     ActivationGrant ->
     RuntimeMeasurement ->
-    Either
-        ActivationError
-        (VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId)
-verifyRuntimeRoleActivation key expectedRevision manifest (ActivationGrant signature) measurement
-    | manifestRevision manifest /= expectedRevision =
-        Left (ActivationRevisionStale (manifestRevision manifest) expectedRevision)
+    ( forall scope planDigest specDigest binaryDigest frame revision instanceId.
+      VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId ->
+      IO result
+    ) ->
+    IO (Either ActivationError result)
+verifyRuntimeRoleActivation
+    (ActivationVerificationKey key)
+    store
+    expected
+    manifest
+    (ActivationGrant signature)
+    measurement
+    use
+    | Left failure <- validateManifest manifest = pure (Left failure)
+    | Left failure <- validateMeasuredInstance (measuredInstance measurement) = pure (Left failure)
+    | manifestRevision manifest /= manifestRevision expected =
+        pure (Left (ActivationRevisionStale (manifestRevision manifest) (manifestRevision expected)))
+    | Just (fieldName, signed, selected) <- firstManifestMismatch expected manifest =
+        pure (Left (ActivationManifestMismatch fieldName signed selected))
     | manifestBinaryDigest manifest /= measuredBinaryDigest measurement =
-        Left
-            ( ActivationMeasurementMismatch
-                "binary"
-                (manifestBinaryDigest manifest)
-                (measuredBinaryDigest measurement)
+        pure
+            ( Left
+                ( ActivationMeasurementMismatch
+                    "binary"
+                    (manifestBinaryDigest manifest)
+                    (measuredBinaryDigest measurement)
+                )
             )
     | manifestConfigDigest manifest /= measuredConfigDigest measurement =
-        Left
-            ( ActivationMeasurementMismatch
-                "config"
-                (manifestConfigDigest manifest)
-                (measuredConfigDigest measurement)
+        pure
+            ( Left
+                ( ActivationMeasurementMismatch
+                    "config"
+                    (manifestConfigDigest manifest)
+                    (measuredConfigDigest measurement)
+                )
             )
     | manifestSecretDigest manifest /= measuredSecretDigest measurement =
-        Left
-            ( ActivationMeasurementMismatch
-                "secret"
-                (manifestSecretDigest manifest)
-                (measuredSecretDigest measurement)
+        pure
+            ( Left
+                ( ActivationMeasurementMismatch
+                    "secret"
+                    (activationSecretDigestText (manifestSecretDigest manifest))
+                    (activationSecretDigestText (measuredSecretDigest measurement))
+                )
             )
-    | otherwise = case Ed25519.publicKey (verificationKeyBytes key) of
-        CryptoFailed err -> Left (ActivationKeyUnusable (Text.pack (show err)))
-        CryptoPassed parsedKey -> case Ed25519.signature signature of
-            CryptoFailed err -> Left (ActivationSignatureInvalid (Text.pack (show err)))
-            CryptoPassed parsedSignature
-                | not (Ed25519.verify parsedKey (signedMaterial manifest) parsedSignature) ->
-                    Left
+    | otherwise = case Ed25519.signature signature of
+        CryptoFailed err -> pure (Left (ActivationSignatureInvalid (Text.pack (show err))))
+        CryptoPassed parsedSignature
+            | not (Ed25519.verify key (signedMaterial manifest) parsedSignature) ->
+                pure
+                    ( Left
                         ( ActivationSignatureInvalid
                             "the grant does not authenticate this manifest"
                         )
-                | otherwise ->
-                    Right
-                        ( VerifiedRuntimeRoleActivation manifest (measuredInstance measurement)
+                    )
+            | otherwise ->
+                Right
+                    <$> use
+                        ( VerifiedRuntimeRoleActivation
+                            manifest
+                            (measuredInstance measurement)
+                            (protectedStoreIdentity store)
                         )
 
--- ---------------------------------------------------------------------------
--- One-use lifecycle admission
+validateMeasuredInstance :: MeasuredInstance -> Either ActivationError ()
+validateMeasuredInstance instance' = case instance' of
+    KubernetesInstance measuredPodUid _
+        | Text.null measuredPodUid ->
+            Left (ActivationInstanceInvalid "the measured Kubernetes pod UID is empty")
+    HostServiceInstance nonce
+        | Text.null nonce ->
+            Left (ActivationInstanceInvalid "the measured host invocation nonce is empty")
+    _ -> Right ()
 
-{- | Proof that this exact instance reserved its single lifecycle admission.
-
-the composition-and-network-algebra phase requires one before Prereq/acquisition, so a duplicated activation
-or request cannot open two lifecycle admissions or acquire the same resources
-twice.
--}
-newtype LifecycleAdmission scope planDigest frame revision instanceId
-    = LifecycleAdmission Text
-
-instance Show (LifecycleAdmission scope planDigest frame revision instanceId) where
-    show (LifecycleAdmission key) = "LifecycleAdmission " <> Text.unpack key
-
--- | The durable key this admission was reserved under.
-lifecycleAdmissionKey :: LifecycleAdmission scope planDigest frame revision instanceId -> Text
-lifecycleAdmissionKey (LifecycleAdmission key) = key
-
-{- | Reserve the one-use admission for a verified activation.
-
-The reservation is a compare-and-swap against absence, keyed on the plan, frame,
-revision, and **measured instance**. A second attempt by the same instance is
-'ActivationAdmissionConsumed'; a genuinely new instance — a restart, which has a
-different restart count — gets its own key and its own admission.
--}
-reserveLifecycleAdmission ::
-    ProtectedSession session ->
-    VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId ->
-    IO
-        ( Either
-            ActivationError
-            (LifecycleAdmission scope planDigest frame revision instanceId)
-        )
-reserveLifecycleAdmission session (VerifiedRuntimeRoleActivation manifest instance') =
-    case mkRecordKey rawKey of
-        Left failure -> pure (Left (ActivationStoreFailure failure))
-        Right key -> do
-            written <-
-                compareAndSwapProtectedRecord
-                    session
-                    key
-                    ExpectAbsent
-                    (renderActivationManifest manifest)
-            pure $ case written of
-                Left _ -> Left (ActivationAdmissionConsumed rawKey)
-                Right _ -> Right (LifecycleAdmission rawKey)
+firstManifestMismatch ::
+    ActivationManifest ->
+    ActivationManifest ->
+    Maybe (Text, Text, Text)
+firstManifestMismatch expected signed = firstDifferent fields
   where
-    rawKey =
-        Text.filter legal $
-            "admission."
-                <> manifestPlanDigest manifest
-                <> "."
-                <> manifestFrame manifest
-                <> "."
-                <> manifestRevision manifest
-                <> "."
-                <> instanceIdentityText instance'
-    legal character =
-        character `elem` ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_." :: String)
+    fields =
+        [ ("scope", manifestScope signed, manifestScope expected)
+        , ("plan digest", manifestPlanDigest signed, manifestPlanDigest expected)
+        , ("spec digest", manifestSpecDigest signed, manifestSpecDigest expected)
+        , ("binary digest", manifestBinaryDigest signed, manifestBinaryDigest expected)
+        , ("frame", manifestFrame signed, manifestFrame expected)
+        , ("revision", manifestRevision signed, manifestRevision expected)
+        , ("config digest", manifestConfigDigest signed, manifestConfigDigest expected)
+        , ( "secret digest"
+          , activationSecretDigestText (manifestSecretDigest signed)
+          , activationSecretDigestText (manifestSecretDigest expected)
+          )
+        , ("service", manifestService signed, manifestService expected)
+        , ("role-plan digest", manifestRolePlanDigest signed, manifestRolePlanDigest expected)
+        , ( "permitted effects"
+          , Text.intercalate "," (manifestPermittedEffects signed)
+          , Text.intercalate "," (manifestPermittedEffects expected)
+          )
+        , ("secret channel", manifestSecretChannel signed, manifestSecretChannel expected)
+        ]
+    firstDifferent [] = Nothing
+    firstDifferent (candidate@(_, actual, wanted) : rest)
+        | actual /= wanted = Just candidate
+        | otherwise = firstDifferent rest
 
 -- ---------------------------------------------------------------------------
 -- Failures
 
+sha256Hex :: ByteString -> Text
+sha256Hex payload =
+    Text.pack (concatMap hex (ByteArray.unpack (Hash.hashWith Hash.SHA256 payload)))
+  where
+    hex byte = [hexDigit (byte `shiftR` 4), hexDigit (byte .&. 0x0f)]
+    hexDigit nibble = ByteStringChar8.index "0123456789abcdef" (fromIntegral nibble)
+
 data ActivationError
     = ActivationManifestInvalid Text
+    | ActivationManifestNotAdmitted
+    | ActivationBrokerExpired
+    | ActivationSigningKeyInvalid Text
+    | ActivationVerificationKeyInvalid Text
     | -- | the signed revision, then the one this process was started for
       ActivationRevisionStale Text Text
+    | -- | field, the signed value, then the independently selected value
+      ActivationManifestMismatch Text Text Text
     | -- | what, the signed value, then the measured one
       ActivationMeasurementMismatch Text Text Text
+    | ActivationInstanceInvalid Text
     | ActivationSignatureInvalid Text
-    | ActivationKeyUnusable Text
-    | ActivationAdmissionConsumed Text
-    | ActivationStoreFailure ProtectedError
+    | -- | the verification store identity, then the supplied session store
+      ActivationStoreOriginMismatch Text Text
     deriving (Eq, Show)
 
 activationErrorMessage :: ActivationError -> String
 activationErrorMessage err = case err of
     ActivationManifestInvalid detail -> "activation: " <> Text.unpack detail
+    ActivationManifestNotAdmitted ->
+        "activation: the root signing policy did not admit this exact manifest"
+    ActivationBrokerExpired ->
+        "activation: the root signing broker has left its active bracket"
+    ActivationSigningKeyInvalid detail ->
+        "activation: the provisioned signing key is invalid: " <> Text.unpack detail
+    ActivationVerificationKeyInvalid detail ->
+        "activation: the provisioned verification key is invalid: " <> Text.unpack detail
     ActivationRevisionStale signed expected ->
         "activation: manifest revision "
             <> Text.unpack signed
             <> " is not the started revision "
             <> Text.unpack expected
+    ActivationManifestMismatch fieldName signed expected ->
+        "activation: signed "
+            <> Text.unpack fieldName
+            <> " "
+            <> show (Text.unpack signed)
+            <> " is not the selected value "
+            <> show (Text.unpack expected)
     ActivationMeasurementMismatch what signed measured ->
         "activation: "
             <> Text.unpack what
@@ -578,9 +825,10 @@ activationErrorMessage err = case err of
             <> ", measured "
             <> Text.unpack measured
             <> ")"
+    ActivationInstanceInvalid detail -> "activation: " <> Text.unpack detail
     ActivationSignatureInvalid detail -> "activation: " <> Text.unpack detail
-    ActivationKeyUnusable detail ->
-        "activation: the installed verification key is unusable: " <> Text.unpack detail
-    ActivationAdmissionConsumed key ->
-        "activation: lifecycle admission " <> Text.unpack key <> " is already reserved"
-    ActivationStoreFailure failure -> "activation: " <> Text.unpack (protectedErrorMessage failure)
+    ActivationStoreOriginMismatch expected actual ->
+        "activation: verified package belongs to protected store "
+            <> Text.unpack expected
+            <> ", not "
+            <> Text.unpack actual

@@ -73,8 +73,8 @@ dev toolchain (ruff/black/mypy/pytest) is importable. The gate is
 `cli._maintainer_cli_enabled()`; an ordinary pipx environment lacks those modules, so the names are
 absent from `--help` and resolve to `No such command`. Importability is not proof of Poetry/repository
 provenance, however: injecting all four modules into a pipx environment also satisfies the current gate.
-The supported maintainer context is this repository's Poetry `.venv`; Phase 6 Sprint 6.7 owns a
-fail-closed provenance check that makes other contexts unrepresentable. The Poetry environment exposes
+The supported maintainer context is this repository's Poetry `.venv`; the current importability gate does not
+establish stronger environment provenance. The Poetry environment exposes
 two convenience subcommands that wrap the module runners:
 
 - `poetry run hostbootstrap check-code` — same gate as `python -m hostbootstrap.check_code`.

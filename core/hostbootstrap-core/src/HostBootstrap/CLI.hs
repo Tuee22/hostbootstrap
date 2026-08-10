@@ -1,7 +1,6 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -48,13 +47,17 @@ module HostBootstrap.CLI (
 )
 where
 
-import Control.Monad (foldM, join, unless)
-import Data.Char (toLower)
+import Control.Monad (foldM, join)
 import Data.List (group, sort)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Dhall (FromDhall, ToDhall)
 import GHC.Generics (Generic)
+import HostBootstrap.Authority (
+    InstalledProjectIdentity,
+    authorityErrorMessage,
+    withInstalledProjectIdentity,
+ )
 import HostBootstrap.Command (coreCommands)
 import HostBootstrap.Config.Class (
     AssemblyRequest (..),
@@ -62,7 +65,6 @@ import HostBootstrap.Config.Class (
     ConfigInput,
     InitArgs (..),
     ProjectCfg (..),
-    ProjectCodec,
     TestCfg (..),
     configInputPath,
     failConfigAssembly,
@@ -82,21 +84,21 @@ import HostBootstrap.Dhall.Gen (
     requireCodecWitness,
  )
 import HostBootstrap.Harness (TestSuite, caseIdText, emptySuite, testSuiteCaseCount, testSuiteCaseIds)
+import HostBootstrap.ProjectPlan.Construct
+    ( FinalizedProjectSpec
+    , withFinalizedProjectSpec
+    )
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot)
 import HostBootstrap.Service (
-    FinalizedServiceRegistry,
     ServiceRegistry,
     ServiceRegistryError,
     emptyServiceRegistry,
     mergeServiceRegistries,
     serviceVariantNames,
-    withFinalizedServiceRegistry,
  )
 import HostBootstrap.Step (Step, StepPlan, StepPlanError (..), mkStepPlan)
 import Options.Applicative
-import System.Environment (getProgName)
 import System.Exit (die)
-import System.FilePath (dropExtension, takeExtension, takeFileName)
 import System.IO (hSetEncoding, stderr, stdout, utf8)
 
 {- | A derived project's required extension points, generic over the project's
@@ -107,17 +109,17 @@ carry their own descent and their own reverse effect, § W), service-handler
 registry, one scope-aware restricted project-config assembler, and its
 test-config initializer. The bare core binary uses 'runBareHostBootstrapCLI' instead.
 -}
-data ProjectSpec projectId cfg tcfg = ProjectSpec
+data ProjectSpec cfg tcfg = ProjectSpec
     { psTestSuite :: TestSuite
     , psCheckCode :: IO ()
     , psArtifacts :: [ConfigArtifact]
     , psTestCodec :: CodecWitness tcfg
     , psAssemblyInputs :: [ConfigInput]
-    , psServices :: ServiceRegistry (cfg (Production projectId))
+    , psServices :: ServiceRegistry cfg
     , psStepPlan ::
-        forall configScope rootScope rootId.
-        CanonicalProjectRoot rootScope rootId ->
-        cfg configScope ->
+        forall scope rootId.
+        CanonicalProjectRoot scope rootId ->
+        cfg scope ->
         Either StepPlanError StepPlan
     {- ^ The one validated plan. It is built under the admitted
     'CanonicalProjectRoot' (§ X), so every step — its forward action and the
@@ -129,7 +131,7 @@ data ProjectSpec projectId cfg tcfg = ProjectSpec
     (@test init@) — needs no pre-existing project config.
     -}
     , psAssemble ::
-        forall scope.
+        forall projectId scope.
         AssemblyRequest projectId tcfg (TestVariant tcfg) scope ->
         ConfigAssembly scope (cfg scope)
     {- ^ The sole default-bearing project-config assembler. Its closed request
@@ -138,11 +140,11 @@ data ProjectSpec projectId cfg tcfg = ProjectSpec
     -}
     }
 
-newtype StepFragment projectId cfg = StepFragment
+newtype StepFragment cfg = StepFragment
     { runStepFragment ::
-        forall configScope rootScope rootId.
-        CanonicalProjectRoot rootScope rootId ->
-        cfg configScope ->
+        forall scope rootId.
+        CanonicalProjectRoot scope rootId ->
+        cfg scope ->
         [Step]
     }
 
@@ -150,17 +152,17 @@ newtype StepFragment projectId cfg = StepFragment
 service contributions are additive, and each step carries its own descent and
 reverse effect, so there is no lifecycle slot beside the plan.
 -}
-data ProjectSpecBuilder projectId cfg tcfg = ProjectSpecBuilder
+data ProjectSpecBuilder cfg tcfg = ProjectSpecBuilder
     { pbTestSuite :: TestSuite
     , pbCheckCode :: IO ()
     , pbArtifacts :: [ConfigArtifact]
     , pbTestCodec :: CodecWitness tcfg
     , pbAssemblyInputs :: [ConfigInput]
-    , pbStepFragments :: [StepFragment projectId cfg]
-    , pbServiceRegistries :: [ServiceRegistry (cfg (Production projectId))]
+    , pbStepFragments :: [StepFragment cfg]
+    , pbServiceRegistries :: [ServiceRegistry cfg]
     , pbTestInit :: InitArgs -> tcfg
     , pbAssemble ::
-        forall scope.
+        forall projectId scope.
         AssemblyRequest projectId tcfg (TestVariant tcfg) scope ->
         ConfigAssembly scope (cfg scope)
     }
@@ -184,11 +186,11 @@ projectSpec ::
     [ConfigArtifact] ->
     CodecWitness tcfg ->
     (InitArgs -> tcfg) ->
-    ( forall scope.
+    ( forall projectId scope.
       AssemblyRequest projectId tcfg (TestVariant tcfg) scope ->
       ConfigAssembly scope (cfg scope)
     ) ->
-    ProjectSpecBuilder projectId cfg tcfg
+    ProjectSpecBuilder cfg tcfg
 projectSpec suite check arts testCodec testInit assemble =
     ProjectSpecBuilder
         { pbTestSuite = suite
@@ -205,8 +207,8 @@ projectSpec suite check arts testCodec testInit assemble =
 -- | Add schema/artifact contributions without replacing prior layers.
 addArtifacts ::
     [ConfigArtifact] ->
-    ProjectSpecBuilder projectId cfg tcfg ->
-    ProjectSpecBuilder projectId cfg tcfg
+    ProjectSpecBuilder cfg tcfg ->
+    ProjectSpecBuilder cfg tcfg
 addArtifacts artifacts builder =
     builder{pbArtifacts = pbArtifacts builder ++ artifacts}
 
@@ -215,8 +217,8 @@ addArtifacts artifacts builder =
 -}
 addAssemblyInputs ::
     [ConfigInput] ->
-    ProjectSpecBuilder projectId cfg tcfg ->
-    ProjectSpecBuilder projectId cfg tcfg
+    ProjectSpecBuilder cfg tcfg ->
+    ProjectSpecBuilder cfg tcfg
 addAssemblyInputs inputs builder =
     builder{pbAssemblyInputs = pbAssemblyInputs builder ++ inputs}
 
@@ -229,13 +231,13 @@ its project-relative paths — and the descent it declares with
 'HostBootstrap.Step.descendsVia' — from that one authority (§ X).
 -}
 addSteps ::
-    ( forall configScope rootScope rootId.
-      CanonicalProjectRoot rootScope rootId ->
-      cfg configScope ->
+    ( forall scope rootId.
+      CanonicalProjectRoot scope rootId ->
+      cfg scope ->
       [Step]
     ) ->
-    ProjectSpecBuilder projectId cfg tcfg ->
-    ProjectSpecBuilder projectId cfg tcfg
+    ProjectSpecBuilder cfg tcfg ->
+    ProjectSpecBuilder cfg tcfg
 addSteps fragment builder =
     builder{pbStepFragments = pbStepFragments builder ++ [StepFragment fragment]}
 
@@ -243,15 +245,15 @@ addSteps fragment builder =
 order; duplicate identities are rejected by finalization.
 -}
 addServices ::
-    ServiceRegistry (cfg (Production projectId)) ->
-    ProjectSpecBuilder projectId cfg tcfg ->
-    ProjectSpecBuilder projectId cfg tcfg
+    ServiceRegistry cfg ->
+    ProjectSpecBuilder cfg tcfg ->
+    ProjectSpecBuilder cfg tcfg
 addServices registry builder =
     builder{pbServiceRegistries = pbServiceRegistries builder ++ [registry]}
 
 finalizeProjectSpec ::
-    ProjectSpecBuilder projectId cfg tcfg ->
-    Either ProjectSpecError (ProjectSpec projectId cfg tcfg)
+    ProjectSpecBuilder cfg tcfg ->
+    Either ProjectSpecError (ProjectSpec cfg tcfg)
 finalizeProjectSpec builder = do
     validateBase
     services <- foldServices
@@ -292,10 +294,10 @@ finalizeProjectSpec builder = do
         accumulated >>= \current ->
             either (Left . InvalidServiceRegistry) Right (mergeServiceRegistries current next)
 
-projectServiceVariantNames :: ProjectSpec projectId cfg tcfg -> [String]
+projectServiceVariantNames :: ProjectSpec cfg tcfg -> [String]
 projectServiceVariantNames = serviceVariantNames . psServices
 
-projectArtifactNames :: ProjectSpec projectId cfg tcfg -> [T.Text]
+projectArtifactNames :: ProjectSpec cfg tcfg -> [T.Text]
 projectArtifactNames = map artifactName . psArtifacts
 
 {- | Project one scope-indexed config through the finalized plan builder.
@@ -305,9 +307,9 @@ different config scopes. Observation cannot bypass validation: the result is
 still an opaque 'StepPlan'.
 -}
 projectStepPlan ::
-    ProjectSpec projectId cfg tcfg ->
-    CanonicalProjectRoot rootScope rootId ->
-    cfg configScope ->
+    ProjectSpec cfg tcfg ->
+    CanonicalProjectRoot scope rootId ->
+    cfg scope ->
     Either StepPlanError StepPlan
 projectStepPlan = psStepPlan
 
@@ -315,59 +317,44 @@ projectStepPlan = psStepPlan
 with a validated project spec.
 -}
 runHostBootstrapCLI ::
-    forall projectId cfg tcfg.
-    (ProjectCfg projectId cfg, TestCfg tcfg) =>
+    forall cfg tcfg.
+    (ProjectCfg cfg, TestCfg tcfg) =>
     String ->
-    ProjectSpec projectId cfg tcfg ->
+    ProjectSpec cfg tcfg ->
     IO ()
 runHostBootstrapCLI progName spec = do
-    let testCodec = psTestCodec spec
-        initBuilder args = do
-            assembled <-
-                runConfigAssembly
-                    (psAssemblyInputs spec)
-                    (psAssemble spec (ProductionAssembly args))
-            either die pure assembled
     configureUtf8Output
-    validateRuntimeProjectIdentity progName
-    withProductionProjectCodec @projectId @cfg $ \baseCodec ->
-        withFinalizedServiceRegistry
-            ProductionScope
-            baseCodec
-            (psServices spec)
-            ( \cfgCodec services ->
-                runCLI
-                    cfgCodec
-                    testCodec
-                    progName
-                    (psArtifacts spec)
-                    (psTestSuite spec)
-                    (psCheckCode spec)
-                    services
-                    (psStepPlan spec)
-                    (psAssemblyInputs spec)
-                    (psAssemble spec)
-                    initBuilder
-                    (psTestInit spec)
-            )
-
-validateRuntimeProjectIdentity :: String -> IO ()
-validateRuntimeProjectIdentity declared = do
-    runtime <- runtimeProjectIdentity <$> getProgName
-    unless (runtime == declared) $
-        die
-            ( "project identity mismatch before command dispatch: declared "
-                ++ show declared
-                ++ ", runtime executable "
-                ++ show runtime
-            )
-
-runtimeProjectIdentity :: FilePath -> String
-runtimeProjectIdentity invoked =
-    let filename = takeFileName invoked
-     in if map toLower (takeExtension filename) == ".exe"
-            then dropExtension filename
-            else filename
+    admitted <-
+        withInstalledProjectIdentity (T.pack progName) $
+            \(project :: InstalledProjectIdentity projectId) -> do
+                let testCodec = psTestCodec spec
+                    initBuilder args = do
+                        assembled <-
+                            runConfigAssembly
+                                (psAssemblyInputs spec)
+                                (psAssemble spec (ProductionAssembly args))
+                        either die pure assembled
+                withProductionProjectCodec @cfg @projectId $ \baseCodec ->
+                    withFinalizedProjectSpec
+                        ProductionScope
+                        baseCodec
+                        (psServices spec)
+                        (psStepPlan spec)
+                        ( \finalizedSpec ->
+                            runCLI
+                                project
+                                finalizedSpec
+                                testCodec
+                                progName
+                                (psArtifacts spec)
+                                (psTestSuite spec)
+                                (psCheckCode spec)
+                                (psAssemblyInputs spec)
+                                (psAssemble spec)
+                                initBuilder
+                                (psTestInit spec)
+                        )
+    either (die . T.unpack . authorityErrorMessage) pure admitted
 
 {- | The bare core binary's trivial project config: a newtype over the universal
 'Context.BinaryContext'. It carries no project fields (no resources, no
@@ -375,12 +362,10 @@ Dockerfile, no deploy), so the bare binary type-checks against the generic spec
 without inventing a project config shape. The @init@/@test@ builders below give
 it the minimal behaviour the bare surface needs.
 -}
-data BareProject
-
 newtype BareConfig scope = BareConfig {bareContext :: Context.BinaryContext}
     deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
-instance ProjectCfg BareProject BareConfig where
+instance ProjectCfg BareConfig where
     withProductionProjectCodec =
         withProjectCodec
             (T.pack "BareConfig/Production")
@@ -400,31 +385,34 @@ runBareHostBootstrapCLI :: String -> IO ()
 runBareHostBootstrapCLI progName = do
     let testCodec = requireCodecWitness "bare test config" (autoCodecWitness @())
     configureUtf8Output
-    validateRuntimeProjectIdentity progName
-    withProductionProjectCodec @BareProject @BareConfig $ \baseCodec ->
-        withFinalizedServiceRegistry
-            ProductionScope
-            baseCodec
-            emptyServiceRegistry
-            ( \cfgCodec services ->
-                runCLI
-                    cfgCodec
-                    testCodec
-                    progName
-                    []
-                    emptySuite
-                    (putStrLn "check-code: bare core binary has no project checks")
-                    services
-                    (\_ _ -> Left EmptyStepPlan)
-                    []
-                    bareAssemble
-                    (either fail pure . bareInit)
-                    (const ())
-            )
+    admitted <-
+        withInstalledProjectIdentity (T.pack progName) $
+            \(project :: InstalledProjectIdentity projectId) ->
+                withProductionProjectCodec @BareConfig @projectId $ \baseCodec ->
+                    withFinalizedProjectSpec
+                        ProductionScope
+                        baseCodec
+                        emptyServiceRegistry
+                        (\_ _ -> Left EmptyStepPlan)
+                        ( \finalizedSpec ->
+                            runCLI
+                                project
+                                finalizedSpec
+                                testCodec
+                                progName
+                                []
+                                emptySuite
+                                (putStrLn "check-code: bare core binary has no project checks")
+                                []
+                                bareAssemble
+                                (either fail pure . bareInit)
+                                (const ())
+                        )
+    either (die . T.unpack . authorityErrorMessage) pure admitted
   where
     bareAssemble ::
-        forall scope.
-        AssemblyRequest BareProject () () scope ->
+        forall projectId scope.
+        AssemblyRequest projectId () () scope ->
         ConfigAssembly scope (BareConfig scope)
     bareAssemble (ProductionAssembly args) =
         either failConfigAssembly pureConfigAssembly (bareInit args)
@@ -465,22 +453,14 @@ configureUtf8Output = do
 
 runCLI ::
     forall projectId cfg tcfg specDigest.
-    (ProjectCfg projectId cfg, TestCfg tcfg) =>
-    ProjectCodec (Production projectId) specDigest cfg ->
+    (ProjectCfg cfg, TestCfg tcfg) =>
+    InstalledProjectIdentity projectId ->
+    FinalizedProjectSpec (Production projectId) specDigest cfg ->
     CodecWitness tcfg ->
     String ->
     [ConfigArtifact] ->
     TestSuite ->
     IO () ->
-    FinalizedServiceRegistry
-        (Production projectId)
-        specDigest
-        (cfg (Production projectId)) ->
-    ( forall configScope rootScope rootId.
-      CanonicalProjectRoot rootScope rootId ->
-      cfg configScope ->
-      Either StepPlanError StepPlan
-    ) ->
     [ConfigInput] ->
     ( forall scope.
       AssemblyRequest projectId tcfg (TestVariant tcfg) scope ->
@@ -489,19 +469,18 @@ runCLI ::
     (InitArgs -> IO (cfg (Production projectId))) ->
     (InitArgs -> tcfg) ->
     IO ()
-runCLI cfgCodec testCodec progName projectArtifacts testSuite checkCode services stepPlan assemblyInputs assemble initBuilder testInit =
+runCLI project finalizedSpec testCodec progName projectArtifacts testSuite checkCode assemblyInputs assemble initBuilder testInit =
     join (customExecParser (prefs showHelpOnEmpty) opts)
   where
     allCommands =
         coreCommands
-            cfgCodec
+            project
+            finalizedSpec
             testCodec
             progName
             projectArtifacts
             testSuite
             checkCode
-            services
-            stepPlan
             assemblyInputs
             assemble
             initBuilder

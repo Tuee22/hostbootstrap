@@ -31,10 +31,12 @@ default. A repeated blob `HEAD` can therefore still receive `307` to the cluster
 host Docker client cannot resolve. This is not an S3 credential, image-size, resource-limit, or nvkind
 defect; it is a scope crossing.
 
-Phase 14 owned the generic reachability/delivery algebra and has delivered it. Phase 13 owns the demo's
-finalized registry plan, renderer, and live proof, and remains open. Phase 9's opaque readiness and
-operation-precondition work supplies the identity-bound runtime observation consumed by the push
-operation.
+The [composition-and-network-algebra phase](../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md)
+owns the generic reachability/delivery algebra and finalized registry plan. The
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns the demo renderer, adoption, and live
+proof. The [canonical-quantities-and-reconcile-results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md)
+and [prepared-operations phase](../../DEVELOPMENT_PLAN/phase-11-prepared-operations.md) supply the
+identity-bound runtime observation consumed by the push operation.
 
 Names differ slightly between this document and the implementation: the shipped scope kind is
 `NetworkScope = HostLocal | VmLocal | ClusterOnly` (no `Public` scope exists yet, and the

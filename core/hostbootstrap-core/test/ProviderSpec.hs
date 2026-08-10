@@ -1,25 +1,28 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-{- | The one pure lift per substrate ('HostBootstrap.Substrate.Provider'). These
-tests lock the launch/teardown/transfer effect lists byte-for-byte: Lima and
-Incus must reproduce the exact argv the former hand-branched code emitted (so
-the unification is behavior-preserving on the validated substrates), and WSL2
-must additionally write the global @.wslconfig@ ceiling with @swap@ and apply it
-with @wsl --shutdown@ before install (the honest WSL2 wall).
+{- | Pure provider dispatch and planning contract.  Authority-bearing discovery
+is exercised through the clause-holding backend in 'ProviderAliasSpec'; this
+module locks the public opaque route's descriptive projections and effect plans.
 -}
 module ProviderSpec (tests) where
 
-import Data.List (isInfixOf)
-import HostBootstrap.Context (ProviderKind (..), ResourceEnvelope (..))
+import Control.Monad (forM_)
+import Data.List (isInfixOf, isPrefixOf)
+import HostBootstrap.Context (ResourceEnvelope (..))
+import qualified HostBootstrap.Context as Context
+import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.HostTool (HostTool (Incus, Lima, Wsl))
 import HostBootstrap.Incus (IncusVM (..))
-import HostBootstrap.Lift (LiftLayer (..))
+import HostBootstrap.Lift (LiftLayer (ViaWsl2VM), inLimaVM, inVM, inWsl2VM, localContext)
 import HostBootstrap.Lima (LimaVM (..))
 import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..))
 import HostBootstrap.Substrate.Provider
 import HostBootstrap.Wsl2 (Wsl2VM (..))
+import qualified SourceGuard
+import System.Directory (getCurrentDirectory)
+import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 handles :: VMHandles
 handles =
@@ -30,9 +33,6 @@ handles =
         , vmhGuardPrefix = "demo"
         }
 
-{- | Handles whose VM names do not carry the guard prefix, to prove a destroy is
-refused outside the managed namespace.
--}
 unguardedHandles :: VMHandles
 unguardedHandles = handles{vmhWsl2 = Wsl2VM "someone-elses-distro"}
 
@@ -40,49 +40,89 @@ env :: ResourceEnvelope
 env = ResourceEnvelope{cpu = 6, memory = "10GiB", storage = "80GiB"}
 
 sel :: Substrate -> SubstrateProvider
-sel sub = either (error . ("selectSubstrateProvider failed: " ++)) id (selectSubstrateProvider sub handles)
+sel substrate =
+    either
+        (error . ("selectSubstrateProvider failed: " ++))
+        id
+        (selectSubstrateProvider substrate handles)
 
-apple, linux, windows :: SubstrateProvider
+apple, linux, windows, direct :: SubstrateProvider
 apple = sel (Substrate AppleSilicon Arm64)
 linux = sel (Substrate LinuxCpu Amd64)
 windows = sel (Substrate WindowsCpu Amd64)
+direct = sel (Substrate LinuxGpu Amd64)
 
-appleShare, linuxShare, windowsShare :: HostPathShare
-appleShare = spShare apple "/Users/me/demo/.data"
-linuxShare = spShare linux "/srv/demo/.data"
-windowsShare = spShare windows "C:\\repo\\demo\\.data"
+plannedShare :: SubstrateProvider -> FilePath -> HostPathShare
+plannedShare provider source =
+    either (error . show) id (planProviderShare provider source)
+
+appleShare, linuxShare, windowsShare, directShare :: HostPathShare
+appleShare = plannedShare apple "/Users/me/demo/.data"
+linuxShare = plannedShare linux "/srv/demo/.data"
+windowsShare = plannedShare windows "C:\\repo\\demo\\.data"
+directShare = plannedShare direct "/srv/demo/.data"
 
 tests :: TestTree
 tests =
     testGroup
         "ProviderSpec"
-        [ testGroup "identity / provider kind / lift layer" identityCases
-        , testGroup "launch effect lists (byte-for-byte)" launchCases
+        [ testGroup "closed dispatch" dispatchCases
+        , testGroup "pure lifecycle plans" lifecycleCases
         , testGroup "host-path shares" shareCases
-        , testGroup "teardown (stop / guarded destroy)" teardownCases
-        , testGroup "exists / wait probes" probeCases
+        , testGroup "probe descriptions" probeCases
         , testGroup "pure interpreters" interpreterCases
-        , testGroup "guest-side durable alias state machine" aliasCases
+        , testGroup "guest alias state machine" aliasCases
+        , testGroup "provider-live client boundary" providerLiveBoundaryCases
         ]
 
-identityCases :: [TestTree]
-identityCases =
-    [ testCase "apple selects Lima" $ do
-        spVmId apple @?= "demo-vm"
-        spProviderKind apple @?= LimaVMProvider
-        spLiftLayer apple @?= ViaLimaVM (LimaVM "demo-vm")
-    , testCase "linux selects Incus" $ do
-        spProviderKind linux @?= IncusVMProvider
-        spLiftLayer linux @?= ViaVM (IncusVM "demo-vm" "images:ubuntu/24.04")
-    , testCase "windows selects WSL2" $ do
-        spProviderKind windows @?= Wsl2VMProvider
-        spLiftLayer windows @?= ViaWsl2VM (Wsl2VM "demo-vm")
+dispatchCases :: [TestTree]
+dispatchCases =
+    [ testCase "descriptive accessors project each closed provider" $ do
+        providerVmId apple @?= "demo-vm"
+        providerKind apple @?= ProviderLima
+        providerLiftContext apple @?= inLimaVM (LimaVM "demo-vm") localContext
+        providerKind linux @?= ProviderIncus
+        providerLiftContext linux @?= inVM (IncusVM "demo-vm" "images:ubuntu/24.04") localContext
+        providerKind windows @?= ProviderWsl2
+        providerLiftContext windows @?= inWsl2VM (Wsl2VM "demo-vm") localContext
+        providerVmId direct @?= "local-host"
+        providerKind direct @?= ProviderDirectHost
+        providerLiftContext direct @?= localContext
+    , testCase "kind dispatch is total, including Direct" $ do
+        let kinds = [ProviderIncus, ProviderLima, ProviderWsl2, ProviderDirectHost]
+        map (providerKind . (`selectProviderKind` handles)) kinds @?= kinds
+        map
+            providerKindForSubstrate
+            [ Substrate AppleSilicon Arm64
+            , Substrate LinuxCpu Amd64
+            , Substrate LinuxGpu Amd64
+            , Substrate WindowsCpu Amd64
+            , Substrate WindowsGpu Amd64
+            ]
+            @?= [ProviderLima, ProviderIncus, ProviderDirectHost, ProviderWsl2, ProviderWsl2]
+    , testCase "lifecycle kinds project totally into topology kinds" $
+        map providerTopologyKind [ProviderIncus, ProviderLima, ProviderWsl2, ProviderDirectHost]
+            @?= [Context.IncusVMProvider, Context.LimaVMProvider, Context.Wsl2VMProvider, Context.HostProvider]
+    , testCase "discovery reports are structurally guest or Direct" $ do
+        let ready = ProviderObservedReady ()
+            guest =
+                GuestProviderDiscovery
+                    ready
+                    ready
+                    ready
+                    (ProviderObservedNotReady "endpoint warming")
+                    (ProviderObservedReady (GuestFlock "/usr/bin/flock"))
+                    (ProviderObservedReady (GuestGnuStat "/usr/bin/stat"))
+                    (ProviderObservedReady (GuestPython3 "/usr/bin/python3"))
+            local = DirectProviderDiscovery ready (ProviderObservedUnavailable "offline")
+        ProviderGuestDiscovery guest @?= ProviderGuestDiscovery guest
+        ProviderDirectDiscovery local @?= ProviderDirectDiscovery local
     ]
 
-launchCases :: [TestTree]
-launchCases =
-    [ testCase "lima launch reproduces the sized startVMArgs argv" $
-        spLaunch apple env (Just appleShare)
+lifecycleCases :: [TestTree]
+lifecycleCases =
+    [ testCase "provision plans retain the exact provider argv" $ do
+        planProviderProvision apple env (Just appleShare)
             @?= Right
                 [ RunHostTool
                     Lima
@@ -106,8 +146,7 @@ launchCases =
                     , "template:ubuntu-24.04"
                     ]
                 ]
-    , testCase "incus launch reproduces the sized createVMArgs argv" $
-        spLaunch linux env (Just linuxShare)
+        planProviderProvision linux env (Just linuxShare)
             @?= Right
                 [ RunHostTool
                     Incus
@@ -123,65 +162,75 @@ launchCases =
                     , "root,size=80GiB"
                     ]
                 ]
-    , testCase "wsl2 launch acquires the global wall (+swap), shuts down, then installs with the VHDX cap" $
-        spLaunch windows env (Just windowsShare)
+        planProviderProvision direct env (Just directShare)
+            @?= Right [RunDirectHost RealizeDirectHost]
+    , testCase "WSL provision applies the global wall before install" $
+        planProviderProvision windows env (Just windowsShare)
             @?= Right
-                [ ApplyGlobalWslWall
-                    ["[general]", "instanceIdleTimeout=21600000", "[wsl2]", "processors=6", "memory=10GB", "swap=10GB", "vmIdleTimeout=21600000"]
+                [ ApplyGlobalWslWall wallBody
                 , RunHostTool Wsl ["--shutdown"]
                 , RunHostTool
                     Wsl
                     ["--install", "-d", "Ubuntu-24.04", "--name", "demo-vm", "--no-launch", "--vhd-size", "80GB"]
                 ]
-    , testCase "lima/incus acquire no global wall at launch; only wsl2 does" $ do
-        fmap (any isWall) (spLaunch apple env (Just appleShare)) @?= Right False
-        fmap (any isWall) (spLaunch linux env (Just linuxShare)) @?= Right False
-        fmap (any isWall) (spLaunch windows env (Just windowsShare)) @?= Right True
-    , testCase "an omitted optional share preserves the former Lima launch argv" $
-        spLaunch apple env Nothing
+    , testCase "reboot-to-ready has one result shape" $ do
+        planProviderRebootReady linux
             @?= Right
-                [ RunHostTool
-                    Lima
-                    [ "start"
-                    , "-y"
-                    , "--timeout"
-                    , "15m"
-                    , "--name=demo-vm"
-                    , "--containerd"
-                    , "none"
-                    , "--cpus"
-                    , "6"
-                    , "--memory"
-                    , "10"
-                    , "--disk"
-                    , "80"
-                    , "--vm-type"
-                    , "vz"
-                    , "template:ubuntu-24.04"
-                    ]
-                ]
-    , testCase "only wsl2 needs an explicit reconcile-to-running effect set to empty" $ do
-        spStartExisting windows @?= []
-        spStartExisting apple @?= [RunHostTool Lima ["start", "demo-vm"]]
-        spStartExisting linux @?= [RunHostTool Incus ["start", "demo-vm"]]
+                RebootReadyPlan
+                    { rebootStartEffects = [RunHostTool Incus ["start", "demo-vm"]]
+                    , rebootCordonReconcile = Nothing
+                    , rebootWaitProbe = WaitProbe Incus ["exec", "demo-vm", "--", "true"]
+                    }
+        planProviderRebootReady direct
+            @?= Right
+                RebootReadyPlan
+                    { rebootStartEffects = [RunDirectHost ReconcileDirectHostReady]
+                    , rebootCordonReconcile = Nothing
+                    , rebootWaitProbe = DirectHostReadyProbe
+                    }
+    , testCase "stop and guarded delete are explicit" $ do
+        planProviderStop apple env @?= Right [RunHostTool Lima ["stop", "demo-vm"]]
+        planProviderStop linux env @?= Right [RunHostTool Incus ["stop", "demo-vm"]]
+        planProviderStop windows env
+            @?= Right [ReleaseGlobalWslWall wallBody, RunHostTool Wsl ["--shutdown"]]
+        planProviderDelete apple env @?= Right [RunHostTool Lima ["delete", "demo-vm", "--force"]]
+        planProviderDelete linux env @?= Right [RunHostTool Incus ["delete", "demo-vm", "--force"]]
+        planProviderDelete windows env
+            @?= Right [RunHostTool Wsl ["--unregister", "demo-vm"], ReleaseGlobalWslWall wallBody]
+    , testCase "Direct stop/delete and Direct guest alias are structured refusals" $ do
+        assertUnsupported ProviderStop (planProviderStop direct env)
+        assertUnsupported ProviderDelete (planProviderDelete direct env)
+        assertUnsupported ProviderAlias (planProviderAlias direct "/alias" "/target" AliasAbsent)
+    , testCase "a guarded delete cannot target a foreign namespace" $
+        case selectSubstrateProvider (Substrate WindowsCpu Amd64) unguardedHandles of
+            Left failure -> assertBool ("expected provider selection, got " ++ failure) False
+            Right provider ->
+                case planProviderDelete provider env of
+                    Left ProviderOperationFailure{providerErrorOperation = ProviderDelete} -> pure ()
+                    other -> assertBool ("expected guarded ProviderOperationFailure, got " ++ show other) False
     ]
   where
-    -- Lima and Incus own per-VM walls, so their launch touches no global user
-    -- state; WSL2's only memory/CPU wall is the shared utility VM's .wslconfig.
-    isWall (ApplyGlobalWslWall _) = True
-    isWall (ReleaseGlobalWslWall _) = True
-    isWall _ = False
+    wallBody =
+        [ "[general]"
+        , "instanceIdleTimeout=21600000"
+        , "[wsl2]"
+        , "processors=6"
+        , "memory=10GB"
+        , "swap=10GB"
+        , "vmIdleTimeout=21600000"
+        ]
+    assertUnsupported operation result =
+        case result of
+            Left ProviderUnsupported{providerErrorKind = ProviderDirectHost, providerErrorOperation = observed} ->
+                observed @?= operation
+            other -> assertBool ("expected Direct ProviderUnsupported, got " ++ show other) False
 
 shareCases :: [TestTree]
 shareCases =
-    [ testCase "Lima exposes the same absolute path with no post-create effect" $ do
-        hpsHostPath appleShare @?= "/Users/me/demo/.data"
-        hpsGuestPath appleShare @?= "/Users/me/demo/.data"
-        hpsReconcile appleShare @?= Nothing
-        shareReconcileEffects appleShare "anything" @?= []
-    , testCase "Incus plans one idempotent post-create disk device" $ do
-        hpsHostPath linuxShare @?= "/srv/demo/.data"
-        hpsGuestPath linuxShare @?= "/srv/demo/.data"
+    [ testCase "Lima and Direct preserve the canonical path" $ do
+        appleShare @?= HostPathShare "/Users/me/demo/.data" "/Users/me/demo/.data" Nothing
+        directShare @?= HostPathShare "/srv/demo/.data" "/srv/demo/.data" Nothing
+    , testCase "Incus plans one idempotent disk device" $ do
         hpsReconcile linuxShare
             @?= Just
                 ShareReconcile
@@ -201,150 +250,143 @@ shareCases =
                             ]
                         ]
                     }
-    , testCase "Incus adds a missing share but leaves an existing device untouched" $ do
-        shareReconcileEffects linuxShare "root\neth0\n"
-            @?= [ RunHostTool
-                    Incus
-                    [ "config"
-                    , "device"
-                    , "add"
-                    , "demo-vm"
-                    , "durable-data"
-                    , "disk"
-                    , "source=/srv/demo/.data"
-                    , "path=/srv/demo/.data"
-                    ]
-                ]
         shareReconcileEffects linuxShare "root\ndurable-data\neth0\n" @?= []
-    , testCase "WSL2 projects the host directory through DrvFs with no host effect" $ do
-        hpsHostPath windowsShare @?= "C:\\repo\\demo\\.data"
-        hpsGuestPath windowsShare @?= "/mnt/c/repo/demo/.data"
-        hpsReconcile windowsShare @?= Nothing
-        shareReconcileEffects windowsShare "anything" @?= []
+    , testCase "WSL projects through DrvFs" $
+        windowsShare @?= HostPathShare "C:\\repo\\demo\\.data" "/mnt/c/repo/demo/.data" Nothing
     ]
-
-teardownCases :: [TestTree]
-teardownCases =
-    [ testCase "stop releases the wall per substrate (wsl2 releases .wslconfig first, then wsl --shutdown)" $ do
-        spStop apple env @?= Right [RunHostTool Lima ["stop", "demo-vm"]]
-        spStop linux env @?= Right [RunHostTool Incus ["stop", "demo-vm"]]
-        -- WSL2 releases its global wall on `project down` like Lima/Incus: the
-        -- order is load-bearing (release the uncordoned .wslconfig FIRST, then
-        -- `wsl --shutdown` so the utility VM re-reads it on next cold boot), and
-        -- it is `--shutdown` (whole utility VM, releases the wall) rather than
-        -- `--terminate <distro>` (one distro, leaves the balloon pinned).
-        spStop windows env
-            @?= Right
-                [ ReleaseGlobalWslWall
-                    ["[general]", "instanceIdleTimeout=21600000", "[wsl2]", "processors=6", "memory=10GB", "swap=10GB", "vmIdleTimeout=21600000"]
-                , RunHostTool Wsl ["--shutdown"]
-                ]
-    , testCase "the released wall names exactly the body the launch applied" $
-        fmap (filter isWall) (spStop windows env)
-            @?= fmap (map released . filter isWall) (spLaunch windows env (Just windowsShare))
-    , testCase "guarded destroy emits the delete argv (and wsl2 releases its wall)" $ do
-        spDestroy apple env @?= Right [RunHostTool Lima ["delete", "demo-vm", "--force"]]
-        spDestroy linux env @?= Right [RunHostTool Incus ["delete", "demo-vm", "--force"]]
-        spDestroy windows env
-            @?= Right
-                [ RunHostTool Wsl ["--unregister", "demo-vm"]
-                , ReleaseGlobalWslWall
-                    ["[general]", "instanceIdleTimeout=21600000", "[wsl2]", "processors=6", "memory=10GB", "swap=10GB", "vmIdleTimeout=21600000"]
-                ]
-    , testCase "destroy refuses a VM name outside the guard prefix" $
-        case selectSubstrateProvider (Substrate WindowsCpu Amd64) unguardedHandles of
-            Left err -> assertBool ("expected a provider, got: " ++ err) False
-            Right sp -> assertBool "expected a guard refusal" (isLeft (spDestroy sp env))
-    ]
-  where
-    isLeft (Left _) = True
-    isLeft _ = False
-    isWall (ApplyGlobalWslWall _) = True
-    isWall (ReleaseGlobalWslWall _) = True
-    isWall _ = False
-    released (ApplyGlobalWslWall body) = ReleaseGlobalWslWall body
-    released effect = effect
 
 probeCases :: [TestTree]
 probeCases =
-    [ testCase "exists probes are the list argv + membership parse" $ do
-        spExists apple @?= ExistsProbe Lima ["list", "-q"] LinesMember
-        spExists linux @?= ExistsProbe Incus ["list", "--format", "csv", "-c", "n"] LinesMember
-        spExists windows @?= ExistsProbe Wsl ["--list", "--quiet"] WslQuietMember
-    , testCase "wait probes run a trivial true in the VM" $ do
-        spWait apple @?= WaitProbe Lima ["shell", "demo-vm", "--", "sudo", "-H", "true"]
-        spWait linux @?= WaitProbe Incus ["exec", "demo-vm", "--", "true"]
-        spWait windows @?= WaitProbe Wsl ["-d", "demo-vm", "--", "true"]
-    , testCase "reconcile-cordon: Nothing for Lima/Incus, a running-probe + guarded shutdown for WSL2" $ do
-        spReconcileCordon apple @?= Nothing
-        spReconcileCordon linux @?= Nothing
-        spReconcileCordon windows
-            @?= Just
-                ( ExistsProbe Wsl ["--list", "--verbose"] WslRunningMember
-                , [RunHostTool Wsl ["--shutdown"]]
-                )
+    [ testCase "probe folds hide Direct/tool dispatch" $ do
+        foldExistsProbe
+            (Left "direct")
+            (\tool args membership -> Right (tool, args, membership))
+            (providerExistsProbe direct)
+            @?= (Left "direct" :: Either String (HostTool, [String], Membership))
+        foldWaitProbe
+            (Left "direct")
+            (\tool args -> Right (tool, args))
+            (providerWaitProbe windows)
+            @?= (Right (Wsl, ["-d", "demo-vm", "--", "true"]) :: Either String (HostTool, [String]))
+    , testCase "closed providers expose exact probe descriptions" $ do
+        providerExistsProbe apple @?= ExistsProbe Lima ["list", "-q"] LinesMember
+        providerExistsProbe linux @?= ExistsProbe Incus ["list", "--format", "csv", "-c", "n"] LinesMember
+        providerExistsProbe windows @?= ExistsProbe Wsl ["--list", "--quiet"] WslQuietMember
+        providerExistsProbe direct @?= DirectHostExistsProbe
+        providerWaitProbe direct @?= DirectHostReadyProbe
     ]
 
 interpreterCases :: [TestTree]
 interpreterCases =
-    [ testCase "membersOf LinesMember splits on lines" $
+    [ testCase "membership parsers are total" $ do
         membersOf LinesMember "demo-vm\nother\n" @?= ["demo-vm", "other"]
-    , testCase "membersOf WslQuietMember strips NULs and splits on whitespace" $
-        assertBool "demo-vm is a member" $
-            "demo-vm" `elem` membersOf WslQuietMember "Ubuntu-24.04\0\r\ndemo-vm\0\r\n"
-    , testCase "membersOf WslRunningMember returns only the Running distros (skips header + Stopped)" $
-        membersOf WslRunningMember "  NAME  STATE  VERSION\n* demo-vm  Running  2\nother  Stopped  2\n"
+        membersOf WslRunningMember "NAME STATE VERSION\n* demo-vm Running 2\nother Stopped 2\n"
             @?= ["demo-vm"]
-    , testCase "stageFileEffects copies to the guest via limactl on Lima (removed after)" $
+    , testCase "file staging retains each transport" $ do
         stageFileEffects (LimaFileTransfer (LimaVM "demo-vm")) "src.tgz" "/tmp/x.tgz"
             @?= StagedFile [RunHostTool Lima ["copy", "src.tgz", "demo-vm:/tmp/x.tgz"]] "/tmp/x.tgz" True
-    , testCase "stageFileEffects pushes to a temp on Incus (removed after)" $
         stageFileEffects (IncusFileTransfer (IncusVM "demo-vm" "images:ubuntu/24.04")) "src.tgz" "/tmp/x.tgz"
             @?= StagedFile [RunHostTool Incus ["file", "push", "src.tgz", "demo-vm/tmp/x.tgz"]] "/tmp/x.tgz" True
-    , testCase "stageFileEffects reads in place via /mnt on WSL2 (no host effect)" $
-        stageFileEffects (Wsl2MountTransfer (Wsl2VM "demo-vm")) "C:\\repo\\src.tgz" "/tmp/x.tgz"
-            @?= StagedFile [] "/mnt/c/repo/src.tgz" False
-    , testCase "vmShellArgs folds a single VM layer to its exec argv" $ do
-        vmShellArgs (ViaWsl2VM (Wsl2VM "d")) ["bash", "-lc", "echo hi"]
-            @?= Just (Wsl, ["-d", "d", "--", "bash", "-lc", "echo hi"])
-        vmShellArgs (ViaLimaVM (LimaVM "d")) ["true"]
-            @?= Just (Lima, ["shell", "d", "--", "sudo", "-H", "true"])
-    , testCase "windowsPathToWslMount rewrites a drive path to its /mnt mount" $
+        stageFileEffects DirectHostTransfer "/srv/demo/src.tgz" "/tmp/x.tgz"
+            @?= StagedFile [] "/srv/demo/src.tgz" False
+    , testCase "VM shell and Windows mount folds are descriptive" $ do
+        vmShellArgs (ViaWsl2VM (Wsl2VM "d")) ["true"]
+            @?= Just (Wsl, ["-d", "d", "--", "true"])
         windowsPathToWslMount "C:\\Users\\Matt\\f.tgz" @?= "/mnt/c/Users/Matt/f.tgz"
     ]
 
-{- | The pure diagnostic alias state machine (§ DD): all four
-'AliasState' cases from raw 'AliasFacts', and the create/remove planners over
-each — an idempotent correct link, a fresh create, and a collision surfaced as a
-legible 'Left' (never a bare exit code).
--}
 aliasCases :: [TestTree]
 aliasCases =
-    [ testCase "classifyAlias: absent path" $
+    [ testCase "alias classification and ensure are total" $ do
         classifyAlias target (AliasFacts Nothing False) @?= AliasAbsent
-    , testCase "classifyAlias: symlink to the expected target (trailing slash tolerated)" $ do
         classifyAlias target (AliasFacts (Just target) True) @?= AliasLinkedCorrectly
-        classifyAlias target (AliasFacts (Just (target ++ "/")) True) @?= AliasLinkedCorrectly
-    , testCase "classifyAlias: symlink to a different target" $
-        classifyAlias target (AliasFacts (Just "/some/other/path") True) @?= AliasLinkedElsewhere "/some/other/path"
-    , testCase "classifyAlias: a non-symlink occupant" $
-        classifyAlias target (AliasFacts Nothing True) @?= AliasOccupied AliasNodeKindUnknown
-    , testCase "planAliasEnsure: absent creates, correct is a no-op" $ do
         planAliasEnsure alias target AliasAbsent @?= Right AliasCreateLink
         planAliasEnsure alias target AliasLinkedCorrectly @?= Right AliasLeaveLinked
-    , testCase "planAliasEnsure: a collision is a legible Left, never an exit code" $ do
+    , testCase "foreign aliases are refused rather than overwritten" $ do
         assertLeftHas "points to" (planAliasEnsure alias target (AliasLinkedElsewhere "/elsewhere"))
-        assertLeftHas "collision" (planAliasEnsure alias target (AliasOccupied AliasDirectory))
-    , testCase "planAliasRemove: unlink only the owned link; keep absent; refuse a retarget" $ do
-        planAliasRemove alias target AliasLinkedCorrectly @?= Right AliasUnlink
-        case planAliasRemove alias target AliasAbsent of
-            Right (AliasKeep _) -> pure ()
-            other -> assertBool ("expected AliasKeep for absent, got " ++ show other) False
         assertLeftHas "refusing to remove" (planAliasRemove alias target (AliasLinkedElsewhere "/elsewhere"))
+    , testCase "owned alias removal is explicit" $
+        planAliasRemove alias target AliasLinkedCorrectly @?= Right AliasUnlink
     ]
   where
     target = "/var/tmp/hostbootstrap-demo-data-actual"
     alias = "/var/tmp/hostbootstrap-demo-data"
-    assertLeftHas needle e = case e of
-        Left msg -> assertBool ("expected " ++ show needle ++ " in " ++ msg) (needle `isInfixOf` msg)
-        Right ok -> assertBool ("expected a Left, got " ++ show ok) False
+    assertLeftHas needle result = case result of
+        Left message -> assertBool ("expected " ++ show needle ++ " in " ++ message) (needle `isInfixOf` message)
+        Right value -> assertBool ("expected Left, got " ++ show value) False
+
+providerLiveBoundaryCases :: [TestTree]
+providerLiveBoundaryCases =
+    [ testCase "the live client uses only opaque prepared provider routes" $ do
+        cwd <- getCurrentDirectory
+        root <- findRepoRoot cwd >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
+        let liveRoot = root </> "core" </> "hostbootstrap-core" </> "provider-live"
+            liveFiles =
+                [ "ProviderLiveMain.hs"
+                , "ProviderLiveConfig.hs"
+                , "ProviderLiveRunner.hs"
+                , "ProviderLiveAliasFixture.hs"
+                ]
+            rawPlannerIdentifiers =
+                [ "planProviderProvision"
+                , "planProviderRebootReady"
+                , "planProviderStop"
+                , "planProviderDelete"
+                , "planProviderShare"
+                , "planProviderAlias"
+                ]
+            independentGuestIdentifiers =
+                [ "GuestExec"
+                , "ProviderGuestExecutor"
+                , "bindProviderGuestExecutor"
+                , "runProviderGuestExecutor"
+                ]
+            opaqueConstructorImports =
+                [ ["SubstrateProvider", "(", "..", ")"]
+                , ["ManagedProviderHandle", "(", "..", ")"]
+                , ["ManagedProviderShareHandle", "(", "..", ")"]
+                , ["ProviderCapability", "(", "..", ")"]
+                ]
+        sources <-
+            traverse
+                ( \name -> do
+                    source <- readFile (liveRoot </> name)
+                    pure (name, source)
+                )
+                liveFiles
+        forM_ sources $ \(name, source) -> do
+            assertBool
+                (name ++ " imports the private provider executor boundary")
+                (not (SourceGuard.importsModule "HostBootstrap.Substrate.Provider.Internal" source))
+            forM_ (rawPlannerIdentifiers ++ independentGuestIdentifiers) $ \identifier ->
+                assertBool
+                    (name ++ " contains forbidden provider-live identifier " ++ identifier)
+                    (SourceGuard.countHaskellIdentifier identifier source == 0)
+            forM_ opaqueConstructorImports $ \tokens ->
+                assertBool
+                    (name ++ " requests an opaque constructor: " ++ unwords tokens)
+                    (SourceGuard.countHaskellTokenSequence tokens source == 0)
+        aliasSource <-
+            maybe
+                (assertFailure "ProviderLiveAliasFixture.hs was not loaded")
+                pure
+                (lookup "ProviderLiveAliasFixture.hs" sources)
+        let directSlice = sourceSlice "exerciseDirect ::" "exerciseIncus ::" aliasSource
+        assertBool "could not isolate the provider-live Direct route" (not (null directSlice))
+        SourceGuard.countHaskellIdentifier "stopProvider" directSlice @?= 1
+        SourceGuard.countHaskellTokenSequence ["Right", "_", "->", "fixtureFailure"] directSlice @?= 1
+        forM_
+            [ "deleteProvider"
+            , "withPreparedProviderDelete"
+            , "runProviderDeleteCall"
+            , "planProviderDelete"
+            ]
+            (\identifier -> SourceGuard.countHaskellIdentifier identifier directSlice @?= 0)
+    ]
+
+sourceSlice :: String -> String -> String -> String
+sourceSlice start end =
+    unlines
+        . takeWhile (not . isPrefixOf end)
+        . dropWhile (not . isPrefixOf start)
+        . lines

@@ -34,12 +34,12 @@ See
 [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md).
 
 The schema is topology-aware. Runtime context includes an execution topology, `currentFrame`, and runtime
-witnesses that catch many mismatches such as "VM project container command running on the host Docker
-daemon" before side effects when the relevant witness is supplied. Current validation has no mandatory
-provider/kind witness set and does not prove whole-graph validity. These decoded fields are not yet
-opaque authority: callers can still construct or update descriptive context values. Phase 15.9 replaces
-those gaps with total graph/witness validation and narrowed opaque
-authority/capabilities.
+witnesses that catch mismatches such as "VM project container command running on the host Docker daemon"
+before side effects. The
+[Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
+implements complete graph validation, the exact required-witness set, and closed role-addition checks.
+Those decoded fields remain descriptive rather than opaque authority: callers can still construct or
+update a context value, and an effectful command gate must independently admit it.
 
 Under
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md) the config type
@@ -55,9 +55,11 @@ See the [generic_project_model.md](../architecture/generic_project_model.md) des
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).
 Test configuration is likewise project-defined. Core now owns only opaque validated `CaseId`,
 `VariantId`, `VariantDraft`, and `TestMatrix` shapes plus the `TestCfg` projection contract. The demo's
-current `<project>.test.dhall` decodes exactly `{ testResources : Resources }`; `all` is a typed parser
-selector and is never stored schema data. This typed foundation does not restore a core config type, and
-Phase 20 still owns moving the demo's concrete two-message mapping into its test config.
+current `<project>.test.dhall` decodes `testResources` plus a declarative `testVariants` list;
+`demoTestMatrix` projects every compiled case across those decoded variants. `all` is a typed parser
+selector and is never stored schema data. This typed foundation does not restore a core config type. The
+[worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns the matrix and its remaining
+same-run recreate acceptance.
 
 This is why root/harness initialization defaults must be project-owned: a naive one-size `4/8/20`
 default (only the sample value of core's `budget` render artifact, not a core-shipped config default)
@@ -122,7 +124,13 @@ now has one project-owned `resources` value; `BinaryContext` carries no independ
 copy, and full child-config projection preserves the already-refined project value. One project-owned
 assembler is the structural default source, and finalized service-role projection invents no missing
 values. Plan-indexed provider admission and partitioning are implemented as a pure foundation; live
-provider adapters still must adopt that authority. See
+budget-wall consumers still must adopt that authority. The lifecycle provider boundary is separate:
+`SubstrateProvider` is an opaque Haskell descriptor selected from the closed provider kind, and its
+opaque nominal managed provider/share/alias authorities are minted only by prepared backend settlement.
+The Dhall `ProviderKind` below is descriptive topology data; it cannot construct a provider descriptor,
+choose a raw probe, mint a managed wrapper, or turn Direct into physical-host stop/delete/guest authority.
+The demo's prepared provider/alias call-site adoption remains work for the
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md). See
 [config_generation.md](config_generation.md) and the
 [generic_project_model.md](../architecture/generic_project_model.md) design). The on-disk config a normal
 command reads is therefore a complete value, not a sparse override.
@@ -331,9 +339,12 @@ the boundary. The target gives projection and delivery one plan operation. Runti
 election, build IDs, and secrets live in state stores or mounted secrets, not by silently mutating the
 active config.
 
-Phase 15.9 removes global reloads and passes
-`ValidatedConfig scope specDigest configId (cfg scope)` through parent plan construction/closed operations.
-Phase 18.6 verifies the child role wire/private bundle into a different local request and internally
+The
+[step algebra and project plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)
+passes one `ValidatedConfig scope specDigest configId (cfg scope)` snapshot through parent plan
+construction and closed operations; no production step reopens the sibling config. The
+[service runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md) verifies the child role
+wire/private bundle into a different local request and internally
 packages it only with its matching closed handler program and
 `ServiceSelection scope specDigest planId configId secretDigest frame revision instanceId ServePhase
 service effects`. The core-owned masked run-to-Exit operation privately invokes

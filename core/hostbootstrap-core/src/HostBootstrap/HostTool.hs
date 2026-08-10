@@ -67,6 +67,9 @@ data HostTool
     | Sudo
     | XcodeSelect
     | Incus
+    | Python3
+    | Flock
+    | Lockf
     | Df
     | Kill
     | Ps
@@ -109,6 +112,9 @@ toolCommandName Wsl = "wsl"
 toolCommandName Sudo = "sudo"
 toolCommandName XcodeSelect = "xcode-select"
 toolCommandName Incus = "incus"
+toolCommandName Python3 = "python3"
+toolCommandName Flock = "flock"
+toolCommandName Lockf = "lockf"
 toolCommandName Df = "df"
 toolCommandName Kill = "kill"
 toolCommandName Ps = "ps"

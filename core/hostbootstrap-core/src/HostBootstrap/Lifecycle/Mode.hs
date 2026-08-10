@@ -2,10 +2,11 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {- | Project-wide lifecycle mode, run leases, and the lifecycle-profile openers
-(§ EE, the test-harness-and-run-ownership phase the test-harness-and-run-ownership phase).
+(§ EE and the lifecycle-modes-and-run-leases phase).
 
 A project is in exactly one mode at a time — Production or one Harness run — and
 that exclusion is a single protected record both openers contend on.  Production
@@ -14,11 +15,13 @@ terminal close.  Neither profile can slip between a precondition check and
 ownership, because the check is re-run inside the same compare-and-swap that
 takes the mode.
 
-The run lease is the second half. An opener records an
-'UnboundRunLease' before it has a plan; only after the plan snapshot is
-persisted and verified does 'bindRunLease' produce the 'BoundRunLease' that
-every later effect requires.  A crash therefore always leaves a durable,
-classifiable lease rather than an opaque lock directory:
+The run lease is the second half. An opener records an 'UnboundRunLease' before
+it has a plan; only after the plan snapshot is persisted and verified can the
+fresh-only 'bindRunLease' produce the 'BoundRunLease' that every later effect
+requires. Existing Production admission is read-only and is exposed only by
+@withBoundPlanSnapshot@ in "HostBootstrap.ProjectPlan.Snapshot"; abandoned
+Harness leases are classified by the sweep. A crash therefore always leaves a
+durable, classifiable lease rather than an opaque lock directory:
 
 * an unbound incomplete lease can be closed by the sweep once
   'verifyUnboundLeaseHasNoEffects' proves it recorded no effect;
@@ -30,55 +33,98 @@ classifiable lease rather than an opaque lock directory:
 That is the direct replacement for the bare @createDirectory@ ownership claim
 whose crash left @.test_data@ and @.test_data.hostbootstrap-run-owner@ behind
 with no way to tell a dead predecessor from a live one.
+
+This module is also the public plan-bound lifecycle facade. It exposes the
+opaque 'AcquisitionJournal' and 'LifecycleCursor', current-phase discovery, and
+the two legal cursor successors. "HostBootstrap.Lifecycle.Session" owns their
+protected keys, canonical codecs, exact-source checks, and compare-and-swap
+implementation; callers do not assemble those durable bindings here.
 -}
 module HostBootstrap.Lifecycle.Mode (
     -- * Run identity
     RunId,
-    mkRunId,
     runIdText,
 
     -- * Modes
-    ProjectMode (..),
-    projectModeName,
+    ProductionMode,
+    HarnessMode,
     ProjectModeLease,
-    projectModeLeaseMode,
+    projectModeLeaseName,
     projectModeLeaseEpoch,
+    ActiveProjectMode,
+    activeProjectModeEpoch,
+    productionActiveMode,
+    harnessActiveMode,
 
     -- * Plan snapshots
     VerifiedPlanSnapshot,
-    planSnapshotRun,
+    planSnapshotRunText,
+    planSnapshotProjectName,
+    planSnapshotStoreIdentity,
     planSnapshotRevision,
     planSnapshotSpecDigest,
     planSnapshotPlanDigest,
     planSnapshotConfigDigest,
     planSnapshotCanonicalBytes,
+    PlanSnapshotView,
+    planSnapshotViewRevision,
+    planSnapshotViewSpecDigest,
+    planSnapshotViewPlanDigest,
+    planSnapshotViewConfigDigest,
+    planSnapshotViewCanonicalBytes,
+    inspectPlanSnapshot,
     persistPlanSnapshot,
     persistCanonicalPlanSnapshot,
     verifyPlanSnapshot,
+    verifyIndexedPlanSnapshot,
+    validateFreshPlanSnapshotEvidence,
+    persistAndVerifyIndexedPlanSnapshotKernel,
 
     -- * Run leases
     UnboundRunLease,
-    unboundRunLeaseRun,
+    unboundRunLeaseRunText,
     BoundRunLease,
-    boundRunLeaseRun,
+    boundRunLeaseRunText,
     boundRunLeaseSpecDigest,
     boundRunLeasePlanDigest,
-    RunLeaseBinding (..),
+    AcquisitionJournal,
+    acquisitionJournalStableScope,
+    acquisitionJournalSnapshotDigest,
+    acquisitionJournalRunLease,
+    acquisitionJournalBrokerGeneration,
+    acquisitionJournalRecordVersion,
+    acquisitionJournalRootVerb,
+    withAcquisitionJournalPhase,
+    withAcquisitionJournal,
+    validateBoundRunLeaseAcquisitionJournal,
+    LifecycleCursor,
+    lifecycleCursorFrame,
+    lifecycleCursorRecordVersion,
+    lifecycleCursorVerb,
+    lifecycleCursorPhase,
+    lifecycleCursorMatchesCommandAuthority,
+    validateCurrentLifecycleCursor,
+    withLifecycleCursor,
+    withCurrentLifecycleCursor,
+    withExecuteLifecycleCursor,
+    withTeardownLifecycleCursor,
     NormalActiveRecovery,
-    normalActiveRecoveryRun,
+    normalActiveRecoveryRunText,
     bindRunLease,
+    bindRunLeaseWithPlanRecovery,
+    LeaseConflict,
+    leaseConflictMessage,
 
     -- * Bound-invocation recovery
     BoundInvocationRecovery,
-    boundInvocationRecoveryRun,
+    boundInvocationRecoveryRunText,
+    boundInvocationRecoveryRevisionKind,
+    withBoundPlanSnapshotKernel,
     OpenRevisionRecovery,
-    openRevisionRecoveryRun,
+    openRevisionRecoveryRunText,
     OpenRevisionKind (..),
     openRevisionKind,
-    ProductionBoundRecovery (..),
-    eliminateProductionBoundRecovery,
     HarnessBoundRecovery (..),
-    eliminateHarnessBoundRecovery,
     classifyAbandonedBoundRun,
     InvocationCloseKey,
     mkInvocationCloseKey,
@@ -90,15 +136,23 @@ module HostBootstrap.Lifecycle.Mode (
 
     -- * Lifecycle profiles
     LifecycleProfile,
-    lifecycleProfileMode,
+    lifecycleProfileName,
     lifecycleProfileEpoch,
+    lifecycleProfileProjectName,
+    lifecycleProfileStoreIdentity,
     withProductionLifecycleProfile,
     withHarnessLifecycleProfile,
     RecoveredProductionLifecycleProfile,
-    recoveredProductionProfileRun,
+    recoveredProductionProfileRunText,
+    recoveredProductionProfileProjectName,
+    recoveredProductionProfileStoreIdentity,
+    recoveredProductionProfileRevision,
     recoveredProductionProfileSpecDigest,
     recoveredProductionProfilePlanDigest,
+    recoveredProductionProfileConfigDigest,
+    recoveredProductionProfileCanonicalBytes,
     recoveredProductionProfileEpoch,
+    recoveredProductionProfileRevisionKind,
     withRecoveredProductionLifecycleProfile,
 
     -- * Plan migration
@@ -133,7 +187,6 @@ module HostBootstrap.Lifecycle.Mode (
     productionRootModeLease,
     productionRootUnboundLease,
     withProductionRoot,
-    productionRunId,
     HarnessRoot,
     harnessRootAuthority,
     harnessRootHarnessAuthority,
@@ -177,6 +230,7 @@ module HostBootstrap.Lifecycle.Mode (
     ProjectClosureEvidence,
     projectClosureEvidenceKind,
     verifyNoProjectResourcesAcquired,
+    verifyBoundRunHasNoProjectResourcesAcquired,
     destroySettledClosure,
     verifyUnboundLeaseHasNoEffects,
     VerifiedUnboundLeaseHasNoEffects,
@@ -185,7 +239,7 @@ module HostBootstrap.Lifecycle.Mode (
 
     -- * Abandoned-run recovery
     VerifiedIncompleteRunLease,
-    incompleteRunLeaseRun,
+    incompleteRunLeaseRunText,
     incompleteRunLeaseKind,
     IncompleteLeaseKind (..),
     ClosedAbandonedHarnessRuns,
@@ -209,6 +263,8 @@ module HostBootstrap.Lifecycle.Mode (
     -- * Failures
     ModeError (..),
     modeErrorMessage,
+    LifecycleError,
+    lifecycleErrorMessage,
 ) where
 
 import Control.Applicative ((<|>))
@@ -225,44 +281,86 @@ import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import GHC.Clock (getMonotonicTimeNSec)
 import HostBootstrap.Authority (
-    AuthorityError,
+    AuthorityError (..),
     BrokerEpoch,
-    InstalledProject,
-    OperatorAuthorization,
-    ProductionCloseKind (PreEffectRefusalClose, SettledDestroyClose),
-    ProductionCloseRoot,
-    ProjectVerb (ProjectDestroy),
+    InstalledProjectIdentity,
+    ProjectVerb (ProjectDestroy, ProjectUp),
     RootInvocationAuthority,
+    RootScopeAuthority,
     VerbDestroy,
     VerbUp,
     authorityErrorMessage,
     brokerEpochWord,
     installedProjectName,
-    productionCloseRootVerb,
+    projectVerbName,
     rootAuthorityEpoch,
     rootAuthorityProjectName,
-    verifyOperatorAuthorization,
-    withFreshBrokerEpoch,
-    withVerifiedRootInvocation,
+    rootAuthorityVerb,
+ )
+import HostBootstrap.Authority.Kernel (
+    RootScopeWitness (HarnessRootScope, ProductionRootScope),
+    VerifiedOsPrincipal,
+    rootScopeEpochWord,
+    rootScopeProjectName,
+    rootScopeStoreIdentity,
+    rootAuthorityStoreIdentity,
+    verifyOsPrincipal,
+    withFreshBrokerEpochKernel,
+    withReifiedAllocatedBrokerEpochKernel,
+    withExistingVerifiedRootInvocationKernel,
+    withVerifiedRootInvocationKernel,
  )
 import HostBootstrap.Config.Authority.Internal (
     HarnessAuthority,
+    harnessRunName,
     mintHarnessAuthority,
  )
 import HostBootstrap.Config.Vocab (Harness, Production)
 import HostBootstrap.Lifecycle.Plan (
+    BoundPlanSnapshot,
     CanonicalPlanSnapshot,
+    ExistingBoundSnapshotAdmission,
+    IndexedPlanSnapshot,
+    PlanDigestBinding,
+    ProjectPlan,
+    admitPersistedCanonicalPlanSnapshotKernel,
+    boundPlanSnapshotBytesKernel,
     canonicalPlanSnapshotBytes,
     canonicalPlanSnapshotConfigDigest,
     canonicalPlanSnapshotDigest,
     canonicalPlanSnapshotSpecDigest,
+    acquisitionJournalAdmissionKernel,
+    consumeAcquisitionJournalAdmissionKernel,
+    consumeExistingBoundSnapshotAdmissionKernel,
+    indexedPlanSnapshotCanonicalKernel,
+    planDigestBindingDigestKernel,
+    projectPlanProfileEpochKernel,
+    projectPlanProfileNameKernel,
+    projectPlanProfileProjectNameKernel,
+    projectPlanProfileStoreIdentityKernel,
+    projectPlanIndexedSnapshotKernel,
+    withPersistedBoundPlanSnapshotKernel,
+ )
+import HostBootstrap.Lifecycle.Closure (
+    ProductionCloseKind (PreEffectRefusalClose, SettledDestroyClose),
+    ProductionCloseRoot,
+    productionCloseRootVerb,
  )
 import HostBootstrap.Lifecycle.Session (
+    AcquisitionJournal,
+    acquisitionJournalBrokerGeneration,
+    acquisitionJournalRecordVersion,
+    acquisitionJournalRootVerb,
+    acquisitionJournalRunLease,
+    acquisitionJournalSnapshotDigest,
+    acquisitionJournalStableScope,
     CurrentBrokerSessionAdmission,
     InterpretedRecovery,
+    LifecycleCursor,
+    LifecycleError,
     OldPermitsFenced,
     ProjectPermit,
-    SessionError,
+    SessionError (..),
     VerifiedAllSessionsClosed,
     VerifiedSessionManifest,
     admitCurrentBroker,
@@ -270,9 +368,23 @@ import HostBootstrap.Lifecycle.Session (
     allSessionsClosedPlanDigest,
     fenceOldPermits,
     interpretRecordedSessions,
+    lifecycleCursorFrame,
+    lifecycleCursorMatchesCommandAuthority,
+    lifecycleCursorPhase,
+    lifecycleCursorRecordVersion,
+    lifecycleCursorVerb,
+    validateCurrentLifecycleCursor,
     openProjectJournal,
+    openAcquisitionJournalKernel,
     sessionErrorMessage,
+    validateAcquisitionJournalBindingKernel,
+    lifecycleErrorMessage,
     verifySessionManifest,
+    withAcquisitionJournalPhase,
+    withCurrentLifecycleCursor,
+    withExecuteLifecycleCursor,
+    withLifecycleCursor,
+    withTeardownLifecycleCursor,
  )
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
@@ -281,13 +393,18 @@ import HostBootstrap.Protected (
     ProtectedSession,
     ProtectedStore,
     RecordKey,
+    RecordVersion,
     compareAndDeleteProtectedRecord,
     compareAndSwapProtectedRecord,
     listProtectedRecords,
     mkRecordKey,
     protectedErrorMessage,
+    protectedStoreIdentity,
+    protectedStoreIdentityText,
     readProtectedRecord,
+    recordVersionWord,
     recordKeyText,
+    sessionStoreIdentity,
     withProtectedEntry,
  )
 import HostBootstrap.Teardown (
@@ -299,32 +416,49 @@ import System.FilePath ((<.>), (</>))
 
 -- Run identity -----------------------------------------------------------------
 
-{- | A generative harness run identifier. It names the run's cluster, data root,
-and lease; it is not itself authority.
--}
-newtype RunId = RunId Text
+-- | Stable durable key material. This never crosses the public boundary.
+newtype RunKey = RunKey Text
     deriving (Eq, Ord)
 
-instance Show RunId where
-    show (RunId value) = "RunId " <> show value
+instance Show RunKey where
+    show (RunKey value) = "RunKey " <> show value
 
-runIdText :: RunId -> Text
-runIdText (RunId value) = value
+{- | A generative Harness run identifier. Its constructor and parser are
+private; the only public operation is the non-authorizing text projection.
+-}
+type role RunId nominal
+newtype RunId runId = RunId RunKey
 
-mkRunId :: Text -> Either ModeError RunId
-mkRunId raw
+instance Show (RunId runId) where
+    show run = "RunId " <> show (runIdText run)
+
+runIdText :: RunId runId -> Text
+runIdText (RunId (RunKey value)) = value
+
+runKeyText :: RunKey -> Text
+runKeyText (RunKey value) = value
+
+parseRunKey :: Text -> Either ModeError RunKey
+parseRunKey raw
     | Text.null raw = Left (ModeInvalidIdentity "a run id must not be empty")
     | Text.length raw > 48 = Left (ModeInvalidIdentity "a run id must be at most 48 characters")
     | not (Text.all legal raw) =
         Left (ModeInvalidIdentity ("a run id may contain only alphanumerics and '-': " <> raw))
-    | otherwise = Right (RunId raw)
+    | otherwise = Right (RunKey raw)
   where
     legal character = isAlphaNum character || character == '-'
 
-freshRunId :: IO RunId
-freshRunId = do
+withFreshRunId :: (forall runId. RunId runId -> IO result) -> IO result
+withFreshRunId use = do
     stamp <- getMonotonicTimeNSec
-    pure (RunId (Text.pack ("run-" <> showHexWord stamp)))
+    use (RunId (RunKey (Text.pack ("run-" <> showHexWord stamp))))
+
+-- | Reify durable Harness key material behind a fresh local phantom. This is
+-- package-private and is used only by abandoned-run recovery; it never accepts
+-- caller text and never returns the generative witness outside the rank-2
+-- continuation.
+withReifiedRunId :: RunKey -> (forall runId. RunId runId -> result) -> result
+withReifiedRunId run use = use (RunId run)
 
 showHexWord :: Word64 -> String
 showHexWord value = go value ""
@@ -338,32 +472,84 @@ showHexWord value = go value ""
 
 -- Modes -------------------------------------------------------------------------
 
--- | The project-wide mode. Exactly one is active at a time.
-data ProjectMode
-    = ProductionMode
-    | HarnessMode RunId
+-- | Public opaque type tag for the Production branch.
+data ProductionMode
+
+-- | Public opaque type tag for one exact generative Harness run.
+type role HarnessMode nominal
+data HarnessMode runId
+
+-- | Private stable representation persisted in the mode record.
+data ModeWire
+    = WireProduction
+    | WireHarness RunKey
     deriving (Eq, Show)
 
-projectModeName :: ProjectMode -> Text
-projectModeName ProductionMode = "production"
-projectModeName (HarnessMode run) = "harness:" <> runIdText run
+modeWireName :: ModeWire -> Text
+modeWireName WireProduction = "production"
+modeWireName (WireHarness run) = "harness:" <> runKeyText run
 
-{- | The held project-wide mode lease. Its constructor is private: a lease value
-exists only where the protected compare-and-swap that took the mode succeeded.
+-- | Private lifecycle identity shared by a lease and its verified snapshot.
+type role RunIdentity nominal
+data RunIdentity scope where
+    ProductionRunIdentity :: RunKey -> RunIdentity (Production projectId)
+    HarnessRunIdentity :: RunId runId -> RunIdentity (Harness projectId runId)
+
+runIdentityKey :: RunIdentity scope -> RunKey
+runIdentityKey (ProductionRunIdentity run) = run
+runIdentityKey (HarnessRunIdentity (RunId run)) = run
+
+runIdentityText :: RunIdentity scope -> Text
+runIdentityText = runKeyText . runIdentityKey
+
+runIdentityMode :: RunIdentity scope -> ModeWire
+runIdentityMode (ProductionRunIdentity _) = WireProduction
+runIdentityMode (HarnessRunIdentity (RunId run)) = WireHarness run
+
+{- | The held project-wide mode lease. The mode index is nominal and its
+constructor is private: only a successful protected mode transition can mint
+one.
 -}
-data ProjectModeLease projectId brokerGeneration
-    = ProjectModeLease ProjectMode (BrokerEpoch brokerGeneration)
+type role ProjectModeLease nominal nominal nominal
+data ProjectModeLease projectId mode brokerGeneration
+    = ProjectModeLease ModeWire Text Text (BrokerEpoch brokerGeneration)
 
-instance Show (ProjectModeLease projectId brokerGeneration) where
-    show (ProjectModeLease mode epoch) =
-        "ProjectModeLease " <> show mode <> " " <> show epoch
+instance Show (ProjectModeLease projectId mode brokerGeneration) where
+    show (ProjectModeLease mode _project _store epoch) =
+        "ProjectModeLease " <> Text.unpack (modeWireName mode) <> " " <> show epoch
 
-projectModeLeaseMode :: ProjectModeLease projectId brokerGeneration -> ProjectMode
-projectModeLeaseMode (ProjectModeLease mode _) = mode
+projectModeLeaseName :: ProjectModeLease projectId mode brokerGeneration -> Text
+projectModeLeaseName (ProjectModeLease mode _ _ _) = modeWireName mode
 
 projectModeLeaseEpoch ::
-    ProjectModeLease projectId brokerGeneration -> BrokerEpoch brokerGeneration
-projectModeLeaseEpoch (ProjectModeLease _ epoch) = epoch
+    ProjectModeLease projectId mode brokerGeneration -> BrokerEpoch brokerGeneration
+projectModeLeaseEpoch (ProjectModeLease _ _ _ epoch) = epoch
+
+-- | Scope-narrowed active-mode evidence. The constructor is private and the
+-- two functions below are its only producers.
+type role ActiveProjectMode nominal nominal
+data ActiveProjectMode scope brokerGeneration
+    = ActiveProjectMode ModeWire Text Text (BrokerEpoch brokerGeneration)
+
+instance Show (ActiveProjectMode scope brokerGeneration) where
+    show (ActiveProjectMode mode _project _store epoch) =
+        "ActiveProjectMode " <> Text.unpack (modeWireName mode) <> " " <> show epoch
+
+activeProjectModeEpoch ::
+    ActiveProjectMode scope brokerGeneration -> BrokerEpoch brokerGeneration
+activeProjectModeEpoch (ActiveProjectMode _ _ _ epoch) = epoch
+
+productionActiveMode ::
+    ProjectModeLease projectId ProductionMode brokerGeneration ->
+    ActiveProjectMode (Production projectId) brokerGeneration
+productionActiveMode (ProjectModeLease mode project store epoch) =
+    ActiveProjectMode mode project store epoch
+
+harnessActiveMode ::
+    ProjectModeLease projectId (HarnessMode runId) brokerGeneration ->
+    ActiveProjectMode (Harness projectId runId) brokerGeneration
+harnessActiveMode (ProjectModeLease mode project store epoch) =
+    ActiveProjectMode mode project store epoch
 
 -- Plan snapshots -----------------------------------------------------------------
 
@@ -380,13 +566,22 @@ digest needed by configless teardown or recovery. Legacy digest-only records
 remain readable while callers migrate; they expose 'Nothing' through the two
 canonical accessors and cannot be mistaken for a reconstructible snapshot.
 -}
-data VerifiedPlanSnapshot projectId specDigest planDigest
-    = VerifiedPlanSnapshot RunId Word64 Text Text (Maybe Text) (Maybe ByteString)
+type role VerifiedPlanSnapshot nominal nominal nominal
+data VerifiedPlanSnapshot scope specDigest planDigest
+    = VerifiedPlanSnapshot
+        (RunIdentity scope)
+        Text
+        Text
+        Word64
+        Text
+        Text
+        (Maybe Text)
+        (Maybe ByteString)
 
-instance Show (VerifiedPlanSnapshot projectId specDigest planDigest) where
-    show (VerifiedPlanSnapshot run revision spec plan config canonicalBytes) =
+instance Show (VerifiedPlanSnapshot scope specDigest planDigest) where
+    show (VerifiedPlanSnapshot run _project _store revision spec plan config canonicalBytes) =
         "VerifiedPlanSnapshot "
-            <> show run
+            <> show (runIdentityText run)
             <> " "
             <> show revision
             <> " "
@@ -396,26 +591,37 @@ instance Show (VerifiedPlanSnapshot projectId specDigest planDigest) where
             <> maybe " <digest-only>" (const " <canonical>") config
             <> maybe "" (\bytes -> " <" <> show (ByteString.length bytes) <> " bytes>") canonicalBytes
 
-planSnapshotRun :: VerifiedPlanSnapshot projectId specDigest planDigest -> RunId
-planSnapshotRun (VerifiedPlanSnapshot run _ _ _ _ _) = run
+planSnapshotRunText :: VerifiedPlanSnapshot scope specDigest planDigest -> Text
+planSnapshotRunText (VerifiedPlanSnapshot run _ _ _ _ _ _ _) = runIdentityText run
+
+planSnapshotRunKey :: VerifiedPlanSnapshot scope specDigest planDigest -> RunKey
+planSnapshotRunKey (VerifiedPlanSnapshot run _ _ _ _ _ _ _) = runIdentityKey run
+
+-- | The installed project retained by the protected snapshot read.
+planSnapshotProjectName :: VerifiedPlanSnapshot scope specDigest planDigest -> Text
+planSnapshotProjectName (VerifiedPlanSnapshot _ project _ _ _ _ _ _) = project
+
+-- | The durable protected-store identity retained by the snapshot read.
+planSnapshotStoreIdentity :: VerifiedPlanSnapshot scope specDigest planDigest -> Text
+planSnapshotStoreIdentity (VerifiedPlanSnapshot _ _ storeIdentity _ _ _ _ _) = storeIdentity
 
 -- | The active plan revision. Positive by construction.
-planSnapshotRevision :: VerifiedPlanSnapshot projectId specDigest planDigest -> Word64
-planSnapshotRevision (VerifiedPlanSnapshot _ revision _ _ _ _) = revision
+planSnapshotRevision :: VerifiedPlanSnapshot scope specDigest planDigest -> Word64
+planSnapshotRevision (VerifiedPlanSnapshot _ _ _ revision _ _ _ _) = revision
 
-planSnapshotSpecDigest :: VerifiedPlanSnapshot projectId specDigest planDigest -> Text
-planSnapshotSpecDigest (VerifiedPlanSnapshot _ _ spec _ _ _) = spec
+planSnapshotSpecDigest :: VerifiedPlanSnapshot scope specDigest planDigest -> Text
+planSnapshotSpecDigest (VerifiedPlanSnapshot _ _ _ _ spec _ _ _) = spec
 
-planSnapshotPlanDigest :: VerifiedPlanSnapshot projectId specDigest planDigest -> Text
-planSnapshotPlanDigest (VerifiedPlanSnapshot _ _ _ plan _ _) = plan
+planSnapshotPlanDigest :: VerifiedPlanSnapshot scope specDigest planDigest -> Text
+planSnapshotPlanDigest (VerifiedPlanSnapshot _ _ _ _ _ plan _ _) = plan
 
 -- | The exact admitted config digest, present only on a canonical snapshot.
-planSnapshotConfigDigest :: VerifiedPlanSnapshot projectId specDigest planDigest -> Maybe Text
-planSnapshotConfigDigest (VerifiedPlanSnapshot _ _ _ _ config _) = config
+planSnapshotConfigDigest :: VerifiedPlanSnapshot scope specDigest planDigest -> Maybe Text
+planSnapshotConfigDigest (VerifiedPlanSnapshot _ _ _ _ _ _ config _) = config
 
 -- | The exact stable plan bytes, present only on a canonical snapshot.
-planSnapshotCanonicalBytes :: VerifiedPlanSnapshot projectId specDigest planDigest -> Maybe ByteString
-planSnapshotCanonicalBytes (VerifiedPlanSnapshot _ _ _ _ _ bytes) = bytes
+planSnapshotCanonicalBytes :: VerifiedPlanSnapshot scope specDigest planDigest -> Maybe ByteString
+planSnapshotCanonicalBytes (VerifiedPlanSnapshot _ _ _ _ _ _ _ bytes) = bytes
 
 data PlanSnapshotRecord = PlanSnapshotRecord
     { snapshotRecordRevision :: Word64
@@ -425,8 +631,64 @@ data PlanSnapshotRecord = PlanSnapshotRecord
     , snapshotRecordCanonicalBytes :: Maybe ByteString
     }
 
+{- | A non-authorizing read-only view of durable snapshot bytes. Unlike
+'VerifiedPlanSnapshot', this value carries no lifecycle scope or digest
+indices and cannot be used to bind a lease. It exists for diagnostics and
+tests that need to inspect a stable run name without reconstructing a
+generative 'RunId'.
+-}
+data PlanSnapshotView = PlanSnapshotView Word64 Text Text (Maybe Text) (Maybe ByteString)
+    deriving (Eq, Show)
+
+planSnapshotViewRevision :: PlanSnapshotView -> Word64
+planSnapshotViewRevision (PlanSnapshotView revision _ _ _ _) = revision
+
+planSnapshotViewSpecDigest :: PlanSnapshotView -> Text
+planSnapshotViewSpecDigest (PlanSnapshotView _ spec _ _ _) = spec
+
+planSnapshotViewPlanDigest :: PlanSnapshotView -> Text
+planSnapshotViewPlanDigest (PlanSnapshotView _ _ plan _ _) = plan
+
+planSnapshotViewConfigDigest :: PlanSnapshotView -> Maybe Text
+planSnapshotViewConfigDigest (PlanSnapshotView _ _ _ config _) = config
+
+planSnapshotViewCanonicalBytes :: PlanSnapshotView -> Maybe ByteString
+planSnapshotViewCanonicalBytes (PlanSnapshotView _ _ _ _ bytes) = bytes
+
+{- | Inspect a snapshot by stable run text without minting run or lifecycle
+authority. The text is validated with the private wire parser and used only to
+locate and decode the immutable record.
+-}
+inspectPlanSnapshot ::
+    ProtectedSession session ->
+    InstalledProjectIdentity projectId ->
+    Text ->
+    IO (Either ModeError PlanSnapshotView)
+inspectPlanSnapshot session project rawRun = case parseRunKey rawRun of
+    Left failure -> pure (Left failure)
+    Right run -> withRecordKey (snapshotKeyForRunKey project run) $ \key -> do
+        observed <- readProtectedRecord session key
+        pure $ case observed of
+            Left failure -> Left (ModeStoreFailure failure)
+            Right Nothing -> Left (ModeSnapshotMissing rawRun)
+            Right (Just record) -> case decodePlanSnapshotRecord (protectedRecordBytes record) of
+                Nothing -> Left (ModeMalformedRecord (recordKeyText key))
+                Just snapshot ->
+                    Right
+                        ( PlanSnapshotView
+                            (snapshotRecordRevision snapshot)
+                            (snapshotRecordSpecDigest snapshot)
+                            (snapshotRecordPlanDigest snapshot)
+                            (snapshotRecordConfigDigest snapshot)
+                            (snapshotRecordCanonicalBytes snapshot)
+                        )
+
 snapshotRecordVersion :: Word64
 snapshotRecordVersion = 1
+
+-- | The first active revision written by fresh project-plan admission.
+initialPlanSnapshotRevision :: Word64
+initialPlanSnapshotRevision = 1
 
 snapshotRecordMagic :: ByteString
 snapshotRecordMagic = "HOSTBOOTSTRAP-SNAPSHOT"
@@ -449,9 +711,7 @@ durably. Repeating the exact bytes is idempotent and does not advance the record
 version; any attempted replacement is refused.
 -}
 persistPlanSnapshot ::
-    ProtectedSession session ->
-    InstalledProject projectId ->
-    RunId ->
+    UnboundRunLease scope brokerGeneration ->
     -- | active plan revision; must be positive
     Word64 ->
     -- | spec digest
@@ -459,7 +719,7 @@ persistPlanSnapshot ::
     -- | plan digest
     Text ->
     IO (Either ModeError ())
-persistPlanSnapshot session project run revision spec plan
+persistPlanSnapshot unbound revision spec plan
     | revision == 0 =
         pure (Left (ModeInvalidIdentity "a plan revision must be positive"))
     | Text.null spec || Text.null plan =
@@ -467,52 +727,57 @@ persistPlanSnapshot session project run revision spec plan
     | not (snapshotTextWithinBound spec) || not (snapshotTextWithinBound plan) =
         pure (Left (ModeInvalidIdentity "a plan snapshot digest exceeds the wire bound"))
     | otherwise =
-        persistSnapshotRecord
-            session
-            project
-            run
-            (PlanSnapshotRecord revision spec plan Nothing Nothing)
+        withUnboundLeaseEntry unbound $ \session ->
+            persistSnapshotRecordAt
+                session
+                (leaseLocationSnapshotKey (unboundRunLeaseLocation unbound))
+                (PlanSnapshotRecord revision spec plan Nothing Nothing)
 
 {- | Persist the exact canonical plan bytes together with their revision and
 spec/config/plan digests. Every identity is derived from the opaque canonical
 snapshot rather than accepted as an independently supplied string.
 -}
 persistCanonicalPlanSnapshot ::
-    ProtectedSession session ->
-    InstalledProject projectId ->
-    RunId ->
+    UnboundRunLease scope brokerGeneration ->
     Word64 ->
     CanonicalPlanSnapshot ->
     IO (Either ModeError ())
-persistCanonicalPlanSnapshot session project run revision snapshot
+persistCanonicalPlanSnapshot unbound revision snapshot =
+    case canonicalSnapshotRecord revision snapshot of
+        Left failure -> pure (Left failure)
+        Right proposed ->
+            withUnboundLeaseEntry unbound $ \session ->
+                persistSnapshotRecordAt
+                    session
+                    (leaseLocationSnapshotKey (unboundRunLeaseLocation unbound))
+                    proposed
+
+canonicalSnapshotRecord ::
+    Word64 ->
+    CanonicalPlanSnapshot ->
+    Either ModeError PlanSnapshotRecord
+canonicalSnapshotRecord revision snapshot
     | revision == 0 =
-        pure (Left (ModeInvalidIdentity "a plan revision must be positive"))
+        Left (ModeInvalidIdentity "a plan revision must be positive")
     | Text.null spec || Text.null config || Text.null plan || ByteString.null canonicalBytes =
-        pure (Left (ModeInvalidIdentity "a canonical plan snapshot needs non-empty identities and bytes"))
+        Left (ModeInvalidIdentity "a canonical plan snapshot needs non-empty identities and bytes")
     | any (not . snapshotTextWithinBound) [spec, config, plan] =
-        pure (Left (ModeInvalidIdentity "a canonical plan snapshot identity exceeds the wire bound"))
+        Left (ModeInvalidIdentity "a canonical plan snapshot identity exceeds the wire bound")
     | ByteString.length canonicalBytes > maxCanonicalPlanBytes =
-        pure (Left (ModeInvalidIdentity "a canonical plan snapshot exceeds the wire bound"))
-    | otherwise =
-        persistSnapshotRecord
-            session
-            project
-            run
-            (PlanSnapshotRecord revision spec plan (Just config) (Just canonicalBytes))
+        Left (ModeInvalidIdentity "a canonical plan snapshot exceeds the wire bound")
+    | otherwise = Right (PlanSnapshotRecord revision spec plan (Just config) (Just canonicalBytes))
   where
     spec = canonicalPlanSnapshotSpecDigest snapshot
     config = canonicalPlanSnapshotConfigDigest snapshot
     plan = canonicalPlanSnapshotDigest snapshot
     canonicalBytes = canonicalPlanSnapshotBytes snapshot
 
-persistSnapshotRecord ::
+persistSnapshotRecordAt ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    RunId ->
+    RecordKey ->
     PlanSnapshotRecord ->
     IO (Either ModeError ())
-persistSnapshotRecord session project run proposed =
-    withRecordKey (snapshotKey project run) $ \key -> do
+persistSnapshotRecordAt session key proposed = do
         let payload = encodePlanSnapshotRecord proposed
         observed <- readProtectedRecord session key
         case observed of
@@ -539,7 +804,7 @@ persistSnapshotRecord session project run proposed =
                                 checkExistingSnapshot key proposed payload existing
                             Right Nothing -> Left (ModeStoreFailure failure)
   where
-    checkExistingSnapshot key candidate payload existing
+    checkExistingSnapshot existingKey candidate payload existing
         | protectedRecordBytes existing == payload = Right ()
         | otherwise = case decodePlanSnapshotRecord (protectedRecordBytes existing) of
             Just recorded ->
@@ -548,7 +813,7 @@ persistSnapshotRecord session project run proposed =
                         (snapshotDescription candidate)
                         (snapshotDescription recorded)
                     )
-            _ -> Left (ModeMalformedRecord (recordKeyText key))
+            _ -> Left (ModeMalformedRecord (recordKeyText existingKey))
 
 snapshotDescription :: PlanSnapshotRecord -> Text
 snapshotDescription record =
@@ -565,32 +830,258 @@ snapshot is refused rather than defaulted: without one there is nothing a lease
 could legitimately be bound to.
 -}
 verifyPlanSnapshot ::
-    ProtectedSession session ->
-    InstalledProject projectId ->
-    RunId ->
+    UnboundRunLease scope brokerGeneration ->
     ( forall specDigest planDigest.
-      VerifiedPlanSnapshot projectId specDigest planDigest ->
+      VerifiedPlanSnapshot scope specDigest planDigest ->
       IO (Either ModeError result)
     ) ->
     IO (Either ModeError result)
-verifyPlanSnapshot session project run use =
-    withRecordKey (snapshotKey project run) $ \key -> do
-        observed <- readProtectedRecord session key
-        case observed of
-            Left failure -> pure (Left (ModeStoreFailure failure))
-            Right Nothing -> pure (Left (ModeSnapshotMissing (runIdText run)))
-            Right (Just record) -> case decodePlanSnapshotRecord (protectedRecordBytes record) of
-                Just snapshot ->
-                    use
+verifyPlanSnapshot unbound use = do
+    loaded <-
+        withUnboundLeaseEntry unbound $ \session ->
+            readVerifiedPlanSnapshotAt
+                session
+                (leaseLocationSnapshotKey location)
+                (unboundRunLeaseIdentity unbound)
+                (leaseLocationProjectName location)
+                (leaseLocationStoreIdentity location)
+    case loaded of
+        Left failure -> pure (Left failure)
+        Right (SomeVerifiedPlanSnapshot snapshot) -> use snapshot
+  where
+    location = unboundRunLeaseLocation unbound
+
+{- | Restricted same-package verification for an exact indexed project plan.
+
+Unlike 'verifyPlanSnapshot', this seam preserves the specification identity
+already carried by the private 'IndexedPlanSnapshot' and quantifies only the
+stable @planDigest@ read from the protected record.  The indexed input has no
+public producer or projection, so downstream clients cannot invoke this
+refinement independently of an admitted 'ProjectPlan'.
+
+All stable material must agree exactly: specification digest, configuration
+digest, canonical bytes, and the content-derived plan digest.  Only then is the
+verified value reconstructed under the indexed snapshot's existing
+@specDigest@ phantom.
+-}
+verifyIndexedPlanSnapshot ::
+    UnboundRunLease scope brokerGeneration ->
+    IndexedPlanSnapshot scope specDigest planId configId ->
+    ( forall planDigest.
+      VerifiedPlanSnapshot scope specDigest planDigest ->
+      IO (Either ModeError result)
+    ) ->
+    IO (Either ModeError result)
+verifyIndexedPlanSnapshot unbound indexed use = do
+    loaded <-
+        withUnboundLeaseEntry unbound $ \session ->
+            readVerifiedPlanSnapshotAt
+                session
+                (leaseLocationSnapshotKey location)
+                (unboundRunLeaseIdentity unbound)
+                (leaseLocationProjectName location)
+                (leaseLocationStoreIdentity location)
+    case loaded of
+        Left failure -> pure (Left failure)
+        Right (SomeVerifiedPlanSnapshot observed) ->
+            case refineVerifiedPlanSnapshot indexed observed of
+                Left failure -> pure (Left failure)
+                Right verified -> use verified
+  where
+    location = unboundRunLeaseLocation unbound
+
+{- | Check all retained admission origins before the fresh snapshot protocol
+can enter the protected store.
+
+The plan is deliberately not broker-indexed, so its project, store, profile,
+and epoch are retained in the hidden plan kernel and compared here.  The
+root/lease checks remain explicit as a fail-closed runtime backstop to their
+shared nominal indices.
+-}
+validateFreshPlanSnapshotEvidence ::
+    RootInvocationAuthority scope brokerGeneration VerbUp ->
+    UnboundRunLease scope brokerGeneration ->
+    ProjectPlan scope specDigest planId configId cfg ->
+    Either ModeError ()
+validateFreshPlanSnapshotEvidence root unbound plan = do
+    match "root project" leaseProject (rootAuthorityProjectName root)
+    match "root store" leaseStore (rootAuthorityStoreIdentity root)
+    matchWord
+        "root epoch"
+        retainedEpochWord
+        (brokerEpochWord (rootAuthorityEpoch root))
+    match "plan profile" leaseProfile (projectPlanProfileNameKernel plan)
+    matchWord "plan epoch" retainedEpochWord (projectPlanProfileEpochKernel plan)
+    match "plan project" leaseProject (projectPlanProfileProjectNameKernel plan)
+    match "plan store" leaseStore (projectPlanProfileStoreIdentityKernel plan)
+  where
+    location = unboundRunLeaseLocation unbound
+    leaseProject = leaseLocationProjectName location
+    leaseStore = leaseLocationStoreIdentity location
+    retainedEpochWord = brokerEpochWord (unboundRunLeaseEpoch unbound)
+    leaseProfile = modeWireName (runIdentityMode (unboundRunLeaseIdentity unbound))
+    match subject expected observed
+        | expected == observed = Right ()
+        | otherwise = Left (ModeEvidenceMismatch subject expected observed)
+    matchWord subject expected observed =
+        match subject (showWord expected) (showWord observed)
+
+data SomeRefinedPlanSnapshot scope specDigest
+    = forall planDigest.
+        SomeRefinedPlanSnapshot
+            (VerifiedPlanSnapshot scope specDigest planDigest)
+
+readRefinedIndexedPlanSnapshotAt ::
+    ProtectedSession session ->
+    UnboundRunLease scope brokerGeneration ->
+    IndexedPlanSnapshot scope specDigest planId configId ->
+    IO (Either ModeError (SomeRefinedPlanSnapshot scope specDigest))
+readRefinedIndexedPlanSnapshotAt session unbound indexed = do
+    observed <-
+        readVerifiedPlanSnapshotAt
+            session
+            (leaseLocationSnapshotKey location)
+            (unboundRunLeaseIdentity unbound)
+            (leaseLocationProjectName location)
+            (leaseLocationStoreIdentity location)
+    pure $ case observed of
+        Left failure -> Left failure
+        Right (SomeVerifiedPlanSnapshot snapshot) ->
+            SomeRefinedPlanSnapshot <$> refineVerifiedPlanSnapshot indexed snapshot
+  where
+    location = unboundRunLeaseLocation unbound
+
+{- | Persist and authoritatively read back one exact indexed plan snapshot in
+one protected entry.
+
+The retained unbound lease is revalidated before the immutable write.  The
+continuation runs only after the protected entry has closed, so later lease or
+journal work cannot re-enter the store while its lock is held.
+-}
+persistAndVerifyIndexedPlanSnapshotKernel ::
+    UnboundRunLease scope brokerGeneration ->
+    IndexedPlanSnapshot scope specDigest planId configId ->
+    ( forall planDigest.
+      VerifiedPlanSnapshot scope specDigest planDigest ->
+      IO result
+    ) ->
+    IO (Either ModeError result)
+persistAndVerifyIndexedPlanSnapshotKernel unbound indexed use = do
+    loaded <-
+        withUnboundLeaseEntry unbound $ \session -> do
+            retained <- readRetainedUnboundLeaseAt session unbound
+            case retained of
+                Left failure -> pure (Left failure)
+                Right _ ->
+                    case
+                        canonicalSnapshotRecord
+                            initialPlanSnapshotRevision
+                            (indexedPlanSnapshotCanonicalKernel indexed)
+                    of
+                        Left failure -> pure (Left failure)
+                        Right proposed -> do
+                            persisted <-
+                                persistSnapshotRecordAt
+                                    session
+                                    (leaseLocationSnapshotKey (unboundRunLeaseLocation unbound))
+                                    proposed
+                            case persisted of
+                                Left failure -> pure (Left failure)
+                                Right () ->
+                                    readRefinedIndexedPlanSnapshotAt session unbound indexed
+    case loaded of
+        Left failure -> pure (Left failure)
+        Right (SomeRefinedPlanSnapshot snapshot) -> Right <$> use snapshot
+
+refineVerifiedPlanSnapshot ::
+    IndexedPlanSnapshot scope specDigest planId configId ->
+    VerifiedPlanSnapshot scope observedSpecDigest planDigest ->
+    Either ModeError (VerifiedPlanSnapshot scope specDigest planDigest)
+refineVerifiedPlanSnapshot indexed observed
+    | planSnapshotSpecDigest observed /= expectedSpec =
+        mismatch expectedSpec (planSnapshotSpecDigest observed)
+    | planSnapshotConfigDigest observed /= Just expectedConfig =
+        mismatch
+            expectedConfig
+            (maybe "<absent>" id (planSnapshotConfigDigest observed))
+    | planSnapshotCanonicalBytes observed /= Just expectedBytes =
+        mismatch
+            "the indexed plan's exact canonical bytes"
+            ( case planSnapshotCanonicalBytes observed of
+                Nothing -> "<absent>"
+                Just _ -> "different canonical bytes"
+            )
+    | planSnapshotPlanDigest observed /= expectedPlan =
+        mismatch expectedPlan (planSnapshotPlanDigest observed)
+    | otherwise = Right (reindexSpec observed)
+  where
+    canonical = indexedPlanSnapshotCanonicalKernel indexed
+    expectedSpec = canonicalPlanSnapshotSpecDigest canonical
+    expectedConfig = canonicalPlanSnapshotConfigDigest canonical
+    expectedBytes = canonicalPlanSnapshotBytes canonical
+    expectedPlan = canonicalPlanSnapshotDigest canonical
+    mismatch expected actual = Left (ModeSnapshotMismatch expected actual)
+    reindexSpec
+        (VerifiedPlanSnapshot run project store revision _ plan config bytes) =
+            VerifiedPlanSnapshot
+                run
+                project
+                store
+                revision
+                expectedSpec
+                plan
+                config
+                bytes
+
+data SomeVerifiedPlanSnapshot scope
+    = forall specDigest planDigest.
+        SomeVerifiedPlanSnapshot (VerifiedPlanSnapshot scope specDigest planDigest)
+
+readVerifiedPlanSnapshotAt ::
+    ProtectedSession session ->
+    RecordKey ->
+    RunIdentity scope ->
+    Text ->
+    Text ->
+    IO (Either ModeError (SomeVerifiedPlanSnapshot scope))
+readVerifiedPlanSnapshotAt session key run projectName storeIdentity = do
+    observed <- readProtectedRecord session key
+    pure $ case observed of
+        Left failure -> Left (ModeStoreFailure failure)
+        Right Nothing -> Left (ModeSnapshotMissing (runIdentityText run))
+        Right (Just record) -> case decodePlanSnapshotRecord (protectedRecordBytes record) of
+            Just snapshot ->
+                Right
+                    ( SomeVerifiedPlanSnapshot
                         ( VerifiedPlanSnapshot
                             run
+                            projectName
+                            storeIdentity
                             (snapshotRecordRevision snapshot)
                             (snapshotRecordSpecDigest snapshot)
                             (snapshotRecordPlanDigest snapshot)
                             (snapshotRecordConfigDigest snapshot)
                             (snapshotRecordCanonicalBytes snapshot)
                         )
-                Nothing -> pure (Left (ModeMalformedRecord (recordKeyText key)))
+                    )
+            Nothing -> Left (ModeMalformedRecord (recordKeyText key))
+
+verifyPlanSnapshotInSession ::
+    ProtectedSession session ->
+    RecordKey ->
+    RunIdentity scope ->
+    Text ->
+    Text ->
+    ( forall specDigest planDigest.
+      VerifiedPlanSnapshot scope specDigest planDigest ->
+      IO (Either ModeError result)
+    ) ->
+    IO (Either ModeError result)
+verifyPlanSnapshotInSession session key run projectName storeIdentity use = do
+    loaded <- readVerifiedPlanSnapshotAt session key run projectName storeIdentity
+    case loaded of
+        Left failure -> pure (Left failure)
+        Right (SomeVerifiedPlanSnapshot snapshot) -> use snapshot
 
 encodePlanSnapshotRecord :: PlanSnapshotRecord -> ByteString
 encodePlanSnapshotRecord record =
@@ -707,25 +1198,76 @@ snapshotTextWithinBound =
 effect; its only powers are to be bound or to be closed by the sweep after
 proving it recorded none.
 -}
+data LeaseLocation = LeaseLocation
+    { leaseLocationStore :: ProtectedStore
+    , leaseLocationProjectName :: Text
+    , leaseLocationStoreIdentity :: Text
+    , leaseLocationLeaseKey :: RecordKey
+    , leaseLocationSnapshotKey :: RecordKey
+    , leaseLocationInvocationKey :: RecordKey
+    , leaseLocationMigrationKey :: RecordKey
+    , leaseLocationProfileKey :: RecordKey
+    }
+
+type role UnboundRunLease nominal nominal
 data UnboundRunLease scope brokerGeneration
-    = UnboundRunLease RunId (BrokerEpoch brokerGeneration)
+    = UnboundRunLease
+        (RunIdentity scope)
+        LeaseLocation
+        (BrokerEpoch brokerGeneration)
+        Word64
 
 instance Show (UnboundRunLease scope brokerGeneration) where
-    show (UnboundRunLease run epoch) = "UnboundRunLease " <> show run <> " " <> show epoch
+    show (UnboundRunLease run _ epoch _) =
+        "UnboundRunLease " <> Text.unpack (runIdentityText run) <> " " <> show epoch
 
-unboundRunLeaseRun :: UnboundRunLease scope brokerGeneration -> RunId
-unboundRunLeaseRun (UnboundRunLease run _) = run
+unboundRunLeaseRunText :: UnboundRunLease scope brokerGeneration -> Text
+unboundRunLeaseRunText (UnboundRunLease run _ _ _) = runIdentityText run
+
+unboundRunLeaseIdentity :: UnboundRunLease scope brokerGeneration -> RunIdentity scope
+unboundRunLeaseIdentity (UnboundRunLease run _ _ _) = run
+
+unboundRunLeaseLocation :: UnboundRunLease scope brokerGeneration -> LeaseLocation
+unboundRunLeaseLocation (UnboundRunLease _ location _ _) = location
+
+unboundRunLeaseEpoch ::
+    UnboundRunLease scope brokerGeneration -> BrokerEpoch brokerGeneration
+unboundRunLeaseEpoch (UnboundRunLease _ _ epoch _) = epoch
+
+unboundRunLeaseRecordVersion :: UnboundRunLease scope brokerGeneration -> Word64
+unboundRunLeaseRecordVersion (UnboundRunLease _ _ _ version) = version
+
+withUnboundLeaseEntry ::
+    UnboundRunLease scope brokerGeneration ->
+    (forall session. ProtectedSession session -> IO (Either ModeError result)) ->
+    IO (Either ModeError result)
+withUnboundLeaseEntry unbound action = do
+    entered <- withProtectedEntry (leaseLocationStore (unboundRunLeaseLocation unbound)) (fmap Right . action)
+    pure $ case entered of
+        Left failure -> Left (ModeStoreFailure failure)
+        Right result -> result
 
 {- | A lease bound to one verified plan snapshot. Every prepared operation
 requires it, so an effect cannot precede the snapshot it claims to belong to.
 -}
+data BindingOrigin = FreshBinding | ExistingBinding | MigratedBinding
+    deriving (Eq)
+
+type role BoundRunLease nominal nominal nominal nominal
 data BoundRunLease scope specDigest planDigest brokerGeneration
-    = BoundRunLease RunId Text Text (BrokerEpoch brokerGeneration)
+    = BoundRunLease
+        (RunIdentity scope)
+        LeaseLocation
+        Text
+        Text
+        (BrokerEpoch brokerGeneration)
+        RecordVersion
+        BindingOrigin
 
 instance Show (BoundRunLease scope specDigest planDigest brokerGeneration) where
-    show (BoundRunLease run spec plan epoch) =
+    show (BoundRunLease run _ spec plan epoch _ _) =
         "BoundRunLease "
-            <> show run
+            <> Text.unpack (runIdentityText run)
             <> " "
             <> show spec
             <> " "
@@ -733,46 +1275,315 @@ instance Show (BoundRunLease scope specDigest planDigest brokerGeneration) where
             <> " "
             <> show epoch
 
-boundRunLeaseRun :: BoundRunLease scope specDigest planDigest brokerGeneration -> RunId
-boundRunLeaseRun (BoundRunLease run _ _ _) = run
+boundRunLeaseRunText :: BoundRunLease scope specDigest planDigest brokerGeneration -> Text
+boundRunLeaseRunText (BoundRunLease run _ _ _ _ _ _) = runIdentityText run
+
+boundRunLeaseIdentity ::
+    BoundRunLease scope specDigest planDigest brokerGeneration -> RunIdentity scope
+boundRunLeaseIdentity (BoundRunLease run _ _ _ _ _ _) = run
+
+harnessBoundRunId ::
+    BoundRunLease (Harness projectId runId) specDigest planDigest brokerGeneration ->
+    RunId runId
+harnessBoundRunId bound = case boundRunLeaseIdentity bound of
+    HarnessRunIdentity run -> run
+
+boundRunLeaseLocation ::
+    BoundRunLease scope specDigest planDigest brokerGeneration ->
+    LeaseLocation
+boundRunLeaseLocation (BoundRunLease _ location _ _ _ _ _) = location
 
 boundRunLeaseSpecDigest ::
     BoundRunLease scope specDigest planDigest brokerGeneration -> Text
-boundRunLeaseSpecDigest (BoundRunLease _ spec _ _) = spec
+boundRunLeaseSpecDigest (BoundRunLease _ _ spec _ _ _ _) = spec
 
 boundRunLeasePlanDigest ::
     BoundRunLease scope specDigest planDigest brokerGeneration -> Text
-boundRunLeasePlanDigest (BoundRunLease _ _ plan _) = plan
+boundRunLeasePlanDigest (BoundRunLease _ _ _ plan _ _ _) = plan
 
-{- | What binding a lease found. Both branches carry the same
-'BoundRunLease' — the lease /is/ bound either way — but they carry different
-recovery authority, so a caller cannot treat an abandoned invocation as a fresh
-one (§ EE).
+boundRunLeaseEpoch ::
+    BoundRunLease scope specDigest planDigest brokerGeneration ->
+    BrokerEpoch brokerGeneration
+boundRunLeaseEpoch (BoundRunLease _ _ _ _ epoch _ _) = epoch
+
+boundRunLeaseRecordVersion ::
+    BoundRunLease scope specDigest planDigest brokerGeneration -> RecordVersion
+boundRunLeaseRecordVersion (BoundRunLease _ _ _ _ _ version _) = version
+
+{- | The sole public plan-bound acquisition-journal opener.
+
+The hidden witness is forced before any store access. All in-memory evidence is
+compared first. One entry in the store retained by the opaque bound lease then
+revalidates the live project mode/epoch, exact bound-lease record key/version
+and bytes, and protected canonical snapshot. Only after every comparison does
+Session open or resume the dedicated acquisition record. The caller callback is
+invoked after that protected entry has closed.
 -}
-data RunLeaseBinding projectId scope specDigest planDigest brokerGeneration
-    = {- | The lease was still unbound: this invocation bound it, and there is
-      no prior invocation to recover.
-      -}
-      FreshRunLeaseBinding
-        (BoundRunLease scope specDigest planDigest brokerGeneration)
-        (NormalActiveRecovery scope)
-    | {- | The lease was already bound to this exact snapshot: a previous
-      invocation reached a plan and did not settle.
-      -}
-      ExistingRunLeaseBinding
-        (BoundRunLease scope specDigest planDigest brokerGeneration)
-        (BoundInvocationRecovery projectId)
+withAcquisitionJournal ::
+    forall scope brokerGeneration verb specDigest planDigest planId configId cfg result.
+    RootInvocationAuthority scope brokerGeneration verb ->
+    BoundRunLease scope specDigest planDigest brokerGeneration ->
+    BoundPlanSnapshot scope specDigest planDigest planId ->
+    PlanDigestBinding scope specDigest planDigest planId ->
+    ProjectPlan scope specDigest planId configId cfg ->
+    (AcquisitionJournal scope planId brokerGeneration -> IO result) ->
+    IO (Either LifecycleError result)
+withAcquisitionJournal root bound boundSnapshot binding plan use =
+    case consumeAcquisitionJournalAdmissionKernel admission of
+        () ->
+            case validateRetainedEvidence of
+                Left failure -> pure (Left failure)
+                Right () -> do
+                    entered <-
+                        withProtectedEntry store $ \session -> do
+                            admitted <- validateLiveEvidence session
+                            pure (Right admitted)
+                    case entered of
+                        Left failure -> pure (Left (SessionStoreFailure failure))
+                        Right (Left failure) -> pure (Left failure)
+                        Right (Right journal) -> Right <$> use journal
+  where
+    admission = acquisitionJournalAdmissionKernel
+    runIdentity = boundRunLeaseIdentity bound
+    location = boundRunLeaseLocation bound
+    store = leaseLocationStore location
+    project = leaseLocationProjectName location
+    storeIdentity = leaseLocationStoreIdentity location
+    run = boundRunLeaseRunText bound
+    specDigest = boundRunLeaseSpecDigest bound
+    planDigest = boundRunLeasePlanDigest bound
+    epoch = boundRunLeaseEpoch bound
+    epochWord = brokerEpochWord epoch
+    leaseKey = leaseLocationLeaseKey location
+    leaseVersion = boundRunLeaseRecordVersion bound
+    profileName = projectPlanProfileNameKernel plan
+    expectedProfileName = modeWireName (runIdentityMode runIdentity)
+    indexed = projectPlanIndexedSnapshotKernel plan
+    canonical = indexedPlanSnapshotCanonicalKernel indexed
+    canonicalSpec = canonicalPlanSnapshotSpecDigest canonical
+    canonicalPlan = canonicalPlanSnapshotDigest canonical
+    canonicalConfig = canonicalPlanSnapshotConfigDigest canonical
+    canonicalBytes = canonicalPlanSnapshotBytes canonical
+    rootVerb = projectVerbName (rootAuthorityVerb root)
 
-{- | Proof that a binding was fresh, so no recovery is owed. Its constructor is
-private: absence of recovery is a verified observation, not a default.
+    validateRetainedEvidence = do
+        requirePositive "broker epoch" epochWord
+        requirePositive "lease record version" (recordVersionWord leaseVersion)
+        requireText "root project" project (rootAuthorityProjectName root)
+        requireText "root store" storeIdentity (rootAuthorityStoreIdentity root)
+        requireWord "root broker epoch" epochWord (brokerEpochWord (rootAuthorityEpoch root))
+        requireText "plan project" project (projectPlanProfileProjectNameKernel plan)
+        requireText "plan store" storeIdentity (projectPlanProfileStoreIdentityKernel plan)
+        requireWord "plan broker epoch" epochWord (projectPlanProfileEpochKernel plan)
+        requireText "plan stable scope" expectedProfileName profileName
+        requireText "plan specification digest" specDigest canonicalSpec
+        requireText "plan digest" planDigest canonicalPlan
+        requireText "digest binding" planDigest (planDigestBindingDigestKernel binding)
+        requireBytes "bound snapshot bytes" canonicalBytes (boundPlanSnapshotBytesKernel boundSnapshot)
+        requireNonempty "run" run
+        requireNonempty "root verb" rootVerb
+
+    validateLiveEvidence ::
+        forall session.
+        ProtectedSession session ->
+        IO (Either LifecycleError (AcquisitionJournal scope planId brokerGeneration))
+    validateLiveEvidence session = do
+        liveResult <- validateLiveBinding session
+        case liveResult of
+            Left failure -> pure (Left failure)
+            Right () ->
+                openAcquisitionJournalKernel
+                    admission
+                    store
+                    session
+                    validateLiveBinding
+                    profileName
+                    project
+                    storeIdentity
+                    planDigest
+                    (recordKeyText leaseKey)
+                    (recordVersionWord leaseVersion)
+                    run
+                    specDigest
+                    planDigest
+                    epochWord
+                    rootVerb
+
+    validateLiveBinding ::
+        forall session.
+        ProtectedSession session ->
+        IO (Either LifecycleError ())
+    validateLiveBinding session = do
+        modeResult <- validateLiveMode session
+        case modeResult of
+            Left failure -> pure (Left failure)
+            Right () -> do
+                leaseResult <- validateLiveLease session
+                case leaseResult of
+                    Left failure -> pure (Left failure)
+                    Right () -> validateLiveSnapshot session
+
+    validateLiveMode :: forall session. ProtectedSession session -> IO (Either LifecycleError ())
+    validateLiveMode session =
+        case storeKey ("mode." <> project) of
+            Left failure -> pure (Left (modeFailure "mode record key" failure))
+            Right key -> do
+                observed <- readProtectedRecord session key
+                pure $ case observed of
+                    Left failure -> Left (SessionStoreFailure failure)
+                    Right Nothing ->
+                        Left (SessionAcquisitionBindingMismatch "live mode" expectedProfileName "absent")
+                    Right (Just record) -> case decodeMode (protectedRecordBytes record) of
+                        Nothing -> Left (SessionRecordCorrupt "project mode")
+                        Just (liveMode, liveEpoch) -> do
+                            requireText "live mode" expectedProfileName (modeWireName liveMode)
+                            requireWord "live mode broker epoch" epochWord liveEpoch
+
+    validateLiveLease :: forall session. ProtectedSession session -> IO (Either LifecycleError ())
+    validateLiveLease session = do
+        observed <- readProtectedRecord session leaseKey
+        pure $ case observed of
+            Left failure -> Left (SessionStoreFailure failure)
+            Right Nothing ->
+                Left (SessionAcquisitionBindingMismatch "live lease record" (recordKeyText leaseKey) "absent")
+            Right (Just record) -> do
+                requireWord
+                    "live lease record version"
+                    (recordVersionWord leaseVersion)
+                    (recordVersionWord (protectedRecordVersion record))
+                case decodeLease (protectedRecordBytes record) of
+                    Just (LeaseBound liveEpoch liveSpec livePlan) -> do
+                        requireWord "live lease broker epoch" epochWord liveEpoch
+                        requireText "live lease specification digest" specDigest liveSpec
+                        requireText "live lease plan digest" planDigest livePlan
+                        requireBytes
+                            "live lease bytes"
+                            (encodeLease (LeaseBound epochWord specDigest planDigest))
+                            (protectedRecordBytes record)
+                    Just other ->
+                        Left
+                            ( SessionAcquisitionBindingMismatch
+                                "live lease state"
+                                "bound"
+                                (leaseStateName other)
+                            )
+                    Nothing -> Left (SessionRecordCorrupt "run lease")
+
+    validateLiveSnapshot :: forall session. ProtectedSession session -> IO (Either LifecycleError ())
+    validateLiveSnapshot session = do
+        observed <-
+            readVerifiedPlanSnapshotAt
+                session
+                (leaseLocationSnapshotKey location)
+                runIdentity
+                project
+                storeIdentity
+        pure $ case observed of
+            Left failure -> Left (modeFailure "protected snapshot" failure)
+            Right (SomeVerifiedPlanSnapshot snapshot) -> do
+                requireText "live snapshot specification digest" specDigest (planSnapshotSpecDigest snapshot)
+                requireText "live snapshot plan digest" planDigest (planSnapshotPlanDigest snapshot)
+                requireMaybeText
+                    "live snapshot configuration digest"
+                    canonicalConfig
+                    (planSnapshotConfigDigest snapshot)
+                requireMaybeBytes
+                    "live snapshot canonical bytes"
+                    canonicalBytes
+                    (planSnapshotCanonicalBytes snapshot)
+
+    requireNonempty field value
+        | Text.null value = Left (SessionAcquisitionBindingInvalid field)
+        | otherwise = Right ()
+    requirePositive field value
+        | value == 0 = Left (SessionAcquisitionBindingInvalid field)
+        | otherwise = Right ()
+    requireText field expected observed
+        | expected == observed = Right ()
+        | otherwise = Left (SessionAcquisitionBindingMismatch field expected observed)
+    requireWord field expected observed =
+        requireText field (showWord expected) (showWord observed)
+    requireBytes field expected observed
+        | expected == observed = Right ()
+        | otherwise = Left (SessionAcquisitionBindingMismatch field "exact bytes" "different bytes")
+    requireMaybeText field expected observed = case observed of
+        Just actual -> requireText field expected actual
+        Nothing -> Left (SessionAcquisitionBindingMismatch field expected "absent")
+    requireMaybeBytes field expected observed = case observed of
+        Just actual -> requireBytes field expected actual
+        Nothing -> Left (SessionAcquisitionBindingMismatch field "exact bytes" "absent")
+    modeFailure field failure = case failure of
+        ModeStoreFailure storeFailure -> SessionStoreFailure storeFailure
+        _ ->
+            SessionAcquisitionBindingMismatch
+                field
+                "valid retained evidence"
+                (modeErrorMessage failure)
+
+{- | Purely prove that a later authority gate was given the exact bound lease
+whose full protected origin was retained by an acquisition journal.
+
+The public lease projections intentionally omit its store, project, record
+key/version, and broker evidence.  Keeping this comparison beside the opaque
+'BoundRunLease' representation lets the specialized authority facade reject a
+hostile phantom substitution without exposing those members individually.
 -}
-data NormalActiveRecovery scope = NormalActiveRecovery RunId
+validateBoundRunLeaseAcquisitionJournal ::
+    BoundRunLease scope specDigest planDigest brokerGeneration ->
+    AcquisitionJournal scope planId brokerGeneration ->
+    Either LifecycleError ()
+validateBoundRunLeaseAcquisitionJournal bound journal =
+    validateAcquisitionJournalBindingKernel
+        journal
+        (modeWireName (runIdentityMode runIdentity))
+        (leaseLocationProjectName location)
+        (leaseLocationStoreIdentity location)
+        (boundRunLeasePlanDigest bound)
+        (recordKeyText (leaseLocationLeaseKey location))
+        (recordVersionWord (boundRunLeaseRecordVersion bound))
+        (boundRunLeaseRunText bound)
+        (boundRunLeaseSpecDigest bound)
+        (boundRunLeasePlanDigest bound)
+        (brokerEpochWord (boundRunLeaseEpoch bound))
+  where
+    runIdentity = boundRunLeaseIdentity bound
+    location = boundRunLeaseLocation bound
 
-instance Show (NormalActiveRecovery scope) where
-    show (NormalActiveRecovery run) = "NormalActiveRecovery " <> show run
+{- | Proof that one exact plan binding was fresh, so no recovery is owed.
 
-normalActiveRecoveryRun :: NormalActiveRecovery scope -> RunId
-normalActiveRecoveryRun (NormalActiveRecovery run) = run
+The constructor is private and all five indices are nominal.  In particular,
+generic lease binding cannot invent the local @planId@; only the fresh
+project-plan snapshot leaf can supply the hidden matching digest binding.
+-}
+type role NormalActiveRecovery nominal nominal nominal nominal nominal
+data NormalActiveRecovery scope specDigest planDigest planId brokerGeneration
+    = NormalActiveRecovery
+        (RunIdentity scope)
+        Text
+        Text
+        (BrokerEpoch brokerGeneration)
+
+instance Show (NormalActiveRecovery scope specDigest planDigest planId brokerGeneration) where
+    show (NormalActiveRecovery run spec plan epoch) =
+        "NormalActiveRecovery "
+            <> Text.unpack (runIdentityText run)
+            <> " "
+            <> show spec
+            <> " "
+            <> show plan
+            <> " "
+            <> show epoch
+
+normalActiveRecoveryRunText ::
+    NormalActiveRecovery scope specDigest planDigest planId brokerGeneration ->
+    Text
+normalActiveRecoveryRunText (NormalActiveRecovery run _ _ _) = runIdentityText run
+
+newtype LeaseConflict = LeaseConflict ModeError
+    deriving (Eq, Show)
+
+leaseConflictMessage :: LeaseConflict -> Text
+leaseConflictMessage (LeaseConflict failure) = modeErrorMessage failure
 
 {- | Bind a lease to the exact verified plan snapshot, in one protected
 compare-and-swap over the recorded lease.
@@ -784,80 +1595,150 @@ snapshot that was persisted and verified" structural rather than a convention,
 and it is why the successor lease record can classify an abandoned run without a
 config.
 
-An already-bound lease is /not/ an error. It is the abandoned-invocation case,
-and it yields 'BoundInvocationRecovery' so the caller must classify it before
-doing anything else. A lease bound to *different* digests is refused: that is a
-snapshot substitution, not a resumption.
+This fresh transition accepts only the exact retained unbound record version.
+An already-bound lease is a 'LeaseConflict' and yields no authority; recovery
+must enter through the separate existing-bound admission, which cannot mint
+'NormalActiveRecovery'.
 -}
 bindRunLease ::
-    ProtectedSession session ->
-    InstalledProject projectId ->
     UnboundRunLease scope brokerGeneration ->
-    VerifiedPlanSnapshot projectId specDigest planDigest ->
-    ( RunLeaseBinding projectId scope specDigest planDigest brokerGeneration ->
-      IO (Either ModeError result)
+    VerifiedPlanSnapshot scope specDigest planDigest ->
+    (BoundRunLease scope specDigest planDigest brokerGeneration -> IO result) ->
+    IO (Either LeaseConflict result)
+bindRunLease unbound snapshot use =
+    do
+        bound <- bindFreshRunLease unbound snapshot
+        case bound of
+            Left failure -> pure (Left (LeaseConflict failure))
+            Right lease -> Right <$> use lease
+
+{- | Fresh-only binding for the exact locally admitted plan identity.
+
+The private indexed snapshot makes this seam unavailable to external callers;
+the opaque digest binding then pins @planId@ and @planDigest@ to that same
+snapshot.  A failed or already-completed lease CAS yields no normal-active
+evidence.
+-}
+bindRunLeaseWithPlanRecovery ::
+    UnboundRunLease scope brokerGeneration ->
+    IndexedPlanSnapshot scope specDigest planId configId ->
+    VerifiedPlanSnapshot scope specDigest planDigest ->
+    PlanDigestBinding scope specDigest planDigest planId ->
+    ( BoundRunLease scope specDigest planDigest brokerGeneration ->
+      NormalActiveRecovery scope specDigest planDigest planId brokerGeneration ->
+      IO result
     ) ->
-    IO (Either ModeError result)
-bindRunLease session project (UnboundRunLease run epoch) snapshot use
-    | planSnapshotRun snapshot /= run =
-        pure
-            ( Left
-                ( ModeSnapshotMismatch
-                    (runIdText run)
-                    (runIdText (planSnapshotRun snapshot))
-                )
-            )
-    | otherwise = withRecordKey (leaseKey project run) $ \key -> do
-        observed <- readProtectedRecord session key
-        case observed of
-            Left failure -> pure (Left (ModeStoreFailure failure))
-            Right Nothing -> pure (Left (ModeLeaseMissing (runIdText run)))
-            Right (Just record) -> case decodeLease (protectedRecordBytes record) of
-                Just (LeaseUnbound recordedEpoch)
-                    | recordedEpoch /= brokerEpochWord epoch ->
-                        pure (Left (ModeEpochMismatch recordedEpoch (brokerEpochWord epoch)))
-                    | otherwise -> do
-                        written <-
-                            compareAndSwapProtectedRecord
-                                session
-                                key
-                                (ExpectVersion (protectedRecordVersion record))
-                                (encodeLease (LeaseBound recordedEpoch specDigest planDigest))
-                        case written of
-                            Left failure -> pure (Left (ModeStoreFailure failure))
-                            Right _ ->
-                                use
-                                    ( FreshRunLeaseBinding
-                                        bound
-                                        (NormalActiveRecovery run)
-                                    )
-                Just (LeaseBound _ recordedSpec recordedPlan)
-                    | recordedSpec /= specDigest ->
-                        pure (Left (ModeSnapshotMismatch specDigest recordedSpec))
-                    | recordedPlan /= planDigest ->
-                        pure (Left (ModeSnapshotMismatch planDigest recordedPlan))
-                    | otherwise -> do
-                        disposition <- readInvocationDisposition session project run
-                        case disposition of
-                            Left failure -> pure (Left failure)
-                            Right recorded ->
-                                use
-                                    ( ExistingRunLeaseBinding
-                                        bound
-                                        ( BoundInvocationRecovery
-                                            run
-                                            specDigest
-                                            planDigest
-                                            recorded
-                                        )
-                                    )
-                Just other ->
-                    pure (Left (ModeLeaseNotBindable (runIdText run) (leaseStateName other)))
-                Nothing -> pure (Left (ModeMalformedRecord (recordKeyText key)))
+    IO (Either LeaseConflict result)
+bindRunLeaseWithPlanRecovery unbound indexed snapshot binding use =
+    case refineVerifiedPlanSnapshot indexed snapshot of
+        Left failure -> pure (Left (LeaseConflict failure))
+        Right exact
+            | planDigestBindingDigestKernel binding /= planSnapshotPlanDigest exact ->
+                pure
+                    ( Left
+                        ( LeaseConflict
+                            ( ModeSnapshotMismatch
+                                (planSnapshotPlanDigest exact)
+                                (planDigestBindingDigestKernel binding)
+                            )
+                        )
+                    )
+            | otherwise -> do
+                bound <- bindFreshRunLease unbound exact
+                case bound of
+                    Left failure -> pure (Left (LeaseConflict failure))
+                    Right lease ->
+                        Right
+                            <$> use
+                                lease
+                                ( NormalActiveRecovery
+                                    (unboundRunLeaseIdentity unbound)
+                                    (planSnapshotSpecDigest exact)
+                                    (planSnapshotPlanDigest exact)
+                                    (unboundRunLeaseEpoch unbound)
+                                )
+
+bindFreshRunLease ::
+    UnboundRunLease scope brokerGeneration ->
+    VerifiedPlanSnapshot scope specDigest planDigest ->
+    IO (Either ModeError (BoundRunLease scope specDigest planDigest brokerGeneration))
+bindFreshRunLease unbound snapshot =
+    case validateLeaseSnapshot unbound snapshot of
+        Left failure -> pure (Left failure)
+        Right () -> withUnboundLeaseEntry unbound $ \session -> do
+            let location = unboundRunLeaseLocation unbound
+                run = unboundRunLeaseIdentity unbound
+                epoch = unboundRunLeaseEpoch unbound
+                specDigest = planSnapshotSpecDigest snapshot
+                planDigest = planSnapshotPlanDigest snapshot
+            retained <- readRetainedUnboundLeaseAt session unbound
+            case retained of
+                Left failure -> pure (Left failure)
+                Right record -> do
+                    written <-
+                        compareAndSwapProtectedRecord
+                            session
+                            (leaseLocationLeaseKey location)
+                            (ExpectVersion (protectedRecordVersion record))
+                            ( encodeLease
+                                ( LeaseBound
+                                    (brokerEpochWord epoch)
+                                    specDigest
+                                    planDigest
+                                )
+                            )
+                    pure $ case written of
+                        Left failure -> Left (ModeStoreFailure failure)
+                        Right version ->
+                            Right
+                                (BoundRunLease run location specDigest planDigest epoch version FreshBinding)
+
+readRetainedUnboundLeaseAt ::
+    ProtectedSession session ->
+    UnboundRunLease scope brokerGeneration ->
+    IO (Either ModeError ProtectedRecord)
+readRetainedUnboundLeaseAt session unbound = do
+    observed <- readProtectedRecord session (leaseLocationLeaseKey location)
+    pure $ case observed of
+        Left failure -> Left (ModeStoreFailure failure)
+        Right Nothing -> Left (ModeLeaseMissing (runIdentityText run))
+        Right (Just record) -> case decodeLease (protectedRecordBytes record) of
+            Just (LeaseUnbound recordedEpoch)
+                | recordedEpoch /= brokerEpochWord epoch ->
+                    Left (ModeEpochMismatch recordedEpoch (brokerEpochWord epoch))
+                | recordVersionWord (protectedRecordVersion record)
+                    /= unboundRunLeaseRecordVersion unbound ->
+                    Left
+                        ( ModeLeaseNotBindable
+                            (runIdentityText run)
+                            "the retained unbound lease version is stale"
+                        )
+                | otherwise -> Right record
+            Just other ->
+                Left (ModeLeaseNotBindable (runIdentityText run) (leaseStateName other))
+            Nothing ->
+                Left (ModeMalformedRecord (recordKeyText (leaseLocationLeaseKey location)))
   where
-    specDigest = planSnapshotSpecDigest snapshot
-    planDigest = planSnapshotPlanDigest snapshot
-    bound = BoundRunLease run specDigest planDigest epoch
+    location = unboundRunLeaseLocation unbound
+    run = unboundRunLeaseIdentity unbound
+    epoch = unboundRunLeaseEpoch unbound
+
+validateLeaseSnapshot ::
+    UnboundRunLease scope brokerGeneration ->
+    VerifiedPlanSnapshot scope specDigest planDigest ->
+    Either ModeError ()
+validateLeaseSnapshot unbound snapshot
+    | runIdentityKey (unboundRunLeaseIdentity unbound) /= planSnapshotRunKey snapshot = mismatch runName snapshotRun
+    | leaseLocationProjectName location /= planSnapshotProjectName snapshot =
+        mismatch (leaseLocationProjectName location) (planSnapshotProjectName snapshot)
+    | leaseLocationStoreIdentity location /= planSnapshotStoreIdentity snapshot =
+        mismatch (leaseLocationStoreIdentity location) (planSnapshotStoreIdentity snapshot)
+    | otherwise = Right ()
+  where
+    location = unboundRunLeaseLocation unbound
+    runName = unboundRunLeaseRunText unbound
+    snapshotRun = planSnapshotRunText snapshot
+    mismatch expected observed = Left (ModeSnapshotMismatch expected observed)
 
 -- Bound-invocation recovery -------------------------------------------------------
 
@@ -908,22 +1789,23 @@ data InvocationDisposition
       InvocationClosing Word64
     deriving (Eq, Show)
 
-{- | An abandoned invocation that reached a plan. Its constructor is private: it
-exists only where 'bindRunLease' observed an already-bound lease, so a caller
-cannot claim recovery authority for a run that never bound one.
+{- | Package-private scope-only observation used while classifying an abandoned
+Harness invocation that reached a plan. Its constructor is private and its
+sole producer starts from a sweep-verified bound lease, so a caller cannot
+claim recovery authority for a run that never bound one.
 
-The value itself authorizes nothing. Only the scope-specific eliminators below
-open it, and each refuses the other scope's disposition — a Production recovery
-cannot consume a persisted Harness @Closing@ epoch, and a Harness recovery
-cannot consume a Production terminal acknowledgment.
+The value itself authorizes nothing. Harness classification refuses a
+Production terminal acknowledgment rather than treating it as a Harness
+revision.
 -}
-data BoundInvocationRecovery projectId
-    = BoundInvocationRecovery RunId Text Text InvocationDisposition
+type role ObservedBoundInvocationRecovery nominal
+data ObservedBoundInvocationRecovery scope
+    = ObservedBoundInvocationRecovery (RunIdentity scope) Text Text InvocationDisposition
 
-instance Show (BoundInvocationRecovery projectId) where
-    show (BoundInvocationRecovery run spec plan disposition) =
-        "BoundInvocationRecovery "
-            <> show run
+instance Show (ObservedBoundInvocationRecovery scope) where
+    show (ObservedBoundInvocationRecovery run spec plan disposition) =
+        "ObservedBoundInvocationRecovery "
+            <> Text.unpack (runIdentityText run)
             <> " "
             <> show spec
             <> " "
@@ -931,20 +1813,70 @@ instance Show (BoundInvocationRecovery projectId) where
             <> " "
             <> show disposition
 
-boundInvocationRecoveryRun :: BoundInvocationRecovery projectId -> RunId
-boundInvocationRecoveryRun (BoundInvocationRecovery run _ _ _) = run
+{- | An exact existing-bound Production admission.
+
+All five parameters are nominal.  The hidden representation retains the run,
+project and protected-store origin, both stable digests, exact recorded broker
+generation, and the already classified durable Open revision.  It carries no
+journal, cursor, migration policy, replay, or effect authority.
+-}
+type role BoundInvocationRecovery nominal nominal nominal nominal nominal
+data BoundInvocationRecovery scope specDigest planDigest planId brokerGeneration
+    = BoundInvocationRecovery
+        (RunIdentity scope)
+        Text
+        Text
+        Text
+        Text
+        (BrokerEpoch brokerGeneration)
+        OpenRevisionKind
+
+instance
+    Show
+        ( BoundInvocationRecovery
+            scope
+            specDigest
+            planDigest
+            planId
+            brokerGeneration
+        )
+    where
+    show (BoundInvocationRecovery run project _store spec plan epoch kind) =
+        "BoundInvocationRecovery "
+            <> Text.unpack (runIdentityText run)
+            <> " "
+            <> show project
+            <> " "
+            <> show spec
+            <> " "
+            <> show plan
+            <> " "
+            <> show epoch
+            <> " "
+            <> show kind
+
+boundInvocationRecoveryRunText ::
+    BoundInvocationRecovery scope specDigest planDigest planId brokerGeneration ->
+    Text
+boundInvocationRecoveryRunText (BoundInvocationRecovery run _ _ _ _ _ _) = runIdentityText run
+
+boundInvocationRecoveryRevisionKind ::
+    BoundInvocationRecovery scope specDigest planDigest planId brokerGeneration ->
+    OpenRevisionKind
+boundInvocationRecoveryRevisionKind (BoundInvocationRecovery _ _ _ _ _ _ kind) = kind
 
 {- | The Open branch: the invocation was still operating, so its /revision/ has
 to be recovered. Its constructor is private, and it is reached only after the
 terminal dispositions have been ruled out.
 -}
-data OpenRevisionRecovery projectId
-    = OpenRevisionRecovery RunId Text Text OpenRevisionKind
+type role OpenRevisionRecovery nominal
+data OpenRevisionRecovery scope
+    = OpenRevisionRecovery (RunIdentity scope) Text Text OpenRevisionKind
 
-instance Show (OpenRevisionRecovery projectId) where
+instance Show (OpenRevisionRecovery scope) where
     show (OpenRevisionRecovery run spec plan kind) =
         "OpenRevisionRecovery "
-            <> show run
+            <> Text.unpack (runIdentityText run)
             <> " "
             <> show spec
             <> " "
@@ -952,8 +1884,8 @@ instance Show (OpenRevisionRecovery projectId) where
             <> " "
             <> show kind
 
-openRevisionRecoveryRun :: OpenRevisionRecovery projectId -> RunId
-openRevisionRecoveryRun (OpenRevisionRecovery run _ _ _) = run
+openRevisionRecoveryRunText :: OpenRevisionRecovery scope -> Text
+openRevisionRecoveryRunText (OpenRevisionRecovery run _ _ _) = runIdentityText run
 
 {- | Which revision recovery the Open branch selects (§ EE). A recorded
 migration key distinguishes a staging that never activated from one whose
@@ -966,56 +1898,296 @@ data OpenRevisionKind
     | CompletedMigration Text
     deriving (Eq, Show)
 
-openRevisionKind :: OpenRevisionRecovery projectId -> OpenRevisionKind
+openRevisionKind :: OpenRevisionRecovery scope -> OpenRevisionKind
 openRevisionKind (OpenRevisionRecovery _ _ _ kind) = kind
 
-{- | The Production eliminator. It distinguishes an exact terminal
-@up@\/@down@ acknowledgment awaiting or uncertain of its lease close from Open
-operational revision recovery. The former yields only the stable close key,
-because the sole legal continuation is to resume that same close.
--}
-data ProductionBoundRecovery projectId
-    = ProductionTerminalAcknowledgment InvocationCloseKey
-    | ProductionOpenRevisionRecovery (OpenRevisionRecovery projectId)
-    deriving (Show)
+data ExistingBoundSnapshotObservation projectId
+    = ExistingBoundSnapshotTerminal InvocationCloseKey
+    | forall brokerGeneration specDigest planDigest.
+      ExistingBoundSnapshotOpen
+        (RootInvocationAuthority (Production projectId) brokerGeneration VerbUp)
+        (ProjectModeLease projectId ProductionMode brokerGeneration)
+        (BoundRunLease (Production projectId) specDigest planDigest brokerGeneration)
+        (VerifiedPlanSnapshot (Production projectId) specDigest planDigest)
+        CanonicalPlanSnapshot
+        OpenRevisionKind
 
-eliminateProductionBoundRecovery ::
+{- | Package-gated kernel for the sole public existing-Production snapshot
+admission in "HostBootstrap.ProjectPlan.Snapshot".
+
+The hidden admission witness is forced before store access.  One protected
+entry then reads and cross-checks the existing Production mode, exact allocated
+broker generation, authority binding, bound lease, canonical snapshot, and
+invocation disposition.  It performs no protected mutation.  Both user
+callbacks run only after that entry has closed; only Open reaches the hidden
+rank-2 local-plan binder.
+-}
+withBoundPlanSnapshotKernel ::
+    ExistingBoundSnapshotAdmission ->
+    ProtectedStore ->
+    InstalledProjectIdentity projectId ->
+    (InvocationCloseKey -> IO result) ->
+    ( forall brokerGeneration specDigest planDigest planId.
+      RootInvocationAuthority (Production projectId) brokerGeneration VerbUp ->
+      ProjectModeLease projectId ProductionMode brokerGeneration ->
+      BoundRunLease (Production projectId) specDigest planDigest brokerGeneration ->
+      VerifiedPlanSnapshot (Production projectId) specDigest planDigest ->
+      BoundPlanSnapshot (Production projectId) specDigest planDigest planId ->
+      PlanDigestBinding (Production projectId) specDigest planDigest planId ->
+      BoundInvocationRecovery
+        (Production projectId)
+        specDigest
+        planDigest
+        planId
+        brokerGeneration ->
+      IO result
+    ) ->
+    IO (Either ModeError result)
+withBoundPlanSnapshotKernel admission store project terminal useOpen =
+    case consumeExistingBoundSnapshotAdmissionKernel admission of
+        () ->
+            case makeLeaseLocation store project productionRunKey of
+                Left failure -> pure (Left failure)
+                Right location -> do
+                    prepared <-
+                        runProtected store $ \session ->
+                            prepareExistingBoundSnapshotAt session location project
+                    case prepared of
+                        Left failure -> pure (Left failure)
+                        Right (ExistingBoundSnapshotTerminal key) -> Right <$> terminal key
+                        Right
+                            ( ExistingBoundSnapshotOpen
+                                root
+                                modeLease
+                                boundLease
+                                verified
+                                canonical
+                                revisionKind
+                                ) ->
+                                Right
+                                    <$> withPersistedBoundPlanSnapshotKernel canonical
+                                        ( \boundSnapshot binding ->
+                                            useOpen
+                                                root
+                                                modeLease
+                                                boundLease
+                                                verified
+                                                boundSnapshot
+                                                binding
+                                                ( BoundInvocationRecovery
+                                                    (ProductionRunIdentity productionRunKey)
+                                                    (rootAuthorityProjectName root)
+                                                    (rootAuthorityStoreIdentity root)
+                                                    (planSnapshotSpecDigest verified)
+                                                    (planSnapshotPlanDigest verified)
+                                                    (rootAuthorityEpoch root)
+                                                    revisionKind
+                                                )
+                                        )
+
+prepareExistingBoundSnapshotAt ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    BoundInvocationRecovery projectId ->
-    IO (Either ModeError (ProductionBoundRecovery projectId))
-eliminateProductionBoundRecovery session project (BoundInvocationRecovery run spec plan disposition) =
-    case disposition of
-        InvocationAcknowledged key ->
-            pure (Right (ProductionTerminalAcknowledgment key))
-        InvocationClosing epoch ->
-            -- Closing is the Harness terminal projection. A Production
-            -- invocation that observed one is looking at another scope's record.
-            pure
-                ( Left
-                    ( ModeWrongRecoveryScope
-                        "production"
-                        ("harness closing epoch " <> showWord epoch)
+    LeaseLocation ->
+    InstalledProjectIdentity projectId ->
+    IO (Either ModeError (ExistingBoundSnapshotObservation projectId))
+prepareExistingBoundSnapshotAt session location project = do
+    observedMode <- readExistingProductionModeEpochAt session project
+    case observedMode of
+        Left failure -> pure (Left failure)
+        Right recordedEpoch ->
+            withRecordedEpoch session project recordedEpoch $ \epoch -> do
+                operator <- verifyOsPrincipal session
+                case operator of
+                    Left failure -> pure (Left (ModeAuthorityFailure failure))
+                    Right authorized ->
+                        withExistingVerifiedRoot
+                            ProductionRootScope
+                            session
+                            project
+                            authorized
+                            epoch
+                            ProjectUp
+                            $ \root -> do
+                                let modeLease =
+                                        ProjectModeLease
+                                            WireProduction
+                                            (installedProjectName project)
+                                            (protectedStoreIdentityText (sessionStoreIdentity session))
+                                            epoch
+                                withExistingProductionBoundSnapshotAt
+                                    session
+                                    location
+                                    epoch
+                                    $ \boundLease verified canonical disposition ->
+                                        case disposition of
+                                            InvocationAcknowledged key ->
+                                                pure
+                                                    ( Right
+                                                        (ExistingBoundSnapshotTerminal key)
+                                                    )
+                                            InvocationClosing closingEpoch ->
+                                                pure
+                                                    ( Left
+                                                        ( ModeWrongRecoveryScope
+                                                            "production"
+                                                            ( "harness closing epoch "
+                                                                <> showWord closingEpoch
+                                                            )
+                                                        )
+                                                    )
+                                            InvocationOpen -> do
+                                                revision <-
+                                                    readOpenRevisionKindForKey
+                                                        session
+                                                        project
+                                                        productionRunKey
+                                                pure
+                                                    ( fmap
+                                                        ( ExistingBoundSnapshotOpen
+                                                            root
+                                                            modeLease
+                                                            boundLease
+                                                            verified
+                                                            canonical
+                                                        )
+                                                        revision
+                                                    )
+
+readExistingProductionModeEpochAt ::
+    ProtectedSession session ->
+    InstalledProjectIdentity projectId ->
+    IO (Either ModeError Word64)
+readExistingProductionModeEpochAt session project =
+    withRecordKey (modeKey project) $ \key -> do
+        observed <- readProtectedRecord session key
+        pure $ case observed of
+            Left failure -> Left (ModeStoreFailure failure)
+            Right Nothing -> Left (ModeWrongMode "production" "absent")
+            Right (Just record) -> case decodeMode (protectedRecordBytes record) of
+                Nothing -> Left (ModeMalformedRecord (recordKeyText key))
+                Just (WireProduction, epoch)
+                    | epoch == 0 -> Left (ModeMalformedRecord (recordKeyText key))
+                    | otherwise -> Right epoch
+                Just (other, _) -> Left (ModeWrongMode "production" (modeWireName other))
+
+withExistingProductionBoundSnapshotAt ::
+    ProtectedSession session ->
+    LeaseLocation ->
+    BrokerEpoch brokerGeneration ->
+    ( forall specDigest planDigest.
+      BoundRunLease (Production projectId) specDigest planDigest brokerGeneration ->
+      VerifiedPlanSnapshot (Production projectId) specDigest planDigest ->
+      CanonicalPlanSnapshot ->
+      InvocationDisposition ->
+      IO (Either ModeError result)
+    ) ->
+    IO (Either ModeError result)
+withExistingProductionBoundSnapshotAt session location epoch use = do
+    let leaseKey = leaseLocationLeaseKey location
+        run = ProductionRunIdentity productionRunKey
+    observedLease <- readProtectedRecord session leaseKey
+    case observedLease of
+        Left failure -> pure (Left (ModeStoreFailure failure))
+        Right Nothing -> pure (Left (ModeLeaseMissing (runIdentityText run)))
+        Right (Just leaseRecord) -> case decodeLease (protectedRecordBytes leaseRecord) of
+            Nothing -> pure (Left (ModeMalformedRecord (recordKeyText leaseKey)))
+            Just (LeaseBound recordedEpoch recordedSpec recordedPlan)
+                | recordedEpoch == 0 ->
+                    pure (Left (ModeMalformedRecord (recordKeyText leaseKey)))
+                | Text.null recordedSpec || Text.null recordedPlan ->
+                    pure (Left (ModeMalformedRecord (recordKeyText leaseKey)))
+                | recordedEpoch /= brokerEpochWord epoch ->
+                    pure (Left (ModeEpochMismatch recordedEpoch (brokerEpochWord epoch)))
+                | otherwise -> do
+                    observedSnapshot <-
+                        readVerifiedPlanSnapshotAt
+                            session
+                            (leaseLocationSnapshotKey location)
+                            run
+                            (leaseLocationProjectName location)
+                            (leaseLocationStoreIdentity location)
+                    case observedSnapshot of
+                        Left failure -> pure (Left failure)
+                        Right (SomeVerifiedPlanSnapshot verified)
+                            | recordedSpec /= planSnapshotSpecDigest verified ->
+                                pure
+                                    ( Left
+                                        ( ModeSnapshotMismatch
+                                            recordedSpec
+                                            (planSnapshotSpecDigest verified)
+                                        )
+                                    )
+                            | recordedPlan /= planSnapshotPlanDigest verified ->
+                                pure
+                                    ( Left
+                                        ( ModeSnapshotMismatch
+                                            recordedPlan
+                                            (planSnapshotPlanDigest verified)
+                                        )
+                                    )
+                            | otherwise ->
+                                case
+                                    admitPersistedCanonicalPlanSnapshotKernel
+                                        (planSnapshotSpecDigest verified)
+                                        (planSnapshotPlanDigest verified)
+                                        (planSnapshotConfigDigest verified)
+                                        (planSnapshotCanonicalBytes verified)
+                                of
+                                    Left _ ->
+                                        pure
+                                            ( Left
+                                                ( ModeMalformedRecord
+                                                    ( recordKeyText
+                                                        (leaseLocationSnapshotKey location)
+                                                    )
+                                                )
+                                            )
+                                    Right canonical -> do
+                                        disposition <-
+                                            readInvocationDispositionAt
+                                                session
+                                                (leaseLocationInvocationKey location)
+                                        case disposition of
+                                            Left failure -> pure (Left failure)
+                                            Right recorded ->
+                                                use
+                                                    ( BoundRunLease
+                                                        run
+                                                        location
+                                                        (planSnapshotSpecDigest verified)
+                                                        (planSnapshotPlanDigest verified)
+                                                        epoch
+                                                        (protectedRecordVersion leaseRecord)
+                                                        ExistingBinding
+                                                    )
+                                                    verified
+                                                    canonical
+                                                    recorded
+            Just other ->
+                pure
+                    ( Left
+                        ( ModeLeaseNotBindable
+                            (runIdentityText run)
+                            (leaseStateName other)
+                        )
                     )
-                )
-        InvocationOpen -> do
-            kind <- readOpenRevisionKind session project run
-            pure (fmap (ProductionOpenRevisionRecovery . OpenRevisionRecovery run spec plan) kind)
 
 {- | The Harness eliminator. It distinguishes an exact persisted Closing epoch
 from Open before the Open branch selects its revision recovery.
 -}
-data HarnessBoundRecovery projectId
+data HarnessBoundRecovery projectId runId
     = HarnessPersistedClosing Word64
-    | HarnessOpenRevisionRecovery (OpenRevisionRecovery projectId)
+    | HarnessOpenRevisionRecovery (OpenRevisionRecovery (Harness projectId runId))
     deriving (Show)
+
+type role HarnessBoundRecovery nominal nominal
 
 eliminateHarnessBoundRecovery ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    BoundInvocationRecovery projectId ->
-    IO (Either ModeError (HarnessBoundRecovery projectId))
-eliminateHarnessBoundRecovery session project (BoundInvocationRecovery run spec plan disposition) =
+    InstalledProjectIdentity projectId ->
+    ObservedBoundInvocationRecovery (Harness projectId runId) ->
+    IO (Either ModeError (HarnessBoundRecovery projectId runId))
+eliminateHarnessBoundRecovery session project (ObservedBoundInvocationRecovery run spec plan disposition) =
     case disposition of
         InvocationClosing epoch -> pure (Right (HarnessPersistedClosing epoch))
         InvocationAcknowledged key ->
@@ -1027,17 +2199,18 @@ eliminateHarnessBoundRecovery session project (BoundInvocationRecovery run spec 
                     )
                 )
         InvocationOpen -> do
-            kind <- readOpenRevisionKind session project run
+            kind <- readOpenRevisionKindForKey session project (runIdentityKey run)
             pure (fmap (HarnessOpenRevisionRecovery . OpenRevisionRecovery run spec plan) kind)
 
 {- | Classify an abandoned __bound__ Harness lease so the sweep can act on it.
 
-'bindRunLease' was the only producer of 'BoundInvocationRecovery', and it needs
-an 'UnboundRunLease' that an abandoned run no longer has. Without this, a bound
-lease could only be /reported/: the sweep named the run and refused every
-variant, and the sole way forward was to delete the run's protected records by
-hand — exactly the hand cleanup the recoverable reservation exists to eliminate,
-moved from a lock directory into the store.
+The ordinary fresh lease API cannot produce this package-private scope-only
+durable observation for a run that no longer has an 'UnboundRunLease'. Without
+the sweep route, a bound lease could only be /reported/: the
+sweep named the run and refused every variant, and the sole way forward was to
+delete the run's protected records by hand — exactly the hand cleanup the
+recoverable reservation exists to eliminate, moved from a lock directory into
+the store.
 
 The only route in is a 'VerifiedIncompleteRunLease' the sweep itself minted, and
 only its 'IncompleteBound' kind, so a caller cannot claim recovery authority for
@@ -1046,22 +2219,46 @@ than the caller, so a substituted snapshot cannot be presented as this run's.
 -}
 classifyAbandonedBoundRun ::
     ProtectedSession session ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     VerifiedIncompleteRunLease projectId ->
-    IO (Either ModeError (HarnessBoundRecovery projectId))
-classifyAbandonedBoundRun session project (VerifiedIncompleteRunLease run kind) =
+    ( forall runId.
+      RunId runId ->
+      HarnessBoundRecovery projectId runId ->
+      IO (Either ModeError result)
+    ) ->
+    IO (Either ModeError result)
+classifyAbandonedBoundRun session project (VerifiedIncompleteRunLease runKey kind) use =
+    withReifiedRunId runKey $ \run ->
+        classifyHarnessBoundRunFor session project run kind (use run)
+
+classifyHarnessBoundRunFor ::
+    ProtectedSession session ->
+    InstalledProjectIdentity projectId ->
+    RunId runId ->
+    IncompleteLeaseKind ->
+    (HarnessBoundRecovery projectId runId -> IO (Either ModeError result)) ->
+    IO (Either ModeError result)
+classifyHarnessBoundRunFor session project run kind use =
     case kind of
         IncompleteUnbound ->
             pure (Left (ModeLeaseNotBindable (runIdText run) "unbound"))
         IncompleteBound spec plan -> do
-            disposition <- readInvocationDisposition session project run
+            disposition <-
+                readInvocationDispositionForKey
+                    session
+                    project
+                    (runIdentityKey (HarnessRunIdentity run))
             case disposition of
                 Left failure -> pure (Left failure)
-                Right recorded ->
-                    eliminateHarnessBoundRecovery
+                Right recorded -> do
+                    eliminated <-
+                        eliminateHarnessBoundRecovery
                         session
                         project
-                        (BoundInvocationRecovery run spec plan recorded)
+                        (ObservedBoundInvocationRecovery (HarnessRunIdentity run) spec plan recorded)
+                    case eliminated of
+                        Left failure -> pure (Left failure)
+                        Right recovery -> use recovery
 
 {- | Record an ordinary Production invocation's terminal acknowledgment under a
 stable, idempotent close key, /before/ the lease close it authorizes. A crash
@@ -1070,26 +2267,32 @@ what lets bound recovery resume the same close instead of reopening work.
 -}
 recordProductionInvocationAcknowledgment ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    RunId ->
+    InstalledProjectIdentity projectId ->
+    BoundRunLease (Production projectId) specDigest planDigest brokerGeneration ->
     InvocationCloseKey ->
     IO (Either ModeError ())
-recordProductionInvocationAcknowledgment session project run key =
-    writeInvocationDisposition session project run (InvocationAcknowledged key)
+recordProductionInvocationAcknowledgment session project bound key =
+    writeInvocationDispositionForKey
+        session
+        project
+        (runIdentityKey (boundRunLeaseIdentity bound))
+        (InvocationAcknowledged key)
 
-{- | Record a Harness run's Closing epoch before its terminal close projection
-runs, so a persisted Closing run resumes only its own close journal.
+{- | Record a Harness run's Closing epoch after settled destroy and immediately
+before terminal finalization, so a persisted Closing run resumes only its own
+close journal.
 -}
 recordHarnessClosingEpoch ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    RunId ->
+    InstalledProjectIdentity projectId ->
+    RunId runId ->
     Word64 ->
     IO (Either ModeError ())
 recordHarnessClosingEpoch session project run epoch
     | epoch == 0 =
         pure (Left (ModeInvalidIdentity "a closing epoch must be positive"))
-    | otherwise = writeInvocationDisposition session project run (InvocationClosing epoch)
+    | otherwise =
+        writeInvocationDispositionForKey session project (runIdentityKey (HarnessRunIdentity run)) (InvocationClosing epoch)
 
 {- | Record which side of the migration activation barrier a revision is on, so
 the Open branch's classification is a durable observation rather than an
@@ -1097,12 +2300,21 @@ inference from the current config.
 -}
 recordOpenRevisionMigration ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    RunId ->
+    InstalledProjectIdentity projectId ->
+    RunId runId ->
     OpenRevisionKind ->
     IO (Either ModeError ())
-recordOpenRevisionMigration session project run kind =
-    withRecordKey (migrationKey project run) $ \key -> do
+recordOpenRevisionMigration session project run =
+    recordOpenRevisionMigrationForKey session project (runIdentityKey (HarnessRunIdentity run))
+
+recordOpenRevisionMigrationForKey ::
+    ProtectedSession session ->
+    InstalledProjectIdentity projectId ->
+    RunKey ->
+    OpenRevisionKind ->
+    IO (Either ModeError ())
+recordOpenRevisionMigrationForKey session project run kind =
+    withRecordKey (migrationKeyForRunKey project run) $ \key -> do
         observed <- readProtectedRecord session key
         case observed of
             Left failure -> pure (Left (ModeStoreFailure failure))
@@ -1117,31 +2329,37 @@ recordOpenRevisionMigration session project run kind =
                         (encodeRevisionKind kind)
                 pure (either (Left . ModeStoreFailure) (const (Right ())) written)
 
-readInvocationDisposition ::
+readInvocationDispositionForKey ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    RunId ->
+    InstalledProjectIdentity projectId ->
+    RunKey ->
     IO (Either ModeError InvocationDisposition)
-readInvocationDisposition session project run =
-    withRecordKey (invocationKey project run) $ \key -> do
-        observed <- readProtectedRecord session key
-        pure $ case observed of
-            Left failure -> Left (ModeStoreFailure failure)
-            Right Nothing -> Right InvocationOpen
-            Right (Just record) ->
-                maybe
-                    (Left (ModeMalformedRecord (recordKeyText key)))
-                    Right
-                    (decodeDisposition (protectedRecordBytes record))
+readInvocationDispositionForKey session project run =
+    withRecordKey (invocationKeyForRunKey project run) (readInvocationDispositionAt session)
 
-writeInvocationDisposition ::
+readInvocationDispositionAt ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    RunId ->
+    RecordKey ->
+    IO (Either ModeError InvocationDisposition)
+readInvocationDispositionAt session key = do
+    observed <- readProtectedRecord session key
+    pure $ case observed of
+        Left failure -> Left (ModeStoreFailure failure)
+        Right Nothing -> Right InvocationOpen
+        Right (Just record) ->
+            maybe
+                (Left (ModeMalformedRecord (recordKeyText key)))
+                Right
+                (decodeDisposition (protectedRecordBytes record))
+
+writeInvocationDispositionForKey ::
+    ProtectedSession session ->
+    InstalledProjectIdentity projectId ->
+    RunKey ->
     InvocationDisposition ->
     IO (Either ModeError ())
-writeInvocationDisposition session project run disposition =
-    withRecordKey (invocationKey project run) $ \key -> do
+writeInvocationDispositionForKey session project run disposition =
+    withRecordKey (invocationKeyForRunKey project run) $ \key -> do
         observed <- readProtectedRecord session key
         case observed of
             Left failure -> pure (Left (ModeStoreFailure failure))
@@ -1164,18 +2382,22 @@ migration protocol's own callers need to be able to assert on it.
 -}
 readRecordedOpenRevisionKind ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    RunId ->
+    InstalledProjectIdentity projectId ->
+    BoundRunLease scope specDigest planDigest brokerGeneration ->
     IO (Either ModeError OpenRevisionKind)
-readRecordedOpenRevisionKind = readOpenRevisionKind
+readRecordedOpenRevisionKind session project bound =
+    readOpenRevisionKindForKey
+        session
+        project
+        (runIdentityKey (boundRunLeaseIdentity bound))
 
-readOpenRevisionKind ::
+readOpenRevisionKindForKey ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    RunId ->
+    InstalledProjectIdentity projectId ->
+    RunKey ->
     IO (Either ModeError OpenRevisionKind)
-readOpenRevisionKind session project run =
-    withRecordKey (migrationKey project run) $ \key -> do
+readOpenRevisionKindForKey session project run =
+    withRecordKey (migrationKeyForRunKey project run) $ \key -> do
         observed <- readProtectedRecord session key
         pure $ case observed of
             Left failure -> Left (ModeStoreFailure failure)
@@ -1192,64 +2414,95 @@ readOpenRevisionKind session project run =
 openers below mint one, and only from the exact active mode plus a still-unbound
 lease; a caller cannot choose a scope and then look for evidence.
 -}
+type role LifecycleProfile nominal
 data LifecycleProfile scope
-    = LifecycleProfile ProjectMode Word64
+    = LifecycleProfile ModeWire Text Text Word64
 
 instance Show (LifecycleProfile scope) where
-    show (LifecycleProfile mode epoch) =
-        "LifecycleProfile " <> show mode <> " " <> show epoch
+    show (LifecycleProfile mode _project _store epoch) =
+        "LifecycleProfile " <> Text.unpack (modeWireName mode) <> " " <> show epoch
 
-lifecycleProfileMode :: LifecycleProfile scope -> ProjectMode
-lifecycleProfileMode (LifecycleProfile mode _) = mode
+lifecycleProfileName :: LifecycleProfile scope -> Text
+lifecycleProfileName (LifecycleProfile mode _ _ _) = modeWireName mode
 
 lifecycleProfileEpoch :: LifecycleProfile scope -> Word64
-lifecycleProfileEpoch (LifecycleProfile _ epoch) = epoch
+lifecycleProfileEpoch (LifecycleProfile _ _ _ epoch) = epoch
+
+-- | The installed project whose protected profile slot was consumed.
+lifecycleProfileProjectName :: LifecycleProfile scope -> Text
+lifecycleProfileProjectName (LifecycleProfile _ project _ _) = project
+
+-- | The durable protected-store identity that owned the consumed slot.
+lifecycleProfileStoreIdentity :: LifecycleProfile scope -> Text
+lifecycleProfileStoreIdentity (LifecycleProfile _ _ storeIdentity _) = storeIdentity
 
 {- | Open the fresh Production profile. It requires the exact Production mode
 lease and the still-unbound run lease minted under the same broker generation.
 -}
 withProductionLifecycleProfile ::
-    ProjectModeLease projectId brokerGeneration ->
+    RootScopeAuthority (Production projectId) ->
+    ActiveProjectMode (Production projectId) brokerGeneration ->
     UnboundRunLease (Production projectId) brokerGeneration ->
-    Either ModeError (LifecycleProfile (Production projectId))
-withProductionLifecycleProfile (ProjectModeLease mode epoch) _ =
-    case mode of
-        ProductionMode -> Right (LifecycleProfile mode (brokerEpochWord epoch))
-        HarnessMode _ -> Left (ModeWrongMode "production" (projectModeName mode))
+    (LifecycleProfile (Production projectId) -> result) ->
+    IO (Either AuthorityError result)
+withProductionLifecycleProfile root active unbound use = do
+    opened <- consumeLifecycleProfileSlot root WireProduction active unbound
+    pure (fmap use opened)
 
 {- | Open the fresh Harness profile for one run. A 'TestComponent' is given only
 this opener, so there is no route from harness code to a Production profile.
 -}
 withHarnessLifecycleProfile ::
-    ProjectModeLease projectId brokerGeneration ->
+    RootScopeAuthority (Harness projectId runId) ->
+    HarnessAuthority projectId runId ->
+    RunId runId ->
+    ActiveProjectMode (Harness projectId runId) brokerGeneration ->
     UnboundRunLease (Harness projectId runId) brokerGeneration ->
-    Either ModeError (LifecycleProfile (Harness projectId runId))
-withHarnessLifecycleProfile (ProjectModeLease mode epoch) unbound =
-    case mode of
-        HarnessMode run
-            | run == unboundRunLeaseRun unbound ->
-                Right (LifecycleProfile mode (brokerEpochWord epoch))
-            | otherwise ->
-                Left
-                    ( ModeWrongMode
-                        ("harness:" <> runIdText (unboundRunLeaseRun unbound))
-                        (projectModeName mode)
-                    )
-        ProductionMode -> Left (ModeWrongMode "harness" (projectModeName mode))
+    (LifecycleProfile (Harness projectId runId) -> result) ->
+    IO (Either AuthorityError result)
+withHarnessLifecycleProfile root authority run active unbound use
+    | harnessRunName authority /= runIdText run =
+        pure
+            ( Left
+                ( AuthorityMalformedBinding
+                    "the Harness authority and generative run witness disagree"
+                )
+            )
+    | runIdText run /= unboundRunLeaseRunText unbound =
+        pure
+            ( Left
+                ( AuthorityMalformedBinding
+                    "the Harness run witness and unbound lease disagree"
+                )
+            )
+    | otherwise = do
+        opened <- consumeLifecycleProfileSlot root (WireHarness (runIdentityKey (HarnessRunIdentity run))) active unbound
+        pure (fmap use opened)
 
-{- | The recovered Production profile — the /only/ exception to fresh plan
-construction (§ Y).
+{- | The exact recovered Production profile named by one already-admitted Open
+invocation.
 
-A configful abandoned Production @up@ must be able to rebuild the same plan it
-left behind, and nothing else. So this profile is a distinct type from
-'LifecycleProfile': it is indexed by the exact spec and plan digests and by the
-local @planId@ its rebuild is fixed to, and there is no function from it to a
-fresh profile, to Harness scope, or to teardown authority. A caller holding one
-can reconstruct that same @planId@\/spec\/digest, or open the separately typed
-migration builder, and nothing more.
+All five indices are nominal and the constructor is hidden.  The retained
+runtime identity is deliberately complete enough for the later recovered-plan
+builder to compare rather than infer: Production run, project and protected
+store origin, positive snapshot revision, specification/configuration/plan
+digests, exact canonical bytes, broker epoch, and the already classified Open
+revision kind.  The profile itself opens no journal and grants no effect
+authority.
 -}
+type role RecoveredProductionLifecycleProfile nominal nominal nominal nominal nominal
 data RecoveredProductionLifecycleProfile projectId specDigest planDigest planId brokerGeneration
-    = RecoveredProductionLifecycleProfile RunId Word64 Text Text Word64
+    = RecoveredProductionLifecycleProfile
+        (RunIdentity (Production projectId))
+        Text
+        Text
+        Word64
+        Text
+        Text
+        Text
+        ByteString
+        (BrokerEpoch brokerGeneration)
+        OpenRevisionKind
 
 instance
     Show
@@ -1261,110 +2514,429 @@ instance
             brokerGeneration
         )
     where
-    show (RecoveredProductionLifecycleProfile run revision spec plan epoch) =
-        "RecoveredProductionLifecycleProfile "
-            <> show run
-            <> " "
-            <> show revision
-            <> " "
-            <> show spec
-            <> " "
-            <> show plan
-            <> " "
-            <> show epoch
+    show
+        ( RecoveredProductionLifecycleProfile
+                run
+                project
+                _store
+                revision
+                spec
+                plan
+                _config
+                canonicalBytes
+                epoch
+                revisionKind
+            ) =
+            "RecoveredProductionLifecycleProfile "
+                <> show (runIdentityText run)
+                <> " "
+                <> show project
+                <> " "
+                <> show revision
+                <> " "
+                <> show spec
+                <> " "
+                <> show plan
+                <> " <"
+                <> show (ByteString.length canonicalBytes)
+                <> " canonical bytes> "
+                <> show epoch
+                <> " "
+                <> show revisionKind
 
-recoveredProductionProfileRun ::
-    RecoveredProductionLifecycleProfile projectId specDigest planDigest planId brokerGeneration ->
-    RunId
-recoveredProductionProfileRun (RecoveredProductionLifecycleProfile run _ _ _ _) = run
+recoveredProductionProfileRunText ::
+    RecoveredProductionLifecycleProfile
+        projectId specDigest planDigest planId brokerGeneration ->
+    Text
+recoveredProductionProfileRunText
+    (RecoveredProductionLifecycleProfile run _ _ _ _ _ _ _ _ _) = runIdentityText run
+
+recoveredProductionProfileProjectName ::
+    RecoveredProductionLifecycleProfile
+        projectId specDigest planDigest planId brokerGeneration ->
+    Text
+recoveredProductionProfileProjectName
+    (RecoveredProductionLifecycleProfile _ project _ _ _ _ _ _ _ _) = project
+
+recoveredProductionProfileStoreIdentity ::
+    RecoveredProductionLifecycleProfile
+        projectId specDigest planDigest planId brokerGeneration ->
+    Text
+recoveredProductionProfileStoreIdentity
+    (RecoveredProductionLifecycleProfile _ _ storeIdentity _ _ _ _ _ _ _) = storeIdentity
+
+recoveredProductionProfileRevision ::
+    RecoveredProductionLifecycleProfile
+        projectId specDigest planDigest planId brokerGeneration ->
+    Word64
+recoveredProductionProfileRevision
+    (RecoveredProductionLifecycleProfile _ _ _ revision _ _ _ _ _ _) = revision
 
 recoveredProductionProfileSpecDigest ::
-    RecoveredProductionLifecycleProfile projectId specDigest planDigest planId brokerGeneration ->
+    RecoveredProductionLifecycleProfile
+        projectId specDigest planDigest planId brokerGeneration ->
     Text
-recoveredProductionProfileSpecDigest (RecoveredProductionLifecycleProfile _ _ spec _ _) = spec
+recoveredProductionProfileSpecDigest
+    (RecoveredProductionLifecycleProfile _ _ _ _ spec _ _ _ _ _) = spec
 
 recoveredProductionProfilePlanDigest ::
-    RecoveredProductionLifecycleProfile projectId specDigest planDigest planId brokerGeneration ->
+    RecoveredProductionLifecycleProfile
+        projectId specDigest planDigest planId brokerGeneration ->
     Text
-recoveredProductionProfilePlanDigest (RecoveredProductionLifecycleProfile _ _ _ plan _) = plan
+recoveredProductionProfilePlanDigest
+    (RecoveredProductionLifecycleProfile _ _ _ _ _ plan _ _ _ _) = plan
+
+recoveredProductionProfileConfigDigest ::
+    RecoveredProductionLifecycleProfile
+        projectId specDigest planDigest planId brokerGeneration ->
+    Text
+recoveredProductionProfileConfigDigest
+    (RecoveredProductionLifecycleProfile _ _ _ _ _ _ config _ _ _) = config
+
+recoveredProductionProfileCanonicalBytes ::
+    RecoveredProductionLifecycleProfile
+        projectId specDigest planDigest planId brokerGeneration ->
+    ByteString
+recoveredProductionProfileCanonicalBytes
+    (RecoveredProductionLifecycleProfile _ _ _ _ _ _ _ canonicalBytes _ _) = canonicalBytes
 
 recoveredProductionProfileEpoch ::
-    RecoveredProductionLifecycleProfile projectId specDigest planDigest planId brokerGeneration ->
+    RecoveredProductionLifecycleProfile
+        projectId specDigest planDigest planId brokerGeneration ->
     Word64
-recoveredProductionProfileEpoch (RecoveredProductionLifecycleProfile _ _ _ _ epoch) = epoch
+recoveredProductionProfileEpoch
+    (RecoveredProductionLifecycleProfile _ _ _ _ _ _ _ _ epoch _) = brokerEpochWord epoch
 
-{- | The separate protected bound-recovery opener.
+recoveredProductionProfileRevisionKind ::
+    RecoveredProductionLifecycleProfile
+        projectId specDigest planDigest planId brokerGeneration ->
+    OpenRevisionKind
+recoveredProductionProfileRevisionKind
+    (RecoveredProductionLifecycleProfile _ _ _ _ _ _ _ _ _ revisionKind) = revisionKind
 
-Every one of its inputs is load-bearing, and none is substitutable:
+{- | Refine the seven values yielded together by the Open branch of
+@withBoundPlanSnapshot@ into their one recovered Production profile.
 
-* the root must be the exact Production @ProjectUp@ authority — a @down@ or
-  @destroy@ root cannot rebuild a plan;
-* the mode lease must currently hold Production, under the same broker
-  generation as the root and the bound lease;
-* the bound lease and the verified snapshot must agree on both digests, which
-  they do by construction because 'bindRunLease' consumed that same snapshot;
-* the recovery evidence must be the Open revision branch. A terminal
-  acknowledgment is *not* recoverable into a profile — its only continuation is
-  resuming the stable close key — so passing one is refused here rather than
-  quietly rebuilding a plan for an invocation that already finished.
-
-The rank-2 continuation binds a fresh local @planId@: recovery reconstructs the
-same plan /identity/ under a new in-process handle, because generative handles
-are never serialized (§ EE).
+This is a pure runtime cross-check, not another protected transition.  The
+admission-generated @planId@ is fixed by the bound snapshot, digest binding,
+and recovery evidence in the argument types; this function has no
+local-identity quantifier and cannot mint or select a replacement.  Success
+yields only the opaque profile to the continuation.
 -}
 withRecoveredProductionLifecycleProfile ::
     RootInvocationAuthority (Production projectId) brokerGeneration VerbUp ->
-    ProjectModeLease projectId brokerGeneration ->
+    ProjectModeLease projectId ProductionMode brokerGeneration ->
     BoundRunLease (Production projectId) specDigest planDigest brokerGeneration ->
-    VerifiedPlanSnapshot projectId specDigest planDigest ->
-    OpenRevisionRecovery projectId ->
-    ( forall planId.
-      RecoveredProductionLifecycleProfile
-        projectId
-        specDigest
-        planDigest
-        planId
-        brokerGeneration ->
+    VerifiedPlanSnapshot (Production projectId) specDigest planDigest ->
+    BoundPlanSnapshot (Production projectId) specDigest planDigest planId ->
+    PlanDigestBinding (Production projectId) specDigest planDigest planId ->
+    BoundInvocationRecovery
+        (Production projectId) specDigest planDigest planId brokerGeneration ->
+    ( RecoveredProductionLifecycleProfile
+        projectId specDigest planDigest planId brokerGeneration ->
       result
     ) ->
     Either ModeError result
-withRecoveredProductionLifecycleProfile root modeLease bound snapshot open use
-    | ProductionMode /= projectModeLeaseMode modeLease =
-        Left
-            ( ModeWrongMode
-                "production"
-                (projectModeName (projectModeLeaseMode modeLease))
-            )
-    | brokerEpochWord (rootAuthorityEpoch root)
-        /= brokerEpochWord (projectModeLeaseEpoch modeLease) =
-        Left
-            ( ModeEpochMismatch
-                (brokerEpochWord (projectModeLeaseEpoch modeLease))
-                (brokerEpochWord (rootAuthorityEpoch root))
-            )
-    | boundRunLeaseRun bound /= planSnapshotRun snapshot =
-        Left
-            ( ModeSnapshotMismatch
-                (runIdText (boundRunLeaseRun bound))
-                (runIdText (planSnapshotRun snapshot))
-            )
-    | boundRunLeaseRun bound /= openRevisionRecoveryRun open =
-        Left
-            ( ModeSnapshotMismatch
-                (runIdText (boundRunLeaseRun bound))
-                (runIdText (openRevisionRecoveryRun open))
-            )
-    | otherwise =
-        Right
-            ( use
-                ( RecoveredProductionLifecycleProfile
-                    (boundRunLeaseRun bound)
-                    (planSnapshotRevision snapshot)
-                    (planSnapshotSpecDigest snapshot)
-                    (planSnapshotPlanDigest snapshot)
-                    (brokerEpochWord (rootAuthorityEpoch root))
+withRecoveredProductionLifecycleProfile
+    root
+    modeLease
+    boundLease
+    verifiedSnapshot
+    boundSnapshot
+    digestBinding
+    recovery
+    use = do
+        profile <-
+            validateRecoveredProductionLifecycleProfile
+                root
+                modeLease
+                boundLease
+                verifiedSnapshot
+                boundSnapshot
+                digestBinding
+                recovery
+        Right (use profile)
+
+validateRecoveredProductionLifecycleProfile ::
+    RootInvocationAuthority (Production projectId) brokerGeneration VerbUp ->
+    ProjectModeLease projectId ProductionMode brokerGeneration ->
+    BoundRunLease (Production projectId) specDigest planDigest brokerGeneration ->
+    VerifiedPlanSnapshot (Production projectId) specDigest planDigest ->
+    BoundPlanSnapshot (Production projectId) specDigest planDigest planId ->
+    PlanDigestBinding (Production projectId) specDigest planDigest planId ->
+    BoundInvocationRecovery
+        (Production projectId) specDigest planDigest planId brokerGeneration ->
+    Either
+        ModeError
+        ( RecoveredProductionLifecycleProfile
+            projectId specDigest planDigest planId brokerGeneration
+        )
+validateRecoveredProductionLifecycleProfile
+    root
+    modeLease
+    boundLease
+    verifiedSnapshot
+    boundSnapshot
+    digestBinding
+    recovery = do
+        requireVerb (rootAuthorityVerb root)
+        requireMode modeWire
+        requirePositiveEpoch retainedLeaseEpoch
+        requireEpoch retainedLeaseEpoch (rootAuthorityEpoch root)
+        requireEpoch retainedLeaseEpoch modeEpoch
+        requireEpoch retainedLeaseEpoch recoveryEpoch
+        requireRun "lease run" productionRunKey leaseRun
+        requireNonempty "project identity" leaseProject
+        requireNonempty "protected-store identity" leaseStore
+        requireNonempty "specification digest" leaseSpec
+        requireNonempty "plan digest" leasePlan
+        requireText "root project" leaseProject (rootAuthorityProjectName root)
+        requireText "mode project" leaseProject modeProject
+        requireText "snapshot project" leaseProject (planSnapshotProjectName verifiedSnapshot)
+        requireText "recovery project" leaseProject recoveryProject
+        requireText "root store" leaseStore (rootAuthorityStoreIdentity root)
+        requireText "mode store" leaseStore modeStore
+        requireText "snapshot store" leaseStore (planSnapshotStoreIdentity verifiedSnapshot)
+        requireText "recovery store" leaseStore recoveryStore
+        requireRun "snapshot run" leaseRun (planSnapshotRunKey verifiedSnapshot)
+        requireRun "recovery run" leaseRun recoveryRun
+        requireText "snapshot specification" leaseSpec (planSnapshotSpecDigest verifiedSnapshot)
+        requireText "recovery specification" leaseSpec recoverySpec
+        requireText "snapshot plan" leasePlan (planSnapshotPlanDigest verifiedSnapshot)
+        requireText "digest binding" leasePlan (planDigestBindingDigestKernel digestBinding)
+        requireText "recovery plan" leasePlan recoveryPlan
+        requireBindingOrigin bindingOrigin
+        configDigest <-
+            maybe
+                (evidenceMismatch "canonical configuration" "present" "absent")
+                Right
+                (planSnapshotConfigDigest verifiedSnapshot)
+        canonicalBytes <-
+            maybe
+                (evidenceMismatch "canonical bytes" "present" "absent")
+                Right
+                (planSnapshotCanonicalBytes verifiedSnapshot)
+        requireNonempty "canonical configuration" configDigest
+        requireNonemptyBytes canonicalBytes
+        requireCanonicalBytes canonicalBytes (boundPlanSnapshotBytesKernel boundSnapshot)
+        if snapshotRevision == 0
+            then evidenceMismatch "snapshot revision" "positive" "zero"
+            else
+                Right
+                    ( RecoveredProductionLifecycleProfile
+                        leaseRunIdentity
+                        leaseProject
+                        leaseStore
+                        snapshotRevision
+                        leaseSpec
+                        leasePlan
+                        configDigest
+                        canonicalBytes
+                        retainedLeaseEpoch
+                        revisionKind
+                    )
+  where
+    ProjectModeLease modeWire modeProject modeStore modeEpoch = modeLease
+    BoundRunLease leaseRunIdentity location leaseSpec leasePlan retainedLeaseEpoch _leaseVersion bindingOrigin =
+        boundLease
+    BoundInvocationRecovery
+        recoveryRunIdentity
+        recoveryProject
+        recoveryStore
+        recoverySpec
+        recoveryPlan
+        recoveryEpoch
+        revisionKind = recovery
+    leaseRun = runIdentityKey leaseRunIdentity
+    recoveryRun = runIdentityKey recoveryRunIdentity
+    leaseProject = leaseLocationProjectName location
+    leaseStore = leaseLocationStoreIdentity location
+    snapshotRevision = planSnapshotRevision verifiedSnapshot
+
+    evidenceMismatch subject expected observed =
+        Left (ModeEvidenceMismatch subject expected observed)
+
+    requireText subject expected observed
+        | expected == observed = Right ()
+        | otherwise = evidenceMismatch subject expected observed
+
+    requireRun subject expected observed =
+        requireText subject (runKeyText expected) (runKeyText observed)
+
+    requireMode observed
+        | observed == WireProduction = Right ()
+        | otherwise =
+            Left (ModeWrongMode "production" (modeWireName observed))
+
+    requireVerb :: ProjectVerb VerbUp -> Either ModeError ()
+    requireVerb ProjectUp = Right ()
+
+    requireEpoch expected observed
+        | brokerEpochWord expected == brokerEpochWord observed = Right ()
+        | otherwise =
+            Left
+                ( ModeEpochMismatch
+                    (brokerEpochWord expected)
+                    (brokerEpochWord observed)
                 )
-            )
+
+    requirePositiveEpoch epoch
+        | brokerEpochWord epoch > 0 = Right ()
+        | otherwise = evidenceMismatch "broker generation" "positive" "zero"
+
+    requireBindingOrigin origin =
+        case origin of
+            ExistingBinding -> Right ()
+            FreshBinding -> evidenceMismatch "lease binding origin" "existing" "fresh"
+            MigratedBinding -> evidenceMismatch "lease binding origin" "existing" "migrated"
+
+    requireNonempty subject value
+        | Text.null value = evidenceMismatch subject "nonempty" "empty"
+        | otherwise = Right ()
+
+    requireNonemptyBytes bytes
+        | ByteString.null bytes = evidenceMismatch "canonical bytes" "nonempty" "empty"
+        | otherwise = Right ()
+
+    requireCanonicalBytes expected observed
+        | expected == observed = Right ()
+        | otherwise = evidenceMismatch "canonical bytes" "exact verified bytes" "different bytes"
+
+consumeLifecycleProfileSlot ::
+    forall scope brokerGeneration.
+    RootScopeAuthority scope ->
+    ModeWire ->
+    ActiveProjectMode scope brokerGeneration ->
+    UnboundRunLease scope brokerGeneration ->
+    IO (Either AuthorityError (LifecycleProfile scope))
+consumeLifecycleProfileSlot root expectedMode active unbound =
+    case validateLifecycleProfileEvidence root expectedMode active unbound of
+        Left failure -> pure (Left failure)
+        Right () -> do
+            entered <-
+                withProtectedEntry (leaseLocationStore location) $ \session -> do
+                    consumed <- consumeProfileRecord session
+                    pure (Right consumed)
+            pure $ case entered of
+                Left failure -> Left (AuthorityStoreFailure failure)
+                Right result -> result
+  where
+    location = unboundRunLeaseLocation unbound
+    projectName = leaseLocationProjectName location
+    storeIdentity = leaseLocationStoreIdentity location
+    expectedEpoch = brokerEpochWord (unboundRunLeaseEpoch unbound)
+    expectedLeaseVersion = unboundRunLeaseRecordVersion unbound
+    key = leaseLocationProfileKey location
+    invocationName =
+        "lifecycle-profile:"
+            <> leaseLocationProjectName location
+            <> ":"
+            <> unboundRunLeaseRunText unbound
+
+    consumeProfileRecord ::
+        forall session.
+        ProtectedSession session ->
+        IO (Either AuthorityError (LifecycleProfile scope))
+    consumeProfileRecord session = do
+        observed <- readProtectedRecord session key
+        case observed of
+            Left failure -> pure (Left (AuthorityStoreFailure failure))
+            Right Nothing ->
+                pure (Left (AuthorityMalformedBinding "the lifecycle profile slot is missing"))
+            Right (Just record) -> case decodeProfileSlot (protectedRecordBytes record) of
+                Nothing ->
+                    pure (Left (AuthorityMalformedBinding "the lifecycle profile slot is malformed"))
+                Just (ProfileAvailable epoch leaseVersion)
+                    | epoch /= expectedEpoch || leaseVersion /= expectedLeaseVersion ->
+                        pure
+                            ( Left
+                                ( AuthorityMalformedBinding
+                                    "the lifecycle profile slot does not match the lease epoch and version"
+                                )
+                            )
+                    | otherwise -> do
+                        written <-
+                            compareAndSwapProtectedRecord
+                                session
+                                key
+                                (ExpectVersion (protectedRecordVersion record))
+                                (encodeProfileSlot (ProfileConsumed epoch leaseVersion))
+                        case written of
+                            Right _ ->
+                                pure
+                                    ( Right
+                                        ( LifecycleProfile
+                                            expectedMode
+                                            projectName
+                                            storeIdentity
+                                            epoch
+                                        )
+                                    )
+                            Left failure -> do
+                                raced <- readProtectedRecord session key
+                                pure $ case raced of
+                                    Right (Just latest)
+                                        | Just (ProfileConsumed racedEpoch racedVersion) <-
+                                            decodeProfileSlot (protectedRecordBytes latest)
+                                        , racedEpoch == epoch
+                                        , racedVersion == leaseVersion ->
+                                            Left (AuthorityInvocationConsumed invocationName)
+                                    Left readFailure -> Left (AuthorityStoreFailure readFailure)
+                                    _ -> Left (AuthorityStoreFailure failure)
+                Just (ProfileConsumed epoch leaseVersion)
+                    | epoch == expectedEpoch && leaseVersion == expectedLeaseVersion ->
+                        pure (Left (AuthorityInvocationConsumed invocationName))
+                    | otherwise ->
+                        pure
+                            ( Left
+                                ( AuthorityMalformedBinding
+                                    "the consumed lifecycle profile slot belongs to another lease epoch or version"
+                                )
+                            )
+
+validateLifecycleProfileEvidence ::
+    RootScopeAuthority scope ->
+    ModeWire ->
+    ActiveProjectMode scope brokerGeneration ->
+    UnboundRunLease scope brokerGeneration ->
+    Either AuthorityError ()
+validateLifecycleProfileEvidence root expectedMode (ActiveProjectMode activeMode activeProject activeStore activeEpoch) unbound
+    | rootScopeProjectName root /= projectName = mismatch "root scope project"
+    | activeProject /= projectName = mismatch "active mode project"
+    | rootScopeStoreIdentity root /= storeIdentity =
+        Left (AuthorityWrongStore storeIdentity (rootScopeStoreIdentity root))
+    | activeStore /= storeIdentity = Left (AuthorityWrongStore storeIdentity activeStore)
+    | rootScopeEpochWord root /= expectedEpoch = mismatch "root scope epoch"
+    | brokerEpochWord activeEpoch /= expectedEpoch = mismatch "active mode epoch"
+    | activeMode /= expectedMode = mismatch "active mode tag"
+    | runIdentityMode (unboundRunLeaseIdentity unbound) /= expectedMode = mismatch "lease mode tag"
+    | otherwise = Right ()
+  where
+    location = unboundRunLeaseLocation unbound
+    projectName = leaseLocationProjectName location
+    storeIdentity = leaseLocationStoreIdentity location
+    expectedEpoch = brokerEpochWord (unboundRunLeaseEpoch unbound)
+    mismatch subject =
+        Left (AuthorityMalformedBinding (subject <> " does not match the lifecycle profile slot"))
+
+data ProfileSlot
+    = ProfileAvailable Word64 Word64
+    | ProfileConsumed Word64 Word64
+
+encodeProfileSlot :: ProfileSlot -> ByteString
+encodeProfileSlot slot = case slot of
+    ProfileAvailable epoch leaseVersion ->
+        encodeFields ["available", showWord epoch, showWord leaseVersion]
+    ProfileConsumed epoch leaseVersion ->
+        encodeFields ["consumed", showWord epoch, showWord leaseVersion]
+
+decodeProfileSlot :: ByteString -> Maybe ProfileSlot
+decodeProfileSlot raw = case decodeFields raw of
+    ["available", epoch, leaseVersion] ->
+        ProfileAvailable <$> readWord epoch <*> readWord leaseVersion
+    ["consumed", epoch, leaseVersion] ->
+        ProfileConsumed <$> readWord epoch <*> readWord leaseVersion
+    _ -> Nothing
 
 -- Plan migration --------------------------------------------------------------------
 
@@ -1396,6 +2968,8 @@ something exact to compare against.
 -}
 data ProspectivePlanSnapshot projectId newSpecDigest newPlanDigest
     = ProspectivePlanSnapshot StableMigrationKey Text Text
+
+type role ProspectivePlanSnapshot nominal nominal nominal
 
 instance Show (ProspectivePlanSnapshot projectId newSpecDigest newPlanDigest) where
     show (ProspectivePlanSnapshot key spec plan) =
@@ -1433,15 +3007,22 @@ It carries no plan. § EE: "Compatible revision carry first uses the sole
 'withProjectUpMigrationProfile' producer to revalidate ... without a new plan."
 -}
 data ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration
-    = ProjectUpMigrationProfile RunId Text Text Word64
+    = ProjectUpMigrationProfile
+        (RunIdentity (Production projectId))
+        LeaseLocation
+        Text
+        Text
+        Word64
+
+type role ProjectUpMigrationProfile nominal nominal nominal nominal
 
 instance
     Show
         (ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration)
     where
-    show (ProjectUpMigrationProfile run spec plan epoch) =
+    show (ProjectUpMigrationProfile run _ spec plan epoch) =
         "ProjectUpMigrationProfile "
-            <> show run
+            <> show (runIdentityText run)
             <> " "
             <> show spec
             <> " "
@@ -1450,38 +3031,41 @@ instance
             <> show epoch
 
 migrationProfileRun ::
-    ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration -> RunId
-migrationProfileRun (ProjectUpMigrationProfile run _ _ _) = run
+    ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration -> Text
+migrationProfileRun (ProjectUpMigrationProfile run _ _ _ _) = runIdentityText run
+
+migrationProfileRunIdentity ::
+    ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration ->
+    RunIdentity (Production projectId)
+migrationProfileRunIdentity (ProjectUpMigrationProfile run _ _ _ _) = run
+
+migrationProfileLocation ::
+    ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration ->
+    LeaseLocation
+migrationProfileLocation (ProjectUpMigrationProfile _ location _ _ _) = location
 
 migrationProfileOldSpecDigest ::
     ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration -> Text
-migrationProfileOldSpecDigest (ProjectUpMigrationProfile _ spec _ _) = spec
+migrationProfileOldSpecDigest (ProjectUpMigrationProfile _ _ spec _ _) = spec
 
 migrationProfileOldPlanDigest ::
     ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration -> Text
-migrationProfileOldPlanDigest (ProjectUpMigrationProfile _ _ plan _) = plan
+migrationProfileOldPlanDigest (ProjectUpMigrationProfile _ _ _ plan _) = plan
 
 migrationProfileEpoch ::
     ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration -> Word64
-migrationProfileEpoch (ProjectUpMigrationProfile _ _ _ epoch) = epoch
+migrationProfileEpoch (ProjectUpMigrationProfile _ _ _ _ epoch) = epoch
 
 -- | Mint the migration profile, or refuse. See 'ProjectUpMigrationProfile'.
 withProjectUpMigrationProfile ::
     RootInvocationAuthority (Production projectId) brokerGeneration VerbUp ->
-    ProjectModeLease projectId brokerGeneration ->
+    ProjectModeLease projectId ProductionMode brokerGeneration ->
     BoundRunLease (Production projectId) oldSpecDigest oldPlanDigest brokerGeneration ->
-    VerifiedPlanSnapshot projectId oldSpecDigest oldPlanDigest ->
-    NormalActiveRecovery (Production projectId) ->
+    VerifiedPlanSnapshot (Production projectId) oldSpecDigest oldPlanDigest ->
     Either
         ModeError
         (ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration)
-withProjectUpMigrationProfile root modeLease bound snapshot active
-    | ProductionMode /= projectModeLeaseMode modeLease =
-        Left
-            ( ModeWrongMode
-                "production"
-                (projectModeName (projectModeLeaseMode modeLease))
-            )
+withProjectUpMigrationProfile root modeLease bound snapshot
     | brokerEpochWord (rootAuthorityEpoch root)
         /= brokerEpochWord (projectModeLeaseEpoch modeLease) =
         Left
@@ -1489,17 +3073,17 @@ withProjectUpMigrationProfile root modeLease bound snapshot active
                 (brokerEpochWord (projectModeLeaseEpoch modeLease))
                 (brokerEpochWord (rootAuthorityEpoch root))
             )
-    | boundRunLeaseRun bound /= planSnapshotRun snapshot =
+    | run /= planSnapshotRunKey snapshot =
         Left
             ( ModeSnapshotMismatch
-                (runIdText (boundRunLeaseRun bound))
-                (runIdText (planSnapshotRun snapshot))
+                (runKeyText run)
+                (planSnapshotRunText snapshot)
             )
-    | boundRunLeaseRun bound /= normalActiveRecoveryRun active =
+    | bindingOrigin /= FreshBinding =
         Left
             ( ModeSnapshotMismatch
-                (runIdText (boundRunLeaseRun bound))
-                (runIdText (normalActiveRecoveryRun active))
+                "fresh lease binding"
+                "recovered or migrated lease binding"
             )
     | boundRunLeaseSpecDigest bound /= planSnapshotSpecDigest snapshot =
         Left
@@ -1516,11 +3100,15 @@ withProjectUpMigrationProfile root modeLease bound snapshot active
     | otherwise =
         Right
             ( ProjectUpMigrationProfile
-                (boundRunLeaseRun bound)
+                (boundRunLeaseIdentity bound)
+                location
                 (planSnapshotSpecDigest snapshot)
                 (planSnapshotPlanDigest snapshot)
                 (brokerEpochWord (rootAuthorityEpoch root))
             )
+  where
+    BoundRunLease _ location _ _ _ _ bindingOrigin = bound
+    run = runIdentityKey (boundRunLeaseIdentity bound)
 
 {- | Build one migration candidate and persist it under a fresh stable key,
 before anything is frozen.
@@ -1545,7 +3133,7 @@ the candidate cannot be confused with the old revision's.
 withProspectiveMigrationPlan ::
     forall session projectId oldSpecDigest oldPlanDigest brokerGeneration result.
     ProtectedSession session ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration ->
     -- | the candidate's spec digest
     Text ->
@@ -1610,7 +3198,7 @@ stableMigrationKeyFor ::
     StableMigrationKey
 stableMigrationKeyFor profile newPlan =
     StableMigrationKey
-        ( runIdText (migrationProfileRun profile)
+        ( migrationProfileRun profile
             <> "."
             <> migrationProfileOldPlanDigest profile
             <> "."
@@ -1619,7 +3207,7 @@ stableMigrationKeyFor profile newPlan =
 
 readProspectiveSnapshot ::
     ProtectedSession session ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     StableMigrationKey ->
     IO (Either ModeError (Text, Text))
 readProspectiveSnapshot session project key =
@@ -1647,7 +3235,17 @@ data FrozenMigrationRunLease
     newSpecDigest
     newPlanDigest
     brokerGeneration
-    = FrozenMigrationRunLease RunId StableMigrationKey Text Text Text Text Word64
+    = FrozenMigrationRunLease
+        (RunIdentity (Production projectId))
+        LeaseLocation
+        StableMigrationKey
+        Text
+        Text
+        Text
+        Text
+        Word64
+
+type role FrozenMigrationRunLease nominal nominal nominal nominal nominal nominal
 
 instance
     Show
@@ -1660,9 +3258,9 @@ instance
             brokerGeneration
         )
     where
-    show (FrozenMigrationRunLease run key oldSpec oldPlan newSpec newPlan epoch) =
+    show (FrozenMigrationRunLease run _ key oldSpec oldPlan newSpec newPlan epoch) =
         "FrozenMigrationRunLease "
-            <> show run
+            <> show (runIdentityText run)
             <> " "
             <> show key
             <> " "
@@ -1685,7 +3283,7 @@ frozenMigrationKey ::
         newPlanDigest
         brokerGeneration ->
     StableMigrationKey
-frozenMigrationKey (FrozenMigrationRunLease _ key _ _ _ _ _) = key
+frozenMigrationKey (FrozenMigrationRunLease _ _ key _ _ _ _ _) = key
 
 frozenMigrationRun ::
     FrozenMigrationRunLease
@@ -1695,8 +3293,30 @@ frozenMigrationRun ::
         newSpecDigest
         newPlanDigest
         brokerGeneration ->
-    RunId
-frozenMigrationRun (FrozenMigrationRunLease run _ _ _ _ _ _) = run
+    Text
+frozenMigrationRun (FrozenMigrationRunLease run _ _ _ _ _ _ _) = runIdentityText run
+
+frozenMigrationRunIdentity ::
+    FrozenMigrationRunLease
+        projectId
+        oldSpecDigest
+        oldPlanDigest
+        newSpecDigest
+        newPlanDigest
+        brokerGeneration ->
+    RunIdentity (Production projectId)
+frozenMigrationRunIdentity (FrozenMigrationRunLease run _ _ _ _ _ _ _) = run
+
+frozenMigrationLocation ::
+    FrozenMigrationRunLease
+        projectId
+        oldSpecDigest
+        oldPlanDigest
+        newSpecDigest
+        newPlanDigest
+        brokerGeneration ->
+    LeaseLocation
+frozenMigrationLocation (FrozenMigrationRunLease _ location _ _ _ _ _ _) = location
 
 {- | Freeze the old revision against a persisted candidate.
 
@@ -1721,7 +3341,7 @@ the same capability, so a retried migration converges rather than refusing.
 -}
 withPlanMigration ::
     ProtectedSession session ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration ->
     ProspectivePlanSnapshot projectId newSpecDigest newPlanDigest ->
     IO
@@ -1747,21 +3367,21 @@ withPlanMigration session project profile candidate = do
                 pure (Left (ModeSnapshotMismatch (prospectiveSnapshotPlanDigest candidate) plan))
             | otherwise -> do
                 recorded <-
-                    recordOpenRevisionMigration
+                    recordOpenRevisionMigrationForKey
                         session
                         project
-                        run
+                        (runIdentityKey run)
                         (IncompleteMigration (stableMigrationKeyText key))
                 case recorded of
                     Left failure -> pure (Left failure)
                     Right () -> freezeLease session project profile key spec plan
   where
     key = prospectiveSnapshotKey candidate
-    run = migrationProfileRun profile
+    run = migrationProfileRunIdentity profile
 
 freezeLease ::
     ProtectedSession session ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     ProjectUpMigrationProfile projectId oldSpecDigest oldPlanDigest brokerGeneration ->
     StableMigrationKey ->
     Text ->
@@ -1778,12 +3398,13 @@ freezeLease ::
                 brokerGeneration
             )
         )
-freezeLease session project profile key newSpec newPlan =
-    withRecordKey (leaseKey project run) $ \recordKey -> do
+freezeLease session _project profile key newSpec newPlan =
+    let recordKey = leaseLocationLeaseKey location
+     in do
         observed <- readProtectedRecord session recordKey
         case observed of
             Left failure -> pure (Left (ModeStoreFailure failure))
-            Right Nothing -> pure (Left (ModeLeaseMissing (runIdText run)))
+            Right Nothing -> pure (Left (ModeLeaseMissing (runIdentityText run)))
             Right (Just record) -> case decodeLease (protectedRecordBytes record) of
                 Nothing -> pure (Left (ModeMalformedRecord (recordKeyText recordKey)))
                 -- Already frozen under this exact key: idempotent resume.
@@ -1801,6 +3422,7 @@ freezeLease session project profile key newSpec newPlan =
                             ( Right
                                 ( FrozenMigrationRunLease
                                     run
+                                    location
                                     key
                                     oldSpec
                                     oldPlan
@@ -1848,6 +3470,7 @@ freezeLease session project profile key newSpec newPlan =
                                 Right
                                     ( FrozenMigrationRunLease
                                         run
+                                        location
                                         key
                                         recordedSpec
                                         recordedPlan
@@ -1856,9 +3479,10 @@ freezeLease session project profile key newSpec newPlan =
                                         (migrationProfileEpoch profile)
                                     )
                 Just other ->
-                    pure (Left (ModeLeaseNotBindable (runIdText run) (leaseStateName other)))
+                    pure (Left (ModeLeaseNotBindable (runIdentityText run) (leaseStateName other)))
   where
-    run = migrationProfileRun profile
+    run = migrationProfileRunIdentity profile
+    location = migrationProfileLocation profile
 
 {- | The activation barrier: proof that the lineage switch committed.
 
@@ -1867,7 +3491,9 @@ cannot authorize another's activation. Its constructor is private and
 'commitMigrationActivation' is its sole producer.
 -}
 data PlanMigrationBarrier projectId oldPlanDigest newPlanDigest
-    = PlanMigrationBarrier StableMigrationKey RunId Text Text
+    = PlanMigrationBarrier StableMigrationKey RunKey Text Text
+
+type role PlanMigrationBarrier nominal nominal nominal
 
 instance Show (PlanMigrationBarrier projectId oldPlanDigest newPlanDigest) where
     show (PlanMigrationBarrier key run old new) =
@@ -1910,7 +3536,7 @@ already-bound candidate and completes the record.
 -}
 commitMigrationActivation ::
     ProtectedSession session ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     FrozenMigrationRunLease
         projectId
         oldSpecDigest
@@ -1927,11 +3553,12 @@ commitMigrationActivation ::
             )
         )
 commitMigrationActivation session project frozen epoch =
-    withRecordKey (leaseKey project run) $ \recordKey -> do
+    let recordKey = leaseLocationLeaseKey location
+     in do
         observed <- readProtectedRecord session recordKey
         case observed of
             Left failure -> pure (Left (ModeStoreFailure failure))
-            Right Nothing -> pure (Left (ModeLeaseMissing (runIdText run)))
+            Right Nothing -> pure (Left (ModeLeaseMissing (runIdentityText run)))
             Right (Just record) -> case decodeLease (protectedRecordBytes record) of
                 Nothing -> pure (Left (ModeMalformedRecord (recordKeyText recordKey)))
                 Just (LeaseFrozen _ recorded _oldSpec oldPlan newSpec newPlan)
@@ -1946,33 +3573,34 @@ commitMigrationActivation session project frozen epoch =
                                 (encodeLease (LeaseBound (brokerEpochWord epoch) newSpec newPlan))
                         case written of
                             Left failure -> pure (Left (ModeStoreFailure failure))
-                            Right _ -> complete oldPlan newSpec newPlan
+                            Right leaseVersion -> complete leaseVersion oldPlan newSpec newPlan
                 -- The swap already committed and the record write did not: the
                 -- lease is bound to the candidate, so finish the record rather
                 -- than refusing a migration that is in fact activated.
                 Just (LeaseBound _ recordedSpec recordedPlan)
                     | (recordedSpec, recordedPlan) == candidateDigests ->
-                        complete oldPlanOf recordedSpec recordedPlan
+                        complete (protectedRecordVersion record) oldPlanOf recordedSpec recordedPlan
                 Just other ->
-                    pure (Left (ModeLeaseNotBindable (runIdText run) (leaseStateName other)))
+                    pure (Left (ModeLeaseNotBindable (runIdentityText run) (leaseStateName other)))
   where
-    FrozenMigrationRunLease _ key _oldSpecOf oldPlanOf newSpecOf newPlanOf _ = frozen
-    run = frozenMigrationRun frozen
+    FrozenMigrationRunLease _ _ key _oldSpecOf oldPlanOf newSpecOf newPlanOf _ = frozen
+    run = frozenMigrationRunIdentity frozen
+    location = frozenMigrationLocation frozen
     candidateDigests = (newSpecOf, newPlanOf)
 
-    complete oldPlan newSpec newPlan = do
+    complete leaseVersion oldPlan newSpec newPlan = do
         recorded <-
-            recordOpenRevisionMigration
+            recordOpenRevisionMigrationForKey
                 session
                 project
-                run
+                (runIdentityKey run)
                 (CompletedMigration (stableMigrationKeyText key))
         pure $ case recorded of
             Left failure -> Left failure
             Right () ->
                 Right
-                    ( BoundRunLease run newSpec newPlan epoch
-                    , PlanMigrationBarrier key run oldPlan newPlan
+                    ( BoundRunLease run location newSpec newPlan epoch leaseVersion MigratedBinding
+                    , PlanMigrationBarrier key (runIdentityKey run) oldPlan newPlan
                     )
 
 {- | Activate the migrated plan: the last gate before the new revision may open
@@ -2089,48 +3717,90 @@ digests at the term level before admitting anything.
 -}
 withCompletedMigrationRecovery ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    RunId ->
+    InstalledProjectIdentity projectId ->
+    BoundRunLease
+        scope
+        newSpecDigest
+        newPlanDigest
+        brokerGeneration ->
     ( forall oldPlanDigest.
       PlanMigrationBarrier projectId oldPlanDigest newPlanDigest ->
       IO (Either ModeError result)
     ) ->
     IO (Either ModeError result)
-withCompletedMigrationRecovery session project run use = do
-    kind <- readOpenRevisionKind session project run
-    case kind of
-        Left failure -> pure (Left failure)
-        Right (CompletedMigration key) -> withRecordKey (leaseKey project run) $ \recordKey -> do
-            observed <- readProtectedRecord session recordKey
-            case observed of
-                Left failure -> pure (Left (ModeStoreFailure failure))
-                Right Nothing -> pure (Left (ModeLeaseMissing (runIdText run)))
-                Right (Just record) -> case decodeLease (protectedRecordBytes record) of
-                    Nothing -> pure (Left (ModeMalformedRecord (recordKeyText recordKey)))
-                    -- The lease is bound to the candidate, so the old plan
-                    -- digest is recovered from the stable key rather than from
-                    -- any config.
-                    Just (LeaseBound _ _ recordedPlan) ->
-                        case oldPlanFromStableKey key of
-                            Nothing -> pure (Left (ModeMalformedRecord key))
-                            Just oldPlan ->
-                                use
-                                    ( PlanMigrationBarrier
-                                        (StableMigrationKey key)
-                                        run
-                                        oldPlan
-                                        recordedPlan
-                                    )
-                    Just other ->
-                        pure (Left (ModeLeaseNotBindable (runIdText run) (leaseStateName other)))
-        Right other ->
+withCompletedMigrationRecovery session project bound use = do
+    if leaseLocationProjectName location /= installedProjectName project
+        then
             pure
                 ( Left
-                    ( ModeWrongRecoveryScope
-                        "completed-migration"
-                        (openRevisionKindName other)
+                    ( ModeSnapshotMismatch
+                        (leaseLocationProjectName location)
+                        (installedProjectName project)
                     )
                 )
+        else
+            if leaseLocationStoreIdentity location /= observedStoreIdentity
+                then
+                    pure
+                        ( Left
+                            ( ModeSnapshotMismatch
+                                (leaseLocationStoreIdentity location)
+                                observedStoreIdentity
+                            )
+                        )
+                else do
+                    kind <- readOpenRevisionKindForKey session project runKey
+                    case kind of
+                        Left failure -> pure (Left failure)
+                        Right (CompletedMigration key) ->
+                            withRecordKey (leaseKeyForRunKey project runKey) $ \recordKey -> do
+                                observed <- readProtectedRecord session recordKey
+                                case observed of
+                                    Left failure -> pure (Left (ModeStoreFailure failure))
+                                    Right Nothing ->
+                                        pure (Left (ModeLeaseMissing (runKeyText runKey)))
+                                    Right (Just record) ->
+                                        case decodeLease (protectedRecordBytes record) of
+                                            Nothing ->
+                                                pure
+                                                    ( Left
+                                                        (ModeMalformedRecord (recordKeyText recordKey))
+                                                    )
+                                            -- The lease is bound to the candidate, so the old plan
+                                            -- digest is recovered from the stable key rather than from
+                                            -- any config.
+                                            Just (LeaseBound _ _ recordedPlan) ->
+                                                case oldPlanFromStableKey key of
+                                                    Nothing ->
+                                                        pure (Left (ModeMalformedRecord key))
+                                                    Just oldPlan ->
+                                                        use
+                                                            ( PlanMigrationBarrier
+                                                                (StableMigrationKey key)
+                                                                runKey
+                                                                oldPlan
+                                                                recordedPlan
+                                                            )
+                                            Just other ->
+                                                pure
+                                                    ( Left
+                                                        ( ModeLeaseNotBindable
+                                                            (runKeyText runKey)
+                                                            (leaseStateName other)
+                                                        )
+                                                    )
+                        Right other ->
+                            pure
+                                ( Left
+                                    ( ModeWrongRecoveryScope
+                                        "completed-migration"
+                                        (openRevisionKindName other)
+                                    )
+                                )
+  where
+    location = boundRunLeaseLocation bound
+    runKey = runIdentityKey (boundRunLeaseIdentity bound)
+    observedStoreIdentity = protectedStoreIdentityText (sessionStoreIdentity session)
 
 -- | The old plan digest a stable migration key names: @\<run\>.\<old\>.\<new\>@.
 oldPlanFromStableKey :: Text -> Maybe Text
@@ -2144,7 +3814,7 @@ openRevisionKindName kind = case kind of
     IncompleteMigration key -> "incomplete migration " <> key
     CompletedMigration key -> "completed migration " <> key
 
-prospectiveKey :: InstalledProject projectId -> StableMigrationKey -> Either ModeError RecordKey
+prospectiveKey :: InstalledProjectIdentity projectId -> StableMigrationKey -> Either ModeError RecordKey
 prospectiveKey project key =
     storeKey
         ( "prospective."
@@ -2161,9 +3831,11 @@ the held project-wide mode, and the recorded unbound lease.
 data ProductionRoot projectId brokerGeneration verb = ProductionRoot
     { productionRootAuthority ::
         RootInvocationAuthority (Production projectId) brokerGeneration verb
-    , productionRootModeLease :: ProjectModeLease projectId brokerGeneration
+    , productionRootModeLease :: ProjectModeLease projectId ProductionMode brokerGeneration
     , productionRootUnboundLease :: UnboundRunLease (Production projectId) brokerGeneration
     }
+
+type role ProductionRoot nominal nominal nominal
 
 {- | The composite Production root bracket: it runs the the operator-root-and-command-authority phase verifier
 *inside* the protected mode transaction, so no intermediate state is exposed and
@@ -2175,7 +3847,7 @@ harness run holds the mode.
 -}
 withProductionRoot ::
     ProtectedStore ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     ProjectVerb verb ->
     ( forall brokerGeneration.
       ProductionRoot projectId brokerGeneration verb ->
@@ -2187,17 +3859,30 @@ withProductionRoot store project verb use = do
     -- entry protects the mode/lease decision, not the whole lifecycle run.
     prepared <-
         runProtected store $ \session -> do
-            operator <- verifyOperatorAuthorization session
+            operator <- verifyOsPrincipal session
             case operator of
                 Left failure -> pure (Left (ModeAuthorityFailure failure))
                 Right authorized ->
                     withFreshEpoch session project $ \epoch ->
-                        withVerifiedRoot session project authorized epoch verb $ \root -> do
-                            acquired <- acquireMode session project ProductionMode epoch
+                        withVerifiedRoot
+                            ProductionRootScope
+                            session
+                            project
+                            authorized
+                            epoch
+                            verb
+                            $ \root -> do
+                            acquired <- acquireProductionMode session project epoch
                             case acquired of
                                 Left failure -> pure (Left failure)
                                 Right modeLease -> do
-                                    recorded <- recordUnboundLease session project productionRunId epoch
+                                    recorded <-
+                                        recordUnboundLease
+                                            store
+                                            session
+                                            project
+                                            (ProductionRunIdentity productionRunKey)
+                                            epoch
                                     case recorded of
                                         Left failure -> pure (Left failure)
                                         Right unbound ->
@@ -2220,28 +3905,30 @@ data SomeProductionRoot projectId verb
 {- | Production's lease name. Production has one logical invocation lease per
 broker generation rather than a generated run identity.
 -}
-productionRunId :: RunId
-productionRunId = RunId "production"
+productionRunKey :: RunKey
+productionRunKey = RunKey "production"
 
 {- | Is this the reserved Production invocation lease rather than a harness run?
 
-'freshRunId' only ever mints @run-\<hex\>@, so the reserved name cannot collide
+'withFreshRunId' only ever mints @run-\<hex\>@, so the reserved name cannot collide
 with a generated run identity, and the distinction is structural rather than a
 naming convention two call sites could disagree about.
 -}
-isProductionRun :: RunId -> Bool
-isProductionRun = (== productionRunId)
+isProductionRunKey :: RunKey -> Bool
+isProductionRunKey = (== productionRunKey)
 
 -- | Everything the Harness bracket established for one fresh run.
 data HarnessRoot projectId runId brokerGeneration verb = HarnessRoot
     { harnessRootAuthority ::
         RootInvocationAuthority (Harness projectId runId) brokerGeneration verb
     , harnessRootHarnessAuthority :: HarnessAuthority projectId runId
-    , harnessRootRunId :: RunId
-    , harnessRootModeLease :: ProjectModeLease projectId brokerGeneration
+    , harnessRootRunId :: RunId runId
+    , harnessRootModeLease :: ProjectModeLease projectId (HarnessMode runId) brokerGeneration
     , harnessRootUnboundLease ::
         UnboundRunLease (Harness projectId runId) brokerGeneration
     }
+
+type role HarnessRoot nominal nominal nominal nominal
 
 {- | The composite Harness root bracket.
 
@@ -2254,7 +3941,7 @@ from one run cannot be presented in another.
 -}
 withHarnessRoot ::
     ProtectedStore ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     ProjectVerb verb ->
     HarnessPreconditions ->
     ClosedAbandonedHarnessRuns projectId ->
@@ -2266,7 +3953,7 @@ withHarnessRoot ::
 withHarnessRoot store project verb preconditions swept use = do
     prepared <-
         runProtected store $ \session -> do
-            operator <- verifyOperatorAuthorization session
+            operator <- verifyOsPrincipal session
             case operator of
                 Left failure -> pure (Left (ModeAuthorityFailure failure))
                 Right authorized -> do
@@ -2280,29 +3967,42 @@ withHarnessRoot store project verb preconditions swept use = do
                             case stillSwept of
                                 Left failure -> pure (Left failure)
                                 Right () -> do
-                                    run <- freshRunId
-                                    withFreshEpoch session project $ \epoch ->
-                                        withVerifiedRoot session project authorized epoch verb $ \root -> do
-                                            acquired <- acquireMode session project (HarnessMode run) epoch
-                                            case acquired of
-                                                Left failure -> pure (Left failure)
-                                                Right modeLease -> do
-                                                    recorded <- recordUnboundLease session project run epoch
-                                                    case recorded of
-                                                        Left failure -> pure (Left failure)
-                                                        Right unbound ->
-                                                            pure
-                                                                ( Right
-                                                                    ( SomeHarnessRoot
-                                                                        ( HarnessRoot
-                                                                            root
-                                                                            (mintHarnessAuthority (runIdText run))
-                                                                            run
-                                                                            modeLease
-                                                                            unbound
+                                    withFreshRunId $ \run ->
+                                        withFreshEpoch session project $ \epoch ->
+                                            withVerifiedRoot
+                                                HarnessRootScope
+                                                session
+                                                project
+                                                authorized
+                                                epoch
+                                                verb
+                                                $ \root -> do
+                                                acquired <- acquireHarnessMode session project run epoch
+                                                case acquired of
+                                                    Left failure -> pure (Left failure)
+                                                    Right modeLease -> do
+                                                        recorded <-
+                                                            recordUnboundLease
+                                                                store
+                                                                session
+                                                                project
+                                                                (HarnessRunIdentity run)
+                                                                epoch
+                                                        case recorded of
+                                                            Left failure -> pure (Left failure)
+                                                            Right unbound ->
+                                                                pure
+                                                                    ( Right
+                                                                        ( SomeHarnessRoot
+                                                                            ( HarnessRoot
+                                                                                root
+                                                                                (mintHarnessAuthority (runIdText run))
+                                                                                run
+                                                                                modeLease
+                                                                                unbound
+                                                                            )
                                                                         )
                                                                     )
-                                                                )
     case prepared of
         Left failure -> pure (Left failure)
         Right (SomeHarnessRoot root) -> use root
@@ -2333,7 +4033,7 @@ caller cannot claim a config is absent; the project supplies only its own
 cluster-liveness probe, which core cannot know how to perform.
 -}
 harnessPreconditions ::
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     -- | the directory a sibling production config would occupy
     FilePath ->
     -- | the project's production-cluster liveness probe
@@ -2357,27 +4057,89 @@ mint one, and each records which closed way it was reached.
 data ProjectClosureEvidence scope
     = ProjectClosureEvidence ProductionCloseKind
 
+type role ProjectClosureEvidence nominal
+
 instance Show (ProjectClosureEvidence scope) where
     show (ProjectClosureEvidence kind) = "ProjectClosureEvidence " <> show kind
 
 projectClosureEvidenceKind :: ProjectClosureEvidence scope -> ProductionCloseKind
 projectClosureEvidenceKind (ProjectClosureEvidence kind) = kind
 
-{- | The true-pre-effect verifier: the run's records must contain no effect of
-any shape. A single effect-shaped record refuses, so partial @up@/@down@ work
-cannot be relabelled as a refusal that preceded acquisition.
+{- | The true-pre-effect verifier: the unbound run's records must contain no
+effect of any shape and no same-run acquisition row. A single matching key
+refuses without decoding its payload, so partial @up@/@down@ work or impossible
+acquisition ownership under an unbound lease cannot be relabelled as a refusal
+that preceded acquisition.
 -}
 verifyNoProjectResourcesAcquired ::
-    ProtectedSession session ->
-    InstalledProject projectId ->
-    RunId ->
+    UnboundRunLease scope brokerGeneration ->
     IO (Either ModeError (ProjectClosureEvidence scope))
-verifyNoProjectResourcesAcquired session project run = do
-    effects <- effectRecordsFor session project run
-    pure $ case effects of
-        Left failure -> Left failure
-        Right [] -> Right (ProjectClosureEvidence PreEffectRefusalClose)
-        Right (record : _) -> Left (ModeEffectsRecorded (recordKeyText record))
+verifyNoProjectResourcesAcquired unbound =
+    verifyLeaseLocationHasNoUnboundOwnership
+        (unboundRunLeaseLocation unbound)
+        (runIdentityKey (unboundRunLeaseIdentity unbound))
+
+{- | The corresponding no-effect verifier for a lease that was already bound
+before recovery. It is separate from the unbound producer so neither lease
+state can be substituted for the other at call sites.
+-}
+verifyBoundRunHasNoProjectResourcesAcquired ::
+    BoundRunLease scope specDigest planDigest brokerGeneration ->
+    IO (Either ModeError (ProjectClosureEvidence scope))
+verifyBoundRunHasNoProjectResourcesAcquired bound =
+    verifyLeaseLocationHasNoEffects
+        (boundRunLeaseLocation bound)
+        (runIdentityKey (boundRunLeaseIdentity bound))
+
+verifyLeaseLocationHasNoUnboundOwnership ::
+    LeaseLocation ->
+    RunKey ->
+    IO (Either ModeError (ProjectClosureEvidence scope))
+verifyLeaseLocationHasNoUnboundOwnership =
+    verifyLeaseLocationHasNoRecords isUnboundOwnershipKeyForLease
+
+verifyLeaseLocationHasNoEffects ::
+    LeaseLocation ->
+    RunKey ->
+    IO (Either ModeError (ProjectClosureEvidence scope))
+verifyLeaseLocationHasNoEffects =
+    verifyLeaseLocationHasNoRecords isEffectKeyForLease
+
+verifyLeaseLocationHasNoRecords ::
+    (LeaseLocation -> RunKey -> RecordKey -> Bool) ->
+    LeaseLocation ->
+    RunKey ->
+    IO (Either ModeError (ProjectClosureEvidence scope))
+verifyLeaseLocationHasNoRecords isOwned location runKey = do
+    entered <-
+        withProtectedEntry (leaseLocationStore location) $ \session -> do
+            keys <- listProtectedRecords session
+            pure
+                ( Right
+                    ( case keys of
+                        Left failure -> Left (ModeStoreFailure failure)
+                        Right present ->
+                            case filter (isOwned location runKey) present of
+                                [] -> Right (ProjectClosureEvidence PreEffectRefusalClose)
+                                record : _ ->
+                                    Left (ModeEffectsRecorded (recordKeyText record))
+                    )
+                )
+    pure $ case entered of
+        Left failure -> Left (ModeStoreFailure failure)
+        Right result -> result
+
+isUnboundOwnershipKeyForLease :: LeaseLocation -> RunKey -> RecordKey -> Bool
+isUnboundOwnershipKeyForLease location run key =
+    isEffectKeyForLease location run key || isAcquisitionKeyForLease location run key
+
+isEffectKeyForLease :: LeaseLocation -> RunKey -> RecordKey -> Bool
+isEffectKeyForLease location =
+    hasRunRecordPrefix "effect." (leaseLocationProjectName location)
+
+isAcquisitionKeyForLease :: LeaseLocation -> RunKey -> RecordKey -> Bool
+isAcquisitionKeyForLease location =
+    hasRunRecordPrefix "acquisition." (leaseLocationProjectName location)
 
 {- | The settled-destroy half of 'ProjectClosureEvidence' (the recursive-lifecycle-command phase).
 
@@ -2410,24 +4172,51 @@ destroySettledClosure lease sessions settled
   where
     bound = boundRunLeasePlanDigest lease
 
-{- | Exact-version proof that an unbound lease recorded no effect. The sweep
-cannot close an unbound lease without it.
+{- | Exact-version proof that an unbound lease recorded neither an effect nor a
+plan-bound acquisition. The sweep cannot close an unbound lease without it.
+
+The acquisition check is key-shaped deliberately: once a same-run
+@acquisition.<project>.<run>.@ row exists, even a malformed payload or unknown
+epoch is durable evidence that acquisition started and must not be swept as a
+pre-effect refusal. Such ownership is impossible in the valid unbound flow but
+must be treated conservatively if found. The historical
+@VerifiedUnboundLeaseHasNoEffects@ name is retained for API continuity; its
+proof now also means "no same-run acquisition row".
 -}
 data VerifiedUnboundLeaseHasNoEffects projectId
-    = VerifiedUnboundLeaseHasNoEffects RunId
+    = VerifiedUnboundLeaseHasNoEffects RunKey
+
+type role VerifiedUnboundLeaseHasNoEffects nominal
 
 instance Show (VerifiedUnboundLeaseHasNoEffects projectId) where
     show (VerifiedUnboundLeaseHasNoEffects run) =
-        "VerifiedUnboundLeaseHasNoEffects " <> show run
+        "VerifiedUnboundLeaseHasNoEffects " <> show (runKeyText run)
 
+{- | Mint the historical no-effects proof only when neither effect-shaped nor
+same-run acquisition-shaped ownership exists for the exact Harness run.
+
+Acquisition payload and epoch validity are irrelevant here: any matching key is
+impossible unbound ownership evidence and refuses the proof.
+-}
 verifyUnboundLeaseHasNoEffects ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    RunId ->
+    InstalledProjectIdentity projectId ->
+    RunId runId ->
     IO (Either ModeError (VerifiedUnboundLeaseHasNoEffects projectId))
 verifyUnboundLeaseHasNoEffects session project run = do
-    effects <- effectRecordsFor session project run
-    pure $ case effects of
+    verifyUnboundLeaseHasNoEffectsForKey
+        session
+        project
+        (runIdentityKey (HarnessRunIdentity run))
+
+verifyUnboundLeaseHasNoEffectsForKey ::
+    ProtectedSession session ->
+    InstalledProjectIdentity projectId ->
+    RunKey ->
+    IO (Either ModeError (VerifiedUnboundLeaseHasNoEffects projectId))
+verifyUnboundLeaseHasNoEffectsForKey session project run = do
+    owned <- unboundOwnershipRecordsFor session project run
+    pure $ case owned of
         Left failure -> Left failure
         Right [] -> Right (VerifiedUnboundLeaseHasNoEffects run)
         Right (record : _) -> Left (ModeEffectsRecorded (recordKeyText record))
@@ -2439,7 +4228,7 @@ a settled-destroy root cannot be paired with pre-effect evidence.
 -}
 releaseProductionMode ::
     ProtectedSession session ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     ProductionCloseRoot (Production projectId) brokerGeneration ->
     ProjectClosureEvidence (Production projectId) ->
     IO (Either ModeError ())
@@ -2451,10 +4240,10 @@ releaseProductionMode session project root evidence
         && projectClosureEvidenceKind evidence /= PreEffectRefusalClose =
         pure (Left (ModeClosureMismatch "pre-effect refusal" "settled destroy"))
     | otherwise = do
-        closed <- closeLease session project productionRunId
+        closed <- closeLeaseForKey session project productionRunKey
         case closed of
             Left failure -> pure (Left failure)
-            Right () -> releaseMode session project ProductionMode
+            Right () -> releaseMode session project WireProduction
 
 -- Production invocation close ------------------------------------------------------
 
@@ -2467,15 +4256,20 @@ mode, its resources, and its Open journal — which is exactly what makes
 true-pre-effect refusal can release the mode, and neither goes through here.
 -}
 data ProductionInvocationCompleted projectId specDigest planDigest brokerGeneration
-    = ProductionInvocationCompleted RunId Int
+    = ProductionInvocationCompleted
+        (BoundRunLease (Production projectId) specDigest planDigest brokerGeneration)
+        Int
+
+type role ProductionInvocationCompleted nominal nominal nominal nominal
 
 instance Show (ProductionInvocationCompleted projectId specDigest planDigest brokerGeneration) where
     show (ProductionInvocationCompleted run sessions) =
         "ProductionInvocationCompleted " <> show run <> " " <> show sessions
 
 productionInvocationCompletedRun ::
-    ProductionInvocationCompleted projectId specDigest planDigest brokerGeneration -> RunId
-productionInvocationCompletedRun (ProductionInvocationCompleted run _) = run
+    ProductionInvocationCompleted projectId specDigest planDigest brokerGeneration -> Text
+productionInvocationCompletedRun (ProductionInvocationCompleted bound _) =
+    boundRunLeaseRunText bound
 
 {- | Mint the completion proof from the bound lease and the independently derived
 complete-session set. The session proof is the load-bearing argument: it is
@@ -2501,7 +4295,7 @@ completeProductionInvocation bound closed
     | otherwise =
         Right
             ( ProductionInvocationCompleted
-                (boundRunLeaseRun bound)
+                bound
                 (allSessionsClosedCount closed)
             )
 
@@ -2510,14 +4304,16 @@ Deliberately carries no lease, admission, or permit: this value authorizes
 nothing further.
 -}
 data ProductionInvocationClosed projectId specDigest planDigest brokerGeneration
-    = ProductionInvocationClosed RunId
+    = ProductionInvocationClosed RunKey
+
+type role ProductionInvocationClosed nominal nominal nominal nominal
 
 instance Show (ProductionInvocationClosed projectId specDigest planDigest brokerGeneration) where
     show (ProductionInvocationClosed run) = "ProductionInvocationClosed " <> show run
 
 productionInvocationClosedRun ::
-    ProductionInvocationClosed projectId specDigest planDigest brokerGeneration -> RunId
-productionInvocationClosedRun (ProductionInvocationClosed run) = run
+    ProductionInvocationClosed projectId specDigest planDigest brokerGeneration -> Text
+productionInvocationClosedRun (ProductionInvocationClosed run) = runKeyText run
 
 {- | The outcome of the close transaction. An uncertain acknowledgment is its own
 constructor, not an error: the close may in fact have committed, so the only
@@ -2528,6 +4324,8 @@ data ProductionInvocationClose projectId specDigest planDigest brokerGeneration
         (ProductionInvocationClosed projectId specDigest planDigest brokerGeneration)
     | ProductionInvocationCloseUnknown InvocationCloseKey
     deriving (Show)
+
+type role ProductionInvocationClose nominal nominal nominal nominal
 
 {- | Close a completed ordinary Production invocation.
 
@@ -2543,8 +4341,8 @@ release any resource.
 -}
 closeCompletedProductionInvocation ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    ProjectModeLease projectId brokerGeneration ->
+    InstalledProjectIdentity projectId ->
+    ProjectModeLease projectId ProductionMode brokerGeneration ->
     ProductionInvocationCompleted projectId specDigest planDigest brokerGeneration ->
     InvocationCloseKey ->
     IO
@@ -2553,25 +4351,26 @@ closeCompletedProductionInvocation ::
             (ProductionInvocationClose projectId specDigest planDigest brokerGeneration)
         )
 closeCompletedProductionInvocation session project modeLease completed key
-    | ProductionMode /= projectModeLeaseMode modeLease =
+    | brokerEpochWord (projectModeLeaseEpoch modeLease)
+        /= brokerEpochWord (boundRunLeaseEpoch bound) =
         pure
             ( Left
-                ( ModeWrongMode
-                    "production"
-                    (projectModeName (projectModeLeaseMode modeLease))
+                ( ModeEpochMismatch
+                    (brokerEpochWord (boundRunLeaseEpoch bound))
+                    (brokerEpochWord (projectModeLeaseEpoch modeLease))
                 )
             )
     | otherwise = do
         held <- currentMode session project
         case held of
             Left failure -> pure (Left failure)
-            Right (Just ProductionMode) -> do
+            Right (Just WireProduction) -> do
                 acknowledged <-
-                    recordProductionInvocationAcknowledgment session project run key
+                    recordProductionInvocationAcknowledgment session project bound key
                 case acknowledged of
                     Left failure -> pure (Left failure)
                     Right () -> do
-                        closed <- closeLease session project run
+                        closed <- closeLeaseForKey session project run
                         pure $ case closed of
                             -- The acknowledgment is durable, so an uncertain
                             -- lease close resumes this exact key.
@@ -2585,12 +4384,13 @@ closeCompletedProductionInvocation session project modeLease completed key
                 pure
                     ( Left
                         ( ModeHeldByAnother
-                            (maybe "none" projectModeName observed)
+                            (maybe "none" modeWireName observed)
                             "production"
                         )
                     )
   where
-    run = productionInvocationCompletedRun completed
+    ProductionInvocationCompleted bound _ = completed
+    run = runIdentityKey (boundRunLeaseIdentity bound)
 
 -- Harness terminal close -----------------------------------------------------------
 
@@ -2627,7 +4427,13 @@ generative, so a close root minted for one run cannot be presented for another
 even when the run names coincide.
 -}
 data HarnessCloseRoot projectId runId brokerGeneration
-    = HarnessCloseRoot HarnessCloseOrigin RunId Text (BrokerEpoch brokerGeneration)
+    = HarnessCloseRoot
+        HarnessCloseOrigin
+        (RunId runId)
+        Text
+        (BrokerEpoch brokerGeneration)
+
+type role HarnessCloseRoot nominal nominal nominal
 
 instance Show (HarnessCloseRoot projectId runId brokerGeneration) where
     show (HarnessCloseRoot origin run project epoch) =
@@ -2640,7 +4446,7 @@ instance Show (HarnessCloseRoot projectId runId brokerGeneration) where
             <> " "
             <> show epoch
 
-harnessCloseRootRun :: HarnessCloseRoot projectId runId brokerGeneration -> RunId
+harnessCloseRootRun :: HarnessCloseRoot projectId runId brokerGeneration -> RunId runId
 harnessCloseRootRun (HarnessCloseRoot _ run _ _) = run
 
 harnessCloseRootOrigin :: HarnessCloseRoot projectId runId brokerGeneration -> HarnessCloseOrigin
@@ -2669,13 +4475,15 @@ Its constructor is private and it is minted only after every session was proved
 Closed, so a close cannot be authorized while operations are outstanding.
 -}
 data HarnessCloseAuthorization projectId runId
-    = HarnessCloseAuthorization HarnessCloseOrigin RunId Word64
+    = HarnessCloseAuthorization HarnessCloseOrigin (RunId runId) Word64
+
+type role HarnessCloseAuthorization nominal nominal
 
 instance Show (HarnessCloseAuthorization projectId runId) where
     show (HarnessCloseAuthorization origin run epoch) =
         "HarnessCloseAuthorization " <> show origin <> " " <> show run <> " " <> show epoch
 
-harnessCloseRun :: HarnessCloseAuthorization projectId runId -> RunId
+harnessCloseRun :: HarnessCloseAuthorization projectId runId -> RunId runId
 harnessCloseRun (HarnessCloseAuthorization _ run _) = run
 
 harnessCloseEpoch :: HarnessCloseAuthorization projectId runId -> Word64
@@ -2688,11 +4496,13 @@ harnessCloseOrigin (HarnessCloseAuthorization origin _ _) = origin
 {- | Authorize terminal close for one harness run.
 
 It requires the close root — the live run\'s or recovery\'s, and nothing a caller
-can build — the exact Harness mode lease for this run, the bound lease, and the
-complete-session proof; it then persists the Closing epoch so a crash here
-resumes this close rather than reopening the run (bound recovery reaches
-'HarnessPersistedClosing'). Moving the project journal itself to @ClosingProject@
-is "HostBootstrap.Lifecycle.Session"\'s 'Session.beginClosingProject', which
+can build — the exact Harness mode lease for this run, the bound lease, the
+complete-session proof, and settled-destroy closure evidence for this exact
+Harness scope. A true-pre-effect proof is deliberately rejected: only after
+ordinary destroy has settled may this function persist the Closing epoch, so
+recovery can finish terminal cleanup without abandoning live project resources.
+Moving the project journal itself to @ClosingProject@ is
+"HostBootstrap.Lifecycle.Session"\'s 'Session.beginClosingProject', which
 contends on the same version session-opening advances.
 
 The close root is checked against the bound lease and the mode lease rather than
@@ -2703,15 +4513,16 @@ retains a root across a generation boundary.
 -}
 authorizeHarnessClose ::
     ProtectedSession session ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     HarnessCloseRoot projectId runId brokerGeneration ->
-    ProjectModeLease projectId brokerGeneration ->
+    ProjectModeLease projectId (HarnessMode runId) brokerGeneration ->
     BoundRunLease (Harness projectId runId) specDigest planDigest brokerGeneration ->
     VerifiedAllSessionsClosed (Harness projectId runId) planId ->
+    ProjectClosureEvidence (Harness projectId runId) ->
     -- | the fresh closing epoch; must be positive
     Word64 ->
     IO (Either ModeError (HarnessCloseAuthorization projectId runId))
-authorizeHarnessClose session project closeRoot modeLease bound closed epoch
+authorizeHarnessClose session project closeRoot modeLease bound closed closure epoch
     | epoch == 0 =
         pure (Left (ModeInvalidIdentity "a closing epoch must be positive"))
     | otherwise = case checkHarnessCloseRoot project closeRoot modeLease run of
@@ -2725,6 +4536,8 @@ authorizeHarnessClose session project closeRoot modeLease bound closed epoch
                             (allSessionsClosedPlanDigest closed)
                         )
                     )
+            | projectClosureEvidenceKind closure /= SettledDestroyClose ->
+                pure (Left (ModeClosureMismatch "settled destroy" "pre-effect refusal"))
             | otherwise -> do
                 recorded <- recordHarnessClosingEpoch session project run epoch
                 pure
@@ -2733,7 +4546,7 @@ authorizeHarnessClose session project closeRoot modeLease bound closed epoch
                         recorded
                     )
   where
-    run = boundRunLeaseRun bound
+    run = harnessBoundRunId bound
     origin = harnessCloseRootOrigin closeRoot
 
 {- | The checks shared by every consumer of a 'HarnessCloseRoot': the root must
@@ -2741,15 +4554,16 @@ name this project, this exact run, and the same broker generation the held mode
 lease does, and the mode must actually be this run\'s Harness mode.
 -}
 checkHarnessCloseRoot ::
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     HarnessCloseRoot projectId runId brokerGeneration ->
-    ProjectModeLease projectId brokerGeneration ->
-    RunId ->
+    ProjectModeLease projectId (HarnessMode runId) brokerGeneration ->
+    RunId runId ->
     Either ModeError ()
 checkHarnessCloseRoot project (HarnessCloseRoot _ rootRun rootProject rootEpoch) modeLease run
     | rootProject /= installedProjectName project =
         Left (ModeClosureMismatch (installedProjectName project) rootProject)
-    | rootRun /= run =
+    | runIdentityKey (HarnessRunIdentity rootRun)
+        /= runIdentityKey (HarnessRunIdentity run) =
         Left
             ( ModeClosureMismatch
                 ("harness:" <> runIdText run)
@@ -2761,24 +4575,23 @@ checkHarnessCloseRoot project (HarnessCloseRoot _ rootRun rootProject rootEpoch)
                 (brokerEpochWord (projectModeLeaseEpoch modeLease))
                 (brokerEpochWord rootEpoch)
             )
-    | otherwise = case projectModeLeaseMode modeLease of
-        ProductionMode ->
-            Left (ModeWrongMode ("harness:" <> runIdText run) "production")
-        HarnessMode active
-            | active /= run ->
-                Left
-                    ( ModeWrongMode
-                        ("harness:" <> runIdText run)
-                        ("harness:" <> runIdText active)
-                    )
-            | otherwise -> Right ()
+    | mode /= WireHarness (runIdentityKey (HarnessRunIdentity run)) =
+        Left
+            ( ModeWrongMode
+                ("harness:" <> runIdText run)
+                (modeWireName mode)
+            )
+    | otherwise = Right ()
+  where
+    ProjectModeLease mode _ _ _ = modeLease
 
 {- | Resume a close that was already authorized and never finished.
 
-'authorizeHarnessClose' persists the Closing epoch **before** the terminal
-projection runs, exactly so a crash between the two is resumable rather than
-indistinguishable from a live run. This is that resumption, and it is the only
-route to a 'HarnessCloseAuthorization' that does not persist a new epoch.
+'authorizeHarnessClose' consumes settled-destroy evidence and then persists the
+Closing epoch **before** terminal finalization, exactly so a crash between those
+two operations is resumable rather than indistinguishable from a live run. This
+is that resumption, and it is the only route to a 'HarnessCloseAuthorization'
+that does not persist a new epoch.
 
 It cannot invent a close. The durable disposition is re-read inside the caller's
 entry and must be exactly the @Closing@ epoch the recovery classification
@@ -2792,9 +4605,9 @@ own authority under its fresh broker generation.
 -}
 resumeHarnessClose ::
     ProtectedSession session ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     HarnessCloseRoot projectId runId brokerGeneration ->
-    ProjectModeLease projectId brokerGeneration ->
+    ProjectModeLease projectId (HarnessMode runId) brokerGeneration ->
     BoundRunLease (Harness projectId runId) specDigest planDigest brokerGeneration ->
     -- | the epoch the abandoned run persisted; must be positive
     Word64 ->
@@ -2805,7 +4618,11 @@ resumeHarnessClose session project closeRoot modeLease bound epoch
     | otherwise = case checkHarnessCloseRoot project closeRoot modeLease run of
         Left failure -> pure (Left failure)
         Right () -> do
-            recorded <- readInvocationDisposition session project run
+            recorded <-
+                readInvocationDispositionForKey
+                    session
+                    project
+                    (runIdentityKey (HarnessRunIdentity run))
             pure $ case recorded of
                 Left failure -> Left failure
                 Right (InvocationClosing persisted)
@@ -2821,18 +4638,20 @@ resumeHarnessClose session project closeRoot modeLease bound epoch
                             ("production acknowledgment " <> invocationCloseKeyText key)
                         )
   where
-    run = boundRunLeaseRun bound
+    run = harnessBoundRunId bound
     origin = harnessCloseRootOrigin closeRoot
 
 {- | Proof that a harness run reached terminal @ClosedProject@ and gave its mode
 back.
 -}
-data ClosedHarnessProject projectId runId = ClosedHarnessProject RunId
+data ClosedHarnessProject projectId runId = ClosedHarnessProject (RunId runId)
+
+type role ClosedHarnessProject nominal nominal
 
 instance Show (ClosedHarnessProject projectId runId) where
     show (ClosedHarnessProject run) = "ClosedHarnessProject " <> show run
 
-closedHarnessProjectRun :: ClosedHarnessProject projectId runId -> RunId
+closedHarnessProjectRun :: ClosedHarnessProject projectId runId -> RunId runId
 closedHarnessProjectRun (ClosedHarnessProject run) = run
 
 {- | The terminal finalizer: close the run\'s lease, then release the exact
@@ -2844,18 +4663,19 @@ outstanding (§ Y).
 -}
 finalizeHarnessClose ::
     ProtectedSession session ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     HarnessCloseAuthorization projectId runId ->
     IO (Either ModeError (ClosedHarnessProject projectId runId))
 finalizeHarnessClose session project authorization = do
-    closed <- closeLease session project run
+    closed <- closeLeaseForKey session project runKey
     case closed of
         Left failure -> pure (Left failure)
         Right () -> do
-            released <- releaseMode session project (HarnessMode run)
+            released <- releaseMode session project (WireHarness runKey)
             pure (fmap (const (ClosedHarnessProject run)) released)
   where
     run = harnessCloseRun authorization
+    runKey = runIdentityKey (HarnessRunIdentity run)
 
 {- | Terminal harness close for a run that provably acquired nothing: record the
 run\'s lease Closed, then release the exact Harness mode epoch last. Mode is never
@@ -2877,9 +4697,9 @@ no close authority for.
 -}
 closeHarnessRun ::
     ProtectedSession session ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     HarnessCloseRoot projectId runId brokerGeneration ->
-    ProjectModeLease projectId brokerGeneration ->
+    ProjectModeLease projectId (HarnessMode runId) brokerGeneration ->
     ProjectClosureEvidence (Harness projectId runId) ->
     IO (Either ModeError ())
 closeHarnessRun session project closeRoot modeLease evidence =
@@ -2889,12 +4709,13 @@ closeHarnessRun session project closeRoot modeLease evidence =
             SettledDestroyClose ->
                 pure (Left (ModeClosureMismatch "pre-effect refusal" "settled destroy"))
             PreEffectRefusalClose -> do
-                closed <- closeLease session project run
+                closed <- closeLeaseForKey session project runKey
                 case closed of
                     Left failure -> pure (Left failure)
-                    Right () -> releaseMode session project (HarnessMode run)
+                    Right () -> releaseMode session project (WireHarness runKey)
   where
     run = harnessCloseRootRun closeRoot
+    runKey = runIdentityKey (HarnessRunIdentity run)
 
 -- Abandoned-run recovery -------------------------------------------------------------------
 
@@ -2909,14 +4730,19 @@ data IncompleteLeaseKind
 is private: a caller cannot manufacture a run to skip.
 -}
 data VerifiedIncompleteRunLease projectId
-    = VerifiedIncompleteRunLease RunId IncompleteLeaseKind
+    = VerifiedIncompleteRunLease RunKey IncompleteLeaseKind
+
+type role VerifiedIncompleteRunLease nominal
 
 instance Show (VerifiedIncompleteRunLease projectId) where
     show (VerifiedIncompleteRunLease run kind) =
-        "VerifiedIncompleteRunLease " <> show run <> " " <> show kind
+        "VerifiedIncompleteRunLease " <> show (runKeyText run) <> " " <> show kind
 
-incompleteRunLeaseRun :: VerifiedIncompleteRunLease projectId -> RunId
-incompleteRunLeaseRun (VerifiedIncompleteRunLease run _) = run
+incompleteRunLeaseRunText :: VerifiedIncompleteRunLease projectId -> Text
+incompleteRunLeaseRunText (VerifiedIncompleteRunLease run _) = runKeyText run
+
+incompleteRunLeaseRunKey :: VerifiedIncompleteRunLease projectId -> RunKey
+incompleteRunLeaseRunKey (VerifiedIncompleteRunLease run _) = run
 
 incompleteRunLeaseKind :: VerifiedIncompleteRunLease projectId -> IncompleteLeaseKind
 incompleteRunLeaseKind (VerifiedIncompleteRunLease _ kind) = kind
@@ -2927,6 +4753,8 @@ cannot bypass unresolved ownership.
 -}
 data ClosedAbandonedHarnessRuns projectId
     = ClosedAbandonedHarnessRuns Int
+
+type role ClosedAbandonedHarnessRuns nominal
 
 instance Show (ClosedAbandonedHarnessRuns projectId) where
     show (ClosedAbandonedHarnessRuns closed) =
@@ -2950,7 +4778,7 @@ can return a no-op success. Only an empty final set mints
 recoverAbandonedHarnessRuns ::
     forall projectId.
     ProtectedStore ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     -- | reclaim an unbound run's owned state, before its lease is closed
     ( VerifiedIncompleteRunLease projectId ->
       IO (Either ModeError ())
@@ -2979,7 +4807,7 @@ recoverAbandonedHarnessRuns store project reclaimUnbound resolveBound = do
                             pure
                                 ( Left
                                     ( ModeRecoveryRequired
-                                        (runIdText (incompleteRunLeaseRun unresolved))
+                                        (incompleteRunLeaseRunText unresolved)
                                     )
                                 )
   where
@@ -2991,14 +4819,25 @@ recoverAbandonedHarnessRuns store project reclaimUnbound resolveBound = do
                 Left failure -> pure (Left failure)
                 Right () -> runProtected store $ \session -> do
                     proof <-
-                        verifyUnboundLeaseHasNoEffects session project (incompleteRunLeaseRun lease)
+                        verifyUnboundLeaseHasNoEffectsForKey
+                            session
+                            project
+                            (incompleteRunLeaseRunKey lease)
                     case proof of
                         Left failure -> pure (Left failure)
                         Right _ -> do
-                            closed <- closeLease session project (incompleteRunLeaseRun lease)
+                            closed <-
+                                closeLeaseForKey
+                                    session
+                                    project
+                                    (incompleteRunLeaseRunKey lease)
                             case closed of
                                 Left failure -> pure (Left failure)
-                                Right () -> releaseModeIfRun session project (incompleteRunLeaseRun lease)
+                                Right () ->
+                                    releaseModeIfRunKey
+                                        session
+                                        project
+                                        (incompleteRunLeaseRunKey lease)
         IncompleteBound _ _ -> resolveBound lease
 
 -- Reopening an abandoned bound run ----------------------------------------------------------
@@ -3019,19 +4858,21 @@ second reopening.
 -}
 data AbandonedHarnessRun projectId oldRunId specDigest planDigest planId brokerGeneration
     = AbandonedHarnessRun
-    { abandonedHarnessRunId :: RunId
+    { abandonedHarnessRunId :: RunId oldRunId
     -- ^ the abandoned run this reopening belongs to
-    , abandonedHarnessSnapshot :: VerifiedPlanSnapshot projectId specDigest planDigest
+    , abandonedHarnessSnapshot ::
+        VerifiedPlanSnapshot (Harness projectId oldRunId) specDigest planDigest
     -- ^ the exact plan snapshot the old lease was bound to, read back durably
     , abandonedHarnessBoundLease ::
         BoundRunLease (Harness projectId oldRunId) specDigest planDigest brokerGeneration
     -- ^ the /already-bound/ lease, retained on the fresh broker generation
-    , abandonedHarnessModeLease :: ProjectModeLease projectId brokerGeneration
+    , abandonedHarnessModeLease ::
+        ProjectModeLease projectId (HarnessMode oldRunId) brokerGeneration
     -- ^ the old run's own project-wide Harness mode, likewise retained
     , abandonedHarnessDestroyRoot ::
         RootInvocationAuthority (Harness projectId oldRunId) brokerGeneration VerbDestroy
     -- ^ recovery's only root authority: @destroy@, so it can release and not acquire
-    , abandonedHarnessRecovery :: HarnessBoundRecovery projectId
+    , abandonedHarnessRecovery :: HarnessBoundRecovery projectId oldRunId
     -- ^ the exhaustive first branch: a persisted Closing epoch, or Open revision recovery
     , abandonedHarnessCloseRoot :: HarnessCloseRoot projectId oldRunId brokerGeneration
     -- ^ the narrow close authority, marked 'RecoveredHarnessClose'
@@ -3050,6 +4891,8 @@ data AbandonedHarnessRun projectId oldRunId specDigest planDigest planId brokerG
         CurrentBrokerSessionAdmission (Harness projectId oldRunId) planId brokerGeneration
     -- ^ the admission only both complete sets can mint
     }
+
+type role AbandonedHarnessRun nominal nominal nominal nominal nominal nominal
 
 {- | A reopening whose generative indices are hidden, so the protected
 transaction that mints it can complete before the continuation runs.
@@ -3105,7 +4948,7 @@ transactions.
 withAbandonedHarnessRun ::
     forall projectId result.
     ProtectedStore ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     -- | the bound lease the sweep minted; an unbound one is refused
     VerifiedIncompleteRunLease projectId ->
     ( forall oldRunId specDigest planDigest planId brokerGeneration.
@@ -3117,67 +4960,86 @@ withAbandonedHarnessRun store project lease use = case incompleteRunLeaseKind le
     IncompleteUnbound ->
         -- An unbound lease has no snapshot, so there is nothing to reopen: the
         -- sweep closes it behind 'verifyUnboundLeaseHasNoEffects' instead.
-        pure (Left (ModeLeaseNotBindable (runIdText run) "unbound"))
-    IncompleteBound recordedSpec recordedPlan -> do
-        prepared <- runProtected store (reopen recordedSpec recordedPlan)
-        case prepared of
-            Left failure -> pure (Left failure)
-            Right (SomeAbandonedHarnessRun reopened) -> use reopened
+        pure (Left (ModeLeaseNotBindable (runKeyText runKey) "unbound"))
+    IncompleteBound recordedSpec recordedPlan ->
+        withReifiedRunId runKey $ \run -> do
+            prepared <- runProtected store (reopen run recordedSpec recordedPlan)
+            case prepared of
+                Left failure -> pure (Left failure)
+                Right (SomeAbandonedHarnessRun reopened) -> use reopened
   where
-    run = incompleteRunLeaseRun lease
+    runKey = incompleteRunLeaseRunKey lease
 
     reopen ::
+        RunId oldRunId ->
         Text ->
         Text ->
         ProtectedSession session ->
         IO (Either ModeError (SomeAbandonedHarnessRun projectId))
-    reopen recordedSpec recordedPlan session = do
-        stillBound <- leaseStillBoundTo session project run recordedSpec recordedPlan
+    reopen run recordedSpec recordedPlan session = do
+        stillBound <- leaseStillBoundTo session project runKey recordedSpec recordedPlan
         case stillBound of
             Left failure -> pure (Left failure)
             Right () -> do
-                classified <- classifyAbandonedBoundRun session project lease
-                case classified of
-                    Left failure -> pure (Left failure)
-                    Right recovery ->
-                        verifyPlanSnapshot session project run $ \snapshot ->
-                            case checkSnapshotDigests recovery snapshot recordedSpec recordedPlan of
-                                Left failure -> pure (Left failure)
-                                Right () -> do
-                                    operator <- verifyOperatorAuthorization session
-                                    case operator of
-                                        Left failure -> pure (Left (ModeAuthorityFailure failure))
-                                        Right authorized ->
-                                            withFreshEpoch session project $ \epoch ->
-                                                withVerifiedRoot
-                                                    session
-                                                    project
-                                                    authorized
-                                                    epoch
-                                                    ProjectDestroy
-                                                    ( retain
-                                                        session
-                                                        snapshot
-                                                        (recordedSpec, recordedPlan)
-                                                        recovery
-                                                        epoch
-                                                    )
+                classifyHarnessBoundRunFor session project run (incompleteRunLeaseKind lease) $ \recovery ->
+                    case makeLeaseLocation store project runKey of
+                        Left failure -> pure (Left failure)
+                        Right location ->
+                            verifyPlanSnapshotInSession
+                                session
+                                (leaseLocationSnapshotKey location)
+                                (HarnessRunIdentity run)
+                                (installedProjectName project)
+                                (leaseLocationStoreIdentity location)
+                                $ \snapshot ->
+                                    case checkSnapshotDigests recovery snapshot recordedSpec recordedPlan of
+                                        Left failure -> pure (Left failure)
+                                        Right () -> do
+                                            operator <- verifyOsPrincipal session
+                                            case operator of
+                                                Left failure ->
+                                                    pure (Left (ModeAuthorityFailure failure))
+                                                Right authorized ->
+                                                    withFreshEpoch session project $ \epoch ->
+                                                        withVerifiedRoot
+                                                            HarnessRootScope
+                                                            session
+                                                            project
+                                                            authorized
+                                                            epoch
+                                                            ProjectDestroy
+                                                            ( retain
+                                                                run
+                                                                session
+                                                                snapshot
+                                                                (recordedSpec, recordedPlan)
+                                                                recovery
+                                                                epoch
+                                                            )
 
     retain ::
+        RunId oldRunId ->
         ProtectedSession session ->
-        VerifiedPlanSnapshot projectId specDigest planDigest ->
+        VerifiedPlanSnapshot (Harness projectId oldRunId) specDigest planDigest ->
         (Text, Text) ->
-        HarnessBoundRecovery projectId ->
+        HarnessBoundRecovery projectId oldRunId ->
         BrokerEpoch brokerGeneration ->
         RootInvocationAuthority (Harness projectId oldRunId) brokerGeneration VerbDestroy ->
         IO (Either ModeError (SomeAbandonedHarnessRun projectId))
-    retain session snapshot recordedDigests recovery epoch root = do
+    retain run session snapshot recordedDigests recovery epoch root = do
         retained <- retainAbandonedHarnessMode session project run epoch
         case retained of
             Left failure -> pure (Left failure)
             Right modeLease -> do
                 rebound <-
-                    retainBoundLeaseGeneration session project snapshot recordedDigests epoch
+                    retainBoundLeaseGeneration
+                        store
+                        session
+                        project
+                        run
+                        snapshot
+                        recordedDigests
+                        epoch
                 case rebound of
                     Left failure -> pure (Left failure)
                     Right bound -> do
@@ -3225,7 +5087,7 @@ withAbandonedHarnessRun store project lease use = case incompleteRunLeaseKind le
     readmitSessions ::
         forall session oldRunId planId brokerGeneration specDigest planDigest.
         ProtectedSession session ->
-        VerifiedPlanSnapshot projectId specDigest planDigest ->
+        VerifiedPlanSnapshot (Harness projectId oldRunId) specDigest planDigest ->
         BrokerEpoch brokerGeneration ->
         IO
             ( Either
@@ -3286,8 +5148,8 @@ withAbandonedHarnessRun store project lease use = case incompleteRunLeaseKind le
     reopening yields stays the old revision's, which is what teardown of the
     superseded revision needs. -}
     checkSnapshotDigests ::
-        HarnessBoundRecovery projectId ->
-        VerifiedPlanSnapshot projectId specDigest planDigest ->
+        HarnessBoundRecovery projectId oldRunId ->
+        VerifiedPlanSnapshot (Harness projectId oldRunId) specDigest planDigest ->
         Text ->
         Text ->
         Either ModeError ()
@@ -3312,17 +5174,17 @@ or bound to a different snapshot; neither is a run this opener may reopen.
 -}
 leaseStillBoundTo ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    RunId ->
+    InstalledProjectIdentity projectId ->
+    RunKey ->
     Text ->
     Text ->
     IO (Either ModeError ())
 leaseStillBoundTo session project run expectedSpec expectedPlan =
-    withRecordKey (leaseKey project run) $ \key -> do
+    withRecordKey (leaseKeyForRunKey project run) $ \key -> do
         observed <- readProtectedRecord session key
         pure $ case observed of
             Left failure -> Left (ModeStoreFailure failure)
-            Right Nothing -> Left (ModeLeaseMissing (runIdText run))
+            Right Nothing -> Left (ModeLeaseMissing (runKeyText run))
             Right (Just record) -> case decodeLease (protectedRecordBytes record) of
                 Nothing -> Left (ModeMalformedRecord (recordKeyText key))
                 Just (LeaseBound _ spec plan)
@@ -3330,7 +5192,7 @@ leaseStillBoundTo session project run expectedSpec expectedPlan =
                     | plan /= expectedPlan -> Left (ModeSnapshotMismatch expectedPlan plan)
                     | otherwise -> Right ()
                 Just other ->
-                    Left (ModeLeaseNotBindable (runIdText run) (leaseStateName other))
+                    Left (ModeLeaseNotBindable (runKeyText run) (leaseStateName other))
 
 {- | Retain an abandoned run's own Harness mode onto a fresh broker generation.
 
@@ -3347,10 +5209,14 @@ store, not an invitation to claim one.
 -}
 retainAbandonedHarnessMode ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    RunId ->
+    InstalledProjectIdentity projectId ->
+    RunId runId ->
     BrokerEpoch brokerGeneration ->
-    IO (Either ModeError (ProjectModeLease projectId brokerGeneration))
+    IO
+        ( Either
+            ModeError
+            (ProjectModeLease projectId (HarnessMode runId) brokerGeneration)
+        )
 retainAbandonedHarnessMode session project run epoch =
     withRecordKey (modeKey project) $ \key -> do
         observed <- readProtectedRecord session key
@@ -3360,8 +5226,8 @@ retainAbandonedHarnessMode session project run epoch =
             Right (Just record) -> case decodeMode (protectedRecordBytes record) of
                 Nothing -> pure (Left (ModeMalformedRecord (recordKeyText key)))
                 Just (held, _)
-                    | held /= HarnessMode run ->
-                        pure (Left (ModeHeldByAnother (projectModeName held) wanted))
+                    | held /= wantedMode ->
+                        pure (Left (ModeHeldByAnother (modeWireName held) wanted))
                     | otherwise -> do
                         written <-
                             compareAndSwapProtectedRecord
@@ -3371,9 +5237,17 @@ retainAbandonedHarnessMode session project run epoch =
                                 (encodeMode held (brokerEpochWord epoch))
                         pure $ case written of
                             Left failure -> Left (ModeStoreFailure failure)
-                            Right _ -> Right (ProjectModeLease held epoch)
+                            Right _ ->
+                                Right
+                                    ( ProjectModeLease
+                                        held
+                                        (installedProjectName project)
+                                        (protectedStoreIdentityText (sessionStoreIdentity session))
+                                        epoch
+                                    )
   where
-    wanted = projectModeName (HarnessMode run)
+    wantedMode = WireHarness (runIdentityKey (HarnessRunIdentity run))
+    wanted = modeWireName wantedMode
 
 {- | Retain an already-bound lease onto a fresh broker generation without
 touching the snapshot it names.
@@ -3396,52 +5270,85 @@ Every other divergence is still a substitution and still refuses, because the
 caller passes the digests it expects and this compares against them.
 -}
 retainBoundLeaseGeneration ::
+    ProtectedStore ->
     ProtectedSession session ->
-    InstalledProject projectId ->
-    VerifiedPlanSnapshot projectId specDigest planDigest ->
+    InstalledProjectIdentity projectId ->
+    RunId runId ->
+    VerifiedPlanSnapshot (Harness projectId runId) specDigest planDigest ->
     -- | the digests the lease record must currently hold
     (Text, Text) ->
     BrokerEpoch brokerGeneration ->
-    IO (Either ModeError (BoundRunLease scope specDigest planDigest brokerGeneration))
-retainBoundLeaseGeneration session project snapshot (spec, plan) epoch =
-    withRecordKey (leaseKey project run) $ \key -> do
-        observed <- readProtectedRecord session key
-        case observed of
-            Left failure -> pure (Left (ModeStoreFailure failure))
-            Right Nothing -> pure (Left (ModeLeaseMissing (runIdText run)))
-            Right (Just record) -> case decodeLease (protectedRecordBytes record) of
-                Nothing -> pure (Left (ModeMalformedRecord (recordKeyText key)))
-                Just (LeaseBound _ recordedSpec recordedPlan)
-                    | recordedSpec /= spec -> pure (Left (ModeSnapshotMismatch spec recordedSpec))
-                    | recordedPlan /= plan -> pure (Left (ModeSnapshotMismatch plan recordedPlan))
-                    | otherwise -> do
-                        written <-
-                            compareAndSwapProtectedRecord
-                                session
-                                key
-                                (ExpectVersion (protectedRecordVersion record))
-                                (encodeLease (LeaseBound (brokerEpochWord epoch) spec plan))
-                        pure $ case written of
-                            Left failure -> Left (ModeStoreFailure failure)
-                            Right _ -> Right (BoundRunLease run spec plan epoch)
-                Just other ->
-                    pure (Left (ModeLeaseNotBindable (runIdText run) (leaseStateName other)))
+    IO
+        ( Either
+            ModeError
+            (BoundRunLease (Harness projectId runId) specDigest planDigest brokerGeneration)
+        )
+retainBoundLeaseGeneration store session project run snapshot (spec, plan) epoch =
+    case makeLeaseLocation store project runKey of
+        Left failure -> pure (Left failure)
+        Right location -> do
+            observed <- readProtectedRecord session (leaseLocationLeaseKey location)
+            case observed of
+                Left failure -> pure (Left (ModeStoreFailure failure))
+                Right Nothing -> pure (Left (ModeLeaseMissing (runIdText run)))
+                Right (Just record) -> case decodeLease (protectedRecordBytes record) of
+                    Nothing ->
+                        pure
+                            ( Left
+                                (ModeMalformedRecord (recordKeyText (leaseLocationLeaseKey location)))
+                            )
+                    Just (LeaseBound _ recordedSpec recordedPlan)
+                        | planSnapshotRunKey snapshot /= runKey ->
+                            pure
+                                ( Left
+                                    ( ModeSnapshotMismatch
+                                        (runIdText run)
+                                        (planSnapshotRunText snapshot)
+                                    )
+                                )
+                        | recordedSpec /= spec ->
+                            pure (Left (ModeSnapshotMismatch spec recordedSpec))
+                        | recordedPlan /= plan ->
+                            pure (Left (ModeSnapshotMismatch plan recordedPlan))
+                        | otherwise -> do
+                            written <-
+                                compareAndSwapProtectedRecord
+                                    session
+                                    (leaseLocationLeaseKey location)
+                                    (ExpectVersion (protectedRecordVersion record))
+                                    (encodeLease (LeaseBound (brokerEpochWord epoch) spec plan))
+                            pure $ case written of
+                                Left failure -> Left (ModeStoreFailure failure)
+                                Right leaseVersion ->
+                                    Right
+                                        ( BoundRunLease
+                                            (HarnessRunIdentity run)
+                                            location
+                                            spec
+                                            plan
+                                            epoch
+                                            leaseVersion
+                                            ExistingBinding
+                                        )
+                    Just other ->
+                        pure (Left (ModeLeaseNotBindable (runIdText run) (leaseStateName other)))
   where
-    run = planSnapshotRun snapshot
+    runKey = runIdentityKey (HarnessRunIdentity run)
 
 {- | Release the project-wide mode when it is held by this exact abandoned run.
 A Production mode, or another run's mode, is left untouched.
 -}
-releaseModeIfRun ::
+releaseModeIfRunKey ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    RunId ->
+    InstalledProjectIdentity projectId ->
+    RunKey ->
     IO (Either ModeError ())
-releaseModeIfRun session project run = do
+releaseModeIfRunKey session project run = do
     held <- currentMode session project
     case held of
         Left failure -> pure (Left failure)
-        Right (Just (HarnessMode active)) | active == run -> releaseMode session project (HarnessMode run)
+        Right (Just (WireHarness active))
+            | active == run -> releaseMode session project (WireHarness run)
         Right _ -> pure (Right ())
 
 -- The protected record layer -------------------------------------------------------------------
@@ -3474,7 +5381,9 @@ encodeLease state = case state of
 decodeLease :: ByteString -> Maybe LeaseState
 decodeLease raw = case decodeFields raw of
     ["unbound", epoch] -> LeaseUnbound <$> readWord epoch
-    ["bound", epoch, spec, plan] -> (\value -> LeaseBound value spec plan) <$> readWord epoch
+    ["bound", epoch, spec, plan]
+        | not (Text.null spec) && not (Text.null plan) ->
+            (\value -> LeaseBound value spec plan) <$> readWord epoch
     ["frozen", epoch, key, oldSpec, oldPlan, newSpec, newPlan]
         | not (Text.null key) ->
             (\value -> LeaseFrozen value key oldSpec oldPlan newSpec newPlan) <$> readWord epoch
@@ -3488,13 +5397,17 @@ encodeDisposition disposition = case disposition of
     InvocationClosing epoch -> encodeFields ["closing", showWord epoch]
 
 decodeDisposition :: ByteString -> Maybe InvocationDisposition
-decodeDisposition raw = case decodeFields raw of
+decodeDisposition raw = case exactFields raw of
     ["open"] -> Just InvocationOpen
-    ["ack", key] | not (Text.null key) -> Just (InvocationAcknowledged (InvocationCloseKey key))
+    ["ack", key] ->
+        either (const Nothing) (Just . InvocationAcknowledged) (mkInvocationCloseKey key)
     ["closing", epoch] -> do
         value <- readWord epoch
         if value == 0 then Nothing else Just (InvocationClosing value)
     _ -> Nothing
+
+exactFields :: ByteString -> [Text]
+exactFields = Text.splitOn "\t" . Text.pack . ByteStringChar8.unpack
 
 encodeRevisionKind :: OpenRevisionKind -> ByteString
 encodeRevisionKind kind = case kind of
@@ -3509,18 +5422,18 @@ decodeRevisionKind raw = case decodeFields raw of
     ["completed", key] | not (Text.null key) -> Just (CompletedMigration key)
     _ -> Nothing
 
-encodeMode :: ProjectMode -> Word64 -> ByteString
-encodeMode ProductionMode epoch = encodeFields ["production", showWord epoch]
-encodeMode (HarnessMode run) epoch =
-    encodeFields ["harness", showWord epoch, runIdText run]
+encodeMode :: ModeWire -> Word64 -> ByteString
+encodeMode WireProduction epoch = encodeFields ["production", showWord epoch]
+encodeMode (WireHarness run) epoch =
+    encodeFields ["harness", showWord epoch, runKeyText run]
 
-decodeMode :: ByteString -> Maybe (ProjectMode, Word64)
+decodeMode :: ByteString -> Maybe (ModeWire, Word64)
 decodeMode raw = case decodeFields raw of
-    ["production", epoch] -> (\value -> (ProductionMode, value)) <$> readWord epoch
+    ["production", epoch] -> (\value -> (WireProduction, value)) <$> readWord epoch
     ["harness", epoch, run] -> do
         value <- readWord epoch
-        parsed <- either (const Nothing) Just (mkRunId run)
-        pure (HarnessMode parsed, value)
+        parsed <- either (const Nothing) Just (parseRunKey run)
+        pure (WireHarness parsed, value)
     _ -> Nothing
 
 encodeFields :: [Text] -> ByteString
@@ -3544,13 +5457,13 @@ on) and refuses while a harness run holds it. A harness run may take the mode
 only when it is absent: two harness runs, or a harness run against live
 Production, contend on this exact record and exactly one wins.
 -}
-acquireMode ::
+acquireModeWire ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    ProjectMode ->
+    InstalledProjectIdentity projectId ->
+    ModeWire ->
     BrokerEpoch brokerGeneration ->
-    IO (Either ModeError (ProjectModeLease projectId brokerGeneration))
-acquireMode session project requested epoch =
+    IO (Either ModeError ())
+acquireModeWire session project requested epoch =
     withRecordKey (modeKey project) $ \key -> do
         observed <- readProtectedRecord session key
         case observed of
@@ -3559,14 +5472,14 @@ acquireMode session project requested epoch =
             Right (Just record) -> case decodeMode (protectedRecordBytes record) of
                 Nothing -> pure (Left (ModeMalformedRecord (recordKeyText key)))
                 Just (held, _)
-                    | held == requested && requested == ProductionMode ->
+                    | held == requested && requested == WireProduction ->
                         take_ key (ExpectVersion (protectedRecordVersion record))
                     | otherwise ->
                         pure
                             ( Left
                                 ( ModeHeldByAnother
-                                    (projectModeName held)
-                                    (projectModeName requested)
+                                    (modeWireName held)
+                                    (modeWireName requested)
                                 )
                             )
   where
@@ -3579,13 +5492,59 @@ acquireMode session project requested epoch =
                 (encodeMode requested (brokerEpochWord epoch))
         pure $ case written of
             Left failure -> Left (ModeStoreFailure failure)
-            Right _ -> Right (ProjectModeLease requested epoch)
+            Right _ -> Right ()
+
+acquireProductionMode ::
+    ProtectedSession session ->
+    InstalledProjectIdentity projectId ->
+    BrokerEpoch brokerGeneration ->
+    IO (Either ModeError (ProjectModeLease projectId ProductionMode brokerGeneration))
+acquireProductionMode session project epoch = do
+    acquired <- acquireModeWire session project WireProduction epoch
+    pure
+        ( fmap
+            ( const
+                ( ProjectModeLease
+                    WireProduction
+                    (installedProjectName project)
+                    (protectedStoreIdentityText (sessionStoreIdentity session))
+                    epoch
+                )
+            )
+            acquired
+        )
+
+acquireHarnessMode ::
+    ProtectedSession session ->
+    InstalledProjectIdentity projectId ->
+    RunId runId ->
+    BrokerEpoch brokerGeneration ->
+    IO
+        ( Either
+            ModeError
+            (ProjectModeLease projectId (HarnessMode runId) brokerGeneration)
+        )
+acquireHarnessMode session project run epoch = do
+    let mode = WireHarness (runIdentityKey (HarnessRunIdentity run))
+    acquired <- acquireModeWire session project mode epoch
+    pure
+        ( fmap
+            ( const
+                ( ProjectModeLease
+                    mode
+                    (installedProjectName project)
+                    (protectedStoreIdentityText (sessionStoreIdentity session))
+                    epoch
+                )
+            )
+            acquired
+        )
 
 -- | The mode currently recorded, if any.
 currentMode ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    IO (Either ModeError (Maybe ProjectMode))
+    InstalledProjectIdentity projectId ->
+    IO (Either ModeError (Maybe ModeWire))
 currentMode session project =
     withRecordKey (modeKey project) $ \key -> do
         observed <- readProtectedRecord session key
@@ -3598,8 +5557,8 @@ currentMode session project =
 
 releaseMode ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    ProjectMode ->
+    InstalledProjectIdentity projectId ->
+    ModeWire ->
     IO (Either ModeError ())
 releaseMode session project expected =
     withRecordKey (modeKey project) $ \key -> do
@@ -3614,8 +5573,8 @@ releaseMode session project expected =
                         pure
                             ( Left
                                 ( ModeHeldByAnother
-                                    (projectModeName held)
-                                    (projectModeName expected)
+                                    (modeWireName held)
+                                    (modeWireName expected)
                                 )
                             )
                     | otherwise -> do
@@ -3627,36 +5586,98 @@ releaseMode session project expected =
                         pure (either (Left . ModeStoreFailure) Right deleted)
 
 recordUnboundLease ::
+    ProtectedStore ->
     ProtectedSession session ->
-    InstalledProject projectId ->
-    RunId ->
+    InstalledProjectIdentity projectId ->
+    RunIdentity scope ->
     BrokerEpoch brokerGeneration ->
     IO (Either ModeError (UnboundRunLease scope brokerGeneration))
-recordUnboundLease session project run epoch =
-    withRecordKey (leaseKey project run) $ \key -> do
-        observed <- readProtectedRecord session key
-        case observed of
-            Left failure -> pure (Left (ModeStoreFailure failure))
-            Right existing -> do
-                let expectation =
-                        maybe ExpectAbsent (ExpectVersion . protectedRecordVersion) existing
-                written <-
-                    compareAndSwapProtectedRecord
-                        session
-                        key
-                        expectation
-                        (encodeLease (LeaseUnbound (brokerEpochWord epoch)))
-                pure $ case written of
-                    Left failure -> Left (ModeStoreFailure failure)
-                    Right _ -> Right (UnboundRunLease run epoch)
+recordUnboundLease store session project run epoch =
+    case makeLeaseLocation store project (runIdentityKey run) of
+        Left failure -> pure (Left failure)
+        Right location -> do
+            let key = leaseLocationLeaseKey location
+                writeUnbound expectation = do
+                    written <-
+                        compareAndSwapProtectedRecord
+                            session
+                            key
+                            expectation
+                            (encodeLease (LeaseUnbound (brokerEpochWord epoch)))
+                    case written of
+                        Left failure -> pure (Left (ModeStoreFailure failure))
+                        Right version -> do
+                            let leaseVersion = recordVersionWord version
+                            initialized <- initializeProfileSlot session location epoch leaseVersion
+                            pure
+                                ( fmap
+                                    (const (UnboundRunLease run location epoch leaseVersion))
+                                    initialized
+                                )
+            observed <- readProtectedRecord session key
+            case observed of
+                Left failure -> pure (Left (ModeStoreFailure failure))
+                Right Nothing -> writeUnbound ExpectAbsent
+                Right (Just record) -> case decodeLease (protectedRecordBytes record) of
+                    Nothing -> pure (Left (ModeMalformedRecord (recordKeyText key)))
+                    Just LeaseUnbound{} ->
+                        writeUnbound (ExpectVersion (protectedRecordVersion record))
+                    Just other ->
+                        pure (Left (ModeLeaseNotBindable (runIdentityText run) (leaseStateName other)))
 
-closeLease ::
+initializeProfileSlot ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    RunId ->
+    LeaseLocation ->
+    BrokerEpoch brokerGeneration ->
+    Word64 ->
     IO (Either ModeError ())
-closeLease session project run =
-    withRecordKey (leaseKey project run) $ \key -> do
+initializeProfileSlot session location epoch leaseVersion = do
+    observed <- readProtectedRecord session key
+    case observed of
+        Left failure -> pure (Left (ModeStoreFailure failure))
+        Right existing -> do
+            let expectation = maybe ExpectAbsent (ExpectVersion . protectedRecordVersion) existing
+            written <-
+                compareAndSwapProtectedRecord
+                    session
+                    key
+                    expectation
+                    (encodeProfileSlot (ProfileAvailable (brokerEpochWord epoch) leaseVersion))
+            pure (either (Left . ModeStoreFailure) (const (Right ())) written)
+  where
+    key = leaseLocationProfileKey location
+
+makeLeaseLocation ::
+    ProtectedStore ->
+    InstalledProjectIdentity projectId ->
+    RunKey ->
+    Either ModeError LeaseLocation
+makeLeaseLocation store project run = do
+    leaseRecordKey <- leaseKeyForRunKey project run
+    snapshotRecordKey <- snapshotKeyForRunKey project run
+    invocationRecordKey <- invocationKeyForRunKey project run
+    migrationRecordKey <- migrationKeyForRunKey project run
+    profileRecordKey <- profileKeyForRunKey project run
+    pure
+        LeaseLocation
+            { leaseLocationStore = store
+            , leaseLocationProjectName = installedProjectName project
+            , leaseLocationStoreIdentity =
+                protectedStoreIdentityText (protectedStoreIdentity store)
+            , leaseLocationLeaseKey = leaseRecordKey
+            , leaseLocationSnapshotKey = snapshotRecordKey
+            , leaseLocationInvocationKey = invocationRecordKey
+            , leaseLocationMigrationKey = migrationRecordKey
+            , leaseLocationProfileKey = profileRecordKey
+            }
+
+closeLeaseForKey ::
+    ProtectedSession session ->
+    InstalledProjectIdentity projectId ->
+    RunKey ->
+    IO (Either ModeError ())
+closeLeaseForKey session project run =
+    withRecordKey (leaseKeyForRunKey project run) $ \key -> do
         observed <- readProtectedRecord session key
         case observed of
             Left failure -> pure (Left (ModeStoreFailure failure))
@@ -3683,8 +5704,7 @@ reserved Production invocation lease.
 
 Production's lease is shaped exactly like an abandoned harness run's — unbound,
 open, and carrying no generative identity — but it belongs to the /other/
-profile's recovery ('eliminateProductionBoundRecovery',
-'withRecoveredProductionLifecycleProfile', and the stable 'InvocationCloseKey').
+profile's snapshot admission and stable 'InvocationCloseKey' recovery.
 Reading it as abandoned closed a __live__ invocation's lease: the same shape as
 the four-process reservation defect, across profiles instead of within one, and
 it also discarded the evidence Production's own recovery reads.
@@ -3699,16 +5719,16 @@ reason.
 -}
 abandonedHarnessLeases ::
     ProtectedSession session ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     IO (Either ModeError [VerifiedIncompleteRunLease projectId])
 abandonedHarnessLeases session project =
     fmap
-        (fmap (filter (not . isProductionRun . incompleteRunLeaseRun)))
+        (fmap (filter (not . isProductionRunKey . incompleteRunLeaseRunKey)))
         (incompleteLeases session project)
 
 incompleteLeases ::
     ProtectedSession session ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     IO (Either ModeError [VerifiedIncompleteRunLease projectId])
 incompleteLeases session project = do
     keys <- listProtectedRecords session
@@ -3743,7 +5763,7 @@ incompleteLeases session project = do
 
 sweptSetStillEmpty ::
     ProtectedSession session ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     ClosedAbandonedHarnessRuns projectId ->
     IO (Either ModeError ())
 sweptSetStillEmpty session project _ = do
@@ -3752,60 +5772,78 @@ sweptSetStillEmpty session project _ = do
         Left failure -> Left failure
         Right [] -> Right ()
         Right (unresolved : _) ->
-            Left (ModeRecoveryRequired (runIdText (incompleteRunLeaseRun unresolved)))
+            Left (ModeRecoveryRequired (incompleteRunLeaseRunText unresolved))
 
-effectRecordsFor ::
+unboundOwnershipRecordsFor ::
     ProtectedSession session ->
-    InstalledProject projectId ->
-    RunId ->
+    InstalledProjectIdentity projectId ->
+    RunKey ->
     IO (Either ModeError [RecordKey])
-effectRecordsFor session project run = do
+unboundOwnershipRecordsFor session project run = do
     keys <- listProtectedRecords session
     pure $ case keys of
         Left failure -> Left (ModeStoreFailure failure)
-        Right present -> Right (filter (isEffectKey project run) present)
+        Right present -> Right (filter ownedByRun present)
+  where
+    ownedByRun key =
+        isEffectKey project run key || isAcquisitionKey project run key
 
 -- Record keys ------------------------------------------------------------------------------------
 
-modeKey :: InstalledProject projectId -> Either ModeError RecordKey
+modeKey :: InstalledProjectIdentity projectId -> Either ModeError RecordKey
 modeKey project = storeKey ("mode." <> installedProjectName project)
 
-snapshotKey :: InstalledProject projectId -> RunId -> Either ModeError RecordKey
-snapshotKey project run =
-    storeKey ("snapshot." <> installedProjectName project <> "." <> runIdText run)
+snapshotKeyForRunKey :: InstalledProjectIdentity projectId -> RunKey -> Either ModeError RecordKey
+snapshotKeyForRunKey project run =
+    storeKey ("snapshot." <> installedProjectName project <> "." <> runKeyText run)
 
-invocationKey :: InstalledProject projectId -> RunId -> Either ModeError RecordKey
-invocationKey project run =
-    storeKey ("invocation." <> installedProjectName project <> "." <> runIdText run)
+invocationKeyForRunKey :: InstalledProjectIdentity projectId -> RunKey -> Either ModeError RecordKey
+invocationKeyForRunKey project run =
+    storeKey ("invocation." <> installedProjectName project <> "." <> runKeyText run)
 
-migrationKey :: InstalledProject projectId -> RunId -> Either ModeError RecordKey
-migrationKey project run =
-    storeKey ("migration." <> installedProjectName project <> "." <> runIdText run)
+migrationKeyForRunKey :: InstalledProjectIdentity projectId -> RunKey -> Either ModeError RecordKey
+migrationKeyForRunKey project run =
+    storeKey ("migration." <> installedProjectName project <> "." <> runKeyText run)
 
-leaseKey :: InstalledProject projectId -> RunId -> Either ModeError RecordKey
-leaseKey project run =
-    storeKey (leasePrefix project <> runIdText run)
+leaseKeyForRunKey :: InstalledProjectIdentity projectId -> RunKey -> Either ModeError RecordKey
+leaseKeyForRunKey project run =
+    storeKey (leasePrefix project <> runKeyText run)
 
-leasePrefix :: InstalledProject projectId -> Text
+profileKeyForRunKey :: InstalledProjectIdentity projectId -> RunKey -> Either ModeError RecordKey
+profileKeyForRunKey project run =
+    storeKey ("profile." <> installedProjectName project <> "." <> runKeyText run)
+
+leasePrefix :: InstalledProjectIdentity projectId -> Text
 leasePrefix project = "lease." <> installedProjectName project <> "."
 
-isLeaseKey :: InstalledProject projectId -> RecordKey -> Bool
+isLeaseKey :: InstalledProjectIdentity projectId -> RecordKey -> Bool
 isLeaseKey project key = leasePrefix project `Text.isPrefixOf` recordKeyText key
 
-runOfLeaseKey :: InstalledProject projectId -> RecordKey -> Maybe RunId
+runOfLeaseKey :: InstalledProjectIdentity projectId -> RecordKey -> Maybe RunKey
 runOfLeaseKey project key =
     either
         (const Nothing)
         Just
-        (mkRunId (Text.drop (Text.length (leasePrefix project)) (recordKeyText key)))
+        (parseRunKey (Text.drop (Text.length (leasePrefix project)) (recordKeyText key)))
 
 {- | Effect-shaped records for a run. Every durable record a lifecycle effect
 writes uses this prefix, so "did this run touch anything" is a set membership
 question rather than an inference.
 -}
-isEffectKey :: InstalledProject projectId -> RunId -> RecordKey -> Bool
+isEffectKey :: InstalledProjectIdentity projectId -> RunKey -> RecordKey -> Bool
 isEffectKey project run key =
-    ("effect." <> installedProjectName project <> "." <> runIdText run <> ".")
+    hasRunRecordPrefix "effect." (installedProjectName project) run key
+
+-- The payload and epoch suffix are intentionally not decoded here. Any row
+-- under this exact run prefix proves that acquisition began, while the
+-- trailing dot keeps a different run whose text merely shares a prefix out.
+isAcquisitionKey :: InstalledProjectIdentity projectId -> RunKey -> RecordKey -> Bool
+isAcquisitionKey project run key =
+    hasRunRecordPrefix "acquisition." (installedProjectName project) run key
+
+hasRunRecordPrefix :: Text -> Text -> RunKey -> RecordKey -> Bool
+hasRunRecordPrefix namespace project run key =
+    (namespace <> project <> "." <> runKeyText run <> ".")
         `Text.isPrefixOf` recordKeyText key
 
 storeKey :: Text -> Either ModeError RecordKey
@@ -3832,29 +5870,72 @@ withRecordKey (Right key) use = use key
 
 withFreshEpoch ::
     ProtectedSession session ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     ( forall brokerGeneration.
       BrokerEpoch brokerGeneration ->
       IO (Either ModeError result)
     ) ->
     IO (Either ModeError result)
 withFreshEpoch session project use = do
-    outcome <- withFreshBrokerEpoch session project (fmap Right . use)
+    outcome <- withFreshBrokerEpochKernel session project (fmap Right . use)
+    pure (either (Left . ModeAuthorityFailure) id outcome)
+
+withRecordedEpoch ::
+    ProtectedSession session ->
+    InstalledProjectIdentity projectId ->
+    Word64 ->
+    ( forall brokerGeneration.
+      BrokerEpoch brokerGeneration ->
+      IO (Either ModeError result)
+    ) ->
+    IO (Either ModeError result)
+withRecordedEpoch session project recorded use = do
+    outcome <-
+        withReifiedAllocatedBrokerEpochKernel
+            session
+            project
+            recorded
+            (fmap Right . use)
     pure (either (Left . ModeAuthorityFailure) id outcome)
 
 withVerifiedRoot ::
+    RootScopeWitness projectId scope ->
     ProtectedSession session ->
-    InstalledProject projectId ->
-    OperatorAuthorization ->
+    InstalledProjectIdentity projectId ->
+    VerifiedOsPrincipal ->
     BrokerEpoch brokerGeneration ->
     ProjectVerb verb ->
     ( RootInvocationAuthority scope brokerGeneration verb ->
       IO (Either ModeError result)
     ) ->
     IO (Either ModeError result)
-withVerifiedRoot session project operator epoch verb use = do
+withVerifiedRoot scope session project operator epoch verb use = do
     outcome <-
-        withVerifiedRootInvocation
+        withVerifiedRootInvocationKernel
+            scope
+            session
+            project
+            operator
+            epoch
+            verb
+            (fmap Right . use)
+    pure (either (Left . ModeAuthorityFailure) id outcome)
+
+withExistingVerifiedRoot ::
+    RootScopeWitness projectId scope ->
+    ProtectedSession session ->
+    InstalledProjectIdentity projectId ->
+    VerifiedOsPrincipal ->
+    BrokerEpoch brokerGeneration ->
+    ProjectVerb verb ->
+    ( RootInvocationAuthority scope brokerGeneration verb ->
+      IO (Either ModeError result)
+    ) ->
+    IO (Either ModeError result)
+withExistingVerifiedRoot scope session project operator epoch verb use = do
+    outcome <-
+        withExistingVerifiedRootInvocationKernel
+            scope
             session
             project
             operator
@@ -3889,7 +5970,7 @@ data ModeError
       ModeMalformedRecord Text
     | -- | The harness safety preconditions refused.
       ModeHarnessRefused HarnessPreconditionFailure
-    | -- | An effect-shaped record exists, so this is not a pre-effect state.
+    | -- | An effect- or acquisition-shaped record exists, so this is not a pre-effect state.
       ModeEffectsRecorded Text
     | -- | An abandoned run must be resolved before a new run may start.
       ModeRecoveryRequired Text
@@ -3901,6 +5982,8 @@ data ModeError
       ModeSnapshotMissing Text
     | -- | A presented identity/digest did not match the persisted one.
       ModeSnapshotMismatch Text Text
+    | -- | Fresh snapshot evidence disagreed before any protected mutation.
+      ModeEvidenceMismatch Text Text Text
     | -- | A recovery record belongs to the other lifecycle scope.
       ModeWrongRecoveryScope Text Text
     | ModeAuthorityFailure AuthorityError
@@ -3933,7 +6016,7 @@ modeErrorMessage failure = case failure of
         ProductionClusterRunning ->
             "a production cluster is already running; refusing to touch production state"
     ModeEffectsRecorded key ->
-        "effect record " <> key <> " exists, so no pre-effect proof can be made"
+        "effect or acquisition record " <> key <> " exists, so no pre-effect proof can be made"
     ModeRecoveryRequired run ->
         "the abandoned run " <> run <> " must be recovered before a new run starts"
     ModeOwnershipUnresolved run reason ->
@@ -3944,6 +6027,13 @@ modeErrorMessage failure = case failure of
         "no plan snapshot is persisted for " <> run <> "; a lease cannot be bound without one"
     ModeSnapshotMismatch expected observed ->
         "expected " <> expected <> " but the persisted record says " <> observed
+    ModeEvidenceMismatch subject expected observed ->
+        "snapshot admission "
+            <> subject
+            <> " expected "
+            <> expected
+            <> " but observed "
+            <> observed
     ModeWrongRecoveryScope scope observed ->
         scope <> " recovery cannot consume " <> observed
     ModeAuthorityFailure inner -> authorityErrorMessage inner

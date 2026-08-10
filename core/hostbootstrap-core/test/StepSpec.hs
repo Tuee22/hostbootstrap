@@ -2,9 +2,12 @@
 
 module StepSpec (tests) where
 
-import Data.List (nub)
+import Data.List (isInfixOf, nub)
+import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Lift (localContext)
 import HostBootstrap.Step
+import System.Directory (getCurrentDirectory)
+import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -122,8 +125,8 @@ aliasProjectionSteps =
         (copySourceStep "stage source into the VM" metal noop)
     ]
 
-{- | What a step's action reports about its own node. Before it, an action
-returned @()@ and every node that did not throw looked alike. -}
+{- | What a step's action reports about its own node. Every returned category
+remains distinct through rendering and higher-level classification. -}
 observationCases :: [TestTree]
 observationCases =
     [ testCase "reaching the target state is a success; not reaching it is not" $ do
@@ -153,6 +156,25 @@ observationCases =
                 , "unsupported: bare Linux has no storage quota"
                 , "refused: the cluster holds state this run does not own"
                 ]
+    , testCase "the step algebra owns its observation markers below the harness" $ do
+        [conflictObservationMarker, unsupportedObservationMarker, refusedObservationMarker]
+            @?= ["conflict:", "unsupported:", "refused:"]
+        cwd <- getCurrentDirectory
+        root <-
+            findRepoRoot cwd
+                >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
+        source <-
+            readFile
+                ( root
+                    </> "core"
+                    </> "hostbootstrap-core"
+                    </> "src"
+                    </> "HostBootstrap"
+                    </> "Step.hs"
+                )
+        assertBool
+            "the lower Step module imports the higher Harness module"
+            (not ("import HostBootstrap.Harness" `isInfixOf` source))
     , testCase "an action's observation is what runStep returns" $ do
         -- The plan mints the descriptor, so the only way to observe this is
         -- through a real interpretation; ChainSpec drives that. Here the point
@@ -343,6 +365,32 @@ validationCases =
                 ] of
             Left (PostHandoffBeforeDescentComplete _) -> pure ()
             other -> assertFailure ("expected post-handoff ordering rejection, got " ++ either show (const "validated") other)
+    , testCase "post-handoff hooks unwind from deeper frames toward the root" $ do
+        let normal =
+                [ descendsVia localContext (deployVMStep "outer" metal noop)
+                , contextInitStep "inner" vmFrame noop
+                ]
+            deepestFirst =
+                normal
+                    ++ [ postHandoffStep "inner-hook" "after inner" vmFrame noop
+                       , postHandoffStep "outer-hook" "after outer" metal noop
+                       ]
+            outerFirst =
+                normal
+                    ++ [ postHandoffStep "outer-hook" "after outer" metal noop
+                       , postHandoffStep "inner-hook" "after inner" vmFrame noop
+                       ]
+        case mkStepPlan deepestFirst of
+            Left err -> assertFailure ("deepest-to-root post-handoff order was rejected: " ++ show err)
+            Right _ -> pure ()
+        case mkStepPlan outerFirst of
+            Left err ->
+                err
+                    @?= PostHandoffOutOfDescentOrder
+                        4
+                        "host-orchestrator-0"
+                        "vm-orchestrator-1"
+            Right _ -> assertFailure "root-to-deepest post-handoff order was validated"
     , testCase "every smart constructor retains an explicit reverse policy" $
         map stepReversePolicy
             [ ensureStep "ghc" "ensure" metal noop

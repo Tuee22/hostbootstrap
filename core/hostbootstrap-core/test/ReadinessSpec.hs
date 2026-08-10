@@ -1,23 +1,17 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE TypeApplications #-}
 
 module ReadinessSpec (tests) where
 
+import Data.Foldable (find)
+import qualified Data.Text as Text
 import Data.Word (Word64)
 import qualified Fixture
-import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
 import HostBootstrap.Config.Vocab (Production)
 import HostBootstrap.HostConfig (HostConfig)
+import HostBootstrap.ProjectPlan (PlannedResource, ProviderResource)
+import qualified HostBootstrap.ProjectPlan as ProjectPlan
 import HostBootstrap.Readiness
-import HostBootstrap.Reconcile
-  ( LifecyclePlan,
-    PlannedResource,
-    PlannedResourceKind (ProviderResourceKind),
-    ProviderResource,
-    withLifecyclePlan,
-    withPlannedResourceOfKind,
-  )
 import HostBootstrap.Step (StepFrame (StepFrame), StepObservation (StepChanged), StepPlan, deployVMStep, mkStepPlan)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
@@ -157,17 +151,10 @@ testPlan =
     id
     (mkStepPlan [deployVMStep "provider" (StepFrame "host" "Host") (const (pure StepChanged))])
 
-withTestLifecyclePlan ::
-  (forall planId. LifecyclePlan (Production Fixture.FixtureProject) planId -> result) ->
-  result
-withTestLifecyclePlan consume =
-  withProductionProjectCodec @Fixture.FixtureProject @Fixture.ProjectConfig $ \codec ->
-    withLifecyclePlan codec testPlan consume
-
 runPlannedProbe ::
-  ( forall planId id frame.
+  ( forall projectId planId id frame.
     PlannedResource
-      (Production Fixture.FixtureProject)
+      (Production projectId)
       planId
       id
       ProviderResource
@@ -176,8 +163,28 @@ runPlannedProbe ::
   ) ->
   IO ()
 runPlannedProbe consume =
+  Fixture.withFixtureProjectPlan testPlan $ \projectPlan -> do
+    providerKey <- requireOperationKey "core:deploy-vm" projectPlan
+    case
+      ProjectPlan.withPlannedResourceOfKind
+        projectPlan
+        ProjectPlan.ProviderResourceKind
+        providerKey
+        consume of
+      Left err -> assertBool ("expected planned resource, got " ++ show err) False
+      Right assertion -> assertion
+
+requireOperationKey ::
+  Text.Text ->
+  ProjectPlan.ProjectPlan scope specDigest planId configId cfg ->
+  IO ProjectPlan.OperationKey
+requireOperationKey expected projectPlan =
   case
-    withTestLifecyclePlan $ \plan ->
-      withPlannedResourceOfKind plan ProviderResourceKind "core:deploy-vm" consume of
-    Left err -> assertBool ("expected planned resource, got " ++ show err) False
-    Right assertion -> assertion
+    find
+      ( (== Text.unpack expected)
+          . ProjectPlan.operationKeyText
+          . ProjectPlan.plannedStepOperationKey
+      )
+      (ProjectPlan.forward projectPlan) of
+    Just plannedStep -> pure (ProjectPlan.plannedStepOperationKey plannedStep)
+    Nothing -> fail ("fixture project plan lacks operation " ++ Text.unpack expected)

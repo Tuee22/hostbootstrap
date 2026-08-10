@@ -1,6 +1,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RoleAnnotations #-}
 
 {- | Opaque provider-exact budget admission and constructive partitioning.
 
@@ -31,6 +32,8 @@ module HostBootstrap.Cluster.Budget
     effectiveBudgetValue,
     Workload,
     mkWorkload,
+    workloadName,
+    workloadFrame,
     PlannedWorkloadSet,
     withPlannedWorkloadSet,
     VerifiedWorkloadFit,
@@ -75,22 +78,30 @@ where
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Text as Text
-import HostBootstrap.Cluster.Cordon
+import HostBootstrap.Cluster.Cordon (budgetFromResources)
+import qualified HostBootstrap.Cluster.Cordon.Foundation as Cordon
+import HostBootstrap.Cluster.Cordon.Foundation
   ( ResourceBudget,
     budgetCpu,
-    budgetFromResources,
     budgetMemoryBytes,
     budgetStorageBytes,
-    managedWslIdleTimeoutMillis,
   )
 import HostBootstrap.Context (ResourceEnvelope)
 import Data.Word (Word64)
+import HostBootstrap.ProjectPlan
+  ( PlannedResource,
+    ProjectPlan,
+    ProviderResource,
+    plannedResourceFrame,
+    plannedResourceKey,
+    topology,
+    topologyContainsFrame,
+  )
 import HostBootstrap.Reconcile
   ( ChangeView (..),
     ChangedKind (..),
     ConflictDetail (..),
     FailureDetail (..),
-    LifecyclePlan,
     ReconcileError (..),
     RecoveryDisposition (..),
     UnsupportedDetail (..),
@@ -160,8 +171,10 @@ data BudgetError
 
 data ValidatedBudget scope planId budgetId = ValidatedBudget ResourceBudget
 
+type role ValidatedBudget nominal nominal nominal
+
 withValidatedBudget ::
-  LifecyclePlan scope planId ->
+  ProjectPlan scope specDigest planId configId cfg ->
   ResourceEnvelope ->
   (forall budgetId. ValidatedBudget scope planId budgetId -> result) ->
   Either BudgetError result
@@ -173,22 +186,32 @@ withValidatedBudget _plan envelope consume =
 validatedBudgetValue :: ValidatedBudget scope planId budgetId -> ResourceBudget
 validatedBudgetValue (ValidatedBudget budget) = budget
 
-data ProviderBudgetCapability scope planId provider capabilityId =
-  ProviderBudgetCapability (ProviderKey provider)
+data ProviderBudgetCapability scope planId provider capabilityId where
+  ProviderBudgetCapability ::
+    PlannedResource scope planId resourceId ProviderResource frame ->
+    ProviderKey provider ->
+    ProviderBudgetCapability scope planId provider capabilityId
+
+type role ProviderBudgetCapability nominal nominal nominal nominal
 
 withProviderBudgetCapability ::
-  LifecyclePlan scope planId ->
+  ProjectPlan scope specDigest planId configId cfg ->
+  PlannedResource scope planId resourceId ProviderResource frame ->
   ProviderKey provider ->
   (forall capabilityId. ProviderBudgetCapability scope planId provider capabilityId -> result) ->
   result
-withProviderBudgetCapability _plan key consume =
-  consume (ProviderBudgetCapability key)
+withProviderBudgetCapability _plan resource key consume =
+  consume (ProviderBudgetCapability resource key)
 
 data ProviderWallSpec scope planId budgetId provider capabilityId wallSpecId =
   ProviderWallSpec (ProviderKey provider) ResourceBudget
 
+type role ProviderWallSpec nominal nominal nominal nominal nominal nominal
+
 data EffectiveBudget scope planId budgetId provider capabilityId wallSpecId =
   EffectiveBudget ResourceBudget
+
+type role EffectiveBudget nominal nominal nominal nominal nominal nominal
 
 admitProviderBudget ::
   ValidatedBudget scope planId budgetId ->
@@ -199,7 +222,7 @@ admitProviderBudget ::
     result
   ) ->
   Either BudgetError result
-admitProviderBudget (ValidatedBudget budget) (ProviderBudgetCapability providerKey) consume = do
+admitProviderBudget (ValidatedBudget budget) (ProviderBudgetCapability _resource providerKey) consume = do
   let backend = providerBackend providerKey
   validateBackendExactness backend budget
   pure
@@ -239,56 +262,15 @@ providerWallArgs ::
 providerWallArgs name (ProviderWallSpec providerKey budget) =
   case providerKey of
     ColimaProviderKey ->
-      pure
-        [ "start",
-          "--profile",
-          name,
-          "--runtime",
-          "docker",
-          "--activate=false",
-          "--cpus",
-          show (budgetCpu budget),
-          "--memory",
-          show memoryGiB,
-          "--disk",
-          show storageGiB
-        ]
+      render (Cordon.colimaSizingArgsForBudget name budget)
     LimaProviderKey ->
-      pure
-        [ "--cpus",
-          show (budgetCpu budget),
-          "--memory",
-          show memoryGiB,
-          "--disk",
-          show storageGiB
-        ]
+      render (Cordon.limaSizingArgsForBudget budget)
     IncusProviderKey ->
-      pure
-        [ "limits.cpu=" ++ show (budgetCpu budget),
-          "limits.memory=" ++ show memoryGiB ++ "GiB",
-          "root,size=" ++ show storageGiB ++ "GiB"
-        ]
+      render (Cordon.incusSizingArgsForBudget budget)
     Wsl2ProviderKey ->
-      pure
-        [ "[general]",
-          "instanceIdleTimeout=" ++ show managedWslIdleTimeoutMillis,
-          "[wsl2]",
-          "processors=" ++ show (budgetCpu budget),
-          "memory=" ++ show memoryGiB ++ "GB",
-          "swap=" ++ show memoryGiB ++ "GB",
-          "vmIdleTimeout=" ++ show managedWslIdleTimeoutMillis
-        ]
+      render (Cordon.wsl2SizingArgsForBudget budget)
     DockerNodeProviderKey ->
-      pure
-        [ "update",
-          "--cpus",
-          show (budgetCpu budget),
-          "--memory",
-          show (budgetMemoryBytes budget),
-          "--memory-swap",
-          show (2 * budgetMemoryBytes budget),
-          name
-        ]
+      render (Cordon.kindNodeCordonArgsForBudget name budget)
     BareLinuxProviderKey ->
       Left
         ( UnsupportedBudgetWall
@@ -296,49 +278,118 @@ providerWallArgs name (ProviderWallSpec providerKey budget) =
             "bare Linux has no complete provider wall"
         )
   where
-    gib = 1024 ^ (3 :: Integer)
-    memoryGiB = budgetMemoryBytes budget `div` gib
-    storageGiB = budgetStorageBytes budget `div` gib
+    render = either (Left . InvalidBudget) Right
 
-data Workload = Workload
-  { workloadName :: String,
-    workloadReplicas :: Natural,
-    workloadCpuPerReplica :: Natural,
-    workloadMemoryPerReplica :: Integer,
-    workloadStoragePerReplica :: Integer
-  }
-  deriving (Eq, Show)
+data Workload scope planId where
+  Workload ::
+    PlannedResource scope planId resourceId resource frame ->
+    Natural ->
+    Natural ->
+    Integer ->
+    Integer ->
+    Workload scope planId
+
+type role Workload nominal nominal
+
+instance Eq (Workload scope planId) where
+  left == right =
+    workloadName left == workloadName right
+      && workloadFrame left == workloadFrame right
+      && workloadReplicas left == workloadReplicas right
+      && workloadCpuPerReplica left == workloadCpuPerReplica right
+      && workloadMemoryPerReplica left == workloadMemoryPerReplica right
+      && workloadStoragePerReplica left == workloadStoragePerReplica right
+
+instance Show (Workload scope planId) where
+  show workload =
+    "Workload {workloadName = "
+      ++ show (workloadName workload)
+      ++ ", workloadFrame = "
+      ++ show (workloadFrame workload)
+      ++ ", workloadReplicas = "
+      ++ show (workloadReplicas workload)
+      ++ ", workloadCpuPerReplica = "
+      ++ show (workloadCpuPerReplica workload)
+      ++ ", workloadMemoryPerReplica = "
+      ++ show (workloadMemoryPerReplica workload)
+      ++ ", workloadStoragePerReplica = "
+      ++ show (workloadStoragePerReplica workload)
+      ++ "}"
+
+workloadName :: Workload scope planId -> String
+workloadName (Workload resource _ _ _ _) =
+  Text.unpack (plannedResourceKey resource)
+
+workloadFrame :: Workload scope planId -> String
+workloadFrame (Workload resource _ _ _ _) =
+  Text.unpack (plannedResourceFrame resource)
+
+workloadReplicas :: Workload scope planId -> Natural
+workloadReplicas (Workload _resource replicas _ _ _) = replicas
+
+workloadCpuPerReplica :: Workload scope planId -> Natural
+workloadCpuPerReplica (Workload _resource _ cores _ _) = cores
+
+workloadMemoryPerReplica :: Workload scope planId -> Integer
+workloadMemoryPerReplica (Workload _resource _ _ memoryBytes _) = memoryBytes
+
+workloadStoragePerReplica :: Workload scope planId -> Integer
+workloadStoragePerReplica (Workload _resource _ _ _ storageBytes) = storageBytes
 
 mkWorkload ::
-  String ->
+  PlannedResource scope planId resourceId resource frame ->
   Natural ->
   Natural ->
   Integer ->
   Integer ->
-  Either BudgetError Workload
-mkWorkload name replicas cores memoryBytes storageBytes
+  Either BudgetError (Workload scope planId)
+mkWorkload resource replicas cores memoryBytes storageBytes
   | null name = Left (InvalidWorkload "workload name must not be empty")
+  | null frame = Left (InvalidWorkload (name ++ ": frame must not be empty"))
   | replicas == 0 = Left (InvalidWorkload (name ++ ": replicas must be positive"))
   | cores == 0 = Left (InvalidWorkload (name ++ ": CPU must be positive"))
   | memoryBytes <= 0 = Left (InvalidWorkload (name ++ ": memory must be positive"))
   | storageBytes <= 0 = Left (InvalidWorkload (name ++ ": storage must be positive"))
   | otherwise =
-      Right (Workload name replicas cores memoryBytes storageBytes)
+      Right (Workload resource replicas cores memoryBytes storageBytes)
+  where
+    name = Text.unpack (plannedResourceKey resource)
+    frame = Text.unpack (plannedResourceFrame resource)
 
 data PlannedWorkloadSet scope planId workloadSetId =
-  PlannedWorkloadSet (NonEmpty Workload)
+  PlannedWorkloadSet (NonEmpty (Workload scope planId))
+
+type role PlannedWorkloadSet nominal nominal nominal
 
 withPlannedWorkloadSet ::
-  [Workload] ->
+  ProjectPlan scope specDigest planId configId cfg ->
+  [Workload scope planId] ->
   (forall workloadSetId. PlannedWorkloadSet scope planId workloadSetId -> result) ->
   Either BudgetError result
-withPlannedWorkloadSet workloads consume =
+withPlannedWorkloadSet plan workloads consume =
   case NonEmpty.nonEmpty workloads of
     Nothing -> Left EmptyWorkloadSet
-    Just nonEmpty -> Right (consume (PlannedWorkloadSet nonEmpty))
+    Just nonEmpty -> do
+      mapM_ validateFrame (NonEmpty.toList nonEmpty)
+      Right (consume (PlannedWorkloadSet nonEmpty))
+  where
+    derivedTopology = topology plan
+    validateFrame workload
+      | topologyContainsFrame derivedTopology (Text.pack (workloadFrame workload)) = Right ()
+      | otherwise =
+          Left
+            ( InvalidWorkload
+                ( workloadName workload
+                    ++ ": frame "
+                    ++ workloadFrame workload
+                    ++ " is not part of the admitted plan topology"
+                )
+            )
 
 data VerifiedWorkloadFit scope planId budgetId provider capabilityId wallSpecId workloadSetId =
   VerifiedWorkloadFit
+
+type role VerifiedWorkloadFit nominal nominal nominal nominal nominal nominal nominal
 
 verifyPlannedWorkloadFit ::
   EffectiveBudget scope planId budgetId provider capabilityId wallSpecId ->
@@ -374,19 +425,20 @@ verifyPlannedWorkloadFit (EffectiveBudget budget) (PlannedWorkloadSet workloads)
       | wanted <= allowed = Right ()
       | otherwise = Left (WorkloadOverflow dimension wanted allowed)
 
-data SliceRequest = SliceRequest
-  { requestedSliceName :: String,
-    requestedFrameName :: String,
-    requestedBudget :: ResourceBudget
-  }
+data SliceRequest scope planId where
+  SliceRequest ::
+    PlannedResource scope planId resourceId resource frame ->
+    ResourceBudget ->
+    SliceRequest scope planId
+
+type role SliceRequest nominal nominal
 
 mkSliceRequest ::
-  String ->
-  String ->
+  PlannedResource scope planId resourceId resource frame ->
   ResourceBudget ->
   ResourceBudget ->
-  Either BudgetError SliceRequest
-mkSliceRequest name frame budget requiredMinimum
+  Either BudgetError (SliceRequest scope planId)
+mkSliceRequest resource budget requiredMinimum
   | null name = Left (InvalidSlice "slice name must not be empty")
   | null frame = Left (InvalidSlice (name ++ ": frame must not be empty"))
   | budgetCpu budget < budgetCpu requiredMinimum =
@@ -395,24 +447,39 @@ mkSliceRequest name frame budget requiredMinimum
       Left (InvalidSlice (name ++ ": memory is below the provider minimum"))
   | budgetStorageBytes budget < budgetStorageBytes requiredMinimum =
       Left (InvalidSlice (name ++ ": storage is below the provider minimum"))
-  | otherwise = Right (SliceRequest name frame budget)
+  | otherwise = Right (SliceRequest resource budget)
+  where
+    name = Text.unpack (plannedResourceKey resource)
+    frame = Text.unpack (plannedResourceFrame resource)
+
+requestedBudget :: SliceRequest scope planId -> ResourceBudget
+requestedBudget (SliceRequest _resource budget) = budget
 
 data BudgetPartition scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId =
   BudgetPartition
 
-data ResourceSlice scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId frame resourceId =
-  ResourceSlice String String ResourceBudget
+type role BudgetPartition nominal nominal nominal nominal nominal nominal nominal nominal
+
+data ResourceSlice scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId frame resourceId where
+  ResourceSlice ::
+    PlannedResource scope planId resourceId resource frame ->
+    ResourceBudget ->
+    ResourceSlice scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId frame resourceId
+
+type role ResourceSlice nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
 
 data SomeResourceSlice scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId where
   SomeResourceSlice ::
     ResourceSlice scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId frame resourceId ->
     SomeResourceSlice scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId
 
+type role SomeResourceSlice nominal nominal nominal nominal nominal nominal nominal nominal
+
 withBudgetPartition ::
   EffectiveBudget scope planId budgetId provider capabilityId wallSpecId ->
   VerifiedWorkloadFit scope planId budgetId provider capabilityId wallSpecId workloadSetId ->
   ResourceBudget ->
-  NonEmpty SliceRequest ->
+  NonEmpty (SliceRequest scope planId) ->
   ( forall partitionId.
     BudgetPartition scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId ->
     [SomeResourceSlice scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId] ->
@@ -428,11 +495,10 @@ withBudgetPartition (EffectiveBudget effective) VerifiedWorkloadFit overhead req
         BudgetPartition
         [ SomeResourceSlice
             ( ResourceSlice
-                (requestedSliceName request)
-                (requestedFrameName request)
-                (requestedBudget request)
+                resource
+                budget
             )
-        | request <- NonEmpty.toList requests
+        | SliceRequest resource budget <- NonEmpty.toList requests
         ]
     )
   where
@@ -457,17 +523,19 @@ forResourceSlices slices consume =
 resourceSliceName ::
   ResourceSlice scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId frame resourceId ->
   String
-resourceSliceName (ResourceSlice name _ _) = name
+resourceSliceName (ResourceSlice resource _) =
+  Text.unpack (plannedResourceKey resource)
 
 resourceSliceFrame ::
   ResourceSlice scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId frame resourceId ->
   String
-resourceSliceFrame (ResourceSlice _ frame _) = frame
+resourceSliceFrame (ResourceSlice resource _) =
+  Text.unpack (plannedResourceFrame resource)
 
 resourceSliceBudget ::
   ResourceSlice scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId frame resourceId ->
   ResourceBudget
-resourceSliceBudget (ResourceSlice _ _ budget) = budget
+resourceSliceBudget (ResourceSlice _resource budget) = budget
 
 {- | Journaled, pre-call reservation for one exact wall specification and
 partition. It is the authority for the initial wall call; the live wall
@@ -475,6 +543,8 @@ authority does not exist yet.
 -}
 data ProviderWallReservation scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence =
   ProviderWallReservation Word64
+
+type role ProviderWallReservation nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
 
 withProviderWallReservation ::
   ProviderWallSpec scope planId budgetId provider capabilityId wallSpecId ->
@@ -497,6 +567,8 @@ data PreparedProviderWallCall scope planId budgetId provider capabilityId wallSp
     (ProviderKey provider)
     [String]
     Word64
+
+type role PreparedProviderWallCall nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
 
 prepareProviderWallCall ::
   String ->
@@ -527,6 +599,8 @@ data WallAcquireObservation
 data ProviderWallAuthority scope planId provider wallSpecId wallEpoch fence =
   ProviderWallAuthority Word64 Word64
 
+type role ProviderWallAuthority nominal nominal nominal nominal nominal nominal
+
 providerWallEpoch ::
   ProviderWallAuthority scope planId provider wallSpecId wallEpoch fence ->
   Word64
@@ -540,8 +614,12 @@ providerWallFence (ProviderWallAuthority _ fenceValue) = fenceValue
 data WslGlobalWallLease scope planId wallSpecId wallEpoch fence =
   WslGlobalWallLease Word64 Word64
 
+type role WslGlobalWallLease nominal nominal nominal nominal nominal
+
 data WallReceipt scope planId provider wallSpecId wallEpoch fence =
   WallReceipt String
+
+type role WallReceipt nominal nominal nominal nominal nominal nominal
 
 data LiveProviderWall scope planId provider wallSpecId wallEpoch fence where
   LiveProviderWall ::
@@ -555,6 +633,8 @@ data LiveProviderWall scope planId provider wallSpecId wallEpoch fence where
     WallReceipt scope planId Wsl2Provider wallSpecId wallEpoch fence ->
     ChangeView ->
     LiveProviderWall scope planId Wsl2Provider wallSpecId wallEpoch fence
+
+type role LiveProviderWall nominal nominal nominal nominal nominal nominal
 
 settleProviderWallCall ::
   PreparedProviderWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
@@ -651,6 +731,8 @@ byte value the observation must match.
 -}
 data PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence =
   PreparedStorageWallCall StorageWallMechanism [String] Integer Word64
+
+type role PreparedStorageWallCall nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
 
 {- | Prepare the storage-wall call from already-validated budget inputs: the
 admitted wall spec, the proved partition, and the journaled reservation. A
@@ -783,6 +865,8 @@ view that produced it.
 -}
 data AppliedStorageWall scope planId provider wallSpecId wallEpoch fence =
   AppliedStorageWall ChangeView
+
+type role AppliedStorageWall nominal nominal nominal nominal nominal nominal
 
 appliedStorageWallChange ::
   AppliedStorageWall scope planId provider wallSpecId wallEpoch fence ->

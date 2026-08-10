@@ -59,6 +59,9 @@ module HostBootstrap.Step (
     StepObservation (..),
     observationSucceeded,
     observationDetail,
+    conflictObservationMarker,
+    unsupportedObservationMarker,
+    refusedObservationMarker,
     StepKind,
     stepLabel,
     stepFrame,
@@ -114,18 +117,13 @@ module HostBootstrap.Step (
 )
 where
 
-import Data.List (group, isPrefixOf, sort)
+import Data.List (elemIndex, group, isPrefixOf, sort)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
-import HostBootstrap.Harness (
-    conflictObservationMarker,
-    refusedObservationMarker,
-    unsupportedObservationMarker,
- )
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Lifecycle.Execution (StepExecution)
-import HostBootstrap.Lift (LiftContext)
+import HostBootstrap.Lift.Context (LiftContext)
 
 {- | What a step's forward action receives (§ U).
 
@@ -151,12 +149,10 @@ type StepAction = forall scope planId. StepExecution scope planId -> IO StepObse
 
 {- | What one step's action observed about its own node.
 
-Before this, an action returned @()@: whatever it learned about the resource it
-touched — that the resource was already in its target state, that a foreign
-object holds its name, that the backend cannot represent this node at all — was
-discarded at the moment it was observed, and every node that did not throw
-became one undifferentiated success. A report card could then only say "the
-chain ran".
+Every action reports whether its resource was already exact, changed, conflicted
+with foreign state, unsupported by the backend, or refused by ownership policy.
+The interpreter retains that distinction instead of reducing every returned
+value to one undifferentiated success.
 
 The observation is deliberately **plan-independent**: it carries no resource
 handle, no ownership receipt, and no plan index. Those exist only on the far
@@ -167,9 +163,9 @@ ownership it did not acquire. Turning an observation into a
 only the interpreter can pair it with the handle and receipt the prepare path
 mints.
 
-'StepRefused' is the safety refusal in observation form. An action may still
-throw 'HostBootstrap.Harness.SafetyRefusal'; returning it says the same thing
-without unwinding, so the remaining nodes of the frame are still attempted.
+'StepRefused' is the safety refusal in observation form. The harness boundary
+also supports an exception-form refusal; returning this constructor records the
+same terminal category without unwinding the action callback.
 -}
 data StepObservation
     = -- | the node was already in its target state; nothing was changed
@@ -199,6 +195,21 @@ observationSucceeded (StepConflict _ _ _) = False
 observationSucceeded (StepUnsupported _) = False
 observationSucceeded (StepRefused _) = False
 
+{- | Stable prefixes for the three terminal observation categories.
+
+They are owned beside 'StepObservation' because 'observationDetail' is their
+producer. Higher-level reporting layers may re-export and classify these same
+constants without introducing an upward dependency from the step algebra.
+-}
+conflictObservationMarker :: String
+conflictObservationMarker = "conflict:"
+
+unsupportedObservationMarker :: String
+unsupportedObservationMarker = "unsupported:"
+
+refusedObservationMarker :: String
+refusedObservationMarker = "refused:"
+
 -- | A one-line diagnostic for a node that did not reach its target state.
 observationDetail :: StepObservation -> Text
 observationDetail observation = case observation of
@@ -215,8 +226,8 @@ observationDetail observation = case observation of
     StepUnsupported reason -> marker unsupportedObservationMarker <> " " <> reason
     StepRefused reason -> marker refusedObservationMarker <> " " <> reason
   where
-    -- The markers are the harness's, so the row the interpreter prints and the
-    -- row the report card classifies cannot drift apart (§ Z).
+    -- The markers live with this observation algebra; reporting consumers use
+    -- the same exports so rendered and classified rows cannot drift apart.
     marker = Text.pack
 
 {- | One execution frame. The id is semantic; the label is presentation only.
@@ -454,7 +465,7 @@ for it. A caller cannot supply a 'StepExecution' of its own: the type has no
 public constructor (§ U).
 -}
 runStep :: Step -> StepExecution scope planId -> IO StepObservation
-runStep = internalStepRun
+runStep step execution = internalStepRun step execution
 
 {- | Declare how this step's frame descends into the next frame of the chain
 (§ U): the provider dispatch and, for a boundary that delivers one, the child
@@ -582,6 +593,7 @@ data StepPlanError
     | NonContiguousFrameReturn String [String]
     | PostHandoffBeforeDescentComplete Int
     | PostHandoffForUnknownFrame Int String
+    | PostHandoffOutOfDescentOrder Int String String
     | -- | a frame that descends into another declared no 'descendsVia'
       MissingFrameDescent String
     | -- | more than one 'descendsVia' was declared for the same frame
@@ -601,10 +613,11 @@ data StepPlanError
     deriving (Eq, Show)
 
 {- | Validate the exact declared sequence. Normal steps must form contiguous
-frame segments. Post-handoff hooks may appear only as a final suffix and may
-refer only to a frame already present in the descent sequence. Every frame but
-the innermost declares exactly one descent, and the innermost declares none, so
-the interpreter's handoff context is a projection of this plan rather than a
+frame segments. Post-handoff hooks may appear only as a final suffix, may refer
+only to a frame already present in the descent sequence, and are ordered from
+the deepest participating frame back toward the root. Every frame but the
+innermost declares exactly one descent, and the innermost declares none, so the
+interpreter's handoff context is a projection of this plan rather than a
 separate resolver.
 -}
 mkStepPlan :: [Step] -> Either StepPlanError StepPlan
@@ -622,6 +635,8 @@ mkStepPlan steps
         Left (PostHandoffBeforeDescentComplete index)
     | Just (index, fid) <- unknownPostFrame =
         Left (PostHandoffForUnknownFrame index fid)
+    | Just failure <- postHandoffOrderFailure =
+        Left failure
     | Just fid <- returnedFrame =
         Left (NonContiguousFrameReturn fid normalFrameIds)
     | Just index <- postHandoffDescent =
@@ -655,6 +670,22 @@ mkStepPlan steps
                 then Nothing
                 else Just (index, frameId (stepFrame step))
             | (index, step) <- zip [length normalSteps + 1 ..] postSteps
+            ]
+    postFrameIds = map (frameId . stepFrame) postSteps
+    postHandoffOrderFailure =
+        firstJust
+            [ case (elemIndex previous descentFrameIds, elemIndex next descentFrameIds) of
+                (Just previousPosition, Just nextPosition)
+                    | nextPosition > previousPosition ->
+                        Just
+                            ( PostHandoffOutOfDescentOrder
+                                (length normalSteps + offset)
+                                previous
+                                next
+                            )
+                _ -> Nothing
+            | (offset, (previous, next)) <-
+                zip [2 :: Int ..] (zip postFrameIds (drop 1 postFrameIds))
             ]
     returnedFrame = firstReturnedFrame normalFrameIds
     postHandoffDescent =

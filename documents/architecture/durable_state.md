@@ -5,17 +5,23 @@
 **Referenced by**: [readiness](readiness.md), [cluster lifecycle](../engineering/cluster_lifecycle.md), [WSL2](../engineering/wsl2.md), [Lima](../engineering/lima.md), [Incus](../engineering/incus.md), [documents index](../README.md)
 
 > **Purpose**: Define canonical host-root authority and its typed durable-path projections, explain the
-> current compatibility alias, and record how far destroy/up/readback is proved.
+> current provider-guest alias, and record how far destroy/up/readback is proved.
 
 ## TL;DR
 
 Root-config admission now resolves descriptive `sourceRoot` once into opaque
 `CanonicalProjectRoot scope rootId` authority without rewriting the descriptive context. Direct-host
 Docker binds the matching typed canonical `.data` projection; provider lanes continue to use
-`/var/tmp/hostbootstrap-demo-data` only as a guest-local projection. The final opaque plan still has to
-carry all guest, container, kind-node, and pod projections. End-to-end durability is **proved on the
-native Linux GPU direct lane** by the `durable-readback` harness case; every other provider lane remains
-unvalidated.
+`/var/tmp/hostbootstrap-demo-data` only as a guest-local projection. The opaque `ProjectPlan` now derives
+a pure, frame-indexed reverse projection from the exact admitted `CurrentFrame`; stable step identities,
+operation keys, reverse policies, and declared callbacks come from that same plan, and preserved nodes
+are omitted for both verbs. Production dispatch retains or reconstructs the exact plan/current-frame pair
+and consumes this projection directly. It grants no receipt, journal, exact teardown command, or effect
+authority. The core provider route now has opaque managed provider/share/alias authority and a
+crash-recoverable four-clause guest-alias backend, but the demo still uses its compatibility pathname
+call site. The plan still has to carry all guest, container, kind-node, and pod path projections.
+End-to-end same-run destroy/up/readback remains unproved; the
+[worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns that acceptance.
 
 ## Current Status
 
@@ -51,59 +57,78 @@ guest alias.
 
 - `HostPathShare`/`ShareReconcile` describe the provider-specific host-to-guest carry.
 - WSL2 uses the host drive exposed by drvfs, Incus attaches a disk device, and Lima declares a mount.
+- `HostBootstrap.Substrate.Provider.Reconcile` settles provider shares into an opaque nominal
+  `ManagedProviderShareHandle` that retains the exact managed provider origin. The prepared Incus backend
+  durably binds manifest, sidecar, device, source, and target state under its provider lock; Direct settles
+  only the canonical already-local identity share.
+- `HostBootstrap.Substrate.Provider.Alias` consumes that managed share together with the exact opaque
+  managed Running provider. Its `prepared`, `managed`, and version-fenced `releasing` records recover
+  origin publication, alias publication, and conditional release crash windows without adopting an
+  exact-looking pathname.
 - Provider and direct-host paths create the host durable root. Provider guests establish
   `/var/tmp/hostbootstrap-demo-data`; the direct-host Docker handoff consumes the typed canonical path.
 - Root lifecycle frame/teardown callbacks receive `CanonicalProjectRoot scope rootId` separately from
   `BinaryContext`, and the host-mount adapter accepts only a `CanonicalHostPath` carrying the same
   indices.
+- `teardownPlan` consumes the exact `ProjectPlan` and its already admitted `CurrentFrame`, then projects
+  that frame and its descendants deepest-first and in reverse forward order within each frame. Its
+  `TeardownPlan scope planId frame verb` retains the plan's stable step identities, operation keys,
+  reverse policies, and declared callbacks without running them.
+- `openTeardownForest` consumes that projection alone. Its current forest result is deliberately
+  unframed and non-authorizing; recursive frame propagation, local-versus-foreign work, authenticated
+  descent, and receipt-bound release remain later lifecycle work.
 - Project-container, kind/nvkind, and pod configurations carry the directory to the web workload.
 - Cluster teardown excludes its configured data path from its filesystem removal set.
 
-These facts supersede the older description that `.data` was only frame-relative guest state and that no
-code created it.
+Together these facts make `.data` host-carried state rather than frame-relative guest state.
 
 ## Open defects
 
 The carry is not yet a delivered durability guarantee:
 
-- The current `ProjectSpec` still keeps teardown as a representation separate from the plan (the
-  forward chain and each frame's descent are now one plan value).
-  The final `ProjectPlan` must retain the canonical authority and derive every
-  provider-guest/container/kind-node/pod projection rather than letting remaining adapters accept raw
-  path values.
-- VM-shell and direct observations do not yet share one total, typed probe result at the IO boundary.
-- `/var/tmp/hostbootstrap-demo-data` is created and removed by pathname. Current logic holds none of the
-  four [ownership invariant](ownership_invariant.md) clauses — no exclusive entry, no durable origin
-  record, no identity binding, no conditional release — so it cannot mint a cleanup receipt. This is
-  true on every provider guest, not only one: Lima and Incus aliases are in exactly the same state as
-  WSL2's.
+- Production `HostBootstrap.Command` uses the exact pure `ProjectPlan` reverse route, but that route is
+  current-frame-only and grants no exact teardown authority. The final plan-owned path surface must also
+  derive every provider-guest/container/kind-node/pod projection rather than letting remaining adapters
+  accept raw path values.
+- The closed provider boundary now maps both guest and Direct raw observations into the same total
+  descriptive result vocabulary, but the demo has not adopted its prepared provider/share route.
+- The demo's `/var/tmp/hostbootstrap-demo-data` call site still creates and removes an alias by pathname,
+  so that call site holds none of the four [ownership invariant](ownership_invariant.md) clauses and
+  mints no cleanup receipt. The package-level provider-guest alias backend does hold those clauses; moving
+  the demo to its prepared node route remains work for the
+  [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
 - `DurableStore` is not uniform mutation authority. Core `service run` now binds typed role selection and
   handler fields to one canonically verified sibling snapshot, but neither Web nor accelerator handler
   yet receives plan-derived effect/capability authority. The remaining raw handler `IO` therefore does
   not prove durable placement.
-- The demo test harness currently resolves `containerPlan` with the `Production` profile. It creates and
-  mounts `.data`; the nominal `.test_data` lifecycle is not what the live demo cluster uses.
-- The `durable-readback` case does write through the pod path, run `project destroy`, run `project up`,
-  and read the same bytes back — but only the native Linux GPU direct lane has run it. Lima, Incus, and
-  WSL2 have no such result.
-- Teardown is not a recursive child-to-parent interpretation. A provider VM can be stopped or removed by
-  the plan's reverse projection without first running the lifecycle verb in each child frame.
+- The demo Harness config selects a run-scoped cluster and `.test_data/<runId>`, but cluster, provider,
+  mount, and teardown consumers still derive that profile/root independently from config instead of from
+  the retained exact Harness plan.
+- The configured `durable-readback` case deliberately fails before lifecycle mutation because the engine
+  cannot yet place write/read assertions around a nonterminal same-run destroy → fresh exact up cycle.
+  No substrate has passed that end-to-end gate.
+- Teardown is not yet an authenticated recursive child-to-parent interpretation. The pure projection
+  carries its opening frame only on `TeardownPlan`; `TeardownForest` and its successors do not yet carry
+  that index or distinguish local work from a foreign descent. A provider VM can therefore be stopped or
+  removed without first admitting and settling the lifecycle verb in each child frame.
 
 Documentation must therefore describe the mechanism as **durable carry implemented, end-to-end
-persistence proved on the direct Linux lane only**. A statement covering another provider needs that
-provider's own run.
+persistence not yet proved**. A statement covering any provider needs that provider's own same-run
+destroy/up/readback result.
 
 ## Root authority and alias target
 
 Root-config admission resolves relative `sourceRoot` against the stable project-home anchor owned by the
 selected root config—not caller `cwd` or the executable's sibling `.build` directory—then verifies and
-canonicalizes it once. Its rank-2 `CanonicalProjectRoot scope rootId` is the only source of direct-host
-durable paths. `CanonicalHostPath` construction is private, and the host-bind adapter requires the root
+canonicalizes it once. Its rank-2 `CanonicalProjectRoot scope rootId` retains the exact config/lifecycle
+`scope` already in force and mints only the fresh `rootId`; it is the only source of direct-host durable
+paths. `CanonicalHostPath` construction is private, and the host-bind adapter requires the root
 and path to carry the same `scope`/`rootId`; raw `FilePath`, redirected roots, and cross-root projections
 are rejected.
 
-The final `ProjectPlan` target derives the lifecycle-profile root and all remaining boundary projections
-under that identity. That broader plan work is not yet implemented.
+Current `ProjectPlan` admission retains the canonical root under the exact lifecycle scope, and its pure
+reverse projection preserves the same plan and frame identities. Deriving all remaining durable-path
+boundary projections under that identity is still target work.
 
 Alias reconciliation remains necessary only for provider guests. It is a typed projection operation,
 not root discovery or authority.
@@ -133,10 +158,26 @@ matching opaque ownership receipt; it never removes an alias merely because its 
 failure is `ProbeFailed`/`Failure` in the probe/reconcile error sum, not an alias state.
 Alias reconciliation may mint a receipt only when the backend holds all four
 [ownership invariant](ownership_invariant.md) clauses. Because all three provider guests run the same
-Linux image, one backend satisfies them identically on WSL2, Lima, and Incus: `flock` for exclusive
-entry, a host-side origin record, `stat -c '%d %i'` for identity binding, and a compare-before-`unlink`
-release. A host that cannot supply a clause returns `Unsupported` and mints no receipt. Sprints 9.10 and
-11.10 own the shared algebra and the provider-guest integration.
+Linux image, one backend can satisfy them identically on WSL2, Lima, and Incus. Provider discovery executes
+closed requests, accepts only raw outcomes, and privately parses exact one-line tool/marker/identity
+reports. Its fresh capability retains the GNU/BSD `stat` dialect, Python 3, discovered lock observation,
+and hidden guest executor under the exact opaque managed provider resource/backend/generation. Alias
+admission accepts only retained `GuestFlock`; `GuestLockf` remains a descriptive `Unsupported` result
+because Linux `flock(2)` and `fcntl` lock namespaces are not interchangeable. The alias backend narrows
+that capability without accepting an independent executor and also requires the exact opaque managed
+share authority.
+
+Under that retained `flock`, the backend publishes a fresh-nonce explicit-absence `prepared` record inside
+the host-backed target, fsyncs and reads it back, atomically publishes a nonce staging symlink without
+replacement, and binds the symlink's exact device/inode before publishing `managed`. Conditional release
+first publishes a version-fenced `releasing` record, then re-observes the identity and retains the record
+on conflict. Retries finish exact partial staging/publication, resume the recorded state, and durably prove
+record/alias absence before success. No guest-local pathname sidecar or exact-looking path can mint
+ownership. A guest that cannot supply a clause returns `Unsupported` and mints no receipt. The
+[ownership clauses and reservations phase](../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md)
+owns the protocol, and the
+[host providers and self-reference lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
+owns the provider-guest backend and integration.
 
 The broader capability and ownership contract is defined in
 [lifecycle_state_model](lifecycle_state_model.md).
@@ -147,28 +188,33 @@ late handler-specific config reload cannot mint or widen that authority.
 
 ## Production and test profiles
 
-The current library enum can describe:
+The demo's descriptive run profile can select:
 
 | Profile | Durable root | Cluster identity |
 |---|---|---|
 | Production | `.data` | fixed project production name |
-| `TestCase caseId` | `.test_data/<caseId>` | `<project>-test-<caseId>` |
+| `HarnessRun runId` | `.test_data/<runId>` | run-scoped Harness name |
 
-The cluster library can represent both, and generic harness ownership helpers manage `.test_data`.
-However, the demo's live bring-up currently hardcodes `Production`, so tests exercise the first row.
-This is an open safety defect. A passing unit test over a fabricated Test plan does not prove the demo
-uses it.
+The Harness command admits an exact `ProjectPlan (Harness projectId runId) ...`, and generic harness
+ownership helpers manage `.test_data/<runId>`. Demo cluster, provider, mount, and teardown consumers still
+reread `RunProfile`/`ClusterProfile` and filesystem-root terms independently rather than taking one exact
+plan projection. The
+[worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns that remaining adoption.
 
-The target is the opaque, scope-indexed `LifecycleProfile` in
+The authority foundation is the opaque, scope-indexed `LifecycleProfile` in
 [lifecycle_state_model](lifecycle_state_model.md): the production gate can mint only Production
-authority, and the harness can mint only `Harness projectId runId`. `withProjectPlan` consumes that profile and
-scope-matching config; `containerPlan` is only a projection of the resulting plan and derives the data
-root and cluster identity together. A test config then cannot silently request Production.
+authority, and the harness can mint only `Harness projectId runId`. `withProjectPlan` consumes that profile
+and a scope-matching config. The worked-demo adoption makes the cluster identity and durable root one
+projection of the resulting plan, so an independent config term cannot silently redirect a consumer.
 
 ## Teardown guarantee
 
-The narrow, current guarantee is that cluster teardown does not include the plan's data path in its
-filesystem removal set. That guarantee does not by itself prove:
+The pure reverse surface now makes preservation a plan-owned structural guarantee: a
+`PreserveOnReverse` node is absent from both verb-indexed projections, and every projected node retains
+the stable identity and operation key of its forward node. This says which work is scheduled; it neither
+proves ownership nor authorizes a filesystem effect. The narrow live guarantee remains that cluster
+teardown does not include the plan's data path in its filesystem removal set. Those guarantees do not by
+themselves prove:
 
 - that the path is the host path;
 - that every enclosing frame preserves the share;

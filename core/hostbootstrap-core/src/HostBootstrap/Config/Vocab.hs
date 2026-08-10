@@ -62,6 +62,7 @@ import HostBootstrap.Config.Authority.Internal (
     harnessConfigRunName,
     harnessRunName,
  )
+import HostBootstrap.ProjectScope (Harness, Production)
 import Numeric.Natural (Natural)
 
 -- | Text-quantity resource envelope exported by @Core.dhall@.
@@ -138,12 +139,6 @@ data VaultRef = VaultRef
     , field :: Text
     }
     deriving (Eq, Show, Generic, FromDhall, ToDhall)
-
--- | Production config scope for one installed project identity.
-data Production projectId
-
--- | Harness config scope for one installed project and one generative run.
-data Harness projectId runId
 
 -- | Explicit fixture material. It can enter a scoped secret only with authority.
 newtype TestSecret = TestSecret Text

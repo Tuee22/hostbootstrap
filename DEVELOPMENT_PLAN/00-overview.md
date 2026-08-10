@@ -44,14 +44,20 @@ durable state lives. Everything above invokes host tools, so both invocation axe
 
 **The kernel (4–6).** A durable exclusively-entered store (4); the authority chain that turns an OS fact into
 an unforgeable capability (5); and the canonical quantities, opaque readiness, and ownership-indexed result
-types every observation and reconciliation is expressed in (6).
+types every observation and reconciliation is expressed in (6). The last layer also supplies the
+provider-neutral capacity, sizing, and storage-cordon policy foundation; it has no project-plan or provider
+realization dependency.
 
 **Configuration (7).** The scope-indexed codec, the generated Dhall vocabulary, and the generic project
 specification. It sits above the kernel because a codec's scope index is what keeps a test-only secret out of
-production configuration, and above authority because a harness codec requires a harness capability.
+production configuration, and above authority because a harness codec requires a harness capability. Its
+cordon facade adapts `Resources`/`ResourceEnvelope` to the lower opaque `ResourceBudget`, while its public
+pure `Lift.Context` vocabulary describes provider targets and nested frame stacks without resolving a tool or
+performing an effect.
 
 **Host dependencies (8).** With the binary, the tool boundary, and typed config in place, the binary can
-reconcile what it needs.
+reconcile what it needs. This layer also folds a self-reference command through the pure context stack,
+resolving only the outer host tool; it has no provider-realization or Registry dependency.
 
 **Lifecycle state (9–11).** One mode and one lease per project (9); versioned sessions, the single-writer
 journal, and durable fences (10); and the prepare compare-and-swap that every external effect must pass (11).
@@ -59,7 +65,8 @@ Each needs the one below: a session belongs to a lease, and a prepare revalidate
 
 **The plan (12).** The step algebra and the single project plan whose forward ordering, frame descent, and
 reverse effects are three projections of one value. It is above prepare because a step's action must be able to
-reach a gate.
+reach a gate, and above the generic Lift because its Chain consumer dispatches the exact current-frame
+projection through that lower fold.
 
 **Crossing process boundaries (13).** The closed v1 tag vocabulary — config admission, activation
 signing, and the recovery edge a nested teardown or recovery is admitted on — plus the challenge/grant handoff, child admission, and the build and
@@ -68,8 +75,9 @@ activation authorities. Above the plan because a grant is bound to a plan edge.
 **Ownership (14).** The four ownership clauses and the host-local backends that hold them. Above prepare
 because a reservation is a prepared operation, and above the store because clause 1 is the store's entry.
 
-**Providers and clusters (15–16).** One dispatch path for every host provider (15) and the cluster lifecycle
-inside a declared budget (16). Above ownership because a provider operation acquires an owned object.
+**Providers and clusters (15–16).** Provider lifecycle realizations that consume the already-defined target
+records/renderers and generic Lift (15), then the exact cluster/direct-Colima consumers inside a declared
+budget (16). Above ownership because a provider operation acquires an owned object.
 
 **Interpretation (17).** The recursive lifecycle command: the plan becomes effects across frames, and unwinds
 child-first. Above handoff and clusters because it descends through both.
@@ -86,12 +94,13 @@ the opaque role phase machine (21); then the fixed `service` command that adopts
 **Publication (23).** The rolling native base image and the opportunistic warm store, published only behind
 the complete gate and proved by pulling the tag and smoking a real consumer.
 
-**The consumer (24).** The worked demo — the real application that proves the library composes. It is last
-among baseline phases because a consumer depends on everything.
+**The consumer (24).** The worked demo — the real application that proves the library composes, including
+delivery of the reusable build-authority protocol to its actual command/Dockerfile gate. It is last among
+baseline phases because a consumer depends on everything.
 
 **Acceptance (25–27).** One phase per non-baseline substrate: Apple Silicon, NVIDIA GPU, Windows/WSL2. Each
-adds that substrate's own realizations and confirms the build on it. They are terminal, so a machine without
-that hardware stops at 24.
+adds the remaining substrate-only pieces and confirms the already-built generic/provider boundaries on real
+hardware. They are terminal, so a machine without that hardware stops at 24.
 
 **Reconciliation (28).** The governed-document sweep and the drift guards. Last because its subject is every
 other phase.
@@ -103,6 +112,7 @@ only *backwards*:
 
 - **9** depends on authority (5) and configuration (7): a profile opener needs both a verified root and a
   scope-correct codec.
+- **12** depends on the generic Lift (8) as well as the lifecycle/prepare layers beneath it.
 - **14** depends on the store (4) and prepare (11): clause 1 is the store's entry, and a reservation is a
   prepared operation.
 - **15** depends on the reconcilers (8) and ownership (14).

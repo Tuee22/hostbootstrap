@@ -36,7 +36,7 @@ def test_haskell_host_processes_do_not_launch_bare_literal_commands() -> None:
 
 
 def test_provider_surface_has_one_dispatch_and_no_definition_only_builders() -> None:
-    """The Phase 11 provider API stays production-consumed and single-routed."""
+    """The provider API stays production-consumed and single-routed."""
     root = Path(__file__).resolve().parents[1]
     core = root / "core/hostbootstrap-core"
     cabal = (core / "hostbootstrap-core.cabal").read_text(encoding="utf-8")

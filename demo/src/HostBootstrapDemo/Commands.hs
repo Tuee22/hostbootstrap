@@ -22,9 +22,9 @@ extends the core only through the parallel extension streams threaded into its
     rather than a hook beside it;
   * the **schema-gen registry** — @context render@ / @context schema@ receive
     'demoArtifacts' (registry concatenation, § T);
-  * the **test suite** — 'demoTestSuite' drives the real @project up@ under a
-    test config and asserts against the live stack, then @project destroy@
-    (the harness owns no second bring-up path, § W);
+  * the **test suite** — 'demoTestSuite' supplies assertions over the live stack
+    the command boundary creates and destroys from one exact Harness-scoped
+    project plan (the suite owns no lifecycle path, § W);
   * the **service registry** — 'demoServices' binds each leaf-context role to
     its typed role-field projection, reflected wire codec, and handler.
 
@@ -80,7 +80,7 @@ module HostBootstrapDemo.Commands (
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, evaluate, finally, mask, onException, throwIO, try)
+import Control.Exception (SomeException, finally, mask, onException, throwIO, try)
 import Control.Monad (unless, when)
 import Data.Bifunctor (first)
 import qualified Data.ByteString as BS
@@ -105,7 +105,7 @@ import HostBootstrap.Cluster.Lifecycle (
     AcceleratorIngressPlan (..),
     ClusterDriver (NvkindDriver),
     ClusterPlan (..),
-    ClusterProfile (Production),
+    ClusterProfile (Production, TestCase),
     acceleratorIngressPlan,
     clusterCreate,
     clusterNodeNames,
@@ -117,7 +117,7 @@ import HostBootstrap.Cluster.Lifecycle (
  )
 import HostBootstrap.Config.Fields (roleParamsValue)
 import HostBootstrap.Config.Schema (projectConfigSnapshotHash, projectConfigSnapshotHashBytes, renderProjectConfigSnapshotLog, siblingProjectConfigPath, writeProjectConfigFile)
-import HostBootstrap.Config.Vocab (Mount (..), PodResources (..), Production)
+import HostBootstrap.Config.Vocab (Mount (..), PodResources (..))
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Detached (
     DetachedLaunch,
@@ -147,9 +147,7 @@ import HostBootstrap.Harness (
     TestSuite (..),
     VariantId,
     caseIdText,
-    lifecycleFailureMarker,
     mkCaseId,
-    safetyRefusalMarker,
     testSafetyPreconditions,
     variantIdText,
  )
@@ -160,7 +158,7 @@ import HostBootstrap.Lifecycle.Execution (
     StepExecution,
     stepExecutionHostConfig,
  )
-import HostBootstrap.Lift (ConfigDelivery (..), ContainerLift (..), LiftContext (..), LiftLeaf (..), blobHeadLeaf, blobUploadFinishLeaf, blobUploadPatchLeaf, blobUploadSessionLeaf, canonicalHostMount, inContainer, liftLeaf, localContext, reachLeaf)
+import HostBootstrap.Lift (ConfigDelivery (..), ContainerLift (..), LiftContext, LiftLeaf (..), blobHeadLeaf, blobUploadFinishLeaf, blobUploadPatchLeaf, blobUploadSessionLeaf, canonicalHostMount, inContainer, liftLeaf, localContext, reachLeaf)
 import HostBootstrap.Lima (LimaVM (..))
 import HostBootstrap.Network (
     NetworkError,
@@ -241,21 +239,24 @@ import HostBootstrap.Substrate (Substrate, SubstrateName (LinuxCpu, LinuxGpu, Wi
 import HostBootstrap.Substrate.Provider (
     AliasAction (..),
     AliasFacts (..),
-    ExistsProbe (..),
+    DirectHostAction (..),
     HostEffect (..),
     HostPathShare (..),
     ShareReconcile (..),
     StagedFile (..),
     SubstrateProvider (..),
     VMHandles (..),
-    WaitProbe (..),
     classifyAlias,
+    foldExistsProbe,
+    foldWaitProbe,
     membersOf,
     planAliasEnsure,
-    selectSubstrateProvider,
+    providerGuestShellArgs,
+    providerKindForSubstrate,
+    providerTopologyKind,
+    selectProviderKind,
     shareReconcileEffects,
     stageFileEffects,
-    vmShellArgs,
  )
 import HostBootstrap.Wsl2 (Wsl2VM (..))
 import HostBootstrap.Wsl2.GlobalWall (PersistedWallRecord (persistedFenceValue))
@@ -271,7 +272,6 @@ import HostBootstrapDemo.Accelerator (backendName)
 import HostBootstrapDemo.Accelerator.Daemon (acceleratorBackendForSubstrate, serveAcceleratorDaemonWithConfig)
 import HostBootstrapDemo.Config (
     AcceleratorServiceConfig,
-    DemoProject,
     DeployConfig (..),
     ProjectConfig (..),
     Resources,
@@ -299,13 +299,13 @@ import HostBootstrapDemo.Web.Bridge (writeBridge)
 import HostBootstrapDemo.Web.Server (serveWebWithConfig)
 import Numeric.Natural (Natural)
 import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, getHomeDirectory, getPermissions, makeAbsolute, removeDirectory, removeFile, setPermissions, withCurrentDirectory)
-import System.Environment (getEnvironment, getExecutablePath, lookupEnv, setEnv, unsetEnv)
+import System.Environment (getEnvironment, getExecutablePath, setEnv)
 import System.Exit (ExitCode (..), die)
 import System.FilePath (normalise, takeDirectory, (</>))
-import System.IO (hFlush, hGetContents, hPutStr, stderr, stdout)
+import System.IO (hFlush, hPutStr, stderr, stdout)
 import System.IO.Error (tryIOError)
 import System.Info (os)
-import System.Process (CreateProcess (std_err, std_out), StdStream (CreatePipe, Inherit), createProcess, proc, readProcessWithExitCode, waitForProcess)
+import System.Process (readProcessWithExitCode)
 
 {- | One SPA tab as typed data: its label and the API endpoint it reads (empty
 for a static tab).
@@ -510,8 +510,8 @@ chain) or, with no VM-orchestrator frame, the direct Linux GPU chain.
 -}
 demoChainFor ::
     Substrate ->
-    CanonicalProjectRoot rootScope rootId ->
-    ProjectConfig configScope ->
+    CanonicalProjectRoot scope rootId ->
+    ProjectConfig scope ->
     [Step]
 demoChainFor sub root cfg
     | not (null (Context.parentChain ctx)) = nestedChain cfg
@@ -528,8 +528,8 @@ demoChainFor sub root cfg
         | otherwise = demoLinuxGpuChain root
 
 demoLinuxGpuChain ::
-    CanonicalProjectRoot rootScope rootId ->
-    ProjectConfig configScope ->
+    CanonicalProjectRoot scope rootId ->
+    ProjectConfig scope ->
     [Step]
 demoLinuxGpuChain root cfg =
     [ buildImageStep "build the project image on the Linux GPU host for the direct container handoff" demoMetalFrame (changed (const (runDirectHostBootstrap cfg)))
@@ -611,26 +611,23 @@ directContainerConfigPayload cfg =
             (Context.deriveLinuxGpuContainerContext (context cfg) (T.pack containerSourceRoot))
         )
 
-{- | The lift from the metal/harness frame into the demo's VM frame, selected by
-substrate — @inLimaVM@ on Apple Silicon, @inVM@ (Incus) on Linux. Shared by
-the metal frame's declared descent (the @project up@ handoff) and 'demoTestUp'
+{- | The route from the metal/harness frame into the demo provider, selected by
+the closed provider dispatch: one VM layer for Lima/Incus/WSL2 and the empty
+local context for direct host. Shared by
+the metal frame's declared descent (the @project up@ handoff) and 'demoOpenAssertions'
 (so the harness's reachability probes run inside the VM, where the NodePort is
 published, on both providers — § U).
 -}
 demoVMFrameContext :: Substrate -> LiftContext
 demoVMFrameContext sub =
-    case selectSubstrateProvider sub demoVMHandles of
-        Right sp -> LiftContext [spLiftLayer sp]
-        Left _ -> localContext
+    spLiftContext (selectProviderKind (providerKindForSubstrate sub) demoVMHandles)
 
 {- | Assertions run where the production NodePorts are published: in the
 provider VM for VM-backed lanes, directly on the host for Linux GPU's
 VM-less nvkind lane.
 -}
 demoTestFrameContext :: Substrate -> LiftContext
-demoTestFrameContext sub
-    | substrateName sub == LinuxGpu = localContext
-    | otherwise = demoVMFrameContext sub
+demoTestFrameContext = demoVMFrameContext
 
 {- | @context-init@ (the @vm-orchestrator-1@ step): the project-container child
 @<project>.dhall@ is streamed in-place into the container over the handoff
@@ -1660,7 +1657,6 @@ startHostAcceleratorDaemonAction stepCfg execution
                                                   , "HOSTBOOTSTRAP_ACCELERATOR_WS_URL"
                                                   , "HOSTBOOTSTRAP_ACCELERATOR_SHUTDOWN_FILE"
                                                   , "HOSTBOOTSTRAP_ACCELERATOR_READY_FILE"
-                                                  , harnessMutationGuardEnv
                                                   ]
                                 )
                                 env0
@@ -1882,19 +1878,16 @@ renderRetainedDaemonOutput retained
             ++ "\n--- end host daemon output ---"
 
 {- | Render the Windows-only hidden launch script. The short-lived PowerShell
-parent receives the four daemon-specific environment overrides, removes the
-harness mutation guard, and uses @Start-Process@ without @-NoNewWindow@. That
-child does not retain the captured @project up@ pipe. The script writes the PID
-before reporting success and force-stops the child if PID persistence fails, so
-the Haskell lifecycle never creates an untrackable daemon.
+parent receives the four daemon-specific environment overrides and uses
+@Start-Process@ without @-NoNewWindow@. That child does not retain the captured
+@project up@ pipe. The script writes the PID before reporting success and
+force-stops the child if PID persistence fails, so the Haskell lifecycle never
+creates an untrackable daemon.
 -}
 hostAcceleratorDaemonPowerShellScript :: FilePath -> FilePath -> [(String, String)] -> String
 hostAcceleratorDaemonPowerShellScript daemonExe pidPath overrides =
     "$ErrorActionPreference = 'Stop'; "
         ++ concatMap setOverride overrides
-        ++ "Remove-Item -LiteralPath "
-        ++ powerShellQuote ("Env:" ++ harnessMutationGuardEnv)
-        ++ " -ErrorAction SilentlyContinue; "
         ++ "$p = Start-Process -FilePath "
         ++ powerShellQuote daemonExe
         ++ " -ArgumentList @('service', 'run') -WindowStyle Hidden -PassThru; "
@@ -2220,22 +2213,21 @@ asserts the SPA renders.
 -}
 data CaseEnv = CaseEnv HostConfig LiftContext T.Text
 
-{- | The demo's **stack-driven** test suite (development_plan_standards § W, § Z):
-it drives the **real** @project up@ under a test config and asserts against the
-live persistent stack, then tears it down with @project destroy@. There is **no
-second cluster-bring-up path** — the deleted @demoSeams@ mirror (which stood up an
-isolated per-case kind cluster via @clusterCreate@ → @kind load@ → @deployChart@)
-is gone; the harness reuses the chain the deploy uses. The three cases share the
-one stack @project up@ brings up.
+{- | The demo's assertion-only test suite (development_plan_standards § W, § Z).
+
+The command boundary retains and interprets one exact Harness-scoped project
+plan; this value contributes only the safety probe, post-forward assertion
+environment, cases, case assertions, and post-reverse absence assertion.  It
+therefore has no project-lifecycle self-invocation path.
 -}
 demoTestSuite :: TestSuite
 demoTestSuite =
     TestSuite
         demoTestSafety
-        demoTestUp
+        demoOpenAssertions
         demoCases
         demoAssert
-        demoTestDown
+        demoAssertReversed
 
 {- | The suite-level fail-fast safety precondition (§ Z): never touch a running
 production cluster. Checked before any bring-up; if it holds, no tests run.
@@ -2256,9 +2248,9 @@ demoTestSafety = do
 
 {- | The "production cluster running" safety probe (§ Z), folded into the VM frame
 so it actually fires. The demo's cluster lives **inside** the provider VM, so a
-metal @kind get clusters@ never sees it (the reopened phase-10 gap: the probe was a
-structural no-op). This checks the metal kind (for a hypothetical no-VM path) **and**
-whether the managed provider VM exists — an existing VM is an operator's live stack
+metal @kind get clusters@ never sees it (the probe was a
+structural no-op). The total provider probe fold checks the direct Docker stack
+for the local-host route and VM existence for a guest route. An existing VM is an operator's live stack
 (or a crashed run's leftover) whose in-VM cluster the harness must not disturb, so a
 present VM refuses the run. The operator tears it down first (@project destroy@, or
 @wsl --unregister@ for a crashed WSL2 run). This is also the demo's spatial-isolation
@@ -2267,15 +2259,16 @@ collision — a second run is refused by the existing VM (and by the sibling-con
 precondition), so runs are mutually exclusive rather than racing.
 -}
 productionClusterRunning :: HostConfig -> ClusterPlan -> IO Bool
-productionClusterRunning cfg plan
-    | substrateName (hcSubstrate cfg) == LinuxGpu =
-        if toolPresent cfg Docker then directClusterExists cfg plan else pure False
-    | otherwise = do
-        sp <- demoProvider cfg
-        case spExists sp of
-            ExistsProbe tool _ _
-                | toolPresent cfg tool -> substrateExists cfg sp
-                | otherwise -> pure False
+productionClusterRunning cfg plan = do
+    provider <- demoProvider cfg
+    foldExistsProbe
+        (if toolPresent cfg Docker then directClusterExists cfg plan else pure False)
+        ( \tool _ _ ->
+            if toolPresent cfg tool
+                then substrateExists cfg provider
+                else pure False
+        )
+        (spExists provider)
 
 {- | The direct lane has no Incus provider. Refuse the harness whenever Docker
 still has the managed kind/nvkind control-plane, running or stopped.
@@ -2299,52 +2292,30 @@ directClusterPresence expected result = case result of
     Right (ExitFailure n, _, err) -> Left ("test safety: Docker cluster probe failed (exit " ++ show n ++ "): " ++ err)
     Left err -> Left ("test safety: Docker cluster probe failed: " ++ err)
 
-{- | Bring the test stack up by driving the **real** @project up@ (the same chain
-interpreter production uses, § W) through the binary's self-reference (§ U), then
-resolve the assertion env (the live Production stack the cases assert against).
-One @project up@ per variant; the variant @label@ (its expected served message) is
-threaded into the 'CaseEnv' so the assertions can check the SPA renders it (the worked-demo phase).
+{- | Resolve the assertion environment after the command-owned exact forward
+interpreter has brought this Harness variant up.  The variant identity is
+threaded into reporting by the engine; the expected served message comes from
+the still-owned generated config.
 -}
-demoTestUp :: VariantId -> IO CaseEnv
-demoTestUp ident = do
-    self <- getExecutablePath
-    putStrLn ("test run: bringing the stack up via the real `project up` (variant=" ++ T.unpack (variantIdText ident) ++ ")")
-    withHarnessMutationGuard (runSelfOrDie self ["project", "up"])
+demoOpenAssertions :: VariantId -> IO CaseEnv
+demoOpenAssertions ident = do
+    putStrLn ("test run: opening assertions for exact Harness variant " ++ T.unpack (variantIdText ident))
     cfg <- resolveHostConfig
     cfgPath <- siblingProjectConfigPath (T.pack demoProject)
     projectCfg <- decodeProjectConfigFile cfgPath
     pure (CaseEnv cfg (demoTestFrameContext (hcSubstrate cfg)) (message projectCfg))
 
-{- | Tear the test stack down by driving @project destroy@ (best-effort, so a
-partial stack always tears down).
-Env-independent (§ Y): @project destroy@ re-detects the stack itself, so the harness
-can run this even after a failed @project up@ — the guaranteed-teardown path.
+{- | Prove the command-owned exact reverse projection left no live test stack.
+
+This assertion runs only after that projection settles and while the generated
+Harness config is still owned, so it can derive the exact run-scoped cluster
+profile without performing lifecycle work itself.
 -}
-demoTestDown :: IO ()
-demoTestDown = do
-    self <- getExecutablePath
-    -- The run's own profile is read off the generated sibling config *before* the
-    -- destroy, because that is the config `project destroy` itself interprets: the
-    -- stack this must prove gone is the run's, never production's.
+demoAssertReversed :: IO ()
+demoAssertReversed = do
     cfgPath <- siblingProjectConfigPath (T.pack demoProject)
     projectCfg <- decodeProjectConfigFile cfgPath
-    putStrLn "test run: tearing the stack down via `project destroy`"
-    runSelfOrDie self ["project", "destroy"]
     verifyHarnessTeardown (clusterProfileOf projectCfg)
-
-harnessMutationGuardEnv :: String
-harnessMutationGuardEnv = "HOSTBOOTSTRAP_DEMO_HARNESS_MUTATION_GUARD"
-
-{- | Mark the child @project up@ so its post-ensure safety check can distinguish
-a harness bring-up (which must never reconcile pre-existing state) from an
-operator's idempotent production reconcile. Restore the caller's environment
-exactly after the child exits.
--}
-withHarnessMutationGuard :: IO a -> IO a
-withHarnessMutationGuard body = do
-    previous <- lookupEnv harnessMutationGuardEnv
-    setEnv harnessMutationGuardEnv "1"
-    body `finally` maybe (unsetEnv harnessMutationGuardEnv) (setEnv harnessMutationGuardEnv) previous
 
 {- | A green variant requires a proven-empty teardown, not merely a zero exit
 from best-effort lifecycle cleanup.
@@ -2362,25 +2333,26 @@ verifyHarnessTeardown profile = do
     operationRemaining <- doesDirectoryExist daemonOperation
     when (pidRemaining || ownerRemaining || operationRemaining) $
         die "test teardown: host accelerator daemon ownership/PID/operation state remains after project destroy"
-    if substrateName (hcSubstrate cfg) == LinuxGpu
-        then do
+    provider <- demoProvider cfg
+    foldExistsProbe
+        ( do
             unless (toolPresent cfg Docker) $
                 die "test teardown: Docker is unavailable, so absence of the direct nvkind stack cannot be proven"
             let plan = resolvePlanWithDriver demoProject root profile NvkindDriver
             remaining <- directClusterExists cfg plan
             when remaining (die "test teardown: the direct nvkind stack still exists after project destroy")
-        else do
-            provider <- demoProvider cfg
-            case spExists provider of
-                ExistsProbe tool _ _ ->
-                    unless (toolPresent cfg tool) $
-                        die "test teardown: the provider probe is unavailable, so VM deletion cannot be proven"
+        )
+        ( \tool _ _ -> do
+            unless (toolPresent cfg tool) $
+                die "test teardown: the provider probe is unavailable, so VM deletion cannot be proven"
             remaining <- substrateExists cfg provider
             when remaining (die ("test teardown: managed VM still exists after project destroy: " ++ spVmId provider))
             when (isWindows (hcSubstrate cfg)) $ do
                 home <- getHomeDirectory
                 journalRemaining <- doesFileExist (home </> ".hostbootstrap" </> "global-wall.record")
                 when journalRemaining (die "test teardown: the global WSL2 wall journal remains; the wall was never released")
+        )
+        (spExists provider)
 
 {- | The per-case assertions against the live persistent stack @project up@ brought
 up. Every case runs in the **VM frame** (the frame where the NodePort is
@@ -2514,78 +2486,19 @@ assertRegistrySurvivesRestart cfg frame = do
                     then Pass
                     else Fail "registry-persistence: the pushed image was LOST after a registry pod restart (storage is not durable)"
 
-{- | Prove the host-owned durable root survives the destructive provider path:
-write through the running web service, destroy every derived frame, rebuild the
-stack, then read the marker through the newly created web pod.
+{- | The assertion-only suite cannot yet express the required same-run
+destroy/recreate choreography.  Returning an honest red result keeps this case
+visible in the configured five-case matrix without letting project-owned test
+code invoke a second Production lifecycle.  The harness engine will own the
+write -> exact destroy -> fresh exact up -> read sequence once its durable
+same-run invocation transition is available.
 -}
 assertDurableReadback :: HostConfig -> LiftContext -> IO CaseResult
-assertDurableReadback cfg frame = do
-    let markerUrl = "http://localhost:30080/api/durable/marker"
-        request method = liftLeaf cfg frame (RawCmd ["curl", "-fsS", "-X", method, markerUrl])
-    written <- request "POST"
-    case written of
-        Right (ExitSuccess, _, _) -> do
-            self <- getExecutablePath
-            runSelfOrDie self ["project", "destroy"]
-            withHarnessMutationGuard (runSelfOrDie self ["project", "up"])
-            readBack <- request "GET"
-            pure $ case readBack of
-                Right (ExitSuccess, out, _)
-                    | "hostbootstrap-destroy-up-v1" `isInfixOf` out -> Pass
-                Right (ExitFailure n, _, err) ->
-                    Fail ("durable-readback: GET failed after recreate (exit " ++ show n ++ "): " ++ err)
-                Right (ExitSuccess, out, _) ->
-                    Fail ("durable-readback: unexpected marker after recreate: " ++ out)
-                Left err -> Fail ("durable-readback: GET failed after recreate: " ++ err)
-        Right (ExitFailure n, _, err) ->
-            pure (Fail ("durable-readback: POST failed (exit " ++ show n ++ "): " ++ err))
-        Left err -> pure (Fail ("durable-readback: POST failed: " ++ err))
-
-{- | Run the binary's own subcommand (the self-reference, § U), streaming its
-output and surfacing a **legible** failure (development_plan_standards § CC,
-stream-then-die). The child's stdout is inherited so a long recursive @project up@
-is observable in real time instead of block-buffered until it exits; its stderr is
-captured to detect the structured-failure markers and carry the cause. A failure
-is thrown as a structured exception, never a message-less @die@ (@ExitFailure 1@):
-a 'SafetyRefusal' round-trips as before, a child that already carried a
-'LifecycleFailure' is re-raised with its inner reason (no per-frame envelope
-accretion), and any other non-zero exit becomes a 'LifecycleFailure' carrying the
-child's stderr — so the harness report card renders /why/ the bring-up failed.
--}
-runSelfOrDie :: FilePath -> [String] -> IO ()
-runSelfOrDie self args = do
-    (_, _, mErr, ph) <-
-        createProcess (proc self args){std_out = Inherit, std_err = CreatePipe}
-    err <- maybe (pure "") hGetContents mErr
-    _ <- evaluate (length err)
-    code <- waitForProcess ph
-    case code of
-        ExitSuccess -> unless (null err) (hPutStr stderr err >> hFlush stderr)
-        ExitFailure n
-            | safetyRefusalMarker `isInfixOf` err -> throwIO (SafetyRefusal err)
-            | Just reason <- afterMarker lifecycleFailureMarker err -> throwIO (LifecycleFailure reason)
-            | otherwise ->
-                throwIO
-                    ( LifecycleFailure
-                        (self ++ " " ++ unwords args ++ " failed (exit " ++ show n ++ ")\n" ++ err)
-                    )
-
-{- | Extract the reason a child process carried after a structured-failure marker in
-its stderr (the § CC subprocess round-trip). Returns the text after the **last**
-marker occurrence, so a 'LifecycleFailure' re-raised through several nested frames
-is not re-wrapped with an extra @failed (exit 1)@ envelope at each hop. 'Nothing'
-when the marker is absent (a plain child @die@, which the caller wraps once).
--}
-afterMarker :: String -> String -> Maybe String
-afterMarker marker = go Nothing
-  where
-    go found str
-        | marker `isPrefixOf` str =
-            let rest = drop (length marker) str
-             in go (Just (dropWhile isSpace rest)) rest
-        | otherwise = case str of
-            [] -> found
-            (_ : t) -> go found t
+assertDurableReadback _cfg _frame =
+    pure
+        ( Fail
+            "durable-readback: the exact same-run destroy/up lifecycle cycle is not implemented"
+        )
 
 {- | The project image carries both the served demo app and the base image's
 Playwright installation, so the e2e runner never pulls an external Playwright
@@ -2645,9 +2558,11 @@ data AcceleratorRoleFields = AcceleratorRoleFields
 
 {- | The demo's service-handler registry (§ AA). The validated leaf context
 selects the closed role, and its definition projects only the explicit
-role-owned parameters into the handler.
+role-owned parameters into the handler. The registry is parametric in the
+whole 'ProjectConfig' family, so finalization may instantiate the same
+definitions for Production or any exact Harness scope.
 -}
-demoServices :: ServiceRegistry (ProjectConfig (Production DemoProject))
+demoServices :: ServiceRegistry ProjectConfig
 demoServices =
     either (error . show) id $
         serviceRegistry
@@ -2737,16 +2652,16 @@ on Linux, WSL2 on Windows), selected once and interpreted generically by the
 lifecycle helpers below ('substrateExists' / 'runLaunch' / 'substrateWait' /
 'stageSource' / 'demoProviderReverse'). Replaces the former hand-branched
 @DemoVMProvider@ with the single pure 'SubstrateProvider' value, so per-substrate
-knowledge lives in one place ('selectSubstrateProvider').
+knowledge lives in one place ('selectProviderKind').
 -}
 demoProvider :: HostConfig -> IO SubstrateProvider
-demoProvider cfg = do
-    either die pure (selectSubstrateProvider (hcSubstrate cfg) demoVMHandles)
+demoProvider cfg =
+    pure (selectProviderKind (providerKindForSubstrate (hcSubstrate cfg)) demoVMHandles)
 
 {- | Stable daemon-host path used at the two Docker boundaries. The provider
 share exposes the project-owned host @.data@ at a substrate-specific guest path;
-the VM bootstrap creates this alias to that path. The direct Linux GPU lane
-creates the same alias on the metal host. Keeping the Docker-visible path fixed
+the VM bootstrap creates this alias to that path. The direct Linux GPU lane has
+no guest alias and binds the canonical host projection itself. Keeping the Docker-visible path fixed
 lets the checked-in kind configs carry one byte-for-byte mount contract while
 the actual durable directory remains @<host project root>/.data@.
 -}
@@ -2764,14 +2679,19 @@ reconcileDurableShare ::
 reconcileDurableShare _vmReady cfg share =
     case hpsReconcile share of
         Nothing -> pure ()
-        Just (ShareReconcile (ExistsProbe tool args _) _ _) -> do
-            result <- runTool cfg tool args
-            output <- case result of
-                Right (ExitSuccess, out, _) -> pure out
-                Right (ExitFailure n, _, err) ->
-                    die ("vm up: durable-share probe failed (exit " ++ show n ++ "): " ++ err)
-                Left err -> die ("vm up: durable-share probe failed: " ++ err)
-            runEffects cfg (shareReconcileEffects share output)
+        Just (ShareReconcile probe _ _) ->
+            foldExistsProbe
+                (throwIO (LifecycleFailure "vm up: direct host unexpectedly requested guest share reconciliation"))
+                ( \tool args _ -> do
+                    result <- runTool cfg tool args
+                    output <- case result of
+                        Right (ExitSuccess, out, _) -> pure out
+                        Right (ExitFailure n, _, err) ->
+                            die ("vm up: durable-share probe failed (exit " ++ show n ++ "): " ++ err)
+                        Left err -> die ("vm up: durable-share probe failed: " ++ err)
+                    runEffects cfg (shareReconcileEffects share output)
+                )
+                probe
 
 {- | Prove the host-backed durable share is a writable directory INSIDE the guest,
 then mint the 'Ready DurableShareMounted' witness the alias step requires
@@ -2784,9 +2704,13 @@ Consumes the 'Ready NetworkReady' witness, so it cannot run before the network i
 awaitDurableShareMounted ::
     ObservedReady NetworkReady -> HostConfig -> SubstrateProvider -> HostPathShare -> IO (ObservedReady DurableShareMounted)
 awaitDurableShareMounted _net cfg provider share =
-    case vmShellArgs (spLiftLayer provider) ["bash", "-lc", mountProbe] of
-        Nothing -> throwIO (LifecycleFailure ("vm up: " ++ spVmId provider ++ " is not a VM frame; cannot probe the durable share"))
-        Just (tool, args) -> do
+    case providerGuestShellArgs provider ["bash", "-lc", mountProbe] of
+        Left refusal ->
+            throwIO
+                ( LifecycleFailure
+                    ("vm up: durable-share guest probe is unsupported: " ++ show refusal)
+                )
+        Right (tool, args) -> do
             outcome <- awaitObservedReady networkPoll ("vm up: durable share mounted in " ++ spVmId provider) (exitZeroProbe tool args) cfg
             either
                 (\e -> throwIO (LifecycleFailure ("vm up: durable share not mounted/writable in " ++ spVmId provider ++ ": " ++ renderPollError e)))
@@ -2836,9 +2760,13 @@ gatherVMAliasFacts cfg provider aliasPath = do
 -- | Run a trivial guest command and report whether it exited zero (§ CC).
 inVMExitZero :: HostConfig -> SubstrateProvider -> String -> IO Bool
 inVMExitZero cfg provider script =
-    case vmShellArgs (spLiftLayer provider) ["bash", "-lc", script] of
-        Nothing -> pure False
-        Just (tool, args) -> do
+    case providerGuestShellArgs provider ["bash", "-lc", script] of
+        Left refusal ->
+            throwIO
+                ( LifecycleFailure
+                    ("guest command is unsupported for the selected provider: " ++ show refusal)
+                )
+        Right (tool, args) -> do
             r <- runTool cfg tool args
             pure $ case r of
                 Right (ExitSuccess, _, _) -> True
@@ -2847,9 +2775,9 @@ inVMExitZero cfg provider script =
 -- | Capture a trivial guest command's stdout (used for @readlink@ in the facts probe).
 captureInVMStdout :: HostConfig -> SubstrateProvider -> String -> IO (Either String String)
 captureInVMStdout cfg provider script =
-    case vmShellArgs (spLiftLayer provider) ["bash", "-lc", script] of
-        Nothing -> pure (Left (spVmId provider ++ " is not a VM frame"))
-        Just (tool, args) -> do
+    case providerGuestShellArgs provider ["bash", "-lc", script] of
+        Left refusal -> pure (Left ("guest command is unsupported: " ++ show refusal))
+        Right (tool, args) -> do
             r <- runTool cfg tool args
             pure $ case r of
                 Right (ExitSuccess, out, _) -> Right out
@@ -2866,6 +2794,7 @@ runEffects cfg = mapM_ go
     go (RunHostTool tool args) = runOrDie cfg tool args
     go (ApplyGlobalWslWall body) = acquireDemoWslWall body
     go (ReleaseGlobalWslWall body) = releaseDemoWslWall body
+    go (RunDirectHost action) = runDirectHostAction action
 
 {- | Run teardown effects best-effort under one intent message: a missing or
 already-stopped VM is not a failure for idempotent teardown.
@@ -2879,6 +2808,19 @@ runEffectsBestEffort cfg intent = mapM_ go
     -- cordoned, or leaving the operator's original .wslconfig unrestored, is a
     -- durable global side effect a green teardown must not report.
     go (ReleaseGlobalWslWall body) = releaseDemoWslWall body
+    go (RunDirectHost action) = runDirectHostAction action
+
+{- | Interpret an explicit direct-host lifecycle transition. The local frame
+requires no guest mutation, but acknowledging the closed action keeps this
+truthful realization distinct from an unimplemented empty effect list.
+-}
+runDirectHostAction :: DirectHostAction -> IO ()
+runDirectHostAction action =
+    case action of
+        RealizeDirectHost ->
+            putStrLn "provider: selected the already-local direct-host frame; no guest provisioning is required"
+        ReconcileDirectHostReady ->
+            putStrLn "provider: reconciled the already-local direct-host frame to ready"
 
 {- | The demo's identity for the one per-user global WSL2 wall.
 
@@ -2946,17 +2888,20 @@ releaseDemoWslWall body = do
                     ("project down: the global WSL2 wall was not released: " ++ show err)
                 )
 
--- | Probe whether the provider's VM already exists (idempotent reconcile).
+-- | Probe whether the provider frame exists; direct host is structurally present.
 substrateExists :: HostConfig -> SubstrateProvider -> IO Bool
 substrateExists cfg sp =
-    case spExists sp of
-        ExistsProbe tool args membership -> do
+    foldExistsProbe
+        (pure True)
+        ( \tool args membership -> do
             r <- runTool cfg tool args
             case r of
                 Right (ExitSuccess, out, _) -> pure (spVmId sp `elem` membersOf membership out)
                 Right (ExitFailure n, _, err) ->
                     die ("provider existence probe failed for " ++ spVmId sp ++ " (exit " ++ show n ++ "): " ++ err)
                 Left err -> die ("provider existence probe failed for " ++ spVmId sp ++ ": " ++ err)
+        )
+        (spExists sp)
 
 {- | Poll the provider's readiness probe until the VM answers, bounded by @n@
 two-second attempts (the substrate-generic peer of the former per-provider
@@ -2967,8 +2912,7 @@ substrateWait cfg sp = do
     outcome <- awaitObservedReady vmBootPoll ("vm up: " ++ spVmId sp) probe cfg
     either (const (die ("vm up: " ++ spVmId sp ++ " did not become ready"))) pure outcome
   where
-    probe = case spWait sp of
-        WaitProbe tool args -> exitZeroProbe tool args
+    probe = foldWaitProbe (\_ -> pure (ProbeReady ())) exitZeroProbe (spWait sp)
 
 {- | Keep only the WALL effects of a launch effect list (the WSL2 @.wslconfig@
 acquire/release) — used to re-apply the cordon on the idempotent reconcile path
@@ -2982,6 +2926,7 @@ wallEffectsOnly = filter isWall
     isWall (ApplyGlobalWslWall _) = True
     isWall (ReleaseGlobalWslWall _) = True
     isWall (RunHostTool _ _) = False
+    isWall (RunDirectHost _) = False
 
 {- | Disclose that applying the WSL2 @.wslconfig@ ceiling runs @wsl --shutdown@ — a
 global cross-distro side-effect (the historical @0x80072746@ session-drop surface):
@@ -3000,9 +2945,13 @@ three-second attempts.
 -}
 waitVMNetwork :: ObservedReady VMReady -> HostConfig -> SubstrateProvider -> IO (ObservedReady NetworkReady)
 waitVMNetwork _vmReady cfg sp =
-    case vmShellArgs (spLiftLayer sp) ["bash", "-lc", netProbe] of
-        Nothing -> throwIO (LifecycleFailure ("vm up: " ++ spVmId sp ++ " is not a VM frame; cannot wait for network"))
-        Just (tool, args) -> do
+    case providerGuestShellArgs sp ["bash", "-lc", netProbe] of
+        Left refusal ->
+            throwIO
+                ( LifecycleFailure
+                    ("vm up: guest network readiness is unsupported: " ++ show refusal)
+                )
+        Right (tool, args) -> do
             outcome <- awaitObservedReady networkPoll ("vm up: " ++ spVmId sp ++ " network") (exitZeroProbe tool args) cfg
             ready <-
                 either
@@ -3025,9 +2974,9 @@ path.
 -}
 waitDockerReady :: HostConfig -> SubstrateProvider -> IO (ObservedReady DockerDaemon)
 waitDockerReady cfg provider =
-    case vmShellArgs (spLiftLayer provider) ["bash", "-lc", "docker info >/dev/null 2>&1"] of
-        Nothing -> die ("waitDockerReady: " ++ spVmId provider ++ " is not a VM frame")
-        Just (tool, args) -> do
+    case providerGuestShellArgs provider ["bash", "-lc", "docker info >/dev/null 2>&1"] of
+        Left refusal -> die ("waitDockerReady: guest Docker readiness is unsupported: " ++ show refusal)
+        Right (tool, args) -> do
             outcome <- awaitObservedReady dockerPoll ("pristine-bootstrap: docker daemon in " ++ spVmId provider) (exitZeroProbe tool args) cfg
             daemon <-
                 either
@@ -3065,9 +3014,9 @@ in the run log (§ C).
 -}
 runBuildImageReporting :: HostConfig -> SubstrateProvider -> String -> String -> IO ()
 runBuildImageReporting cfg provider script input =
-    case vmShellArgs (spLiftLayer provider) ["bash", "-lc", script] of
-        Nothing -> die ("runInDemoVM: " ++ spVmId provider ++ " is not a VM frame")
-        Just (tool, args) -> do
+    case providerGuestShellArgs provider ["bash", "-lc", script] of
+        Left refusal -> die ("runInDemoVM: guest build route is unsupported: " ++ show refusal)
+        Right (tool, args) -> do
             result <- runToolWithStdin cfg tool args input
             case result of
                 Right (ExitSuccess, out, _) -> unless (null out) (putStr out)
@@ -3102,9 +3051,9 @@ the in-VM base-image pull of build #3 (see 'HostBootstrap.Registry').
 -}
 runInDemoVMStdin :: HostConfig -> SubstrateProvider -> String -> String -> IO ()
 runInDemoVMStdin cfg provider script input =
-    case vmShellArgs (spLiftLayer provider) ["bash", "-lc", script] of
-        Just (tool, args) -> runOrDieStdin cfg tool args input
-        Nothing -> die ("runInDemoVM: " ++ spVmId provider ++ " is not a VM frame")
+    case providerGuestShellArgs provider ["bash", "-lc", script] of
+        Right (tool, args) -> runOrDieStdin cfg tool args input
+        Left refusal -> die ("runInDemoVM: guest route is unsupported: " ++ show refusal)
 
 {- | Run a resolved host tool, streaming its stdout and dying with the captured
 stderr on a non-zero exit.
@@ -3119,9 +3068,8 @@ runOrDieStdin cfg tool args input = do
     case result of
         Right (ExitSuccess, out, _) -> unless (null out) (putStr out)
         -- A failed host-tool step surfaces a structured 'LifecycleFailure' carrying its
-        -- captured output (§ CC) rather than a message-less @die@: propagated to the top
-        -- of a nested @project up@ it prints its marker to stderr, and the parent
-        -- 'runSelfOrDie' round-trips the carried cause up to the harness report card.
+        -- captured output (§ CC) rather than a message-less @die@: the common
+        -- interpreter carries the structured cause to the harness report card.
         Right (ExitFailure n, out, err) ->
             throwIO
                 ( LifecycleFailure
@@ -3149,6 +3097,8 @@ runVmEnsure stepCfg = demoAction stepCfg Context.HostOrchestratorCommand [Contex
             | isAppleSilicon (hcSubstrate cfg) -> do
                 runEnsure EnsureLima.reconciler
                 putStrLn "vm ensure: Apple Silicon uses a Lima VM (no Incus nested VM)"
+            | substrateName (hcSubstrate cfg) == LinuxGpu ->
+                putStrLn "provider ensure: Linux GPU uses the already-local direct host (no VM prerequisite)"
             | isLinux (hcSubstrate cfg) -> runEnsure Incus.reconciler
             | isWindows (hcSubstrate cfg) -> do
                 runEnsure EnsureWsl2.reconciler
@@ -3176,14 +3126,16 @@ runVmUp stepCfg = demoConfigContext stepCfg Context.HostOrchestratorCommand [Con
     -- is started rather than re-creating it (a create on an existing instance
     -- fails), so a re-run of `project up` reconciles a partially-built stack.
     exists <- substrateExists cfg sp
-    harnessRun <- lookupEnv harnessMutationGuardEnv
-    when (harnessRun == Just "1" && exists) $
-        throwIO
-            ( SafetyRefusal
-                ( "managed VM appeared after provider ensure; refusing to reconcile pre-existing state: "
-                    ++ spVmId sp
-                )
-            )
+    case clusterProfileOf projectCfg of
+        TestCase _ ->
+            when exists $
+                throwIO
+                    ( SafetyRefusal
+                        ( "managed VM appeared after provider ensure; refusing to reconcile pre-existing state: "
+                            ++ spVmId sp
+                        )
+                    )
+        Production -> pure ()
     if exists
         then do
             putStrLn ("vm up: " ++ spVmId sp ++ " already exists; re-applying the cordon + ensuring it is started (idempotent)")
@@ -3255,18 +3207,23 @@ applyReconcileCordon :: HostConfig -> SubstrateProvider -> IO ()
 applyReconcileCordon cfg sp =
     case spReconcileCordon sp of
         Nothing -> pure ()
-        Just (ExistsProbe tool args membership, whenStopped) -> do
-            r <- runTool cfg tool args
-            running <- case r of
-                Right (ExitSuccess, out, _) -> pure (spVmId sp `elem` membersOf membership out)
-                Right (ExitFailure n, _, err) -> die ("vm up: reconcile-state probe failed (exit " ++ show n ++ "): " ++ err)
-                Left err -> die ("vm up: reconcile-state probe failed: " ++ err)
-            if running
-                then putStrLn ("vm up: " ++ spVmId sp ++ " is already running; its cordon is live — skipping the global `wsl --shutdown`")
-                else do
-                    discloseWslShutdown
-                    putStrLn ("vm up: " ++ spVmId sp ++ " is stopped; applying the .wslconfig cordon via `wsl --shutdown` so the utility VM re-reads it on the next boot")
-                    runEffects cfg whenStopped
+        Just (probe, whenStopped) ->
+            foldExistsProbe
+                (throwIO (LifecycleFailure "vm up: direct host unexpectedly requested VM cordon reconciliation"))
+                ( \tool args membership -> do
+                    r <- runTool cfg tool args
+                    running <- case r of
+                        Right (ExitSuccess, out, _) -> pure (spVmId sp `elem` membersOf membership out)
+                        Right (ExitFailure n, _, err) -> die ("vm up: reconcile-state probe failed (exit " ++ show n ++ "): " ++ err)
+                        Left err -> die ("vm up: reconcile-state probe failed: " ++ err)
+                    if running
+                        then putStrLn ("vm up: " ++ spVmId sp ++ " is already running; its cordon is live — skipping the global `wsl --shutdown`")
+                        else do
+                            discloseWslShutdown
+                            putStrLn ("vm up: " ++ spVmId sp ++ " is stopped; applying the .wslconfig cordon via `wsl --shutdown` so the utility VM re-reads it on the next boot")
+                            runEffects cfg whenStopped
+                )
+                probe
 
 requireDemoLifecycleResources :: Resources -> Either String ()
 requireDemoLifecycleResources actualResources = do
@@ -3401,11 +3358,12 @@ runDirectHostBootstrap stepCfg = demoConfigContext stepCfg Context.HostOrchestra
     let root = T.unpack (Context.sourceRoot ctx)
     _hostDurableRoot <- ensureProfileDataPath (clusterProfileOf parentCfg) root
     let directPlan = resolvePlanWithDriver demoProject root (clusterProfileOf parentCfg) NvkindDriver
-    harnessRun <- lookupEnv harnessMutationGuardEnv
-    when (harnessRun == Just "1") $ do
-        exists <- directClusterExists cfgAfterDocker directPlan
-        when exists $
-            throwIO (SafetyRefusal "direct nvkind state appeared after Docker ensure; refusing to reconcile it before CUDA mutates Docker")
+    case clusterProfileOf parentCfg of
+        TestCase _ -> do
+            exists <- directClusterExists cfgAfterDocker directPlan
+            when exists $
+                throwIO (SafetyRefusal "direct nvkind state appeared after Docker ensure; refusing to reconcile it before CUDA mutates Docker")
+        Production -> pure ()
     runEnsure EnsureCuda.reconciler
     cfg <- resolveHostConfig
     -- The Docker build context is the repository root because the Dockerfile
@@ -3453,24 +3411,32 @@ streamVMConfig ::
     IO ()
 streamVMConfig _vmReady cfg provider parentCfg ctx = do
     let remotePath = vmDemoRoot ++ "/.build/hostbootstrap-demo.dhall"
-        vmCfg =
-            projectConfigFromContext
-                parentCfg
-                (Context.deriveVMContextWithProvider (spProviderKind provider) ctx (T.pack vmDemoRoot))
-    runInDemoVMStdin
-        cfg
-        provider
-        ( "mkdir -p "
-            ++ shellQuote (vmDemoRoot ++ "/.build")
-            ++ " && sudo mkdir -p /run/hostbootstrap"
-            ++ " && printf %s "
+        script =
+            "mkdir -p "
+                ++ shellQuote (vmDemoRoot ++ "/.build")
+                ++ " && sudo mkdir -p /run/hostbootstrap"
+                ++ " && printf %s "
             ++ shellQuote (spVmId provider)
             ++ " | sudo tee /run/hostbootstrap/vm-provider >/dev/null"
-            ++ " && cat > "
-            ++ shellQuote remotePath
-        )
-        (T.unpack (renderProjectConfig vmCfg))
-    putStrLn ("pristine-bootstrap: streamed parent-derived VM config into " ++ spVmId provider ++ ":" ++ remotePath)
+                ++ " && cat > "
+                ++ shellQuote remotePath
+    case providerGuestShellArgs provider ["bash", "-lc", script] of
+        Left refusal ->
+            throwIO
+                ( LifecycleFailure
+                    ("pristine-bootstrap: VM config delivery requires a guest provider: " ++ show refusal)
+                )
+        Right (tool, args) -> do
+            let vmCfg =
+                    projectConfigFromContext
+                        parentCfg
+                        ( Context.deriveVMContextWithProvider
+                            (providerTopologyKind (spProviderKind provider))
+                            ctx
+                            (T.pack vmDemoRoot)
+                        )
+            runOrDieStdin cfg tool args (T.unpack (renderProjectConfig vmCfg))
+            putStrLn ("pristine-bootstrap: streamed parent-derived VM config into " ++ spVmId provider ++ ":" ++ remotePath)
 
 {- | The published base tag the demo's project container builds @FROM@ — cpu /
 the detected VM architecture. The base is pulled inside the VM by build #3.

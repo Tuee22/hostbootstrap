@@ -25,15 +25,19 @@ import qualified HarnessSpec
 import qualified HostToolSpec
 import qualified IncusSpec
 import qualified LifecycleSpec
+import qualified LiftContextSpec
 import qualified LiftSpec
 import qualified LimaSpec
 import qualified ProjectRootSpec
+import qualified ProjectPlanSpec
 import qualified ClusterBackendSpec
 import qualified DataRootSpec
 import qualified GeneratedConfigSpec
 import qualified ClusterReconcileSpec
 import qualified ProviderSpec
 import qualified ProviderAliasSpec
+import qualified ProviderBackendSpec
+import qualified ProviderReconcileSpec
 import qualified ReadinessSpec
 import qualified ReconcileSpec
 import qualified RegistryPlanSpec
@@ -141,11 +145,14 @@ main = do
                         , CordonSpec.tests
                         , ProviderSpec.tests
                         , ProviderAliasSpec.tests
+                        , ProviderBackendSpec.tests
+                        , ProviderReconcileSpec.tests
                         , ClusterReconcileSpec.tests
                         , ClusterBackendSpec.tests
                         , DataRootSpec.tests
                         , GeneratedConfigSpec.tests
                         , ProjectRootSpec.tests
+                        , ProjectPlanSpec.tests
                         , ContextSpec.tests
                         , LifecycleSpec.tests
                         , HarnessSpec.tests
@@ -159,6 +166,7 @@ main = do
 #else
                         , WslGlobalWallHostSpec.tests
 #endif
+                        , LiftContextSpec.tests
                         , LiftSpec.tests
                         , StepSpec.tests
                         , ChainSpec.tests

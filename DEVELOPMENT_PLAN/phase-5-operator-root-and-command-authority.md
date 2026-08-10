@@ -1,144 +1,272 @@
-# Phase 5 — Operator, root, and command authority
+# Phase 5 — Installed identity, operator verification, and authority kernels
 
 **Status**: Done
 **Depends on**: Phase 4 (protected store)
 **Substrates**: none (static)
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`, including the compile-fail fixtures
 
-> **Purpose**: Replace self-asserted permission with unforgeable, generation-indexed authority values that
-> only a verified operator invocation can mint.
+> **Purpose**: Turn independently verified executable, operating-system, store, and generation facts into
+> opaque authority inputs, while leaving lifecycle-specific command admission to the phases that possess
+> the complete plan, lease, frame, cursor, and context package.
 
 ## Phase Objective
 
-A command must not authorize itself. Before this phase the only thing a verb could consult was the decoded
-configuration it was handed — which is the caller's own claim. This phase introduces the chain that
-converts an operating-system fact into a typed capability: the OS permits this process to act as the
-project's operator, therefore a root invocation authority exists for this exact verb under this exact
-broker generation, therefore a command authority exists for this exact frame and phase, exactly once.
-
-Every value here has a private constructor and a generative type index, so it cannot be forged, retained
-across a generation boundary, or presented at a frame it was not minted for.
+An invocation cannot establish authority by choosing a phantom type, replaying a recorded integer, or
+presenting descriptive configuration. This phase supplies the lower authority vocabulary and the sealed
+compare-and-swap kernels later lifecycle gates consume. The safe facade verifies installed identity and
+the current OS principal, exposes opaque inspection, and parses the closed verb vocabulary; only the
+allow-listed package implementation can allocate a fresh epoch, select a root scope, or reserve a command
+invocation. Recorded recovery evidence remains in the protected transition that read it and never remints
+an epoch from an integer.
 
 ## Sprints
 
-### Sprint 5.1: Verbs, phases, and installed project identity [Done]
-
-**Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`
-**Substrates**: none
-**Docs to update**: `documents/architecture/binary_context_config.md`
-
-#### Objective
-
-Make the verb and the project identity types rather than strings.
-
-#### Deliverables
-
-- `ProjectVerb` is a GADT over `VerbUp`, `VerbDown`, `VerbDestroy`, so a value minted for one verb cannot
-  be presented for another.
-- `LifecyclePhase` distinguishes `PreparePhase`, `ExecutePhase`, and `TeardownPhase` at the type level.
-- `InstalledProject projectId` carries a validated project name; `withInstalledProject` opens a generative
-  index for a binary with no installed config family, and `installedProjectFor` fixes the index to the
-  project's own config family.
-- The declared project name must equal the invoked executable identity, so one binary cannot present itself
-  as another project.
-
-#### Validation
-
-`AuthoritySpec` covers verb parsing, the name validation, and both project openers.
-
-#### Remaining Work
-
-None.
-
-### Sprint 5.2: Operator authorization and broker generations [Done]
-
-**Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`
-**Substrates**: none
-**Docs to update**: `documents/architecture/binary_context_config.md`
-
-#### Objective
-
-Turn an OS fact into a typed capability, and index every capability by generation.
-
-#### Deliverables
-
-- `verifyOperatorAuthorization` reads the operating system's own answer and yields an
-  `OperatorAuthorization` bound to the store it was issued against; presenting it to another store refuses.
-- `BrokerEpoch brokerGeneration` is generative and monotonic; `withFreshBrokerEpoch` allocates the next one
-  durably, and `withRecordedBrokerEpoch` reopens the type identity of a generation a record already names.
-- A fresh generation is what fences a dead invocation's permits out. Reusing one would make a delayed
-  permit indistinguishable from a live one — see [rationale.md](rationale.md).
-
-#### Validation
-
-`AuthoritySpec` covers the OS check, the cross-store refusal, monotonic allocation, and the recorded-epoch
-reopening.
-
-#### Remaining Work
-
-None.
-
-### Sprint 5.3: Root invocation and command authority [Done]
+### Sprint 5.1: Closed verb and phase vocabulary [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Config/Authority/Internal.hs`,
-`core/hostbootstrap-core/test/compile-fail/`
+`core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: none
 **Docs to update**: `documents/architecture/binary_context_config.md`
 
 #### Objective
 
-One root authority per verified invocation, one command authority per frame, consumed once.
+Make lifecycle verbs and phases closed type-indexed vocabularies.
 
 #### Deliverables
 
-- `withVerifiedRootInvocation` consumes the operator authorization, the generation, and the exact verb, and
-  yields `RootInvocationAuthority scope brokerGeneration verb` inside a continuation. It also binds the
-  store to this project on first use.
-- `authorizeProjectCommand` yields `CommandAuthority` for one verb at one frame of one plan in one phase,
-  under one generation, exactly once. The frame index is generative, so an authority obtained for one frame
-  cannot be presented at another even when the frame names match.
-- `InvocationId` is recorded durably *before* it is handed out, so a one-use identity cannot be replayed.
-- `HarnessAuthority projectId runId` is minted only inside the harness opener and is the only planning
-  capability a project test component receives; there is no function from it to a production capability.
-- Compile-fail fixtures prove each opaque constructor is unreachable from outside its module.
+- `ProjectVerb` is a GADT over `VerbUp`, `VerbDown`, and `VerbDestroy`; a value for one verb cannot inhabit
+  another.
+- `LifecyclePhase` distinguishes `PreparePhase`, `ExecutePhase`, and `TeardownPhase` at the type level.
+- Parsing yields one existential member of the closed verb set or a typed refusal; there is no text-backed
+  extension constructor.
 
 #### Validation
 
-`AuthoritySpec` covers the mint, the one-use consumption, and each refusal. `CompileFailSpec` runs the
-fixtures and asserts GHC rejects them by content rather than by line wrapping.
+`AuthoritySpec` covers every accepted verb, unknown-verb refusal, and exact rendering.
 
 #### Remaining Work
 
 None.
 
-### Sprint 5.4: The closure root half [Done]
+### Sprint 5.2: Generative installed project identity [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`
+**Substrates**: none
+**Docs to update**: `documents/architecture/binary_context_config.md`,
+`documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Bind project identity before any plan, run, or authority identity exists.
+
+#### Deliverables
+
+- `InstalledProjectIdentity projectId` has a hidden constructor and exists only inside a rank-2 continuation.
+- `withInstalledProjectIdentity` validates an ASCII stable project name against the normalized leaf of
+  `getExecutablePath`, including the Windows `.exe` spelling, before minting `projectId`.
+- The safe facade cannot fix project identity to a caller-chosen phantom or reconstruct it from its rendered
+  name; Phase 7 threads this opener through the configuration and CLI surfaces.
+- Stable record keys derive their project component only from `InstalledProjectIdentity`.
+
+#### Validation
+
+`AuthoritySpec` covers matching/mismatching executable identities, Windows suffix normalization, and invalid
+ASCII stable names. Pinned compile-fail fixtures cover constructor forgery, rank-2 escape, and nominal-index
+coercion; Phase 7 covers propagation across distinct runtime invocations.
+
+#### Remaining Work
+
+None.
+
+### Sprint 5.3: Verified OS principal [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`
+**Substrates**: none
+**Docs to update**: `documents/architecture/binary_context_config.md`
+
+#### Objective
+
+Represent the OS decision separately from lifecycle authority.
+
+#### Deliverables
+
+- `verifyOsPrincipal` asks the operating system to create and remove a probe in the exact protected records
+  directory and yields opaque `VerifiedOsPrincipal` only on success.
+- The evidence retains the protected-store identity and is refused by a kernel operating on another store.
+- `VerifiedOsPrincipal` grants no verb, scope, plan, epoch, or command authority by itself.
+
+#### Validation
+
+`AuthoritySpec` covers OS refusal, matching-store evidence, and root/reservation refusal across stores.
+
+#### Remaining Work
+
+None.
+
+### Sprint 5.4: Broker epochs [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: none
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
 
 #### Objective
 
-Separate "this verb may close the project" from "the project is provably closeable".
+Make a broker generation evidence of a protected transition, not an integer claim.
 
 #### Deliverables
 
-- `ProductionCloseKind` distinguishes `SettledDestroyClose` from `PreEffectRefusalClose`.
-- `destroyCloseRoot` accepts only an exact `VerbDestroy` root; `preEffectCloseRoot` accepts any production
-  verb.
-- Both yield `ProductionCloseRoot`, which is the root half only. The proof half is a separate value from the
-  lifecycle-modes phase, and neither closes a project alone.
-- A close root records the project name, because the `projectId` index belongs to the config family and two
-  projects sharing a family share it — see [rationale.md](rationale.md).
+- `BrokerEpoch brokerGeneration` is opaque and generative.
+- The package-private fresh opener advances the installed project's protected monotonic counter before yielding
+  the new epoch and retains its exact project and store origin.
+- Root admission rechecks that origin. No recorded-value opener exists: higher recovery transitions retain or
+  verify the generation evidence from their protected record without reconstructing `BrokerEpoch`.
+- The exposed module offers no `Word64 -> BrokerEpoch` route, and nominal roles prevent coercing one generation
+  index into another.
 
 #### Validation
 
-`AuthoritySpec` covers both producers and the refusal when the root and the proof disagree.
+`AuthoritySpec` covers monotonic allocation, malformed/exhausted counter refusal, and project/store separation.
+Pinned compile-fail and import guards cover constructor opacity, nominal coercion, and raw-opener absence.
+
+#### Remaining Work
+
+None.
+
+### Sprint 5.5: Scoped root invocation authority [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`
+**Substrates**: none
+**Docs to update**: `documents/architecture/binary_context_config.md`,
+`documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Verify one exact root invocation without letting a public caller select its lifecycle scope.
+
+#### Deliverables
+
+- `RootInvocationAuthority scope brokerGeneration verb` is opaque and retains the installed project, durable
+  protected-store identity, project/store-bound broker epoch, and exact closed verb.
+- Its package-private producer consumes the exact installed identity, verified OS principal, epoch, verb, and a
+  scope selected by the composite lifecycle transaction.
+- The verifier binds an unclaimed authority store to the installed identity with compare-and-swap and refuses a
+  store already bound to another project.
+- The exposed module offers no standalone root opener and no scope-selection witness.
+
+#### Validation
+
+`AuthoritySpec` reaches the kernel through the composite Production/Harness brackets and covers project/store,
+verb, epoch-origin, and scope binding. Pinned compile-fail fixtures cover constructor, scope-substitution,
+nominal-role, and public-opener absence.
+
+#### Remaining Work
+
+None.
+
+### Sprint 5.6: Root-scope narrowing [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`
+**Substrates**: none
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Expose the root's established scope without exposing a scope constructor.
+
+#### Deliverables
+
+- `RootScopeAuthority scope` is opaque.
+- `rootScopeAuthority` projects it only from `RootInvocationAuthority scope brokerGeneration verb`.
+- No function converts one `RootScopeAuthority` to another scope or constructs one from configuration/context.
+
+#### Validation
+
+`AuthoritySpec` covers exact projection; compile-fail fixtures cover construction and cross-scope substitution.
+
+#### Remaining Work
+
+None.
+
+### Sprint 5.7: Command authority vocabulary [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/test/compile-fail/ForgeCommandAuthority.hs`
+**Substrates**: none
+**Docs to update**: `documents/architecture/binary_context_config.md`
+
+#### Objective
+
+Define the opaque result shared by proof-complete lifecycle command gates.
+
+#### Deliverables
+
+- `CommandAuthority scope planId frame authorityEpoch verb phase` carries the exact scope, plan, frame,
+  authority epoch, verb, and phase indices.
+- Its constructor is package-private; the safe authority facade exposes inspection but no producer. The later
+  proof-complete `authorizeProjectUp`, child, and teardown gates own public production.
+- `commandAuthorityEpoch` returns the indexed epoch value rather than erasing it to an unrelated word.
+- The safe authority facade exports no generic lifecycle command-authority producer; the reservation producer
+  remains package-private and proof-complete gates own its use.
+
+#### Validation
+
+Pinned construction/coercion fixtures cover scope, plan, frame, and epoch indices, and an exported-surface
+guard pins the safe facade's absence of a generic producer.
+
+#### Remaining Work
+
+None.
+
+### Sprint 5.8: One-use command reservation kernel [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`
+**Substrates**: none
+**Docs to update**: `documents/architecture/binary_context_config.md`
+
+#### Objective
+
+Give later complete authorization gates one atomic reservation primitive.
+
+#### Deliverables
+
+- Package-private `CommandReservation` contains the stable installed-project, protected-store, plan-digest,
+  frame-key, epoch, verb, and phase identity already verified by its caller.
+- `reserveCommandInvocationKernel` compare-and-swaps the exact absent reservation to consumed before yielding
+  `CommandAuthority`.
+- The record key is SHA-256 over one canonical length-prefixed encoding; the complete encoding is retained in
+  the record so a digest collision refuses rather than consuming another invocation.
+- Concurrent identical reservations have exactly one winner; changing any stable member names a distinct
+  reservation.
+- The kernel performs no plan, lease, frame, cursor, or context validation and is not an authorization gate.
+
+#### Validation
+
+`AuthoritySpec` covers thread and POSIX cross-process one-winner races plus every stable key member. Import
+guards restrict the kernel to its allow-listed package implementation and keep configuration/reconciliation
+dependencies above it.
+
+Dated evidence for the phase gate: `cabal test all --ghc-options=-Werror` from `core/` passed 1088/1088
+on 2026-08-08 (aarch64-osx, GHC 9.12.4). The gate includes all 69 public compile-fail boundaries.
 
 #### Remaining Work
 
@@ -147,12 +275,14 @@ None.
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
-- `documents/architecture/binary_context_config.md` — descriptive context versus opaque authority, and the
-  operator → root → command chain.
-- `documents/architecture/lifecycle_state_model.md` — where the closure root half sits.
+- `documents/architecture/binary_context_config.md` — installed identity, OS evidence, root scope, and the
+  reservation kernel beneath proof-complete command gates.
+- `documents/architecture/lifecycle_state_model.md` — the composite lifecycle transaction that alone scopes a
+  root and the later consumers of `CommandAuthority`.
 
 **Engineering docs to create/update:**
-- `documents/engineering/testing.md` — the compile-fail fixture mechanism.
+- `documents/engineering/testing.md` — compile-fail/export/import guards and the cross-process reservation race.
 
 **Cross-references to add:**
-- `development_plan_standards.md` § X names this phase as the owner of command gating.
+- `development_plan_standards.md` § X and § EE name this phase as the owner of the lower authority vocabulary;
+  Phases 9, 12, 13, 17, and 18 own its proof-complete lifecycle consumers.

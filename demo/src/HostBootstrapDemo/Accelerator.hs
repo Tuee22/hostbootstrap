@@ -3,7 +3,7 @@
 {- | Demo accelerator worker source generation.
 
 The daemon runtime is owned by the later service/runtime phases. This module is
-the Phase-13 demo-owned static substrate: deterministic worker source templates,
+the demo-owned static substrate: deterministic worker source templates,
 artifact hashes, and pure build-command builders for the four accelerator lanes.
 -}
 module HostBootstrapDemo.Accelerator (

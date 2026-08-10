@@ -1,4 +1,4 @@
--- | The mechanical documentation validator (Phase-0 quality-gate deliverable).
+-- | The mechanical documentation validator for the governed plan.
 --
 -- 'validateRepo' walks the governed @documents/@ suite, the governed root
 -- documents (@README.md@, @AGENTS.md@, @CLAUDE.md@), and the @DEVELOPMENT_PLAN/@
@@ -12,6 +12,7 @@
 --     @DEVELOPMENT_PLAN/@ docs
 --   * root @README.md@ references to both @documents/@ and @DEVELOPMENT_PLAN/@
 --   * @DEVELOPMENT_PLAN/@ phase docs retaining @## Documentation Requirements@
+--   * phase-header status harmony with @DEVELOPMENT_PLAN/README.md@'s status table
 --   * @snake_case@ file naming under @documents/@ (only @README.md@ is exempt)
 --   * the canonical @documents/@ taxonomy (no top-level category outside the
 --     declared set)
@@ -40,6 +41,7 @@ module HostBootstrap.DocValidator
     -- * Plan-doctrine checks (development_plan_standards.md § A, § C, § G, § II)
     checkPhaseNumbering,
     checkPhaseHeader,
+    checkPhaseStatusHarmony,
     checkPhaseOrdering,
     checkNoReversal,
     checkSprintStructure,
@@ -50,7 +52,8 @@ where
 
 import Control.Monad (filterM, foldM)
 import Data.Char (isDigit)
-import Data.List (isInfixOf, isPrefixOf, isSuffixOf, sort, sortOn)
+import Data.List (isInfixOf, isPrefixOf, isSuffixOf, nub, sort, sortOn)
+import Data.Maybe (isNothing)
 import System.Directory
   ( doesDirectoryExist,
     doesFileExist,
@@ -99,6 +102,7 @@ validateRepo root = do
   -- for contiguity, then each document individually.
   let numberingV = checkPhaseNumbering root phaseDocs
   headerV <- concatMapM (checkPhaseHeader root) phaseDocs
+  statusHarmonyV <- checkPhaseStatusHarmony root phaseDocs
   orderingV <- concatMapM (checkPhaseOrdering root) phaseDocs
   reversalV <- concatMapM (checkNoReversal root) phaseDocs
   sprintV <- concatMapM (checkSprintStructure root) phaseDocs
@@ -118,6 +122,7 @@ validateRepo root = do
             ++ ledgerV
             ++ numberingV
             ++ headerV
+            ++ statusHarmonyV
             ++ orderingV
             ++ reversalV
             ++ sprintV
@@ -242,14 +247,263 @@ checkPhaseHeader root file = do
   let rel = rrel root file
       missing field =
         [ Violation rel ("phase document missing '**" ++ field ++ "**:' header field")
-        | not (any (\l -> ("**" ++ field ++ "**:") `isPrefixOf` trim l) ls)
+        | isNothing (phaseHeaderFieldValue field ls)
         ]
       badStatus =
         [ Violation rel ("phase status is not one of Done|Active|Planned: " ++ observed)
-        | Just observed <- [fieldValue "Status" ls],
+        | Just observed <- [phaseHeaderFieldValue "Status" ls],
           observed `notElem` ["Done", "Active", "Planned"]
         ]
   pure (concatMap missing ["Status", "Depends on", "Substrates", "Gate"] ++ badStatus)
+
+-- | One parsed row from @DEVELOPMENT_PLAN/README.md@'s status table.
+--
+-- The link label is deliberately discarded. Phase titles are prose and can be
+-- edited without changing identity; the numeric cell and normalized link path
+-- are the stable join key shared with the phase documents.
+data PhaseStatusRow = PhaseStatusRow
+  { statusRowNumber :: Int,
+    statusRowPath :: FilePath,
+    statusRowStatus :: String
+  }
+
+{- | § J: every phase document's header status agrees with the one
+cross-phase status source of truth.
+
+Rows are joined to phase documents by both the numeric cell and the normalized
+link target. This catches a correctly numbered row that points at the wrong
+document without depending on the human-facing phase title. Table structure is
+validated here as well so a missing, duplicate, or malformed row cannot make
+the comparison vacuously pass.
+-}
+checkPhaseStatusHarmony :: FilePath -> [FilePath] -> IO [Violation]
+checkPhaseStatusHarmony root phaseDocs = do
+  let readme = root </> "DEVELOPMENT_PLAN" </> "README.md"
+      readmeRel = rrel root readme
+  exists <- doesFileExist readme
+  if not exists
+    then pure [Violation readmeRel "required Current Phase Status source is missing"]
+    else do
+      readmeLines <- readLines readme
+      documents <- mapM readPhaseDocument phaseDocs
+      let (rows, tableViolations) = parsePhaseStatusTable root readme readmeLines
+          numberedDocuments =
+            [ (number, rrel root file, status)
+            | (file, Just number, status) <- documents
+            ]
+          malformedDocumentViolations =
+            [ Violation
+                (rrel root file)
+                "phase status cannot be matched because the phase filename has no numeric phase identity"
+            | (file, Nothing, _status) <- documents
+            ]
+          duplicateNumberViolations =
+            [ Violation
+                readmeRel
+                ("duplicate Current Phase Status row for phase number " ++ show number)
+            | number <- nub (map statusRowNumber rows),
+              length (filter ((== number) . statusRowNumber) rows) > 1
+            ]
+          duplicatePathViolations =
+            [ Violation
+                readmeRel
+                ("duplicate Current Phase Status row for path " ++ path)
+            | path <- nub (map statusRowPath rows),
+              length (filter ((== path) . statusRowPath) rows) > 1
+            ]
+          missingRowViolations =
+            [ Violation
+                readmeRel
+                ( "Current Phase Status table is missing phase "
+                    ++ show number
+                    ++ " row for "
+                    ++ path
+                )
+            | (number, path, _status) <- numberedDocuments,
+              null (matchingRows number path rows)
+            ]
+          missingHeaderStatusViolations =
+            [ Violation
+                path
+                ( "phase status harmony cannot compare phase "
+                    ++ show number
+                    ++ " because the phase header is missing '**Status**:'"
+                )
+            | (number, path, Nothing) <- numberedDocuments
+            ]
+          unmatchedRowViolations =
+            [ Violation
+                readmeRel
+                ( "Current Phase Status row for phase "
+                    ++ show (statusRowNumber row)
+                    ++ " and path "
+                    ++ statusRowPath row
+                    ++ " does not match any phase document"
+                )
+            | row <- rows,
+              not
+                ( any
+                    (\(number, path, _status) -> number == statusRowNumber row && path == statusRowPath row)
+                    numberedDocuments
+                )
+            ]
+          mismatchViolations =
+            [ Violation
+                path
+                ( "phase status mismatch for phase "
+                    ++ show number
+                    ++ ": README has "
+                    ++ tableStatus
+                    ++ " but the phase header has "
+                    ++ documentStatus
+                )
+            | (number, path, Just documentStatus) <- numberedDocuments,
+              tableStatus <- nub (map statusRowStatus (matchingRows number path rows)),
+              tableStatus /= documentStatus
+            ]
+      pure
+        ( tableViolations
+            ++ malformedDocumentViolations
+            ++ duplicateNumberViolations
+            ++ duplicatePathViolations
+            ++ missingRowViolations
+            ++ missingHeaderStatusViolations
+            ++ unmatchedRowViolations
+            ++ mismatchViolations
+        )
+  where
+    readPhaseDocument file = do
+      ls <- readLines file
+      pure (file, phaseNumberOf file, phaseHeaderFieldValue "Status" ls)
+
+matchingRows :: Int -> FilePath -> [PhaseStatusRow] -> [PhaseStatusRow]
+matchingRows number path =
+  filter (\row -> statusRowNumber row == number && statusRowPath row == path)
+
+-- | Parse only the table beneath the exact status-section heading. Other
+-- tables in the plan README are irrelevant to the status contract.
+parsePhaseStatusTable :: FilePath -> FilePath -> [String] -> ([PhaseStatusRow], [Violation])
+parsePhaseStatusTable root readme ls =
+  case currentPhaseStatusSection ls of
+    Nothing -> ([], [Violation rel "missing '## Current Phase Status' section"])
+    Just section ->
+      case dropWhile (not . isTableLine) section of
+        [] -> ([], [Violation rel "Current Phase Status section has no markdown table"])
+        tableStart ->
+          let tableLines = takeWhile isTableLine tableStart
+              headerCells = firstTableCells tableLines
+              expectedWidth = max 3 (length headerCells)
+              headerViolations =
+                [ Violation rel "malformed Current Phase Status table header; expected #, Phase, and Status columns"
+                | take 3 headerCells /= ["#", "Phase", "Status"]
+                ]
+              separatorCells = case drop 1 tableLines of
+                (separator : _) -> case splitTableRow separator of
+                  Just cells -> cells
+                  Nothing -> []
+                [] -> []
+              separatorViolations =
+                [ Violation rel "malformed Current Phase Status table separator"
+                | length separatorCells /= expectedWidth
+                    || not (all isSeparatorCell separatorCells)
+                ]
+              parsed = map (parsePhaseStatusRow root readme expectedWidth) (drop 2 tableLines)
+              rows = [row | Right row <- parsed]
+              malformedRowViolations = [violation | Left violation <- parsed]
+           in (rows, headerViolations ++ separatorViolations ++ malformedRowViolations)
+  where
+    rel = rrel root readme
+    firstTableCells tableLines = case tableLines of
+      (header : _) -> case splitTableRow header of
+        Just cells -> cells
+        Nothing -> []
+      [] -> []
+
+parsePhaseStatusRow :: FilePath -> FilePath -> Int -> String -> Either Violation PhaseStatusRow
+parsePhaseStatusRow root readme expectedWidth row =
+  case splitTableRow row of
+    Nothing -> malformed "row must begin and end with '|'"
+    Just cells
+      | length cells /= expectedWidth ->
+          malformed
+            ( "expected "
+                ++ show expectedWidth
+                ++ " cells but found "
+                ++ show (length cells)
+            )
+      | numberCell : phaseCell : statusCell : _ <- cells ->
+          case parsePhaseNumber numberCell of
+            Nothing -> malformed "the # cell is not a non-negative integer"
+            Just number ->
+              case extractLinkTargets phaseCell of
+                [target]
+                  | isCheckableTarget target ->
+                      let linkedPath =
+                            rrel root
+                              (takeDirectory readme </> takeWhile (/= '#') target)
+                       in case phaseNumberOf linkedPath of
+                            Nothing -> malformed "the Phase link does not target a phase-N-*.md document"
+                            Just linkedNumber
+                              | linkedNumber /= number ->
+                                  malformed
+                                    ( "phase number "
+                                        ++ show number
+                                        ++ " does not match linked path "
+                                        ++ linkedPath
+                                    )
+                              | statusCell `notElem` ["Done", "Active", "Planned"] ->
+                                  malformed
+                                    ( "the Status cell is not one of Done|Active|Planned: "
+                                        ++ statusCell
+                                    )
+                              | otherwise -> Right (PhaseStatusRow number linkedPath statusCell)
+                _ -> malformed "the Phase cell must contain exactly one relative markdown link"
+      | otherwise -> malformed "row has fewer than the required #, Phase, and Status cells"
+  where
+    rel = rrel root readme
+    malformed reason =
+      Left
+        ( Violation
+            rel
+            ("malformed Current Phase Status row (" ++ reason ++ "): " ++ trim row)
+        )
+
+currentPhaseStatusSection :: [String] -> Maybe [String]
+currentPhaseStatusSection ls =
+  case dropWhile ((/= "## Current Phase Status") . trim) ls of
+    [] -> Nothing
+    (_heading : rest) -> Just (takeWhile (not . isLevelTwoHeading) rest)
+  where
+    isLevelTwoHeading line = "## " `isPrefixOf` trim line
+
+isTableLine :: String -> Bool
+isTableLine = ("|" `isPrefixOf`) . trim
+
+splitTableRow :: String -> Maybe [String]
+splitTableRow row =
+  case trim row of
+    '|' : rest
+      | not (null rest), last rest == '|' ->
+          Just (map trim (splitOnPipe (init rest)))
+    _ -> Nothing
+  where
+    splitOnPipe [] = [""]
+    splitOnPipe input =
+      let (cell, remainder) = break (== '|') input
+       in cell : case remainder of
+            [] -> []
+            (_pipe : more) -> splitOnPipe more
+
+isSeparatorCell :: String -> Bool
+isSeparatorCell cell =
+  not (null cell) && all (`elem` ("-:" :: String)) cell
+
+parsePhaseNumber :: String -> Maybe Int
+parsePhaseNumber raw =
+  case reads raw of
+    [(number, "")]
+      | number >= 0 -> Just number
+    _ -> Nothing
 
 {- | § A: a phase depends only on strictly lower-numbered phases.
 
@@ -575,6 +829,12 @@ fieldValue field ls = case [trim (drop (length prefix) (trim l)) | l <- ls, pref
   [] -> Nothing
   where
     prefix = "**" ++ field ++ "**:"
+
+-- | Read a field only from the phase-level header block. A sprint's own
+-- @**Status**@ must never stand in for a missing phase status.
+phaseHeaderFieldValue :: String -> [String] -> Maybe String
+phaseHeaderFieldValue field =
+  fieldValue field . takeWhile (not . ("## " `isPrefixOf`) . trim)
 
 {- | Every phase number a @Depends on@ value mentions, read out of its
 @phase-NN-@ links. Prose without a link contributes nothing, which is why § G

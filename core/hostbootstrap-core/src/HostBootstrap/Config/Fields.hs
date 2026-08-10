@@ -111,7 +111,7 @@ decodeRoleWire codec settings input = do
                                     else Right wire
 
 frameworkEnvelopeCodec ::
-    (ProjectCfg projectId cfg) =>
+    (ProjectCfg cfg) =>
     ScopeKind ->
     ProjectCodec scope specDigest cfg ->
     FrameworkEnvelopeCodec scope specDigest cfg

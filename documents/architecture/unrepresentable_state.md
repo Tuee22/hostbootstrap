@@ -56,9 +56,9 @@ these can only exist if the durable compare-and-swap that mints it actually land
 Some values are only meaningful inside the scope that authorized them. A rank-2 bracket binds a fresh
 type variable the caller cannot instantiate, so the value cannot outlive its bracket.
 
-`withProtectedEntry`, `withCanonicalProjectRoot`, `withLifecyclePlan`, and `withVerifiedRootInvocation`
-all do this. It is what makes "this handle is valid only while the entry is held" a type error rather
-than a comment.
+`withProtectedEntry`, `withCanonicalProjectRoot`, `withInstalledProjectIdentity`, and the composite
+Production/Harness root brackets all do this. It is what makes "this handle belongs to the entry,
+root, installed binary, or broker generation that opened it" a type error rather than a comment.
 
 ### Closed sum, total eliminator
 
@@ -73,13 +73,68 @@ prevent — it silently absorbs the case nobody considered.
 ### Phantom indices
 
 A `scope`, `planId`, `runId`, or `resource` index costs nothing at runtime and makes cross-plan,
-cross-scope, and cross-resource mixing a type error. `LifecycleProfile (Production projectId)` versus
+cross-scope, and cross-resource mixing a type error only when the carrier's role is nominal. GHC otherwise
+permits `coerce` across a phantom or representational parameter even when the constructor is hidden.
+`LifecycleProfile (Production projectId)` versus
 `LifecycleProfile (Harness projectId runId)` is the load-bearing instance: a test component has no
 route to a Production profile because there is no term of that type it can reach.
+
+`LifecycleCursor scope planId frame brokerGeneration verb phase` is the six-index durable instance.
+Every role is nominal, its constructor is hidden, and its only public producer consumes the matching
+`AcquisitionJournal` plus `ProjectFrame`. The public successor surface contains only
+`Prepare -> Execute -> Teardown`; there is no function whose input can skip Execute, change the verb,
+advance Teardown, or reinterpret one frame/broker/plan cursor as another. Existential recovery does not
+weaken that relation: `withCurrentLifecycleCursor` quantifies the phase itself and delivers the matching
+phase witness and cursor together.
+
+The reconciliation boundary applies the same rule exhaustively. `StepExecution`, `StepRuntime`, and
+`ResourceCarrier` make both `scope` and `planId` nominal; `ResourceHandle` makes scope, plan, resource
+identity/kind, ownership, and phase nominal; and the receipt, adoption, dependency, prepared-operation,
+result, journal-proof, and phase-transition families make every identity or typestate parameter nominal.
+Thus an equal runtime representation cannot turn a foreign observation into managed ownership, pair the
+halves of different preparations, or relabel one plan's carried resource as another's.
+
+The interpreter-carried `PlannedStepObservation scope planId configId` likewise makes all three roles
+nominal. The backend-facing `StepObservation` remains deliberately plan-independent and non-authorizing;
+the public plan facade wraps it before Chain classifies or settles it. This proves scope, plan, and
+configuration continuity, not a separate node identity: exact Chain supplies the matching planned node and
+descriptor at the call site, while the wrapper itself has no node index.
 
 Indices are only as strong as the values that carry them. An index on a type whose every accessor
 returns plain `Text` is documentation, not enforcement — worth writing when a future consumer will
 need the pairing checked, but it should be described as such until then.
+
+### Project-plan absence guards
+
+The [step-algebra-and-project-plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)
+mechanically guards the project-plan boundary. Its scope is exact and intentionally narrower than the
+behavior of every consumer:
+
+- of the snapshot family, the public pure `HostBootstrap.ProjectPlan` facade exposes only
+  non-authorizing `StablePlanSnapshot`; public snapshot evidence lives in
+  `HostBootstrap.ProjectPlan.Snapshot`, while indexed construction and the canonical encoder remain behind
+  the representation boundary;
+- the current production-source import allowlist for `HostBootstrap.Lifecycle.Plan` is
+  `HostBootstrap.ProjectPlan`, `HostBootstrap.ProjectPlan.Construct`, `HostBootstrap.ProjectPlan.Frame`,
+  `HostBootstrap.ProjectPlan.Snapshot`, `HostBootstrap.Authority.ProjectPlan`, and
+  `HostBootstrap.Lifecycle.Mode`, plus the audited transitional consumers
+  `HostBootstrap.Lifecycle.Session` and `HostBootstrap.Reconcile`; the lexical guard pins that exact set,
+  rejects any additional production importer, and keeps full Lift out of every plan-kernel importer;
+- every Cabal-exposed module has an explicit lexically parsed export list. None exposes the indexed snapshot,
+  canonical encoder, hidden kernel, or a `PlannedResource` constructor, and the plan facade is the sole public
+  exporter of the plan-owned resource/edge projection routes;
+- the command-admission source guard counts only the Production fresh-or-recovered plan admission. The
+  [test-harness-and-run-ownership
+  phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md) owns Harness command adoption and
+  the assertion-only `TestSuite` boundary; and
+- generic `ResourceEnvelope` remains descriptive input to exact generic Budget admission. Proof that the
+  demo envelope comes from its exact configuration, workload, overhead, partition, and slices remains
+  with the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md)'s concrete workload and slice
+  projection.
+
+Dated closure evidence remains in the
+[step-algebra-and-project-plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)
+rather than being duplicated on this architecture page.
 
 ## The proof obligation
 
@@ -87,6 +142,11 @@ A boundary that claims a shape cannot be constructed ships a compile-fail fixtur
 `core/hostbootstrap-core/test/compile-fail/`, registered in `CompileFailSpec`.
 
 Worked examples: `ForgeStepExecution.hs` (a project cannot fabricate a plan-minted descriptor),
+`CoerceExecutionRoles.hs`, `CoerceResourceHandleRoles.hs`, `CoerceReconcilePlanRoles.hs`, and
+`CoerceReconcileEvidenceRoles.hs` (opaque indices cannot be representation-coerced),
+`CoercePlannedStepObservationRoles.hs` (an interpreter-carried observation cannot be relabelled across
+scope, plan, or configuration), `CrossAuthorityChain.hs` and `CrossCursorChain.hs` (an exact Chain entry
+cannot substitute foreign command evidence),
 `ForgePreparedGate.hs` (nor a prepare gate, nor reach one by record update), `ForgeTeardownForest.hs`
 (nor a teardown forest, nor substitute one verb's projection for another's).
 
@@ -126,11 +186,15 @@ Stating the limits is part of the contract, not a caveat appended to it.
   exclusion.
 - **It does not bind a caller who reaches past the boundary.** Sealing a module does not remove the
   underlying package from the build plan. Keeping a surface sealed is a drift-guard obligation, owned
-  by Phase 21, not a property the type system maintains on its own.
+  by the [composition-and-network-algebra phase](../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md),
+  not a property the type system maintains on its own.
 - **It does not make a runtime effect exactly-once.** § EE states the limit directly: no plan may claim
   compile-time exactly-once effects from phantom types alone. Ordinary Haskell values are not linear;
   "consumed" is an interpreter invariant enforced by a journal, and the type only prevents forging the
-  token.
+  token. The lifecycle cursor demonstrates the distinction: one protected CAS reserves each transition
+  at most once, but its callback runs after unlock and is deliberately at-least-once. Recovery or a
+  callback exception may redeliver the same durable phase; backend exactly-once behavior still requires
+  its own journal/fence/idempotence contract.
 - **It does not make an unsound design sound.** A closed sum over the wrong domain is still wrong.
   Totality guarantees every case is *considered*, not that the cases are the right ones.
 
@@ -141,18 +205,37 @@ Stating the limits is part of the contract, not a caveat appended to it.
 | Host-tool resolution (§ K) | `AbsExe` | — (smart constructor, `HostToolSpec`) |
 | Readiness (§ CC) | `Ready`, `Probe`, `PollPolicy` | `RawReadiness.hs` |
 | Capabilities and lifecycle state (§ EE) | `PreparedGate`, ownership receipts, `RunLease` | `ForgePreparedGate.hs`, `ForgeRunLease.hs` |
-| Command authority (§ X) | `CommandAuthority`, `RootInvocationAuthority` | `ForgeCommandAuthority.hs` |
-| Plan, descent, reverse (§ W/§ Y) | `StepPlan`, `StepExecution`, `TeardownForest` | `ForgeStepExecution.hs`, `ForgeTeardownForest.hs` |
+| Installed and broker identity (§ X) | `InstalledProjectIdentity`, `BrokerEpoch` | `EscapeInstalledProjectIdentity.hs`, `ForgeInstalledProjectIdentity.hs`, `CoerceInstalledProjectIdentity.hs`, `CoerceBrokerEpoch.hs` |
+| Root authority (§ X) | `RootInvocationAuthority`, `RootScopeAuthority`; no public root or recorded-epoch opener | `ForgeCommandAuthority.hs`, `CrossRootScopeAuthority.hs`, `ForgeRootScopeAuthority.hs`, `OpenRootInvocationAuthority.hs`, `OpenRecordedBrokerEpoch.hs` |
+| Command authority (§ X) | nominally indexed `CommandAuthority`; no generic producer in the safe authority facade | `ForgeCommandAuthority.hs`, `CrossScopeCommandAuthority.hs`, `CrossPlanCommandAuthority.hs`, `CrossFrameCommandAuthority.hs`, `OpenGenericCommandAuthority.hs` |
+| Authority kernel package boundary (§ X) | hidden `HostBootstrap.Authority.Kernel` | `ImportAuthorityKernel.hs` |
+| Plan-bound acquisition and frame cursor (§ W/§ EE) | hidden-constructor `AcquisitionJournal`; six-role nominal `LifecycleCursor`; existential current-phase recovery; only adjacent phase successors | `ForgeLifecycleCursor.hs`, `CoerceLifecycleCursorScope.hs`, `CrossPlanLifecycleCursorOpen.hs`, `CrossFrameLifecycleCursor.hs`, `CrossBrokerLifecycleCursor.hs`, `CrossVerbLifecycleCursor.hs`, `CrossPhaseLifecycleCursor.hs`, `SkipLifecycleCursorExecute.hs`, `AdvanceTerminalLifecycleCursor.hs` |
+| Plan, descent, reverse (§ W/§ Y) | `StepPlan`, `StepExecution`, plan/config-indexed `PlannedStepObservation`, `TeardownForest` | `ForgeStepExecution.hs`, `CoercePlannedStepObservationRoles.hs`, `ForgeTeardownForest.hs` |
+| Exact current-frame Chain (§ W/§ X/§ EE) | one `ProjectPlan` plus matching execute-phase `CommandAuthority` and `LifecycleCursor`; nominal observation flow | `CrossAuthorityChain.hs`, `CrossCursorChain.hs`, `CoercePlannedStepObservationRoles.hs` |
+| Production command plan continuity (§ W/§ X/§ Y) | one retained or fixed-identity reconstructed `ProjectPlan` across render/persist/journal/cursor/authorize/Chain/current-frame reverse work; no plan-only alternate producer | `CLISpec`, `AuthoritySpec`, `ChainSpec`, `TeardownSpec` |
+| Exact current-frame reverse projection (§ W/§ Y) | nominal `TeardownPlan scope planId frame verb`, produced only from the matching `ProjectPlan` and `CurrentFrame`; projection-only forest opening | `CrossPlanCurrentFrameTeardown.hs`, `CrossFrameTeardownPlan.hs`, `CoerceTeardownPlanFrame.hs`, `LifecyclePlanAsTeardownPlanSource.hs`, `CallerFrameNameTeardown.hs`, `DuplicateCurrentFrameTeardown.hs`, `OpenTeardownForestWithLifecyclePlan.hs`, `OpenTeardownForestWithCurrentFrame.hs`, `ForgeTeardownPlan.hs`, `ForgeInitialTeardownForest.hs` |
 | Process launch (§ HH) | `DetachedLaunch`, `DetachedChild`, `DetachedWorkingDirectory`, `DetachedOutputSink` | `ForgeDetachedLaunch.hs`, `RelabelDetachedLaunch.hs` |
-| Teardown frame and descent (§ X/§ Y) — **target** | `CurrentFrame`, the frame phantom on plan/forest/cursor, the local\/foreign cursor sum, the descent entry | `CrossFrameTeardownCursor.hs`, `ForgeTeardownDescent.hs` |
+| Recursive teardown frame and descent (§ X/§ Y) — **target** | propagation of the existing frame phantom through forest/progress/authorization/cursor/completion, the local\/foreign cursor sum, and the descent entry | `CrossFrameTeardownCursor.hs`, `ForgeTeardownDescent.hs` |
 
-The last row is a **target contract**, not implemented behaviour: it is owned by
+The exact Production command retains or reconstructs one plan identity and has no second command-authority,
+forward-interpreter, descriptor, or reverse-plan entry. That absence does not make pure reverse work into
+authority: `down`/`destroy` exact authorization remains part of the recursive boundary, and a nested
+lifecycle invocation currently refuses before effects.
+
+The exact plan-projection prefix is implemented: one plan plus its admitted current frame produces the
+four-index `TeardownPlan`, while the opener accepts that projection alone. The last row is the remaining
+**target contract**: the forest and every successor value are still unframed, and no closed local/foreign
+cursor or authenticated descent entry exists yet. That suffix is owned by
 [the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
 and its wire by [the authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md).
 Phase status is tracked in [the development plan](../../DEVELOPMENT_PLAN/README.md); this page does not
 duplicate it.
 
 ## The teardown descent boundary — target
+
+This target starts from the already implemented `TeardownPlan scope planId frame verb`; it does not
+derive or accept another `CurrentFrame`. What remains is to carry that existing index into every forest
+state and to authorize its local and descendant branches.
 
 A recursive verb reaches two states that look alike and are not. An **operator** types
 `project destroy` at the topology root. A **parent frame** invokes the same verb inside its child during

@@ -1,11 +1,11 @@
-{- | The incus VM lifecycle: pure argument builders, the name-prefix delete-guard,
-and the reboot-to-ready classification.
+{- | The Incus VM lifecycle: pure argument builders and the name-prefix
+delete-guard.
 
 @incus@ is the host-provider axis (see @development_plan_standards.md § U@).
 Every VM operation goes through the single resolved host @incus@ (the in-VM
 tools are the VM's own @$PATH@ binaries reached through one @incus exec@). The
-argv builders are pure so they are unit-tested; the IO dispatch is the
-provider-backed frame fold in "HostBootstrap.Lift".
+argv builders are pure so they are unit-tested; the common substrate-provider
+layer composes them with the generic frame fold in "HostBootstrap.Lift".
 -}
 module HostBootstrap.Incus (
     IncusVM (..),
@@ -21,15 +21,7 @@ module HostBootstrap.Incus (
 where
 
 import Data.List (isPrefixOf)
-
-{- | An incus VM: its name and the image it launches from
-(e.g. @"images:ubuntu/24.04"@).
--}
-data IncusVM = IncusVM
-    { vmName :: String
-    , vmImage :: String
-    }
-    deriving (Eq, Show)
+import HostBootstrap.Lift.Context (IncusVM (..), execVMArgs)
 
 {- | @incus launch <image> <name> --vm [sizing...]@ — create + start a VM, sized
 by the budget args ('HostBootstrap.Cluster.Cordon.incusSizingArgs').
@@ -44,12 +36,6 @@ startVMArgs vm = ["start", vmName vm]
 -- | @incus stop <name>@.
 stopVMArgs :: IncusVM -> [String]
 stopVMArgs vm = ["stop", vmName vm]
-
-{- | @incus exec <name> -- <cmd...>@ — the single host dispatch into the VM. The
-@<cmd>@ is the VM's own @$PATH@ binary (§ K governs host invocation only).
--}
-execVMArgs :: IncusVM -> [String] -> [String]
-execVMArgs vm cmd = ["exec", vmName vm, "--"] ++ cmd
 
 -- | @incus file push <src> <name>/<dst>@.
 pushFileArgs :: IncusVM -> FilePath -> FilePath -> [String]

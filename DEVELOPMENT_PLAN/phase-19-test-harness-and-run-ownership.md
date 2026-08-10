@@ -3,7 +3,9 @@
 **Status**: Active
 **Depends on**: Phase 18 (recovery and migration)
 **Substrates**: linux-cpu
-**Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus a live `test run all` on linux-cpu
+**Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus on linux-cpu
+`cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern recovery-interruption'`
+from `core/` and `hostbootstrap run -- test run all`
 
 > **Purpose**: Make a test run an exclusively owned transaction whose failures are isolated per variant and
 > whose cleanup cannot delete foreign or concurrently replaced state.
@@ -15,8 +17,13 @@ recoverable lease, clause-holding ownership of the objects it generates, and a s
 killed predecessor left. What this phase adds is the engine on top: per-variant isolation, a structured report
 card, and a cleanup driven by receipts rather than by paths.
 
-The harness has no route to production. A project's test component receives only the harness-indexed planning
-function, and cluster name, data root, and ports all derive from the run identity.
+The harness has no route to Production. The command constructs and retains one exact Harness `ProjectPlan`
+for each admitted variant, then gives the engine an opaque lifecycle over that plan. A project's `TestSuite`
+owns only the safety probe, assertion-environment opener, typed case matrix, per-case assertion, and
+post-reverse absence assertion; it receives no lifecycle callback or Production planning path. The exact plan
+is retained through lifecycle interpretation, while the demo's cluster profile, durable root, and port terms
+still enter through its independently derived run profile. Making those terms exact plan projections belongs
+to the [worked-demo phase](phase-24-worked-demo.md).
 
 ## Sprints
 
@@ -77,19 +84,71 @@ Run the matrix so one variant's failure does not hide another's result.
 - Cleanup failures are their own rows: a data-root cleanup failure, a generated-config cleanup failure, and a
   mode-close failure are separately named.
 - The report card renders every case for every variant, including a suite with no cases.
-- A project's test component receives only the harness-indexed planning function; there is no route to the
-  production planner, proved by a compile-fail fixture.
+- The engine consumes one opaque lifecycle supplied by the command and orders forward, assertions, reverse,
+  and post-reverse verification without constructing or reopening a project plan.
+- A project's `TestSuite` contains only the safety probe, assertion-environment opener, typed cases, case
+  assertion, and post-reverse absence assertion. It receives neither lifecycle actions nor a Production plan.
 
 #### Validation
 
-`HarnessSpec` covers per-case classification, each cleanup-failure row, the empty suite, and the variant
-sequencing. `CompileFailSpec` proves the production planner is unreachable.
+`HarnessSpec` covers per-case classification, each cleanup-failure row, the empty suite, variant sequencing,
+and engine ordering around an opaque lifecycle. The public-signature/source guard proves that `TestSuite`
+cannot invoke project lifecycle operations or obtain a Production plan.
 
 #### Remaining Work
 
 None.
 
-### Sprint 19.3: Reconciler-produced report rows [Done]
+### Sprint 19.3: Exact Harness project-plan command adoption [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
+`core/hostbootstrap-core/internal/harness-lifecycle/HostBootstrap/Harness/Lifecycle/Internal.hs`,
+`core/hostbootstrap-core/test/HarnessSpec.hs`, `core/hostbootstrap-core/test/CLISpec.hs`,
+`core/hostbootstrap-core/test/ChainSpec.hs`, `core/hostbootstrap-core/test/CompileFailSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/run_models.md`,
+`documents/architecture/harness_workflow.md`
+
+#### Objective
+
+Retain one exact Harness project plan through generated-config ownership and drive the common lifecycle
+interpreter directly.
+
+#### Deliverables
+
+- The Harness scope-finalized spec, lifecycle profile, and validated Harness config produce
+  `ProjectPlan (Harness projectId runId) ...`.
+- The generated `runId` remains in every draft, frame, snapshot, lease, journal, cursor, authority, and
+  interpreted node index.
+- The generated-config bracket retains that exact plan while the common forward and reverse interpreters run.
+- `TestSuite` owns the case matrix and assertions, while project lifecycle resides in the plan and command
+  interpreter.
+- Harness dispatch uses the common `forward`, `topology`, snapshot, resource, and chain boundaries directly.
+- Test case selection remains outside project-plan construction.
+- Production evidence cannot enter the Harness path.
+
+#### Validation
+
+`HarnessSpec`, `CLISpec`, and compile-fail fixtures cover exact run identity, direct shared interpretation,
+generated-config lifetime, and Production/Harness separation. A source guard rejects lifecycle-owned
+`project up` or `project destroy` self-invocation from `TestSuite`.
+
+Dated host-static evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4), the focused `HarnessSpec`, `CLISpec`,
+`ChainSpec`, and `ProviderAliasSpec` groups passed 41/41, 47/47, 39/39, and 16/16 respectively; all 234
+public compile-fail boundaries passed; the changed demo consumer's `hostbootstrap-demo-test` suite passed
+123/123; and `cabal test all --ghc-options=-Werror` from `core/` passed 1421/1421 cases in 67.44 seconds,
+including 2/2 governed-documentation checks. This is the static half of this phase's gate, not its still-owed
+live linux-cpu evidence.
+
+#### Remaining Work
+
+None.
+
+### Sprint 19.4: Reconciler-produced report rows [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
@@ -109,8 +168,9 @@ Let the report card carry what the reconcilers actually observed.
   and state an operator must resolve reads as a conflict rather than a break.
 - `classifyLifecycleReason` is what produces them, and it reads the cause the interpreted chain already
   reported. A cause naming none of the three stays an ordinary `BROKEN` row rather than being guessed into one.
-- The three markers live with the harness and are what `observationDetail` renders with, so the row the chain
-  interpreter printed and the row the report card classifies cannot drift apart.
+- The three markers live with the shared `HostBootstrap.Step` observation vocabulary. Harness imports and
+  reexports those exact values, and `observationDetail` renders with them, so the row the chain interpreter
+  printed and the row the report card classifies cannot drift apart.
 - None of the new rows is a pass: a skipped lane did not do what was asked, and `caseResultPassed` stays total
   so a later outcome cannot be silently counted as success.
 - A `ManagedResult` retains its managed handle and teardown receipt while a `ForeignResult` exposes only an
@@ -132,9 +192,11 @@ None.
 
 ## Phase Remaining Work
 
-The live half of the phase gate. Every sprint's own deliverables are built and closed by the host static gate;
-a live `test run all` on linux-cpu is what the phase still owes, and this repository's current development host
-is aarch64-osx.
+The live half of the phase gate. Every sprint's own deliverables are closed by the host static gate, while the
+phase still owes two linux-cpu confirmations: rerun the recovery phase's deterministic interruption matrix with
+`cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern recovery-interruption'`
+from `core/`, then run `hostbootstrap run -- test run all` against live harness infrastructure. Dated evidence
+records both results together. This repository's current development host is aarch64-osx.
 
 ## Documentation Requirements
 
@@ -147,4 +209,5 @@ is aarch64-osx.
   cover.
 
 **Cross-references to add:**
-- `development_plan_standards.md` § W and § Z name this phase as the owner of the harness engine.
+- `development_plan_standards.md` §§ W, Y, and Z name this phase as the owner of the Harness command consumer
+  and assertion engine.

@@ -102,7 +102,7 @@ withAssembledHarnessConfig
   -> Either ConfigError a
 ```
 
-`ProjectCfg projectId cfg` installs a Production mapped codec and, only inside a continuation carrying
+`ProjectCfg cfg` installs an identity-generative Production mapped codec and, only inside a continuation carrying
 exact `HarnessConfigAuthority`, a Harness mapped codec. `withAssembledHarnessConfig` canonical-renders,
 hashes, strictly re-decodes, and checks byte-stable re-rendering before minting fresh rank-2
 `VerifiedConfigWire` and `ValidatedConfig` identities. There is no direct `FromDhall` instance for a
@@ -125,10 +125,10 @@ data ValidatedServiceRequest specDigest configId secretDigest fields service -- 
 data VerifiedRuntimeRoleActivation
   scope planDigest specDigest binaryDigest frame revision instanceId configDigest secretDigest
   service rolePlanDigest permittedEffects -- constructor hidden
-data ConfigHandoff
-data VerifiedHandoff
-  scope planDigest brokerGeneration parentFrame childFrame
-  payloadKind payloadId verb phase -- constructor hidden
+data VerifiedHandoff scope brokerGeneration -- constructor hidden transport proof
+data VerifiedConfigHandoff
+  scope planDigest brokerGeneration parentFrame childFrame configId verb phase
+  -- constructor hidden config/plan-coordinate refinement
 
 withVerifiedRuntimeSecretBundle
   :: VerifiedRuntimeRoleActivation
@@ -258,24 +258,34 @@ test run : <project>.test.dhall --pure matrix validation--> NonEmpty VariantDraf
              cfg (Harness projectId runId)
              --matching mapped ProjectCodec + withAssembledHarnessConfig-->
              VerifiedConfigWire + ValidatedConfig
-             --write--> <project>.dhall --project up--> assert --project destroy
+             --write--> <project>.dhall --direct current-frame forward--> assert
+             --direct current-frame reverse-->
              --cleanup--> delete only if the owned bytes still match; otherwise retain and report
 
 downstream target:
 root ValidatedConfig --build/bind root plan-->
              HarnessConfigWire
-             --one-time ConfigHandoff grant + exact-byte verification-->
-             VerifiedConfigWire + VerifiedHandoff + child HarnessConfigAuthority
-             + ValidatedConfig --withChildProjectPlan-->
+             --one-time handoff grant--> VerifiedHandoff
+             --exact-byte verification--> VerifiedConfigWire + child HarnessConfigAuthority
+             + ValidatedConfig --withVerifiedConfigHandoff--> VerifiedConfigHandoff
+             --withChildProjectPlan-->
              ChildPlanAuthority + child ProjectPlan + PlanDigestBinding
              --authorizeChildProject--> child
 ```
+
+The signed handoff binding includes the root protected-store identity. `HostBootstrap.Handoff` owns only
+the transport proof; `HostBootstrap.Config.Schema` owns `VerifiedConfigHandoff`,
+`HostBootstrap.ProjectPlan.Construct` owns the opaque fully indexed `ChildPlanAuthority`, and
+`HostBootstrap.Authority.ProjectPlan` consumes it. The
+[recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) still
+owns recursive Production descent and child journal/cursor acquisition; current Harness uses the direct
+current-frame path shown above.
 
 Core stays secret-agnostic: it offers the scope-indexed `SecretRef` shape, mapped-codec boundary, and
 restricted assembler;
 everything about
 where secrets live, how they unseal, and which fixtures stand in for them is the project's concern. This is
-why the generic `ProjectSpec projectId cfg tcfg` (rather than a fixed `ProjectConfig`) is required — a
+why the generic `ProjectSpec cfg tcfg` (rather than a fixed `ProjectConfig`) is required — a
 secrets-strict consumer's `cfg scope` is a different shape. `psTestMatrix` validates a pure
 matrix of stable variant drafts, while restricted `psAssemble` injects each variant's test secrets only
 after the harness has opened that variant's fresh project/run-scoped authority. Its
@@ -285,6 +295,6 @@ lifecycle/backend mutation capability.
 ## Cross-references
 
 - [../architecture/generic_project_model.md](../architecture/generic_project_model.md) —
-  `ProjectSpec projectId cfg tcfg` and `psAssemble`, the seam this doc plugs into.
+  `ProjectSpec cfg tcfg` and the identity-polymorphic `psAssemble`, the seam this doc plugs into.
 - [testing.md](testing.md) — the standardized harness that drives the generated config.
 - [schema.md](schema.md) — the project-defined, explicit config schema `SecretRef` fields live in.

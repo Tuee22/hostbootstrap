@@ -19,8 +19,8 @@ ownership receipt when it holds all four **Locked-Origin Identity Ownership** cl
 exclusive lock, a durable origin record written before the first mutation, identity binding to the
 object's stable kernel identity rather than its pathname, and conditional release on exact identity
 match. This **excludes** crash/retry and concurrent cooperating runs and **detects** foreign mutation;
-it does **not** exclude a hostile same-privilege process. No substrate supplies that exclusion, so the
-contract no longer claims it. A backend that cannot satisfy a clause returns `Unsupported` and mints no
+it does **not** exclude a hostile same-privilege process. No substrate supplies that exclusion, and the
+contract makes no such claim. A backend that cannot satisfy a clause returns `Unsupported` and mints no
 receipt.
 
 The normative statement is
@@ -29,12 +29,65 @@ document is its canonical explanation and per-substrate realization.
 
 ## Current Status
 
-The invariant is defined, the algebra that consumes it exists, and five backends now hold all four
-clauses. **Two of them are wired into live call sites**; the rest await the plan-driven wiring their
-sprints own.
+The invariant is defined and the algebra that consumes it exists. The prepared Incus provider/share and
+provider-guest alias implementations now encode all four clauses, but the
+[host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
+has a closed static gate and remains Active until its native Linux/x86_64 KVM/Incus gate passes. The demo
+still uses its compatibility
+provider/alias call site; adopting the sealed route belongs to the
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md). Those facts are implementation claims,
+not closure or native-validation evidence.
 
-- `HostBootstrap.Reconcile` and `HostBootstrap.Readiness` supply the receipt, prepared-operation, and
-  journal types that a satisfying backend settles into. These are implemented.
+- `HostBootstrap.ProjectPlan` is the sole whole-plan producer of `PlannedResource` and `PlannedEdge`.
+  Its facade takes an opaque admitted `OperationKey` plus a closed `PlannedResourceKind`, generates the
+  resource and frame identities under a rank-2 continuation, and admits a typed edge only when the exact
+  resources remain open and the dependency exists in the same plan. `HostBootstrap.Reconcile` consumes
+  that vocabulary through the public facade. Its exact, total `stepExecutionFor` producer accepts one
+  `ProjectPlan scope specDigest planId configId cfg`, a matching `StepRuntime scope planId`, and one
+  `PlannedStep scope planId configId (cfg scope)`. The resulting `StepExecution scope planId` retains the
+  stable plan digest, admitted configuration digest, stable node identity, frame, operation key, ordered
+  dependency prefix, and projected operation keys. The shared `scope`, `planId`, and `configId` inputs make
+  a node from another admission a type error; no caller supplies an identity or asks a membership question.
+  `HostBootstrap.Reconcile` exposes no constructor for the plan, planned resource, or canonical snapshot.
+  Its resource-narrowing and guest-alias adapters consume the same exact descriptor projections.
+
+  `StepRuntime scope planId` contains the interpretation's `ResourceCarrier scope planId`, so a managed
+  resource carried from a projected node can be read only within the same scope and plan. Every phantom
+  parameter on the opaque lifecycle-plan, execution, runtime, carrier, handle, receipt, authority,
+  descriptor, dependency, prepared-call, reconcile-result, journal-proof, and phase-evidence types has an
+  explicit nominal role. Equal runtime representations therefore cannot use `coerce` to relabel a scope,
+  plan, resource, operation, phase, attempt, or journal identity.
+
+  Public `HostBootstrap.Chain` now consumes one exact `ProjectPlan` and its non-empty `forward`
+  projection together with a matching execute-phase `CommandAuthority` and `LifecycleCursor`. Before it
+  begins I/O, it checks that the authority belongs to the supplied `ProtectedStore`, and it compares the
+  cursor's retained store plus decoded acquisition project/store/broker origin with that authority. It
+  also compares the retained frame, verb, and phase terms before opening the journal or performing any
+  durable transition. The authority's broker epoch and invocation identity drive the operation session,
+  each exact `PlannedStep` enters the total `stepExecutionFor` producer, and descent comes only from the
+  plan's `DerivedTopology`. The term-level origin check makes even a hostile package substitution fail
+  before durable state is opened rather than relying only on nominal indices. Every later protected
+  entry revalidates the cursor's exact acquisition source and current durable row under that same
+  exclusive entry before its dependent journal/session/prepare/settle/close action. An execute cursor
+  advanced to teardown therefore cannot be reused through a stale in-memory value.
+
+  The step callback's raw `StepObservation` is deliberately plan-independent and grants no ownership.
+  The public plan facade immediately wraps that result under the projected scope, plan, and configuration
+  indices as opaque nominal `PlannedStepObservation scope planId configId`; a caught safety refusal is
+  wrapped through the same call-site `PlannedStep`. Chain classifies, reports, and acknowledges only this
+  indexed wrapper, so an
+  observation from another scope, plan, or configuration cannot enter the node's settlement path through
+  `coerce`.
+
+  Production `HostBootstrap.Command` retains or reconstructs one exact plan and keeps render/persist,
+  journal/cursor admission, `authorizeProjectUp`, Chain interpretation, observations, and current-frame
+  reverse work under that identity. No Production plan-only authority, raw-step descriptor, alternate
+  forward interpreter, or reverse-plan producer exists. This exact representation does not itself mint
+  `down`/`destroy` authority; nested lifecycle entry fails closed and
+  [the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
+  owns the proof-complete operator/descent gates. The
+  [test-harness-and-run-ownership phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md)
+  owns direct Harness interpretation.
 - `HostBootstrap.Harness.DataRoot` holds all four clauses for the harness durable data root, and is
   **live**: `HostBootstrap.Harness.Ownership` — the bracket every `test run` executes inside — acquires
   and releases `.test_data` through it. The origin record naming the exact prior identity-or-absence is
@@ -48,20 +101,37 @@ sprints own.
   release unlinks only on an exact re-observed identity **and** payload. Both share
   `HostBootstrap.Harness.Identity`, so the directory and file realizations cannot drift. Recording the
   payload digest before the write is what makes the crash window between the record and the identity
-  binding resolvable without ever adopting bytes the record does not name. It replaced a
-  `<config>.hostbootstrap-test-owner` directory that held none of the four clauses.
+  binding resolvable without ever adopting bytes the record does not name. No pathname sidecar participates
+  in that authority.
+- `HostBootstrap.Substrate.Provider.Backend` and `Provider.Reconcile` supply the prepared Incus
+  provision/readiness/share/stop/delete route. The opaque nominal `ManagedProviderHandle` and
+  `ManagedProviderShareHandle` retain the exact backend origin rather than exposing their generic
+  handle/receipt components. Incus publishes an explicit-absence fresh-nonce origin before launch, binds
+  the VM UUID and owner nonce, records share intent/device identity durably, and revalidates those facts
+  before every later mutation or guest execution. Direct uses the same prepared algebra only for a
+  plan-local reservation and identity share; it publishes no physical-host origin and cannot produce
+  successful stop/delete authority.
 - `HostBootstrap.Substrate.Provider.Alias` supplies the typed prepared call/release for the
-  provider-guest durable alias, and `discoverStrongAliasBackend` mints a backend that holds all four
-  clauses against a real POSIX guest filesystem. The demo still creates the alias with an unowned
-  `ln -s`; migrating that call site is open Sprint 11.10 work.
+  provider-guest durable alias. Its `StrongAliasBackend` is derived only from the capability for the exact
+  managed Running provider and accepts the exact opaque managed share authority. `ManagedGuestAliasHandle`
+  hides the generic handle/receipt authority after settlement. The whole-plan alias projection yields its
+  opaque alias resource and typed alias-to-share edge only when the durable-share node both depends on the
+  provider and declares the derived `<provider>/<share>/guest-alias` operation. The demo still creates the
+  alias through its compatibility pathname route; migrating that call site belongs to
+  [the worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
 - `HostBootstrap.Cluster.Backend` holds all four clauses for the kind cluster, binding to the
-  control-plane node's container ID. The plan-level replacement of the imperative `ensureCluster`
-  delete-recreate is open Sprint 5.7 work.
+  control-plane node's container ID. The plan-level cluster interpreter belongs to the
+  [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
 - The WSL2 global `.wslconfig` wall is a portable driver (`Wsl2.GlobalWall.Host`) over a `Posix` and a
   `Windows` backend; the backup-existence (`.bak`) inference is gone. On 2026-08-01 the Windows-gated
   suite exercised the production entrypoint against a temporary `USERPROFILE` and passed all four
   native apply/restore/origin/replacement cases. This is focused adapter evidence, not the full WSL2
   provider lifecycle gate.
+
+The plan projections above are descriptive identity and topology evidence, not ownership receipts or
+mutation authority. They prevent a caller from supplying a plan digest, frame text, resource identity, or
+dependency edge independently; the selected backend must still satisfy all four clauses below before it
+may mutate the named object or mint ownership evidence.
 
 Phase and sprint ownership is in
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md). Where a clause below has no live
@@ -107,27 +177,39 @@ the same Ubuntu image, so the guest column is one implementation, not three.
 
 | Clause | Windows host | POSIX host | Shell-invoked frame (provider guest, project container) |
 |---|---|---|---|
-| 1 — exclusive entry | `LockFileEx` byte-range lock | `flock` via `unix` | an exclusive `flock(2)` through whichever front end the frame has: `flock(1)` (util-linux) or `lockf(1)` (BSD userland) |
-| 2 — durable origin record | journal under the project state directory: write-temp, fsync, rename | same | same, recorded host-side |
+| 1 — exclusive entry | `LockFileEx` byte-range lock | `flock` via `unix` | the provider/alias routes admit only util-linux `flock(1)` over the `flock(2)` namespace; a discovered `lockf(1)` remains descriptive `Unsupported` |
+| 2 — durable origin record | journal under the project state directory: write-temp, fsync, rename | same | create-if-absent record with a fresh 256-bit nonce inside the host-backed durable target; file and directory fsync plus exact readback before the alias effect |
 | 3 — identity binding | `getFileInformationByHandle` → `bhfiVolumeSerialNumber` + `bhfiFileIndex` | `deviceID` / `fileID` from `getFileStatus` | `stat -c '%d:%i'` (GNU coreutils) or `stat -f '%d:%i'` (BSD); neither follows a symlink |
-| 4 — conditional release | re-observe through the retained handle, compare, act | same | `stat`, compare, `unlink` |
+| 4 — conditional release | re-observe through the retained handle, compare, act | same | under the retained lock, `stat` the symlink itself, compare exact device/inode, unlink only on equality, flush the parent, then conditionally remove the exact managed record |
 
 Every mechanism above uses a dependency or platform API already present. `Win32` ships with the pinned
 GHC; the Windows host backend supplements its public surface with a narrow direct `kernel32` FFI where
 exact status preservation is required. This adds no Haskell package, C shim, or Cabal `c-sources`, and
 `unix` remains the existing conditional POSIX dependency.
 
-The shell-invoked column is **discovered, never assumed**. A backend's discovery probe asks the frame it
-will actually run in which front ends it has and retains the answer on the opaque capability, so the
-bracket cannot be built from a tool the frame was never shown to have, and an unrecognized report is
+The shell-invoked column is **discovered, never assumed**. A backend's closed discovery plan asks the frame
+it will actually run in which front ends it has; the injected executor returns only raw command outcomes,
+and a private total parser retains the answer on the opaque discovery value. The bracket therefore cannot
+be built from a tool the frame was never shown to have, and an unrecognized report is
 `Unsupported` rather than a guess. Selecting from the build host's `os()` would be wrong in the ordinary
 case, not the exotic one: a macOS host drives a Linux guest, so the host's userland says nothing about the
-guest's. `flock(1)` and `lockf(1)` take the same kernel lock on the same inode, so a holder of either
-excludes a holder of the other — two front ends, not two schemes. They differ in one respect that these
-brackets do not rely on: `flock(1)` passes the locked descriptor to the command it runs, while `lockf(1)`
-keeps it, so under `lockf` the wrapper is the holder. It blocks until the script exits, so the lock still
-spans the whole bracket; it would not outlive the wrapper in a process the script backgrounded, and these
-scripts background nothing.
+guest's. On Linux, `flock(2)` locks and the POSIX record locks commonly used by `lockf(1)` are distinct
+kernel namespaces and do not mutually exclude one another. Provider discovery may retain `GuestLockf` as
+a descriptive observation, but the strong alias backend refuses it as `Unsupported`; the Incus ownership
+backend likewise requires one resolved `Flock` executable. This prevents two nominally supported front ends
+from guarding the same origin record with non-interoperating locks.
+
+The provider-guest alias record is keyed by a SHA-256 digest of an injective owner binding containing the
+exact provider origin, share key/generation, alias key/generation, alias, and target; the complete binding
+is also stored and checked, so the digest is only a bounded filename. Its `prepared` state records explicit
+absence plus a fresh 64-hex-digit nonce before the first alias mutation. A nonce-named staging symlink is
+flushed and published at the final pathname with `link(..., follow_symlinks=False)`, which is atomic
+no-replace and preserves the staging symlink's device/inode. The `managed` record is then written and
+fsynced separately, atomically replaces the prepared record, and is read back after directory fsync.
+Release first persists and reads back a version-fenced `releasing` record, then conditionally unlinks the
+same identity and durably proves record/alias absence. A retry after any boundary resumes only the exact
+`prepared`, `managed`, or `releasing` state and nonce; a correct-looking foreign symlink with no matching
+durable record is reported foreign. No pathname sidecar participates in ownership.
 
 Publishing a file under a name that must not already exist uses the platform's atomic **no-replace
 link**: `link(2)` on POSIX and `CreateHardLinkW` on Windows. A hard link publishes the written bytes under
@@ -151,13 +233,14 @@ path with a config that is already present.
 
 Guest-side probes obey the probe discipline in [readiness](readiness.md): one observation per probe, no
 compound `set -eu`, no nested `"$(…)"`, so they survive the Windows PowerShell → `wsl` → `bash` path.
-`stat` and the lock front end meet that bar; branching and retry stay in Haskell. A discovery probe is
-still one round trip: it reports the front ends it found on stdout and exits non-zero if any required tool
-is missing, so it is fail-closed rather than partially satisfied.
+`stat` and the lock front end meet that bar; branching and retry stay in Haskell. Where a private marker,
+tool path, identity, or backend report is required, success means exactly one LF-terminated stdout line and
+empty stderr. Extra lines, carriage returns, missing newlines, unexpected arity, and unknown tags are typed
+failure rather than partially accepted evidence.
 
 ## What the invariant excludes
 
-Stating this exactly is part of the contract. Overclaiming here is the defect the previous rule had.
+Stating this exactly is part of the contract; any stronger claim is unsupported.
 
 | Scenario | Outcome |
 |---|---|
@@ -186,25 +269,24 @@ identity mismatch), `SafetyRefusal` (a policy decline), and `Failure` (an IO fau
 total, so these never collapse into one branch. See
 [lifecycle state model](lifecycle_state_model.md) for the full error algebra.
 
-## Why the rule changed
+## Why all four clauses are required
 
-The superseded rule required "an OS-protected namespace plus an identity-bound conditional
-mutation/delete." That is a statement about a *platform primitive*, and no platform in scope supplies
-one for these objects. Three consequences followed:
+An "OS-protected namespace plus an identity-bound conditional mutation/delete" is a statement about a
+*platform primitive*, and no platform in scope supplies one for these objects. It is not the governing
+contract for three reasons:
 
-1. **It was uniformly unmet.** Backend discovery returned `Unsupported` on every substrate, so the
-   typed ownership path was unreachable and production kept an unowned bypass. A rule that no backend
+1. **It is uniformly unavailable.** Backend discovery would return `Unsupported` on every substrate, so a
+   typed ownership path could not be reached. A rule that no backend
    can satisfy enforces nothing.
-2. **Satisfying it broke uniformity.** The only serious attempt was a Windows-specific native shim,
-   which would have made one substrate authoritative and the others not — the opposite of what a
+2. **A platform-specific shim breaks uniformity.** A Windows-only native shim would make one substrate
+   authoritative and the others not — the opposite of what a
    uniform contract is for.
-3. **It drove unbounded scope.** Because the shim still did not meet the bar, the next step was a
-   privileged Windows broker service. That is a large, platform-specific, security-sensitive surface
-   bought for a guarantee the contract could not honestly deliver on any substrate anyway.
+3. **A privileged broker has unbounded scope.** Such a service is a large, platform-specific,
+   security-sensitive surface bought for a guarantee the contract cannot honestly deliver uniformly.
 
-Restating the rule as a protocol keeps every property that was actually load-bearing — crash recovery,
-exclusion of cooperating races, refusal to clobber — expresses them identically on all substrates, and
-drops only the claim that a hostile same-privilege process is excluded. That claim was never true.
+The four-clause protocol keeps the load-bearing properties — crash recovery, exclusion of cooperating races,
+and refusal to clobber — and expresses them identically on all substrates. It does not claim exclusion of a
+hostile same-privilege process.
 
 ## Validation
 

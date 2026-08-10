@@ -5,7 +5,7 @@ import HostBootstrap.Teardown
 -- A `down` projection is not a `destroy` projection. `down` stops a provider
 -- frame and keeps its disk; `destroy` deletes both. Substituting one for the
 -- other is the difference between a restartable stack and a deleted one.
-downAsDestroy :: TeardownPlan s p DownVerb -> TeardownPlan s p DestroyVerb
+downAsDestroy :: TeardownPlan s p f DownVerb -> TeardownPlan s p f DestroyVerb
 downAsDestroy projection = projection
 
 -- Likewise for the live forest and for the completed proof, so a completed

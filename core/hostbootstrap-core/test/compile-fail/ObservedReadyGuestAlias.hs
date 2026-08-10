@@ -3,8 +3,11 @@ module ObservedReadyGuestAlias where
 import HostBootstrap.Readiness
 import HostBootstrap.Reconcile
 import HostBootstrap.Substrate.Provider.Alias
+import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 
 badPrepare ::
+  StrongAliasBackend scope planId providerId backendId capabilityId ->
+  ResourceHandle scope planId providerId ProviderResource Managed Running ->
   PlannedResource scope planId aliasId DurableAliasResource aliasFrame ->
   PlannedEdge
     scope
@@ -16,18 +19,18 @@ badPrepare ::
     DurableShareResource
     shareFrame ->
   ResourceHandle scope planId aliasId DurableAliasResource Unclassified Observed ->
-  ResourceHandle scope planId shareId DurableShareResource Managed sharePhase ->
   ObservedReady DurableShareReady ->
   GuestAliasSpec ->
-  Either ReconcileError ()
-badPrepare planned edge aliasHandle shareHandle observedReady spec =
+  PreparedGate ->
+  IO (Either ReconcileError ())
+badPrepare backend managed planned edge aliasHandle observedReady spec gate =
   withPreparedGuestAliasCall
+    backend
+    managed
     planned
     edge
     aliasHandle
-    shareHandle
     observedReady
     spec
-    1
-    1
+    gate
     (const ())

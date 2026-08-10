@@ -1,7 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
 
 {- | The phase-indexed role lifecycle (the composition-and-network-algebra phase).
 
@@ -19,11 +18,13 @@ import qualified Data.Text as Text
 import qualified Fixture
 import HostBootstrap.Activation
 import qualified HostBootstrap.Authority as Authority
-import HostBootstrap.Handoff (ProjectVerificationKey, installedVerificationKey)
+import HostBootstrap.Lifecycle.Mode (productionRootAuthority, withProductionRoot)
 import HostBootstrap.Protected (
+    ProtectedError (ProtectedMalformedRecord),
     ProtectedSession,
     ProtectedStore,
     openProtectedStore,
+    protectedStoreRoot,
     withProtectedEntry,
  )
 import HostBootstrap.RoleLifecycle
@@ -88,27 +89,27 @@ draftTests =
 verificationTests :: [TestTree]
 verificationTests =
     [ testCase "a draft that renders to the signed digest verifies" $
-        withActivationFor servingEffects listenerDraft $ \activation ->
+        withActivationFor servingEffects listenerDraft $ \_ activation ->
             case verifyRolePlanDraft activation listenerDraft (const ()) of
                 Right () -> pure ()
                 Left failure -> assertFailure (roleLifecycleErrorMessage failure)
     , testCase "a different draft is refused against the signed digest" $
-        withActivationFor servingEffects listenerDraft $ \activation ->
+        withActivationFor servingEffects listenerDraft $ \_ activation ->
             case verifyRolePlanDraft activation (draftOf [request "other" False]) (const ()) of
                 Left (RoleDraftDigestMismatch _ _) -> pure ()
                 other -> assertFailure ("expected a digest mismatch, got " ++ describe other)
     , testCase "an unparseable signed effect is refused rather than assumed harmless" $
-        withActivationFor ["teleport"] listenerDraft $ \activation ->
+        withActivationFor ["teleport"] listenerDraft $ \_ activation ->
             case verifyRolePlanDraft activation listenerDraft (const ()) of
                 Left (RoleEffectUnsupported "teleport") -> pure ()
                 other -> assertFailure ("expected an unsupported effect, got " ++ describe other)
     , testCase "an exclusive resource under a no-exclusive ceiling is refused" $
-        withActivationFor servingEffects storeDraft $ \activation ->
+        withActivationFor servingEffects storeDraft $ \_ activation ->
             case verifyRolePlanDraft activation storeDraft (const ()) of
                 Left (RoleDraftInvalid _) -> pure ()
                 other -> assertFailure ("expected a refusal, got " ++ describe other)
     , testCase "the same exclusive resource verifies under a mutating ceiling" $
-        withActivationFor mutatingEffects storeDraft $ \activation ->
+        withActivationFor mutatingEffects storeDraft $ \_ activation ->
             case verifyRolePlanDraft activation storeDraft (const ()) of
                 Right () -> pure ()
                 Left failure -> assertFailure (roleLifecycleErrorMessage failure)
@@ -120,80 +121,298 @@ verificationTests =
 admissionTests :: [TestTree]
 admissionTests =
     [ testCase "the first attempt reserves and the second reports recovery owed" $
-        withStore $ \store ->
-            withActivationFor servingEffects listenerDraft $ \activation ->
-                withVerifiedDraft activation listenerDraft $ \verified -> do
-                    first <- entry store (\session -> withRoleLifecycleAdmission session activation verified)
-                    case first of
-                        RoleAdmissionReserved _ -> pure ()
-                        other -> assertFailure ("expected a reservation, got " ++ describeAdmission other)
-                    second <- entry store (\session -> withRoleLifecycleAdmission session activation verified)
-                    case second of
-                        RoleAdmissionRecoveryRequired _ persisted ->
-                            assertBool
-                                "the predecessor record is reported verbatim"
-                                ("reserved " `Text.isPrefixOf` persisted)
-                        other -> assertFailure ("expected recovery owed, got " ++ describeAdmission other)
+        withActivationFor servingEffects listenerDraft $ \store activation ->
+            withVerifiedDraft activation listenerDraft $ \verified -> do
+                first <- entry store (\session -> withRoleLifecycleAdmission session activation verified)
+                case first of
+                    RoleAdmissionReserved _ -> pure ()
+                    other -> assertFailure ("expected a reservation, got " ++ describeAdmission other)
+                second <- entry store (\session -> withRoleLifecycleAdmission session activation verified)
+                case second of
+                    RoleAdmissionRecoveryRequired _ persisted ->
+                        assertBool
+                            "the predecessor record is reported verbatim"
+                            ("reserved " `Text.isPrefixOf` persisted)
+                    other -> assertFailure ("expected recovery owed, got " ++ describeAdmission other)
+    , testCase "instance identities that the former sanitizer collided reserve distinct rows" $ do
+        let manifest =
+                baseManifest
+                    { manifestPermittedEffects = servingEffects
+                    , manifestRolePlanDigest = rolePlanDraftDigest listenerDraft
+                    }
+            slashIdentity =
+                baseMeasurement{measuredInstance = HostServiceInstance "nonce/a"}
+            joinedIdentity =
+                baseMeasurement{measuredInstance = HostServiceInstance "noncea"}
+        withBroker manifest $ \broker store key -> do
+            grant <- either (assertFailure . activationErrorMessage) pure =<< signActivationManifest broker manifest
+            slashKey <-
+                reserveAdmissionKey store key manifest grant slashIdentity listenerDraft
+            joinedKey <-
+                reserveAdmissionKey store key manifest grant joinedIdentity listenerDraft
+            assertBool
+                "the slash is framed into the measured coordinate rather than discarded"
+                (slashKey /= joinedKey)
+    , testCase "an arbitrarily long valid measured identity still reserves with a bounded key" $ do
+        let manifest =
+                baseManifest
+                    { manifestPermittedEffects = servingEffects
+                    , manifestRolePlanDigest = rolePlanDraftDigest listenerDraft
+                    }
+            longIdentity =
+                baseMeasurement
+                    { measuredInstance = HostServiceInstance (Text.replicate 10000 "n")
+                    }
+        withBroker manifest $ \broker store key -> do
+            grant <- either (assertFailure . activationErrorMessage) pure =<< signActivationManifest broker manifest
+            admissionKey <-
+                reserveAdmissionKey store key manifest grant longIdentity listenerDraft
+            Text.length admissionKey @?= Text.length "role-admission." + 64
+            assertBool
+                "the admission key remains below the protected store's 200-character limit"
+                (Text.length admissionKey <= 200)
+    , testCase "a cross-store activation is refused before the target store mutates" $ do
+        let manifest =
+                baseManifest
+                    { manifestPermittedEffects = servingEffects
+                    , manifestRolePlanDigest = rolePlanDraftDigest listenerDraft
+                    }
+        withBroker manifest $ \broker origin key -> do
+            signed <- signActivationManifest broker manifest
+            grant <- either (assertFailure . activationErrorMessage) pure signed
+            withIndependentStore $ \other -> do
+                refused <-
+                    verifyRuntimeRoleActivation
+                        key
+                        origin
+                        manifest
+                        manifest
+                        grant
+                        baseMeasurement
+                        ( \activation ->
+                            withVerifiedDraft activation listenerDraft $ \verified -> do
+                                outcome <-
+                                    entry other $ \session ->
+                                        withRoleLifecycleAdmission session activation verified
+                                case outcome of
+                                    RoleAdmissionRefused detail ->
+                                        assertBool
+                                            "the deterministic refusal names the protected-store mismatch"
+                                            ("protected store" `Text.isInfixOf` detail)
+                                    otherOutcome ->
+                                        assertFailure
+                                            ( "expected a cross-store refusal, got "
+                                                ++ describeAdmission otherOutcome
+                                            )
+                        )
+                either (assertFailure . activationErrorMessage) pure refused
+
+                -- If the hostile attempt touched this record, the correctly
+                -- verified activation will report recovery instead of reserving.
+                admitted <-
+                    verifyRuntimeRoleActivation
+                        key
+                        other
+                        manifest
+                        manifest
+                        grant
+                        baseMeasurement
+                        ( \activation ->
+                            withVerifiedDraft activation listenerDraft $ \verified -> do
+                                outcome <-
+                                    entry other $ \session ->
+                                        withRoleLifecycleAdmission session activation verified
+                                case outcome of
+                                    RoleAdmissionReserved _ -> pure ()
+                                    otherOutcome ->
+                                        assertFailure
+                                            ( "the refused attempt mutated the target store: "
+                                                ++ describeAdmission otherOutcome
+                                            )
+                        )
+                either (assertFailure . activationErrorMessage) pure admitted
+    , testCase "an origin-A reservation cannot consume a same-shaped store-B row" $ do
+        let manifest =
+                baseManifest
+                    { manifestPermittedEffects = servingEffects
+                    , manifestRolePlanDigest = rolePlanDraftDigest listenerDraft
+                    }
+        withBroker manifest $ \broker origin key -> do
+            signed <- signActivationManifest broker manifest
+            grant <- either (assertFailure . activationErrorMessage) pure signed
+            withIndependentStore $ \other -> do
+                -- Reserve the same semantic admission in B first.  Both fresh
+                -- records have version 1, so without the origin guard A's
+                -- reservation would be able to consume B's row.
+                prepared <-
+                    verifyRuntimeRoleActivation
+                        key
+                        other
+                        manifest
+                        manifest
+                        grant
+                        baseMeasurement
+                        ( \activation ->
+                            withVerifiedDraft activation listenerDraft $ \verified -> do
+                                outcome <-
+                                    entry other $ \session ->
+                                        withRoleLifecycleAdmission session activation verified
+                                case outcome of
+                                    RoleAdmissionReserved _ -> pure ()
+                                    otherOutcome ->
+                                        assertFailure
+                                            ( "could not prepare store B: "
+                                                ++ describeAdmission otherOutcome
+                                            )
+                        )
+                either (assertFailure . activationErrorMessage) pure prepared
+
+                hostile <-
+                    verifyRuntimeRoleActivation
+                        key
+                        origin
+                        manifest
+                        manifest
+                        grant
+                        baseMeasurement
+                        ( \activation ->
+                            withVerifiedDraft activation listenerDraft $ \verified -> do
+                                reserved <-
+                                    entry origin $ \session ->
+                                        withRoleLifecycleAdmission session activation verified
+                                case reserved of
+                                    RoleAdmissionReserved admission -> do
+                                        attempted <-
+                                            entry other $ \session ->
+                                                withRuntimeRolePlan
+                                                    session
+                                                    activation
+                                                    verified
+                                                    admission
+                                                    (\_ _ _ _ -> pure ())
+                                        case attempted of
+                                            Left (RoleAdmissionStoreOriginMismatch detail) ->
+                                                assertBool
+                                                    "the refusal names the protected-store mismatch"
+                                                    ("protected store" `Text.isInfixOf` detail)
+                                            otherOutcome ->
+                                                assertFailure
+                                                    ( "expected an origin refusal, got "
+                                                        ++ describePlan otherOutcome
+                                                    )
+                                    otherOutcome ->
+                                        assertFailure
+                                            ( "could not reserve in store A: "
+                                                ++ describeAdmission otherOutcome
+                                            )
+                        )
+                either (assertFailure . activationErrorMessage) pure hostile
+
+                intact <-
+                    verifyRuntimeRoleActivation
+                        key
+                        other
+                        manifest
+                        manifest
+                        grant
+                        baseMeasurement
+                        ( \activation ->
+                            withVerifiedDraft activation listenerDraft $ \verified -> do
+                                outcome <-
+                                    entry other $ \session ->
+                                        withRoleLifecycleAdmission session activation verified
+                                case outcome of
+                                    RoleAdmissionRecoveryRequired _ persisted ->
+                                        assertBool
+                                            "store B retained its unconsumed reservation"
+                                            ("reserved " `Text.isPrefixOf` persisted)
+                                    otherOutcome ->
+                                        assertFailure
+                                            ( "store B's row changed unexpectedly: "
+                                                ++ describeAdmission otherOutcome
+                                            )
+                        )
+                either (assertFailure . activationErrorMessage) pure intact
     , testCase "the reservation is consumed exactly once" $
-        withStore $ \store ->
-            withActivationFor servingEffects listenerDraft $ \activation ->
-                withVerifiedDraft activation listenerDraft $ \verified -> do
-                    reserved <- entry store (\session -> withRoleLifecycleAdmission session activation verified)
-                    case reserved of
-                        RoleAdmissionReserved admission -> do
-                            firstUse <-
-                                entry store $ \session ->
-                                    withRuntimeRolePlan session activation verified admission $
-                                        \plan binding placement _cursor ->
-                                            pure
-                                                ( rolePlanRevision plan
-                                                , rolePlanFrame plan
-                                                , rolePlanDigestBindingPlanDigest binding
-                                                , placementLeaseRequirement placement
-                                                )
-                            firstUse @?= Right ("rev-1", "daemon-3", "plan-1", NoExclusiveEffects)
-                            secondUse <-
-                                entry store $ \session ->
-                                    withRuntimeRolePlan session activation verified admission $
-                                        \_ _ _ _ -> pure ()
-                            case secondUse of
-                                Left (RoleAdmissionAlreadyConsumed _) -> pure ()
-                                other ->
-                                    assertFailure
-                                        ("expected the second use to be refused, got " ++ describePlan other)
-                        other -> assertFailure ("expected a reservation, got " ++ describeAdmission other)
+        withActivationFor servingEffects listenerDraft $ \store activation ->
+            withVerifiedDraft activation listenerDraft $ \verified -> do
+                reserved <- entry store (\session -> withRoleLifecycleAdmission session activation verified)
+                case reserved of
+                    RoleAdmissionReserved admission -> do
+                        firstUse <-
+                            entry store $ \session ->
+                                withRuntimeRolePlan session activation verified admission $
+                                    \plan binding placement _cursor ->
+                                        pure
+                                            ( rolePlanRevision plan
+                                            , rolePlanFrame plan
+                                            , rolePlanDigestBindingPlanDigest binding
+                                            , placementLeaseRequirement placement
+                                            )
+                        firstUse @?= Right ("rev-1", "daemon-3", "plan-1", NoExclusiveEffects)
+                        secondUse <-
+                            entry store $ \session ->
+                                withRuntimeRolePlan session activation verified admission $
+                                    \_ _ _ _ -> pure ()
+                        case secondUse of
+                            Left (RoleAdmissionAlreadyConsumed _) -> pure ()
+                            other ->
+                                assertFailure
+                                    ("expected the second use to be refused, got " ++ describePlan other)
+                    other -> assertFailure ("expected a reservation, got " ++ describeAdmission other)
+    , testCase "a malformed reservation row remains a store failure, not already consumed" $
+        withActivationFor servingEffects listenerDraft $ \store activation ->
+            withVerifiedDraft activation listenerDraft $ \verified -> do
+                reserved <- entry store (\session -> withRoleLifecycleAdmission session activation verified)
+                case reserved of
+                    RoleAdmissionReserved admission -> do
+                        let recordPath =
+                                protectedStoreRoot store
+                                    </> "records"
+                                    </> (Text.unpack (reservedRoleAdmissionKey admission) <> ".rec")
+                        ByteString.writeFile recordPath "not-a-protected-record"
+                        attempted <-
+                            entry store $ \session ->
+                                withRuntimeRolePlan session activation verified admission $
+                                    \_ _ _ _ -> pure ()
+                        case attempted of
+                            Left (RoleAdmissionStoreFailure ProtectedMalformedRecord{}) -> pure ()
+                            other ->
+                                assertFailure
+                                    ( "expected a malformed-record store failure, got "
+                                        ++ describePlan other
+                                    )
+                    other -> assertFailure ("expected a reservation, got " ++ describeAdmission other)
     , testCase "the binding reports the signed role-plan digest, not a recomputed plan" $
-        withStore $ \store ->
-            withActivationFor servingEffects listenerDraft $ \activation ->
-                withVerifiedDraft activation listenerDraft $ \verified -> do
-                    reserved <- entry store (\session -> withRoleLifecycleAdmission session activation verified)
-                    case reserved of
-                        RoleAdmissionReserved admission -> do
-                            outcome <-
-                                entry store $ \session ->
-                                    withRuntimeRolePlan session activation verified admission $
-                                        \_ binding _ _ -> pure (rolePlanDigestBindingRolePlanDigest binding)
-                            outcome @?= Right (rolePlanDraftDigest listenerDraft)
-                        other -> assertFailure ("expected a reservation, got " ++ describeAdmission other)
+        withActivationFor servingEffects listenerDraft $ \store activation ->
+            withVerifiedDraft activation listenerDraft $ \verified -> do
+                reserved <- entry store (\session -> withRoleLifecycleAdmission session activation verified)
+                case reserved of
+                    RoleAdmissionReserved admission -> do
+                        outcome <-
+                            entry store $ \session ->
+                                withRuntimeRolePlan session activation verified admission $
+                                    \_ binding _ _ -> pure (rolePlanDigestBindingRolePlanDigest binding)
+                        outcome @?= Right (rolePlanDraftDigest listenerDraft)
+                    other -> assertFailure ("expected a reservation, got " ++ describeAdmission other)
     , testCase "a mutating ceiling yields the generation-lease requirement" $
-        withStore $ \store ->
-            withActivationFor mutatingEffects storeDraft $ \activation ->
-                withVerifiedDraft activation storeDraft $ \verified -> do
-                    reserved <- entry store (\session -> withRoleLifecycleAdmission session activation verified)
-                    case reserved of
-                        RoleAdmissionReserved admission -> do
-                            outcome <-
-                                entry store $ \session ->
-                                    withRuntimeRolePlan session activation verified admission $
-                                        \_ _ placement _ ->
-                                            pure
-                                                ( placementLeaseRequirement placement
-                                                , placementPermittedEffects placement
-                                                , placementService placement
-                                                )
-                            outcome
-                                @?= Right (RequiresGenerationLease, [DurableStore, NetworkListen], "accelerator")
-                        other -> assertFailure ("expected a reservation, got " ++ describeAdmission other)
+        withActivationFor mutatingEffects storeDraft $ \store activation ->
+            withVerifiedDraft activation storeDraft $ \verified -> do
+                reserved <- entry store (\session -> withRoleLifecycleAdmission session activation verified)
+                case reserved of
+                    RoleAdmissionReserved admission -> do
+                        outcome <-
+                            entry store $ \session ->
+                                withRuntimeRolePlan session activation verified admission $
+                                    \_ _ placement _ ->
+                                        pure
+                                            ( placementLeaseRequirement placement
+                                            , placementPermittedEffects placement
+                                            , placementService placement
+                                            )
+                        outcome
+                            @?= Right (RequiresGenerationLease, [DurableStore, NetworkListen], "accelerator")
+                    other -> assertFailure ("expected a reservation, got " ++ describeAdmission other)
     ]
 
 {- | The declared effect row and its authorization against the signed ceiling
@@ -269,7 +488,18 @@ describeAuthorization (Right authorization) = "authorized " ++ show (authorizedE
 
 engineTests :: [TestTree]
 engineTests =
-    [ testCase "a prerequisite refusal turns at Prereq and acquires nothing" $
+    [ testCase "a role plan refuses another store before liveness or engine callbacks" $
+        withRole mutatingEffects storeDraft $ \_ plan placement cursor ->
+            withIndependentStore $ \other -> do
+                trace <- newIORef []
+                report <- runRoleLifecycle other plan placement cursor (tracingEngine trace)
+                exitTurnedAtPhase report @?= Prereq
+                exitReason report @?= Just "the role plan belongs to a different protected store"
+                exitOwnedResources report @?= []
+                exitUnknownResources report @?= []
+                exitDrainFailures report @?= []
+                readIORef trace >>= (@?= [])
+    , testCase "a prerequisite refusal turns at Prereq and acquires nothing" $
         withRole servingEffects twoResourceDraft $ \store plan placement cursor -> do
             trace <- newIORef []
             report <-
@@ -506,36 +736,79 @@ withActivationFor ::
     [Text] ->
     RolePlanDraft ->
     ( forall scope planDigest specDigest binaryDigest frame revision instanceId.
+      ProtectedStore ->
       VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId ->
       IO ()
     ) ->
     IO ()
 withActivationFor effects draft use =
-    withBroker $ \broker key -> do
-        let manifest =
-                baseManifest
-                    { manifestPermittedEffects = effects
-                    , manifestRolePlanDigest = rolePlanDraftDigest draft
-                    }
-        case signActivationManifest broker manifest of
+    let manifest =
+            baseManifest
+                { manifestPermittedEffects = effects
+                , manifestRolePlanDigest = rolePlanDraftDigest draft
+                }
+     in withBroker manifest $ \broker store key -> do
+        signed <- signActivationManifest broker manifest
+        case signed of
             Left failure -> assertFailure (activationErrorMessage failure)
-            Right grant ->
-                case verifyRuntimeRoleActivation key "rev-1" manifest grant baseMeasurement of
-                    Left failure -> assertFailure (activationErrorMessage failure)
-                    Right activation -> use activation
+            Right grant -> do
+                verified <-
+                    verifyRuntimeRoleActivation
+                        key
+                        store
+                        manifest
+                        manifest
+                        grant
+                        baseMeasurement
+                        (use store)
+                either (assertFailure . activationErrorMessage) pure verified
 
 withVerifiedDraft ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId ->
     RolePlanDraft ->
     ( forall rolePlanDigest.
       VerifiedRolePlanDraft scope planDigest frame revision instanceId rolePlanDigest ->
-      IO ()
+      IO result
     ) ->
-    IO ()
+    IO result
 withVerifiedDraft activation draft use =
     case verifyRolePlanDraft activation draft use of
         Left failure -> assertFailure (roleLifecycleErrorMessage failure)
         Right action -> action
+
+-- | Verify one measured instance and return the key only after its admission
+-- has been durably reserved.  Returning plain text keeps all generative
+-- activation and draft indices inside their verification continuations.
+reserveAdmissionKey ::
+    ProtectedStore ->
+    ActivationVerificationKey ->
+    ActivationManifest ->
+    ActivationGrant ->
+    RuntimeMeasurement ->
+    RolePlanDraft ->
+    IO Text
+reserveAdmissionKey store key manifest grant measurement draft = do
+    verified <-
+        verifyRuntimeRoleActivation
+            key
+            store
+            manifest
+            manifest
+            grant
+            measurement
+            ( \activation ->
+                withVerifiedDraft activation draft $ \verifiedDraft -> do
+                    outcome <-
+                        entry store $ \session ->
+                            withRoleLifecycleAdmission session activation verifiedDraft
+                    case outcome of
+                        RoleAdmissionReserved admission ->
+                            pure (reservedRoleAdmissionKey admission)
+                        other ->
+                            assertFailure
+                                ("expected a reservation, got " ++ describeAdmission other)
+            )
+    either (assertFailure . activationErrorMessage) pure verified
 
 {- | Everything a role needs to reach its first cursor: a store, a signed
 activation, a verified draft, a reserved-then-consumed admission, and the plan.
@@ -552,30 +825,26 @@ withRole ::
     ) ->
     IO ()
 withRole effects draft use =
-    withStore $ \store ->
-        withActivationFor effects draft $ \activation ->
-            withVerifiedDraft activation draft $ \verified -> do
-                reserved <- entry store (\session -> withRoleLifecycleAdmission session activation verified)
-                case reserved of
-                    RoleAdmissionReserved admission -> do
-                        opened <-
-                            entry store $ \session ->
-                                withRuntimeRolePlan session activation verified admission $
-                                    \plan _binding placement cursor -> use store plan placement cursor
-                        either (assertFailure . roleLifecycleErrorMessage) pure opened
-                    other -> assertFailure ("expected a reservation, got " ++ describeAdmission other)
-
-withStore :: (ProtectedStore -> IO ()) -> IO ()
-withStore use =
-    withSystemTempDirectory "hostbootstrap-role" $ \directory -> do
-        opened <- openProtectedStore (directory </> "authority")
-        either (assertFailure . show) use opened
+    withActivationFor effects draft $ \store activation ->
+        withVerifiedDraft activation draft $ \verified -> do
+            reserved <- entry store (\session -> withRoleLifecycleAdmission session activation verified)
+            case reserved of
+                RoleAdmissionReserved admission -> do
+                    opened <-
+                        entry store $ \session ->
+                            withRuntimeRolePlan session activation verified admission $
+                                \plan _binding placement cursor -> use store plan placement cursor
+                    either (assertFailure . roleLifecycleErrorMessage) pure opened
+                other -> assertFailure ("expected a reservation, got " ++ describeAdmission other)
 
 -- | Run one protected transaction, failing the test on a store error.
 entry :: ProtectedStore -> (forall session. ProtectedSession session -> IO result) -> IO result
 entry store action = do
     outcome <- withProtectedEntry store (fmap Right . action)
     either (assertFailure . show) pure outcome
+
+baseSecretBundle :: ByteString.ByteString
+baseSecretBundle = "role=accelerator\ncredential=fixture-secret\n"
 
 baseManifest :: ActivationManifest
 baseManifest =
@@ -587,7 +856,7 @@ baseManifest =
         , manifestFrame = "daemon-3"
         , manifestRevision = "rev-1"
         , manifestConfigDigest = "config-1"
-        , manifestSecretDigest = "secret-1"
+        , manifestSecretDigest = activationSecretDigestFromBytes baseSecretBundle
         , manifestService = "accelerator"
         , manifestRolePlanDigest = "roleplan-1"
         , manifestPermittedEffects = []
@@ -599,61 +868,60 @@ baseMeasurement =
     RuntimeMeasurement
         { measuredBinaryDigest = "binary-1"
         , measuredConfigDigest = "config-1"
-        , measuredSecretDigest = "secret-1"
+        , measuredSecretDigest = activationSecretDigestFromBytes baseSecretBundle
         , measuredInstance = KubernetesInstance "pod-uid-1" 0
         }
 
 -- | A real root invocation, a real activation broker, and its installed key.
 withBroker ::
+    ActivationManifest ->
     ( forall scope brokerGeneration verb.
       ActivationBroker scope brokerGeneration verb ->
-      ProjectVerificationKey ->
+      ProtectedStore ->
+      ActivationVerificationKey ->
       IO ()
     ) ->
     IO ()
-withBroker use =
-    withSystemTempDirectory "hostbootstrap-role-broker" $ \directory -> do
-        opened <- openProtectedStore (directory </> "authority")
-        case opened of
-            Left failure -> assertFailure (show failure)
-            Right store -> do
-                outcome <- withAuthorityEntry store $ \session -> do
-                    operator <- Authority.verifyOperatorAuthorization session
-                    case operator of
-                        Left failure -> pure (Left failure)
-                        Right authorized ->
-                            withFixtureProject $ \project ->
-                                Authority.withFreshBrokerEpoch session project $ \epoch ->
-                                    Authority.withVerifiedRootInvocation
-                                        session
-                                        project
-                                        authorized
-                                        epoch
-                                        Authority.ProjectUp
-                                        (\root -> Right <$> withActivationBroker root (installAndUse directory))
-                either (assertFailure . show) pure outcome
-  where
-    installAndUse directory broker = do
-        let path = directory </> "project.pub"
-        ByteString.writeFile path (activationBrokerKey broker)
-        loaded <- installedVerificationKey path
-        either (assertFailure . show) (use broker) loaded
-
-withAuthorityEntry ::
-    ProtectedStore ->
-    (forall session. ProtectedSession session -> IO (Either Authority.AuthorityError result)) ->
-    IO (Either Authority.AuthorityError result)
-withAuthorityEntry store action = do
-    outcome <- withProtectedEntry store (fmap Right . action)
-    pure (either (Left . Authority.AuthorityStoreFailure) id outcome)
+withBroker manifest use = case activationSigningPolicy [manifest] of
+    Left failure -> assertFailure (activationErrorMessage failure)
+    Right policy ->
+        withSystemTempDirectory "hostbootstrap-role-broker" $ \directory -> do
+            opened <- openProtectedStore (directory </> "authority")
+            case opened of
+                Left failure -> assertFailure (show failure)
+                Right store -> do
+                    signing <-
+                        case activationSigningKeyFromBytes (ByteString.replicate 32 73) of
+                            Left failure -> assertFailure (activationErrorMessage failure)
+                            Right key -> pure key
+                    let provisioned = activationSigningVerificationKey signing
+                    verification <-
+                        case
+                            activationVerificationKeyFromBytes
+                                (activationVerificationKeyBytes provisioned) of
+                            Left failure -> assertFailure (activationErrorMessage failure)
+                            Right key -> pure key
+                    outcome <-
+                        withFixtureProject $ \project ->
+                            withProductionRoot store project Authority.ProjectUp $ \root ->
+                                Right
+                                    <$> withActivationBroker
+                                        signing
+                                        (productionRootAuthority root)
+                                        policy
+                                        (\broker -> use broker store verification)
+                    either (assertFailure . show) pure outcome
 
 withFixtureProject ::
-    (Authority.InstalledProject Fixture.FixtureProject -> IO result) ->
+    (forall projectId. Authority.InstalledProjectIdentity projectId -> IO result) ->
     IO result
-withFixtureProject use =
-    case Authority.installedProjectFor @Fixture.FixtureProject @Fixture.ProjectConfig "hostbootstrap-demo" of
-        Left failure -> assertFailure (show failure)
-        Right project -> use project
+withFixtureProject = Fixture.withFixtureInstalledProject
+
+withIndependentStore :: (ProtectedStore -> IO result) -> IO result
+withIndependentStore use =
+    withSystemTempDirectory "hostbootstrap-role-other-store" $ \directory -> do
+        opened <- openProtectedStore (directory </> "authority")
+        either (assertFailure . show) use opened
 
 -- ---------------------------------------------------------------------------
 -- Small helpers
@@ -665,6 +933,7 @@ describeAdmission :: RoleAdmissionOutcome scope planDigest frame revision instan
 describeAdmission outcome = case outcome of
     RoleAdmissionReserved admission -> "reserved " ++ show (reservedRoleAdmissionKey admission)
     RoleAdmissionRecoveryRequired key persisted -> "recovery owed " ++ show (key, persisted)
+    RoleAdmissionRefused detail -> "refused " ++ show detail
     RoleAdmissionUnknown detail -> "unknown " ++ show detail
 
 describePlan :: Either RoleLifecycleError () -> String

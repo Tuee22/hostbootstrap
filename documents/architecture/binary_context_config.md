@@ -14,22 +14,37 @@
   **parameters** (the user-owned root settings), **context** (the binary's place in the topology), and
   **witness** (locally checkable facts that prove the process is in that place).
 - The role lives inside the Dhall value, not in the filename. The binary has one default lookup rule.
-- The recursive `project up` interpreter hands a subcommand off into the next frame; on each handoff the
+- The target recursive `project up` interpreter hands a subcommand off into the next frame; on each handoff the
   child checks its own `.dhall` frame against the runtime and known mismatches **fail fast** (exit code 1)
-  before command side effects. The decoded context/capability fields are not yet opaque authority; Phase
-  15.9 closes that construction/widening gap.
+  before command side effects. The decoded context remains descriptive rather than authority. The
+  [step algebra and project plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)'s
+  implemented pure `withCurrentFrame` admission joins it to the exact `ProjectPlan` and jointly generates
+  opaque `CurrentFrame`, `ProjectFrame`, and `ValidatedContext` evidence. The plan-bound journal,
+  same-broker per-frame lifecycle cursor, and exact `authorizeProjectUp` current-frame authority boundary
+  are also implemented and consumed by Production and Harness dispatch. Nested lifecycle entry fails
+  closed; the
+  [recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
+  owns proof-complete recursive authorization and traversal, including exact
+  `down`/`destroy` authority.
 - The `.dhall` describes parameters and context, never the lift chain shape — the chain is code. The model
   lives in [composition_methodology](composition_methodology.md); this doc defers to it.
+- The static authoring value remains `ProjectSpec cfg tcfg`, with no runtime scope or specification
+  phantom. Scope finalization yields `FinalizedProjectSpec scope specDigest cfg`; admission then yields an
+  opaque `ProjectPlan` whose forward order, topology, stable snapshot, resources, and dependency edges are
+  current pure projections.
 - `sourceRoot` is descriptive input. Lifecycle root admission resolves it once against the config-owned
   project home and yields opaque canonical-root authority without replacing the field in
-  `BinaryContext`. Root frame/teardown callbacks and the direct-host mount consume that authority;
-  remaining typed child-boundary projections move into the final opaque plan.
+  `BinaryContext`. The admitted plan now retains that root, and its typed resource and dependency-edge
+  projections are implemented. Production dispatch retains or reconstructs that exact plan for rendering,
+  persistence, journal/cursor admission, authorization, public Chain, and current-frame reverse work;
+  Harness dispatch admits its separately scoped exact plan and drives the same common forward/reverse
+  boundaries directly inside generated-config ownership.
 - `context` is a **read-only** introspection/visualization command, but its inputs differ by subcommand:
   `inspect` decodes the sibling `.dhall`, `show [FILE]` decodes the selected/default file, and
   `path`/`schema`/`render` use only static binary-owned information. Child context delivery is internal
   `project up` work; no `context` verb does it. The demo's current `context-init` step is only an
-  announcement while composite bootstrap/handoff code performs the actual writes; the target plan makes
-  those one operation.
+  announcement while composite bootstrap/handoff code performs the actual writes; later plan-aware
+  consumer adoption makes those one operation.
 - The accelerator daemon reuses this context model: in-cluster Linux daemons receive service/daemon
   configs, while Apple Silicon and Windows GPU host daemons read host-resident daemon configs and connect
   to the cluster through a local-only NodePort.
@@ -37,8 +52,9 @@
 ## The Contract
 
 The project binary is not a blind command receiver. It is the local interpreter of one segment of a pure,
-typed global composition. When the recursive interpreter lifts `project up` across a boundary, the callee
-still has enough typed information to know which frame of the chain it is responsible for.
+typed global composition. When the target recursive interpreter lifts `project up` across a boundary, the
+callee still has enough typed information to know which frame of the chain it is responsible for. Current
+Production interprets only the exact current-frame segment and fails closed at nested entry.
 
 The canonical lookup path is:
 
@@ -69,10 +85,28 @@ The sibling `<project>.dhall` carries three layers in one typed value:
 | **Context** | the parent lifecycle's child projection/delivery | this binary's place in the topology: identity, frames, current frame, capabilities, allowed command classes, and the current raw resource envelope; the target envelope is plan/frame-indexed |
 | **Witness** | the same child projection/delivery | locally checkable facts (`runtimeWitnesses`) that let this binary prove it really is in the declared frame |
 
-The `.dhall` never encodes the lift plan itself. The current forward ordering is an opaque validated
-Haskell `StepPlan`. Frame context and teardown remain separate checked current inputs; the
-target opaque lifecycle plan derives them from the same validated representation (see
-[composition_methodology](composition_methodology.md)).
+The `.dhall` never encodes the lift plan itself. The
+[step algebra and project plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)
+finalizes the static
+`ProjectSpec cfg tcfg` as `FinalizedProjectSpec scope specDigest cfg`, admits its non-empty drafts as one
+opaque `ProjectPlan`, and derives `forward`, `topology`, `renderSnapshot`, resource, and dependency-edge
+projections from that value. Its pure `withCurrentFrame` boundary also joins descriptive context to the
+plan and generates the matching opaque frame-evidence package. The exact `authorizeProjectUp` boundary
+consumes that package with the matching plan, lease, journal, and cursor evidence. Public
+`HostBootstrap.Chain` consumes the exact `ProjectPlan` and its non-empty `forward` projection together
+with matching execute-phase `CommandAuthority` and `LifecycleCursor` evidence. Before I/O, it verifies
+that the authority belongs to the supplied protected store and compares the cursor's retained store plus
+decoded acquisition project/store/broker origin with that authority; it then compares the retained
+frame/verb/phase terms before any durable transition. It derives the operation session's epoch and
+identity from the authority and derives descent from the plan's `DerivedTopology`. Every protected Chain
+entry also revalidates the exact acquisition source and current cursor row under the same exclusive entry
+before its dependent journal/session/prepare/settle/close action, so an execute cursor advanced to
+teardown cannot remain usable through a stale in-memory value.
+Reconciliation's exact descriptor producer consumes that same plan and one matching `PlannedStep`,
+retaining the plan/configuration/node/frame/operation projections and nominal scope/plan indices (see
+[composition_methodology](composition_methodology.md)). Production dispatch consumes those exact
+boundaries directly, and Harness dispatch uses them with the exact
+`Harness projectId runId` plan retained by its generated-config bracket.
 Structural variation (for example, skipping the VM frame to go straight to a Docker frame) is a parameter
 flag on the **root** `.dhall`, so plan construction stays a pure function of root parameters rather than a second
 representation living in config.
@@ -84,7 +118,7 @@ representation living in config.
 | Project identity | project name, binary name, and descriptive source root; canonical host-root authority is resolved separately at root admission |
 | Execution topology | a list of provider-backed frames, their parent links, and the current frame id |
 | Context kind | host orchestrator, VM orchestrator, VM project container, image-build container, cluster service, daemon, one-shot job, or test harness |
-| Role name(s) | the roles this config requests/declares — a single `<project>.dhall` may declare **more than one** (e.g. project *and* service); the current gate checks descriptive classes/capabilities and the target gate consumes separate opaque authority |
+| Role name(s) | the roles this config requests/declares — a single `<project>.dhall` may declare **more than one** (e.g. project *and* service); the existing-frame gate checks descriptive classes/capabilities, while the exact `ProjectUp` gate consumes independently derived opaque authority evidence; recursive child integration remains separate |
 | Runtime witnesses | locally checkable facts proving the process is in the declared frame: provider profile, mounted socket, env value, config hash, or executable path |
 | Local capabilities | tools and services this context may use: Docker socket, kind network, Kubernetes API, durable store |
 | Allowed command classes | which command families are valid in this context |
@@ -125,52 +159,118 @@ pair — `isRootFrame` plus `HostOrchestratorPlacement`. A forged leaf config th
 `ClusterLifecycleCommand` or `HostOrchestratorCommand` is therefore refused by its placement rather than
 believed.
 
-That root-only pair governs the **operator** entry to a teardown verb, and it is the whole of what is
-implemented today. The **target** adds the second entry the child-first unwind needs: a
+That root-only pair governs the **operator** entry to a teardown verb. The second entry the child-first
+unwind needs is descent-initiated: a
 descent-initiated `down|destroy` runs in a nested frame, where the root-only pair correctly refuses it,
 and is admitted instead by verifying the recovery wire its parent minted for that exact edge. The two
 entries are two types rather than one command class asked to mean both, and a lifecycle verb names no
 command class as a source constant chosen per call site — which is why `project up`, uniform across
 orchestration frames, needs no such split while the teardown verbs do. The wire belongs to
 [the authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
-and the entries to
-[the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md). The [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
+and the descent-entry composition and traversal to
+[the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
+The [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
 owns that relation; the role-specific opaque command authorities minted by validated transitions are the
-[operator, root, and command authority phase](../../DEVELOPMENT_PLAN/phase-5-operator-root-and-command-authority.md)'s
-independent gate, which `project up|down|destroy` already enter at the root frame.
+[installed identity, operator verification, and authority kernels phase](../../DEVELOPMENT_PLAN/phase-5-operator-root-and-command-authority.md)'s
+lower vocabulary, which `project up|down|destroy` enter through the composite Production root transaction.
+The [step algebra and project plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)
+owns the pure plan-local frame package, local snapshot, journal, canonical cursor record, same-broker
+admission and transitions, plan-owned resource projections, and exact current-frame `ProjectUp`
+authority composition. The
+[recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
+consumes that substrate; it does not own or regenerate the descriptive frame evidence.
 
-One target API shape makes the compatibility relation and exact invocation state explicit:
+### Installed identity and the lower authority kernel
+
+Authority begins before configuration. `withInstalledProjectIdentity` compares the declared stable
+project name with the invoked executable basename, treating a terminal `.exe` suffix
+case-insensitively, and opens `InstalledProjectIdentity projectId` only under a rank-2 continuation. A
+caller therefore cannot select `projectId` from a configuration family or reconstruct it from
+`installedProjectName`.
+
+`verifyOsPrincipal` asks the operating system whether the current principal may write the exact
+protected store and retains that store's durable identity in opaque `VerifiedOsPrincipal`. The
+package-private root kernel accepts only that same store, binds an unclaimed authority store to the
+installed project with compare-and-swap, and mints
+`RootInvocationAuthority scope brokerGeneration verb` with the exact project, store, fresh broker
+generation, closed verb, and one of the closed Production/Harness scope witnesses. The safe facade
+exports neither a raw generation reopener nor a standalone root opener. Recovery rehydrates recorded
+state only through the later protected recovery transition that owns the record; an integer is never
+epoch evidence.
+
+`RootScopeAuthority scope` is only a projection of that root. It has no configuration- or
+context-derived constructor, so descriptive bytes cannot select Production or Harness authority.
+`CommandAuthority scope planId frame brokerGeneration verb phase` is likewise abstract. Its
+package-private reservation kernel receives only stable members that an enclosing lifecycle gate has
+already verified: installed project, protected-store identity, plan digest, frame key, broker epoch,
+verb, and phase. Those fields are encoded canonically with length prefixes and a SHA-256 record key;
+the full canonical bytes are stored and checked on collision. An exact absent-to-consumed
+compare-and-swap happens before the authority is yielded, so identical contenders have one winner while
+changing any member names another reservation.
+
+The reservation kernel deliberately does not inspect a plan, lease, cursor, or context. It is a sealed
+atomic primitive beneath the proof-complete project-up, authenticated-child, and teardown gates, not a
+generic authorization decision. `HostBootstrap.Authority.Kernel` is a hidden Cabal module with an
+allow-listed package-internal importer set and no configuration or reconciliation dependency.
+`HostBootstrap.Authority.ProjectPlan` exposes the specialized, evidence-complete `authorizeProjectUp`
+producer. The broad safe `HostBootstrap.Authority` facade remains command-authority-producer-free: it
+exports the abstract authority vocabulary and safe projections, but neither a `CommandAuthority`
+constructor nor a generic reservation entry point.
+
+One target API sketch makes the exact invocation state explicit; it is not an implementation inventory. In the
+[step algebra and project plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md), the
+scope-finalized specification, opaque plan and pure projections, and jointly generated frame-evidence
+package shown here, protected snapshot admission/persistence, acquisition journal, canonical cursor
+record, lifecycle admission/transitions, plan-owned resources and edges, and exact current-frame
+`authorizeProjectUp` boundary are implemented and consumed by Production dispatch.
+Recursive child authorization and complete forward/reverse traversal
+remain work in the
+[recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md);
+their target signatures appear here only to show how they consume the step-algebra substrate. Likewise, the
+`RoleLifecycleAdmission`, admission/plan-open Unknown, and rehydration APIs below are the Phase 21 target. The
+current Phase 13 boundary has the smaller `ReservedRoleAdmission`/`RoleAdmissionOutcome` API described after
+the sketch and does not reconstruct a reservation or consumed plan after acknowledgement loss.
 
 ```haskell
-data ProjectUp
-data ProjectDown
-data ProjectDestroy
+data VerbUp
+data VerbDown
+data VerbDestroy
+data ProjectVerb verb where
+  ProjectUp :: ProjectVerb VerbUp
+  ProjectDown :: ProjectVerb VerbDown
+  ProjectDestroy :: ProjectVerb VerbDestroy
 data ServiceRun
 data CheckCode
-data ProjectVerb verb -- closed singleton
 
+data CurrentFrame scope planId frame
 data ProjectFrame scope specDigest planId configId frame
-  -- hidden plan-local proof; only legal orchestration frame kinds have constructors
+data ValidatedContext scope planId frame
+  -- hidden plan-local evidence; all three are generated together by pure admission
 data ServiceFrame frame -- hidden proof; only ClusterService and Daemon have constructors
-data LifecycleCursor scope planId frame verb phase -- constructor hidden
+data AcquisitionJournal scope planId brokerGeneration -- constructor hidden
+data LifecycleCursor scope planId frame brokerGeneration verb phase -- constructor hidden
 data RoleCursor scope planId frame instanceId phase -- constructor hidden
 data BrokerEpoch brokerGeneration
-data BuildEpoch buildId
-data CommandAuthority scope planId frame authorityEpoch verb phase -- constructor hidden
-  -- project/build commands use BrokerEpoch or BuildEpoch; runtime services use the distinct
-  -- VerifiedRuntimeRoleActivation + RoleLifecycleAdmission + ServiceCommandAuthority path below
+data CommandAuthority scope planId frame brokerGeneration verb phase -- constructor hidden
+data BuildCommandAuthority projectId specDigest configId -- constructor hidden
+  -- build and runtime-service commands use their distinct authority families below
 data PlanDigestBinding scope specDigest planDigest planId -- constructor hidden
 data VerifiedConfigWire scope configDigest configId -- constructor hidden
-data ConfigHandoff
-data RecoveryHandoff
-data VerifiedHandoff
-  scope planDigest brokerGeneration parentFrame childFrame
-  payloadKind payloadId verb phase -- constructor hidden
+data HandoffPayloadKind = NarrowedProjectConfig | RecoveryAdapterWire
+data HandoffToken -- constructor hidden
+data HandoffGrant scope brokerGeneration -- constructor hidden
+data VerifiedHandoff scope brokerGeneration -- constructor hidden transport proof
+data VerifiedConfigHandoff
+  scope planDigest brokerGeneration parentFrame childFrame configId verb phase
+  -- constructor hidden; produced only by Config.Schema.withVerifiedConfigHandoff
+data VerifiedRecoveryHandoff
+  scope brokerGeneration planDigest parentFrame childFrame recoveryWireDigest recoveryWireId verb
+  -- constructor hidden
 data RecoveryWireDigest
 data VerifiedRecoveryWire
-  scope planDigest frame recoveryWireDigest recoveryWireId -- constructor hidden
+  scope brokerGeneration verb planDigest frame recoveryWireDigest recoveryWireId -- constructor hidden
 data RecoveryProjectionBinding
-  scope planDigest parentFrame childFrame recoveryWireDigest -- constructor hidden
+  scope brokerGeneration verb planDigest parentFrame childFrame recoveryWireDigest -- constructor hidden
 data RuntimeRoleWire fields service
 data RuntimeRoleWireBytes
 data ProductionConfigWire
@@ -179,8 +279,8 @@ data FrameworkEnvelopeCodec scope specDigest fields -- constructor hidden
 data LocalContextView scope specDigest wireKind frame -- constructor hidden; no role parameters or authority
 data LocalWireBytes
 data ProjectCodec scope specDigest cfg -- constructor hidden
-data FinalizedProjectSpec scope specDigest cfg fields
-  -- constructor hidden; contains matching project/envelope/runtime codecs and registries
+data FinalizedProjectSpec scope specDigest cfg
+  -- constructor hidden; retains the matching project codec, service registry, and plan builder
 data FinalizedSchemaFamily projectId specDigest cfg fields
   -- constructor hidden; contains the named Production/Harness envelope+codec families
 data DescriptiveScopeKind scope -- closed ProductionWire | HarnessWire discriminator in the envelope
@@ -188,7 +288,7 @@ data DisplayedScope scope -- constructor hidden; display-only, never authority
 data RoleCodec scope specDigest fields -- constructor hidden
 data ValidatedServiceRequest specDigest configId secretDigest fields service -- constructor hidden
 data RoleParams specDigest configId secretDigest fields service -- constructor hidden
-data FinalizedServiceRegistry specDigest fields -- constructor hidden
+data FinalizedServiceRegistry scope specDigest config -- constructor hidden
 data FinalizedRuntimeSpec scope specDigest fields
   -- constructor hidden; contains the matching RoleCodec and finalized registry
 data VerifiedServicePlacement
@@ -283,7 +383,7 @@ data VerifiedRuntimeRoleActivation
 data VerifiedRuntimeWorkloadIdentity
   scope binaryDigest frame revision instanceId -- constructor hidden
   -- revision is the installed rollout; instanceId is pod UID + restart count or an OS invocation nonce
-data PinnedProjectVerificationKey scope -- constructor hidden
+data ActivationVerificationKey -- constructor hidden; installed independently of handoff/build identities
 data SignedRuntimeRoleManifestBytes
 data VerifiedSecretBundle
   scope planDigest specDigest binaryDigest frame revision instanceId configDigest secretDigest
@@ -445,7 +545,7 @@ data TeardownAuthorizationPoint scope planId verb frame childSet next
   -- closed sum of an ordinary settled-child/cursor pair or destroy-only pre-descent step
 
 withVerifiedRuntimeRoleActivation
-  :: PinnedProjectVerificationKey scope
+  :: ActivationVerificationKey
   -> VerifiedRuntimeWorkloadIdentity scope binaryDigest frame revision instanceId
   -> SignedRuntimeRoleManifestBytes
   -> (forall planDigest specDigest configDigest secretDigest service rolePlanDigest permittedEffects.
@@ -477,7 +577,7 @@ withVerifiedRuntimeSecretBundle
   -> IO (Either SecretBundleError a)
 
 runVerifiedRuntimeRole
-  :: PinnedProjectVerificationKey scope
+  :: ActivationVerificationKey
   -> VerifiedRuntimeWorkloadIdentity scope binaryDigest frame revision instanceId
   -> SignedRuntimeRoleManifestBytes
   -> FinalizedRuntimeSpec scope specDigest fields
@@ -540,6 +640,37 @@ withReadinessAdvance
         -> IO a)
   -> IO a
 
+withCurrentFrame
+  :: (ProjectCfg cfg)
+  => ProjectPlan scope specDigest planId configId cfg
+  -> BinaryContext
+  -> (forall frame.
+        CurrentFrame scope planId frame
+        -> ProjectFrame scope specDigest planId configId frame
+        -> ValidatedContext scope planId frame
+        -> result)
+  -> Either FrameError result
+
+-- Implemented: the pure frame is necessary placement evidence but opens no
+-- cursor without the matching broker-indexed acquisition journal.
+withLifecycleCursor
+  :: AcquisitionJournal scope planId brokerGeneration
+  -> ProjectFrame scope specDigest planId configId frame
+  -> ProjectVerb verb
+  -> LifecyclePhase phase
+  -> (LifecycleCursor scope planId frame brokerGeneration verb phase -> IO result)
+  -> IO (Either LifecycleError result)
+
+withCurrentLifecycleCursor
+  :: AcquisitionJournal scope planId brokerGeneration
+  -> ProjectFrame scope specDigest planId configId frame
+  -> ProjectVerb verb
+  -> (forall phase.
+        LifecyclePhase phase
+        -> LifecycleCursor scope planId frame brokerGeneration verb phase
+        -> IO result)
+  -> IO (Either LifecycleError result)
+
 withRecoveredProjectFrame
   :: BoundPlanSnapshot scope specDigest planDigest planId
   -> PlanDigestBinding scope specDigest planDigest planId
@@ -549,27 +680,40 @@ withRecoveredProjectFrame
   -> (RecoveredProjectFrame scope planId frame -> a)
   -> Either TeardownError a
 
+-- Implemented by the specialized HostBootstrap.Authority.ProjectPlan facade.
 authorizeProjectUp
-  :: RootInvocationAuthority scope brokerGeneration ProjectUp
-  -> ProjectVerb ProjectUp
+  :: RootInvocationAuthority scope brokerGeneration VerbUp
+  -> ProjectVerb VerbUp
   -> VerifiedPlanSnapshot scope specDigest planDigest
+  -> BoundPlanSnapshot scope specDigest planDigest planId
   -> PlanDigestBinding scope specDigest planDigest planId
   -> BoundRunLease scope specDigest planDigest brokerGeneration
   -> ProjectPlan scope specDigest planId configId cfg
+  -> AcquisitionJournal scope planId brokerGeneration
   -> ProjectFrame scope specDigest planId configId frame
-  -> LifecycleCursor scope planId frame ProjectUp phase
+  -> LifecycleCursor scope planId frame brokerGeneration VerbUp phase
   -> ValidatedContext scope planId frame
   -> IO
        (Either
           AuthorityError
           (CommandAuthority
-             scope planId frame (BrokerEpoch brokerGeneration) ProjectUp phase))
+             scope planId frame brokerGeneration VerbUp phase))
+
+withVerifiedConfigHandoff
+  :: ProjectVerb verb
+  -> VerifiedHandoff scope brokerGeneration
+  -> VerifiedConfigWire scope configDigest configId
+  -> ValidatedConfig scope specDigest configId config
+  -> (forall planDigest parentFrame childFrame phase.
+        VerifiedConfigHandoff
+          scope planDigest brokerGeneration parentFrame childFrame configId verb phase
+        -> a)
+  -> Either HandoffError a
 
 withChildProjectPlan
   :: ProjectVerb verb
-  -> VerifiedHandoff
-       scope planDigest brokerGeneration parentFrame frame
-       ConfigHandoff configId verb phase
+  -> VerifiedConfigHandoff
+       scope planDigest brokerGeneration parentFrame frame configId verb phase
   -> VerifiedConfigWire scope configDigest configId
   -> ValidatedConfig scope specDigest configId (cfg scope)
   -> NonEmpty (PlanDraft scope specDigest (cfg scope))
@@ -588,46 +732,51 @@ authorizeChildProject
        scope specDigest planDigest brokerGeneration parentFrame frame
        planId configId verb phase
   -> ProjectPlan scope specDigest planId configId cfg
+  -> AcquisitionJournal scope planId brokerGeneration
   -> ProjectFrame scope specDigest planId configId frame
-  -> LifecycleCursor scope planId frame verb phase
+  -> LifecycleCursor scope planId frame brokerGeneration verb phase
   -> ValidatedContext scope planId frame
   -> IO
        (Either
           AuthorityError
           (CommandAuthority
-             scope planId frame (BrokerEpoch brokerGeneration) verb phase))
+             scope planId frame brokerGeneration verb phase))
 
 authorizeRecoveryTeardown
   :: TeardownVerb verb
   -> RootInvocationAuthority scope brokerGeneration verb
   -> BoundPlanSnapshot scope specDigest planDigest planId
   -> BoundRunLease scope specDigest planDigest brokerGeneration
+  -> AcquisitionJournal scope planId brokerGeneration
   -> RecoveredProjectFrame scope planId frame
+  -> LifecycleCursor scope planId frame brokerGeneration verb TeardownPhase
   -> TeardownAuthorizationPoint scope planId verb frame childSet next
   -> IO
        (Either
           AuthorityError
           (CommandAuthority
-             scope planId frame (BrokerEpoch brokerGeneration) verb TeardownPhase))
+             scope planId frame brokerGeneration verb TeardownPhase))
 
 authorizeRecoveredChildTeardown
   :: TeardownVerb verb
-  -> VerifiedHandoff
-       scope planDigest brokerGeneration parentFrame frame
-       RecoveryHandoff recoveryWireId verb TeardownPhase
+  -> VerifiedRecoveryHandoff
+       scope brokerGeneration planDigest parentFrame frame
+       recoveryWireDigest recoveryWireId verb
   -> VerifiedRecoveryWire
-       scope planDigest frame recoveryWireDigest recoveryWireId
+       scope brokerGeneration verb planDigest frame recoveryWireDigest recoveryWireId
   -> RecoveryProjectionBinding
-       scope planDigest parentFrame frame recoveryWireDigest
+       scope brokerGeneration verb planDigest parentFrame frame recoveryWireDigest
   -> BoundPlanSnapshot scope specDigest planDigest planId
   -> BoundRunLease scope specDigest planDigest brokerGeneration
+  -> AcquisitionJournal scope planId brokerGeneration
   -> RecoveredProjectFrame scope planId frame
+  -> LifecycleCursor scope planId frame brokerGeneration verb TeardownPhase
   -> TeardownAuthorizationPoint scope planId verb frame childSet next
   -> IO
        (Either
           AuthorityError
           (CommandAuthority
-             scope planId frame (BrokerEpoch brokerGeneration) verb TeardownPhase))
+             scope planId frame brokerGeneration verb TeardownPhase))
 
 withVerifiedRuntimeRoleWire
   :: VerifiedRuntimeRoleActivation
@@ -873,82 +1022,90 @@ withDrainAdvance
         -> IO a)
   -> IO a
 
-authorizeBuild
-  :: BuildSessionGrant
-       projectId specDigest coordinatorBinaryDigest builderBinaryDigest
-       configDigest buildId sourceDigest
-  -> ProjectCodec (Production projectId) specDigest cfg
-  -> ProductionConfigWire
-  -> VerifiedBuildBinaryIdentity
-       projectId coordinatorBinaryDigest builderBinaryDigest
-  -> VerifiedSourceContext projectId sourceDigest
-  -> BuildCursor buildId BuildPhase
-  -> (forall configId frame.
-        VerifiedConfigWire (Production projectId) configDigest configId
-        -> ValidatedConfig
-             (Production projectId) specDigest configId (cfg (Production projectId))
-        -> ImageBuildFrame projectId specDigest configId frame
+verifyBuildInvocation
+  :: BuildVerificationKey
+  -> Text       -- locally verified project name
+  -> Text       -- finalized Production specification digest
+  -> Text       -- locally computed Production config digest
+  -> Text       -- installed coordinator-binary identity
+  -> FilePath   -- caller-supplied source root measured by the verifier
+  -> FilePath   -- caller-supplied builder path measured by the verifier
+  -> BuildChannel
+  -> (forall projectId specDigest configId frame buildId sourceDigest builderBinaryDigest.
+        ImageBuildFrame projectId specDigest configId frame
         -> BuildInvocationAuthority
              projectId specDigest configId buildId sourceDigest builderBinaryDigest
         -> IO a)
-  -> IO (Either AuthorityError a)
+  -> IO (Either BuildError a)
 
-authorizeBuildCheck
-  :: BuildInvocationAuthority
+authorizeCheckCode
+  :: ImageBuildFrame projectId specDigest configId frame
+  -> BuildInvocationAuthority
        projectId specDigest configId buildId sourceDigest builderBinaryDigest
-  -> ImageBuildFrame projectId specDigest configId frame
-  -> IO
-       (Either
-          AuthorityError
-          (CommandAuthority
-             (ImageBuildScope projectId) buildId frame (BuildEpoch buildId)
-             CheckCode BuildPhase))
+  -> IO (Either BuildError (BuildCommandAuthority projectId specDigest configId))
 
-data OverwritePolicy
-  = RefuseExisting
-  | KeepExisting
-  | ReplaceExisting
+authorizeBuildPhase
+  :: ImageBuildFrame projectId specDigest configId frame
+  -> BuildInvocationAuthority
+       projectId specDigest configId buildId sourceDigest builderBinaryDigest
+  -> IO (Either BuildError (BuildCommandAuthority projectId specDigest configId))
 
-data InitRequest frame -- constructor hidden
-rootProjectInit  :: RootInitArgs -> InitRequest HostOrchestrator
-imageBuildInit   :: ImageBuildArgs -> InitRequest ImageBuildContainer
-data ServiceInitRequest scope specDigest fields
-  -- constructor hidden; existential service plus legal leaf placement under one finalized field row
-clusterServiceInit
-  :: FinalizedProjectSpec scope specDigest cfg fields
-  -> ServiceInitArgs
-  -> Either InitError (ServiceInitRequest scope specDigest fields)
-daemonServiceInit
-  :: FinalizedProjectSpec scope specDigest cfg fields
-  -> ServiceInitArgs
-  -> Either InitError (ServiceInitRequest scope specDigest fields)
-data TestInitRequest -- constructor hidden
 ```
 
-The parser may return an existential validated request, but there is no public generic record containing
-arbitrary primary kind + role list + command-class list. Added project metadata may coexist with service
-parameters, yet only `ServiceFrame` can authorize `ServiceRun` and only `ProjectFrame` can authorize a
-closed `ProjectVerb`. `RootInvocationAuthority scope brokerGeneration verb` comes from the independent
-OS/project root
+The parser returns the current shared `InitArgs`, and assembly validates every added role through the
+closed placement relation. Added project metadata may coexist with service parameters, but `ServiceFrame`
+and `ProjectFrame` are placement evidence rather than authority. Only the
+matching effectful gate can authorize `ServiceRun` or a closed `ProjectVerb` after consuming every other
+required input. `RootInvocationAuthority scope brokerGeneration verb` comes from the independent OS/project root
 gate, not from decoded context, so there is no authority → lifecycle profile → transition → authority
-cycle. The plan/cursor/context parameters bind the exact plan, frame, authority epoch, verb, and
-lifecycle phase; an `up` authority cannot call `down`, a stale phase cannot call the same verb again,
-and another Production plan's context cannot be substituted. Its broker-generation index must match the
-bound lease, so an authority retained from one opener cannot be paired with another invocation's lease.
-Each hidden value also carries a one-use invocation identity. Because ordinary Haskell values are not
-linear, each `authorize*` gate is effectful: it atomically reserves the exact unconsumed invocation
-record while checking the live cursor/epoch. The operation-session opener also requires the exact
-current broker's session-admission proof before it changes that same record to Open, and the prepare
-dispatcher revalidates every index plus the current journal/session versions; retaining the value
-cannot open two sessions or repeat an effect.
+cycle. The implemented `authorizeProjectUp` boundary consumes the root authority indexed by `VerbUp`,
+term-level `ProjectUp`, verified and bound snapshot, digest binding, bound lease, `ProjectPlan`,
+`AcquisitionJournal`, `ProjectFrame`, `LifecycleCursor`, and `ValidatedContext`. Their indices bind the
+same scope, specification and plan digests, local plan and configuration identities, frame, broker
+generation, `VerbUp`, and lifecycle phase. Journal and cursor both retain that same broker generation, so
+neither can be paired with a root authority or lease from another broker. An `up` authority cannot call
+`down`, a stale phase cannot call the same verb again, and another Production plan's context cannot be
+substituted. The pure `CurrentFrame`, `ProjectFrame`, and `ValidatedContext` package grants none of that
+command, journal, cursor, lease, or mutation authority by itself.
 
-`withChildProjectPlan` is the normal recursive child planning gate. It consumes the closed
-`ProjectVerb`, exact config-kind verified handoff/wire, validated child config, and project plan draft;
-inside one rank-2 continuation it verifies the stable plan digest and jointly returns the fresh local
-plan, binding, and exact `ChildPlanAuthority`. It never yields `RootScopeAuthority`,
+Before entering protected state, `authorizeProjectUp` checks the retained root, plan, verified/bound
+snapshot, digest binding, lease, journal, frame, cursor, and context origins. That includes the canonical
+specification/configuration/plan digests and bytes; project, protected-store, stable-scope, run, broker,
+verb, and phase agreement; plan-topology frame membership; exact frame/cursor/context identity; and the
+context's structural permission for `ClusterLifecycleCommand`. It also compares the opaque presented
+`BoundRunLease` to the acquisition journal's complete hidden lease origin: mode, project, store, plan,
+lease record key/version, run, specification and plan digests, and broker generation. Matching public
+digest projections or matching phantom indices therefore cannot disguise a lease from another protected
+origin.
+
+The resulting command value carries a one-use invocation identity. Because ordinary Haskell values are
+not linear, `authorizeProjectUp` is effectful. One protected-store entry revalidates the live mode, exact
+bound lease, and canonical snapshot; verifies the journal against the cursor's exact acquisition source;
+rereads the exact current cursor key, version, bytes, binding, verb, and phase; and only then consumes the
+sealed command reservation. Any live-evidence drift or stale cursor returns before an invocation record is
+written. The later operation-session opener also requires the exact current broker's session-admission
+proof before it changes that same record to Open, and the prepare dispatcher revalidates every index plus
+the current journal/session versions; retaining the value cannot open two sessions or repeat an effect.
+
+Transport verification alone yields only `VerifiedHandoff scope brokerGeneration` and therefore cannot
+select plan, frame, configuration, verb, or phase indices. Before plan construction,
+`Config.Schema.withVerifiedConfigHandoff` consumes that proof with the closed `ProjectVerb`, exact
+`VerifiedConfigWire`, and matching `ValidatedConfig`; it checks the signed payload kind, wire/config digest,
+specification digest, verb, and closed phase and yields fully indexed `VerifiedConfigHandoff` only inside a
+rank-2 continuation.
+
+`ProjectPlan.Construct.withChildProjectPlan` is the authenticated child planning gate. It consumes that
+refinement, the same verified wire/config, and project plan draft; inside one rank-2 continuation it verifies
+the stable plan digest and signed project/protected-store/broker origin and jointly returns the fresh local
+plan, binding, and exact opaque `ChildPlanAuthority`. It never yields `RootScopeAuthority`,
 `HarnessAuthority`, a Production value from a Harness handoff, or signing/delegation authority.
-`authorizeChildProject` consumes that child-plan authority with the matching frame/cursor/context, so
-plan construction no longer requires authority that only the later command gate could mint.
+`Authority.ProjectPlan.authorizeChildProject` consumes that child-plan authority with the matching
+plan/journal/frame/cursor/context, so
+plan construction does not require authority that only `authorizeProjectUp` can mint.
+This authority substrate is implemented by the
+[authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md),
+but the [recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
+still owns Production descent and the child acquisition-journal/cursor integration that invokes it.
 `authorizeRecoveryTeardown` is deliberately narrower still: it
 accepts only `ProjectDown`/`ProjectDestroy`, a verified/bound stable plan snapshot, the new broker
 generation's lease bound to that same digest, recovered frame, and a closed
@@ -1011,53 +1168,38 @@ transaction) and one atomically switched current pointer; each start then mints 
 and measures the binary. Crash/race tests cover every partial publication. Key rotation/revocation and
 spec/binary migration are explicit signed revisions, never acceptance of an old manifest by a new
 executable.
-`withVerifiedRuntimeRoleActivation` consumes a pinned project verification key, independently measured
-platform workload/OS-service and binary/image identity, and the signed manifest bytes; only its rank-2
-continuation receives one opaque
-`VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId
-configDigest secretDigest service rolePlanDigest permittedEffects`. Its matching
-`RuntimeActivationAuthority`, `VerifiedRuntimeRolePlanProjection`, and private-channel locator cannot be
-separated or paired from different manifests/instances. Each restart verifies the actual narrowed mounted
-bytes through the matching
-`FinalizedRuntimeSpec scope specDigest fields` (which inseparably carries its
-`RoleCodec scope specDigest fields` and registry) and the matching verified secret bundle, creates a fresh local
-`configId`, and returns the generic verified wire plus an existential
-`ValidatedServiceRequest specDigest configId secretDigest fields service` in one continuation. Runtime
-promotion mints no `HarnessConfigAuthority`; that authority remains confined to root assembly and normal
-config handoff. The restart neither replays a consumed edge handoff nor requires the old CLI broker. The
-activation package's signed manifest member contains a narrowed, non-secret role-plan projection
-with its own `rolePlanDigest` and a proof binding it to the parent `planDigest`; the child never claims it
-can recompute the full lifecycle-plan digest from narrowed inputs. Platform/manifest verification yields
-`VerifiedRuntimeRolePlanProjection scope planDigest specDigest binaryDigest frame revision instanceId
-configDigest secretDigest service rolePlanDigest permittedEffects`. Before any prerequisite or acquisition,
-`verifyRolePlanDraft` first validates the non-empty local draft and its signed `rolePlanDigest` without
-opening durable state. `withRoleLifecycleAdmission` is then the sole protected producer of a role
-admission. It binds that verified draft, the exact activation, fresh local `configId`, request, signed
-plan/effect ceiling, service, revision, and measured instance to fresh rank-2
-`planId`/`invocationId` identities, and atomically writes the first durable role-journal version before returning
-`RoleLifecycleAdmission ... planId configId ... invocationId admissionKey admissionVersion`.
-`admissionKey` is deterministically bound to the verified activation/request/draft identity; the
-protected row moves only `AdmissionReserved → AdmissionConsumed`. A lost reservation acknowledgment
-yields `RoleLifecycleAdmissionUnknown`, and either
-`resumeRoleLifecycleAdmissionUnknown` or the same exact opener rehydrates the already stored
-`planId`/`invocationId` under that key rather than allocating another. The current instance's own
-Reserved row is never classified as a non-live predecessor. `withRuntimeRolePlan` linearly consumes the
-exact Reserved admission and verified draft in a CAS to Consumed; concurrent duplicate rehydrated tokens
-have one winner. If that CAS commits before plan/cursor delivery is acknowledged, the only result is
-`RolePlanOpenUnknown`; `resumeRuntimeRolePlanOpen` rehydrates the same stored
-`planId`/`invocationId`/plan-open version and delivers its sole cursor rather than consuming a new
-admission. The exact opener also classifies a same-activation Consumed row into that branch, so a crash
-does not strand it or misclassify it as predecessor recovery. The gate performs no independent
-reservation, has no remaining draft/digest failure, and its callback is fixed to the admission's
-`planId`. Retaining the activation, wire, request, or raw draft therefore cannot mint another
-plan/cursor. The gate
-reconstructs only a
-`RolePlan scope specDigest planId configId secretDigest frame revision instanceId`, checks the local
-role-plan digest, and jointly returns
-`RolePlanDigestBinding scope specDigest planDigest rolePlanDigest planId` plus
-`VerifiedServicePlacement scope specDigest planId frame revision instanceId service permittedEffects`
-and the sole initial Prereq cursor inside the fresh `planId`; it cannot construct a lifecycle
-`ProjectPlan`. The role lifecycle then acquires and probes instance-indexed managed
+The implemented Phase 13 activation boundary is smaller and deliberately honest.
+`verifyRuntimeRoleActivation` consumes the independently installed `ActivationVerificationKey`, the protected
+store whose origin later admission must use, an independently selected exact manifest, the received manifest
+and grant, and the process's measured binary/config/private-bundle/instance values. Only its rank-2 callback
+receives opaque
+`VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId`; service,
+role-plan digest, effect ceiling, secret-channel locator, and protected-store origin remain private term-level
+members of that inseparable package. The long-lived Activation identity is provisioned separately from the
+handoff and Build identities; a runtime-closed broker signs only its exact closed policy under
+`hostbootstrap/activation/v1`, and an escaped broker refuses. The current boundary does not yet produce the
+target `RuntimeActivationAuthority`, `VerifiedRuntimeRolePlanProjection`, runtime role-wire request, or
+private-bundle handle package; those consumers remain Phase 21/22 work.
+
+Before any prerequisite or acquisition, current `verifyRolePlanDraft` checks the local draft and signed
+`rolePlanDigest` without durable mutation and introduces
+`VerifiedRolePlanDraft scope planDigest frame revision instanceId rolePlanDigest` under six nominal roles.
+`withRoleLifecycleAdmission` is the sole one-use reservation. It first requires a `ProtectedSession` from the
+activation's privately retained store, then uses the fixed 79-character legal key
+`role-admission.<sha256>` over `frameWire`-framed, `hostbootstrap/role-admission/v1`-separated exact plan digest,
+frame, revision, and measured instance kind/coordinates. A first attempt returns opaque
+`ReservedRoleAdmission`; an existing row reports `RoleAdmissionRecoveryRequired`, and a returned store failure
+whose reservation status cannot be classified reports `RoleAdmissionUnknown`. Neither branch rehydrates a
+reservation. `withRuntimeRolePlan` repeats the store-origin check and CAS-consumes the exact reserved version,
+jointly returning `RolePlan`, `RolePlanDigestBinding`, `VerifiedServicePlacement`, and the sole initial Prereq
+cursor inside its rank-2 continuation. Only `ProtectedVersionMismatch` means
+`RoleAdmissionAlreadyConsumed`; other protected-store failures remain `RoleAdmissionStoreFailure`.
+`runRoleLifecycle` checks the retained origin again before liveness or callbacks. If reservation or plan
+delivery is lost after a durable transition, this API prevents duplicate use but does not reconstruct the
+reservation, plan, or cursor. Crash/lost-acknowledgement rehydration, including the richer
+`RoleLifecycleAdmissionUnknown`/`RolePlanOpenUnknown` target sketched above, belongs to Phase 21.
+
+In the Phase 21/22 target, the role lifecycle then acquires and probes instance-indexed managed
 listener/connection/worker handles; only a successful probe yields opaque `ReadyServiceHandles` for those
 exact identities. A restartable worker is represented by a stable, readiness-probed supervisor handle
 rather than a child PID. Only a core-owned, journal-prepared supervisor transition may replace its child,
@@ -1200,25 +1342,26 @@ or Drain cursor cannot be replayed or captured by project code. Uncatchable proc
 in-process guarantee: controller/OS recovery must rehydrate the durable admission, receipts, lease, and
 effect journal, clean up/reprobe, or refuse explicit unknowns.
 
-`authorizeBuild` verifies the supplied bytes with the project-owned, pointer-only Production
-`ProjectCodec`, bridges the signed
-build session's stable config digest to a fresh local `configId`, and checks the independently measured,
-project-indexed source/context digest. The signed grant also binds the finalized `specDigest`, coordinator
-binary identity, and exact builder binary/image identity; those indices remain on the image-build frame
-and invocation authority, so an upgraded codec or builder cannot replay a same-config/source grant. It
-returns the verified wire, validated Production config, and
-matching validated image-build frame, and build authority only inside one rank-2 continuation.
-`ImageBuildScope projectId` is the command-authority
-scope, not a third secret/config scope; the grant and `Production projectId` wire keep identical bytes
-from another installed project from satisfying it. `authorizeBuildCheck`
-can then mint only
-the image-build-frame `CheckCode`/`BuildPhase` command authority. A normal developer's `check-code`
-remains the existing sibling-config-gated, existing-frame, non-attesting quality path. Its project-owned
-`psCheckCode :: IO ()` action is non-lifecycle by contract/convention, not mechanically read-only or
-effect-restricted; it carries no build attestation and cannot authorize lifecycle or release claims.
-Positive construction tests must pass the jointly returned frame to `authorizeBuildCheck`; negative
-fixtures substitute the same-role frame from another config/project or a non-image-build role and prove
-neither type-checks or dispatches. Cross-spec and cross-builder same-config/source fixtures fail too.
+`verifyBuildInvocation` checks a delivered `BuildChannel` against an independently installed
+`BuildVerificationKey`, distinct from both the handoff project key and the runtime Activation key,
+the locally supplied project/spec/config/coordinator identities, and fresh measurements of the caller-supplied
+source-root and builder paths. This reusable verifier authenticates the selected bytes; it does not establish
+that the paths name the build engine's actual context and running executable. Only its rank-2 continuation
+receives the jointly generated `ImageBuildFrame` and `BuildInvocationAuthority`. `authorizeCheckCode` and
+`authorizeBuildPhase` consume that exact pair and each phase can be authorized at most once on that returned
+authority. A separate successful verification creates separate in-memory phase state, so global signed-channel
+consumption is not a Phase 13 claim. The long-lived Build signing identity is provisioned before the
+short-lived coordinator bracket; grants use the dedicated `hostbootstrap/build/v1` signature domain, and an
+escaped coordinator refuses after its bracket closes. A normal developer's `check-code` remains the existing
+sibling-config-gated, existing-frame, non-attesting quality path. Its project-owned `psCheckCode :: IO ()`
+action is non-lifecycle by contract/convention, not mechanically read-only or effect-restricted; it carries
+no build attestation and cannot authorize lifecycle or release claims. The current static
+`checkCodeCommand` does not consume `HostBootstrap.Build`; the
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns that consumer seam, trusted derivation
+of both measurement paths, single presentation/acknowledgement or durable `buildId` replay refusal, the
+concrete Docker secret/session channel, and live container evidence. The
+[authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
+keeps its public parser/eliminator phantom audit open rather than claiming the protocol gate is closed.
 
 Overwrite behavior is one value rather than interacting Booleans. The target rejects
 `--force` plus `--if-missing` as an invalid request; it cannot silently rely on flag precedence.
@@ -1351,64 +1494,95 @@ The relation also makes the frame's provider load-bearing: a kind its provider c
 `ClusterService` frame claiming `HostProvider`) has no placement, and `validateTopology` refuses it with
 `ContextTopologyIllegalProvider` rather than guessing a required set for it.
 
-Because the placement is derived from the graph, the direct Linux GPU lane can no longer be
-**self-asserted**. `isExplicitLinuxGpuContainer` previously answered by looking for the
-`HOSTBOOTSTRAP_DIRECT_CONTAINER` witness in the declared list, so a hand-edited config could opt out of
-the VM-ancestor requirement just by listing that fact. It is now the structural question "is this a
-Docker project container whose parent is the host orchestrator?", and the witness is something that
-placement must *prove*, not something that selects it.
+Because placement is derived from the graph, the direct Linux GPU lane cannot be **self-asserted**.
+`isExplicitLinuxGpuContainer` answers the structural question "is this a Docker project container whose
+parent is the host orchestrator?" The `HOSTBOOTSTRAP_DIRECT_CONTAINER` witness must prove that
+placement; merely declaring the witness cannot select it.
 
-These checks make invalid combinations explicit **runtime validation failures**; they do not make those
-combinations unrepresentable. The decoded representation still contains `Text` identifiers and ordinary
-lists, its capability constructors are public data, and a caller can construct or hand-edit a context that
-claims classes/capabilities it did not acquire. A workflow that declares itself to be a VM project
-container is rejected when a supplied parent/frame reference or Docker/container witness is checked and
-fails, but omission is not currently rejected.
+These checks make invalid combinations explicit **runtime validation failures**; the decoded
+`BinaryContext` itself still contains `Text` identifiers, ordinary lists, public capability constructors,
+and record-update paths. A caller can therefore construct or hand-edit an invalid value, but
+`validateContext` rejects wrong placement, parent/frame structure, command classes, capabilities, and a
+missing, extra, duplicate, or contradictory required-witness declaration. The existing effectful runtime
+gate separately verifies each required fact against the local environment before a command effect begins.
 
-The target decodes into an untrusted `BinaryContextDraft`, validates the complete graph, and returns an
-opaque `ValidatedContext scope planId frame` whose constructor is unavailable to consumers. Frame
-identifiers are typed, topology is non-empty and derived from the same opaque
-`ProjectPlan scope specDigest planId configId cfg` as the lifecycle, and command authority is minted only from the
-independent root/runtime authority plus the exact plan cursor and validated context, then consumed by the
-command gate and matching journal transition. Commands accept the opaque validated value rather than raw
-decoded fields. At that boundary a missing parent, widened capability, production/test-profile mismatch,
-wrong verb/phase, or authority for a different plan/frame cannot be supplied as an input.
-Negative API fixtures must also prove the recursive child gate cannot be instantiated with `ServiceRun`
-or `CheckCode`, even if an internal cursor or malformed draft carries the same textual label.
-Validation requires unique IDs, one root, one resolvable parent per non-root, connectivity, acyclicity
-with terminating traversal, exact `parentChain` agreement, one reachable current frame, and legal
-child-kind/provider/role relations. A closed required-witness function derives the exact evidence set
-for that placement; missing, duplicate, irrelevant, contradictory, or false witnesses cannot mint
-`ValidatedContext`. Everything in this paragraph except the opaque `ValidatedContext` value itself is
-implemented today — see the closed required-witness relation above; what the target still adds is
-carrying the result as an unforgeable value rather than re-validating a public record.
+The
+[step algebra and project plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)
+provides an implemented pure plan-local boundary above that descriptive record.
+`withCurrentFrame` consumes the exact
+`ProjectPlan scope specDigest planId configId cfg` and a `BinaryContext`; it requires the supplied context
+to equal the context retained by the plan's validated configuration, revalidates its topology, checks its
+ordered frame/parent prefix against the plan-derived topology, and requires its declared current frame to
+be that prefix's endpoint. Only then does one rank-2 continuation jointly receive
+`CurrentFrame scope planId frame`, `ProjectFrame scope specDigest planId configId frame`, and
+`ValidatedContext scope planId frame`, all with hidden constructors and the same fresh `frame` index.
+This admission performs no runtime-witness I/O or protected-store transition. `CurrentFrame`,
+`ProjectFrame`, and `ValidatedContext`, alone or together, grant no command, journal, cursor, lease, or
+mutation authority.
+
+The effectful cursor boundary consumes that exact `ProjectFrame` over the canonical cursor record without
+changing the pure context contract. The semantic frame `Text` is retained unchanged; Session derives a digest key from
+canonical length-framed acquisition-key and UTF-8 frame bytes, so delimiter and Unicode identifiers are
+unambiguous. The strict cursor row binds the exact acquisition key/version/bytes, frame, immutable root
+verb, and frame-local phase. The acquisition phase is only an absent-row seed. Once the row exists it is
+authoritative for that frame, and `withCurrentLifecycleCursor` existentially recovers its closed phase
+and matching cursor rather than trusting descriptive context or guessing from the old seed. All six
+cursor indices are nominal, and distinct semantic frames advance in distinct rows.
+
+Only `Prepare -> Execute -> Teardown` successor eliminators exist. Their CAS reservation is at-most-once;
+the continuation runs after the protected entry closes and is at-least-once, so a retry or callback
+exception may redeliver the already-durable cursor. Neither `ProjectFrame` nor `LifecycleCursor` alone is
+command authority, and neither turns a runtime witness or decoded frame name into authority.
+
+The specialized `authorizeProjectUp` boundary consumes the matching plan/snapshot/binding,
+presented lease, journal, frame, cursor, and validated context alongside the exact root `VerbUp`
+authority. It checks their complete retained origins and structural placement before one protected entry
+revalidates the live mode, lease, snapshot, acquisition source, and exact cursor and consumes the one-use
+reservation. Production `project up` calls this boundary before public Chain interpretation. The
+[recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
+composes the local substrate with authenticated child admission,
+proof-complete operator/descent authorization, and complete recursive forward/reverse traversal; it does
+not own the pure frame admission itself.
 
 Across a process boundary, the target does not serialize authority into sibling Dhall. The independently
-authorized **root invocation** owns the profile-specific broker and unbound/bound run lease; its protected private signing
-key is the trust root, while each binary has the project public verification key installed independently
-of config. Immediate parents relay a private duplex session to that root broker; they receive no signing
+authorized **root invocation** owns the profile-specific handoff broker and unbound/bound run lease; its
+provisioned project signing key is the handoff trust root, while each binary has the matching project public
+verification key installed independently of config. The independently provisioned Build and Activation
+identities are separate long-lived trust domains and are not derived from that handoff broker. Each long-lived
+key is provisioned before its short-lived capability bracket: `RootBroker`, `ActivationBroker`, and
+`BuildCoordinator` refuse after their respective invocation/coordinator lifetime ends. Handoff grants frame
+`hostbootstrap/handoff-grant` plus protocol version 1; recovery wires use
+`hostbootstrap/recovery-wire/v1`, Activation uses `hostbootstrap/activation/v1`, and Build uses
+`hostbootstrap/build/v1`. Immediate parents relay a
+private duplex session to the root broker; they receive no signing
 or delegation key. The root sends a length-delimited offer containing the narrowed config wire and
-one-time token bound to the exact plan revision, broker generation, child identity/frame, verb/phase,
-and child config digest. The **binary's internal receiver**, replacing the current container shell writer, returns a
+one-time token bound to the exact plan revision, protected-store identity, broker generation, child
+identity/frame, verb/phase, and child config digest. The **binary's internal receiver**, replacing the current container shell writer, returns a
 fresh challenge. The root broker consumes the lease nonce and authenticates a grant over that challenge
-and all bound fields; grant plus byte verification creates a fresh child `configId`, generic
-`VerifiedConfigWire`, and exact `VerifiedHandoff ... ConfigHandoff ...` required for
-promotion/dispatch. A recorded transcript,
+and all bound fields. Signature and one-use edge verification yield transport-only
+`VerifiedHandoff scope brokerGeneration`. Exact-byte codec verification separately creates a fresh child
+`configId`, `VerifiedConfigWire`, and matching `ValidatedConfig`; only
+`Config.Schema.withVerifiedConfigHandoff` can refine those values into the fully indexed proof required for
+child plan admission. A recorded transcript,
 replay, truncation, or config/token mismatch cannot produce those values. Neither payload appears in
 `argv` or the environment, and the token is never a Dhall field.
 
 **The transport itself is implemented** in `HostBootstrap.Handoff`. Every handoff is bound to one
-`HandoffBinding` — scope, plan revision, broker generation, the parent→child frame pair, the child
-config digest, verb, and phase — rendered with **length-prefixed** fields so two different edges cannot
-render to the same signed bytes. `withRootBroker` mints an Ed25519 keypair from a verified
-`RootInvocationAuthority` and never returns it; an immediate parent gets only a keyless `BrokerRelay`
-with no field a signature can come from. The receiver mints a fresh challenge, the root signs over it,
-and `verifyHandoff` checks the signature **before** consuming the one-time token — so an
-unauthenticated message cannot burn a token, while a byte-identical replay of a genuinely signed message
-is still refused by the protected compare-and-swap. The config digest is recomputed from the bytes
+`HandoffBinding` — installed project, specification, payload kind, scope, **protected-store identity**,
+stable plan revision, broker generation, the parent→child frame pair, child-config digest, verb, closed phase,
+and token commitment — rendered with **length-prefixed** fields so two different edges cannot
+render to the same signed bytes. `withRootBroker` narrows a separately provisioned `ProjectSigningKey` to a
+verified `RootInvocationAuthority`; it neither generates nor exports the long-lived identity. An immediate
+parent gets only a keyless `BrokerRelay` with no field a signature can come from. Every broker operation holds
+the bracket's live-state lock through its protected-store or signing work, and an existentially retained broker
+refuses after the bracket closes. The receiver mints a fresh challenge, and the root consumes the registered
+one-time edge by compare-and-swap before issuing its signed grant. The child then verifies that grant against
+its independently installed key; a byte-identical retry at the root converges on the recorded signature, while
+a different challenge is refused as token reuse. The config digest is recomputed from the bytes
 actually received, and the verification key is a separately installed input; a key carried in the
-envelope is never consulted. `authorizeChildProject` refuses a genuine grant presented by the wrong
-frame or for the wrong verb.
+envelope is never consulted. The config refinement refuses the wrong wire/config/specification/verb/phase,
+and `authorizeChildProject` rechecks the signed project/store/broker/plan/frame coordinates against the
+locally admitted plan and acquisition evidence.
 
 **The receiver and the relay are implemented too.** `HostBootstrap.Handoff.Receiver` is the binary's
 internal receiver: it runs the child half on a duplex `HandoffChannel` — `stdin` inbound, `stdout`
@@ -1416,19 +1590,56 @@ outbound, because those are the only descriptors a `docker run` / `limactl shell
 carries, which is also why a receiving binary's diagnostics belong on `stderr`. It mints its challenge
 *after* the offer arrives, compares the offer's key digest against the installed key without ever using
 it as one, and **sends** every refusal, so a parent learns its child declined instead of inferring it
-from a closed pipe. `HostBootstrap.Handoff.Relay` is the parent half: a `BrokerLink` is a frame's route
-to the root's two capabilities — open an edge and grant one. At the root it carries the live broker plus
-the plan's edge admission; at every other frame it carries a channel and a request identity and nothing
-else, so an intermediate frame is structurally keyless. `registerHandoffEdge` makes that separation real
+from a closed pipe. The public `ReceivedEdge` exposes only its verified handoff/config views; its raw channel,
+request identity, and constructor live in hidden `HostBootstrap.Handoff.Receiver.Internal`, which only the
+relay imports. `HostBootstrap.Handoff.Relay` is the parent half: a `BrokerLink` is a frame's route
+to four root-owned capabilities — open an edge, grant one, sign an admitted Activation manifest, and sign an
+admitted recovery wire. At the root it carries the live handoff/Activation brokers plus the plan's edge and
+recovery admissions; at every other frame it is derived from the already verified parent edge and remains
+structurally keyless. Each public request begins with that route's verified current frame. Every cooperating
+serving parent requires the private path to begin at the exact child it admitted, requires the requested edge's
+parent to be that path's tail, then prepends its own verified frame. A leaf-to-grandchild request through the
+sealed `BrokerLink` API can therefore cross every hop, while sibling and ancestor splices through that API are
+refused before root admission or broker mutation. This is a § HH repository boundary, not a cryptographic
+claim about an external actor or deliberately raw in-process code that retained a `HandoffChannel`; the root's
+exact plan-derived edge and recovery admissions remain the final authorization in either case.
+`registerHandoffEdge` makes the signing separation real
 rather than nominal: the root records each edge it intends before any grant can be asked for, so a frame
 that can relay a request still cannot invent one. Losing the route to the broker before anything durable
 refuses and leaves the edge intact; losing it afterwards reprobes to the same signature rather than
 consuming a second edge.
 
+Recovery now has a separate, closed protocol-v1 seam rather than reusing a config grant. The stable
+`RecoveryRequestTag` carries exactly two fields — one canonical, length-framed
+`RecoveryProjectionBinding` and the exact adapter wire — while `RecoveryResponseTag` carries exactly one
+recovery-domain signature and never a key. The child state machine permits that request/response pair
+only after the child reaches `ChildRunning`, so an unadmitted frame cannot ask the root to sign recovery
+material. `withRecoveryProjectionBindingInput` admits semantic plan/edge fields only inside a rank-2
+continuation, so wire or caller-chosen phantom identities cannot escape into a projection request.
+`mkRecoveryProjectionBinding` derives project, scope, protected-store identity, broker generation, and wire
+digest from the live root broker and exact bytes; it admits only the broker's exact `down` or `destroy` verb and
+mints the generative wire-digest identity inside its callback. The canonical decoder rechecks every
+root-derived and admitted coordinate and rejects missing,
+extra, truncated, or trailing material.
+
+`withVerifiedRecoveryWire` verifies the exact binding and bytes against the handoff's retained independently
+installed project key under the distinct `hostbootstrap/recovery-wire/v1` signing domain, and only its rank-2
+callback can receive a fresh `VerifiedRecoveryWire ... recoveryWireId`. `RecoveryAdapterWire` is a
+distinct handoff payload kind: `withVerifiedRecoveryHandoff` joins that wire proof to an ordinary
+one-use `VerifiedHandoff` and yields opaque fully indexed `VerifiedRecoveryHandoff` only when project,
+scope, protected-store identity, broker generation, teardown verb, plan digest, parent/child frames, wire
+digest, and payload bytes all agree and a typed `down` or `destroy` verb names the `teardown` phase. Raw signatures,
+the wrong independent key, altered bytes, a different plan or edge, config-wire substitution, and
+non-teardown verbs therefore cannot produce either opaque verified recovery value.
+
 What is **not yet wired** is the live descent: `Lift.ConfigDelivery` still delivers the child config
 with the `sh -c "cat > <sibling> && exec <binary>"` writer described above. Adopting the receiver and
 relay at that call site lands with the recursive interpreter in the
 [recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
+Recovery request/response dispatch is implemented across the same repository-sealed requester path, including a
+genuine multi-hop relay. Recursive teardown/recovery call-site adoption remains work for the
+[recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) and the
+[recovery and migration phase](../../DEVELOPMENT_PLAN/phase-18-recovery-and-migration.md).
 
 The root broker remains live through one recursive invocation. Its one-use command authority opens one
 versioned operation session only with `CurrentBrokerSessionAdmission`. Clean activation can mint that
@@ -1467,15 +1678,26 @@ Generative handles/journals/receipts are never carried across processes. If a ch
 child, it requests a fresh edge grant over the retained root relay. A later Production `down`/`destroy`
 re-runs the independent OS/project root gate, binds the protected stable plan snapshot/journal/backend
 identities, and opens a new broker generation rather than relying on the old `up` process. The config
-remains descriptive after it is written. Phase 15.9 coordinates this envelope/receiver and
-installed trust anchor with Phase 10.9's broker/lease ownership and Phase 16.6's recursive persistence
-and recovery.
+remains descriptive after it is written. The
+[authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
+coordinates this envelope, receiver, and installed trust anchor with the protected broker and lease
+ownership from the
+[lifecycle-modes phase](../../DEVELOPMENT_PLAN/phase-9-lifecycle-modes-and-run-leases.md). The
+[step algebra and project plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)
+owns the local plan-snapshot binding, acquisition journal, same-broker cursor, and current-frame
+authority substrate. The
+[recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
+composes it at recursive call sites and owns traversal, while the
+[recovery phase](../../DEVELOPMENT_PLAN/phase-18-recovery-and-migration.md) owns migration and recovery
+policy.
 
 ## Per-Frame Fail-Fast On Handoff
 
-The recursive interpreter descends frame by frame: each frame runs its chain steps, then hands off
+The target recursive interpreter descends frame by frame: each frame runs its chain steps, then hands off
 `<project> project up` into the next frame (see [composition_methodology](composition_methodology.md) for
-the fractal-bootstrap pattern). The binary-context gate is the precondition on each handoff.
+the fractal-bootstrap pattern). The binary-context gate is one precondition on each handoff. Current
+Production runs the exact current-frame segment and fails closed at a declared descent until the
+authenticated child boundary is integrated.
 
 Commands that operate on an existing project frame — `project up|down|destroy`, `service run`, and
 `check-code` — start by loading the sibling config and fail fast with exit code 1 when:
@@ -1489,8 +1711,14 @@ Commands that operate on an existing project frame — `project up|down|destroy`
 - a required local runtime witness cannot be verified.
 
 Validation covers the complete topology graph and the closed required-witness set, so an **omitted**
-required witness is rejected. What remains a Sprint 15.9 target is carrying the validated result as an
-opaque value instead of a public record.
+required witness is rejected. The pure `withCurrentFrame` admission carries the exact
+plan/context join as jointly generated opaque frame-indexed evidence instead of letting a downstream
+caller select the plan and frame indices independently. The same-broker cursor boundary installs it over
+the canonical record, and the exact `authorizeProjectUp` gate consumes
+it with the matching retained and live lifecycle evidence. Production `project up` uses that exact gate.
+The
+[recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
+uses that substrate for authenticated descent and recursive traversal.
 
 The implemented config-input matrix is:
 
@@ -1501,14 +1729,23 @@ The implemented config-input matrix is:
 | `service schema`, `context path`, `context schema`, `context render` | Static and config-free |
 | `context inspect` | Reads and decodes the executable-sibling `<project>.dhall`; no command-authority gate |
 | `context show [FILE]` | Reads and decodes the selected file, or its parser default when `FILE` is omitted; no command-authority gate |
-| `test run <case-id>\|all` | Reads `<project>.test.dhall`, then installs each run variant through `HostBootstrap.Harness.GeneratedConfig`, which holds all four [ownership_invariant](ownership_invariant.md) clauses over that file and removes it only on an exact re-observed identity and payload. The "an existing sibling config refuses" check is that protocol's own found-object refusal plus the post-sweep `harnessPreconditions`, so an interrupted run's config is reclaimed rather than blocking recovery. Phase 10.9 still owns verified receipts for the rest of this path, Sprint 15.9 owns opaque root/command authority, and Sprint 17.4 makes this parser route require it |
+| `test run <case-id>\|all` | Reads `<project>.test.dhall`, then installs each run variant through `HostBootstrap.Harness.GeneratedConfig`, which holds all four [ownership_invariant](ownership_invariant.md) clauses over that file and removes it only on an exact re-observed identity and payload. The "an existing sibling config refuses" check is that protocol's own found-object refusal plus the post-sweep `harnessPreconditions`, so an interrupted run's config is reclaimed rather than blocking recovery. The [lifecycle-modes phase](../../DEVELOPMENT_PLAN/phase-9-lifecycle-modes-and-run-leases.md) owns the protected run/lease evidence, the [installed-identity and authority-kernel phase](../../DEVELOPMENT_PLAN/phase-5-operator-root-and-command-authority.md) owns the lower opaque authority vocabulary, and the [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) makes this parser route require proof-complete authority |
 | `project up\|down\|destroy` | Admit the sibling `<project>.dhall` **once** into a `ValidatedConfig` snapshot, apply the existing-frame command gate, and run plan construction and every chain step against that one snapshot |
 | `service run`, `check-code` | Read the sibling `<project>.dhall` and apply the existing-frame command gate |
 
 This distinction matters: neither read-only inspection nor a config-free writer is evidence that the
 whole `context` or init surface carries runtime authority. `service run` adds the leaf-kind check described
-above; `project up|down|destroy` rely on declared command classes without the exact root-placement gate,
-which is the widening defect owned by Sprint 15.9.
+above. The
+[Dhall configuration and project-model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
+owns the exact placement relation. The
+[step algebra and project plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)
+joins that descriptive result to the exact plan as pure frame evidence, and its exact
+`authorizeProjectUp` gate requires the matching plan,
+lease, journal, cursor, and root authority before reserving a command. Production dispatch consumes that
+gate directly. The
+[recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
+composes that substrate with operator/descent evidence for proof-complete recursive
+`project up|down|destroy` dispatch and traversal.
 
 So when the parent hands off into a child frame, the child's first act before frame work is to prove — against its own
 `.dhall` and the local runtime — that it is in the frame it was minted for. A frame that cannot witness its
@@ -1542,7 +1779,7 @@ root full wire, cluster-service role wire, or daemon role wire; it exposes no `R
 config-free reader starts from the installed project's scope-erased `FinalizedSchemaFamily`, reads the
 scope-kind tag, selects that one named Production/Harness envelope codec, and requires the codec to
 validate the same tag before returning a `DisplayedScope`. A missing/unknown tag, disagreement, or
-legacy overlapping shape returns an explicit unknown/ambiguous display result; it never guesses by
+structurally overlapping untagged shape returns an explicit unknown/ambiguous display result; it never guesses by
 trying structurally overlapping codecs. The witness is presentation-only and cannot mint Harness or
 command authority. Existing-frame authority routing obtains scope only from the verified
 root/handoff/activation package, then requires the descriptive tag to agree; it never derives authority
@@ -1557,46 +1794,46 @@ as syntactically malformed merely because the other codec was tried first.
 The core algebra names a `context-init` step at the boundary where the next binary becomes meaningful,
 but the current demo does not yet make that step the effect owner: its action body only announces the
 boundary. VM config is rendered/streamed inside the composite VM bootstrap/build-pb action. The
-container payload is no longer independent of the announcing row — it rides the descent that same
+container payload is bound to the announcing row: it rides the descent that same
 `context-init` step declares with `descendsVia`, which `mkStepPlan` requires exactly one of per frame —
-but the projection function is still computed outside the plan's own delivery operation. The target
-opaque plan makes child projection, authenticated delivery, and the single `context-init` node one
-validated operation:
+but the projection function is still computed outside the plan's own delivery operation. The opaque
+`ProjectPlan` and topology projection now exist; later delivery/consumer adoption makes child projection,
+authenticated delivery, and the single `context-init` node one validated operation:
 
 1. Python validates one Cabal filename/package/executable identity, builds
    `./.build/<identity>`, and invokes the requested command (POSIX process replacement with `exec`;
    Windows child subprocess). It writes no Dhall and does **not** initialize config; it is the metal-frame
    instance of the fractal bootstrap. The Haskell entrypoint rejects a declared project/config name that
-   differs from the invoked executable before dispatch; later phases still replace descriptive string
-   identity inside lifecycle APIs with opaque plan-indexed authority.
+   differs from the invoked executable before dispatch. The
+   [step algebra and project plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)
+   provides opaque plan-local frame identity at the pure admission boundary and the exact local `ProjectUp`
+   authority boundary. Production dispatch carries that evidence through the live lifecycle API.
 2. `project init` is a config-free writer. With no role/output/policy flags it is the **fresh-root
    default**: write the executable-sibling `<project>.dhall` as a host orchestrator with no parent and
    refuse an existing output. The current parser also supports `--role ROLE`, repeatable
    `--also-role ROLE`, `--output FILE`, `--force`, and `--if-missing` (plus the project parameter
    overrides): `--force` overwrites, `--if-missing` leaves an existing file untouched, and when both are
-   present the current implementation gives `--force` precedence. This shared, permissive `InitArgs`
-   shape is descriptive current behavior, not the target authority boundary. Active
-   [Phase 17's exact-command-semantics repair](../../DEVELOPMENT_PLAN/phase-20-test-and-context-commands.md)
-   owns opaque writer-specific init requests and an explicit overwrite-policy type; Sprint 15.9 owns
-   validation that requested role combinations can mint only compatible command authorities. Because
+   present the current implementation gives `--force` precedence. This shared `InitArgs` shape is the
+   current parser contract. Role additions pass through `roleAdditionAllowed` and the validating `addRole`
+   constructor, while the relevant effectful command gate still consumes independent authority. Because
    Python never creates config, an existing-frame command run before an initializer or harness-generated
    config finds no sibling file and **fails fast** (exit 1).
 3. During current demo `project up`, composite bootstrap/handoff code generates the child
    `<project>.dhall` from passed/forwarded parameters; the separately rendered `context-init` node does
-   not perform that effect. In the target, the plan-owned node performs the parameterized child
-   projection and authenticated handoff, names the child frame, and includes only locally verifiable
-   witnesses.
+   not perform that effect. Later plan-aware delivery adoption makes the plan-owned node perform the
+   parameterized child projection and authenticated handoff, name the child frame, and include only
+   locally verifiable witnesses.
 4. The project Dockerfile currently bakes a context-adjusted full `image-build-container` config at
    `/usr/local/bin/<project>.dhall` so build-time commands (`check-code`, static code generation, web
    asset compilation) can pass the descriptive context gate during the image build. The target does not
-   treat that file as authority: the build orchestrator also supplies an ephemeral
+   treat that file as authority: Sprint 24.7 makes the build orchestrator supply an ephemeral
    `BuildInvocationAuthority projectId specDigest configId buildId sourceDigest builderBinaryDigest`
-   through the build engine's
-   secret/session channel and records the terminal outcome. This binds inputs known before the image
-exists; the resulting image digest is recorded afterward. Runtime parents currently stream a
-context-adjusted full config record in-place on launch `stdin`; the demo retains every project field and
-the full resource envelope. The target internal receiver accepts a
-role-specific payload only with a verified root-broker grant. A
+   through the build engine's secret/session channel and record the terminal outcome. That consumer derives
+   its measurement paths from the actual engine context and running executable and refuses a second channel
+   presentation. This binds inputs known before the image exists; the resulting image digest is recorded
+   afterward. Runtime parents currently stream a context-adjusted full config record in-place on launch
+   `stdin`; the demo retains every project field and the full resource envelope. The target internal receiver
+   accepts a role-specific payload only with a verified root-broker grant. A
    Kubernetes service or daemon pod instead receives descriptive config as a ConfigMap override plus the
    platform identity described below.
 5. A current service or daemon receives a context-adjusted full demo config from the controller or
@@ -1608,8 +1845,10 @@ role-specific payload only with a verified root-broker grant. A
 The Docker image carries a narrow default `ImageBuildContainer` config so the current build-time commands
 can run during the Dockerfile. That baked config declares only build/code-quality and context-init
 classes, but it is not a target authority token. The target command additionally requires the
-single-use, project/spec/config/build/source/builder-bound `BuildInvocationAuthority`; an image or backend that
-cannot receive and acknowledge it refuses the build command.
+project/spec/config/build/source/builder-bound `BuildInvocationAuthority`. Each returned authority permits
+each narrow phase at most once; the concrete channel must separately acknowledge one presentation or durably
+consume its `buildId` across verifier calls. An image or backend that cannot do so refuses the attesting build
+command. The current derived build has not yet adopted this target seam.
 
 A lifted runtime workflow must not gain authority merely because the image has a baked default file.
 Currently, the parent handoff path streams a runtime child `<project>.dhall` into the container
@@ -1644,24 +1883,27 @@ The accelerator daemon adds two authority placements:
 
 Both are intended leaf roles. A generated daemon context plus independently verified platform/OS-service
 instance identity and signed deployment revision can run the daemon handler through
-`service run` and lacks the classes intended for project lifecycle. `addRole` can no longer union
-orchestration classes into a `Daemon` or `ImageBuildContainer` primary. It is still not an unforgeable
-invariant: `project up|down|destroy` have no exact root-placement check, so a **hand-edited** config that
-carries the class without passing through `addRole` is not yet refused. Sprint 15.9's remaining
-opaque role-specific authority closes that.
+`service run` and lacks the classes intended for project lifecycle. `addRole` refuses to union
+orchestration classes into a `Daemon` or `ImageBuildContainer` primary. `validateContext` also derives
+placement from the checked topology and refuses a project-lifecycle class at an illegal frame, including
+a hand-edited daemon config. That remains descriptive runtime validation, not authority: the exact
+`authorizeProjectUp` gate independently rechecks structural placement and refuses the daemon shape.
+The service-role authority gate and recursive authorization/traversal remain later work.
 
-The test harness obeys the same authority rules without a distinct lifted "TestHarness" path: `test run`
-runs the **real `project up`** under a harness-generated root config, so its assertions execute in the
-normal host/VM/container frames the chain mints. A suite may declare **more than one config variant**; the
-harness stands each up, asserts, and tears it down in turn (the demo runs `message = "Hello, world!"` then
+The test harness obeys the same authority rules without a distinct lifted "TestHarness" path. `test run`
+owns a harness-generated root config, admits one exact
+`ProjectPlan (Harness projectId runId) ...`, and invokes its common Chain forward/reverse actions directly,
+so assertions execute in the normal host/VM/container frames the plan mints without a lifecycle
+subprocess or Production re-entry. A suite may declare **more than one config variant**; the harness stands
+each exact plan up, asserts, and tears it down in turn (the demo runs `message = "Hello, world!"` then
 `message = "Hello, Universe!"`, with the `message` flowing `<project>.dhall` → binary-rendered `ConfigMap` → the
 `Web` service → the SPA `#message`, and the Playwright e2e-tabs assertion polymorphic over the exported
-`EXPECTED_MESSAGE`). Two preconditions reduce known collision risk — the harness refuses if the
-executable-sibling `<project>.dhall` (`siblingProjectConfigPath`, i.e. `.build/<project>.dhall`) already
-exists (it would overwrite a real config) or if a production cluster is running (it would touch production
-state). They do not establish isolation: demo plan resolution currently selects Production/`.data`, and
-the parser does not enforce the documented root gate. Generated-config compare-before-delete is
-implemented; complete lifecycle ownership is not.
+`EXPECTED_MESSAGE`). The five-field `TestSuite` contains only the safety precondition,
+assertion-environment opener, case matrix, per-case assertion, and post-reverse absence assertion. The
+opaque lifecycle constructor lives in a private Cabal component, so neither descriptive context nor
+project assertion code can replace the plan-owned lifecycle actions. The harness refuses an existing
+executable-sibling `<project>.dhall` or a running production cluster before mutation, and generated-config
+cleanup rechecks both kernel identity and recorded payload before unlinking.
 
 ## Config Snapshot And Daemons
 
@@ -1673,27 +1915,35 @@ safe framework view. Demo service handlers do not reopen the sibling file.
 sibling **once** per invocation and yields the verified wire, the
 `ValidatedConfig scope specDigest configId (cfg scope)`, its context, and the canonical root together;
 plan construction consumes that byte-stable snapshot, and the chain builder closes every step over it.
-Each step previously called its own sibling loader, so one `project up` ran across as many separately
-decoded configs as it had steps and a file replaced between two steps silently split the run. A step now
-keeps the admitted value even when the file changes underneath it; the next invocation validates a new
-snapshot under a new `configId`.
+Every step keeps that admitted value even when the file changes underneath it; the next invocation
+validates a new snapshot under a new `configId`.
 
-What the lifecycle target still adds on top is the closed operation inputs: a
+The
+[step algebra and project plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)'s
+finalized-spec and opaque `ProjectPlan` admission path is the Production one-read boundary,
+including its pure forward/topology/stable-snapshot, resource/edge, and current-frame projections plus the
+exact `authorizeProjectUp` authority boundary. Production dispatch retains or reconstructs that value and
+uses public `HostBootstrap.Chain` plus total `Reconcile.stepExecutionFor`; its reverse verbs derive work
+from the matching plan/current-frame projection. Harness dispatch independently admits the matching
+Harness-scoped value and retains it through generated-config ownership while the same common
+forward/reverse interpreters run.
+
+What later lifecycle work still adds on top is the closed operation inputs: a
 plan-owned projection renders only `RuntimeRoleWire fields service` fields authorized for the child and
 binds those exact bytes to the deployment manifest. The child verifies the mounted wire through
 `RoleCodec scope specDigest fields`, verifies the separately delivered secret bundle, mints a fresh local
 `configId`, and only then obtains
 `ValidatedServiceRequest specDigest configId secretDigest fields service` with its
-`RoleParams specDigest configId secretDigest fields service`. Sprint 18.6's core-owned
+`RoleParams specDigest configId secretDigest fields service`. The
+[service runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md)'s core-owned
 `selectAndRunService` target packages that request with a closed `ServiceProgram` handler and matching
 revision/instance/Serve/effect proof;
 the parent config identity, full config, unauthorized effect row, and config-read/raw-`IO` escape hatch
 cannot cross the service-handler boundary. The current structural role boundary already excludes full
 config and config-read authority; raw handler `IO` remains. Finalized plan actions likewise use the
-closed effect/descriptors owned by Sprints 9.10/16.6 rather than arbitrary config-reading callbacks. No
-production action reopens the sibling file: the loader that let one do so
-(`requireSiblingProjectConfig`) is deleted and the raw root seam is no longer public
-([design rationale](../../DEVELOPMENT_PLAN/rationale.md)). On-disk
+closed effect/descriptors owned by the prepared-operation and cluster lifecycle boundaries rather than
+arbitrary config-reading callbacks. No production action reopens the sibling file, and no public raw-root
+loader permits it. On-disk
 changes affect only a later invocation with a new `configId`; daemons require a new measured
 `instanceId` or an explicit
 safely designed reconcile, and authority fields are never live-reloaded.
@@ -1738,42 +1988,66 @@ existing-frame gate described in the matrix above. That gate checks project/bina
 command class/capabilities, selected ancestry, and the required runtime-witness set; observed checked
 mismatches fail before command side effects.
 
-It now also validates the complete topology **graph** before authorization
+The
+[step algebra and project plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)
+provides a typed plan/context and local lifecycle-authority layer. Static
+`ProjectSpec cfg tcfg` remains independent of scope and generative identities; scope finalization yields
+`FinalizedProjectSpec scope specDigest cfg`, and admission yields an opaque
+`ProjectPlan scope specDigest planId configId cfg`. Its `forward`, `topology`, and `renderSnapshot` views
+are implemented pure projections, as are its opaque resource and dependency-edge views.
+`withCurrentFrame` jointly generates the matching pure `CurrentFrame`, `ProjectFrame`, and
+`ValidatedContext` evidence described above, and `authorizeProjectUp` consumes the latter two with the
+complete matching root, plan, snapshot, lease, journal, and cursor evidence. Public `HostBootstrap.Chain`
+and `HostBootstrap.Reconcile` now consume the exact plan: Chain requires matching execute-phase command
+authority and cursor evidence, checks both the authority-to-supplied-store relation and the cursor's
+retained store plus decoded acquisition project/store/broker origin before I/O, uses the authority's epoch
+and invocation, and derives descent from `DerivedTopology`. Production `Command` consumes that exact path
+directly; Harness `Command` now consumes the same path under its exact run-scoped plan.
+
+It validates the complete topology **graph** before authorization
 (`HostBootstrap.Context.validateTopology`): unique non-empty frame identifiers, exactly one root, every
 non-root parent resolvable, no parent walk revisiting a frame, every frame reachable from the root, legal
 child kinds, a provider that can own each frame's kind, and a `parentChain` that agrees with the edges.
-The cycle check matters — the ancestor walk previously followed `topologyParentId` with no visited set,
-so a config whose frames named each other as parents did not terminate. It then requires the declared
-witness list to be exactly the closed required set for the current frame's placement, so an empty or
-trimmed list no longer passes vacuously.
+The ancestor walk carries a visited set, so a config whose frames name each other as parents fails as a
+cycle rather than recursing indefinitely. Validation also requires the declared witness list to be exactly
+the closed required set for the current frame's placement; an empty or trimmed list fails.
 
-`service run` additionally rejects a non-leaf primary kind. `project up|down|destroy` do not perform the
-exact root-placement check, so a hand-edited config carrying the class can still pass. Because
-capability/witness constructors and record-update paths are not yet fully hidden, this is not an
-unforgeable proof of authority. Sprint 15.9 makes command gates consume opaque
-role-specific capabilities minted by validated transitions and prevents incompatible role/class
-construction. Dockerfiles bake the narrow `image-build-container` role; runtime containers receive
-parent-generated `vm-project-container` configs **streamed in-place** over the baked file.
+`service run` additionally rejects a non-leaf primary kind. For project lifecycle verbs,
+`validateContext` derives placement from the checked graph and refuses a declared command class at an
+illegal frame, including a non-root operator entry. This remains descriptive runtime validation rather
+than authority: the public `BinaryContext` record can still be constructed or updated, and
+`CurrentFrame`/`ValidatedContext` alone remain non-authorizing. Protected snapshot binding, the
+broker-indexed acquisition journal, its same-broker cursor, and the exact `authorizeProjectUp` gate are
+implemented. That gate validates the complete retained origins and performs its live
+mode/lease/snapshot/acquisition/cursor checks and one-use reservation atomically in one protected entry;
+Production `project up` consumes it. The
+[recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
+composes that substrate with proof-complete
+operator/descent authorization and recursive traversal. Dockerfiles bake the narrow
+`image-build-container` role; runtime containers receive parent-generated `vm-project-container` configs
+**streamed in-place** over the baked file.
 
-**In-place delivery.** Child-config **delivery** was refined from build-then-copy
-(the VM's host-side `.vm.dhall` copied in) and build-then-mount (the VM's `.runtime-container.dhall`
-bind-mounted in) to **streaming the projection in-place over the lift's `stdin` channel**, written by the
-descending binary to its own sibling before dispatch. Only the rendered context-adjusted payload—not a
-parent-side file—crosses on `stdin`, with no parent-side intermediate config or config bind-mount for the
-VM/container frames (the Kubernetes service pod keeps its ConfigMap override). That current payload
-retains the full demo record and parent envelope, and the child persists it at its own inspectable sibling
-path. The target replaces it with a role-specific type. The superseded
-build-then-copy/mount surfaces are tracked in
-[design rationale](../../DEVELOPMENT_PLAN/rationale.md).
+**In-place delivery.** Child-config delivery streams the projection in place over the lift's `stdin`
+channel, and the descending binary writes it to its own sibling before dispatch. Only the rendered
+context-adjusted payload—not a parent-side file—crosses on `stdin`, with no parent-side intermediate
+config or config bind-mount for the VM/container frames (the Kubernetes service pod keeps its ConfigMap
+override). The payload retains the full demo record and parent envelope, and the child persists it at its
+own inspectable sibling path. The target replaces it with a role-specific type.
 
 The implemented context model includes:
 
-- The recursive `project up` interpreter interprets the selected `[Step]` chain across a 3-frame
-  metal → VM → container descent on VM-backed branches or a 2-frame metal → direct-container descent on
-  native Linux GPU. Child creation is internal `project up` work: the VM composite bootstrap projects
-  and delivers independently of the announcing `context-init` row, while the container path now rides
-  the descent that row itself declares. The target plan unifies the remaining paths. The default `project init` invocation writes
-  the fresh root config; explicit role/output/policy flags support the other current writer uses.
+- Public `HostBootstrap.Chain` interprets the current frame's exact `ProjectPlan.forward` segment and
+  derives each next frame and `LiftContext` from `DerivedTopology`; the declared topologies are a 3-frame
+  metal → VM → container VM-backed branch and a 2-frame metal → direct-container native Linux GPU
+  branch. Production nested entry currently refuses before effects, so proof-complete traversal of those
+  declared descendants remains work in the
+  [recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md). Child
+  creation is internal `project up` work: the VM composite bootstrap projects and delivers independently
+  of the announcing `context-init` row, while the container path rides the descent that row itself
+  declares. Harness lifecycle setup/teardown stays in-process at the command boundary; only plan-declared
+  recursive child descent uses the self-reference lift. The
+  default `project init` invocation writes the fresh root config; explicit role/output/policy flags support
+  the other current writer uses.
 - The read-only `context` command is the single introspection surface: `context inspect` reads the
   sibling, `context show` reads its selected/default file, and `context path` / `context schema` /
   `context render` are static and config-free.
@@ -1781,8 +2055,10 @@ The implemented context model includes:
   of, with structural variation expressed as a root parameter flag.
 
 `project up` uses that context path in the live stack. Current `down`/`destroy` are not recursive
-child-to-parent interpretations, and current demo tests select Production/`.data`. The phase records in
-`DEVELOPMENT_PLAN/` own validation status; this document describes the authority contract.
+child-to-parent interpretations. Demo tests select the exact Harness profile and `.test_data/<runId>`, but
+their same-run durable-readback destroy/up choreography remains open until the harness engine owns a fresh
+lifecycle-invocation generation. The phase records in `DEVELOPMENT_PLAN/` own validation status; this
+document describes the authority contract.
 
 The accelerator-daemon context substrate is implemented in
 `HostBootstrap.Context`: host-resident daemon contexts use host placement, in-cluster daemon contexts use

@@ -2,8 +2,10 @@
 
 -- | The @Reconciler@ value type and runner used by @ensure-*@ chain steps.
 --
--- A reconciler is an idempotent value: a host-applicability predicate plus a
--- reconcile action (see @development_plan_standards.md § L@). Running a
+-- A reconciler is a host-applicability predicate plus a reconcile action (see
+-- @development_plan_standards.md § L@). Implementations are probe-first; their
+-- no-op guarantee is only as strong as the probe or package-manager no-op path.
+-- Running a
 -- reconciler whose predicate rejects the host fails fast — a one-line
 -- diagnostic on stderr and a non-zero exit — before any side effect. The
 -- applicability decision ('decide') is pure so it can be tested without
@@ -20,6 +22,7 @@ module HostBootstrap.Ensure
     runToolWithStdin,
     InstallStep (..),
     installAndVerify,
+    installAndVerifyWith,
   )
 where
 
@@ -117,7 +120,30 @@ installAndVerify ::
   (Substrate -> Either String [InstallStep]) ->
   HostConfig ->
   IO ()
-installAndVerify name probe plan cfg0 = do
+installAndVerify =
+  installAndVerifyWith
+    runTool
+    (buildHostConfig . hcSubstrate)
+
+-- | Injectable form of 'installAndVerify'. Production reconciliation uses the
+-- real resolved-tool runner and rebuilds the host configuration after every
+-- successful step; tests and embedders can supply those two effects while the
+-- probe-first, refresh-between-steps, and verify-last control flow remains the
+-- production implementation.
+installAndVerifyWith ::
+  -- | resolved-tool runner
+  (HostConfig -> HostTool -> [String] -> IO (Either String (ExitCode, String, String))) ->
+  -- | refresh the resolved host configuration after a successful step
+  (HostConfig -> IO HostConfig) ->
+  -- | reconciler name (for messages)
+  String ->
+  -- | probe: is the dependency satisfied?
+  (HostConfig -> IO Bool) ->
+  -- | substrate-branched install plan
+  (Substrate -> Either String [InstallStep]) ->
+  HostConfig ->
+  IO ()
+installAndVerifyWith runInstallStep refreshConfig name probe plan cfg0 = do
   satisfied <- probe cfg0
   if satisfied
     then putStrLn ("ensure " ++ name ++ ": present (no-op)")
@@ -132,18 +158,18 @@ installAndVerify name probe plan cfg0 = do
           else die ("ensure " ++ name ++ ": still not satisfied after install; install manually and retry")
   where
     runStep cfg (InstallStep tool args) = do
-      result <- runTool cfg tool args
+      result <- runInstallStep cfg tool args
       case result of
         Right (ExitSuccess, out, errOut)
           | wslNeedsReboot tool (out ++ errOut) ->
               die ("ensure " ++ name ++ ": host reboot required after WSL2 install; reboot and retry")
-          | otherwise -> buildHostConfig (hcSubstrate cfg)
+          | otherwise -> refreshConfig cfg
         Right (ExitFailure n, out, errOut)
           | wslNeedsReboot tool (out ++ errOut) ->
               die ("ensure " ++ name ++ ": host reboot required after WSL2 install; reboot and retry")
           | wslInstallNeedsReboot tool args n ->
               die ("ensure " ++ name ++ ": host reboot required after WSL2 install; reboot and retry")
-          | wingetAlreadyInstalled tool args (out ++ errOut) -> buildHostConfig (hcSubstrate cfg)
+          | wingetAlreadyInstalled tool args (out ++ errOut) -> refreshConfig cfg
           | otherwise ->
               die
                 ( "ensure "

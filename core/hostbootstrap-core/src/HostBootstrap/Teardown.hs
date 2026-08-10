@@ -1,6 +1,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RoleAnnotations #-}
 
 {- | The verb-indexed reverse projection and its teardown forest
 (the recursive-lifecycle-command phase, @development_plan_standards.md@ § Y).
@@ -9,18 +10,20 @@
 They are two **projections of the same validated plan**, and this module is
 where that is made structural:
 
-* 'TeardownPlan' is indexed by the verb, so a @Down@ projection cannot be passed
-  where a @Destroy@ projection is required. The two differ in exactly one place —
-  a provider frame is *stopped* by @down@ and *deleted* by @destroy@ — and in
-  neither does a step whose reverse policy is @PreserveOnReverse@ appear at all,
-  which is how the host-root @.data@ stays inside the one plan with an explicit
-  preserve policy rather than being excluded by a special case at the call site.
+* 'TeardownPlan' is indexed by the exact admitted plan, current frame, and verb,
+  so neither another plan's frame nor a @Down@ projection can be substituted for
+  a @Destroy@ projection. Its nodes come only from the public project-plan
+  projections and retain the same stable step and operation identities as the
+  forward plan. The two verbs differ in exactly one place — a provider frame is
+  *stopped* by @down@ and *deleted* by @destroy@ — and in neither does a step
+  whose reverse policy is @PreserveOnReverse@ appear at all.
 * The kind cluster is deleted by **both** verbs, because kind has no reliable
   stop/restart contract. Its removal set is empty, so no filesystem path is
   removed with it.
-* 'openTeardownForest' is the **sole** initial producer of a forest. There is no
-  cursor, authorization point, or completed-forest value before it, and the
-  forest it opens is bound to the exact plan it was derived from.
+* 'openTeardownForest' is the **sole** initial producer of a forest. It consumes
+  only the already-bound projection; there is no second plan or frame argument
+  that could disagree with it. The forest remains deliberately unframed until
+  the recursive-lifecycle-command phase propagates the frame index.
 
 The forest itself enforces child-first recursion. A frame's own teardown step is
 not offered until every deeper frame's node has settled, so a parent is never
@@ -57,7 +60,10 @@ module HostBootstrap.Teardown (
     TeardownPlan,
     teardownPlan,
     teardownPlanVerbName,
+    teardownPlanFrameId,
     teardownPlanStepKeys,
+    teardownPlanStepIdentities,
+    teardownPlanOperationKeys,
     teardownPlanActions,
     runTeardownProjection,
 
@@ -109,29 +115,33 @@ module HostBootstrap.Teardown (
 import Control.Exception (SomeException, displayException)
 import Control.Exception.Safe (try)
 import Data.List (nub)
+import qualified Data.List.NonEmpty as NonEmpty
 import Data.Text (Text)
 import qualified Data.Text as Text
 import HostBootstrap.HostConfig (HostConfig)
-import HostBootstrap.Reconcile (
-    LifecyclePlan,
-    lifecyclePlanDigest,
-    lifecyclePlanSteps,
+import HostBootstrap.ProjectPlan (
+    OperationKey,
+    PlannedStep,
+    ProjectPlan,
+    forward,
+    operationKeyText,
+    plannedStepFrameId,
+    plannedStepIdentity,
+    plannedStepOperationKey,
+    plannedStepReversePolicy,
+    plannedStepReverseRun,
+    renderSnapshot,
+    stablePlanSnapshotDigest,
+    topology,
+    topologyFrameOrder,
  )
+import HostBootstrap.ProjectPlan.Frame (CurrentFrame, currentFrameId)
 import HostBootstrap.Step (
+    CoreStepId (DeployKindId, DeployVMId),
     ReversePolicy (..),
-    Step,
+    StepIdentity (..),
     TeardownAction (..),
     TeardownOutcome (..),
-    chainFrames,
-    frameId,
-    isDeployKindStep,
-    isDeployVMStep,
-    operationKeyText,
-    stepFrame,
-    stepOperationKey,
-    stepPlanSteps,
-    stepReverse,
-    stepReversePolicy,
  )
 
 -- ---------------------------------------------------------------------------
@@ -170,34 +180,55 @@ adapter owns it ('CoreManagedReverse') or it acquired nothing this frame must
 release.
 -}
 data ReverseStep = ReverseStep
-    { reverseKey :: Text
+    { reverseIdentity :: StepIdentity
+    , reverseOperationKey :: OperationKey
     , reverseFrame :: Text
     , reverseAction :: TeardownAction
     , reversePolicy :: ReversePolicy
     , reverseRun :: Maybe (HostConfig -> TeardownAction -> IO TeardownOutcome)
     }
 
+reverseKey :: ReverseStep -> Text
+reverseKey = Text.pack . operationKeyText . reverseOperationKey
+
 {- | The pure, verb-indexed reverse projection of one validated plan.
 
-Derived only from a 'LifecyclePlan', so the identities it names are exactly the
-plan's own operation keys — the structural property § W requires of the forward
-and reverse projections.
+Derived only from a 'ProjectPlan' and its already-admitted 'CurrentFrame', so
+the identities it names are exactly the plan's own step identities and
+operation keys — the structural property § W requires of the forward and
+reverse projections.
 -}
-data TeardownPlan scope planId verb
-    = TeardownPlan (TeardownVerb verb) Text [[ReverseStep]]
+data TeardownPlan scope planId frame verb
+    = TeardownPlan (TeardownVerb verb) Text Text [[ReverseStep]]
 
-teardownPlanVerbName :: TeardownPlan scope planId verb -> Text
-teardownPlanVerbName (TeardownPlan verb _ _) = teardownVerbName verb
+type role TeardownPlan nominal nominal nominal nominal
 
-{- | The plan's reverse step identities, deepest frame first. Every entry is one
-of the forward plan's own operation keys.
+teardownPlanVerbName :: TeardownPlan scope planId frame verb -> Text
+teardownPlanVerbName (TeardownPlan verb _ _ _) = teardownVerbName verb
+
+-- | The exact semantic frame from which this reverse projection begins.
+teardownPlanFrameId :: TeardownPlan scope planId frame verb -> Text
+teardownPlanFrameId (TeardownPlan _ _ frame _) = frame
+
+{- | The plan's legacy text-key projection, deepest frame first. Every entry is
+rendered from one of the forward plan's own operation keys.
 -}
-teardownPlanStepKeys :: TeardownPlan scope planId verb -> [Text]
-teardownPlanStepKeys (TeardownPlan _ _ levels) =
+teardownPlanStepKeys :: TeardownPlan scope planId frame verb -> [Text]
+teardownPlanStepKeys (TeardownPlan _ _ _ levels) =
     [reverseKey step | level <- levels, step <- level]
 
-teardownPlanActions :: TeardownPlan scope planId verb -> [(Text, TeardownAction)]
-teardownPlanActions (TeardownPlan _ _ levels) =
+-- | The exact stable step identities shared with the admitted forward plan.
+teardownPlanStepIdentities :: TeardownPlan scope planId frame verb -> [StepIdentity]
+teardownPlanStepIdentities (TeardownPlan _ _ _ levels) =
+    [reverseIdentity step | level <- levels, step <- level]
+
+-- | The exact stable operation keys shared with the admitted forward plan.
+teardownPlanOperationKeys :: TeardownPlan scope planId frame verb -> [OperationKey]
+teardownPlanOperationKeys (TeardownPlan _ _ _ levels) =
+    [reverseOperationKey step | level <- levels, step <- level]
+
+teardownPlanActions :: TeardownPlan scope planId frame verb -> [(Text, TeardownAction)]
+teardownPlanActions (TeardownPlan _ _ _ levels) =
     [(reverseKey step, reverseAction step) | level <- levels, step <- level]
 
 {- | Run the verb's reverse projection in its own order — deepest frame first,
@@ -214,20 +245,20 @@ A throwing effect becomes 'TeardownFailed' rather than aborting the traversal,
 so an unrelated later node still gets its turn — the § Y rule that a refusal or
 a failure skips only its own resource.
 
-This drives the pure projection, not the 'TeardownForest'. It is the single-frame
-traversal: it visits only the nodes this binary can act on and claims nothing
-about deeper frames. The production lifecycle verbs drive the __forest__ instead,
-because the forest adds child-first ordering and the destroy-only pre-descent
-reachability step, and those are only truthful when the verb recurses into each
-descendant frame — which it now does.
+This drives the pure current-frame-subtree projection, not the
+'TeardownForest'. It can invoke retained callbacks in projection order, but it
+does not provide the forest's child-first scheduling, destroy-only pre-descent,
+or the recursive lifecycle layer's authenticated distinction between local and
+foreign-frame work. Production lifecycle verbs therefore drive the forest and
+cross each declared descendant boundary explicitly.
 -}
 runTeardownProjection ::
-    TeardownPlan scope planId verb ->
+    TeardownPlan scope planId frame verb ->
     -- | how the core releases a node whose reverse it owns
     (Text -> TeardownAction -> IO TeardownOutcome) ->
     HostConfig ->
     IO [(Text, Maybe TeardownOutcome)]
-runTeardownProjection (TeardownPlan _ _ levels) onCoreManaged cfg =
+runTeardownProjection (TeardownPlan _ _ _ levels) onCoreManaged cfg =
     mapM attempt [step | level <- levels, step <- level]
   where
     attempt step = do
@@ -251,44 +282,57 @@ which is how the durable host root stays inside the plan with an explicit
 preserve policy instead of being removed by either verb's projection.
 -}
 teardownPlan ::
-    LifecyclePlan scope planId ->
+    ProjectPlan scope specDigest planId configId cfg ->
+    CurrentFrame scope planId frame ->
     TeardownVerb verb ->
-    TeardownPlan scope planId verb
-teardownPlan plan verb =
-    TeardownPlan verb (lifecyclePlanDigest plan) levels
+    TeardownPlan scope planId frame verb
+teardownPlan plan current verb =
+    TeardownPlan
+        verb
+        (stablePlanSnapshotDigest (renderSnapshot plan))
+        currentId
+        levels
   where
-    steps = lifecyclePlanSteps plan
+    currentId = currentFrameId current
+    steps = NonEmpty.toList (forward plan)
+    frames =
+        dropWhile
+            (/= currentId)
+            (map fst (NonEmpty.toList (topologyFrameOrder (topology plan))))
     levels =
         [ level
-        | frame <- reverse (map frameId (chainFrames steps))
+        | frame <- reverse frames
         , let level = reverse (map (reverseStepFor verb) (removableIn frame))
         , not (null level)
         ]
     removableIn frame =
         [ step
-        | step <- stepPlanSteps steps
-        , frameId (stepFrame step) == frame
-        , stepReversePolicy step /= PreserveOnReverse
+        | step <- steps
+        , plannedStepFrameId step == frame
+        , plannedStepReversePolicy step /= PreserveOnReverse
         ]
 
-reverseStepFor :: TeardownVerb verb -> Step -> ReverseStep
+reverseStepFor ::
+    TeardownVerb verb ->
+    PlannedStep scope planId configId config ->
+    ReverseStep
 reverseStepFor verb step =
     ReverseStep
-        { reverseKey = Text.pack (operationKeyText (stepOperationKey step))
-        , reverseFrame = Text.pack (frameId (stepFrame step))
-        , reverseAction = actionFor verb step
-        , reversePolicy = stepReversePolicy step
-        , reverseRun = stepReverse step
+        { reverseIdentity = plannedStepIdentity step
+        , reverseOperationKey = plannedStepOperationKey step
+        , reverseFrame = plannedStepFrameId step
+        , reverseAction = actionFor verb (plannedStepIdentity step)
+        , reversePolicy = plannedStepReversePolicy step
+        , reverseRun = plannedStepReverseRun step
         }
 
-actionFor :: TeardownVerb verb -> Step -> TeardownAction
-actionFor verb step
-    | isDeployVMStep step = case verb of
-        DownTeardown -> StopFrame
-        DestroyTeardown -> DeleteFrame
-    -- kind has no reliable stop/restart contract, so both verbs delete it
-    | isDeployKindStep step = DeleteCluster
-    | otherwise = ReleaseResource
+actionFor :: TeardownVerb verb -> StepIdentity -> TeardownAction
+actionFor verb (CoreStepIdentity DeployVMId) = case verb of
+    DownTeardown -> StopFrame
+    DestroyTeardown -> DeleteFrame
+-- kind has no reliable stop/restart contract, so both verbs delete it
+actionFor _ (CoreStepIdentity DeployKindId) = DeleteCluster
+actionFor _ _ = ReleaseResource
 
 -- ---------------------------------------------------------------------------
 -- The forest
@@ -322,16 +366,14 @@ data TeardownForest scope planId verb
 
 {- | The sole initial forest producer.
 
-Binds the pure reverse projection to the plan it was derived from. A node for a
-provider frame under @destroy@ starts in 'PreDescentPending', because after a
-`down` that provider is stopped and its retained children are unreachable until
-it is started again.
+Consumes the already-bound projection alone. A node for a provider frame under
+@destroy@ starts in 'PreDescentPending', because after a `down` that provider is
+stopped and its retained children are unreachable until it is started again.
 -}
 openTeardownForest ::
-    LifecyclePlan scope planId ->
-    TeardownPlan scope planId verb ->
+    TeardownPlan scope planId frame verb ->
     Either TeardownError (TeardownForest scope planId verb)
-openTeardownForest _plan (TeardownPlan verb digest levels)
+openTeardownForest (TeardownPlan verb digest _ levels)
     | null levels = Left (TeardownPlanEmpty (teardownVerbName verb))
     | otherwise = Right (TeardownForest verb digest (nest verb levels))
 
@@ -709,7 +751,7 @@ nodes than the plan projected, so a truncated traversal cannot be presented as a
 settled destroy.
 -}
 verifyDestroySettled ::
-    TeardownPlan scope planId DestroyVerb ->
+    TeardownPlan scope planId frame DestroyVerb ->
     CompletedTeardownForest scope planId DestroyVerb ->
     Either TeardownError (DestroySettled scope planId)
 verifyDestroySettled projection (CompletedTeardownForest _ digest settled _)
@@ -728,10 +770,10 @@ destroy branch: a @down@ yields 'Nothing', and there is no other way to reach th
 proof.
 -}
 settledDestroyEvidence ::
-    TeardownPlan scope planId verb ->
+    TeardownPlan scope planId frame verb ->
     CompletedTeardownForest scope planId verb ->
     Maybe (Either TeardownError (DestroySettled scope planId))
-settledDestroyEvidence projection@(TeardownPlan verb _ _) completed = case verb of
+settledDestroyEvidence projection@(TeardownPlan verb _ _ _) completed = case verb of
     DownTeardown -> Nothing
     DestroyTeardown -> Just (verifyDestroySettled projection completed)
 

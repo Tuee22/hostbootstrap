@@ -5,7 +5,7 @@ import HostBootstrap.Lifecycle.Mode
 -- Leases exist only where the protected compare-and-swap that recorded them
 -- succeeded; neither constructor is public.
 forgedUnbound :: UnboundRunLease scope brokerGeneration
-forgedUnbound = UnboundRunLease (RunId "forged") undefined
+forgedUnbound = UnboundRunLease
 
 forgedBound :: BoundRunLease scope specDigest planDigest brokerGeneration
-forgedBound = BoundRunLease (RunId "forged") "spec" "plan" undefined
+forgedBound = BoundRunLease

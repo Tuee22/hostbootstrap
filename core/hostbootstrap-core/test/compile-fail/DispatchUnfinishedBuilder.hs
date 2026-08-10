@@ -1,12 +1,10 @@
-{-# LANGUAGE MultiParamTypeClasses #-}
-
 module DispatchUnfinishedBuilder where
 
 import HostBootstrap.CLI
 import HostBootstrap.Config.Class
 
 dispatchUnfinished ::
-    (ProjectCfg projectId cfg, TestCfg tcfg) =>
-    ProjectSpecBuilder projectId cfg tcfg ->
+    (ProjectCfg cfg, TestCfg tcfg) =>
+    ProjectSpecBuilder cfg tcfg ->
     IO ()
 dispatchUnfinished = runHostBootstrapCLI "unfinished"

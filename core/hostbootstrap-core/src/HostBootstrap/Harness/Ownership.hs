@@ -63,6 +63,7 @@ refusal an operator had to resolve by deleting protected records by hand.
 -}
 module HostBootstrap.Harness.Ownership (
     OwnedHarnessRoot,
+    OwnedHarnessCloseControl,
     withOwnedHarnessRoot,
     ownedHarnessConfigPath,
     acquireOwnedRunConfig,
@@ -78,12 +79,10 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
 import HostBootstrap.Authority (
-    InstalledProject,
+    InstalledProjectIdentity,
     ProjectVerb (ProjectUp),
     VerbUp,
-    authorityErrorMessage,
     installedProjectName,
-    withInstalledProject,
  )
 import HostBootstrap.Harness (
     HarnessRunCleanupFailure (..),
@@ -108,8 +107,14 @@ import HostBootstrap.Harness.GeneratedConfig (
  )
 import HostBootstrap.Harness.Identity (ObjectIdentityBackend)
 import HostBootstrap.Harness.Identity.Native (nativeObjectIdentityBackend)
+import HostBootstrap.Harness.Ownership.Internal (
+    OwnedHarnessCloseControl,
+    consumeOwnedHarnessClose,
+    newOwnedHarnessCloseControl,
+ )
 import HostBootstrap.Lifecycle.Mode (
     AbandonedHarnessRun,
+    BoundRunLease,
     HarnessBoundRecovery (HarnessOpenRevisionRecovery, HarnessPersistedClosing),
     HarnessRoot,
     IncompleteLeaseKind (IncompleteBound, IncompleteUnbound),
@@ -123,14 +128,14 @@ import HostBootstrap.Lifecycle.Mode (
     abandonedHarnessCloseRoot,
     abandonedHarnessModeLease,
     abandonedHarnessRecovery,
-    abandonedHarnessRunId,
     closeHarnessRun,
     currentHarnessCloseRoot,
     harnessPreconditions,
     harnessRootModeLease,
     harnessRootRunId,
+    harnessRootUnboundLease,
     incompleteRunLeaseKind,
-    incompleteRunLeaseRun,
+    incompleteRunLeaseRunText,
     modeErrorMessage,
     openRevisionKind,
     recoverAbandonedHarnessRuns,
@@ -138,6 +143,7 @@ import HostBootstrap.Lifecycle.Mode (
     abandonedHarnessBoundLease,
     finalizeHarnessClose,
     resumeHarnessClose,
+    verifyBoundRunHasNoProjectResourcesAcquired,
     verifyNoProjectResourcesAcquired,
     withAbandonedHarnessRun,
     withHarnessRoot,
@@ -146,6 +152,7 @@ import HostBootstrap.ProjectRoot (
     CanonicalProjectRoot,
     canonicalProjectRootPath,
  )
+import HostBootstrap.ProjectScope (Harness)
 import HostBootstrap.Protected (
     ProtectedError,
     ProtectedSession,
@@ -172,23 +179,25 @@ contains the exact generative root acquired by 'withHarnessRoot'.
 data OwnedHarnessRoot projectId where
     OwnedHarnessRoot ::
         ProtectedStore ->
-        InstalledProject projectId ->
+        InstalledProjectIdentity projectId ->
         -- | the sibling config path, derived from installed project identity
         FilePath ->
         HarnessRoot projectId runId brokerGeneration VerbUp ->
+        OwnedHarnessCloseControl projectId runId brokerGeneration ->
         OwnedHarnessRoot projectId
 
 withOwnedHarnessRoot ::
     OwnedHarnessRoot projectId ->
     ( forall runId brokerGeneration.
       ProtectedStore ->
-      InstalledProject projectId ->
+      InstalledProjectIdentity projectId ->
       HarnessRoot projectId runId brokerGeneration VerbUp ->
+      OwnedHarnessCloseControl projectId runId brokerGeneration ->
       result
     ) ->
     result
-withOwnedHarnessRoot (OwnedHarnessRoot store project _ root) use =
-    use store project root
+withOwnedHarnessRoot (OwnedHarnessRoot store project _ root closeControl) use =
+    use store project root closeControl
 
 {- | The sibling @\<project\>.dhall@ this run generates. It is derived from the
 installed project identity and the directory the binary sits in — the same
@@ -196,7 +205,7 @@ derivation the harness precondition uses — so a caller cannot name a different
 file as "the generated config".
 -}
 ownedHarnessConfigPath :: OwnedHarnessRoot projectId -> FilePath
-ownedHarnessConfigPath (OwnedHarnessRoot _ _ path _) = path
+ownedHarnessConfigPath (OwnedHarnessRoot _ _ path _ _) = path
 
 {- | Install this run's generated config under all four § EE clauses. An object
 already at the path is refused before any mutation — that refusal is the
@@ -208,10 +217,10 @@ acquireOwnedRunConfig ::
     -- | the exact bytes to install
     ByteString ->
     IO (Either String GeneratedConfigOwnership)
-acquireOwnedRunConfig (OwnedHarnessRoot store project path root) payload = do
+acquireOwnedRunConfig (OwnedHarnessRoot store project path root _) payload = do
     outcome <-
         inConfigEntry store $ \session ->
-            case generatedConfigKey project (harnessRootRunId root) of
+            case generatedConfigKey project (runIdText (harnessRootRunId root)) of
                 Left failure -> pure (Left failure)
                 Right key -> acquireGeneratedConfig identityBackend session key path payload
     pure (either (Left . Text.unpack . generatedConfigErrorMessage) Right outcome)
@@ -224,10 +233,10 @@ releaseOwnedRunConfig ::
     OwnedHarnessRoot projectId ->
     GeneratedConfigOwnership ->
     IO (Either String ())
-releaseOwnedRunConfig (OwnedHarnessRoot store project _ root) owned = do
+releaseOwnedRunConfig (OwnedHarnessRoot store project _ root _) owned = do
     outcome <-
         inConfigEntry store $ \session ->
-            case generatedConfigKey project (harnessRootRunId root) of
+            case generatedConfigKey project (runIdText (harnessRootRunId root)) of
                 Left failure -> pure (Left failure)
                 Right key ->
                     fmap
@@ -236,7 +245,7 @@ releaseOwnedRunConfig (OwnedHarnessRoot store project _ root) owned = do
     pure (either (Left . Text.unpack . generatedConfigErrorMessage) Right outcome)
 
 protectedProjectRunOwnership ::
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     CanonicalProjectRoot rootScope rootId ->
     -- | the directory a sibling production config would occupy
     FilePath ->
@@ -260,8 +269,8 @@ acquires a real typed root and exposes only that root's descriptive run name;
 it cannot mint config authority and is not used by the command path.
 -}
 protectedRunOwnership ::
-    -- | the installed project name
-    Text ->
+    -- | the executable-verified installed project
+    InstalledProjectIdentity projectId ->
     -- | the state root the protected store and data root sit under
     FilePath ->
     -- | the directory a sibling production config would occupy
@@ -269,34 +278,31 @@ protectedRunOwnership ::
     -- | the shared @.test_data@ parent the run's generation sits under
     FilePath ->
     HarnessRunOwnership Text
-protectedRunOwnership projectName stateRoot siblingDirectory dataParent =
-    HarnessRunOwnership (ownRun projectName stateRoot siblingDirectory dataParent)
+protectedRunOwnership project stateRoot siblingDirectory dataParent =
+    HarnessRunOwnership (ownRun project stateRoot siblingDirectory dataParent)
 
 ownRun ::
-    forall result.
-    Text ->
+    forall projectId result.
+    InstalledProjectIdentity projectId ->
     FilePath ->
     FilePath ->
     FilePath ->
     (Text -> IO result) ->
     IO (Either String (result, Maybe HarnessRunCleanupFailure))
-ownRun projectName stateRoot siblingDirectory dataParent body =
-    case withInstalledProject projectName $ \project ->
-        ownProjectRun
-            project
-            (stateRoot </> harnessAuthorityStoreDirectory)
-            siblingDirectory
-            dataParent
-            ( \owned ->
-                withOwnedHarnessRoot owned $ \_store _project root ->
-                    body (runIdText (harnessRootRunId root))
-            ) of
-        Left failure -> pure (Left (refused (authorityErrorMessage failure)))
-        Right action -> action
+ownRun project stateRoot siblingDirectory dataParent body =
+    ownProjectRun
+        project
+        (stateRoot </> harnessAuthorityStoreDirectory)
+        siblingDirectory
+        dataParent
+        ( \owned ->
+            withOwnedHarnessRoot owned $ \_store _project root _closeControl ->
+                body (runIdText (harnessRootRunId root))
+        )
 
 ownProjectRun ::
     forall projectId result.
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     FilePath ->
     FilePath ->
     FilePath ->
@@ -353,12 +359,13 @@ ownProjectRun project storeRoot siblingDirectory dataParent body = do
     runOwned store root = do
         -- § Z: the run owns @.test_data/<runId>@, not the shared parent.
         let generation = testDataGeneration dataParent (runIdText run)
+        terminalClose <- newOwnedHarnessCloseControl
         (outcome, cleanupFailure) <-
             generalBracket
                 (takeDataRoot store project run generation)
                 ( \started _ -> case started of
                     Left _ -> pure Nothing
-                    Right receipt -> releaseRun receipt
+                    Right receipt -> releaseRun terminalClose receipt
                 )
                 ( \started -> case started of
                     Left failure ->
@@ -370,7 +377,15 @@ ownProjectRun project storeRoot siblingDirectory dataParent body = do
                                 )
                             )
                     Right _ ->
-                        Right <$> body (OwnedHarnessRoot store project configPath root)
+                        Right
+                            <$> body
+                                ( OwnedHarnessRoot
+                                    store
+                                    project
+                                    configPath
+                                    root
+                                    terminalClose
+                                )
                 )
         pure (fmap (\result -> (result, cleanupFailure)) outcome)
       where
@@ -379,7 +394,7 @@ ownProjectRun project storeRoot siblingDirectory dataParent body = do
         -- identity: 'currentHarnessCloseRoot' is one of the two producers of
         -- 'HarnessCloseRoot', and recovery's opener is the other.
         run = harnessRootRunId root
-        releaseRun receipt = do
+        releaseRun terminalClose receipt = do
             released <- giveUpDataRoot store project run receipt
             case released of
                 Left failure ->
@@ -398,7 +413,7 @@ ownProjectRun project storeRoot siblingDirectory dataParent body = do
                     -- the config and never released it — and both are the dead
                     -- run's own state. On the ordinary path the release already
                     -- removed the file and deleted the record, so this is a no-op.
-                    settled <- reclaimAbandonedConfig store project run configPath
+                    settled <- reclaimAbandonedConfig store project (runIdText run) configPath
                     case settled of
                         Left failure ->
                             pure
@@ -408,29 +423,58 @@ ownProjectRun project storeRoot siblingDirectory dataParent body = do
                                     )
                                 )
                         Right () -> do
-                            closed <- closeRun
+                            closed <- runTerminalClose terminalClose
                             pure $ case closed of
                                 Left reason -> Just (HarnessModeCloseFailed reason)
                                 Right () -> Nothing
-        closeRun = do
+        runTerminalClose terminalClose =
+            consumeOwnedHarnessClose
+                terminalClose
+                closeUnbound
+                closeBound
+                finalizeSettled
+        closeUnbound = do
+            evidence <- verifyNoProjectResourcesAcquired (harnessRootUnboundLease root)
+            case evidence of
+                Left failure -> pure (Left (Text.unpack (modeErrorMessage failure)))
+                Right proof -> closeShort proof
+        closeBound ::
+            forall specDigest planDigest.
+            BoundRunLease
+                (Harness projectId runId)
+                specDigest
+                planDigest
+                brokerGeneration ->
+            IO (Either String ())
+        closeBound bound = do
+            evidence <- verifyBoundRunHasNoProjectResourcesAcquired bound
+            case evidence of
+                Left failure -> pure (Left (Text.unpack (modeErrorMessage failure)))
+                Right proof -> closeShort proof
+        closeShort proof = do
             closed <-
                 withProtectedEntry store $ \session -> do
-                    evidence <- verifyNoProjectResourcesAcquired session project run
-                    case evidence of
-                        Left failure -> pure (Right (Left failure))
-                        Right proof -> do
-                            outcome <-
-                                closeHarnessRun
-                                    session
-                                    project
-                                    (currentHarnessCloseRoot root)
-                                    (harnessRootModeLease root)
-                                    proof
-                            pure (Right outcome)
+                    outcome <-
+                        closeHarnessRun
+                            session
+                            project
+                            (currentHarnessCloseRoot root)
+                            (harnessRootModeLease root)
+                            proof
+                    pure (Right outcome)
             pure $ case closed of
                 Left failure -> Left (Text.unpack (protectedErrorMessage failure))
                 Right (Left failure) -> Left (Text.unpack (modeErrorMessage failure))
                 Right (Right ()) -> Right ()
+        finalizeSettled authorization = do
+            finalized <-
+                withProtectedEntry store $ \session -> do
+                    outcome <- finalizeHarnessClose session project authorization
+                    pure (Right outcome)
+            pure $ case finalized of
+                Left failure -> Left (Text.unpack (protectedErrorMessage failure))
+                Right (Left failure) -> Left (Text.unpack (modeErrorMessage failure))
+                Right (Right _) -> Right ()
 
 {- | Reclaim an abandoned run's two owned filesystem objects from their durable
 origin records. For an unbound lease the sweep runs this /before/ closing the
@@ -446,7 +490,7 @@ reported and blocks the new run rather than deleting a stranger's file.
 -}
 reclaimAbandonedRun ::
     ProtectedStore ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     -- | the shared @.test_data@ parent
     FilePath ->
     -- | the sibling config path the run would have generated
@@ -459,7 +503,7 @@ reclaimAbandonedRun store project dataParent configPath lease = do
             store
             project
             run
-            (testDataGeneration dataParent (runIdText run))
+            (testDataGeneration dataParent run)
     case reclaimedData of
         Left failure -> pure (Left (unresolved (dataRootErrorMessage failure)))
         Right () -> do
@@ -468,8 +512,8 @@ reclaimAbandonedRun store project dataParent configPath lease = do
                 Left failure -> Left (unresolved (generatedConfigErrorMessage failure))
                 Right () -> Right ()
   where
-    run = incompleteRunLeaseRun lease
-    unresolved = ModeOwnershipUnresolved (runIdText run)
+    run = incompleteRunLeaseRunText lease
+    unresolved = ModeOwnershipUnresolved run
 
 {- | The bound-lease fold callback.
 
@@ -496,14 +540,15 @@ That branch reclaims the run's two owned objects and closes its lease and mode
 under the reopening's own close authority, which is exactly the interrupted-run
 case the reservation exists for.
 
-A persisted @Closing@ epoch is the second branch it resolves. That run already
-proved its sessions closed and had its close authorized — 'authorizeHarnessClose'
-persists the epoch /before/ the terminal projection precisely so the gap is
-resumable — so recovery finishes the close it started rather than reopening the
-run: it reclaims the two owned objects (already settled on the ordinary path, and
-reclaiming from a durable origin record is idempotent), resumes the authorization
-for that exact persisted epoch through 'resumeHarnessClose', and runs the same
-'finalizeHarnessClose' the live run would have.
+    A persisted @Closing@ epoch is the second branch it resolves. That run already
+proved ordinary destroy settled and proved its sessions closed; only then could
+'authorizeHarnessClose' consume that closure evidence and persist the epoch. The
+remaining gap is terminal finalization, so recovery finishes the close it started
+rather than reopening the run: it reclaims the two owned objects (already settled
+on the ordinary path, and reclaiming from a durable origin record is idempotent),
+resumes the authorization for that exact persisted epoch through
+'resumeHarnessClose', and runs the same 'finalizeHarnessClose' the live run would
+have.
 
 An __incomplete__ migration is resolved the same way, and for the same reason.
 Its recorded kind is a durable observation that the activation barrier was never
@@ -522,7 +567,7 @@ lease close.
 resolveBoundRun ::
     forall projectId.
     ProtectedStore ->
-    InstalledProject projectId ->
+    InstalledProjectIdentity projectId ->
     FilePath ->
     FilePath ->
     VerifiedIncompleteRunLease projectId ->
@@ -553,12 +598,11 @@ resolveBoundRun store project dataParent configPath lease =
                             CompletedMigration _ -> resumeCompletedMigration reopened
                             NormalRevision -> closeIfNothingAcquired reopened
   where
-    run = incompleteRunLeaseRun lease
-
-    {- Finish a close the abandoned run had already authorized. The owned objects
-    are reclaimed first — the ordinary path settles them before authorizing, so
-    this is normally a no-op against an absent object, and reclaiming reads the
-    durable origin record rather than guessing. -}
+    {- Finish a close the abandoned run had already authorized. Ordinary project
+    destroy and its closure proof precede that authorization; the terminal
+    projection over the generated config and data-root generation follows it.
+    Recovery therefore reclaims those objects first from their durable origin
+    records, then resumes the exact persisted authorization. -}
     finishPersistedClose ::
         forall oldRunId specDigest planDigest planId brokerGeneration.
         AbandonedHarnessRun projectId oldRunId specDigest planDigest planId brokerGeneration ->
@@ -605,7 +649,11 @@ resolveBoundRun store project dataParent configPath lease =
     resumeCompletedMigration reopened = do
         activated <-
             runInEntry store $ \session ->
-                withCompletedMigrationRecovery session project run $ \barrier ->
+                withCompletedMigrationRecovery
+                    session
+                    project
+                    (abandonedHarnessBoundLease reopened)
+                    $ \barrier ->
                     fmap
                         (fmap (const ()))
                         ( activateMigratedPlan
@@ -626,8 +674,8 @@ resolveBoundRun store project dataParent configPath lease =
         -- The proof is taken first: nothing is reclaimed and no lease is closed
         -- until the run's own records show it acquired nothing.
         proved <-
-            runInEntry store $ \session ->
-                verifyNoProjectResourcesAcquired session project (abandonedHarnessRunId reopened)
+            verifyBoundRunHasNoProjectResourcesAcquired
+                (abandonedHarnessBoundLease reopened)
         case proved of
             Left failure -> pure (Left failure)
             Right evidence -> do
@@ -665,13 +713,13 @@ kernel releases the entry if this process dies part-way through.
 -}
 takeDataRoot ::
     ProtectedStore ->
-    InstalledProject projectId ->
-    RunId ->
+    InstalledProjectIdentity projectId ->
+    RunId runId ->
     FilePath ->
     IO (Either DataRootError DataRootOwnership)
 takeDataRoot store project run path =
     inEntry store $ \session ->
-        case dataRootOriginKey project run of
+        case dataRootOriginKey project (runIdText run) of
             Left failure -> pure (Left failure)
             Right key -> acquireDataRoot identityBackend session key path
 
@@ -683,13 +731,13 @@ outcome, and refusing to remove a stranger's directory is the correct end state.
 -}
 giveUpDataRoot ::
     ProtectedStore ->
-    InstalledProject projectId ->
-    RunId ->
+    InstalledProjectIdentity projectId ->
+    RunId runId ->
     DataRootOwnership ->
     IO (Either DataRootError ())
 giveUpDataRoot store project run owned =
     inEntry store $ \session ->
-        case dataRootOriginKey project run of
+        case dataRootOriginKey project (runIdText run) of
             Left failure -> pure (Left failure)
             Right key ->
                 fmap (fmap (const ())) (releaseDataRoot identityBackend session key owned)
@@ -700,8 +748,8 @@ so a crashed predecessor's generation does not survive the next run.
 -}
 reclaimAbandonedDataRoot ::
     ProtectedStore ->
-    InstalledProject projectId ->
-    RunId ->
+    InstalledProjectIdentity projectId ->
+    Text ->
     FilePath ->
     IO (Either DataRootError ())
 reclaimAbandonedDataRoot store project run path =
@@ -718,8 +766,8 @@ only because the existence refusal now runs after the sweep.
 -}
 reclaimAbandonedConfig ::
     ProtectedStore ->
-    InstalledProject projectId ->
-    RunId ->
+    InstalledProjectIdentity projectId ->
+    Text ->
     FilePath ->
     IO (Either GeneratedConfigError ())
 reclaimAbandonedConfig store project run path =
@@ -748,9 +796,9 @@ inEntry store action = do
         Right inner -> inner
 
 dataRootOriginKey ::
-    InstalledProject projectId -> RunId -> Either DataRootError RecordKey
+    InstalledProjectIdentity projectId -> Text -> Either DataRootError RecordKey
 dataRootOriginKey project run =
-    case mkRecordKey ("dataroot." <> installedProjectName project <> "." <> runIdText run) of
+    case mkRecordKey ("dataroot." <> installedProjectName project <> "." <> run) of
         Left failure -> Left (DataRootStoreFailure failure)
         Right key -> Right key
 
@@ -771,9 +819,9 @@ inConfigEntry store action = do
         Right inner -> inner
 
 generatedConfigKey ::
-    InstalledProject projectId -> RunId -> Either GeneratedConfigError RecordKey
+    InstalledProjectIdentity projectId -> Text -> Either GeneratedConfigError RecordKey
 generatedConfigKey project run =
-    case mkRecordKey ("config." <> installedProjectName project <> "." <> runIdText run) of
+    case mkRecordKey ("config." <> installedProjectName project <> "." <> run) of
         Left failure -> Left (GeneratedConfigStoreFailure failure)
         Right key -> Right key
 

@@ -93,29 +93,12 @@ The current parser also supports `--role ROLE`, repeatable `--also-role ROLE`, `
 `-o FILE`), `--force`, and `--if-missing`. `--force` overwrites an existing output; `--if-missing`
 leaves it byte-for-byte untouched; if both flags are supplied, the current implementation gives
 `--force` precedence. Thus fresh-root behavior is the default, not a restriction on every explicit
-writer invocation. Phase 17 Sprint 17.4 owns the target opaque role-specific init requests and an
-explicit, parser-enforced overwrite-policy type. Phase 15 Sprint 15.9 separately owns smart
-constructors that prevent an init request from producing incompatible primary-role/command-class
-authority.
+writer invocation. The parser uses one shared `InitArgs` value; role additions pass through the closed
+`roleAdditionAllowed` relation and `addRole` validating smart constructor before a config is rendered.
 
-The target writer makes ambiguous and check-then-act states unrepresentable. Each writer-specific
-request contains exactly one closed `OverwritePolicy`: project init maps no flag to `RefuseExisting`,
-`--force` to `ReplaceExisting`, and `--if-missing` to `KeepExisting`, while both flags are rejected
-before any destination access. Service init and test init expose no overwrite flag and can contain only
-`RefuseExisting`. Every policy first writes a uniquely invocation-indexed same-directory temporary to
-completion and flushes it. Refuse and keep then use a platform no-replace installation primitive;
-`EEXIST` yields the structured `RefusedExisting` or `KeptExisting` outcome without exposing the
-temporary as the destination. Replace atomically replaces the destination. A platform without the
-required atomic install reports `Unsupported`; it never falls back to opening the destination and
-writing after `O_CREAT|O_EXCL`. The writer then flushes the parent directory (or uses the Windows
-durability equivalent). Only that completed sequence may report `Written` or `Replaced`.
-
-A failure never appends to or truncates the destination in place. It preserves the prior complete file
-and returns a typed `WriteError`, or `PublicationUnknown` when installation may have become visible but
-durable acknowledgment is unavailable. Retry first reprobes the destination. Matching bytes can produce
-only the non-authorizing `ObservedEquivalent` outcome: they do not prove that this invocation created or
-owns the file, because another writer may have published identical content. Temp recovery is keyed by
-the invocation identity: retry may clean only its verified orphan, reports a typed cleanup-required
+This ordinary initializer is not resource ownership evidence. Harness-generated config uses the stronger
+`HostBootstrap.Harness.GeneratedConfig` bracket, which binds an exact file identity and payload and
+rechecks both before cleanup.
 outcome when that cannot be settled, and never adopts or deletes a foreign temp.
 
 The values it writes are NOT core defaults: `project init` passes parsed flags to
@@ -133,10 +116,12 @@ repeated `ContextKind`/`ProviderKind`/`WitnessKind`/`Capability`/`CommandClass` 
 decodable in-process. Optional structural variation (for example, skip the VM and descend straight to
 Docker) is a flag on this project config, so `chain cfg` stays a pure function of the project parameters.
 
-The root config is the user's editable surface. The core initially decodes it to construct the chain, but
-current demo step actions reopen the sibling file, so one invocation can observe more than one value.
-Every deeper frame's config is generated rather than hand-edited. Phase 15.9's target validates one
-immutable `configId` snapshot and injects it into every step/projection.
+The root config is the user's editable surface. An existing-frame Production invocation decodes and
+admits it once as an immutable `ValidatedConfig ... configId ...` snapshot; plan construction and every
+step consume that value without reopening the sibling file. Every deeper frame's config is generated
+rather than hand-edited. The
+[step algebra and project plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)
+owns that one-read Production boundary.
 
 ## The Structural Assembler
 
@@ -149,8 +134,10 @@ validated variant message. `test init` follows the separate `psTestInit` path be
 `ConfigAssembly` admits only project-declared read-only inputs and no arbitrary `IO`, process, backend,
 write, or lifecycle operation. Production and Harness wire schemas are admitted by separate mapped
 codecs, and Harness admission closes over exact run config authority. Complete per-role parameter
-projection remains target work; it must derive from the validated assembly result rather than substitute
-the demo's current hard-coded Web ports or accelerator timeout.
+projection remains work in the
+[service runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md); it must derive from the
+validated assembly result rather than substitute the demo's current hard-coded Web ports or accelerator
+timeout.
 
 The on-disk config is normally **absent** after a build: nothing creates it as a side effect of building
 the binary, and Python does not initialize or trigger config creation. Existing-frame commands
@@ -159,9 +146,10 @@ the binary, and Python does not initialize or trigger config creation. Existing-
 `service init`, and `test init` are config-free writers; `service schema` and
 `context path|schema|render` are static and config-free; `context inspect` reads the sibling;
 `context show [FILE]` reads its selected/default file; and `test run` reads `<project>.test.dhall`,
-refuses an existing sibling project config, and writes/removes its run config under the current
-four § EE ownership clauses of `HostBootstrap.Harness.GeneratedConfig` (Phase 10.9 still owns verified receipts for the rest of the lifecycle's resources
-and verified receipts). There is no
+refuses an existing sibling project config, and writes/removes its run config under the four § EE
+ownership clauses of `HostBootstrap.Harness.GeneratedConfig`. Complete durable resource-record
+verification and rehydration belongs to the
+[recovery and migration phase](../../DEVELOPMENT_PLAN/phase-18-recovery-and-migration.md). There is no
 auto-init backstop.
 
 ## Child `<project>.dhall`: Current Split And Target Owner
@@ -178,8 +166,10 @@ different operational seams:
   bytes are rollout-hashed.
 
 The named `context-init` row does not perform any of those effects; its body prints an announcement and
-acts as a frame anchor. Consequently the row can drift from the callback/action that actually projects
-and transports the config. The target opaque plan node consumes the parent/child relation, source config,
+acts as a frame anchor. The plan binds the container payload to the descent that row declares, while full
+projection/delivery ownership remains work in the
+[recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md). The
+target opaque plan node consumes the parent/child relation, source config,
 and exact target/operation/precondition-set/call-digest/journal-indexed
 `PreparedOperation`/`PreparedPreconditions` pair jointly returned after durable permit creation, and owns
 both projection and delivery. Its terminal observation advances through
@@ -194,13 +184,15 @@ The current pure generation helpers project the child from the parent:
 - it appends the child frame to `topologyFrames`, sets `currentFrame` to it, and records the witnesses
   that prove the frame locally;
 - trusted projection narrows capabilities and allowed command classes so it does not intentionally grant
-  host-only permissions to a container/service config. The current records remain constructible;
-  `addRole` can union incompatible command classes/capabilities while retaining the primary kind.
-  `service run` rejects a non-leaf primary kind explicitly, but `project up` checks only
-  `ClusterLifecycleCommand`, so a widened `Daemon` or `ImageBuildContainer` can incorrectly orchestrate.
-  Phase 15.9 makes narrowing an opaque authority boundary and replaces unchecked widening with compatible
-  role/class smart constructors. Phases 9.10 and 19.8 replace the inherited resource/full-parameter
-  payload with exact frame and role projections. Its cross-frame target uses a private duplex session for the narrowed
+  host-only permissions to a container/service config. `addRole` validates a closed compatibility
+  relation, `service run` rejects a non-leaf primary kind, and lifecycle validation re-derives placement
+  from the complete topology. The
+  [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns concrete workload and exact
+  resource slices, while the
+  [service runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md) owns the role-specific
+  service request. The
+  [authenticated handoff and child admission phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
+  uses a private duplex session for the narrowed
   config wire and a separate opaque `HandoffToken` issued by the validated parent's profile-specific
   broker only after the exact `UnboundRunLease` has been atomically bound to its verified plan snapshot
   as `BoundRunLease scope specDigest planDigest brokerGeneration`. The binary receiver returns a fresh challenge; the broker atomically

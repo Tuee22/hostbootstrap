@@ -2,7 +2,10 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [resource budgeting](resource_budgeting.md), [cluster lifecycle](cluster_lifecycle.md), [wsl2](wsl2.md), [canonical quantities and reconcile results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md)
+**Referenced by**: [resource budgeting](resource_budgeting.md), [cluster lifecycle](cluster_lifecycle.md),
+[wsl2](wsl2.md),
+[canonical quantities and reconcile results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md),
+[Dhall configuration and generic project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
 
 > **Purpose**: Describe the applied resource controls, including the current bare-Linux storage gap,
 > and the target in which every declared dimension is an enforced ceiling.
@@ -12,16 +15,18 @@
 - The host-level `<project>.dhall` `resources` value is intended to be a hard ceiling. Current
   CPU/memory application is partial: Lima/Incus/WSL limits are creation-time, direct Linux GPU outer
   effects are uncapped, the exact Colima adapter is not yet in the recursive command plan, and
-  bare-Linux storage is only preflighted.
-- One canonical parser, `parseQuantity` in `HostBootstrap.Cluster.Cordon`, decodes every quantity; one
-  builder family produces each provider's sizing representation (argv where applicable and the
-  `.wslconfig` body for WSL2).
+  bare-Linux storage is only preflighted. The prepared Direct provider is only a plan-local admission
+  and identity share; it neither supplies an outer wall nor authorizes physical-host stop/delete.
+- One canonical parser, `parseQuantity` in `HostBootstrap.Cluster.Cordon.Foundation`, decodes every
+  quantity; one lower builder family produces each exact-budget sizing representation. The public
+  `HostBootstrap.Cluster.Cordon` facade adapts the project `Resources`/`ResourceEnvelope` vocabulary and
+  reexports that foundation rather than defining another parser.
 - The top-level demo decode ring uses private, smart-constructed `Quantity`, resource-floor, replica,
   port, and timeout refinements. Lifecycle consumes that sole project-owned resource value; context has
   no duplicate budget. The current capacity ring checks host/cluster capacity and the runtime ring applies selected
   VM/kind-node CPU/memory caps. The target workload ring checks a plan-derived non-empty concurrent pod
   set, but lifecycle bring-up does not yet call `fitsBudget`.
-- Target admission uses a pure provider-capability proof to create one provider-exact `ProviderWallSpec`
+- Target admission uses a pure budget-provider capability proof to create one provider-exact `ProviderWallSpec`
   and equal `EffectiveBudget`, then constructs a `BudgetPartition` proving every positive slice plus
   explicit overhead stays within it. Only afterward may a journaled same-spec reservation authorize the
   initial create/apply adapter, which mints live wall authority after authoritative observation; later
@@ -37,7 +42,7 @@
 
 ## One Canonical Quantity Parser
 
-`parseQuantity` is the shared quantity grammar in `HostBootstrap.Cluster.Cordon`. It accepts binary
+`parseQuantity` is the shared quantity grammar in `HostBootstrap.Cluster.Cordon.Foundation`. It accepts binary
 suffixes (`Ki`, `Mi`, `Gi`, `Ti`, each optionally followed by `B`) and decimal suffixes (`K`, `M`,
 `G`, `T`); a bare number is bytes. It decodes fractional values exactly when they represent a whole
 number of bytes (`0.5Ki` is 512 bytes) and rejects inexact byte fractions (`0.1B`). Grammar parsing is
@@ -46,12 +51,16 @@ Lima/Colima/Incus/WSL admission rejects memory or storage that is not exactly re
 builders do not round a hard ceiling upward. The admitted `EffectiveBudget` equals the validated
 declaration and is the sole numeric input to capacity checks and partitions.
 
-Phase 9.10 also implements the pure journal-before-call wall algebra: a matching wall spec, partition,
-and positive fence create a reservation; only the prepared matching call exposes provider arguments; and
+The [step-algebra-and-project-plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)
+also implements the pure journal-before-call wall algebra: a matching wall spec, partition, and positive
+fence create a reservation; only the prepared matching call exposes provider arguments; and
 successful settlement mints live wall authority. WSL settlement returns its global lease inseparably
-with that authority, while uncertain acquisition returns no authority. Live provider adapters and their
-durable CAS/recovery implementations remain owned by the dependent provider phases; the pure effective
-value alone is never mutation authority.
+with that authority, while uncertain acquisition returns no authority. This budget capability is distinct
+from `HostBootstrap.Substrate.Provider.ProviderCapability`, which is descriptive closed discovery for one
+opaque managed Running provider and grants no mutation or wall authority. The baseline Incus lifecycle
+backend has its own prepared provider/share origin and recovery protocol; live wall consumers and their
+durable CAS/recovery implementations remain owned by the dependent budget/cluster phases. The pure
+effective value alone is never mutation authority.
 
 The Python bootstrapper builds no sizing argv. `colimaSizingArgs project resources` emits the complete
 `colima start --profile <project> --runtime docker --activate=false --cpus N --memory <GiB> --disk
@@ -62,12 +71,14 @@ and [resource budgeting](resource_budgeting.md) for the budget field itself.
 
 ### Why One Parser
 
-One canonical `parseQuantity` decodes every quantity, and one builder family (`colimaSizingArgs`,
+One canonical `parseQuantity` decodes every quantity, and one lower-foundation builder family (`colimaSizingArgs`,
 `limaSizingArgs`, `kindNodeCordonArgsFor`, `incusSizingArgs`, `wsl2SizingArgs`) emits provider-specific
 sizing components (argv for the VM/node providers and the global `.wslconfig` `[wsl2]` body for WSL2).
 The selected WSL install argv separately carries the registration-time per-distro `--vhd-size` value.
 `HostBootstrap.Cluster.Lifecycle.clusterNodeCordonArgs` composes the node builder over the concrete node
 list after splitting the one cluster envelope.
+`HostBootstrap.Cluster.Cordon` owns the configuration-facing conversion/wrappers and descriptive
+`fitsBudget`; the lower Foundation imports no project config, plan, or provider realization module.
 The Python bootstrapper builds no sizing argv. The shared parser keeps current Haskell sizing and
 preflight interpretations aligned; it does not fill the missing compile assertion or bare-Linux storage
 wall.
@@ -77,7 +88,7 @@ wall.
 The demo's top-level config decodes `memory`/`storage` through a transparent `Quantity` newtype backed by
 `parseQuantity`; its `Resources` decoder enforces the CPU floor; and `HaReplicas`, service ports, and
 timeouts use bounded decode-time newtypes. Their constructors are private, public smart constructors are
-total, and the `Num`/`IsString` bypasses have been removed. `Resources` is the sole editable budget;
+total, and they expose no `Num`/`IsString` bypass. `Resources` is the sole editable budget;
 `BinaryContext` has no raw copy. Provider exactness and workload fit remain later plan checks rather than
 properties one field newtype can express. Cross-field port distinctness remains runtime validation for
 the same reason.
@@ -161,8 +172,10 @@ For each concrete name, `kindNodeCordonArgsFor` emits
 fail-closed after kind/nvkind create (and kubeconfig export) and before workload deployment.
 `--memory-swap == 2 × --memory`, so the node has swap headroom equal to its RAM limit. Storage is
 included in the split and positive-share gate but omitted from `docker update`, which has no storage
-flag. The cluster library can apply this path to either profile, but the demo harness currently
-hardcodes the Production profile.
+flag. The cluster library can apply this path to either profile. The demo Harness config selects a
+run-scoped profile, but the cluster consumer still derives that profile independently from config rather
+than projecting it from the exact retained Harness plan; the
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns that adoption.
 
 On Apple, the pristine path uses `limaSizingArgs` when creating a Lima VM; an already-existing VM is
 started without comparing or updating its sizing. Direct Docker workflows use the separate prepared
@@ -197,9 +210,10 @@ concurrent declaration.
 
 `project down` returns the memory promptly: teardown releases the wall and then runs `wsl --shutdown`,
 in that order, so the utility VM re-reads the restored file on its next cold boot and drops the balloon.
-Sprint 9.11 additionally replaced the former `-1` idle-timeout pins with a finite duration, so the host
-recovers the memory on its own even when a run is interrupted before teardown. Lima and Incus release on
-stop. See [wsl2](wsl2.md) § Wall release for the provider detail and that ordering.
+The [Windows-and-WSL2-substrate phase](../../DEVELOPMENT_PLAN/phase-27-windows-and-wsl2-substrate.md) owns
+the finite managed idle timeout, so the host recovers memory on its own even when a run is interrupted
+before teardown. Lima and Incus release on stop. See [wsl2](wsl2.md) § Wall release for the provider detail
+and that ordering.
 
 ## The Storage Wall Backend Operation
 
@@ -249,7 +263,12 @@ storage quota, and existing Incus sizing is not reconciled.
 Capacity reads, the shared parser, and CPU/memory arg builders are implemented. Provider disk walls are
 initial-create behavior for Lima/Incus/WSL2; direct Colima has an exact observed project-profile adapter;
 bare Linux has no runtime storage cordon, and direct Linux GPU outer effects are uncapped. Existing
-resource sizing is not uniformly compared or reconciled. WSL2's production global-wall backend has
+resource sizing is not uniformly compared or reconciled. The prepared Incus/Direct lifecycle boundary
+does not strengthen those wall claims: its four-clause ownership protocol protects provider identity and
+mutation, while exact existing-wall reconciliation remains downstream. Its static gate is closed, while its
+native Linux/x86_64 KVM/Incus gate remains open in the
+[host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md).
+WSL2's production global-wall backend has
 current Windows evidence for its ownership adapter and the live restore-then-shutdown wall-release
 observable. That evidence does not close universal prepared-authority consumption, running-distro wall
 migration, existing-VHDX reconciliation, recursive teardown, durable readback, or test-profile closure.

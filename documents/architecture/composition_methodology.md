@@ -5,27 +5,34 @@
 **Referenced by**: [documents-index](../README.md), [hostbootstrap_core_library](hostbootstrap_core_library.md), [binary_context_config](binary_context_config.md), [library_hierarchy](library_hierarchy.md), [run_models](run_models.md)
 
 > **Purpose**: Define the foundational composition model of `hostbootstrap-core`: project fragments
-> produce one opaque validated `StepPlan` consumed by recursive `project up`, while the later
-> `ProjectPlan scope specDigest planId configId cfg` derives receipt-bound reverse traversal,
-> resource/effect authority, and verb-indexed
-> receipt-driven reverse traversal from
-> one validated representation. The same step algebra composes deployment and runtime business logic.
+> produce one opaque validated `StepPlan` authoring graph admitted into the indexed
+> `ProjectPlan scope specDigest planId configId cfg`; the exact public Chain consumes that plan's
+> forward/topology projections, and its pure reverse projection is derived from the same representation.
+> Receipt-bound traversal and complete resource/effect authority remain downstream work. The same step
+> algebra composes deployment and runtime business logic.
 
 ## TL;DR
 
-- **The validated step plan is the declared forward order.** A project binary contributes additive
-  `cfg -> [Step]` fragments; final projection runs `mkStepPlan`, and `project up --dry-run` renders that
-  opaque plan. Validation preserves the exact order or rejects empty/duplicate/conflicting plans,
-  including a non-contiguous `A1, B1, A2` return and misplaced post-handoff work, before effects. The
-  Each frame that has a successor declares exactly one descent on its own plan node, so topology is
-  part of the same value; the teardown single-assignment slot remains separate. The later receipt-aware
-  `ProjectPlan scope specDigest planId configId cfg` rejects those shapes and derives every view from one
-  representation (§ W).
-- **`project up` is a recursive, fractal interpreter.** It runs the current frame's steps, then hands off
-  `pb project up` into the next frame; each `pb` owns its own segment and the command can be invoked at
-  any declared frame. Convergence after a partial failure is currently best-effort, not guaranteed
-  restartability; Sprints 9.10 and 16.6 own durable identity-bound recovery. Descent is always the same
-  shape: *provision the frame → build/install the `pb` in it → hand off `pb project up`*.
+- **The admitted project plan is the declared forward order.** A project binary contributes additive
+  root/config-scoped `[Step]` fragments; `mkStepPlan` validates the authoring graph, and plan admission
+  retains its exact non-empty `forward` projection. Validation preserves the exact order or rejects
+  empty/duplicate/conflicting plans, including a non-contiguous `A1, B1, A2` return and a post-handoff
+  suffix that does not unwind from the deepest participating frame toward the root, before effects. Each
+  frame that has a successor declares exactly one descent on its own plan node, so topology is part of
+  the same value. The indexed `ProjectPlan scope specDigest planId configId cfg` also derives a
+  `TeardownPlan scope planId frame verb` from that admitted plan and its exact `CurrentFrame`: it retains
+  stable step identities, operation keys, reverse policies, and callbacks, omits preserved nodes, and
+  schedules only the current-frame suffix. The projection is pure and non-authorizing; receipt-bound
+  traversal is a later layer (§ W).
+- **The exact Chain is the current-frame foundation of the recursive, fractal interpreter.** `renderChain` consumes the admitted plan's
+  complete `forward` projection. `runChainFromFrame` consumes that plan plus matching Execute authority
+  and cursor evidence, runs its non-empty current-frame segment, then obtains the child frame and lift
+  context from `DerivedTopology`. Production dispatch retains or reconstructs that exact plan through
+  rendering or through persistence/journal/cursor/authorization/Chain execution. Authenticated child entry
+  and proof-complete traversal remain with the
+  [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md);
+  topology or command arguments alone mint no child admission. Descent is always the same shape:
+  *provision the frame → build/install the `pb` in it → hand off `pb project up`*.
 - **`.dhall` is parameters + context + witness, never the shape.** Each `pb` checks the frame its sibling
   `<project>.dhall` describes, and known mismatches fail fast. Those fields are not yet unforgeable
   authority. The chain is a pure function of root parameters, so the shape lives in code and the
@@ -46,11 +53,15 @@
 ## The Step And The Chain
 
 The foundational unit is a composable **step**: an action a binary runs and reports inside one execution
-frame. Project fragments declare lists, but the interpreter receives only their opaque validated result:
+frame. Project fragments declare lists; validation makes one opaque authoring graph, and admission turns
+it into the exact public interpreter input:
 
 ```haskell
-addSteps :: (cfg (Production projectId) -> [Step]) -> ProjectSpecBuilder projectId cfg tcfg -> ProjectSpecBuilder projectId cfg tcfg
+addSteps :: (forall scope rootId. CanonicalProjectRoot scope rootId -> cfg scope -> [Step]) -> ProjectSpecBuilder cfg tcfg -> ProjectSpecBuilder cfg tcfg
 mkStepPlan :: [Step] -> Either StepPlanError StepPlan
+forward
+  :: ProjectPlan scope specDigest planId configId cfg
+  -> NonEmpty (PlannedStep scope planId configId (cfg scope))
 ```
 
 The project-defined `cfg` is decoded from the root `<project>.dhall` parameters, so plan projection is
@@ -78,7 +89,18 @@ the project's primary CLI contribution.
 ## The Recursive `project up` Interpreter
 
 Execution contexts compose as a stack of provider-backed frames, outermost-first; the empty stack is the
-local host. `project up` is the recursive interpreter of the chain over that stack:
+local host. The implementation boundary is layered:
+
+| Layer | Owner | Contract |
+|---|---|---|
+| pure target/context data | [Dhall configuration and the generic project model](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md) | public `HostBootstrap.Lift.Context`; target records, context stack, same-root mount, and inner transport argv; no resolution or effects |
+| generic self-reference dispatch | [Ensure reconcilers](../../DEVELOPMENT_PLAN/phase-8-ensure-reconcilers.md) | `HostBootstrap.Lift` reexports the context, resolves the outer host tool, folds nested commands, and streams config; no provider realization or Registry import |
+| provider lifecycle realization | [Host providers and the self-reference lift](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md) | Incus/Lima/WSL2/direct-host probes and lifecycle builders consume and reexport lower target/rendering data |
+| network/registry additions | [Composition and network algebra](../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md) | `reachLeaf`, blob leaves, and Registry-owned authenticated dispatch consume generic Lift |
+
+These source boundaries and their gates remain Active in numerical phase order in the
+[development-plan status table](../../DEVELOPMENT_PLAN/README.md). The target recursive interpreter then
+operates over that stack:
 
 1. Read the sibling `<project>.dhall`, verify the current frame, and select the steps belonging to it.
 2. Run those steps in order. Current reconcilers are context-agnostic `HostConfig -> IO ()` callbacks;
@@ -92,7 +114,9 @@ local host. `project up` is the recursive interpreter of the chain over that sta
    `ReconcileResult`. Placement
    is determined by the validated plan/frame, not by a caller-supplied descriptive context.
 3. At a frame boundary, **hand off**: invoke `pb project up` inside the next frame; that child binary owns
-   its own segment of the chain and runs the same interpreter recursively.
+   its own segment of the chain and runs the same interpreter recursively. The current-frame Chain supplies
+   the local projection and dispatch mechanics; the recursive-lifecycle-command phase supplies the
+   authenticated child entry and traversal proof.
 
 | Context frame | Hand-off crossing | The binary in that frame |
 |---|---|---|
@@ -106,23 +130,40 @@ local host. `project up` is the recursive interpreter of the chain over that sta
 create/repair/no-op/conflict result, so typed idempotence is not yet enforced. `project up --dry-run`
 resolves and renders the same `StepPlan` without effects.
 `project down` stops service/VM frames and deletes kind clusters while preserving durable state; provider
-VMs use provider stop, while kind clusters use `kind delete cluster`. Both verbs drive the **teardown
-forest** of the one plan, so each descends into the next frame — invoking the same verb there through the
-descent the plan itself declares — and settles that frame's nodes from that invocation before running its
-own. The child runs the same loop over its own segment and recurses further itself, so a deeper frame is
-released by the binary that can see it.
+VMs use provider stop, while kind clusters use `kind delete cluster`. The exact pure library route is
 
-Two typed boundaries carry that descent, and both are **target** rather than implemented. The reverse
-projection is frame-indexed — a `frame` phantom on plan, forest, and cursor, minted with a `CurrentFrame`
-witness derived from the plan and the validated binary context — so whether an offered node belongs to
-this frame is a closed sum with a total eliminator rather than a comparison of frame names. And the
-nested verb is admitted by verifying the recovery wire its parent minted from the forest's own
-authorization point, because the root-only gate that correctly guards an operator's teardown would
-otherwise refuse the descent the unwind requires. The forest still carries every frame's levels: one
-memoized descent settles the deeper ones, so what makes the boundary hold is the index rather than the
-forest's contents. Cleanup aggregates failures,
-and neither verb places the plan's data path in its cluster-teardown removal set — `down`'s
-removal set is empty and `destroy`'s holds only derived paths. The demo creates host
+```haskell
+teardownPlan
+  :: ProjectPlan scope specDigest planId configId cfg
+  -> CurrentFrame scope planId frame
+  -> TeardownVerb verb
+  -> TeardownPlan scope planId frame verb
+
+openTeardownForest
+  :: TeardownPlan scope planId frame verb
+  -> Either TeardownError (TeardownForest scope planId verb)
+```
+
+The projection schedules only the admitted current frame and its descendants, visits frames deepest
+first, reverses forward order within each frame, and omits every `PreserveOnReverse` node. It retains the
+forward plan's stable step identity, operation key, reverse policy, and declared callback; action
+selection is by `StepIdentity`, never presentation text. `openTeardownForest` is projection-only and
+returns the current unframed forest. Neither function accepts an acquisition journal, ownership receipt,
+revision permit, or effect authority, and neither turns a declared callback into authorized release.
+Production `HostBootstrap.Command` retains or reconstructs the exact plan/current-frame pair and reaches
+this projection directly. That plan-derived work is not exact teardown command authority; nested entry
+fails closed until [the recursive-lifecycle-command
+phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) supplies the operator/descent gates.
+
+The [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
+is the target for the authenticated child-to-parent unwind. It propagates the `frame` phantom already
+present on `TeardownPlan` through the forest, progress, authorization, cursor, and completion types; it
+does not request or mint a second `CurrentFrame`. A closed local/foreign sum then gives local callbacks
+only local cursors and makes a foreign cursor's sole continuation the authenticated descent. The forest
+still carries every frame's levels: one memoized descent settles the deeper ones, so what makes the
+boundary hold is the index rather than the forest's contents. Cleanup aggregates failures, and neither
+verb places the plan's data path in its cluster-teardown removal set — `down`'s removal set is empty and
+`destroy`'s holds only derived paths. The demo creates host
 `<project-root>/.data` and carries it through provider shares and the stable Linux alias, so provider
 deletion does not intentionally delete that host directory. End-to-end destroy/up/readback remains
 unvalidated; see [durable_state](durable_state.md). A failed `project up` attempts best-effort root cleanup. An external
@@ -156,7 +197,9 @@ capability (`HostBootstrap.Registry`): it is **never** in a `<project>.dhall` (i
 never retained in durable project/image state, and never in `argv`. It travels through bounded transient
 effects — process memory, `stdin`, an environment value, and a temporary `DOCKER_CONFIG` removed on exit.
 Opacity/redaction prevents ordinary config serialization but cannot make arbitrary OS-level disclosure
-unrepresentable. See
+unrepresentable. The active composition-and-network boundary places `liftSubcommandWithAuth` in
+`HostBootstrap.Registry`, which consumes the lower generic Lift; generic Lift imports no credential policy.
+See
 [registry_credentials](../engineering/registry_credentials.md).
 
 Networked operations likewise cannot be assembled from unrelated strings. A finalized operation plan
@@ -179,9 +222,11 @@ model makes explicit rather than hides:
 - The **container frame skips the build**, because the image already carries the installed `pb`. During
   current runtime config delivery the lift overrides the Dockerfile entrypoint with `sh`, writes the child
   config from stdin, and `exec`s the binary. That shell can deliver descriptive config but cannot perform
-  the target authority handshake. Phase 15.9 replaces it with the binary's internal framed receiver on a
-  private duplex broker session; the receiver verifies a challenge-bound one-time grant and config hash
-  before writing config or minting scoped authority. The container binary then runs
+  the target authority handshake. The
+  [authenticated-handoff-and-child-admission phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
+  owns the binary's internal framed receiver on a private duplex broker session; the receiver verifies a
+  challenge-bound one-time grant and config hash before writing config or minting scoped authority. The
+  container binary then runs
   `deploy-kind`/`deploy-minio`/`deploy-registry`/`push-image`/`deploy-chart`/`expose-port` and selected
   daemon-placement steps.
 
@@ -251,11 +296,10 @@ topologies over durable external stores (a message bus carrying work-in-flight, 
 static artifacts, a relational store, …), executed by **roles**: stateless long-running daemons that
 subscribe to a request topic, dispatch to an engine, publish a result topic, fetch/store artifacts, and
 recover by replay + refetch rather than by holding authoritative local state. The role lifecycle has the
-`HostDaemon` execution shape in the [run-model taxonomy](run_models.md). Its historical L0 callback
-skeleton named Load → Prereq → Acquire → Ready → Serve → Drain → Exit. In the target, activation,
-config/secret verification, and one-use lifecycle admission replace the untyped Load callback and yield
-the sole initial Prereq cursor; the core-owned runner privately drives Prereq → Acquire → Ready → Serve →
-Drain → Exit. The concrete bus/store/role primitives are L1's delta.
+`HostDaemon` execution shape in the [run-model taxonomy](run_models.md). Activation, config/secret
+verification, and one-use lifecycle admission yield the sole initial Prereq cursor; the core-owned runner
+privately drives Prereq → Acquire → Ready → Serve → Drain → Exit. The concrete bus/store/role primitives
+are L1's delta.
 
 The invariant: **stateless roles + durable external stores + topic-as-contract = repeatable composition
 without mutable coordination.** "Bring up a cluster" declares in-cluster services; "run a pipeline"
@@ -320,13 +364,15 @@ operation on the node's own resource from the same edge set the plan-level route
 A project must have exactly **one lifecycle representation** (§ W). Forward order is now one opaque
 `StepPlan`: typed core/project identities are disjoint, operation keys and dependency prefixes derive
 from that plan, frame segments are exact and contiguous, and render/apply/frame traversal consume the
-same value, and each frame's descent is a node of that same plan. Teardown is a reverse
-interpretation of that same plan, driven child-first across frames. The implementation has not fully
-reached the receipt-aware lifecycle target: the reverse effect is still a callback each step declares
-rather than a receipt-bound transition.
+same value, and each frame's descent is a node of that same plan. The indexed `ProjectPlan` route now
+derives forward steps, topology, and the pure reverse projection from one opaque validated plan. Its
+public `PlannedStep` eliminators expose only stable identity, operation identity, reverse policy, and the
+declared reverse callback; no raw step or hidden plan constructor crosses the facade. Production command
+dispatch uses that exact plan, while the reverse effect remains a declared callback rather than a
+receipt-bound transition.
 
-The target replaces those independent inputs with one **opaque** validated plan from which forward steps,
-frame topology, and reverse transitions are derived:
+The declarations below therefore mix implemented pure plan surfaces with explicitly target durable and
+recursive-lifecycle surfaces:
 
 ```haskell
 data ProjectPlan scope specDigest planId configId (cfg :: Type -> Type) -- constructor hidden
@@ -334,7 +380,9 @@ data ValidatedConfig scope specDigest configId config                    -- cons
 data PlanDraft scope specDigest config
 data PlannedStep scope planId configId config
 data DerivedTopology scope planId
-data AcquisitionJournal scope planId
+data CurrentFrame scope planId frame
+data AcquisitionJournal scope planId brokerGeneration
+data LifecycleCursor scope planId frame brokerGeneration verb phase
 data LifecycleGraph scope planId
 data StablePlanSnapshot
 data VerifiedPlanSnapshot scope specDigest planDigest
@@ -365,8 +413,8 @@ data ProjectDestroy
 data TeardownVerb verb where
   DownVerb    :: TeardownVerb ProjectDown
   DestroyVerb :: TeardownVerb ProjectDestroy
-data TeardownPlan scope planId verb
-data TeardownForest scope planId verb
+data TeardownPlan scope planId frame verb -- implemented pure projection
+data TeardownForest scope planId verb      -- implemented opener result; target adds frame
 data CompletedTeardownForest scope planId verb
 data TeardownDescentStep
   scope planId verb frame childSet id operation operationKey next
@@ -412,14 +460,35 @@ abandonedHarnessCloseRoot
 
 withProjectPlan
   :: LifecycleProfile scope
+  -> CanonicalProjectRoot scope rootId
   -> ValidatedConfig scope specDigest configId (cfg scope)
   -> NonEmpty (PlanDraft scope specDigest (cfg scope))
   -> (forall planId. ProjectPlan scope specDigest planId configId cfg -> a)
   -> Either PlanError a
 
+withRecoveredProductionProjectPlanInputs
+  :: RecoveredProductionLifecycleProfile
+       projectId recoveredSpecDigest planDigest planId brokerGeneration
+  -> CanonicalProjectRoot (Production projectId) rootId
+  -> FinalizedProjectSpec
+       (Production projectId) candidateSpecDigest cfg
+  -> ValidatedConfig
+       (Production projectId) candidateSpecDigest configId
+       (cfg (Production projectId))
+  -> (ValidatedConfig
+        (Production projectId) recoveredSpecDigest configId
+        (cfg (Production projectId))
+      -> NonEmpty
+           (PlanDraft
+              (Production projectId) recoveredSpecDigest
+              (cfg (Production projectId)))
+      -> a)
+  -> Either PlanError a
+
 withRecoveredProductionProjectPlan
   :: RecoveredProductionLifecycleProfile
        projectId specDigest planDigest planId brokerGeneration
+  -> CanonicalProjectRoot (Production projectId) rootId
   -> VerifiedPlanSnapshot (Production projectId) specDigest planDigest
   -> BoundPlanSnapshot (Production projectId) specDigest planDigest planId
   -> PlanDigestBinding (Production projectId) specDigest planDigest planId
@@ -436,6 +505,20 @@ withRecoveredProductionProjectPlan
 forward
   :: ProjectPlan scope specDigest planId configId cfg
   -> NonEmpty (PlannedStep scope planId configId (cfg scope))
+
+plannedStepIdentity
+  :: PlannedStep scope planId configId config
+  -> StepIdentity
+plannedStepOperationKey
+  :: PlannedStep scope planId configId config
+  -> OperationKey
+plannedStepReversePolicy
+  :: PlannedStep scope planId configId config
+  -> ReversePolicy
+plannedStepReverseRun
+  :: PlannedStep scope planId configId config
+  -> Maybe (HostConfig -> TeardownAction -> IO TeardownOutcome)
+
 topology
   :: ProjectPlan scope specDigest planId configId cfg
   -> DerivedTopology scope planId
@@ -459,24 +542,62 @@ withPersistedPlanSnapshot
   -> IO (Either SnapshotError a)
 
 withBoundPlanSnapshot
-  :: RootInvocationAuthority scope brokerGeneration verb
-  -> UnboundRunLease scope brokerGeneration
-  -> VerifiedPlanSnapshot scope specDigest planDigest
-  -> (forall planId.
-        BoundPlanSnapshot scope specDigest planDigest planId
-        -> PlanDigestBinding scope specDigest planDigest planId
-        -> BoundRunLease scope specDigest planDigest brokerGeneration
+  :: ProtectedStore
+  -> InstalledProjectIdentity projectId
+  -> (InvocationCloseKey -> IO result)
+  -> (forall brokerGeneration specDigest planDigest planId.
+        RootInvocationAuthority
+          (Production projectId) brokerGeneration VerbUp
+        -> ProjectModeLease projectId ProductionMode brokerGeneration
+        -> BoundRunLease
+             (Production projectId) specDigest planDigest brokerGeneration
+        -> VerifiedPlanSnapshot
+             (Production projectId) specDigest planDigest
+        -> BoundPlanSnapshot
+             (Production projectId) specDigest planDigest planId
+        -> PlanDigestBinding
+             (Production projectId) specDigest planDigest planId
         -> BoundInvocationRecovery
-             scope specDigest planDigest planId brokerGeneration
+             (Production projectId)
+             specDigest planDigest planId brokerGeneration
+        -> IO result)
+  -> IO (Either SnapshotError result)
+
+-- The sole public plan-bound journal opener.
+withAcquisitionJournal
+  :: RootInvocationAuthority scope brokerGeneration verb
+  -> BoundRunLease scope specDigest planDigest brokerGeneration
+  -> BoundPlanSnapshot scope specDigest planDigest planId
+  -> PlanDigestBinding scope specDigest planDigest planId
+  -> ProjectPlan scope specDigest planId configId cfg
+  -> (AcquisitionJournal scope planId brokerGeneration -> IO a)
+  -> IO (Either LifecycleError a)
+
+-- Lifecycle.Mode is the public facade over the canonical cursor record.
+withLifecycleCursor
+  :: AcquisitionJournal scope planId brokerGeneration
+  -> ProjectFrame scope specDigest planId configId frame
+  -> ProjectVerb verb
+  -> LifecyclePhase phase
+  -> (LifecycleCursor scope planId frame brokerGeneration verb phase -> IO a)
+  -> IO (Either LifecycleError a)
+
+withCurrentLifecycleCursor
+  :: AcquisitionJournal scope planId brokerGeneration
+  -> ProjectFrame scope specDigest planId configId frame
+  -> ProjectVerb verb
+  -> (forall phase.
+        LifecyclePhase phase
+        -> LifecycleCursor scope planId frame brokerGeneration verb phase
         -> IO a)
-  -> IO (Either SnapshotError a)
+  -> IO (Either LifecycleError a)
 
 activateNormalBoundRevision
   :: NormalActiveRecovery scope specDigest planDigest planId brokerGeneration
   -> (forall activeRevisionVersion journalVersion requiredResourceSet.
         ActivePlanRevision
           scope brokerGeneration planDigest activeRevisionVersion
-        -> AcquisitionJournal scope planId
+        -> AcquisitionJournal scope planId brokerGeneration
         -> RehydratedResourceSet
              scope planDigest planId brokerGeneration requiredResourceSet
         -> ProjectOperationState scope planId journalVersion OpenProject
@@ -498,6 +619,17 @@ activateRecoveredNormalBoundRevision
   -> ...
   -> IO (Either ReconcileError a)
 
+teardownPlan
+  :: ProjectPlan scope specDigest planId configId cfg
+  -> CurrentFrame scope planId frame
+  -> TeardownVerb verb
+  -> TeardownPlan scope planId frame verb
+
+openTeardownForest
+  :: TeardownPlan scope planId frame verb
+  -> Either TeardownError (TeardownForest scope planId verb)
+
+-- Target durable lifecycle views layered above the pure projection.
 currentGraph
   :: ProjectPlan scope specDigest planId configId cfg
   -> LifecycleGraph scope planId
@@ -506,25 +638,7 @@ recoveredGraph
   :: BoundPlanSnapshot scope specDigest planDigest planId
   -> LifecycleGraph scope planId
 
-teardownPlan
-  :: TeardownVerb verb
-  -> LifecycleGraph scope planId
-  -> AcquisitionJournal scope planId
-  -> TeardownPlan scope planId verb
-
-openTeardownForest
-  :: BoundPlanSnapshot scope specDigest planDigest planId
-  -> PlanDigestBinding scope specDigest planDigest planId
-  -> ActivePlanRevision
-       scope brokerGeneration planDigest activeRevisionVersion
-  -> ProjectOperationState scope planId journalVersion OpenProject
-  -> RevisionPermitAuthority
-       scope planDigest planId brokerGeneration
-       activeRevisionVersion journalVersion
-  -> TeardownPlan scope planId verb
-  -> (TeardownForest scope planId verb -> a)
-  -> IO (Either TeardownError a)
-
+-- Target recursive recovery/admission surface.
 withRecoveredProjectFrame
   :: BoundPlanSnapshot scope specDigest planDigest planId
   -> PlanDigestBinding scope specDigest planDigest planId
@@ -561,36 +675,84 @@ harnessClosePlan
   -> ProjectOperationState
        (Harness projectId runId) planId closeEpoch ClosingProject
   -> LifecycleGraph (Harness projectId runId) planId
-  -> AcquisitionJournal (Harness projectId runId) planId
+  -> AcquisitionJournal (Harness projectId runId) planId brokerGeneration
   -> HarnessClosePlan projectId runId planId brokerGeneration closeEpoch
 ```
 
 `withProjectPlan` rejects missing parents, duplicate frame/resource identities, invalid handoff order,
 or a mutating step without a teardown policy. Its constructor is hidden, and only a compatible
 `LifecycleProfile scope` plus `ValidatedConfig scope specDigest configId (cfg scope)` and a
-`NonEmpty (PlanDraft scope specDigest (cfg scope))` can produce the scoped steps,
-topology, acquisition journal, and teardown projections. The rank-2 continuation creates a fresh
-`planId`; neither a local journal nor a handle from another Production project/run can type-check with
-this plan. `configId` is the exact validated root/frame config identity bound by the local decoder or
+`NonEmpty (PlanDraft scope specDigest (cfg scope))` can produce the plan whose scoped steps, topology,
+and later teardown projections share one identity. The acquisition journal is not a pure plan
+projection: the effectful `withAcquisitionJournal` boundary additionally requires the exact root, bound
+lease, bound snapshot, and digest binding. The rank-2 plan continuation creates a fresh `planId`; neither
+a local journal nor a handle from another Production project/run can type-check with this plan.
+`configId` is the exact validated root/frame config identity bound by the local decoder or
 authenticated handoff. A narrowed child has different bytes and therefore receives a fresh child
 `configId`; an opaque projection binding preserves scope and the stable plan revision rather than
 pretending parent and child byte identities are equal.
 An abandoned configful Production `ProjectUp` cannot obtain the unbound-only fresh profile.
-Phase 10's protected recovery opener instead requires the exact new root/broker authority, active
-Production mode, bound lease, verified/bound snapshot and binding, and `BoundInvocationRecovery`.
-`withRecoveredProductionProjectPlan` accepts only its indexed recovery profile and reproduces only the
-same `planId`/digest; incomplete/completed migration uses the separately typed recovered migration
-builders. Harness and teardown recovery cannot inhabit that profile.
+The implemented existing-Production `withBoundPlanSnapshot` admission and
+`withRecoveredProductionLifecycleProfile` refinement instead require the exact new root/broker authority,
+active Production mode, bound lease, verified/bound snapshot and binding, and
+`BoundInvocationRecovery`.
+An independently repeated finalization remains nominally distinct even when it describes the same static
+project; ordinary callers cannot pair that candidate specification/config directly with recovered evidence.
+`withRecoveredProductionProjectPlanInputs` is the sole narrow restart bridge: a hidden token is issued only
+when the recovered profile and candidate finalized codec retain the same specification digest, the hidden
+config kernel independently rechecks that digest and preserves the existing `configId`, canonical config
+digest, and decoded value under the recovered phantom, and drafts are regenerated from the candidate's
+private finalized builder. `withRecoveredProductionProjectPlan` then accepts only those indexed recovery
+inputs and reproduces only the same `planId`/digest after exact root-bound bytes and origin agreement;
+incomplete/completed migration uses the separately typed recovered migration builders. Harness and teardown
+recovery cannot inhabit that profile.
 
 `renderSnapshot` is only a pure canonical value; it grants no authority.
-Before the first `PreparedOperation`, `withPersistedPlanSnapshot` atomically commits and fsyncs that
-versioned, non-secret resource graph, stable operation keys, and teardown policies in the protected root
-store and binds the acquired lease to that exact digest in a protected compare-and-swap. It jointly
-yields the verified snapshot, plan binding, local bound snapshot, exact `BoundRunLease`, and
-`NormalActiveRecovery`; only `activateNormalBoundRevision` may then expose the active-revision proof,
-live acquisition journal, complete freshly verified `RehydratedResourceSet`, versioned Open-project
-state, permit authority, and current-broker session admission after proving every recorded older-broker
-session Closed, including zero-operation sessions. An abandoned revision with a recorded Open session must instead use the exact-set
+Before the first plan-bound `PreparedOperation`, `withPersistedPlanSnapshot` persists, fsyncs, reads back,
+and exactly verifies that versioned, non-secret resource graph, stable operation keys, and teardown
+policies in one protected-store entry. After that entry closes, a separate protected lease
+compare-and-swap binds the acquired lease to the exact digest. These are ordered durable transitions, not
+an atomic multi-record transaction. Full success jointly yields the verified snapshot, plan binding,
+local bound snapshot, exact `BoundRunLease`, and `NormalActiveRecovery`.
+
+The implemented `withAcquisitionJournal` next compares all retained evidence and, in one entry in the
+lease's store, rereads the live mode/epoch, exact bound-lease record version/state/bytes, and protected
+canonical snapshot before Session opens or resumes the dedicated record. Its store-local key is
+`acquisition.<project>.<run>.<brokerEpoch>`; stable scope, local `planId`, digests, root verb, lease
+version, and retained source-seed phase stay out of the key. The immutable stable binding is
+collision-checked in the strict 13-field payload; `planId` is never serialized, and the recognized phase
+is decoded as the initial cursor seed. A fresh record begins at `Prepare`; exact pre-handoff resume
+preserves the phase and record version without writing. After handoff the acquisition row remains exact
+and unchanged; only each frame's cursor-row phase is current/mutable. The user continuation runs after the
+protected entry closes.
+
+The [step-algebra-and-project-plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)'s
+canonical cursor record and admission/transitions form the frame-local continuation of that admission, not
+a second plan or topology representation. `Lifecycle.Mode` owns its
+public facade; `Lifecycle.Session` owns the strict durable codec and protected CAS. One row is derived from the canonical length-framed acquisition key and
+semantic UTF-8 frame id, and its payload binds the exact source key/version/bytes, frame, immutable root
+verb, and current phase. The acquisition row's phase seeds an absent cursor row only. Once the
+absent-to-present CAS lands, that frame's cursor row is authoritative; other frames have separate rows and
+advance independently. Every open and successor rereads the unchanged canonical source at its exact
+version and bytes.
+
+Recovery uses `withCurrentLifecycleCursor`, whose rank-2 continuation receives the closed authoritative
+phase and its matching cursor together. The only successors are `Prepare -> Execute -> Teardown`; there is
+no terminal or verb-changing successor. A reservation/successor CAS is at-most-once, but callback delivery
+after the protected entry unlocks is at-least-once. Exact resume, concurrent readers, or a callback
+exception can therefore redeliver the same durable cursor without reserving a second transition. This is
+the local restart boundary; it does not claim exactly-once backend effects or proof-complete recursive
+child traversal.
+
+This plan-bound acquisition row is separate from the
+[sessions, journal, and fences phase](../../DEVELOPMENT_PLAN/phase-10-sessions-journal-and-fences.md)'s
+`project.<planDigest>` Open/Closing transaction and from per-operation attempt/ownership records. The
+future `activateNormalBoundRevision`
+higher-order composition may expose the already-admitted journal together with the active-revision proof,
+complete freshly verified `RehydratedResourceSet`, versioned Open-project state, permit authority, and
+current-broker session admission after proving every recorded older-broker session Closed, including
+zero-operation sessions; it is not a second raw journal producer. An abandoned revision with a recorded
+Open session must instead use the exact-set
 `activateRecoveredNormalBoundRevision` gate and old-permit fence proof plus the manifest pairing an
 independent complete session set with its operation set. The protected gate internally rebinds and
 closes each existing logical session—including a zero-operation Open session—and totally classifies
@@ -608,15 +770,21 @@ before yielding resources or admission. Every prepare also consumes the exact pl
 precondition set, reruns all probes/versions, and jointly returns the only prepared operation/
 preconditions pair accepted by the adapter. No mutating interpreter exists outside those continuations.
 
+That ordering is the contract for the plan-bound route, not a property granted by the lower public
+`openProjectJournal`, operation-session, or prepare primitives. Those primitives are non-authorizing:
+proof-complete plan-bound callers still must pass through `withAcquisitionJournal`.
+
 A later invocation verifies the stored snapshot and uses `withBoundPlanSnapshot` to bind it to a fresh
 local `planId` and the new broker generation's exclusive lease. It receives
 `BoundInvocationRecovery`, not a generic journal. Production first proves the operation state is Open;
 Harness must choose between Open revision recovery and the exact persisted Closing epoch. The Open
 branch then exhaustively chooses normal active, incomplete migration, or committed-new-but-not-activated
-migration. Within the normal-active branch, only its matching activation gate yields
-`AcquisitionJournal scope planId`; migrated activation and completed-migration recovery have their own
-exact gates. Every journal is a freshly rebound local view of stable records, never a serialized
-generative `planId`. The Closing branch can
+migration. After exact fixed-identity plan reconstruction, `withAcquisitionJournal` resumes the matching
+`AcquisitionJournal scope planId brokerGeneration`; conflicting stable evidence reaches the same key and
+refuses. Planned normal/migrated/completed activation gates must consume or internally compose that exact
+admission while adding their own revision and resource proofs, never open an unguarded lower route. Every
+journal is a freshly rebound local view of stable records, never a serialized generative `planId`. The
+Closing branch can
 resume only the old run's close journal. Unknown/incompatible snapshot versions refuse unless an
 explicit migration validates them.
 
@@ -670,25 +838,35 @@ production config, handle, journal, or receipt therefore cannot enter a harness 
 merely share `Production` cannot mix across `planId`.
 
 `DerivedTopology scope planId` is computed from the accepted steps and cannot be supplied or updated
-independently. Each mutating step records its typed reconcile result/ownership receipt, and
-`teardownPlan DownVerb` and `teardownPlan DestroyVerb` have distinct result types. Both can contain only
-child-first operations authorized by the same plan's receipts. The durable root remains in the plan with
-an explicit `Preserve` teardown policy: neither projection deletes it, while `Destroy` may remove
-verified provider/runtime resources that `Down` must retain. A deploy step without a corresponding
-topology edge or teardown policy is therefore not a valid
-`ProjectPlan scope specDigest planId configId cfg`.
+independently. `teardownPlan DownVerb` and `teardownPlan DestroyVerb` have distinct result types and
+derive their nodes only from `forward plan`, the plan's topology, and the exact `CurrentFrame`. Each
+reverse node carries the same stable `StepIdentity` and `OperationKey` as its forward node. The durable
+root remains in the plan with an explicit `PreserveOnReverse` policy and is absent from both projections;
+the verb selects the action for the remaining nodes by typed identity. The retained reverse callback is
+still just the callback declared by that planned step.
 
-The pure `TeardownPlan` is not itself an effect cursor. `openTeardownForest` is the sole conversion: it
-binds the projection to the exact protected snapshot, active revision, and matching Open-state/permit
-version. The forest's exhaustive next-work eliminator yields `CompletedTeardownForest` or one closed
-`TeardownAuthorizationPoint`; only its private eliminator exposes either a destroy-only pre-descent
-reachability step or the plan-derived settled-child proof/cursor for one ordinary step. Callers cannot
-wrap either branch. After `down`, the pre-descent step makes only the exact stopped provider
-teardown-reachable; its successor forest exposes retained children, and their later settlement exposes
-the provider's ordinary stop/delete step. Every attempted effect returns the successor forest even on
-typed failure. `verifyDestroySettled` accepts only the completed Destroy forest.
-Recovered ordinary step evidence is itself a closed sum derived from the bound snapshot, complete
-rehydrated set, and exact forest step: the owned branch yields a managed handle/receipt, while the
+The pure `TeardownPlan` is not an effect cursor. `openTeardownForest` consumes that projection alone,
+rejects an empty projection, and returns `TeardownForest scope planId verb`; it does not accept or inspect
+a protected snapshot, acquisition journal, active revision, Open-state version, permit, ownership
+receipt, or effect capability. The opening `frame` index therefore cannot be recovered from the current
+forest type. Production can run retained callbacks in projection order from the exact plan/current-frame
+pair, but that does not turn them into receipt-authorized transitions.
+
+The recursive lifecycle target propagates the existing `frame` index through the forest and all of its
+successors, then exposes an exhaustive local/foreign next-work eliminator. Its local branch alone yields
+the cursor accepted by a reverse runner; its foreign branch alone yields the authenticated child
+descent. A later durable admission layer binds each authorization point to the exact protected snapshot,
+active revision, matching Open-state/permit version, journal state, and ownership evidence. Under that
+target, the private eliminator exposes either a destroy-only pre-descent reachability step or the
+plan-derived settled-child proof/cursor for one ordinary step. After `down`, the pre-descent step makes
+only the exact stopped provider teardown-reachable; its successor forest exposes retained children, and
+their later settlement exposes the provider's ordinary stop/delete step. Every attempted effect returns
+the successor forest even on typed failure, and `verifyDestroySettled` accepts only the completed
+Destroy forest.
+
+In that receipt-aware target, recovered ordinary step evidence is a closed sum derived from the bound
+snapshot, complete rehydrated set, and exact forest step: the owned branch yields a managed
+handle/receipt, while the
 released branch yields only its verified ordinary/adopted tombstone and matching bindings.
 `confirmReleased` settles that branch without backend-call authority. Only an authoritative protected
 absence recheck plus a distinct new acquisition key can turn the released branch into
@@ -710,8 +888,10 @@ accept only those proofs; unresolved partial ownership produces neither. Only a 
 `HarnessCloseRoot`, derived either from the still-live harness root or from an exact abandoned-run
 recovery opener, can combine the project-wide Harness mode lease, exact
 bound run lease, bound snapshot, versioned Open state, and same-version `ProjectClosureEvidence`.
-`authorizeHarnessClose` atomically verifies all ordinary sessions Closed and changes Open to a fresh
-Closing epoch while creating its close journal; a concurrent operation prepare and that CAS cannot both
+`authorizeHarnessClose` consumes that exact Harness closure evidence, accepts only settled destroy,
+atomically verifies all ordinary sessions Closed, and changes Open to a fresh Closing epoch while creating
+its close journal. Persisted Closing therefore proves ordinary destroy had already settled; a concurrent
+operation prepare and that CAS cannot both
 win. `harnessClosePlan` is a third, harness-only projection of the same graph and journal. Its close
 interpreter uses the normal durable unknown/reprobe/fence protocol to conditionally release the exact
 owned generated config and `.test_data/<runId>` generations. Every terminal close observation returns
@@ -738,18 +918,17 @@ and clears mode. Session opening advances and compare-and-swaps that same Open p
 so it and finalization have exactly one winner; no mode-cleared partial state exists. An `up`/`down`
 partial teardown cannot be relabeled as settled destroy.
 
-- `project up` interprets the current forward chain to bring up a **persistent stack**; current
-  `project down`/`project destroy` run the verb's reverse projection of the one plan rather than recursively
-  interpreting the whole plan. `--dry-run` renders the forward chain; `context` currently introspects
-  projected frame data (see
+- `project up` interprets the current forward chain to bring up a **persistent stack**. Production
+  `project down`/`project destroy` retain or reconstruct the exact plan and run its current-frame reverse
+  projection, but that projection is not an authenticated recursive forest or exact teardown command
+  authority. `--dry-run` renders the exact admitted plan; `context`
+  currently introspects projected frame data (see
   [§ Current Status](#current-status)).
-- `test run` is a **driver** of that one representation, not a second one. For the demo it reads a
-  `<project>.test.dhall` containing an informational suite list plus resource overrides; the case matrix is compiled
-  in Haskell. Per generated configuration, it writes a
-  `<project>.dhall`, runs the **real `project up`** over the project's own chain, runs the case assertions
-  in the appropriate frame, and tears down with `project destroy`. The bring-up a test exercises is the
-  same chain production uses. The demo currently hardcodes the Production cluster profile, showing that
-  shared chain shape alone does not prevent profile/path drift.
+- `test run` is a **driver** of that one representation, not a second one. For each generated configuration,
+  current Harness retains one exact Harness-scoped plan and directly wraps the common current-frame Chain
+  forward/reverse boundaries around assertion-only code; it neither shells `project up` nor claims recursive
+  child entry. Production consumes the same plan/step algebra through its own current-frame command path.
+  The recursive-lifecycle-command phase owns recursive Production traversal and child acquisition integration.
 - The standardized test harness (`HostBootstrap.Harness`: `runMatrix` + `Seams`, see
   [harness_workflow](harness_workflow.md)) owns only the case matrix, the per-case **assertions**, and the
   test-config parameters — never a second cluster-bring-up path.
@@ -761,9 +940,11 @@ partial teardown cannot be relabeled as settled destroy.
   including inside a test seam that stands a cluster up a second way. This is wrong because it is a
   redundant second representation that duplicates the chain and can drift from it (it is exactly how the
   test and deploy resource models drifted before this rule).
-- **RIGHT**: every host and workload action is a step contributed into the one `[Step]`; `project up`
-  interprets it, descending frame by frame; and the **test harness drives that same `project up`** under a
-  test config rather than re-expressing it.
+- **RIGHT**: every host and workload action is a step contributed into the one `[Step]`. In the target,
+  `project up` interprets it frame by frame and the Harness consumes the same authenticated recursive
+  machinery under its own scope rather than re-expressing lifecycle actions. Current Production and Harness
+  share the exact current-frame Chain/reverse boundaries; Production fails closed at descent, while Harness
+  invokes those boundaries directly around assertions.
 
 ## Current Status
 
@@ -779,16 +960,34 @@ by chain steps.
 `Step`, `StepKind`, and `ProjectStepId` constructors are hidden. Smart constructors attach an explicit
 reverse policy and namespaced operation key; core/project identities are disjoint even when presentation
 labels match. `mkStepPlan` rejects duplicate identities, conflicting frame labels, non-contiguous frame
-returns, and invalid post-handoff placement. Generated-sequence properties prove a valid list is
-preserved exactly and an invalid `A, B, A` shape is rejected rather than regrouped.
+returns, and post-handoff suffixes outside deepest-frame-to-root unwind order. Generated-sequence
+properties prove a valid list is preserved exactly and an invalid `A, B, A` shape is rejected rather than
+regrouped.
 
-`project up` is the recursive interpreter driven by the resolved `StepPlan`. The VM-backed demo branches
-descend the 3-frame topology
+The public exact Chain is driven by the admitted `ProjectPlan`, matching Execute `CommandAuthority` and
+`LifecycleCursor`, and the plan's `DerivedTopology`; every protected transition rereads the exact cursor
+source/current row. Production dispatch consumes that boundary directly and retains one plan identity.
+The VM-backed demo branches declare a 3-frame topology
 (`host-orchestrator-0`, `vm-orchestrator-1`, `vm-project-container-2`); the direct native Linux GPU branch
-uses a 2-frame metal → direct-project-container chain with no VM frame. `project down`/`destroy` are the same recursive
-interpretation taken in reverse: each drives the plan's teardown forest, descends into the next frame by
-invoking the same verb there, and runs its own frame's nodes only once that descent has settled. Binding
-each reverse node to an ownership receipt rather than to a declared callback remains open.
+declares a 2-frame metal → direct-project-container chain with no VM frame. Nested Production entry
+currently refuses before effects, so complete traversal of either declared suffix remains
+[recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) work.
+
+The indexed reverse API is now exact at its pure boundary. `teardownPlan` consumes
+`ProjectPlan scope specDigest planId configId cfg`, `CurrentFrame scope planId frame`, and the typed verb;
+it projects that frame and its descendants deepest-first, reverses each frame's forward nodes, preserves
+stable step/operation identities, and excludes `PreserveOnReverse`. The public plan facade exposes the
+needed `PlannedStep` identity, reverse-policy, and callback projections without exposing its hidden
+representation. `openTeardownForest` consumes only the resulting
+`TeardownPlan scope planId frame verb` and returns the currently unframed
+`TeardownForest scope planId verb`.
+
+The Production `project down`/`destroy` command path drives this exact projection from its retained or
+reconstructed plan/current-frame pair. Neither that consumer nor the pure opener binds reverse work to an
+ownership receipt, journal state, exact teardown authority, or effect capability. Recursive frame
+propagation, the total local/foreign work split, authenticated child
+admission, and proof-complete child-to-parent settlement remain the target owned by the
+[recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
 
 `context` is read-only introspection (`inspect`/`path`/`show`/
 `schema`/`render`), and `test init` writes `<project>.test.dhall` while `test run <case-id>|all` runs the
@@ -816,11 +1015,11 @@ the UI add operation reaches the daemon-built worker.
 
 The harness's config handling is reconciled with the § W single-representation rule above. `test run all`
 reads the thin `<project>.test.dhall`, generates each run's scope-indexed `<project>.dhall` through the
-Harness request of the single restricted `psAssemble` and matching mapped codec, drives `project up`
-against that generated config, and unlinks it on teardown only while the file's bound kernel identity
-and its recorded payload both still match; anything else is a reported conflict and is left intact. The
-pre-existing-config flow is removed and recorded in
-[design rationale](../../DEVELOPMENT_PLAN/rationale.md). See
+Harness request of the single restricted `psAssemble` and matching mapped codec, retains the matching
+Harness-indexed plan, and directly drives its current-frame forward/reverse boundaries around assertions.
+It unlinks the generated config on teardown only while the file's bound kernel identity and its recorded
+payload both still match; anything else is a reported conflict and is left intact. A found foreign config
+is therefore refused rather than treated as harness input. See
 [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md) and
 [generic_project_model.md](generic_project_model.md).
 
@@ -846,8 +1045,8 @@ L0 changes.
 Concrete step kinds and the specific chain are layered per the
 [library_hierarchy](library_hierarchy.md):
 
-- **L0 — `hostbootstrap-core`**: the composition algebra, the Step interface, the recursive `project up`
-  interpreter, the host-management step kinds, the `ensure` kind, the execution-shape taxonomy, and the
+- **L0 — `hostbootstrap-core`**: the composition algebra, the Step interface, the exact current-frame Chain
+  plus target recursive `project up` substrate, the host-management step kinds, the `ensure` kind, the execution-shape taxonomy, and the
   role-lifecycle skeleton. No bus/cloud dependency.
 - **L1 — `daemon-substrate`**: the business-logic step primitives (roles, declared topologies,
   batching/scheduler policy, lifecycle reconciler, the WAN-egress hydrator).

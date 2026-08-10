@@ -10,7 +10,6 @@ import Data.Function ((&))
 import Data.List (isInfixOf, isSuffixOf)
 import qualified Data.Text as T
 import qualified Dhall
-import HostBootstrap.Chain (renderChain)
 import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon), AcceleratorIngressPlan (ingressKindListenAddress), ClusterDriver (..), ClusterPlan (clusterConfigFile, clusterDriver, clusterName, dataPath, publishesHostPorts), ClusterProfile (Production, TestCase), acceleratorIngressPlan, profileDataPath, profileDataSegments)
 import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec), projectCodecSpecDigest)
 import HostBootstrap.Config.Fields (
@@ -51,7 +50,7 @@ import HostBootstrap.Service (
     withSelectedServiceRequest,
  )
 import HostBootstrap.RoleLifecycle (RoleEffect (DurableStore, NetworkListen, ProcessSpawn))
-import HostBootstrap.Step (Step, StepFrame (..), StepPlan, chainFrames, frameDescent, frameId, mkStepPlan, postHandoffStepsForFrame, stepKind, stepKindName, stepLabel, stepPlanSteps)
+import HostBootstrap.Step (Step, StepFrame (..), StepPlan, chainFrames, frameDescent, frameId, mkStepPlan, postHandoffStepsForFrame, renderChainPlan, stepKind, stepKindName, stepLabel, stepPlanSteps)
 import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (Substrate), SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu))
 import HostBootstrapDemo.Container (
     baseDigestArgs,
@@ -91,7 +90,6 @@ import HostBootstrapDemo.Commands (
     validateAcceleratorReplicaCount,
  )
 import HostBootstrapDemo.Config (
-    DemoProject,
     Port,
     ProjectConfig (..),
     RunProfile (HarnessRun),
@@ -129,7 +127,7 @@ webFamilyOnly = fst . T.breakOn "- service: accelerator"
 production does.
 -}
 withDemoRoot ::
-    (forall rootScope rootId. CanonicalProjectRoot rootScope rootId -> IO a) ->
+    (forall rootId. CanonicalProjectRoot scope rootId -> IO a) ->
     IO a
 withDemoRoot action = do
     outcome <- withCanonicalProjectRoot ".build/hostbootstrap-demo.dhall" "." action
@@ -226,7 +224,7 @@ tests =
                     , "expose-port"
                     , "deploy-accelerator-daemon"
                     ]
-            assertBool "direct chain names nvkind" ("nvkind" `isInfixOf` renderChain plan)
+            assertBool "direct chain names nvkind" (isInfixOf "nvkind" (renderChainPlan plan))
         , testCase "validated direct context keeps nvkind even if the inner host detects CPU" $ do
             let directCtx = Context.deriveLinuxGpuContainerContext (context hostCfg) "/workspace/demo"
                 vmCtx = Context.deriveVMContextWithProvider Context.IncusVMProvider (context hostCfg) "/vm/demo"
@@ -606,7 +604,7 @@ tests =
                 @?= ["demoWeb", "demoWebApp", "demoProjectProduction", "demoProjectHarness"]
         , testCase "full and role codecs retain one jointly finalized specification digest" $ do
             let (digest, schemas) =
-                    withProductionProjectCodec @DemoProject @ProjectConfig $ \baseCodec ->
+                    withProductionProjectCodec @ProjectConfig @() $ \baseCodec ->
                         withFinalizedServiceRegistry
                             ProductionScope
                             baseCodec
@@ -648,7 +646,7 @@ tests =
                         demoDefaultMessage
                         Context.Daemon
                 selectedWire cfg =
-                    withProductionProjectCodec @DemoProject @ProjectConfig $ \baseCodec ->
+                    withProductionProjectCodec @ProjectConfig @() $ \baseCodec ->
                         withFinalizedServiceRegistry
                             ProductionScope
                             baseCodec
@@ -698,7 +696,7 @@ tests =
                     demoDefaultMessage
                     Context.Daemon
             declaredFor cfg =
-                withProductionProjectCodec @DemoProject @ProjectConfig $ \baseCodec ->
+                withProductionProjectCodec @ProjectConfig @() $ \baseCodec ->
                     withFinalizedServiceRegistry
                         ProductionScope
                         baseCodec
@@ -736,7 +734,7 @@ tests =
                         demoDefaultDeployConfig
                         demoDefaultMessage
                         Context.ClusterService
-            withProductionProjectCodec @DemoProject @ProjectConfig $ \baseCodec ->
+            withProductionProjectCodec @ProjectConfig @() $ \baseCodec ->
                 withFinalizedServiceRegistry
                     ProductionScope
                     baseCodec

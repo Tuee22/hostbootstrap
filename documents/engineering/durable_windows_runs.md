@@ -111,7 +111,8 @@ the project's full CPU and memory budget, walled into the shared WSL2 utility VM
 A run that reaches normal `project down` restores the journalled `.wslconfig` origin and then invokes
 global `wsl --shutdown`; the order ensures the next cold boot reads the restored configuration. Shutdown
 stops every distro and releases the shared utility VM's memory balloon. The current Windows gate proves
-that Phase 9 wall-release observable.
+that wall-release observable from the
+[lifecycle-modes-and-run-leases phase](../../DEVELOPMENT_PLAN/phase-9-lifecycle-modes-and-run-leases.md).
 
 An interrupted detached run is different: if its orchestrator dies before teardown, neither restoration
 nor shutdown is guaranteed to execute. The managed six-hour idle timeouts are the eventual-recovery

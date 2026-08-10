@@ -1,7 +1,7 @@
 module RawBudget where
 
 import HostBootstrap.Cluster.Budget
-import HostBootstrap.Cluster.Cordon
+import HostBootstrap.Cluster.Cordon.Foundation
 
 badBudget :: ResourceBudget
 badBudget = ResourceBudget 0 0 0

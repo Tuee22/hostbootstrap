@@ -1,18 +1,29 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE TypeApplications #-}
 
 module BudgetSpec (tests) where
 
 import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.List.NonEmpty as NonEmpty
 import Data.Word (Word64)
 import qualified Fixture
 import HostBootstrap.Cluster.Budget
 import HostBootstrap.Cluster.Cordon
-import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
 import HostBootstrap.Config.Vocab (Production)
 import HostBootstrap.Context (ResourceEnvelope (..))
-import HostBootstrap.Reconcile (LifecyclePlan, withLifecyclePlan)
+import HostBootstrap.Lift (localContext)
+import HostBootstrap.ProjectPlan
+  ( ClusterResource,
+    PlannedResource,
+    PlannedResourceKind (ClusterResourceKind, ProviderResourceKind),
+    ProjectPlan,
+    ProviderResource,
+    forward,
+    plannedResourceFrame,
+    plannedResourceKey,
+    plannedStepOperationKey,
+    withPlannedResourceOfKind,
+  )
 import HostBootstrap.Reconcile (
   ChangeView (..),
   ChangedKind (..),
@@ -21,9 +32,17 @@ import HostBootstrap.Reconcile (
   UnsupportedDetail (..),
  )
 import qualified Data.Text as Text
-import HostBootstrap.Step (StepFrame (StepFrame), StepObservation (StepChanged), StepPlan, contextInitStep, mkStepPlan)
+import HostBootstrap.Step
+  ( StepFrame (StepFrame),
+    StepObservation (StepChanged),
+    StepPlan,
+    deployKindStep,
+    deployVMStep,
+    descendsVia,
+    mkStepPlan,
+  )
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 gib :: Integer
 gib = 1024 ^ (3 :: Integer)
@@ -37,48 +56,61 @@ tests =
     "BudgetSpec"
     [ testCase "provider admission rejects upward rounding" $ do
         let inexact = ResourceEnvelope 4 "8589934593" "20GiB"
-        admissionSummary inexact LimaBackend
-          @?= Left (InexactProviderQuantity LimaBackend "memory" (8 * gib + 1)),
-      testCase "provider wall argv consumes admitted exact values" $
-        admissionSummary exactEnvelope IncusBackend
-          @?= Right ["limits.cpu=8", "limits.memory=16GiB", "root,size=100GiB"],
-      testCase "bare Linux reports unsupported instead of pretending to cordon storage" $
-        admissionSummary exactEnvelope BareLinuxBackend
+        result <- admissionSummary inexact LimaBackend
+        result @?= Left (InexactProviderQuantity LimaBackend "memory" (8 * gib + 1)),
+      testCase "provider wall argv consumes admitted exact values" $ do
+        result <- admissionSummary exactEnvelope IncusBackend
+        result @?= Right ["limits.cpu=8", "limits.memory=16GiB", "root,size=100GiB"],
+      testCase "bare Linux reports unsupported instead of pretending to cordon storage" $ do
+        result <- admissionSummary exactEnvelope BareLinuxBackend
+        result
           @?= Left (UnsupportedBudgetWall BareLinuxBackend "bare Linux has no quota/image-GC storage wall"),
-      testCase "workload set must be non-empty" $
-        withTestLifecyclePlan
-          ( \plan ->
+      testCase "workload set must be non-empty" $ do
+        result <-
+          withBudgetProjectPlan $ \plan _providerResource _clusterResource ->
+            pure $
               withValidatedBudget plan exactEnvelope
-                (\_ -> withPlannedWorkloadSet [] (const ()))
-          )
-          @?= Right (Left EmptyWorkloadSet),
+                (\_ -> withPlannedWorkloadSet plan [] (const ()))
+        result @?= Right (Left EmptyWorkloadSet),
       testCase "workload fit and constructive partition share the admitted budget" $ do
-        result <- pure successfulPartition
-        result @?= Right [("vm", "metal", (6, 10 * gib, 80 * gib))],
-      testCase "partition rejects slices plus overhead above effective budget" $
-        overflowingPartition
-          @?= Left (PartitionOverflow "cpu" 9 8),
+        result <- successfulPartition
+        result @?= Right [("core:deploy-vm", "host", (6, 10 * gib, 80 * gib))],
+      testCase "workload and slice identity are projected from the admitted plan" $ do
+        result <- projectedIdentitySummary
+        case result of
+          Right (workloadIdentity, projectedWorkloadIdentity, sliceIdentities, projectedSliceIdentity) -> do
+            workloadIdentity @?= projectedWorkloadIdentity
+            sliceIdentities @?= [projectedSliceIdentity]
+          other -> assertFailure ("expected projected workload and slice identities, got " ++ show other),
+      testCase "partition rejects slices plus overhead above effective budget" $ do
+        result <- overflowingPartition
+        result @?= Left (PartitionOverflow "cpu" 9 8),
       testCase "slice request rejects provider-minimum violations" $ do
         tiny <- pure (mkResourceBudget 1 gib gib)
         minimumBudget <- pure (mkResourceBudget 2 (2 * gib) (2 * gib))
         case (tiny, minimumBudget) of
-          (Right actual, Right required) ->
-            assertBool "expected below-minimum rejection" (isLeft (mkSliceRequest "node" "cluster" actual required))
+          (Right actual, Right required) -> do
+            result <-
+              withBudgetProjectPlan $ \_plan providerResource _clusterResource ->
+                pure (isLeft (mkSliceRequest providerResource actual required))
+            assertBool "expected below-minimum rejection" result
           other -> assertBool ("unexpected fixture construction failure: " ++ show other) False,
-      testCase "WSL wall settlement returns the live authority and global lease inseparably" $
-        wallSettlementSummary Wsl2Backend (WallAlreadyExact 9)
-          @?= Right (Unchanged, 9, 1, True),
-      testCase "ordinary provider migration returns repaired live authority without a WSL lease" $
-        wallSettlementSummary LimaBackend (WallMigrated 12 "resized")
-          @?= Right (Changed Repaired, 12, 1, False),
-      testCase "an uncertain wall call yields no live authority" $
+      testCase "WSL wall settlement returns the live authority and global lease inseparably" $ do
+        result <- wallSettlementSummary Wsl2Backend (WallAlreadyExact 9)
+        result @?= Right (Unchanged, 9, 1, True),
+      testCase "ordinary provider migration returns repaired live authority without a WSL lease" $ do
+        result <- wallSettlementSummary LimaBackend (WallMigrated 12 "resized")
+        result @?= Right (Changed Repaired, 12, 1, False),
+      testCase "an uncertain wall call yields no live authority" $ do
+        result <- wallSettlementSummary Wsl2Backend (WallAcquireUncertain "lost acknowledgement")
         assertBool
           "uncertain acquisition must fail closed"
-          (isLeft (wallSettlementSummary Wsl2Backend (WallAcquireUncertain "lost acknowledgement"))),
+          (isLeft result),
       testCase "every VM provider applies the declared storage ceiling exactly" $ do
-        storageWallSummary LimaBackend storageWallShape
-          @?= Right (Right (LimaDiskArgument, ["--disk", "100"], 100 * gib))
-        storageWallSummary ColimaBackend storageWallShape
+        lima <- storageWallSummary LimaBackend storageWallShape
+        lima @?= Right (Right (LimaDiskArgument, ["--disk", "100"], 100 * gib))
+        colima <- storageWallSummary ColimaBackend storageWallShape
+        colima
           @?= Right
             ( Right
                 ( ColimaDiskArgument,
@@ -86,64 +118,73 @@ tests =
                   100 * gib
                 )
             )
-        storageWallSummary IncusBackend storageWallShape
+        incus <- storageWallSummary IncusBackend storageWallShape
+        incus
           @?= Right
             (Right (IncusRootSizeArgument, ["-d", "root,size=100GiB"], 100 * gib))
-        storageWallSummary Wsl2Backend storageWallShape
+        wsl <- storageWallSummary Wsl2Backend storageWallShape
+        wsl
           @?= Right
             (Right (Wsl2VhdSizeArgument, ["--vhd-size", "100GB"], 100 * gib)),
-      testCase "a kind node container is Unsupported, never a silent success" $
-        case storageWallSummary DockerNodeBackend storageWallShape of
+      testCase "a kind node container is Unsupported, never a silent success" $ do
+        result <- storageWallSummary DockerNodeBackend storageWallShape
+        case result of
           Right (Left (Unsupported detail)) ->
             assertBool
               "the reason names the missing storage flag"
               ("DockerNodeHasNoStorageFlag" `Text.isInfixOf` unsupportedReason detail)
           other -> assertBool ("expected Unsupported, got " ++ show other) False,
-      testCase "bare Linux is refused before a storage wall is even prepared" $
+      testCase "bare Linux is refused before a storage wall is even prepared" $ do
         -- Bare Linux has no provider wall at all, so admission refuses it one
         -- step earlier than the storage mechanism does. Either way the caller
         -- gets a typed unsupported result, never a silent success.
-        storageWallSummary BareLinuxBackend storageWallShape
+        result <- storageWallSummary BareLinuxBackend storageWallShape
+        result
           @?= Left
             ( UnsupportedBudgetWall
                 BareLinuxBackend
                 "bare Linux has no quota/image-GC storage wall"
             ),
-      testCase "an exactly applied storage ceiling settles as Changed Created" $
-        storageWallSummary
-          LimaBackend
-          (\prepared -> settleStorageWallCall prepared (StorageWallApplied 4 (100 * gib)) appliedStorageWallChange)
-          @?= Right (Right (Changed Created)),
-      testCase "an already-exact storage ceiling settles as Unchanged" $
-        storageWallSummary
-          LimaBackend
-          (\prepared -> settleStorageWallCall prepared (StorageWallAlreadyExact 4 (100 * gib)) appliedStorageWallChange)
-          @?= Right (Right Unchanged),
-      testCase "a rounded storage ceiling is a Conflict even when the provider succeeded" $
-        case storageWallSummary
-          LimaBackend
-          (\prepared -> settleStorageWallCall prepared (StorageWallApplied 4 (128 * gib)) appliedStorageWallChange) of
+      testCase "an exactly applied storage ceiling settles as Changed Created" $ do
+        result <-
+          storageWallSummary
+            LimaBackend
+            (\prepared -> settleStorageWallCall prepared (StorageWallApplied 4 (100 * gib)) appliedStorageWallChange)
+        result @?= Right (Right (Changed Created)),
+      testCase "an already-exact storage ceiling settles as Unchanged" $ do
+        result <-
+          storageWallSummary
+            LimaBackend
+            (\prepared -> settleStorageWallCall prepared (StorageWallAlreadyExact 4 (100 * gib)) appliedStorageWallChange)
+        result @?= Right (Right Unchanged),
+      testCase "a rounded storage ceiling is a Conflict even when the provider succeeded" $ do
+        result <-
+          storageWallSummary
+            LimaBackend
+            (\prepared -> settleStorageWallCall prepared (StorageWallApplied 4 (128 * gib)) appliedStorageWallChange)
+        case result of
           Right (Left (Conflict detail)) ->
             assertBool
               "the remedy refuses a rounded hard ceiling"
               ("rounded hard ceiling" `Text.isInfixOf` conflictRemedy detail)
           other -> assertBool ("expected a rounding conflict, got " ++ show other) False,
-      testCase "a zero wall epoch cannot mint an applied storage wall" $
-        case storageWallSummary
-          LimaBackend
-          (\prepared -> settleStorageWallCall prepared (StorageWallApplied 0 (100 * gib)) appliedStorageWallChange) of
+      testCase "a zero wall epoch cannot mint an applied storage wall" $ do
+        result <-
+          storageWallSummary
+            LimaBackend
+            (\prepared -> settleStorageWallCall prepared (StorageWallApplied 0 (100 * gib)) appliedStorageWallChange)
+        case result of
           Right (Left (Failure _)) -> pure ()
           other -> assertBool ("expected an epoch failure, got " ++ show other) False,
-      testCase "an inexact declared ceiling never reaches the storage wall" $
+      testCase "an inexact declared ceiling never reaches the storage wall" $ do
+        result <-
+          storageWallSummaryFor
+            (ResourceEnvelope 8 "16GiB" (Text.pack (show (100 * gib + 1))))
+            LimaBackend
+            storageWallShape
         assertBool
           "admission refuses an inexact storage quantity before any wall call"
-          ( isLeft
-              ( storageWallSummaryFor
-                  (ResourceEnvelope 8 "16GiB" (Text.pack (show (100 * gib + 1))))
-                  LimaBackend
-                  storageWallShape
-              )
-          )
+          (isLeft result)
     ]
 
 -- | The prepared storage wall's mechanism, argv, and exact declared ceiling.
@@ -163,7 +204,7 @@ storageWallSummary ::
     PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
     Either ReconcileError result
   ) ->
-  Either BudgetError (Either ReconcileError result)
+  IO (Either BudgetError (Either ReconcileError result))
 storageWallSummary = storageWallSummaryFor exactEnvelope
 
 {- | Prepare the storage wall from already-admitted budget inputs, so no case
@@ -176,134 +217,176 @@ storageWallSummaryFor ::
     PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
     Either ReconcileError result
   ) ->
-  Either BudgetError (Either ReconcileError result)
-storageWallSummaryFor envelope backend consume = do
-  workload <- mkWorkload "storage-wall-check" 1 1 gib gib
-  overhead <- mapBudgetError (mkResourceBudget 1 gib gib)
-  sliceBudget <- mapBudgetError (mkResourceBudget 6 (10 * gib) (80 * gib))
-  minimumBudget <- mapBudgetError (mkResourceBudget 1 gib gib)
-  request <- mkSliceRequest "vm" "metal" sliceBudget minimumBudget
-  withTestLifecyclePlan $ \plan ->
-    joinBudget $ withValidatedBudget plan envelope $ \validated ->
-      withProviderKeyForBackend backend $ \providerKey ->
-        withProviderBudgetCapability plan providerKey $ \capability ->
-          joinBudget $
-            admitProviderBudget validated capability $ \wall effective ->
-              joinBudget $
-                withPlannedWorkloadSet [workload] $ \workloads -> do
-                  fit <- verifyPlannedWorkloadFit effective workloads
-                  joinBudget $
-                    withBudgetPartition effective fit overhead (request :| []) $ \partition _slices ->
-                      joinBudget $
-                        withProviderWallReservation wall partition 1 $ \reservation ->
-                          Right
-                            ( prepareStorageWallCall "demo" wall partition reservation
-                                >>= consume
-                            )
+  IO (Either BudgetError (Either ReconcileError result))
+storageWallSummaryFor envelope backend consume =
+  withBudgetProjectPlan $ \plan providerResource clusterResource ->
+    pure $ do
+      workload <- mkWorkload clusterResource 1 1 gib gib
+      overhead <- mapBudgetError (mkResourceBudget 1 gib gib)
+      sliceBudget <- mapBudgetError (mkResourceBudget 6 (10 * gib) (80 * gib))
+      minimumBudget <- mapBudgetError (mkResourceBudget 1 gib gib)
+      request <- mkSliceRequest providerResource sliceBudget minimumBudget
+      joinBudget $ withValidatedBudget plan envelope $ \validated ->
+        withProviderKeyForBackend backend $ \providerKey ->
+          withProviderBudgetCapability plan providerResource providerKey $ \capability ->
+            joinBudget $
+              admitProviderBudget validated capability $ \wall effective ->
+                joinBudget $
+                  withPlannedWorkloadSet plan [workload] $ \workloads -> do
+                    fit <- verifyPlannedWorkloadFit effective workloads
+                    joinBudget $
+                      withBudgetPartition effective fit overhead (request :| []) $ \partition _slices ->
+                        joinBudget $
+                          withProviderWallReservation wall partition 1 $ \reservation ->
+                            Right
+                              ( prepareStorageWallCall "demo" wall partition reservation
+                                  >>= consume
+                              )
 
-admissionSummary :: ResourceEnvelope -> ProviderBackend -> Either BudgetError [String]
+admissionSummary :: ResourceEnvelope -> ProviderBackend -> IO (Either BudgetError [String])
 admissionSummary envelope backend =
-  withTestLifecyclePlan $ \plan ->
-    joinBudget $ withValidatedBudget plan envelope $ \validated ->
-      withProviderKeyForBackend backend $ \providerKey ->
-        withProviderBudgetCapability plan providerKey $ \capability ->
+  withBudgetProjectPlan $ \plan providerResource clusterResource ->
+    pure $
+      joinBudget $ withValidatedBudget plan envelope $ \validated ->
+        withProviderKeyForBackend backend $ \providerKey ->
+          withProviderBudgetCapability plan providerResource providerKey $ \capability ->
+            joinBudget $
+              admitProviderBudget validated capability $ \wall effective -> do
+                workload <- mkWorkload clusterResource 1 1 gib gib
+                overhead <- mapBudgetError (mkResourceBudget 1 gib gib)
+                sliceBudget <- mapBudgetError (mkResourceBudget 6 (10 * gib) (80 * gib))
+                minimumBudget <- mapBudgetError (mkResourceBudget 1 gib gib)
+                request <- mkSliceRequest providerResource sliceBudget minimumBudget
+                joinBudget $
+                  withPlannedWorkloadSet plan [workload] $ \workloads -> do
+                    fit <- verifyPlannedWorkloadFit effective workloads
+                    joinBudget $
+                      withBudgetPartition effective fit overhead (request :| []) $ \partition _slices ->
+                        joinBudget $
+                          withProviderWallReservation wall partition 1 $ \reservation ->
+                            providerWallCallArgs
+                              <$> prepareProviderWallCall "demo" wall partition reservation
+
+successfulPartition :: IO (Either BudgetError [(String, String, (Integer, Integer, Integer))])
+successfulPartition =
+  withBudgetProjectPlan $ \plan providerResource clusterResource ->
+    pure $ do
+      workload <- mkWorkload clusterResource 2 1 gib gib
+      overhead <- mapBudgetError (mkResourceBudget 1 gib gib)
+      vmBudget <- mapBudgetError (mkResourceBudget 6 (10 * gib) (80 * gib))
+      vmMinimum <- mapBudgetError (mkResourceBudget 1 gib gib)
+      request <- mkSliceRequest providerResource vmBudget vmMinimum
+      joinBudget $ withValidatedBudget plan exactEnvelope $ \validated ->
+        withProviderBudgetCapability plan providerResource LimaProviderKey $ \capability -> do
           joinBudget $
-            admitProviderBudget validated capability $ \wall effective -> do
-              workload <- mkWorkload "admission-check" 1 1 gib gib
-              overhead <- mapBudgetError (mkResourceBudget 1 gib gib)
-              sliceBudget <- mapBudgetError (mkResourceBudget 6 (10 * gib) (80 * gib))
-              minimumBudget <- mapBudgetError (mkResourceBudget 1 gib gib)
-              request <- mkSliceRequest "vm" "metal" sliceBudget minimumBudget
+            admitProviderBudget validated capability $ \_wall effective ->
               joinBudget $
-                withPlannedWorkloadSet [workload] $ \workloads -> do
+                withPlannedWorkloadSet plan [workload] $ \workloads -> do
                   fit <- verifyPlannedWorkloadFit effective workloads
-                  joinBudget $
-                    withBudgetPartition effective fit overhead (request :| []) $ \partition _slices ->
-                      joinBudget $
-                        withProviderWallReservation wall partition 1 $ \reservation ->
-                          providerWallCallArgs
-                            <$> prepareProviderWallCall "demo" wall partition reservation
-
-successfulPartition :: Either BudgetError [(String, String, (Integer, Integer, Integer))]
-successfulPartition = do
-  workload <- mkWorkload "web" 2 1 gib gib
-  overhead <- mapBudgetError (mkResourceBudget 1 gib gib)
-  vmBudget <- mapBudgetError (mkResourceBudget 6 (10 * gib) (80 * gib))
-  vmMinimum <- mapBudgetError (mkResourceBudget 1 gib gib)
-  request <- mkSliceRequest "vm" "metal" vmBudget vmMinimum
-  withTestLifecyclePlan $ \plan ->
-    joinBudget $ withValidatedBudget plan exactEnvelope $ \validated ->
-      withProviderBudgetCapability plan LimaProviderKey $ \capability -> do
-        joinBudget $
-          admitProviderBudget validated capability $ \_wall effective ->
-            joinBudget $
-              withPlannedWorkloadSet [workload] $ \workloads -> do
-                fit <- verifyPlannedWorkloadFit effective workloads
-                withBudgetPartition effective fit overhead (request :| []) $ \_partition slices ->
-                  forResourceSlices slices $ \slice ->
-                    let budget = resourceSliceBudget slice
-                     in ( resourceSliceName slice,
-                          resourceSliceFrame slice,
-                          ( toInteger (budgetCpu budget),
-                            budgetMemoryBytes budget,
-                            budgetStorageBytes budget
+                  withBudgetPartition effective fit overhead (request :| []) $ \_partition slices ->
+                    forResourceSlices slices $ \slice ->
+                      let budget = resourceSliceBudget slice
+                       in ( resourceSliceName slice,
+                            resourceSliceFrame slice,
+                            ( toInteger (budgetCpu budget),
+                              budgetMemoryBytes budget,
+                              budgetStorageBytes budget
+                            )
                           )
-                        )
 
-overflowingPartition :: Either BudgetError ()
-overflowingPartition = do
-  workload <- mkWorkload "web" 1 1 gib gib
-  overhead <- mapBudgetError (mkResourceBudget 3 gib gib)
-  sliceBudget <- mapBudgetError (mkResourceBudget 6 (10 * gib) (80 * gib))
-  minimumBudget <- mapBudgetError (mkResourceBudget 1 gib gib)
-  request <- mkSliceRequest "vm" "metal" sliceBudget minimumBudget
-  withTestLifecyclePlan $ \plan ->
-    joinBudget $ withValidatedBudget plan exactEnvelope $ \validated ->
-      withProviderBudgetCapability plan LimaProviderKey $ \capability -> do
-        joinBudget $
-          admitProviderBudget validated capability $ \_wall effective ->
-            joinBudget $
-              withPlannedWorkloadSet [workload] $ \workloads -> do
-                fit <- verifyPlannedWorkloadFit effective workloads
-                fmap (const ()) $
-                  withBudgetPartition effective fit overhead (request :| []) $ \_ _ -> ()
+projectedIdentitySummary ::
+  IO
+    ( Either
+        BudgetError
+        ( (String, String),
+          (String, String),
+          [(String, String)],
+          (String, String)
+        )
+    )
+projectedIdentitySummary =
+  withBudgetProjectPlan $ \plan providerResource clusterResource ->
+    pure $ do
+      workload <- mkWorkload clusterResource 1 1 gib gib
+      overhead <- mapBudgetError (mkResourceBudget 1 gib gib)
+      sliceBudget <- mapBudgetError (mkResourceBudget 6 (10 * gib) (80 * gib))
+      minimumBudget <- mapBudgetError (mkResourceBudget 1 gib gib)
+      request <- mkSliceRequest providerResource sliceBudget minimumBudget
+      joinBudget $ withValidatedBudget plan exactEnvelope $ \validated ->
+        withProviderBudgetCapability plan providerResource LimaProviderKey $ \capability ->
+          joinBudget $
+            admitProviderBudget validated capability $ \_wall effective ->
+              joinBudget $
+                withPlannedWorkloadSet plan [workload] $ \workloads -> do
+                  fit <- verifyPlannedWorkloadFit effective workloads
+                  withBudgetPartition effective fit overhead (request :| []) $ \_partition slices ->
+                    ( (workloadName workload, workloadFrame workload),
+                      ( Text.unpack (plannedResourceKey clusterResource),
+                        Text.unpack (plannedResourceFrame clusterResource)
+                      ),
+                      forResourceSlices slices $ \slice ->
+                        (resourceSliceName slice, resourceSliceFrame slice),
+                      ( Text.unpack (plannedResourceKey providerResource),
+                        Text.unpack (plannedResourceFrame providerResource)
+                      )
+                    )
+
+overflowingPartition :: IO (Either BudgetError ())
+overflowingPartition =
+  withBudgetProjectPlan $ \plan providerResource clusterResource ->
+    pure $ do
+      workload <- mkWorkload clusterResource 1 1 gib gib
+      overhead <- mapBudgetError (mkResourceBudget 3 gib gib)
+      sliceBudget <- mapBudgetError (mkResourceBudget 6 (10 * gib) (80 * gib))
+      minimumBudget <- mapBudgetError (mkResourceBudget 1 gib gib)
+      request <- mkSliceRequest providerResource sliceBudget minimumBudget
+      joinBudget $ withValidatedBudget plan exactEnvelope $ \validated ->
+        withProviderBudgetCapability plan providerResource LimaProviderKey $ \capability -> do
+          joinBudget $
+            admitProviderBudget validated capability $ \_wall effective ->
+              joinBudget $
+                withPlannedWorkloadSet plan [workload] $ \workloads -> do
+                  fit <- verifyPlannedWorkloadFit effective workloads
+                  fmap (const ()) $
+                    withBudgetPartition effective fit overhead (request :| []) $ \_ _ -> ()
 
 wallSettlementSummary ::
   ProviderBackend ->
   WallAcquireObservation ->
-  Either BudgetError (ChangeView, Word64, Word64, Bool)
-wallSettlementSummary backend observation = do
-  workload <- mkWorkload "wall-check" 1 1 gib gib
-  overhead <- mapBudgetError (mkResourceBudget 1 gib gib)
-  sliceBudget <- mapBudgetError (mkResourceBudget 6 (10 * gib) (80 * gib))
-  minimumBudget <- mapBudgetError (mkResourceBudget 1 gib gib)
-  request <- mkSliceRequest "vm" "metal" sliceBudget minimumBudget
-  withTestLifecyclePlan $ \plan ->
-    joinBudget $ withValidatedBudget plan exactEnvelope $ \validated ->
-      withProviderKeyForBackend backend $ \providerKey ->
-        withProviderBudgetCapability plan providerKey $ \capability ->
-          joinBudget $
-            admitProviderBudget validated capability $ \wall effective ->
-              joinBudget $
-                withPlannedWorkloadSet [workload] $ \workloads -> do
-                  fit <- verifyPlannedWorkloadFit effective workloads
-                  joinBudget $
-                    withBudgetPartition effective fit overhead (request :| []) $ \partition _slices ->
-                      joinBudget $
-                        withProviderWallReservation wall partition 1 $ \reservation -> do
-                          prepared <- prepareProviderWallCall "demo" wall partition reservation
-                          case
-                            settleProviderWallCall prepared observation $ \live ->
-                              withLiveProviderWall
-                                live
-                                ( \authority change ->
-                                    (change, providerWallEpoch authority, providerWallFence authority, False)
-                                )
-                                ( \authority _lease change ->
-                                    (change, providerWallEpoch authority, providerWallFence authority, True)
-                                ) of
-                            Left err -> Left (InvalidWallReservation (show err))
-                            Right summary -> Right summary
+  IO (Either BudgetError (ChangeView, Word64, Word64, Bool))
+wallSettlementSummary backend observation =
+  withBudgetProjectPlan $ \plan providerResource clusterResource ->
+    pure $ do
+      workload <- mkWorkload clusterResource 1 1 gib gib
+      overhead <- mapBudgetError (mkResourceBudget 1 gib gib)
+      sliceBudget <- mapBudgetError (mkResourceBudget 6 (10 * gib) (80 * gib))
+      minimumBudget <- mapBudgetError (mkResourceBudget 1 gib gib)
+      request <- mkSliceRequest providerResource sliceBudget minimumBudget
+      joinBudget $ withValidatedBudget plan exactEnvelope $ \validated ->
+        withProviderKeyForBackend backend $ \providerKey ->
+          withProviderBudgetCapability plan providerResource providerKey $ \capability ->
+            joinBudget $
+              admitProviderBudget validated capability $ \wall effective ->
+                joinBudget $
+                  withPlannedWorkloadSet plan [workload] $ \workloads -> do
+                    fit <- verifyPlannedWorkloadFit effective workloads
+                    joinBudget $
+                      withBudgetPartition effective fit overhead (request :| []) $ \partition _slices ->
+                        joinBudget $
+                          withProviderWallReservation wall partition 1 $ \reservation -> do
+                            prepared <- prepareProviderWallCall "demo" wall partition reservation
+                            case
+                              settleProviderWallCall prepared observation $ \live ->
+                                withLiveProviderWall
+                                  live
+                                  ( \authority change ->
+                                      (change, providerWallEpoch authority, providerWallFence authority, False)
+                                  )
+                                  ( \authority _lease change ->
+                                      (change, providerWallEpoch authority, providerWallFence authority, True)
+                                  ) of
+                              Left err -> Left (InvalidWallReservation (show err))
+                              Right summary -> Right summary
 
 mapBudgetError :: Either String a -> Either BudgetError a
 mapBudgetError = either (Left . InvalidBudget) Right
@@ -314,16 +397,59 @@ joinBudget = either Left id
 isLeft :: Either a b -> Bool
 isLeft = either (const True) (const False)
 
-testPlan :: StepPlan
-testPlan =
+budgetPlan :: StepPlan
+budgetPlan =
   either
     (error . show)
     id
-    (mkStepPlan [contextInitStep "context" (StepFrame "host" "Host") (const (pure StepChanged))])
+    ( mkStepPlan
+        [ descendsVia
+            localContext
+            (deployVMStep "provider" (StepFrame "host" "Host") (const (pure StepChanged))),
+          deployKindStep "cluster" (StepFrame "provider" "Provider") (const (pure StepChanged))
+        ]
+    )
 
-withTestLifecyclePlan ::
-  (forall planId. LifecyclePlan (Production Fixture.FixtureProject) planId -> result) ->
-  result
-withTestLifecyclePlan consume =
-  withProductionProjectCodec @Fixture.FixtureProject @Fixture.ProjectConfig $ \codec ->
-    withLifecyclePlan codec testPlan consume
+withBudgetProjectPlan ::
+  ( forall projectId specDigest planId configId providerId providerFrame clusterId clusterFrame.
+    ProjectPlan
+      (Production projectId)
+      specDigest
+      planId
+      configId
+      Fixture.ProjectConfig ->
+    PlannedResource
+      (Production projectId)
+      planId
+      providerId
+      ProviderResource
+      providerFrame ->
+    PlannedResource
+      (Production projectId)
+      planId
+      clusterId
+      ClusterResource
+      clusterFrame ->
+    IO result
+  ) ->
+  IO result
+withBudgetProjectPlan consume =
+  Fixture.withFixtureProjectPlan budgetPlan $ \plan ->
+    case NonEmpty.toList (forward plan) of
+      [providerNode, clusterNode] ->
+        case
+          withPlannedResourceOfKind
+            plan
+            ProviderResourceKind
+            (plannedStepOperationKey providerNode)
+            ( \providerResource ->
+                withPlannedResourceOfKind
+                  plan
+                  ClusterResourceKind
+                  (plannedStepOperationKey clusterNode)
+                  (consume plan providerResource)
+            ) of
+          Left failure -> fail ("provider projection failed: " ++ show failure)
+          Right (Left failure) -> fail ("cluster projection failed: " ++ show failure)
+          Right (Right action) -> action
+      nodes -> fail ("expected provider and cluster plan nodes, got " ++ show (length nodes))

@@ -13,7 +13,8 @@ consumer claim
 The host binary and Linux image use the same Cabal project. The Python host build retains its explicit
 offline option, while image builds are ordinary online distribution builds and may compile Cabal cache
 misses. Published rolling bases are explicitly pulled before compatibility smoke-testing; lifecycle
-readiness/teardown remain incomplete, and demo tests still use Production state.
+readiness/teardown remain incomplete, and demo Harness consumers still need exact plan-owned
+profile/root projection.
 
 ## Current Status
 
@@ -86,15 +87,48 @@ a host daemon after the private ingress is reachable.
 
 ## Provider dispatch
 
-The active provider abstraction is `SubstrateProvider` plus its `LiftLayer` and generic folds for launch,
-shell, copy, share, stop, and destroy. The former parallel `HostTarget`/`runInTarget` module and
-result-free reboot loop have been deleted. See [Incus](../engineering/incus.md) and
-[WSL2](../engineering/wsl2.md).
+The provider axis has four one-way layers. Public pure `HostBootstrap.Lift.Context` describes target
+records, the nested stack, canonical mounts, and inner transport argv. Generic `HostBootstrap.Lift`
+resolves only the outer host tool and folds a self-reference command without importing provider or Registry
+policy. `HostBootstrap.Incus`/`Lima`/`Wsl2` provide lifecycle-specific builders over those lower records,
+and the abstract `SubstrateProvider` selects their pure operation plans without exposing its constructor or
+record fields. Network/registry code may add leaf helpers by importing generic Lift; generic Lift never
+imports it.
+
+The lifecycle provider kind is a closed, total four-way sum: Incus, Lima, WSL2, or Direct. A selected
+opaque descriptor retains a complete `LiftContext`; the three guest providers contribute exactly one VM
+layer and Direct contributes `localContext`. Provider discovery owns its closed request order and accepts
+only raw exit status, stdout, stderr, or transport failure. Private total parsers require exact one-line
+reports where a marker or identity is expected, preserve structured conflict, and poll only bounded
+`NotReady`. Discovery then becomes a generative, backend-indexed descriptive capability tied to the exact
+opaque managed Running provider; it is not mutation authority and Direct exposes no guest executor.
+
+Provider mutation enters through exact prepared calls. Opaque nominal `ManagedProviderHandle` and
+`ManagedProviderShareHandle` values retain the provider origin and backend realization without exposing a
+generic handle/receipt escape. The Incus backend holds the four ownership clauses around provision,
+readiness, share, stop, bound guest execution, and conditional delete. Direct instead settles a plan-local
+reservation and identity share without publishing an origin or claiming the physical host; stop, delete,
+guest routing, and guest alias are structured refusals rather than empty effects or a fabricated VM. The
+static gate is closed; native validation remains open until the Linux/x86_64 KVM/Incus gate of the
+[host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
+pass. The [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) separately owns replacing the
+demo's compatibility provider and pathname-alias call sites with this route.
+
+The pure Context and lower generic-Lift separations and source guards are closed by the
+[Dhall-configuration-and-generic-project-model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md),
+[ensure-reconcilers phase](../../DEVELOPMENT_PLAN/phase-8-ensure-reconcilers.md). The
+[host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
+owns the independent native Linux provider gate, and the
+[composition-and-network-algebra phase](../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md)
+owns the additive registry leaf coverage and its complete gate.
+See [Incus](../engineering/incus.md), [Lima](../engineering/lima.md), and [WSL2](../engineering/wsl2.md).
 
 ## Lifecycle truth
 
 Bring-up has several bounded waits and fail-closed command checks. Plan-indexed readiness is now opaque,
-resource-bound, and unforgeable at the Phase 9 API boundary, but live effects are not universally
+resource-bound, and unforgeable at the
+[canonical-quantities-and-reconcile-results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md)'s
+API boundary, but live effects are not universally
 type-gated and mostly still consume non-authorizing compatibility observations. Reconcilers mostly
 return `IO ()`, not the implemented explicit create/adopt/repair/no-op/conflict foundation.
 
@@ -112,9 +146,11 @@ Durable carry is implemented from host `.data` through provider share,
 `/var/tmp/hostbootstrap-demo-data`, kind/nvkind, and the pod. It has not passed a workload write →
 destroy → up → host-and-workload readback gate.
 
-The demo test runner currently resolves a Production cluster plan and uses `.data`, despite generic Test
-profile/`.test_data` helpers. The claim that the live test path never touches production storage is false.
-See [durable state](durable_state.md) and [harness workflow](harness_workflow.md).
+The demo test runner assembles a `HarnessRun` config and an exact Harness-scoped plan, owns
+`.test_data/<runId>`, and selects a run-scoped cluster name. Cluster/provider/mount/teardown consumers
+still receive independently config-derived profile and root terms rather than projections from that
+retained plan, so exact consumer continuity remains open. See [durable state](durable_state.md) and
+[harness workflow](harness_workflow.md).
 
 ## Command surface
 

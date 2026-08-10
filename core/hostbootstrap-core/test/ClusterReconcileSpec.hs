@@ -1,17 +1,17 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE TypeApplications #-}
 
 module ClusterReconcileSpec (tests, FixtureScope, withClusterFixtureM, withPlannedClusterFixture) where
 
 import qualified Data.Text as Text
+import Data.Foldable (find)
 import Data.Word (Word64)
 import qualified Fixture
 import HostBootstrap.Cluster.Reconcile
-import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
 import HostBootstrap.Config.Vocab (Production)
 import HostBootstrap.Lifecycle.Prepared (PreparedGate)
+import qualified HostBootstrap.ProjectPlan as ProjectPlan
 import HostBootstrap.Reconcile
 import HostBootstrap.Lift (localContext)
 import HostBootstrap.Step
@@ -113,7 +113,7 @@ tests =
 
 -- | Settle @ClusterCreated@ into (change, receipt operation key).
 settleCreated ::
-    PreparedClusterReconcile FixtureScope planId clusterId operationKey callDigest attempt journalVersion ->
+    PreparedClusterReconcile scope planId clusterId operationKey callDigest attempt journalVersion ->
     Either ReconcileError (ChangeView, Text.Text)
 settleCreated prepared = do
     settled <- settleClusterReconcile Nothing prepared (ClusterCreated 17)
@@ -125,7 +125,7 @@ settleCreated prepared = do
 
 -- | Settle a healthy-without-proof observation into the foreign identity.
 settleForeign ::
-    PreparedClusterReconcile FixtureScope planId clusterId operationKey callDigest attempt journalVersion ->
+    PreparedClusterReconcile scope planId clusterId operationKey callDigest attempt journalVersion ->
     Either ReconcileError Text.Text
 settleForeign prepared = do
     settled <- settleClusterReconcile Nothing prepared (ClusterHealthy 17)
@@ -136,15 +136,15 @@ settleForeign prepared = do
             (\_ foreignState -> foreignIdentity foreignState)
 
 asError ::
-    PreparedClusterReconcile FixtureScope planId clusterId operationKey callDigest attempt journalVersion ->
+    PreparedClusterReconcile scope planId clusterId operationKey callDigest attempt journalVersion ->
     ClusterObservation ->
     Either ReconcileError ()
 asError prepared observation = settleClusterReconcile Nothing prepared observation >> Right ()
 
 unchangedAfterCommit ::
-    LifecyclePlan FixtureScope planId ->
-    ResourceHandle FixtureScope planId clusterId ClusterResource Unclassified Observed ->
-    PreparedClusterReconcile FixtureScope planId clusterId operationKey callDigest attempt journalVersion ->
+    LifecyclePlan scope planId ->
+    ResourceHandle scope planId clusterId ClusterResource Unclassified Observed ->
+    PreparedClusterReconcile scope planId clusterId operationKey callDigest attempt journalVersion ->
     Either ReconcileError (ChangeView, Text.Text, Text.Text)
 unchangedAfterCommit plan handle prepared = do
     created <- settleClusterReconcile Nothing prepared (ClusterCreated 17)
@@ -183,9 +183,9 @@ unchangedAfterCommit plan handle prepared = do
 replaced generation.
 -}
 cleanupCases ::
-    LifecyclePlan FixtureScope planId ->
-    ResourceHandle FixtureScope planId clusterId ClusterResource Unclassified Observed ->
-    PreparedClusterReconcile FixtureScope planId clusterId operationKey callDigest attempt journalVersion ->
+    LifecyclePlan scope planId ->
+    ResourceHandle scope planId clusterId ClusterResource Unclassified Observed ->
+    PreparedClusterReconcile scope planId clusterId operationKey callDigest attempt journalVersion ->
     Either ReconcileError (Either ReconcileError (), Either ReconcileError ())
 cleanupCases _ _ prepared = do
     created <- settleClusterReconcile Nothing prepared (ClusterCreated 17)
@@ -205,25 +205,30 @@ cleanupCases _ _ prepared = do
 without preparing a reconcile (the loopback exposure renderer).
 -}
 withPlannedClusterFixture ::
-    ( forall planId clusterId clusterFrame.
-      PlannedResource FixtureScope planId clusterId ClusterResource clusterFrame ->
+    ( forall projectId planId clusterId clusterFrame.
+      PlannedResource (Production projectId) planId clusterId ClusterResource clusterFrame ->
       Either ReconcileError result
     ) ->
-    Either ReconcileError result
+    IO (Either ReconcileError result)
 withPlannedClusterFixture consume =
-    withTestLifecyclePlan $ \plan ->
-        joinReconcile $
-            withPlannedResourceOfKind plan ClusterResourceKind "core:deploy-kind" consume
+    Fixture.withFixtureProjectPlan testPlan $ \projectPlan -> do
+        clusterKey <- requireOperationKey "core:deploy-kind" projectPlan
+        requirePlanProjection $
+            ProjectPlan.withPlannedResourceOfKind
+                projectPlan
+                ProjectPlan.ClusterResourceKind
+                clusterKey
+                consume
 
 {- | The IO-returning peer of 'withClusterFixture', so a backend spec can run
 real effects inside the same plan-scoped prepared operation.
 -}
 withClusterFixtureM ::
     Word64 ->
-    ( forall planId clusterId operationKey callDigest attempt journalVersion.
-      LifecyclePlan FixtureScope planId ->
-      ResourceHandle FixtureScope planId clusterId ClusterResource Unclassified Observed ->
-      PreparedClusterReconcile FixtureScope planId clusterId operationKey callDigest attempt journalVersion ->
+    ( forall projectId planId clusterId operationKey callDigest attempt journalVersion.
+      LifecyclePlan (Production projectId) planId ->
+      ResourceHandle (Production projectId) planId clusterId ClusterResource Unclassified Observed ->
+      PreparedClusterReconcile (Production projectId) planId clusterId operationKey callDigest attempt journalVersion ->
       IO (Either ReconcileError summary)
     ) ->
     IO (Either ReconcileError summary)
@@ -238,10 +243,10 @@ lets the traversal decide the edge set; a probe run is IO, so the fixture is.
 -}
 withClusterFixture ::
     Word64 ->
-    ( forall planId clusterId operationKey callDigest attempt journalVersion.
-      LifecyclePlan FixtureScope planId ->
-      ResourceHandle FixtureScope planId clusterId ClusterResource Unclassified Observed ->
-      PreparedClusterReconcile FixtureScope planId clusterId operationKey callDigest attempt journalVersion ->
+    ( forall projectId planId clusterId operationKey callDigest attempt journalVersion.
+      LifecyclePlan (Production projectId) planId ->
+      ResourceHandle (Production projectId) planId clusterId ClusterResource Unclassified Observed ->
+      PreparedClusterReconcile (Production projectId) planId clusterId operationKey callDigest attempt journalVersion ->
       Either ReconcileError summary
     ) ->
     IO (Either ReconcileError summary)
@@ -258,44 +263,60 @@ prove what happens when the plan's managed provider is missing from it.
 -}
 withClusterFixtureUsing ::
     Word64 ->
-    ( forall planId providerId.
-      ResourceHandle FixtureScope planId providerId ProviderResource Managed Provisioned ->
-      DependencySnapshot FixtureScope planId
+    ( forall projectId planId providerId.
+      ResourceHandle (Production projectId) planId providerId ProviderResource Managed Provisioned ->
+      DependencySnapshot (Production projectId) planId
     ) ->
-    ( forall planId clusterId operationKey callDigest attempt journalVersion.
-      LifecyclePlan FixtureScope planId ->
-      ResourceHandle FixtureScope planId clusterId ClusterResource Unclassified Observed ->
-      PreparedClusterReconcile FixtureScope planId clusterId operationKey callDigest attempt journalVersion ->
+    ( forall projectId planId clusterId operationKey callDigest attempt journalVersion.
+      LifecyclePlan (Production projectId) planId ->
+      ResourceHandle (Production projectId) planId clusterId ClusterResource Unclassified Observed ->
+      PreparedClusterReconcile (Production projectId) planId clusterId operationKey callDigest attempt journalVersion ->
       Either ReconcileError summary
     ) ->
     IO (Either ReconcileError summary)
 withClusterFixtureUsing observedGeneration snapshotOf consume = do
-    providerGate <- gateFor testPlanDigest "core:deploy-vm"
-    clusterGate <- gateFor testPlanDigest "core:deploy-kind"
-    withTestLifecyclePlan $ \plan ->
-        joinIO $
-            withPlannedResourceOfKind plan ProviderResourceKind "core:deploy-vm" $ \vm ->
-                joinIO $
-                    withPlannedResourceOfKind plan ClusterResourceKind "core:deploy-kind" $ \cluster ->
-                        joinIO $
-                            withManagedProvider providerGate plan vm $ \managedVM ->
+    Fixture.withFixtureProjectPlan testPlan $ \projectPlan -> do
+        let plan = lifecyclePlanFromProjectPlan projectPlan
+            planDigest = lifecyclePlanDigest plan
+        providerGate <- gateFor planDigest "core:deploy-vm"
+        clusterGate <- gateFor planDigest "core:deploy-kind"
+        providerKey <- requireOperationKey "core:deploy-vm" projectPlan
+        clusterKey <- requireOperationKey "core:deploy-kind" projectPlan
+        clusterProjection <-
+            requirePlanProjection $
+                ProjectPlan.withPlannedResourceOfKind
+                    projectPlan
+                    ProjectPlan.ProviderResourceKind
+                    providerKey
+                    ( \vm ->
+                        ProjectPlan.withPlannedResourceOfKind
+                            projectPlan
+                            ProjectPlan.ClusterResourceKind
+                            clusterKey
+                            ( \cluster ->
                                 joinIO $
-                                    withObservedPlannedResource plan cluster observedGeneration 29 $ \observed ->
-                                        flattenIO $
-                                            withPreparedClusterReconcile
-                                                plan
-                                                cluster
-                                                observed
-                                                (snapshotOf managedVM)
-                                                clusterGate
-                                                (consume plan observed)
+                                    withManagedProvider providerGate plan vm $ \managedVM ->
+                                        joinIO $
+                                            withObservedPlannedResource plan cluster observedGeneration 29 $ \observed ->
+                                                flattenIO $
+                                                    withPreparedClusterReconcile
+                                                        plan
+                                                        cluster
+                                                        observed
+                                                        (snapshotOf managedVM)
+                                                        clusterGate
+                                                        (consume plan observed)
+                            )
+                    )
+        projectedAction <- requirePlanProjection clusterProjection
+        projectedAction
 
 -- | Build a managed provider/VM handle for the cluster's dependency edge.
 withManagedProvider ::
     PreparedGate ->
-    LifecyclePlan FixtureScope planId ->
-    PlannedResource FixtureScope planId providerId ProviderResource providerFrame ->
-    ( ResourceHandle FixtureScope planId providerId ProviderResource Managed Provisioned ->
+    LifecyclePlan scope planId ->
+    PlannedResource scope planId providerId ProviderResource providerFrame ->
+    ( ResourceHandle scope planId providerId ProviderResource Managed Provisioned ->
       result
     ) ->
     Either ReconcileError result
@@ -324,15 +345,23 @@ testPlan =
             ]
         )
 
-testPlanDigest :: Text.Text
-testPlanDigest = withTestLifecyclePlan lifecyclePlanDigest
+requireOperationKey ::
+    Text.Text ->
+    ProjectPlan.ProjectPlan scope specDigest planId configId cfg ->
+    IO ProjectPlan.OperationKey
+requireOperationKey expected projectPlan =
+    case
+        find
+            ( (== Text.unpack expected)
+                . ProjectPlan.operationKeyText
+                . ProjectPlan.plannedStepOperationKey
+            )
+            (ProjectPlan.forward projectPlan) of
+        Just plannedStep -> pure (ProjectPlan.plannedStepOperationKey plannedStep)
+        Nothing -> fail ("fixture project plan lacks operation " ++ Text.unpack expected)
 
-withTestLifecyclePlan ::
-    (forall planId. LifecyclePlan FixtureScope planId -> result) ->
-    result
-withTestLifecyclePlan consume =
-    withProductionProjectCodec @Fixture.FixtureProject @Fixture.ProjectConfig $ \codec ->
-        withLifecyclePlan codec testPlan consume
+requirePlanProjection :: Either ProjectPlan.PlanError value -> IO value
+requirePlanProjection = either (fail . show) pure
 
 joinReconcile :: Either ReconcileError (Either ReconcileError value) -> Either ReconcileError value
 joinReconcile = either Left id

@@ -1,6 +1,7 @@
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -86,9 +87,6 @@ serviceId raw
 serviceIdText :: ServiceId -> String
 serviceIdText (ServiceId value) = value
 
-{- | One service's inseparable config projection, role-field codec, and handler.
-'Nothing' means this definition is not selected by the effective config.
--}
 {- | What a service handler is handed (§ AA, § P).
 
 Not the framework view, and not the full config: a handler receives only the
@@ -107,11 +105,20 @@ type ServiceHandler fields =
     RoleParams specDigest configId secretDigest fields service ->
     IO ()
 
+{- | One service's inseparable scope-polymorphic config projection, role-field
+codec, and handler. 'Nothing' means this definition is not selected by the
+effective config.
+
+The registry is indexed by the whole project config /family/, not by one
+already-selected scope. A definition therefore has to project the same role
+from every @cfg scope@. Finalization instantiates that projection only after its
+caller has selected the Production or exact Harness codec.
+-}
 data ServiceDefinition cfg =
     forall fields effects.
     ServiceDefinition
         ServiceId
-        (cfg -> Either String (Maybe fields))
+        (forall scope. cfg scope -> Either String (Maybe fields))
         (DeclaredEffects effects)
         (ServiceHandler fields)
         (CodecWitness (RuntimeRoleWire fields))
@@ -131,7 +138,7 @@ serviceDefinition ::
     forall fields effects cfg.
     (FromDhall fields, ToDhall fields) =>
     ServiceId ->
-    (cfg -> Either String (Maybe fields)) ->
+    (forall scope. cfg scope -> Either String (Maybe fields)) ->
     DeclaredEffects effects ->
     ServiceHandler fields ->
     ServiceDefinition cfg
@@ -156,6 +163,8 @@ serviceDeclaredEffects (ServiceDefinition _ _ effects _ _) = declaredEffectList 
 
 -- | An opaque duplicate-free registry.
 newtype ServiceRegistry cfg = ServiceRegistry [ServiceDefinition cfg]
+
+type role ServiceRegistry nominal
 
 data ServiceRegistryError
     = DuplicateServiceIds [ServiceId]
@@ -196,6 +205,8 @@ data FinalizedServiceDefinition scope specDigest cfg =
 newtype FinalizedServiceRegistry scope specDigest cfg
     = FinalizedServiceRegistry [FinalizedServiceDefinition scope specDigest cfg]
 
+type role FinalizedServiceRegistry nominal nominal nominal
+
 {- | Jointly finalize the full project codec and the closed service registry.
 The rank-2 continuation prevents callers from selecting or reusing the fresh
 @specDigest@ identity.
@@ -203,7 +214,7 @@ The rank-2 continuation prevents callers from selecting or reusing the fresh
 withFinalizedServiceRegistry ::
     ScopeKind ->
     ProjectCodec scope initialDigest cfgFamily ->
-    ServiceRegistry (cfgFamily scope) ->
+    ServiceRegistry cfgFamily ->
     ( forall specDigest.
       ProjectCodec scope specDigest cfgFamily ->
       FinalizedServiceRegistry scope specDigest (cfgFamily scope) ->

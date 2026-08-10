@@ -23,15 +23,6 @@ forgedPlacement = VerifiedServicePlacement "accelerator" [DurableStore] NoExclus
 forgedNoResources :: VerifiedNoRoleResources s p f i
 forgedNoResources = VerifiedNoRoleResources
 
--- The reservation records the exact protected version it was observed at.
-forgedAdmission :: ReservedRoleAdmission s p f r i
-forgedAdmission = ReservedRoleAdmission "role-admission.plan-1.daemon-3.rev-1"
-
--- A verified draft is the output of comparing a project draft with the signed
--- role-plan digest; it cannot be asserted around that check.
-forgedDraft :: VerifiedRolePlanDraft s p f r i rpd
-forgedDraft = VerifiedRolePlanDraft [] "roleplan-1"
-
 -- Serve sees only names Acquire created and Ready probed. Building the handle
 -- set directly would be the bind-at-serve-time escape hatch § AA forbids.
 forgedHandles :: ReadyRoleHandles

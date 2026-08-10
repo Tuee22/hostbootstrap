@@ -1,23 +1,27 @@
 # Readiness Witnesses and Legible Failure
 
 **Status**: Authoritative source
-**Supersedes**: older claims that readiness was forgeable or already gated every mutation
+**Supersedes**: N/A
 **Referenced by**: [documents index](../README.md), [lifecycle state model](lifecycle_state_model.md), [durable state](durable_state.md), [cluster lifecycle](../engineering/cluster_lifecycle.md)
 
-> **Purpose**: Record what the readiness layer enforces today and distinguish the delivered Phase 9
+> **Purpose**: Record what the readiness layer enforces today and distinguish the delivered
+> [canonical-quantities-and-reconcile-results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md)
 > foundation from the downstream adapter integration still required.
 
 ## TL;DR
 
 Readiness constructors are private. Polling is total and bounded, and authoritative evidence is indexed
 by a generative lifecycle plan, exact planned resource family and identity, dependency, generation,
-phase, and observation version. Existing provider effects still consume a deliberately
-non-authorizing compatibility observation in several paths; the dependent interpreter phases must
-migrate those effects to the prepared-operation boundary before readiness gates every mutation.
+phase, and observation version. The provider boundary now owns closed raw discovery and exact prepared
+Incus/Direct readiness; its static gate is closed and its native Linux/x86_64 KVM/Incus gate remains open.
+Other live effects still
+consume deliberately non-authorizing compatibility observations; the dependent interpreter phases must
+migrate those effects before readiness gates every mutation.
 
 ## Current Status
 
-The Phase 9 implementation provides:
+The [canonical-quantities-and-reconcile-results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md)
+provides:
 
 - opaque validated `Micros` and `PollPolicy` values, positive bounded attempt counts, overflow-safe total
   duration validation, named policies, and total `ProbeResult`/`PollError` polling;
@@ -29,7 +33,7 @@ The Phase 9 implementation provides:
 - resource families for provider, durable share, Docker, MinIO, registry, and cluster readiness;
 - tests that obtain a real planned resource, drive the polling transition, reject invalid versions, and
   exercise compile-time opacity rather than injecting a forged witness; and
-- `ObservedReady dependency` for legacy call paths. This value is intentionally non-authorizing and is
+- `ObservedReady dependency` for compatibility call paths. This value is intentionally non-authorizing and is
   not accepted by plan-indexed reconciliation or budget-wall authority.
 
 The lifecycle foundation also provides opaque planned resources and edges, exact operation/dependency
@@ -37,7 +41,8 @@ validation, matching prepared-operation/precondition pairs, phase-indexed handle
 and a legal persisted-journal transition graph. This makes forged readiness and cross-plan/resource use
 unrepresentable at the new boundary.
 
-Sprint 16.6 added the plan-owned dependency-snapshot traversal itself. An operation descriptor's edge set
+The [prepared-operations phase](../../DEVELOPMENT_PLAN/phase-11-prepared-operations.md) owns the
+plan-owned dependency-snapshot traversal. An operation descriptor's edge set
 is the exact ordered **resource-bearing** prefix of the validated plan — a step that owns no plan resource
 has no managed handle to observe, so it contributes no edge — and the sealed `OperationPreconditionSet`
 the prepare consumes has one producer, `withOperationPreconditions`, which iterates that edge set, looks
@@ -61,20 +66,25 @@ The repository does not yet enforce that boundary end to end:
   `plannedNodeOperation` name the planned resources the node may act on without handing it the plan. What
   remains is adoption: each effect that still returns `IO ()` has to be rewritten to consume a prepared
   operation and return a `ReconcileResult`;
-- provider adapters still need identity-bound conditional effects and recovery paths — a backend holding
-  the four [ownership_invariant](ownership_invariant.md) clauses;
+- the Incus/Direct provider adapter now has identity-bound prepared calls, backend-indexed managed
+  provider/share authority, and four-clause Incus recovery. Its discovery accepts only raw outcomes,
+  parses strict one-line tool/identity/marker reports, polls only `NotReady`, and preserves structured
+  provider conflict across the bound transport. This is implemented boundary behavior, not closure
+  evidence: the
+  [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
+  has a closed static gate and remains Active until its native Linux/x86_64 KVM/Incus gate passes, while the
+  demo route remains work for the
+  [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md);
 - structured `LifecycleFailure` is not yet the universal subprocess boundary; and
-- a failure that cannot reach a stream is not legible, whatever its type. This *was* the host-resident
-  accelerator daemon's defect: it was launched with its standard output and error closed, so its own
-  cause — including every `die` on the build path — was written to a descriptor the runtime had
-  reclaimed, and the launcher could report only that the process was gone. The launch is now a sealed
-  boundary (`HostBootstrap.Detached`, see [unrepresentable_state](unrepresentable_state.md)) that points
-  both output streams at one retained sink and hands the launcher a reader for it, so a daemon that dies
-  before readiness quotes its own cause. Closed 2026-08-03: the Apple Silicon lane then passed, and the
-  daemon reached readiness and served real work rather than needing to explain a failure at all.
+- a failure that cannot reach a stream is not legible, whatever its type. The host-resident accelerator
+  daemon therefore launches through the sealed `HostBootstrap.Detached` boundary (see
+  [unrepresentable_state](unrepresentable_state.md)), which points both output streams at one retained sink
+  and hands the launcher a reader for it, so a daemon that dies before readiness quotes its own cause.
 
 Those are assigned integration obligations in the dependent provider/interpreter phases, not missing
-constructor sealing in Phase 9. Historical live-run counts and phase status are intentionally not
+constructor sealing in the
+[canonical-quantities-and-reconcile-results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md).
+Live-run counts and phase status are intentionally not
 repeated here; see
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
@@ -196,11 +206,15 @@ deliberately does not maintain a second copy of the operation-prepare algebra.
 ## Probe discipline
 
 Guest probes should remain simple because the Windows path crosses PowerShell, `wsl`, and `bash -lc`.
-One probe performs one observation, such as `test -e`, `readlink`, `stat -c '%d %i'`, `docker info`, or
+One probe performs one observation, such as `test -e`, `readlink`, GNU/BSD `stat`, `docker info`, or
 `kubectl get`. Branching and retry live in Haskell. The ownership primitives the guest lane needs —
-`flock` for exclusive entry and `stat -c '%d %i'` for identity binding, per
+`flock` for exclusive entry and `stat` for identity binding, per
 [ownership_invariant](ownership_invariant.md) — are single trivial commands and meet this bar without a
-compound shell.
+compound shell. `lockf` may be retained as a descriptive discovery result, but it is `Unsupported` for
+provider-guest alias authority because its common Linux `fcntl` namespace does not interoperate with
+`flock(2)`. A successful tool, marker, identity, or backend report is exactly one LF-terminated stdout
+line with empty stderr; extra lines, carriage returns, unknown tags, and unexpected arity are failures
+rather than readiness evidence.
 
 Filesystem classifiers must establish existence before asking questions that are partial on absence:
 

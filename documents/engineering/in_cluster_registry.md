@@ -21,8 +21,10 @@ The target is the typed plan in
 [network reachability](../architecture/network_reachability.md): core owns the generic endpoint,
 client, delivery, and readiness vocabulary; the demo owns its registry resources, project-image
 operation, and topology-specific plan. For this topology, proxy delivery is selected by construction
-and rendering necessarily emits `storage.redirect.disable: true`. The owning Phase 13 and Phase 14
-follow-on sprints remain open until live repeated-push and persistence evidence closes the defect.
+and rendering necessarily emits `storage.redirect.disable: true`. The
+[composition-and-network-algebra phase](../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md)
+owns the generic proof-gated plan; the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md)
+owns its renderer, adoption, and live repeated-push/persistence evidence.
 
 The hostbootstrap core **does not build or push your project image.** The thin Python bootstrapper
 materializes the host-native project binary. Once that binary is running, a project-supplied build-image

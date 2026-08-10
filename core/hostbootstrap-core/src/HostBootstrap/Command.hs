@@ -1,5 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -25,14 +26,19 @@ module HostBootstrap.Command (
 )
 where
 
-import Control.Exception (SomeException, displayException, fromException, mask)
+import Control.Exception (SomeException, displayException, fromException, mask, throwIO)
 import Control.Exception.Safe (finally, try)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Control.Monad (unless, when)
-import Data.List (find, intercalate, isInfixOf)
+import Data.List (find, intercalate, isInfixOf, stripPrefix)
 import qualified Data.Text as T
 import qualified HostBootstrap.Authority as Authority
-import HostBootstrap.Chain (nextFrameAfter, renderChain, runChainFromFrame)
+import qualified HostBootstrap.Authority.ProjectPlan as ProjectAuthority
+import HostBootstrap.Chain (
+    nextFrameAfter,
+    renderChain,
+    runChainFromFrame,
+ )
 import HostBootstrap.Cluster.Lifecycle (
     ClusterPlan,
     ClusterProfile (Production),
@@ -50,10 +56,10 @@ import HostBootstrap.Config.Class (
     TestCfg (..),
     decodeProjectCodecFile,
     projectCodecSchemaText,
-    projectCodecSpecDigest,
  )
 import HostBootstrap.Config.Fields (inspectLocalContext)
 import HostBootstrap.Config.Schema (
+    ValidatedConfig,
     configRoleNames,
     parseConfigRole,
     projectConfigFileName,
@@ -95,6 +101,7 @@ import qualified HostBootstrap.Ensure.Lima as Lima
 import qualified HostBootstrap.Ensure.Wsl2 as Wsl2
 import HostBootstrap.Harness (
     ConfigVariant (..),
+    LifecycleFailure (..),
     SafetyRefusal (..),
     TestMatrixError (..),
     TestSuite,
@@ -103,6 +110,7 @@ import HostBootstrap.Harness (
     caseIdText,
     parseCaseSelector,
     reportCard,
+    refusedObservationMarker,
     runSuiteSelection,
     safetyRefusalMarker,
     selectTestMatrix,
@@ -121,21 +129,47 @@ import HostBootstrap.Harness.Ownership (
     releaseOwnedRunConfig,
     withOwnedHarnessRoot,
  )
+import HostBootstrap.Harness.Lifecycle.Internal (harnessLifecycle)
+import HostBootstrap.Harness.Ownership.Internal (
+    armOwnedHarnessBoundClose,
+    beginOwnedHarnessBinding,
+    markOwnedHarnessClosePending,
+    settleOwnedHarnessClose,
+ )
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
 import HostBootstrap.Lifecycle.Mode (
-    LifecycleProfile,
-    ModeError (ModeRecoveryRequired),
-    RunLeaseBinding (ExistingRunLeaseBinding, FreshRunLeaseBinding),
-    bindRunLease,
+    AcquisitionJournal,
+    BoundRunLease,
+    LifecycleCursor,
+    ModeError (..),
+    ProductionMode,
+    ProductionRoot,
+    ProjectModeLease,
+    VerifiedPlanSnapshot,
+    authorizeHarnessClose,
+    currentHarnessCloseRoot,
+    destroySettledClosure,
+    harnessActiveMode,
+    harnessRootAuthority,
     harnessRootHarnessAuthority,
     harnessRootModeLease,
     harnessRootRunId,
     harnessRootUnboundLease,
+    lifecycleErrorMessage,
     modeErrorMessage,
-    persistPlanSnapshot,
-    runIdText,
-    verifyPlanSnapshot,
+    productionActiveMode,
+    productionRootAuthority,
+    productionRootModeLease,
+    productionRootUnboundLease,
+    verifyBoundRunHasNoProjectResourcesAcquired,
+    withAcquisitionJournal,
+    withCurrentLifecycleCursor,
+    withExecuteLifecycleCursor,
     withHarnessLifecycleProfile,
+    withProductionLifecycleProfile,
+    withProductionRoot,
+    withRecoveredProductionLifecycleProfile,
+    withTeardownLifecycleCursor,
  )
 import HostBootstrap.Lift (
     SelfRef,
@@ -148,14 +182,47 @@ import HostBootstrap.ProjectRoot (
     canonicalProjectRootPath,
     withCanonicalProjectRoot,
  )
+import HostBootstrap.ProjectPlan.Construct
+    ( FinalizedProjectSpec
+    , finalizedProjectCodec
+    , projectPlanDrafts
+    , withFinalizedProjectSpecParts
+    , withHarnessFinalizedProjectSpec
+    , withProjectPlan
+    , withRecoveredProductionProjectPlan
+    , withRecoveredProductionProjectPlanInputs
+    )
+import HostBootstrap.ProjectPlan (
+    ProjectPlan,
+    forward,
+    plannedStepFrameId,
+    plannedStepIdentity,
+    renderSnapshot,
+    stablePlanSnapshotDigest,
+    topology,
+ )
+import HostBootstrap.ProjectPlan.Frame (
+    CurrentFrame,
+    ProjectFrame,
+    ValidatedContext,
+    currentFrameId,
+    validatedContextValue,
+    withCurrentFrame,
+ )
+import HostBootstrap.ProjectPlan.Snapshot (
+    BoundPlanSnapshot,
+    PlanDigestBinding,
+    SnapshotError (..),
+    withBoundPlanSnapshot,
+    withPersistedPlanSnapshot,
+ )
 import HostBootstrap.Protected (
-    ProtectedSession,
     ProtectedStore,
     openProtectedStore,
     protectedErrorMessage,
     withProtectedEntry,
  )
-import HostBootstrap.Reconcile (LifecyclePlan, lifecyclePlanDigest, withLifecyclePlan)
+import HostBootstrap.Lifecycle.Session (sessionErrorMessage, verifyAllSessionsClosed)
 import HostBootstrap.RoleLifecycle (RoleEffect, roleEffectName)
 import HostBootstrap.Service (
     FinalizedServiceRegistry,
@@ -165,12 +232,8 @@ import HostBootstrap.Service (
     withSelectedServiceRequest,
  )
 import HostBootstrap.Step (
-    StepPlan,
-    StepPlanError,
-    frameDescent,
-    frameId,
-    isDeployKindStep,
-    stepsForFrame,
+    CoreStepId (DeployKindId),
+    StepIdentity (CoreStepIdentity),
  )
 import qualified HostBootstrap.Step as Step
 import HostBootstrap.Substrate (detect)
@@ -206,19 +269,6 @@ extend behavior through the 'ProjectSpec' streams, not new verbs.
 coreCommandNames :: [String]
 coreCommandNames = ["context", "project", "test", "service", "check-code"]
 
-{- | Module-private live-plan opener. Requiring the scope-matched lifecycle
-profile here makes the plan-opening call structurally depend on the exact
-active-mode/unbound-lease gate without adding a public construction route.
--}
-withProfiledLifecyclePlan ::
-    LifecycleProfile scope ->
-    ProjectCodec scope specDigest cfg ->
-    StepPlan ->
-    (forall planId. LifecyclePlan scope planId -> result) ->
-    result
-withProfiledLifecyclePlan profile codec plan use =
-    profile `seq` withLifecyclePlan codec plan use
-
 {- | The core subcommands every @hostbootstrap@-derived binary exposes. The
 project's 'TestSuite' is threaded into the inherited @test@ verb so a project's
 cases run under @test@ (not a per-noun subcommand). The project's config seams
@@ -228,22 +278,14 @@ generates each exact-run-scoped config through the Harness request.
 -}
 coreCommands ::
     forall projectId cfg tcfg specDigest.
-    (ProjectCfg projectId cfg, TestCfg tcfg) =>
-    ProjectCodec (V.Production projectId) specDigest cfg ->
+    (ProjectCfg cfg, TestCfg tcfg) =>
+    Authority.InstalledProjectIdentity projectId ->
+    FinalizedProjectSpec (V.Production projectId) specDigest cfg ->
     CodecWitness tcfg ->
     String ->
     [ConfigArtifact] ->
     TestSuite ->
     IO () ->
-    FinalizedServiceRegistry
-        (V.Production projectId)
-        specDigest
-        (cfg (V.Production projectId)) ->
-    ( forall configScope rootScope rootId.
-      CanonicalProjectRoot rootScope rootId ->
-      cfg configScope ->
-      Either StepPlanError StepPlan
-    ) ->
     [ConfigInput] ->
     ( forall scope.
       AssemblyRequest projectId tcfg (TestVariant tcfg) scope ->
@@ -252,17 +294,18 @@ coreCommands ::
     (InitArgs -> IO (cfg (V.Production projectId))) ->
     (InitArgs -> tcfg) ->
     [Mod CommandFields (IO ())]
-coreCommands cfgCodec testCodec progName projectArtifacts suite checkCode services stepPlan assemblyInputs assemble initBuilder testInit =
-    [ contextCommand @projectId @cfg @(V.Production projectId) cfgCodec progName projectArtifacts initBuilder
-    , projectCommandGroup cfgCodec progName stepPlan initBuilder
-    , testCommand @projectId @cfg @tcfg cfgCodec testCodec progName suite stepPlan assemblyInputs assemble testInit
-    , serviceCommandGroup cfgCodec progName services initBuilder
-    , checkCodeCommand @projectId @cfg @(V.Production projectId) cfgCodec progName checkCode
-    ]
+coreCommands project finalizedSpec testCodec progName projectArtifacts suite checkCode assemblyInputs assemble initBuilder testInit =
+    withFinalizedProjectSpecParts finalizedSpec $ \cfgCodec services _scopePlanBuilder ->
+        [ contextCommand @cfg @(V.Production projectId) cfgCodec progName projectArtifacts initBuilder
+        , projectCommandGroup project finalizedSpec progName initBuilder
+        , testCommand @projectId @cfg @tcfg project finalizedSpec testCodec progName suite assemblyInputs assemble testInit
+        , serviceCommandGroup cfgCodec progName services initBuilder
+        , checkCodeCommand @cfg @(V.Production projectId) cfgCodec progName checkCode
+        ]
 
 gate ::
-    forall projectId cfg configScope specDigest.
-    (ProjectCfg projectId cfg) =>
+    forall cfg configScope specDigest.
+    (ProjectCfg cfg) =>
     ProjectCodec configScope specDigest cfg ->
     String ->
     Context.CommandClass ->
@@ -288,16 +331,12 @@ restricted assembler and its matching codec, writes it as the sibling
 -}
 testCommand ::
     forall projectId cfg tcfg specDigest.
-    (ProjectCfg projectId cfg, TestCfg tcfg) =>
-    ProjectCodec (V.Production projectId) specDigest cfg ->
+    (ProjectCfg cfg, TestCfg tcfg) =>
+    Authority.InstalledProjectIdentity projectId ->
+    FinalizedProjectSpec (V.Production projectId) specDigest cfg ->
     CodecWitness tcfg ->
     String ->
     TestSuite ->
-    ( forall configScope rootScope rootId.
-      CanonicalProjectRoot rootScope rootId ->
-      cfg configScope ->
-      Either StepPlanError StepPlan
-    ) ->
     [ConfigInput] ->
     ( forall scope.
       AssemblyRequest projectId tcfg (TestVariant tcfg) scope ->
@@ -305,7 +344,7 @@ testCommand ::
     ) ->
     (InitArgs -> tcfg) ->
     Mod CommandFields (IO ())
-testCommand _productionCodec testCodec progName suite projectPlan assemblyInputs assemble testInit =
+testCommand project productionSpec testCodec progName suite assemblyInputs assemble testInit =
     command
         "test"
         ( info
@@ -399,32 +438,29 @@ testCommand _productionCodec testCodec progName suite projectPlan assemblyInputs
                 (die . selectionError matrix)
                 pure
                 (selectTestMatrix selector matrix)
-        project <-
-            either
-                (die . ("test run: " ++) . T.unpack . Authority.authorityErrorMessage)
-                pure
-                (Authority.installedProjectFor @projectId @cfg (T.pack progName))
         -- Exclusive run ownership is taken by the protected-store bracket, not
         -- by a bare lock directory: an interrupted run leaves a classifiable
         -- lease the next run's sweep resolves or names for recovery.
         siblingDirectory <- takeDirectory <$> siblingProjectConfigPath (T.pack progName)
         stateRoot <- getCurrentDirectory
         resolved <-
-            withCanonicalProjectRoot cfgPath stateRoot $ \canonicalRoot -> do
+            withCanonicalProjectRoot cfgPath stateRoot $ \ownershipRoot -> do
                 let variantFor selectedVariant =
                         ConfigVariant
                             { variantId = variantDraftId draft
                             , variantCaseIds = selectedVariantCaseIds selectedVariant
-                            , variantWithConfig = \ownedRoot body ->
-                                withOwnedHarnessRoot ownedRoot $ \store ownedProject root -> do
+                            , variantWithLifecycle = \ownedRoot useLifecycle ->
+                                withOwnedHarnessRoot ownedRoot $ \store ownedProject root closeControl -> do
                                     let authority = harnessRootHarnessAuthority root
                                         runName = V.harnessRunName authority
+                                        rootAuthority = harnessRootAuthority root
+                                        unbound = harnessRootUnboundLease root
                                     mask $ \restore -> do
-                                        withHarnessProjectCodec
-                                            @projectId
-                                            @cfg
+                                        withHarnessFinalizedProjectSpec
                                             (V.harnessConfigAuthority authority)
-                                            ( \harnessCodec -> do
+                                            productionSpec
+                                            ( \harnessSpec -> do
+                                                let harnessCodec = finalizedProjectCodec harnessSpec
                                                 assembled <-
                                                     restore
                                                         ( withAssembledHarnessConfig
@@ -433,72 +469,179 @@ testCommand _productionCodec testCodec progName suite projectPlan assemblyInputs
                                                             harnessCodec
                                                             (assemble (HarnessAssembly authority tc draft))
                                                             ( \_wire validated -> do
-                                                                case withHarnessLifecycleProfile
-                                                                    (harnessRootModeLease root)
-                                                                    (harnessRootUnboundLease root) of
-                                                                    Left failure ->
-                                                                        die (T.unpack (modeErrorMessage failure))
-                                                                    Right profile ->
-                                                                        case projectPlan canonicalRoot (validatedConfigValue validated) of
-                                                                            Left failure ->
-                                                                                die ("project plan: " ++ show failure)
-                                                                            Right stepPlan ->
-                                                                                -- This exact mode/unbound-lease profile gates the
-                                                                                -- scope-correct lifecycle plan before any config
-                                                                                -- bytes or suite body become live.
-                                                                                withProfiledLifecyclePlan profile harnessCodec stepPlan $ \lifecyclePlan -> do
-                                                                                    entered <-
-                                                                                        withProtectedEntry store $ \session -> do
-                                                                                                persisted <-
-                                                                                                    persistPlanSnapshot
-                                                                                                        session
-                                                                                                        ownedProject
-                                                                                                        (harnessRootRunId root)
-                                                                                                        1
-                                                                                                        (projectCodecSpecDigest harnessCodec)
-                                                                                                        (lifecyclePlanDigest lifecyclePlan)
-                                                                                                bound <- case persisted of
-                                                                                                    Left failure -> pure (Left failure)
-                                                                                                    Right () ->
-                                                                                                        verifyPlanSnapshot session ownedProject (harnessRootRunId root) $ \snapshot ->
-                                                                                                            bindRunLease
-                                                                                                                session
-                                                                                                                ownedProject
-                                                                                                                (harnessRootUnboundLease root)
-                                                                                                                snapshot
-                                                                                                                ( \binding ->
-                                                                                                                    pure $ case binding of
-                                                                                                                        FreshRunLeaseBinding _ _ -> Right ()
-                                                                                                                        ExistingRunLeaseBinding _ _ ->
-                                                                                                                            Left
-                                                                                                                                ( ModeRecoveryRequired
-                                                                                                                                    (runIdText (harnessRootRunId root))
-                                                                                                                                )
-                                                                                                                )
-                                                                                                pure (Right bound)
-                                                                                    case entered of
-                                                                                        Left failure -> die (T.unpack (protectedErrorMessage failure))
-                                                                                        Right (Left failure) -> die (T.unpack (modeErrorMessage failure))
-                                                                                        Right (Right ()) -> pure ()
-                                                                -- The generated config is acquired under all
-                                                                -- four § EE clauses (the test-harness-and-run-ownership phase): a durable
-                                                                -- origin record naming the intended payload
-                                                                -- precedes the create-if-absent install, and
-                                                                -- the created file's own kernel identity is
-                                                                -- bound to the receipt.
-                                                                ownedPayload <-
-                                                                    either die pure
-                                                                        =<< acquireOwnedRunConfig
-                                                                            ownedRoot
-                                                                            ( renderScopedProjectConfigBytes
-                                                                                harnessCodec
-                                                                                (validatedConfigValue validated)
-                                                                            )
-                                                                restore
-                                                                    ( putStrLn ("test run: generated the run config at " ++ ownedHarnessConfigPath ownedRoot ++ " (variant " ++ T.unpack (variantIdText (variantDraftId draft)) ++ ", run " ++ T.unpack runName ++ ")")
-                                                                        >> body
-                                                                    )
-                                                                    `finally` removeGeneratedConfig ownedRoot ownedPayload
+                                                                scoped <-
+                                                                    withCanonicalProjectRoot cfgPath stateRoot $ \runRoot -> do
+                                                                        opened <-
+                                                                            withHarnessLifecycleProfile
+                                                                                ( Authority.rootScopeAuthority
+                                                                                    rootAuthority
+                                                                                )
+                                                                                authority
+                                                                                (harnessRootRunId root)
+                                                                                (harnessActiveMode (harnessRootModeLease root))
+                                                                                unbound
+                                                                                ( \profile -> do
+                                                                                    drafts <-
+                                                                                        either
+                                                                                            (die . ("project plan: " ++) . show)
+                                                                                            pure
+                                                                                            (projectPlanDrafts harnessSpec runRoot validated)
+                                                                                    planAction <-
+                                                                                        either
+                                                                                            (die . ("project plan: " ++) . show)
+                                                                                            pure
+                                                                                            ( withProjectPlan profile runRoot validated drafts $ \plan ->
+                                                                                                case
+                                                                                                    withCurrentFrame
+                                                                                                        plan
+                                                                                                        (cfgContext (validatedConfigValue validated))
+                                                                                                        ( \current frame admittedContext ->
+                                                                                                            mask $ \restoreBound -> do
+                                                                                                                bindingStarted <- beginOwnedHarnessBinding closeControl
+                                                                                                                either (throwIO . LifecycleFailure) pure bindingStarted
+                                                                                                                persisted <-
+                                                                                                                    withPersistedPlanSnapshot
+                                                                                                                        rootAuthority
+                                                                                                                        unbound
+                                                                                                                        plan
+                                                                                                                        ( \verified bound binding lease _normalRecovery -> do
+                                                                                                                            armed <- armOwnedHarnessBoundClose closeControl lease
+                                                                                                                            either (throwIO . LifecycleFailure) pure armed
+                                                                                                                            restoreBound $ do
+                                                                                                                                ownedPayload <-
+                                                                                                                                    either die pure
+                                                                                                                                        =<< acquireOwnedRunConfig
+                                                                                                                                            ownedRoot
+                                                                                                                                            ( renderScopedProjectConfigBytes
+                                                                                                                                                harnessCodec
+                                                                                                                                                (validatedConfigValue validated)
+                                                                                                                                            )
+                                                                                                                                cfg <- hostConfig
+                                                                                                                                self <- currentSelfRef ("/usr/local/bin/" ++ progName)
+                                                                                                                                let forwardAction = do
+                                                                                                                                        ran <-
+                                                                                                                                            runExactProjectUp
+                                                                                                                                                store
+                                                                                                                                                cfg
+                                                                                                                                                self
+                                                                                                                                                rootAuthority
+                                                                                                                                                lease
+                                                                                                                                                verified
+                                                                                                                                                bound
+                                                                                                                                                binding
+                                                                                                                                                plan
+                                                                                                                                                frame
+                                                                                                                                                admittedContext
+                                                                                                                                        either raiseForwardFailure pure ran
+                                                                                                                                    reverseAction =
+                                                                                                                                        mask $ \restoreReverse -> do
+                                                                                                                                            settled <-
+                                                                                                                                                restoreReverse
+                                                                                                                                                    ( runExactDestroyProjection
+                                                                                                                                                        progName
+                                                                                                                                                        plan
+                                                                                                                                                        current
+                                                                                                                                                        runRoot
+                                                                                                                                                        (cfgContext (validatedConfigValue validated))
+                                                                                                                                                        cfg
+                                                                                                                                                        (clusterDelete cfg)
+                                                                                                                                                    )
+                                                                                                                                            closing <- authorizeAndMarkClose settled
+                                                                                                                                            case closing of
+                                                                                                                                                Left failure -> throwIO (LifecycleFailure failure)
+                                                                                                                                                Right closure -> do
+                                                                                                                                                    closeSettled <- settleOwnedHarnessClose closeControl closure
+                                                                                                                                                    either (throwIO . LifecycleFailure) pure closeSettled
+                                                                                                                                    authorizeAndMarkClose settled = do
+                                                                                                                                        entered <-
+                                                                                                                                            withProtectedEntry store $ \protected -> do
+                                                                                                                                                sessions <-
+                                                                                                                                                    verifyAllSessionsClosed
+                                                                                                                                                        protected
+                                                                                                                                                        (stablePlanSnapshotDigest (renderSnapshot plan))
+                                                                                                                                                case sessions of
+                                                                                                                                                    Left failure ->
+                                                                                                                                                        pure (Right (Left (sessionErrorMessage failure)))
+                                                                                                                                                    Right closed ->
+                                                                                                                                                        case destroySettledClosure lease closed settled of
+                                                                                                                                                            Left failure ->
+                                                                                                                                                                pure (Right (Left (T.unpack (modeErrorMessage failure))))
+                                                                                                                                                            Right closure -> do
+                                                                                                                                                                authorized <-
+                                                                                                                                                                    authorizeHarnessClose
+                                                                                                                                                                        protected
+                                                                                                                                                                        ownedProject
+                                                                                                                                                                        (currentHarnessCloseRoot root)
+                                                                                                                                                                        (harnessRootModeLease root)
+                                                                                                                                                                        lease
+                                                                                                                                                                        closed
+                                                                                                                                                                        closure
+                                                                                                                                                                        1
+                                                                                                                                                                pure . Right $ case authorized of
+                                                                                                                                                                    Left failure -> Left (T.unpack (modeErrorMessage failure))
+                                                                                                                                                                    Right authorization -> Right (closure, authorization)
+                                                                                                                                        case entered of
+                                                                                                                                            Left failure -> pure (Left (T.unpack (protectedErrorMessage failure)))
+                                                                                                                                            Right (Left failure) -> pure (Left failure)
+                                                                                                                                            Right (Right (closure, authorization)) -> do
+                                                                                                                                                pending <- markOwnedHarnessClosePending closeControl authorization
+                                                                                                                                                pure (closure <$ pending)
+                                                                                                                                    raiseForwardFailure failure
+                                                                                                                                        | not (isRefusal failure) =
+                                                                                                                                            throwIO (LifecycleFailure failure)
+                                                                                                                                        | otherwise = do
+                                                                                                                                            noEffects <- verifyBoundRunHasNoProjectResourcesAcquired lease
+                                                                                                                                            case noEffects of
+                                                                                                                                                Right _ ->
+                                                                                                                                                    throwIO (SafetyRefusal (refusalDetail failure))
+                                                                                                                                                Left _ ->
+                                                                                                                                                    throwIO (LifecycleFailure (lateRefusal failure))
+                                                                                                                                    isRefusal failure =
+                                                                                                                                        safetyRefusalMarker `isInfixOf` failure
+                                                                                                                                            || refusedObservationMarker `isInfixOf` failure
+                                                                                                                                    refusalDetail failure =
+                                                                                                                                        case stripPrefix (safetyRefusalMarker ++ " ") failure of
+                                                                                                                                            Just detail -> detail
+                                                                                                                                            Nothing -> case stripPrefix (refusedObservationMarker ++ " ") failure of
+                                                                                                                                                Just detail -> detail
+                                                                                                                                                Nothing -> failure
+                                                                                                                                    lateRefusal failure
+                                                                                                                                        | refusedObservationMarker `isInfixOf` failure = failure
+                                                                                                                                        | otherwise = refusedObservationMarker ++ " " ++ refusalDetail failure
+                                                                                                                                    lifecycleBody =
+                                                                                                                                        putStrLn
+                                                                                                                                            ( "test run: generated the run config at "
+                                                                                                                                                ++ ownedHarnessConfigPath ownedRoot
+                                                                                                                                                ++ " (variant "
+                                                                                                                                                ++ T.unpack (variantIdText (variantDraftId draft))
+                                                                                                                                                ++ ", run "
+                                                                                                                                                ++ T.unpack runName
+                                                                                                                                                ++ ")"
+                                                                                                                                            )
+                                                                                                                                            >> useLifecycle
+                                                                                                                                                (harnessLifecycle forwardAction reverseAction)
+                                                                                                                                lifecycleBody
+                                                                                                                                    `finally` removeGeneratedConfig ownedRoot ownedPayload
+                                                                                                                        )
+                                                                                                                either
+                                                                                                                    (die . ("project snapshot: " ++) . show)
+                                                                                                                    pure
+                                                                                                                    persisted
+                                                                                                        )
+                                                                                                of
+                                                                                                Left failure -> die ("project frame: " ++ show failure)
+                                                                                                Right admittedAction -> admittedAction
+                                                                                            )
+                                                                                    planAction
+                                                                                )
+                                                                        either
+                                                                            (die . T.unpack . Authority.authorityErrorMessage)
+                                                                            id
+                                                                            opened
+                                                                either
+                                                                    (die . ("test run: invalid project root: " ++) . show)
+                                                                    pure
+                                                                    scoped
                                                             )
                                                         )
                                                 either die pure assembled
@@ -509,9 +652,9 @@ testCommand _productionCodec testCodec progName suite projectPlan assemblyInputs
                     ownership =
                         protectedProjectRunOwnership
                             project
-                            canonicalRoot
+                            ownershipRoot
                             siblingDirectory
-                            (canonicalProjectRootPath canonicalRoot </> testDataRoot)
+                            (canonicalProjectRootPath ownershipRoot </> testDataRoot)
                 runSuiteSelection ownership suite (map variantFor selected)
         outcome <-
             either
@@ -559,8 +702,8 @@ defaultInitArgs =
 supplied by the project spec (or by the explicit bare-core entrypoint).
 -}
 checkCodeCommand ::
-    forall projectId cfg configScope specDigest.
-    (ProjectCfg projectId cfg) =>
+    forall cfg configScope specDigest.
+    (ProjectCfg cfg) =>
     ProjectCodec configScope specDigest cfg ->
     String ->
     IO () ->
@@ -569,7 +712,7 @@ checkCodeCommand codec progName checkCode =
     command
         "check-code"
         ( info
-            (pure (gate @projectId @cfg @configScope codec progName Context.CheckCodeCommand [] checkCode))
+            (pure (gate @cfg @configScope codec progName Context.CheckCodeCommand [] checkCode))
             (progDesc "Run the project's fail-fast code-check gate (project-defined body)")
         )
 
@@ -579,8 +722,8 @@ the absorbed read-only config-inspection surfaces (@show@ / @schema@ / @render@ 
 up@, not a @context@ subcommand; config generation is @project init@.
 -}
 contextCommand ::
-    forall projectId cfg configScope specDigest.
-    (ProjectCfg projectId cfg) =>
+    forall cfg configScope specDigest.
+    (ProjectCfg cfg) =>
     ProjectCodec configScope specDigest cfg ->
     String ->
     [ConfigArtifact] ->
@@ -800,18 +943,14 @@ of the never-delete-@.data@ invariant: it is not host mirroring, and the path
 still lives inside whatever frame @destroy@ deletes.
 -}
 projectCommandGroup ::
-    forall projectId cfg configScope specDigest.
-    (ProjectCfg projectId cfg) =>
-    ProjectCodec configScope specDigest cfg ->
+    forall projectId cfg specDigest.
+    (ProjectCfg cfg) =>
+    Authority.InstalledProjectIdentity projectId ->
+    FinalizedProjectSpec (V.Production projectId) specDigest cfg ->
     String ->
-    ( forall rootScope rootId.
-      CanonicalProjectRoot rootScope rootId ->
-      cfg configScope ->
-      Either StepPlanError StepPlan
-    ) ->
-    (InitArgs -> IO (cfg configScope)) ->
+    (InitArgs -> IO (cfg (V.Production projectId))) ->
     Mod CommandFields (IO ())
-projectCommandGroup codec progName projectPlan initBuilder =
+projectCommandGroup project finalizedSpec progName initBuilder =
     command
         "project"
         ( info
@@ -819,6 +958,7 @@ projectCommandGroup codec progName projectPlan initBuilder =
             (progDesc "Project lifecycle: init the root config, then interpret the chain (up/down/destroy)")
         )
   where
+    codec = finalizedProjectCodec finalizedSpec
     pInit = command "init" (initParserInfo codec progName "project init" "host-orchestrator" initBuilder)
     pUp =
         command
@@ -849,66 +989,65 @@ projectCommandGroup codec progName projectPlan initBuilder =
     -- change what the running chain executes.
     runUp dryRun =
         withSiblingValidatedProjectConfigRoot codec (T.pack progName) Context.ClusterLifecycleCommand [] $ \_wire validated ctx root -> do
-            let projectCfg = validatedConfigValue validated :: cfg configScope
-            plan <- either (die . ("project plan: " ++) . show) pure (projectPlan root projectCfg)
-            if dryRun
-                then putStr (renderChain plan)
-                else
-                    withRootLifecycleAuthority
-                        root
-                        ctx
-                        plan
-                        Authority.ProjectUp
-                        (applyChain plan root ctx)
-    applyChain ::
-        forall rootScope rootId.
-        StepPlan ->
-        CanonicalProjectRoot rootScope rootId ->
-        Context.BinaryContext ->
-        IO ()
-    applyChain plan root ctx = do
-        cfg <- hostConfig
-        self <- currentSelfRef ("/usr/local/bin/" ++ progName)
-        -- The interpreter runs each node as a prepared operation (§ EE), so it
-        -- needs the project's own protected store and installed identity. Both
-        -- come from the same openers the root gate uses, under the canonical
-        -- root — not a second store beside it.
-        store <- openAuthorityStore root
-        project <-
-            either
-                (dieAuthority . T.unpack . Authority.authorityErrorMessage)
-                pure
-                (Authority.installedProjectFor @projectId @cfg (T.pack progName))
-        let current = T.unpack (Context.currentFrame ctx)
-        -- Guard the chain apply with best-effort teardown: a chain failure — a `Left`
-        -- from a non-zero handoff, or a thrown exception — at the ROOT frame runs the
-        -- same best-effort teardown as `project destroy`, so a failed `project up`
-        -- does not leak the VM + in-VM kind + the global `.wslconfig`. Only the root
-        -- frame tears down: a nested frame's failure propagates up to the root (which
-        -- alone can reach the VM to delete it and restore `.wslconfig`), and an
-        -- uncatchable external kill is handled instead by the idempotent stale-state
-        -- reconcile on the next `project up` (phases 5/11).
-        -- The interpreter is handed the *lifecycle plan*, not the bare step
-        -- ordering: each step's action receives the descriptor that plan mints
-        -- for its own node (§ U), so a step can name its operation instead of
-        -- reconstructing it.
-        --
-        -- This opens its own bracket; the root authority gate's has already
-        -- closed by now. The digest a step is told is nonetheless the digest the
-        -- gate authorized, because both are 'withLifecyclePlan' over the same
-        -- codec and the same admitted 'StepPlan', and that derivation is pure.
-        outcome <-
-            withLifecyclePlan codec plan $ \lifecyclePlan ->
-                try (runChainFromFrame cfg self current store project lifecyclePlan)
-        case outcome of
-            Right (Right ()) -> pure ()
-            Right (Left err)
-                | safetyRefusalMarker `isInfixOf` err -> die err
-                | otherwise -> failChain plan root cfg ctx err
-            Left (exc :: SomeException) ->
-                case fromException exc of
-                    Just (SafetyRefusal reason) -> die (safetyRefusalMarker ++ " " ++ reason)
-                    Nothing -> failChain plan root cfg ctx (show exc)
+            unless (null (Context.parentChain ctx)) $
+                die "project up: authenticated recursive child admission is not yet available"
+            store <- openAuthorityStore root
+            recovered <-
+                withRecoveredProductionPlan store root validated ctx $ \rootAuthority _modeLease lease verified bound binding plan current frame admittedContext ->
+                    if dryRun
+                        then putStr (renderChain plan)
+                        else do
+                            cfg <- hostConfig
+                            self <- currentSelfRef ("/usr/local/bin/" ++ progName)
+                            runBoundProjectUp
+                                store
+                                root
+                                cfg
+                                self
+                                rootAuthority
+                                lease
+                                verified
+                                bound
+                                binding
+                                plan
+                                current
+                                frame
+                                admittedContext
+            case recovered of
+                Right () -> pure ()
+                Left failure
+                    | startsFreshProductionInvocation failure ->
+                        withFreshProductionPlan store root validated ctx Authority.ProjectUp $ \productionRoot plan current frame admittedContext ->
+                            if dryRun
+                                then putStr (renderChain plan)
+                                else do
+                                    cfg <- hostConfig
+                                    self <- currentSelfRef ("/usr/local/bin/" ++ progName)
+                                    let rootAuthority = productionRootAuthority productionRoot
+                                        unbound = productionRootUnboundLease productionRoot
+                                    persisted <-
+                                        withPersistedPlanSnapshot
+                                            rootAuthority
+                                            unbound
+                                            plan
+                                            ( \verified bound binding lease _normalRecovery ->
+                                                runBoundProjectUp
+                                                    store
+                                                    root
+                                                    cfg
+                                                    self
+                                                    rootAuthority
+                                                    lease
+                                                    verified
+                                                    bound
+                                                    binding
+                                                    plan
+                                                    current
+                                                    frame
+                                                    admittedContext
+                                            )
+                                    either (die . ("project snapshot: " ++) . show) pure persisted
+                Left failure -> die ("project snapshot: " ++ show failure)
     {- Run the best-effort `destroy` reverse projection at the root frame, then
     die. It is the *same* projection `project destroy` runs — one representation
     (§ W) — so a failed `project up` cannot leak resources a real destroy would
@@ -917,17 +1056,18 @@ projectCommandGroup codec progName projectPlan initBuilder =
     rather than replacing the chain's own cause.
     -}
     failChain ::
-        forall rootScope rootId.
-        StepPlan ->
-        CanonicalProjectRoot rootScope rootId ->
+        forall rootId spec planId configId frame.
+        ProjectPlan (V.Production projectId) spec planId configId cfg ->
+        CurrentFrame (V.Production projectId) planId frame ->
+        CanonicalProjectRoot (V.Production projectId) rootId ->
         HostConfig ->
         Context.BinaryContext ->
         String ->
         IO ()
-    failChain plan root cfg ctx reason = do
+    failChain plan current root cfg ctx reason = do
         when (null (Context.parentChain ctx)) $ do
             putStrLn "project up: chain failed — running best-effort teardown (project destroy) so the VM/cluster/.wslconfig are not leaked"
-            ignoreChainExc (reverseProjection plan root ctx cfg Teardown.destroyVerb (clusterDelete cfg))
+            ignoreChainExc (reverseProjection plan current root ctx cfg Teardown.destroyVerb (clusterDelete cfg))
         die reason
     -- Swallow a teardown step's exception (best-effort): the whole teardown must not
     -- hinge on one step succeeding.
@@ -939,18 +1079,339 @@ projectCommandGroup codec progName projectPlan initBuilder =
 
     runDown =
         withSiblingValidatedProjectConfigRoot codec (T.pack progName) Context.HostOrchestratorCommand [] $ \_wire validated ctx root -> do
-            let projectCfg = validatedConfigValue validated :: cfg configScope
+            unless (null (Context.parentChain ctx)) $
+                die "project down: authenticated recursive child admission is not yet available"
             cfg <- hostConfig
-            plan <- either (die . ("project plan: " ++) . show) pure (projectPlan root projectCfg)
-            withRootLifecycleAuthority root ctx plan Authority.ProjectDown $
-                reverseProjection plan root ctx cfg Teardown.downVerb (clusterDown cfg)
+            runProductionTeardown
+                root
+                validated
+                ctx
+                cfg
+                Authority.ProjectDown
+                Teardown.downVerb
+                (clusterDown cfg)
     runDestroy =
         withSiblingValidatedProjectConfigRoot codec (T.pack progName) Context.HostOrchestratorCommand [] $ \_wire validated ctx root -> do
-            let projectCfg = validatedConfigValue validated :: cfg configScope
+            unless (null (Context.parentChain ctx)) $
+                die "project destroy: authenticated recursive child admission is not yet available"
             cfg <- hostConfig
-            plan <- either (die . ("project plan: " ++) . show) pure (projectPlan root projectCfg)
-            withRootLifecycleAuthority root ctx plan Authority.ProjectDestroy $
-                reverseProjection plan root ctx cfg Teardown.destroyVerb (clusterDelete cfg)
+            runProductionTeardown
+                root
+                validated
+                ctx
+                cfg
+                Authority.ProjectDestroy
+                Teardown.destroyVerb
+                (clusterDelete cfg)
+
+    {- | Admit the sole fresh Production plan for one command invocation.
+
+    The Production root, lifecycle profile, draft stream, exact plan, and
+    current-frame evidence are opened in that order.  The one 'withProjectPlan'
+    site is deliberately private to this helper, so a command body cannot mint
+    another local plan identity after receiving the first one.
+    -}
+    withFreshProductionPlan ::
+        forall rootId configId verb result.
+        ProtectedStore ->
+        CanonicalProjectRoot (V.Production projectId) rootId ->
+        ValidatedConfig
+            (V.Production projectId)
+            specDigest
+            configId
+            (cfg (V.Production projectId)) ->
+        Context.BinaryContext ->
+        Authority.ProjectVerb verb ->
+        ( forall brokerGeneration planId frame.
+          ProductionRoot projectId brokerGeneration verb ->
+          ProjectPlan
+            (V.Production projectId)
+            specDigest
+            planId
+            configId
+            cfg ->
+          CurrentFrame (V.Production projectId) planId frame ->
+          ProjectFrame
+            (V.Production projectId)
+            specDigest
+            planId
+            configId
+            frame ->
+          ValidatedContext (V.Production projectId) planId frame ->
+          IO result
+        ) ->
+        IO result
+    withFreshProductionPlan store root validated ctx verb use = do
+        opened <-
+            withProductionRoot store project verb $ \productionRoot -> do
+                let rootAuthority = productionRootAuthority productionRoot
+                    unbound = productionRootUnboundLease productionRoot
+                profiled <-
+                    withProductionLifecycleProfile
+                        (Authority.rootScopeAuthority rootAuthority)
+                        (productionActiveMode (productionRootModeLease productionRoot))
+                        unbound
+                        ( \profile -> do
+                            drafts <-
+                                either
+                                    (die . ("project plan: " ++) . show)
+                                    pure
+                                    (projectPlanDrafts finalizedSpec root validated)
+                            planAction <-
+                                either
+                                    (die . ("project plan: " ++) . show)
+                                    pure
+                                    ( withProjectPlan
+                                        profile
+                                        root
+                                        validated
+                                        drafts
+                                        ( \plan ->
+                                            case withCurrentFrame plan ctx (use productionRoot plan) of
+                                                Left failure -> die ("project frame: " ++ show failure)
+                                                Right admittedAction -> admittedAction
+                                        )
+                                    )
+                            planAction
+                        )
+                case profiled of
+                    Left failure -> pure (Left (ModeAuthorityFailure failure))
+                    Right admittedAction -> Right <$> admittedAction
+        either (die . T.unpack . modeErrorMessage) pure opened
+
+    {- | Reconstruct the sole local plan identity named by an existing bound
+    Production invocation.
+
+    Snapshot admission owns the @planId@ quantifier.  Profile refinement,
+    candidate-spec/config alignment, reconstruction, current-frame admission,
+    and the consumer all remain beneath that same binder.
+    -}
+    withRecoveredProductionPlan ::
+        forall rootId configId result.
+        ProtectedStore ->
+        CanonicalProjectRoot (V.Production projectId) rootId ->
+        ValidatedConfig
+            (V.Production projectId)
+            specDigest
+            configId
+            (cfg (V.Production projectId)) ->
+        Context.BinaryContext ->
+        ( forall brokerGeneration recoveredSpecDigest planDigest planId frame.
+          Authority.RootInvocationAuthority
+            (V.Production projectId)
+            brokerGeneration
+            Authority.VerbUp ->
+          ProjectModeLease projectId ProductionMode brokerGeneration ->
+          BoundRunLease
+            (V.Production projectId)
+            recoveredSpecDigest
+            planDigest
+            brokerGeneration ->
+          VerifiedPlanSnapshot
+            (V.Production projectId)
+            recoveredSpecDigest
+            planDigest ->
+          BoundPlanSnapshot
+            (V.Production projectId)
+            recoveredSpecDigest
+            planDigest
+            planId ->
+          PlanDigestBinding
+            (V.Production projectId)
+            recoveredSpecDigest
+            planDigest
+            planId ->
+          ProjectPlan
+            (V.Production projectId)
+            recoveredSpecDigest
+            planId
+            configId
+            cfg ->
+          CurrentFrame (V.Production projectId) planId frame ->
+          ProjectFrame
+            (V.Production projectId)
+            recoveredSpecDigest
+            planId
+            configId
+            frame ->
+          ValidatedContext (V.Production projectId) planId frame ->
+          IO result
+        ) ->
+        IO (Either SnapshotError result)
+    withRecoveredProductionPlan store root candidateConfig ctx use =
+        withBoundPlanSnapshot
+            store
+            project
+            ( \closeKey ->
+                die
+                    ( "project recovery: the prior Production invocation has a terminal acknowledgment "
+                        ++ show closeKey
+                        ++ "; terminal close recovery is required"
+                    )
+            )
+            ( \rootAuthority modeLease lease verified bound binding recovery -> do
+                profiledAction <-
+                    either
+                        (die . T.unpack . modeErrorMessage)
+                        pure
+                        ( withRecoveredProductionLifecycleProfile
+                            rootAuthority
+                            modeLease
+                            lease
+                            verified
+                            bound
+                            binding
+                            recovery
+                            ( \profile -> do
+                                inputsAction <-
+                                    either
+                                        (die . ("project recovery: " ++) . show)
+                                        pure
+                                        ( withRecoveredProductionProjectPlanInputs
+                                            profile
+                                            root
+                                            finalizedSpec
+                                            candidateConfig
+                                            ( \recoveredConfig recoveredDrafts -> do
+                                                planAction <-
+                                                    either
+                                                        (die . ("project recovery: " ++) . show)
+                                                        pure
+                                                        ( withRecoveredProductionProjectPlan
+                                                            profile
+                                                            root
+                                                            verified
+                                                            bound
+                                                            binding
+                                                            recoveredConfig
+                                                            recoveredDrafts
+                                                            ( \plan ->
+                                                                case withCurrentFrame plan ctx (use rootAuthority modeLease lease verified bound binding plan) of
+                                                                    Left failure -> die ("project frame: " ++ show failure)
+                                                                    Right admittedAction -> admittedAction
+                                                            )
+                                                        )
+                                                planAction
+                                            )
+                                        )
+                                inputsAction
+                            )
+                        )
+                profiledAction
+            )
+
+    -- Only a genuinely new store or an exactly retained unbound retry may
+    -- enter the fresh branch.  Every corruption, immutable-snapshot conflict,
+    -- wrong mode, missing lease, terminal state, or store failure stays fatal.
+    startsFreshProductionInvocation :: SnapshotError -> Bool
+    startsFreshProductionInvocation failure = case failure of
+        SnapshotVerificationError (ModeWrongMode "production" "absent") -> True
+        SnapshotVerificationError (ModeLeaseNotBindable "production" "unbound") -> True
+        _ -> False
+
+    {- | Run one already bound exact Production @up@ invocation.
+
+    Journal, frame cursor, authority, Chain, and the final Execute-to-Teardown
+    transition all consume the same plan identity.  A recovered Teardown cursor
+    means this invocation's current-frame interpretation already completed.
+    -}
+    runBoundProjectUp ::
+        forall rootId brokerGeneration exactSpecDigest planDigest planId configId frame.
+        ProtectedStore ->
+        CanonicalProjectRoot (V.Production projectId) rootId ->
+        HostConfig ->
+        SelfRef ->
+        Authority.RootInvocationAuthority
+            (V.Production projectId)
+            brokerGeneration
+            Authority.VerbUp ->
+        BoundRunLease
+            (V.Production projectId)
+            exactSpecDigest
+            planDigest
+            brokerGeneration ->
+        VerifiedPlanSnapshot
+            (V.Production projectId)
+            exactSpecDigest
+            planDigest ->
+        BoundPlanSnapshot
+            (V.Production projectId)
+            exactSpecDigest
+            planDigest
+            planId ->
+        PlanDigestBinding
+            (V.Production projectId)
+            exactSpecDigest
+            planDigest
+            planId ->
+        ProjectPlan
+            (V.Production projectId)
+            exactSpecDigest
+            planId
+            configId
+            cfg ->
+        CurrentFrame (V.Production projectId) planId frame ->
+        ProjectFrame
+            (V.Production projectId)
+            exactSpecDigest
+            planId
+            configId
+            frame ->
+        ValidatedContext (V.Production projectId) planId frame ->
+        IO ()
+    runBoundProjectUp store root cfg self rootAuthority lease verified bound binding plan current frame admittedContext = do
+        ran <-
+            runExactProjectUp
+                store
+                cfg
+                self
+                rootAuthority
+                lease
+                verified
+                bound
+                binding
+                plan
+                frame
+                admittedContext
+        case ran of
+            Right () -> pure ()
+            Left err
+                | safetyRefusalMarker `isInfixOf` err -> die err
+                | otherwise ->
+                    failChain
+                        plan
+                        current
+                        root
+                        cfg
+                        (validatedContextValue admittedContext)
+                        err
+
+    runProductionTeardown ::
+        forall rootId configId commandVerb teardownVerb.
+        CanonicalProjectRoot (V.Production projectId) rootId ->
+        ValidatedConfig
+            (V.Production projectId)
+            specDigest
+            configId
+            (cfg (V.Production projectId)) ->
+        Context.BinaryContext ->
+        HostConfig ->
+        Authority.ProjectVerb commandVerb ->
+        Teardown.TeardownVerb teardownVerb ->
+        (ClusterPlan -> IO ()) ->
+        IO ()
+    runProductionTeardown root validated ctx cfg commandVerb teardownVerb clusterEffect = do
+        store <- openAuthorityStore root
+        recovered <-
+            withRecoveredProductionPlan store root validated ctx $ \_ _ _ _ _ _ plan current _ _ ->
+                reverseProjection plan current root ctx cfg teardownVerb clusterEffect
+        case recovered of
+            Right () -> pure ()
+            Left failure
+                | startsFreshProductionInvocation failure ->
+                    withFreshProductionPlan store root validated ctx commandVerb $ \_ plan current _ _ ->
+                        reverseProjection plan current root ctx cfg teardownVerb clusterEffect
+            Left failure -> die ("project snapshot: " ++ show failure)
 
     {- Run the verb's reverse projection of the same validated plan (§ W).
 
@@ -963,60 +1424,60 @@ projectCommandGroup codec progName projectPlan initBuilder =
     projection at all, which is the whole of the never-delete-@.data@ invariant.
     -}
     reverseProjection ::
-        forall rootScope rootId verb.
-        StepPlan ->
-        CanonicalProjectRoot rootScope rootId ->
+        forall rootId spec planId configId frame verb.
+        ProjectPlan (V.Production projectId) spec planId configId cfg ->
+        CurrentFrame (V.Production projectId) planId frame ->
+        CanonicalProjectRoot (V.Production projectId) rootId ->
         Context.BinaryContext ->
         HostConfig ->
         Teardown.TeardownVerb verb ->
         (ClusterPlan -> IO ()) ->
         IO ()
-    reverseProjection plan root ctx cfg verb clusterEffect =
-        withLifecyclePlan codec plan $ \lifecyclePlan -> do
-            self <- currentSelfRef ("/usr/local/bin/" ++ progName)
-            descended <- newIORef Nothing
-            let projection = Teardown.teardownPlan lifecyclePlan verb
-                current = Context.currentFrame ctx
-            case Teardown.openTeardownForest lifecyclePlan projection of
-                Left err -> die ("project teardown: " ++ Teardown.teardownErrorMessage err)
-                Right opened -> do
-                    {- The forest drives itself: the child-first ordering and the
-                    destroy-only pre-descent reachability step are its, not this
-                    call site's. This supplies only the effect for one offered
-                    node and the row for its outcome. -}
-                    driven <-
-                        Teardown.driveTeardownForest
-                            opened
-                            ( \point ->
-                                Teardown.withTeardownAuthorization
-                                    point
-                                    (\_ -> descendOnce self descended current)
-                                    (\_settled cursor -> ordinaryReverse self descended current cursor)
+    reverseProjection plan currentFrame root ctx cfg verb clusterEffect = do
+        let projection = Teardown.teardownPlan plan currentFrame verb
+        self <- currentSelfRef ("/usr/local/bin/" ++ progName)
+        descended <- newIORef Nothing
+        let current = currentFrameId currentFrame
+        case Teardown.openTeardownForest projection of
+            Left err -> die ("project teardown: " ++ Teardown.teardownErrorMessage err)
+            Right opened -> do
+                {- The forest drives itself: the child-first ordering and the
+                destroy-only pre-descent reachability step are its, not this
+                call site's. This supplies only the effect for one offered
+                node and the row for its outcome. -}
+                driven <-
+                    Teardown.driveTeardownForest
+                        opened
+                        ( \point ->
+                            Teardown.withTeardownAuthorization
+                                point
+                                (\_ -> descendOnce self descended current)
+                                (\_settled cursor -> ordinaryReverse self descended current cursor)
+                        )
+                        announce
+                case driven of
+                    Left outstanding ->
+                        die
+                            ( "project teardown attempted every reverse step but "
+                                ++ "these nodes did not settle:\n"
+                                ++ unlines (map (("  - " ++) . T.unpack) outstanding)
                             )
-                            announce
-                    case driven of
-                        Left outstanding ->
-                            die
-                                ( "project teardown attempted every reverse step but "
-                                    ++ "these nodes did not settle:\n"
-                                    ++ unlines (map (("  - " ++) . T.unpack) outstanding)
-                                )
-                        -- Settled-destroy evidence is minted from the completed
-                        -- forest, never from the fact that the verb returned: a
-                        -- run that never visited a deeper frame's nodes has a
-                        -- forest that cannot complete, so it cannot mint it.
-                        Right completed ->
-                            case Teardown.settledDestroyEvidence projection completed of
-                                Nothing -> pure ()
-                                Just (Left err) ->
-                                    die ("project teardown: " ++ Teardown.teardownErrorMessage err)
-                                Just (Right settled) ->
-                                    putStrLn
-                                        ( "project teardown: settled "
-                                            ++ show (length (Teardown.destroySettledReleasedKeys settled))
-                                            ++ " nodes of plan "
-                                            ++ T.unpack (Teardown.destroySettledPlanDigest settled)
-                                        )
+                    -- Settled-destroy evidence is minted from the completed
+                    -- forest, never from the fact that the verb returned: a
+                    -- run that never visited a deeper frame's nodes has a
+                    -- forest that cannot complete, so it cannot mint it.
+                    Right completed ->
+                        case Teardown.settledDestroyEvidence projection completed of
+                            Nothing -> pure ()
+                            Just (Left err) ->
+                                die ("project teardown: " ++ Teardown.teardownErrorMessage err)
+                            Just (Right settled) ->
+                                putStrLn
+                                    ( "project teardown: settled "
+                                        ++ show (length (Teardown.destroySettledReleasedKeys settled))
+                                        ++ " nodes of plan "
+                                        ++ T.unpack (Teardown.destroySettledPlanDigest settled)
+                                    )
       where
         {- One ordinary node's attempt.
 
@@ -1070,41 +1531,31 @@ projectCommandGroup codec progName projectPlan initBuilder =
                     writeIORef descended (Just outcome)
                     pure outcome
 
-        runDescent self current = case nextFrameAfter (T.unpack current) plan of
+        runDescent self current = case nextFrameAfter (topology plan) current of
             Nothing ->
                 pure
                     ( Step.TeardownForeignRetained
                         "this frame is the innermost one the chain enters"
                     )
-            Just next -> case frameDescent (T.unpack current) plan of
-                Nothing ->
-                    pure
-                        ( Step.TeardownFailed
-                            ( "frame "
-                                ++ T.unpack current
-                                ++ " declares no descent into "
-                                ++ frameId next
-                            )
-                        )
-                Just nextCtx -> do
-                    putStrLn
-                        ( "project teardown: descending into "
-                            ++ frameId next
-                            ++ " to run its own reverse steps first"
-                        )
-                    result <-
-                        liftSubcommandWithStdin
-                            cfg
-                            self
-                            nextCtx
-                            ["project", T.unpack (Teardown.teardownVerbName verb)]
-                            (liftStdin nextCtx)
-                    case result of
-                        Right (ExitSuccess, out, _) ->
-                            putStr out >> pure Step.TeardownReleased
-                        Right (_, out, err) ->
-                            putStr out >> pure (Step.TeardownFailed err)
-                        Left err -> pure (Step.TeardownFailed err)
+            Just (nextFrame, nextCtx) -> do
+                putStrLn
+                    ( "project teardown: descending into "
+                        ++ T.unpack nextFrame
+                        ++ " to run its own reverse steps first"
+                    )
+                result <-
+                    liftSubcommandWithStdin
+                        cfg
+                        self
+                        nextCtx
+                        ["project", T.unpack (Teardown.teardownVerbName verb)]
+                        (liftStdin nextCtx)
+                case result of
+                    Right (ExitSuccess, out, _) ->
+                        putStr out >> pure Step.TeardownReleased
+                    Right (_, out, err) ->
+                        putStr out >> pure (Step.TeardownFailed err)
+                    Left err -> pure (Step.TeardownFailed err)
 
         guardedReverse effect = do
             attempted <- try effect
@@ -1153,70 +1604,6 @@ projectCommandGroup codec progName projectPlan initBuilder =
         Step.TeardownFailed detail ->
             putStrLn ("project teardown: FAILED " ++ T.unpack key ++ " — " ++ detail)
 
-    {- Run a lifecycle verb behind the independent root gate (the recursive-lifecycle-command phase).
-
-    Before this, @project up|down|destroy@ was authorized by nothing more than
-    the decoded context's command-class membership — self-asserted authority of
-    exactly the kind § X forbids — and 'Authority.withVerifiedRootInvocation' had
-    no production consumer at all, which is why nothing could sign an activation
-    manifest for a runtime role.
-
-    The gate runs only at the **root** frame. A nested frame is reached through
-    the recursive handoff and must receive its authority from the parent's
-    relay, which the recursive-lifecycle-command phase still owes; gating it here would authorize it from
-    its own config, which is the thing being removed. So a nested frame passes
-    through unchanged and its gating stays explicitly open.
-
-    The store is the project's own @.hostbootstrap/authority@, derived from the
-    canonical root rather than the caller's working directory (§ X). The broker
-    epoch is fresh per invocation, so the one-use invocation record
-    'Authority.authorizeProjectCommand' reserves is fresh per invocation too and
-    a re-run is not mistaken for a replay. It fails closed.
-    -}
-    withRootLifecycleAuthority ::
-        forall rootScope rootId verb.
-        CanonicalProjectRoot rootScope rootId ->
-        Context.BinaryContext ->
-        StepPlan ->
-        Authority.ProjectVerb verb ->
-        IO () ->
-        IO ()
-    withRootLifecycleAuthority root ctx plan verb body
-        | not (null (Context.parentChain ctx)) = body
-        | otherwise = do
-            project <-
-                either
-                    (dieAuthority . T.unpack . Authority.authorityErrorMessage)
-                    pure
-                    (Authority.installedProjectFor @projectId @cfg (T.pack progName))
-            store <- openAuthorityStore root
-            outcome <-
-                withLifecyclePlan codec plan $ \lifecyclePlan ->
-                    withAuthorityEntry store $ \session -> do
-                        operator <- Authority.verifyOperatorAuthorization session
-                        case operator of
-                            Left failure -> pure (Left failure)
-                            Right authorized ->
-                                Authority.withFreshBrokerEpoch session project $ \epoch ->
-                                    Authority.withVerifiedRootInvocation
-                                        session
-                                        project
-                                        authorized
-                                        epoch
-                                        verb
-                                        ( \rootAuthority ->
-                                            Authority.authorizeProjectCommand
-                                                session
-                                                project
-                                                rootAuthority
-                                                lifecyclePlan
-                                                Authority.Execute
-                                                (Context.currentFrame ctx)
-                                                (\_command -> pure (Right ()))
-                                        )
-            either (dieAuthority . T.unpack . Authority.authorityErrorMessage) pure outcome
-            body
-
     {- The project's own protected authority store, under the canonical root
     (§ X) rather than the caller's working directory.
 
@@ -1233,29 +1620,259 @@ projectCommandGroup codec progName projectPlan initBuilder =
     openAuthorityStore root = do
         opened <-
             openProtectedStore
-                (canonicalProjectRootPath root </> ".hostbootstrap" </> "authority" </> progName)
+                ( canonicalProjectRootPath root
+                    </> ".hostbootstrap"
+                    </> "authority"
+                    </> T.unpack (Authority.installedProjectName project)
+                )
         either (dieAuthority . T.unpack . protectedErrorMessage) pure opened
-
-    withAuthorityEntry ::
-        ProtectedStore ->
-        ( forall session.
-          ProtectedSession session ->
-          IO (Either Authority.AuthorityError result)
-        ) ->
-        IO (Either Authority.AuthorityError result)
-    withAuthorityEntry store transaction = do
-        outcome <- withProtectedEntry store (fmap Right . transaction)
-        pure (either (Left . Authority.AuthorityStoreFailure) id outcome)
 
     dieAuthority :: String -> IO a
     dieAuthority reason = die ("project: " ++ reason)
 
--- | Whether the current binary frame owns the chain's cluster lifecycle step.
-currentFrameOwnsCluster :: Context.BinaryContext -> StepPlan -> Bool
-currentFrameOwnsCluster ctx plan =
-    any isDeployKindStep (stepsForFrame current plan)
+{- | Run the exact current-frame @up@ transaction shared by Production and
+Harness command dispatch.
+
+The returned failure is still descriptive rather than authorizing.  Callers
+decide whether it is a Production command failure or a Harness report outcome;
+neither can replace any of the indexed evidence consumed here.
+-}
+runExactProjectUp ::
+    forall scope specDigest planDigest planId configId cfg frame brokerGeneration.
+    ProtectedStore ->
+    HostConfig ->
+    SelfRef ->
+    Authority.RootInvocationAuthority scope brokerGeneration Authority.VerbUp ->
+    BoundRunLease scope specDigest planDigest brokerGeneration ->
+    VerifiedPlanSnapshot scope specDigest planDigest ->
+    BoundPlanSnapshot scope specDigest planDigest planId ->
+    PlanDigestBinding scope specDigest planDigest planId ->
+    ProjectPlan scope specDigest planId configId cfg ->
+    ProjectFrame scope specDigest planId configId frame ->
+    ValidatedContext scope planId frame ->
+    IO (Either String ())
+runExactProjectUp store cfg self rootAuthority lease verified bound binding plan frame admittedContext = do
+    journalResult <-
+        withAcquisitionJournal rootAuthority lease bound binding plan $ \journal -> do
+            cursorResult <-
+                withCurrentLifecycleCursor journal frame Authority.ProjectUp $ \phase cursor ->
+                    case phase of
+                        Authority.Prepare -> do
+                            advanced <-
+                                withExecuteLifecycleCursor cursor (authorizeAndRun journal)
+                            pure (either (Left . lifecycleErrorMessage) id advanced)
+                        Authority.Execute -> authorizeAndRun journal cursor
+                        Authority.Teardown -> pure (Right ())
+            pure (either (Left . lifecycleErrorMessage) id cursorResult)
+    pure (either (Left . lifecycleErrorMessage) id journalResult)
   where
-    current = T.unpack (Context.currentFrame ctx)
+    authorizeAndRun ::
+        AcquisitionJournal scope planId brokerGeneration ->
+        LifecycleCursor
+            scope
+            planId
+            frame
+            brokerGeneration
+            Authority.VerbUp
+            Authority.ExecutePhase ->
+        IO (Either String ())
+    authorizeAndRun journal executeCursor = do
+        authorized <-
+            ProjectAuthority.authorizeProjectUp
+                rootAuthority
+                Authority.ProjectUp
+                verified
+                bound
+                binding
+                lease
+                plan
+                journal
+                frame
+                executeCursor
+                admittedContext
+        case authorized of
+            Left failure ->
+                pure (Left (T.unpack (Authority.authorityErrorMessage failure)))
+            Right authority -> do
+                attempted <-
+                    try (runChainFromFrame cfg self store plan authority executeCursor) ::
+                        IO (Either SomeException (Either String ()))
+                case attempted of
+                    Right (Left failure) -> pure (Left failure)
+                    Left exc ->
+                        pure $ case fromException exc of
+                            Just (SafetyRefusal reason) ->
+                                Left (safetyRefusalMarker ++ " " ++ reason)
+                            Nothing -> Left (displayException exc)
+                    Right (Right ()) -> do
+                        transitioned <-
+                            withTeardownLifecycleCursor executeCursor (const (pure ()))
+                        pure (either (Left . lifecycleErrorMessage) Right transitioned)
+
+{- | Drive one exact Harness destroy projection and return its settled proof.
+
+The plan/current-frame pair is the same pair retained by the generated-config
+bracket.  Production's verb-polymorphic wrapper and this Harness-only wrapper
+both consume the public teardown forest; neither accepts a second plan digest,
+frame name, or cleanup list.
+-}
+runExactDestroyProjection ::
+    forall scope specDigest planId configId cfg frame rootId.
+    String ->
+    ProjectPlan scope specDigest planId configId cfg ->
+    CurrentFrame scope planId frame ->
+    CanonicalProjectRoot scope rootId ->
+    Context.BinaryContext ->
+    HostConfig ->
+    (ClusterPlan -> IO ()) ->
+    IO (Teardown.DestroySettled scope planId)
+runExactDestroyProjection progName plan currentFrame root ctx cfg clusterEffect = do
+    let projection = Teardown.teardownPlan plan currentFrame Teardown.destroyVerb
+    self <- currentSelfRef ("/usr/local/bin/" ++ progName)
+    descended <- newIORef Nothing
+    let current = currentFrameId currentFrame
+    opened <-
+        either
+            (die . ("project teardown: " ++) . Teardown.teardownErrorMessage)
+            pure
+            (Teardown.openTeardownForest projection)
+    driven <-
+        Teardown.driveTeardownForest
+            opened
+            ( \point ->
+                Teardown.withTeardownAuthorization
+                    point
+                    (\_ -> descendOnce self descended current)
+                    (\_settled cursor -> ordinaryReverse self descended current cursor)
+            )
+            announce
+    completed <-
+        either
+            ( \outstanding ->
+                die
+                    ( "project teardown attempted every reverse step but these nodes did not settle:\n"
+                        ++ unlines (map (("  - " ++) . T.unpack) outstanding)
+                    )
+            )
+            pure
+            driven
+    settled <-
+        either
+            (die . ("project teardown: " ++) . Teardown.teardownErrorMessage)
+            pure
+            (Teardown.verifyDestroySettled projection completed)
+    putStrLn
+        ( "project teardown: settled "
+            ++ show (length (Teardown.destroySettledReleasedKeys settled))
+            ++ " nodes of plan "
+            ++ T.unpack (Teardown.destroySettledPlanDigest settled)
+        )
+    pure settled
+  where
+    ordinaryReverse ::
+        forall cursorScope cursorPlanId.
+        SelfRef ->
+        IORef (Maybe Step.TeardownOutcome) ->
+        T.Text ->
+        Teardown.TeardownCursor cursorScope cursorPlanId Teardown.DestroyVerb ->
+        IO Step.TeardownOutcome
+    ordinaryReverse self descended current cursor
+        | Teardown.teardownCursorFrame cursor /= current =
+            descendOnce self descended current
+        | otherwise =
+            case (Teardown.teardownCursorRun cursor, Teardown.teardownCursorPolicy cursor) of
+                (Just declared, _) ->
+                    guardedReverse (declared cfg (Teardown.teardownCursorAction cursor))
+                (Nothing, Step.CoreManagedReverse) ->
+                    guardedReverse
+                        ( coreManaged
+                            (Teardown.teardownCursorKey cursor)
+                            (Teardown.teardownCursorAction cursor)
+                        )
+                (Nothing, _) ->
+                    pure
+                        ( Step.TeardownForeignRetained
+                            "the node acquired nothing this frame must release"
+                        )
+
+    descendOnce self descended current = do
+        already <- readIORef descended
+        case already of
+            Just outcome -> pure outcome
+            Nothing -> do
+                outcome <- runDescent self current
+                writeIORef descended (Just outcome)
+                pure outcome
+
+    runDescent self current = case nextFrameAfter (topology plan) current of
+        Nothing ->
+            pure
+                ( Step.TeardownForeignRetained
+                    "this frame is the innermost one the chain enters"
+                )
+        Just (nextFrame, nextCtx) -> do
+            putStrLn
+                ( "project teardown: descending into "
+                    ++ T.unpack nextFrame
+                    ++ " to run its own reverse steps first"
+                )
+            result <-
+                liftSubcommandWithStdin
+                    cfg
+                    self
+                    nextCtx
+                    ["project", "destroy"]
+                    (liftStdin nextCtx)
+            case result of
+                Right (ExitSuccess, out, _) ->
+                    putStr out >> pure Step.TeardownReleased
+                Right (_, out, err) ->
+                    putStr out >> pure (Step.TeardownFailed err)
+                Left err -> pure (Step.TeardownFailed err)
+
+    guardedReverse effect = do
+        attempted <- try effect
+        pure $ case attempted of
+            Right outcome -> outcome
+            Left exc -> Step.TeardownFailed (displayException (exc :: SomeException))
+
+    coreManaged _key reverseAction = case reverseAction of
+        Step.DeleteCluster
+            | currentFrameOwnsCluster ctx plan -> do
+                withCurrentDirectory
+                    (canonicalProjectRootPath root)
+                    (clusterEffect (planForRoot root ctx))
+                pure Step.TeardownReleased
+            | otherwise ->
+                pure
+                    ( Step.TeardownForeignRetained
+                        ( "cluster is owned by a different chain frame; skipping kind cleanup in "
+                            ++ T.unpack (Context.currentFrame ctx)
+                        )
+                    )
+        _ -> pure (Step.TeardownForeignRetained "released with the cluster that contains it")
+
+    announce key outcome = case outcome of
+        Step.TeardownReleased -> putStrLn ("project teardown: released " ++ T.unpack key)
+        Step.TeardownForeignRetained detail ->
+            putStrLn ("project teardown: retained " ++ T.unpack key ++ " — " ++ detail)
+        Step.TeardownRefused detail ->
+            putStrLn ("project teardown: refused " ++ T.unpack key ++ " — " ++ detail)
+        Step.TeardownFailed detail ->
+            putStrLn ("project teardown: FAILED " ++ T.unpack key ++ " — " ++ detail)
+
+-- | Whether the current binary frame owns the chain's cluster lifecycle step.
+currentFrameOwnsCluster ::
+    Context.BinaryContext ->
+    ProjectPlan scope specDigest planId configId cfg ->
+    Bool
+currentFrameOwnsCluster ctx plan =
+    any ownsKind (forward plan)
+  where
+    current = Context.currentFrame ctx
+    ownsKind step =
+        plannedStepFrameId step == current
+            && plannedStepIdentity step == CoreStepIdentity DeployKindId
 
 {- | The @service@ lifecycle command (§ AA): the third DSL-driven core command,
 for a project's long-running roles (the @HostDaemon@/service run-model). @init@
@@ -1275,8 +1892,8 @@ config — fails fast. It then reads the variant from the project's
   fast. There is no variant CLI argument.
 -}
 serviceCommandGroup ::
-    forall projectId cfg configScope specDigest.
-    (ProjectCfg projectId cfg) =>
+    forall cfg configScope specDigest.
+    (ProjectCfg cfg) =>
     ProjectCodec configScope specDigest cfg ->
     String ->
     FinalizedServiceRegistry configScope specDigest (cfg configScope) ->

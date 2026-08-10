@@ -12,7 +12,7 @@
 
 - **The plan is the project.** A consumer's primary contribution is an ordered additive step fragment,
   plus the actions for any project-specific `Step` kinds it adds. Finalization validates an opaque
-  `StepPlan`, which core interprets recursively under `project up`. The consumer extends the plan and step
+  `StepPlan`, which exact plan admission turns into the current-frame input to `project up`. The consumer extends the plan and step
   vocabulary; the command surface (`project`, `test`, `service`, `context`, `check-code`) is fixed. The
   foundational model is [composition_methodology](../architecture/composition_methodology.md); the
   reusable shapes are [composition_patterns](composition_patterns.md).
@@ -38,14 +38,20 @@
    currently discovers the Cabal-file stem and executable stanza separately and does not read Dhall. See
    [schema](schema.md) and
    [resource_budgeting](resource_budgeting.md).
-2. **Author the plan fragments.** Provide one or more `cfg -> [Step]` contributions with `addSteps`.
-   `Step`/`StepKind` constructors are hidden, and `project up --dry-run` renders the same opaque
-   `StepPlan` the interpreter consumes. Validation rejects empty/duplicate/conflicting plans,
+2. **Author the plan fragments.** Provide one or more
+   `CanonicalProjectRoot scope rootId -> cfg scope -> [Step]` contributions with `addSteps`. The shared
+   `scope` is part of the contract: a Production config cannot be paired with a Harness root, or with a
+   different Harness run's root.
+   `Step`/`StepKind` constructors are hidden, and Production `project up --dry-run` renders the exact
+   admitted `ProjectPlan` whose forward projection the interpreter consumes. Validation rejects
+   empty/duplicate/conflicting plans,
    noncontiguous `A/B/A` frames, and invalid post-handoff placement before effects. Frame-context and
-   teardown callbacks remain separate but are checked single-assignment slots. Compose from
+   reverse behavior are carried by the plan's own steps; there is no separate lifecycle slot beside the
+   plan. Compose from
    the core's host-management step kinds (`deployVMStep`, `buildPbStep`, `contextInitStep`,
    `deployKindStep`, `deployChartStep`, `exposePortStep`) and the project's own kinds via `projectStep`;
-   host and workload steps interleave in one list. The core recursively interprets `project up`; current
+   host and workload steps interleave in one list. Core interprets the authorized current-frame segment;
+   authenticated recursive child entry remains downstream work. Current
    reconcilers attempt convergence but mostly return `IO ()`, so typed idempotence remains open. See
    [composition_patterns](composition_patterns.md).
 3. **Define project step kinds and their actions.** A workload step the core does not ship (deploy-registry,
@@ -55,13 +61,18 @@
    result to `runHostBootstrapCLI` so they merge into the recursive
    interpreter. The core command surface (`project`/`test`/`service`/`context`/`check-code`) is fixed; the project
    extends the chain and the step vocabulary (the lift-chain stream of the extension-stream contract; see
-   [library_hierarchy](../architecture/library_hierarchy.md)).
-4. **Let the interpreter cross boundaries.** Each descent is fractal bootstrap: provision the frame, build
+   [library_hierarchy](../architecture/library_hierarchy.md)). The resulting `ProjectSpec cfg tcfg` does
+   not name an installed-identity marker. At dispatch, `runHostBootstrapCLI` verifies its declared name
+   against the actual executable basename and retains the resulting generative identity through codec,
+   service, plan, command, and Harness construction.
+4. **Declare the boundaries the interpreter crosses.** Each descent is fractal bootstrap: provision the frame, build
    or install the binary in it, then hand off `pb project up` into the next frame. The consumer declares
    each boundary on the step that owns it with `Step.descendsVia`; the core lift folds the self-invocation
    (`incus exec <vm> -- <pb> project up` into the VM, then a local `docker run --rm <image> project up`
-   into the container). Each binary hands off only to its immediate next frame, so one one-level lift per
-   transition stands up the whole stack. See
+   into the container). The exact Production root invocation retains one plan through its current-frame
+   Chain segment and derives the next frame from that plan. The child command currently refuses nested
+   lifecycle entry before effects; authenticated child admission and proof-complete recursive traversal
+   belong to [the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md). See
    [`HostBootstrap.Lift`](../architecture/hostbootstrap_core_library.md) and
    [composition_methodology § Single Representation](../architecture/composition_methodology.md#single-representation-the-chain-is-the-representation).
 5. **Supply the test suite.** Provide a `TestSuite`/`Case` matrix (the test stream); the intended
@@ -69,15 +80,18 @@
    `<project>.test.dhall` and needing no pre-existing `<project>.dhall`. The current parser does not
    enforce that root-frame restriction. A suite may declare more than one config variant; for each, the harness **generates**
    the run's `<project>.dhall` functionally via the Harness request of the same restricted `psAssemble`,
-   under fresh exact-run authority and its matching mapped codec. It never shells the CLI, runs the real
-   `project up`, asserts the real workload in-frame, and tears it down with
-   `project destroy` when an in-process body failure is caught before moving to the next variant. A hard
-   interruption does not run `finally`; the target recovery sweep reopens the incomplete run before a new
+   under fresh exact-run authority and its matching mapped codec. It never shells the CLI: it retains the
+   exact Harness plan, invokes the common current-frame Chain, asserts the real workload in-frame, and
+   invokes the matching current-frame reverse projection when an in-process body failure is caught before
+   moving to the next variant. A hard
+   interruption does not run `finally`; the recovery sweep reopens the incomplete run before a new
    variant. The demo runs
    two variants whose only difference is `message`, and its Playwright `e2e-tabs` spec is polymorphic: it
    reads `EXPECTED_MESSAGE` and asserts whichever message the active deployment set. It reuses the chain
-   rather than a separate per-case cluster. Existing-config and production-cluster preconditions reduce
-   collision risk, but they do not establish isolation; the demo currently selects Production/`.data`. See
+   rather than a separate per-case cluster. Each run owns its generated config and `.test_data/<runId>`
+   root under exact Harness authority; provider/cluster/mount consumers still receive independently
+   derived profile/root terms until the
+   [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md)'s exact-plan adoption. See
    [testing](testing.md) and [harness_workflow](../architecture/harness_workflow.md).
 6. **Register schema artifacts and Dhall vocabulary.** Pass only the project's `ConfigArtifact` delta
    to `projectSpec`; core concatenates `coreArtifacts` exactly once. Prefer `artifactOf`, but recognize
@@ -91,7 +105,8 @@
 
 ## A Worked Chain (the demo)
 
-The demo's `demoChainFor :: Substrate -> ProjectConfig -> [Step]` (in
+The demo's
+`demoChainFor :: Substrate -> CanonicalProjectRoot scope rootId -> ProjectConfig scope -> [Step]` (in
 `demo/src/HostBootstrapDemo/Commands.hs`) is the canonical example. Its default VM-backed branch nests
 *pristine-host VM bootstrap* over *in-container deploy*, and every host and workload step lives in one
 ordered `[Step]` spanning three frames:
@@ -101,7 +116,7 @@ deploy-VM       host-orchestrator-0 (metal)        -- ensure the VM provider (In
 deploy-VM       host-orchestrator-0 (metal)        -- launch/start the provider VM (creation-time wall; WSL CPU/memory is global)
 build-pb        host-orchestrator-0 (metal)        -- pristine-bootstrap: build the binary host-native (#2) + the project image (#3) in the VM
 context-init    vm-orchestrator-1 (vm)             -- announcing frame anchor; handoff carries the projected child config
-deploy-kind     vm-project-container-2 (container) -- bring up the persistent kind cluster (cordon #2, Production profile)
+deploy-kind     vm-project-container-2 (container) -- bring up the persistent kind cluster (cordon #2, config-selected run profile)
 deploy-minio    vm-project-container-2 (container) -- install MinIO and create the registry's S3 bucket
 deploy-registry vm-project-container-2 (container) -- install the in-cluster registry (registry:2, NodePort 30500)
 push-image      vm-project-container-2 (container) -- load the project image into kind and push it to the in-cluster registry
@@ -125,9 +140,11 @@ selected accelerator step run: a host-frame `postHandoffStep` on Apple/Windows, 
 `localhost:30080` with the selected accelerator placement. The interpreter runs the steps in order; its
 stronger typed restart/idempotence guarantee remains target work.
 
-Current `project down`/`destroy` do not walk the same chain recursively. They perform owning
-the verb's reverse projection of the one plan: current-frame cluster cleanup plus the reverse each
-acquiring node declared, which may stop or delete the provider.
+Current `project down`/`destroy` retain or reconstruct the same exact Production plan and drive the verb's
+current-frame reverse projection: cluster cleanup plus the reverse each acquiring node declared, which may
+stop or delete the provider. That pure plan/current-frame derivation is not exact teardown command
+authorization. Nested entry fails closed, and authenticated child-to-parent traversal remains
+[the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)'s work.
 Cluster teardown never places the plan's data path in its removal set. The demo's `.data` is a host
 directory carried into the provider, not guest-only disk state, but destroy/up/readback has not yet been
 validated. Typed idempotence, child-to-parent teardown, and ownership-receipt cleanup are targets. See
@@ -157,10 +174,15 @@ teardown leaves the plan's `.data` path out of its removal set (see
 `hostbootstrap-core` exposes exactly `project`, `test`, `service`, `context`, and `check-code`. The
 consumer's contribution is additive root-bound `CanonicalProjectRoot -> cfg -> [Step]` fragments plus
 project step actions; the demo supplies
-`demoChainFor :: Substrate -> CanonicalProjectRoot rootScope rootId -> ProjectConfig configScope -> [Step]`
+`demoChainFor :: Substrate -> CanonicalProjectRoot scope rootId -> ProjectConfig scope -> [Step]`
 in `demo/src/HostBootstrapDemo/Commands.hs`, wired into the builder with `addSteps` and
 `finalizeProjectSpec`.
-`project up` is recursive; `down`/`destroy` are current-frame cleanup plus a hook. The read-only `context` introspection
+Production `project up` admits or reconstructs one exact plan and uses it for dry rendering, snapshot
+persistence, journal/cursor admission, `authorizeProjectUp`, and its current-frame Chain segment.
+`down`/`destroy` use the same exact plan representation for current-frame reverse work. Nested lifecycle
+entry is fail-closed until authenticated recursive admission is implemented. Harness directly retains and
+interprets its exact plan through the same current-frame boundaries; demo profile/root consumers still
+need exact-plan projection. The read-only `context` introspection
 (`inspect`/`path`/`show`/`schema`/`render`, where `inspect` renders the lift composition with the current
 frame marked), and the `test init` / `test run <case-id>|all` split are implemented. Current live
 validation and closure belong in the development plan. The surface is fixed —
@@ -170,13 +192,14 @@ adds no verbs: it contributes internal typed `web`/`accelerator` role definition
 generates the PureScript types folds into the build-image step) and its VM/provider IO as chain steps.
 `ensure` is a reconciler library; core exposes `ensureStep`, but the demo calls `runEnsure` inside
 larger provider/build/accelerator actions. The forward-representation doctrine holds:
-`demoChainFor substrate` produces the one `project up` lift sequence, and `test run all` **drives that
-same `project up`** under a test config rather than standing up a separate per-case cluster.
+`demoChainFor substrate` produces one forward plan definition, and `test run all` admits that definition
+under an exact Harness scope and invokes the common current-frame Chain rather than standing up a
+separate per-case deployment graph.
 
 Under
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md) a project supplies
-the generic `ProjectSpec projectId cfg tcfg` seams — one restricted `psAssemble`, separate
-`psTestInit`, and a typed service registry over `cfg (Production projectId)`. Each frame's lift context
+the generic `ProjectSpec cfg tcfg` seams — one identity-polymorphic restricted `psAssemble`, separate
+`psTestInit`, and a typed `ServiceRegistry cfg` whose projections work at every selected scope. Each frame's lift context
 is not one of those seams: it is declared on the plan node that owns the boundary. The
 matching teardown seam receives the same opaque root authority, so direct-host adapters do not reconstruct
 it from descriptive `sourceRoot`. The demo's assembler carries its own defaults, including `message =
@@ -192,7 +215,7 @@ child projection, and invents no fallback values. See the
 ## See also
 
 - [composition_methodology](../architecture/composition_methodology.md) — the canonical home of the
-  chain-is-the-project model, the recursive `project up` interpreter, and fractal bootstrap.
+  chain-is-the-project model, current-frame Chain, target recursive `project up`, and fractal bootstrap.
 - [composition_patterns](composition_patterns.md) — the cookbook of `Step`-chain shapes this guide
   composes.
 - [derived_project_standards](derived_project_standards.md) — the per-stream rules (stream 1 = the lift

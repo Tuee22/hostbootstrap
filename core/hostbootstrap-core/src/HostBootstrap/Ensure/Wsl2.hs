@@ -4,10 +4,15 @@ module HostBootstrap.Ensure.Wsl2
     installSteps,
     powerShellBoolArgs,
     wsl2Ready,
+    bcdeditHypervisorLaunchArgs,
+    normalizeWslText,
+    wslReportsNoInstalledDistributions,
+    wslReportsVirtualizationDisabled,
   )
 where
 
 import Data.Char (toLower)
+import Data.List (isInfixOf)
 import HostBootstrap.Ensure
   ( InstallStep (..),
     Reconciler (..),
@@ -23,8 +28,25 @@ import HostBootstrap.Substrate
     renderSubstrateName,
     substrateName,
   )
-import qualified HostBootstrap.Wsl2 as Wsl2
 import System.Exit (ExitCode (ExitSuccess), die)
+
+wslReportsVirtualizationDisabled :: (ExitCode, String, String) -> Bool
+wslReportsVirtualizationDisabled (_, out, err) =
+  "virtualization is not enabled" `isInfixOf` text
+    || "wsl2 is unable to start" `isInfixOf` text
+  where
+    text = normalizeWslText (out ++ "\n" ++ err)
+
+wslReportsNoInstalledDistributions :: (ExitCode, String, String) -> Bool
+wslReportsNoInstalledDistributions (_, out, err) =
+  "has no installed distributions"
+    `isInfixOf` normalizeWslText (out ++ "\n" ++ err)
+
+normalizeWslText :: String -> String
+normalizeWslText = map toLower . filter (/= '\0')
+
+bcdeditHypervisorLaunchArgs :: [String]
+bcdeditHypervisorLaunchArgs = ["/set", "hypervisorlaunchtype", "auto"]
 
 reconciler :: Reconciler
 reconciler =
@@ -41,9 +63,9 @@ wsl2Ready cfg = do
   result <- runTool cfg Wsl ["--status"]
   case result of
     Right status@(ExitSuccess, _, _) ->
-      pure (not (Wsl2.wslReportsVirtualizationDisabled status))
+      pure (not (wslReportsVirtualizationDisabled status))
     Right status
-      | Wsl2.wslReportsNoInstalledDistributions status ->
+      | wslReportsNoInstalledDistributions status ->
           pure True
     _ -> wsl2OnlineListReady cfg
 
@@ -52,8 +74,8 @@ wsl2OnlineListReady cfg = do
   result <- runTool cfg Wsl ["--list", "--online"]
   pure $ case result of
     Right online@(ExitSuccess, out, err) ->
-      not (Wsl2.wslReportsVirtualizationDisabled online)
-        && "ubuntu-24.04" `elem` words (Wsl2.normalizeWslText (out ++ "\n" ++ err))
+      not (wslReportsVirtualizationDisabled online)
+        && "ubuntu-24.04" `elem` words (normalizeWslText (out ++ "\n" ++ err))
     _ -> False
 
 reconcileWsl2 :: HostConfig -> IO ()
@@ -79,12 +101,12 @@ reconcileHypervisorLaunch cfg = do
 
 setHypervisorLaunch :: HostConfig -> IO ()
 setHypervisorLaunch cfg = do
-  result <- runTool cfg Bcdedit Wsl2.bcdeditHypervisorLaunchArgs
+  result <- runTool cfg Bcdedit bcdeditHypervisorLaunchArgs
   case result of
     Right (ExitSuccess, _, _) ->
       die "ensure wsl2: host reboot required after WSL2 hypervisor launch configuration; reboot and retry"
     Right (_, _, errOut) ->
-      die ("ensure wsl2: install step `" ++ toolCommandName Bcdedit ++ " " ++ unwords Wsl2.bcdeditHypervisorLaunchArgs ++ "` failed " ++ errOut)
+      die ("ensure wsl2: install step `" ++ toolCommandName Bcdedit ++ " " ++ unwords bcdeditHypervisorLaunchArgs ++ "` failed " ++ errOut)
     Left err -> die ("ensure wsl2: " ++ err)
 
 runPowerShellBool :: HostConfig -> String -> IO (Either String Bool)

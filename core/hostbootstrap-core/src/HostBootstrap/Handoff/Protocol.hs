@@ -94,6 +94,10 @@ data ProtocolTag
       ActivationSignRequestTag
     | -- | The root's signature over that manifest.
       ActivationSignResponseTag
+    | -- | Request fields: canonical recovery binding, exact adapter wire.
+      RecoveryRequestTag
+    | -- | Response field: recovery-domain signature (never a key).
+      RecoveryResponseTag
     | RefusedTag
     deriving (Eq, Ord, Show)
 
@@ -153,6 +157,8 @@ expectedFieldCount tag = case tag of
     CompletedTag -> 1
     ActivationSignRequestTag -> 1
     ActivationSignResponseTag -> 1
+    RecoveryRequestTag -> 2
+    RecoveryResponseTag -> 1
     RefusedTag -> 2
 
 -- | Encode one message as a complete outer frame.
@@ -342,6 +348,7 @@ childProtocolReceive state message = case (state, protocolMessageTag message) of
     (ChildRunning expected, OfferResponseTag) -> requireRequest expected requestId state
     (ChildRunning expected, GrantResponseTag) -> requireRequest expected requestId state
     (ChildRunning expected, ActivationSignResponseTag) -> requireRequest expected requestId state
+    (ChildRunning expected, RecoveryResponseTag) -> requireRequest expected requestId state
     (ChildRunning expected, RefusedTag) -> requireRequest expected requestId ChildFinished
     _ -> Left (ProtocolInvalidTransition "receive" state (protocolMessageTag message))
   where
@@ -366,6 +373,9 @@ childProtocolSend state message = case (state, protocolMessageTag message) of
     -- that has not completed its own admission cannot ask the root to sign
     -- anything.
     (ChildRunning expected, ActivationSignRequestTag) -> requireRequest expected requestId state
+    -- Recovery signing is a relay request, not a new entry.  Only a frame that
+    -- completed its own admission reaches 'ChildRunning' and can raise it.
+    (ChildRunning expected, RecoveryRequestTag) -> requireRequest expected requestId state
     (ChildRunning expected, CompletedTag) -> requireRequest expected requestId ChildFinished
     (_, RefusedTag)
         | state /= ChildFinished -> requireStateRequest state requestId ChildFinished
@@ -477,6 +487,8 @@ tagByte tag = case tag of
     RefusedTag -> 10
     ActivationSignRequestTag -> 11
     ActivationSignResponseTag -> 12
+    RecoveryRequestTag -> 13
+    RecoveryResponseTag -> 14
 
 byteTag :: Word8 -> Either ProtocolError ProtocolTag
 byteTag raw = case raw of
@@ -492,6 +504,8 @@ byteTag raw = case raw of
     10 -> Right RefusedTag
     11 -> Right ActivationSignRequestTag
     12 -> Right ActivationSignResponseTag
+    13 -> Right RecoveryRequestTag
+    14 -> Right RecoveryResponseTag
     _ -> Left (ProtocolUnknownTag raw)
 
 word16BigEndian :: Word16 -> [Word8]

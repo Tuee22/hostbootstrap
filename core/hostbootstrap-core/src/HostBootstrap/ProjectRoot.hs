@@ -18,8 +18,10 @@ import Data.List (isPrefixOf)
 import System.Directory (canonicalizePath, doesDirectoryExist, doesPathExist)
 import System.FilePath (addTrailingPathSeparator, equalFilePath, isAbsolute, normalise, takeDirectory, takeFileName, (</>))
 
--- | A root whose constructor and scope/root identities are private to this
--- module. Both phantoms are minted by 'withCanonicalProjectRoot'.
+-- | A root whose constructor and root identity are private to this module.
+-- The surrounding admission chooses @scope@; 'withCanonicalProjectRoot' mints
+-- only @rootId@.  This lets the config/lifecycle bracket retain its exact scope
+-- while still preventing a root identity from escaping its continuation.
 newtype CanonicalProjectRoot scope rootId = CanonicalProjectRoot FilePath
 
 -- | An absolute host path derived from one canonical project-root identity.
@@ -43,7 +45,7 @@ data ProjectRootError
 withCanonicalProjectRoot ::
     FilePath ->
     FilePath ->
-    (forall scope rootId. CanonicalProjectRoot scope rootId -> IO a) ->
+    (forall rootId. CanonicalProjectRoot scope rootId -> IO a) ->
     IO (Either ProjectRootError a)
 withCanonicalProjectRoot configPath configuredRoot action = do
     let configDir = takeDirectory configPath

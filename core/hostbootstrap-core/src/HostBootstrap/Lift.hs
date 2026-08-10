@@ -20,7 +20,12 @@
 -- directly, so the subcommand is passed bare after the image and any deeper
 -- nesting is the in-container binary's own runtime self-lift.
 module HostBootstrap.Lift
-  ( -- * Contexts
+  ( -- * Provider targets
+    IncusVM (..),
+    LimaVM (..),
+    Wsl2VM (..),
+
+    -- * Contexts
     LiftLayer (..),
     ContainerLift (..),
     ConfigDelivery (..),
@@ -31,20 +36,18 @@ module HostBootstrap.Lift
     inWsl2VM,
     inContainer,
     canonicalHostMount,
+    execVMArgs,
+    shellVMArgs,
+    wslExecArgs,
 
     -- * Self-reference
     SelfRef (..),
     mkSelfRef,
     currentSelfRef,
 
-    -- * Folding and dispatch
+    -- * Generic folding and dispatch
     LiftDispatch (..),
     LiftLeaf (..),
-    reachLeaf,
-    blobUploadSessionLeaf,
-    blobUploadPatchLeaf,
-    blobUploadFinishLeaf,
-    blobHeadLeaf,
     foldLeaf,
     foldLift,
     containerRunArgs,
@@ -54,98 +57,47 @@ module HostBootstrap.Lift
     liftLeafWithStdin,
     liftSubcommand,
     liftSubcommandWithStdin,
-    liftSubcommandWithAuth,
     runSelf,
     runSelfWithStdin,
+    shellQuoteArgs,
+
+    -- * Later composition and network leaves
+    reachLeaf,
+    blobUploadSessionLeaf,
+    blobUploadPatchLeaf,
+    blobUploadFinishLeaf,
+    blobHeadLeaf,
   )
 where
 
 import Control.Exception (SomeException)
 import Control.Exception.Safe (try)
 import qualified Data.Text as T
-import HostBootstrap.Config.Vocab (Mount)
 import qualified HostBootstrap.Config.Vocab as Vocab
 import HostBootstrap.Ensure (runTool, runToolWithStdin)
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima, Wsl), toolCommandName)
-import HostBootstrap.Incus (IncusVM, execVMArgs)
-import HostBootstrap.Lima (LimaVM)
-import qualified HostBootstrap.Lima as Lima
-import HostBootstrap.ProjectRoot (CanonicalHostPath, CanonicalProjectRoot, canonicalHostPathValue)
-import HostBootstrap.Registry (RegistryAuth, registryAuthEnvVar, registryConfigPayload)
-import HostBootstrap.Wsl2 (Wsl2VM)
-import qualified HostBootstrap.Wsl2 as Wsl2
+import HostBootstrap.Lift.Context
+  ( ConfigDelivery (..),
+    ContainerLift (..),
+    IncusVM (..),
+    LiftContext (..),
+    LiftLayer (..),
+    LimaVM (..),
+    Wsl2VM (..),
+    canonicalHostMount,
+    execVMArgs,
+    inContainer,
+    inLimaVM,
+    inVM,
+    inWsl2VM,
+    localContext,
+    shellVMArgs,
+    wslExecArgs,
+  )
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode)
 import System.Process (readProcessWithExitCode)
-
--- | A @docker run@ container layer: the image to run, its bind mounts, any extra
--- raw flags (e.g. a Docker-socket mount or @--network=host@), and whether to
--- pass @--rm@. The container's @ENTRYPOINT@ is the project binary, so the lifted
--- subcommand is the command tail.
-data ContainerLift = ContainerLift
-  { clImage :: String,
-    clMounts :: [Mount],
-    clExtraArgs :: [String],
-    clRemoveAfter :: Bool,
-    -- | Optional in-place child-config delivery. When set, the container handoff
-    -- keeps the container's @stdin@ open (@-i@) and overrides the @ENTRYPOINT@ to
-    -- write the piped @stdin@ (the narrowed child projection) to the sibling
-    -- config path, then @exec@s the binary — so the config is delivered on
-    -- @stdin@ (never @argv@, never a bind-mount) and the sibling exists before the
-    -- in-container command gate reads it.
-    clConfigDelivery :: Maybe ConfigDelivery
-  }
-  deriving (Eq, Show)
-
--- | In-place child-config delivery for a container handoff (see
--- @development_plan_standards.md § X@): write the piped @stdin@ payload to
--- 'cdWritePath' (the child's sibling @\<project\>.dhall@), then @exec@ 'cdExecPath'
--- with the folded subcommand. The payload is the /narrowed child projection/ (not a
--- secret), carried on @stdin@ by the effectful seam and never in @argv@; it
--- replaces the former host-side file + config bind-mount.
-data ConfigDelivery = ConfigDelivery
-  { cdWritePath :: FilePath,
-    cdExecPath :: FilePath,
-    cdPayload :: T.Text
-  }
-  deriving (Eq, Show)
-
--- | Build a container mount whose host source can only come from canonical
--- project-root admission. Raw paths and provider-local guest aliases cannot
--- enter this adapter.
-canonicalHostMount :: CanonicalProjectRoot scope rootId -> CanonicalHostPath scope rootId -> FilePath -> Bool -> Mount
-canonicalHostMount _ hostPath containerPath readOnly =
-  Vocab.Mount (T.pack (canonicalHostPathValue hostPath)) (T.pack containerPath) readOnly
-
--- | One context-boundary layer: a VM provider or a container.
-data LiftLayer = ViaVM IncusVM | ViaLimaVM LimaVM | ViaWsl2VM Wsl2VM | ViaContainer ContainerLift
-  deriving (Eq, Show)
-
--- | A stack of context layers, outermost-first. The empty stack is the local
--- host.
-newtype LiftContext = LiftContext {liftLayers :: [LiftLayer]}
-  deriving (Eq, Show)
-
--- | The local host: run the binary directly, no lift.
-localContext :: LiftContext
-localContext = LiftContext []
-
--- | Nest a VM as the new innermost layer.
-inVM :: IncusVM -> LiftContext -> LiftContext
-inVM vm (LiftContext ls) = LiftContext (ls ++ [ViaVM vm])
-
--- | Nest a Lima VM as the new innermost layer.
-inLimaVM :: LimaVM -> LiftContext -> LiftContext
-inLimaVM vm (LiftContext ls) = LiftContext (ls ++ [ViaLimaVM vm])
-
--- | Nest a WSL2 distro as the new innermost layer.
-inWsl2VM :: Wsl2VM -> LiftContext -> LiftContext
-inWsl2VM vm (LiftContext ls) = LiftContext (ls ++ [ViaWsl2VM vm])
-
--- | Nest a container as the new innermost layer (a container is terminal).
-inContainer :: ContainerLift -> LiftContext -> LiftContext
-inContainer c (LiftContext ls) = LiftContext (ls ++ [ViaContainer c])
 
 -- | How to invoke /this binary/ per context. The local path is the running
 -- executable; the in-VM path is a deployment fact (e.g. the pipx/ghcup-installed
@@ -346,15 +298,15 @@ foldLeaf (LiftContext layers) leaf = build layers
   where
     build [] = leafLocalDispatch leaf
     build (ViaVM vm : rest) = DispatchTool Incus (execVMArgs vm (insideVM rest))
-    build (ViaLimaVM vm : rest) = DispatchTool Lima (Lima.shellVMArgs vm (insideVM rest))
-    build (ViaWsl2VM vm : rest) = DispatchTool Wsl (Wsl2.wslExecArgs (Wsl2.wsl2Distro vm) (insideVM rest))
+    build (ViaLimaVM vm : rest) = DispatchTool Lima (shellVMArgs vm (insideVM rest))
+    build (ViaWsl2VM vm : rest) = DispatchTool Wsl (wslExecArgs (wsl2Distro vm) (insideVM rest))
     build (ViaContainer c : _) = DispatchTool Docker (containerRunArgs c (leafContainerInner leaf))
 
     -- The argv to run inside a VM, given the remaining inner layers.
     insideVM [] = leafInVMArgv leaf
     insideVM (ViaVM vm : rest) = toolCommandName Incus : execVMArgs vm (insideVM rest)
-    insideVM (ViaLimaVM vm : rest) = toolCommandName Lima : Lima.shellVMArgs vm (insideVM rest)
-    insideVM (ViaWsl2VM vm : rest) = toolCommandName Wsl : Wsl2.wslExecArgs (Wsl2.wsl2Distro vm) (insideVM rest)
+    insideVM (ViaLimaVM vm : rest) = toolCommandName Lima : shellVMArgs vm (insideVM rest)
+    insideVM (ViaWsl2VM vm : rest) = toolCommandName Wsl : wslExecArgs (wsl2Distro vm) (insideVM rest)
     insideVM (ViaContainer c : _) = toolCommandName Docker : containerRunArgs c (leafContainerInner leaf)
 
 -- | Fold a context stack and a subcommand of /this binary/ into the host
@@ -431,49 +383,6 @@ runSelfWithStdin exe args input = do
   pure $ case (result :: Either SomeException (ExitCode, String, String)) of
     Right ok -> Right ok
     Left err -> Left ("could not exec " ++ exe ++ ": " ++ show err)
-
--- | Like 'liftSubcommand', but forward a Docker Hub credential into the nested
--- context so any image pull it performs authenticates (avoiding Docker Hub's
--- unauthenticated rate limit). The credential is forwarded only over ephemeral
--- channels and is never in @argv@, never written to a persisted file, and never
--- in Dhall:
---
---   * the minimal @config.json@ payload is piped on @stdin@ to the VM shell,
---     which imports it into the 'registryAuthEnvVar' environment variable
---     (@export VAR=\"$(cat)\"@ — the value never appears in a process listing);
---   * the @docker run@ then carries @-e \<registryAuthEnvVar\>@ (the /name/ only),
---     so Docker forwards the value into the container's environment;
---   * the in-container binary's @withForwardedRegistryAuth@ consumes it once into
---     a transient @DOCKER_CONFIG@ and never persists it.
---
--- This is the supported forwarding shape — a container reached through a VM
--- (@inContainer img (inVM\/inLimaVM\/inWsl2VM vm localContext)@), the worked demo's deploy
--- frame. With 'Nothing' (no host login) or any other context shape it is exactly
--- 'liftSubcommand', so pulls degrade gracefully to anonymous.
-liftSubcommandWithAuth ::
-  HostConfig ->
-  Maybe RegistryAuth ->
-  SelfRef ->
-  LiftContext ->
-  [String] ->
-  IO (Either String (ExitCode, String, String))
-liftSubcommandWithAuth cfg Nothing self ctx sub = liftSubcommand cfg self ctx sub
-liftSubcommandWithAuth cfg (Just auth) self ctx sub =
-  case liftLayers ctx of
-    [ViaLimaVM vm, ViaContainer c] -> forward Lima (Lima.shellVMArgs vm) c
-    [ViaVM vm, ViaContainer c] -> forward Incus (execVMArgs vm) c
-    [ViaWsl2VM vm, ViaContainer c] -> forward Wsl (Wsl2.wslExecArgs (Wsl2.wsl2Distro vm)) c
-    _ -> liftSubcommand cfg self ctx sub
-  where
-    forward tool vmShell c =
-      let inner = toolCommandName Docker : containerRunArgs c sub
-          script =
-            "export "
-              ++ registryAuthEnvVar
-              ++ "=\"$(cat)\"; exec "
-              ++ shellQuoteArgs inner
-          args = vmShell ["bash", "-lc", script]
-       in runToolWithStdin cfg tool args (T.unpack (registryConfigPayload auth))
 
 -- | Single-quote each argument and join with spaces, so an argv can be embedded
 -- verbatim in a @bash -lc@ script without re-splitting or glob expansion. Pure.

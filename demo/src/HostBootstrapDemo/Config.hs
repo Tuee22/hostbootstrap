@@ -4,7 +4,6 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -24,7 +23,6 @@ place defaults live — the @InitArgs@ builders ('demoInit' / 'demoTestInit' /
 'demoTestConfig') the demo's 'HostBootstrap.CLI.ProjectSpec' threads in.
 -}
 module HostBootstrapDemo.Config (
-    DemoProject,
     ProjectConfig (..),
     DeployConfig (..),
     Resources,
@@ -344,19 +342,15 @@ context and is validated against the derived project/binary name before
 normal command dispatch.
 -}
 
--- | Type-level identity for the installed demo project.
-data DemoProject
-
 {- | Which lifecycle profile the stack this config describes belongs to.
 
-The demo used to resolve every cluster plan as @Production@, so a harness run
-took the production cluster name and the durable @.data@ root — which is why the
-long gate had to run on a disposable host. This field is what a run's own
-identity travels in: production assembly writes 'ProductionRun', harness
-assembly writes 'HarnessRun' carrying that run's name, and 'clusterProfileOf'
-turns it into the core's 'ClusterProfile'. Because it is an ordinary field of
-the config the parent streams to each child frame, the container frame resolves
-the same profile the host frame did rather than re-deciding.
+This field carries a run's config-level identity: production assembly writes
+'ProductionRun', harness assembly writes 'HarnessRun' carrying that run's name,
+and 'clusterProfileOf' turns it into the core's 'ClusterProfile'. Because it is
+an ordinary field of the config the parent streams to each child frame, the
+container frame resolves the same profile the host frame did rather than
+re-deciding. Consumers still derive that profile independently from config;
+the exact retained plan does not yet supply their profile/root arguments.
 -}
 data RunProfile
     = ProductionRun
@@ -391,7 +385,7 @@ clusterProfileOf cfg = case runProfile cfg of
 {- | The demo's 'ProjectCfg' instance: the core reaches the embedded context
 through one read-only projection and otherwise never touches the demo's fields.
 -}
-instance ProjectCfg DemoProject ProjectConfig where
+instance ProjectCfg ProjectConfig where
     withProductionProjectCodec =
         withProjectCodec
             "HostBootstrapDemo.ProjectConfig/Production"
@@ -751,8 +745,8 @@ proves the served message really is config-driven (changing the config changes t
 served value), not hard-coded.
 -}
 demoAssemble ::
-    forall scope.
-    AssemblyRequest DemoProject TestConfig Text scope ->
+    forall projectId scope.
+    AssemblyRequest projectId TestConfig Text scope ->
     ConfigAssembly scope (ProjectConfig scope)
 demoAssemble request =
     case request of

@@ -2,7 +2,6 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
@@ -43,7 +42,11 @@ module Fixture (
     projectConfigForRole,
     initArgsFor,
     projectInit,
+    fixtureExecutableName,
+    withFixtureInstalledProject,
     withFixtureProjectRoot,
+    withFixtureProjectPlan,
+    withFixtureProjectPlanContext,
     withFixtureHarnessAuthority,
 )
 where
@@ -62,6 +65,7 @@ import HostBootstrap.Config.Class (
     withMappedProjectCodec,
     withProjectCodec,
  )
+import HostBootstrap.Config.Schema (withValidatedConfig)
 import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.Context (BinaryContext)
 import qualified HostBootstrap.Context as Context
@@ -80,9 +84,29 @@ import HostBootstrap.Harness.Ownership (
     protectedProjectRunOwnership,
     withOwnedHarnessRoot,
  )
-import HostBootstrap.Lifecycle.Mode (harnessRootHarnessAuthority)
-import HostBootstrap.ProjectRoot (CanonicalProjectRoot, withCanonicalProjectRoot)
+import HostBootstrap.Lifecycle.Mode (
+    harnessRootHarnessAuthority,
+    productionActiveMode,
+    productionRootAuthority,
+    productionRootModeLease,
+    productionRootUnboundLease,
+    withProductionLifecycleProfile,
+    withProductionRoot,
+ )
+import HostBootstrap.ProjectPlan (
+    ProjectPlan,
+    planDraftsFromValidatedBuilder,
+ )
+import HostBootstrap.ProjectPlan.Construct (withProjectPlan)
+import HostBootstrap.ProjectRoot (
+    CanonicalProjectRoot,
+    canonicalProjectRootPath,
+    withCanonicalProjectRoot,
+ )
+import HostBootstrap.Protected (openProtectedStore)
+import HostBootstrap.Step (StepPlan)
 import Numeric.Natural (Natural)
+import System.Environment (getExecutablePath)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 
@@ -91,37 +115,148 @@ tests. The helper fails if acquisition or finalization does not settle; it never
 mints authority from a caller-selected run name.
 -}
 withFixtureHarnessAuthority ::
-    forall projectId cfg result.
-    (ProjectCfg projectId cfg) =>
-    Text ->
-    (forall runId. V.HarnessAuthority projectId runId -> IO result) ->
+    forall result.
+    ( forall projectId runId.
+      Authority.InstalledProjectIdentity projectId ->
+      V.HarnessAuthority projectId runId ->
+      IO result
+    ) ->
     IO result
-withFixtureHarnessAuthority projectName use =
-    withSystemTempDirectory "hostbootstrap-harness-authority" $ \root -> do
-        project <-
-            either
-                (ioError . userError . T.unpack . Authority.authorityErrorMessage)
-                pure
-                (Authority.installedProjectFor @projectId @cfg projectName)
-        rooted <-
-            withCanonicalProjectRoot root root $ \canonicalRoot ->
-                runWithOwnedRun
-                    ( protectedProjectRunOwnership
-                        project
-                        canonicalRoot
-                        root
-                        (root </> ".test_data")
+withFixtureHarnessAuthority use =
+    withFixtureInstalledProject $ \project ->
+        withSystemTempDirectory "hostbootstrap-harness-authority" $ \root -> do
+            rooted <-
+                withCanonicalProjectRoot root root $ \canonicalRoot ->
+                    runWithOwnedRun
+                        ( protectedProjectRunOwnership
+                            project
+                            canonicalRoot
+                            root
+                            (root </> ".test_data")
+                        )
+                        ( \owned ->
+                            withOwnedHarnessRoot owned $ \_store _project harnessRoot _closeControl ->
+                                use project (harnessRootHarnessAuthority harnessRoot)
+                        )
+            outcome <- either (ioError . userError . show) pure rooted
+            case outcome of
+                Left reason -> ioError (userError reason)
+                Right (result, Nothing) -> pure result
+                Right (_, Just failure) ->
+                    ioError (userError ("harness authority cleanup failed: " ++ show failure))
+
+-- | The executable-verified name used by the core test binary.
+fixtureExecutableName :: IO Text
+fixtureExecutableName = Authority.normalizeExecutableIdentity <$> getExecutablePath
+
+{- | Admit the actual test executable identity without allowing its generative
+@projectId@ to escape the continuation.
+-}
+withFixtureInstalledProject ::
+    (forall projectId. Authority.InstalledProjectIdentity projectId -> IO result) ->
+    IO result
+withFixtureInstalledProject use = do
+    name <- fixtureExecutableName
+    admitted <- Authority.withInstalledProjectIdentity name use
+    either
+        (ioError . userError . T.unpack . Authority.authorityErrorMessage)
+        pure
+        admitted
+
+{- | Admit one real Production project plan for projection/reconciliation
+tests while keeping every generated identity inside the callback.
+-}
+withFixtureProjectPlan ::
+    StepPlan ->
+    ( forall projectId specDigest planId configId.
+      ProjectPlan
+        (V.Production projectId)
+        specDigest
+        planId
+        configId
+        ProjectConfig ->
+      IO result
+    ) ->
+    IO result
+withFixtureProjectPlan stepPlan use =
+    withFixtureProjectPlanContext id stepPlan (\plan _context -> use plan)
+
+{- | Admit one real Production project plan whose validated configuration
+retains the exact context selected from the fixture's canonical host context.
+
+The selected context is returned beside the plan so a test can feed that exact
+value to 'HostBootstrap.ProjectPlan.Frame.withCurrentFrame'.  Child-frame tests
+select it with 'Context.deriveVMContext' and 'Context.deriveContainerContext';
+the compatibility wrapper above selects the root context unchanged.
+-}
+withFixtureProjectPlanContext ::
+    (BinaryContext -> BinaryContext) ->
+    StepPlan ->
+    ( forall projectId specDigest planId configId.
+      ProjectPlan
+        (V.Production projectId)
+        specDigest
+        planId
+        configId
+        ProjectConfig ->
+      BinaryContext ->
+      IO result
+    ) ->
+    IO result
+withFixtureProjectPlanContext selectContext stepPlan use =
+    withSystemTempDirectory "hostbootstrap-fixture-project-plan" $ \directory -> do
+        store <- openProtectedStore (directory </> "protected") >>= either (fail . show) pure
+        withFixtureInstalledProject $ \project -> do
+            rooted <-
+                withCanonicalProjectRoot
+                    (directory </> "fixture.dhall")
+                    "."
+                    ( \root ->
+                        withProductionRoot store project Authority.ProjectUp $ \productionRoot -> do
+                            opened <-
+                                withProductionLifecycleProfile
+                                    (Authority.rootScopeAuthority (productionRootAuthority productionRoot))
+                                    (productionActiveMode (productionRootModeLease productionRoot))
+                                    (productionRootUnboundLease productionRoot)
+                                    ( \profile ->
+                                        withProductionProjectCodec @ProjectConfig $ \codec -> do
+                                            let rootValue =
+                                                    defaultProjectConfig
+                                                        (Authority.installedProjectName project)
+                                                        (T.pack (canonicalProjectRootPath root))
+                                                        Context.HostOrchestrator
+                                                exactContext = selectContext rootValue.context
+                                                value = rootValue{context = exactContext}
+                                            validated <-
+                                                withValidatedConfig codec value $ \_wire config -> do
+                                                    drafts <-
+                                                        either
+                                                            (fail . show)
+                                                            pure
+                                                            ( planDraftsFromValidatedBuilder
+                                                                root
+                                                                config
+                                                                (\_ _ -> Right stepPlan)
+                                                            )
+                                                    action <-
+                                                        either
+                                                            (fail . show)
+                                                            pure
+                                                            ( withProjectPlan
+                                                                profile
+                                                                root
+                                                                config
+                                                                drafts
+                                                                (\plan -> use plan exactContext)
+                                                            )
+                                                    action
+                                            either fail pure validated
+                                    )
+                            result <- either (fail . show) id opened
+                            pure (Right result)
                     )
-                    ( \owned ->
-                        withOwnedHarnessRoot owned $ \_store _project harnessRoot ->
-                            use (harnessRootHarnessAuthority harnessRoot)
-                    )
-        outcome <- either (ioError . userError . show) pure rooted
-        case outcome of
-            Left reason -> ioError (userError reason)
-            Right (result, Nothing) -> pure result
-            Right (_, Just failure) ->
-                ioError (userError ("harness authority cleanup failed: " ++ show failure))
+            modeResult <- either (fail . show) pure rooted
+            either (fail . show) pure modeResult
 
 data Resources = Resources
     { cpu :: Natural
@@ -165,7 +300,7 @@ data ProjectConfig scope = ProjectConfig
     }
     deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
-instance ProjectCfg FixtureProject ProjectConfig where
+instance ProjectCfg ProjectConfig where
     withProductionProjectCodec =
         withProjectCodec "fixture/Production" projectConfigCodec
     withHarnessProjectCodec _ =
@@ -202,7 +337,7 @@ harnessSecretProjectWireCodec :: CodecWitness HarnessSecretProjectWire
 harnessSecretProjectWireCodec =
     requireCodecWitness "fixture HarnessSecretProjectWire" autoCodecWitness
 
-instance ProjectCfg SecretFixtureProject SecretProjectConfig where
+instance ProjectCfg SecretProjectConfig where
     withProductionProjectCodec =
         withMappedProjectCodec
             "fixture secrets/Production"

@@ -1,6 +1,6 @@
 # Phase 21 — Composition and network algebra
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 16 (cluster lifecycle, budgets, and cordoning)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`
@@ -18,10 +18,12 @@ callbacks a caller can skip.
 
 ## Sprints
 
-### Sprint 21.1: Scope-indexed endpoints and reachability [Done]
+### Sprint 21.1: Scope-indexed endpoints and reachability [Active]
 
-**Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Network.hs`
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Network.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lift.hs`,
+`core/hostbootstrap-core/test/RegistrySpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/network_reachability.md`
 
@@ -36,20 +38,25 @@ Make "this client can reach this endpoint" a typed fact.
 - A reachability proof is produced by observation, not assertion, and carries the scope it was taken in.
 - The identity-bound readiness value the proof consumes comes from the canonical-quantities phase, so
   reachability and readiness are one observation rather than two.
+- `reachLeaf` is the additive smart constructor that renders the reachability probe through the lower generic
+  Lift; it is owned here rather than by the Phase-8 fold contract.
 
 #### Validation
 
-`RegistrySpec` and the network cases cover each scope pairing and the refusal when scopes do not match.
+`RegistrySpec` and the network cases cover each scope pairing, the refusal when scopes do not match, and the
+exact `reachLeaf` argument shape. A source guard distinguishes the later additive helper from the lower Lift
+fold contract.
 
 #### Remaining Work
 
-None.
+The complete phase gate.
 
-### Sprint 21.2: Proof-gated blob delivery [Done]
+### Sprint 21.2: Proof-gated blob delivery [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Registry.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/RegistryPlan.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lift.hs`,
 `core/hostbootstrap-core/test/RegistrySpec.hs`, `core/hostbootstrap-core/test/RegistryPlanSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/network_reachability.md`
@@ -65,19 +72,27 @@ Never redirect a client to something it cannot reach.
 - One finalized registry plan renders the whole configuration as output, including whether redirects are
   enabled, so the configuration a registry receives is the plan's rather than an edit.
 - An image push requires a settled route rather than a successful ping.
+- `blobUploadSessionLeaf`, `blobUploadPatchLeaf`, `blobUploadFinishLeaf`, and `blobHeadLeaf` are additive
+  Lift smart constructors owned by this blob-delivery sprint, not by the lower generic fold.
+- `HostBootstrap.Registry` owns `liftSubcommandWithAuth`: registry policy consumes the lower Lift and its
+  generic `shellQuoteArgs`; `HostBootstrap.Lift` never imports Registry or its credential type.
 
 #### Validation
 
-`RegistrySpec` and `RegistryPlanSpec` cover the finalized rendering and the refusal when the route is not
-settled, with a negative fixture proving an unreachable configuration is refused rather than redirecting.
+`RegistrySpec` and `RegistryPlanSpec` cover the finalized rendering, all four blob leaf argument shapes,
+registry-auth forwarding, and the refusal when the route is not settled, with a negative fixture proving an
+unreachable configuration is refused rather than redirecting. A source guard pins the `Registry -> Lift`
+dependency direction.
 
 #### Remaining Work
 
-None.
+Add exact argument-shape coverage for all four blob Lift leaves, rerun the focused registry suites, and run
+the complete phase gate. The Registry-owned authenticated entry and `Registry -> Lift` dependency guard are
+implemented.
 
-### Sprint 21.3: The opaque role phase machine [Done]
+### Sprint 21.3: The opaque role phase machine [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
 `core/hostbootstrap-core/test/RoleLifecycleSpec.hs`
 **Substrates**: linux-cpu
@@ -105,7 +120,28 @@ failures, the aggregate drain, and a live exclusive holder refusing a peer befor
 
 #### Remaining Work
 
-None. Adoption at the `service run` call site belongs to the service-runtime phase.
+The 2026-08-08 authority audit reopened this sprint. Before it can close:
+
+- make every opaque role-plan, binding, placement, effect-authorization, and phase-cursor identity nominal and
+  pin all axes with exact compile-fail evidence;
+- replace the reusable prerequisite cursor with a core-owned transition chain that actually yields every
+  successor and prevents a second run from the same cursor;
+- define and test the asynchronous-exception policy so interruption during a restored callback still reaches
+  Drain, and force callback outcomes inside that protection so a delayed exception cannot escape after it;
+- make shutdown reporting agree with `roleExitReportOk`, and either implement the promised unknown-receipt
+  reprobe before release or narrow the contract;
+- extend Phase 13's collision-free bounded admission key with the durable admission/open recovery protocol
+  described by the canonical standards: explicit lost-acknowledgement outcomes, identity-preserving
+  rehydration of Reserved/Consumed state, and no permanently lost sole cursor after callback interruption; and
+- rerun the focused suite and complete phase gate.
+
+Adoption at the `service run` call site remains the service-runtime phase's work.
+
+## Remaining Work
+
+Sprint 21.2 still needs exact argument-shape coverage for its four blob Lift leaves. Sprint 21.3 is reopened
+for the role authority, transition, interruption, reporting, receipt-reprobe, and durable-resume gaps listed
+above. The focused suites and a fresh complete phase gate validate the phase after both lanes close.
 
 ## Documentation Requirements
 

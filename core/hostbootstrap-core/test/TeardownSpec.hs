@@ -1,6 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE TypeApplications #-}
 
 {- | The verb-indexed reverse projection and its teardown forest (the recursive-lifecycle-command phase).
 
@@ -13,21 +12,35 @@ hypothetical.
 module TeardownSpec (tests) where
 
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import qualified Data.List.NonEmpty as NonEmpty
 import Data.Text (Text)
+import qualified Data.Text as Text
+import qualified Data.Text.IO as TextIO
 import qualified Fixture
-import HostBootstrap.HostConfig (HostConfig, buildHostConfig)
-import HostBootstrap.Substrate (detect)
-import System.IO.Unsafe (unsafePerformIO)
-import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
 import HostBootstrap.Config.Vocab (Production)
+import qualified HostBootstrap.Context as Context
+import HostBootstrap.DocValidator (findRepoRoot)
+import HostBootstrap.HostConfig (HostConfig, buildHostConfig)
 import HostBootstrap.Lift (localContext)
-import HostBootstrap.Reconcile (LifecyclePlan, lifecyclePlanDigest, withLifecyclePlan)
+import HostBootstrap.ProjectPlan (
+    ProjectPlan,
+    forward,
+    plannedStepIdentity,
+    plannedStepOperationKey,
+    plannedStepReversePolicy,
+    renderSnapshot,
+    stablePlanSnapshotDigest,
+ )
+import qualified HostBootstrap.ProjectPlan as ProjectPlan
+import HostBootstrap.ProjectPlan.Frame (CurrentFrame, currentFrameId, withCurrentFrame)
 import HostBootstrap.Step
+import HostBootstrap.Substrate (detect)
 import HostBootstrap.Teardown
+import System.Directory (getCurrentDirectory)
+import System.FilePath ((</>))
+import System.IO.Unsafe (unsafePerformIO)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
-
-type FixtureScope = Production Fixture.FixtureProject
 
 tests :: TestTree
 tests =
@@ -38,7 +51,75 @@ tests =
         , testGroup "the forest" forestTests
         , testGroup "settlement" settlementTests
         , testGroup "the production driver" driverTests
+        , testGroup "source shape" sourceShapeTests
         ]
+
+{- | Pin the deliberate staging boundary between the plan projection and the
+recursive forest. The reverse projection carries @frame@ only on
+'TeardownPlan'; the recursive-lifecycle-command phase propagates it through the
+successor types later. Keeping this as a source-shape check makes an accidental
+early propagation, or a restored second opener argument, fail mechanically.
+-}
+sourceShapeTests :: [TestTree]
+sourceShapeTests =
+    [ testCase "only TeardownPlan is frame-indexed and the opener consumes it alone" $ do
+        cwd <- getCurrentDirectory
+        root <-
+            findRepoRoot cwd
+                >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
+        source <-
+            TextIO.readFile
+                ( root
+                    </> "core"
+                    </> "hostbootstrap-core"
+                    </> "src"
+                    </> "HostBootstrap"
+                    </> "Teardown.hs"
+                )
+        let declarations = map Text.strip (Text.lines source)
+            normalized = Text.unwords (Text.words source)
+            declaration name expected =
+                [ line
+                | line <- declarations
+                , ("data " <> name <> " ") `Text.isPrefixOf` line
+                ]
+                    @?= [expected]
+            exactSignatures =
+                [ "teardownPlan :: ProjectPlan scope specDigest planId configId cfg -> CurrentFrame scope planId frame -> TeardownVerb verb -> TeardownPlan scope planId frame verb"
+                , "openTeardownForest :: TeardownPlan scope planId frame verb -> Either TeardownError (TeardownForest scope planId verb)"
+                ]
+        declaration
+            "TeardownPlan"
+            "data TeardownPlan scope planId frame verb"
+        declaration
+            "TeardownForest"
+            "data TeardownForest scope planId verb"
+        declaration
+            "TeardownProgress"
+            "data TeardownProgress scope planId verb"
+        declaration
+            "CompletedTeardownForest"
+            "data CompletedTeardownForest scope planId verb"
+        declaration
+            "TeardownAuthorizationPoint"
+            "data TeardownAuthorizationPoint scope planId verb"
+        declaration
+            "TeardownCursor"
+            "data TeardownCursor scope planId verb = TeardownCursor ReverseStep"
+        mapM_
+            ( \signature ->
+                assertBool
+                    ("missing exact teardown signature: " ++ Text.unpack signature)
+                    (signature `Text.isInfixOf` normalized)
+            )
+            exactSignatures
+        assertBool
+            "Teardown must consume only the public project-plan facade"
+            (not ("import HostBootstrap.Lifecycle.Plan" `Text.isInfixOf` source))
+        assertBool
+            "Teardown must not retain the deleted LifecyclePlan compatibility projection"
+            (not ("withCompatibilityTeardownPlan" `Text.isInfixOf` source))
+    ]
 
 {- | The loop a lifecycle verb runs (the recursive-lifecycle-command phase).
 
@@ -49,10 +130,11 @@ properties the live verb depends on, taken here without a provider.
 driverTests :: [TestTree]
 driverTests =
     [ testCase "the driver visits every node child-first and completes" $
-        withPlan $ \plan -> do
+        withPlan $ \plan current -> do
             visited <- newIORef []
             rows <- newIORef []
-            forest <- openOrFail plan (teardownPlan plan destroyVerb)
+            let projection = teardownPlan plan current destroyVerb
+            forest <- openOrFail projection
             driven <-
                 driveTeardownForest
                     forest
@@ -68,7 +150,7 @@ driverTests =
                         "every projected identity settled"
                         ( all
                             (`elem` completedForestSettledKeys completed)
-                            (teardownPlanStepKeys (teardownPlan plan destroyVerb))
+                            (teardownPlanStepKeys projection)
                         )
             -- the provider's pre-descent step first, then the deepest frame,
             -- then outwards; every node reports exactly one row
@@ -91,9 +173,9 @@ driverTests =
                     ]
             assertBool "every row is released" (all ((== TeardownReleased) . snd) observedRows)
     , testCase "a failed node stops the run and names every node left outstanding" $
-        withPlan $ \plan -> do
+        withPlan $ \plan current -> do
             attempts <- newIORef (0 :: Int)
-            forest <- openOrFail plan (teardownPlan plan destroyVerb)
+            forest <- openOrFail (teardownPlan plan current destroyVerb)
             driven <-
                 driveTeardownForest
                     forest
@@ -118,8 +200,8 @@ driverTests =
             -- sibling: the failing node is attempted once, not spun on
             readIORef attempts >>= (@?= 3)
     , testCase "a foreign or refused node settles and does not block completion" $
-        withPlan $ \plan -> do
-            forest <- openOrFail plan (teardownPlan plan destroyVerb)
+        withPlan $ \plan current -> do
+            forest <- openOrFail (teardownPlan plan current destroyVerb)
             driven <-
                 driveTeardownForest
                     forest
@@ -134,11 +216,11 @@ driverTests =
                 Left outstanding -> assertFailure ("did not complete: " ++ show outstanding)
                 Right _ -> pure ()
     , testCase "only a destroy run can mint settled-destroy evidence" $
-        withPlan $ \plan -> do
-            let destroyProjection = teardownPlan plan destroyVerb
-                downProjection = teardownPlan plan downVerb
-            destroyForest <- openOrFail plan destroyProjection
-            downForest <- openOrFail plan downProjection
+        withPlan $ \plan current -> do
+            let destroyProjection = teardownPlan plan current destroyVerb
+                downProjection = teardownPlan plan current downVerb
+            destroyForest <- openOrFail destroyProjection
+            downForest <- openOrFail downProjection
             destroyDone <- driveTeardownForest destroyForest (const (pure TeardownReleased)) (\_ _ -> pure ())
             downDone <- driveTeardownForest downForest (const (pure TeardownReleased)) (\_ _ -> pure ())
             case (destroyDone, downDone) of
@@ -165,39 +247,68 @@ describeEvidence (Just (Right _)) = "settled"
 
 projectionTests :: [TestTree]
 projectionTests =
-    [ testCase "both verbs project the same identities, deepest frame first" $
-        withPlan $ \plan -> do
-            let down = teardownPlanStepKeys (teardownPlan plan downVerb)
-                destroy = teardownPlanStepKeys (teardownPlan plan destroyVerb)
-            down @?= destroy
-            down
+    [ testCase "forward and reverse share exact identities and operation keys" $
+        withPlan $ \plan current -> do
+            let forwardReverseNodes =
+                    reverse
+                        [ node
+                        | node <- NonEmpty.toList (forward plan)
+                        , plannedStepReversePolicy node /= PreserveOnReverse
+                        ]
+                expectedIdentities = map plannedStepIdentity forwardReverseNodes
+                expectedOperations = map plannedStepOperationKey forwardReverseNodes
+                down = teardownPlan plan current downVerb
+                destroy = teardownPlan plan current destroyVerb
+            teardownPlanStepIdentities down @?= expectedIdentities
+            teardownPlanStepIdentities destroy @?= expectedIdentities
+            teardownPlanOperationKeys down @?= expectedOperations
+            teardownPlanOperationKeys destroy @?= expectedOperations
+            teardownPlanStepKeys down @?= map (Text.pack . ProjectPlan.operationKeyText) expectedOperations
+            teardownPlanStepKeys destroy
                 @?= [ "core:deploy-chart"
                     , "core:deploy-kind"
                     , "core:build-pb"
                     , "core:deploy-vm"
                     ]
+    , testCase "root, VM, and container projections retain their exact suffix" $ do
+        assertPlanSuffix
+            id
+            "host-orchestrator-0"
+            ["core:deploy-chart", "core:deploy-kind", "core:build-pb", "core:deploy-vm"]
+        assertPlanSuffix
+            (\root -> Context.deriveVMContext root "/fixture/vm")
+            "vm-orchestrator-1"
+            ["core:deploy-chart", "core:deploy-kind", "core:build-pb"]
+        assertPlanSuffix
+            ( \root ->
+                Context.deriveContainerContext
+                    (Context.deriveVMContext root "/fixture/vm")
+                    "/fixture/container"
+            )
+            "vm-project-container-2"
+            ["core:deploy-chart", "core:deploy-kind"]
     , testCase "a preserve-on-reverse step is in neither projection" $
-        withPlan $ \plan ->
+        withPlan $ \plan current ->
             assertBool
                 "the preserved provider-ensure step is absent"
                 ( "project:ensure-vm-provider"
-                    `notElem` teardownPlanStepKeys (teardownPlan plan destroyVerb)
+                    `notElem` teardownPlanStepKeys (teardownPlan plan current destroyVerb)
                 )
     , testCase "the provider is stopped by down and deleted by destroy" $
-        withPlan $ \plan -> do
-            lookup "core:deploy-vm" (teardownPlanActions (teardownPlan plan downVerb))
+        withPlan $ \plan current -> do
+            lookup "core:deploy-vm" (teardownPlanActions (teardownPlan plan current downVerb))
                 @?= Just StopFrame
-            lookup "core:deploy-vm" (teardownPlanActions (teardownPlan plan destroyVerb))
+            lookup "core:deploy-vm" (teardownPlanActions (teardownPlan plan current destroyVerb))
                 @?= Just DeleteFrame
     , testCase "the kind cluster is deleted by both verbs, because kind has no stop" $
-        withPlan $ \plan -> do
-            lookup "core:deploy-kind" (teardownPlanActions (teardownPlan plan downVerb))
+        withPlan $ \plan current -> do
+            lookup "core:deploy-kind" (teardownPlanActions (teardownPlan plan current downVerb))
                 @?= Just DeleteCluster
-            lookup "core:deploy-kind" (teardownPlanActions (teardownPlan plan destroyVerb))
+            lookup "core:deploy-kind" (teardownPlanActions (teardownPlan plan current destroyVerb))
                 @?= Just DeleteCluster
     , testCase "a plan whose every step preserves projects nothing and cannot open" $
-        withPreservedPlan $ \plan ->
-            case openTeardownForest plan (teardownPlan plan destroyVerb) of
+        withPreservedPlan $ \plan current ->
+            case openTeardownForest (teardownPlan plan current destroyVerb) of
                 Left (TeardownPlanEmpty "destroy") -> pure ()
                 other -> assertFailure ("expected an empty projection, got " ++ describeOpen other)
     ]
@@ -288,9 +399,12 @@ and the effects.
 -}
 projectionDriverTests :: [TestTree]
 projectionDriverTests =
-    [ testCase "each node runs the reverse its own step declared, deepest frame first" $
-        withReversedPlan $ \plan observed -> do
-            let projection = teardownPlan plan destroyVerb
+    [ testCase "projection and forest construction retain callbacks without running them" $
+        withReversedPlan $ \plan current observed -> do
+            let projection = teardownPlan plan current destroyVerb
+            readIORef observed >>= (@?= [])
+            _ <- openOrFail projection
+            readIORef observed >>= (@?= [])
             outcomes <- runTeardownProjection projection neverCore hostConfigFixture
             readIORef observed
                 >>= ( @?=
@@ -304,13 +418,13 @@ projectionDriverTests =
             [key | (key, Just _) <- outcomes]
                 @?= ["core:deploy-chart", "core:deploy-kind", "core:build-pb", "core:deploy-vm"]
     , testCase "the verb reaches the declared effect: down stops, destroy deletes" $
-        withReversedPlan $ \plan observed -> do
-            _ <- runTeardownProjection (teardownPlan plan downVerb) neverCore hostConfigFixture
+        withReversedPlan $ \plan current observed -> do
+            _ <- runTeardownProjection (teardownPlan plan current downVerb) neverCore hostConfigFixture
             seen <- readIORef observed
             lookup "core:deploy-vm" seen @?= Just StopFrame
     , testCase "a node that declared no reverse is skipped, not silently released" $
-        withReversedPlan $ \plan _ -> do
-            outcomes <- runTeardownProjection (teardownPlan plan destroyVerb) neverCore hostConfigFixture
+        withReversedPlan $ \plan current _ -> do
+            outcomes <- runTeardownProjection (teardownPlan plan current destroyVerb) neverCore hostConfigFixture
             lookup "core:deploy-kind" outcomes @?= Just (Just coreHandled)
             -- `copy-source` declares neither a reverse nor core management.
             lookup "core:copy-source" outcomes @?= Just Nothing
@@ -318,16 +432,16 @@ projectionDriverTests =
       -- core-managed resources that live *inside* it, or it would run the
       -- cluster teardown once per node. The action is what carries that.
       testCase "the core adapter receives each node's own action" $
-        withReversedPlan $ \plan _ -> do
+        withReversedPlan $ \plan current _ -> do
             seen <- newIORef []
             let recordCore key coreAction = do
                     modifyIORef' seen (++ [(key, coreAction)])
                     pure TeardownReleased
-            _ <- runTeardownProjection (teardownPlan plan destroyVerb) recordCore hostConfigFixture
+            _ <- runTeardownProjection (teardownPlan plan current destroyVerb) recordCore hostConfigFixture
             readIORef seen >>= (@?= [("core:deploy-kind", DeleteCluster)])
     , testCase "a throwing reverse becomes a failure and later nodes still run" $
-        withThrowingPlan $ \plan reached -> do
-            outcomes <- runTeardownProjection (teardownPlan plan destroyVerb) neverCore hostConfigFixture
+        withThrowingPlan $ \plan current reached -> do
+            outcomes <- runTeardownProjection (teardownPlan plan current destroyVerb) neverCore hostConfigFixture
             case lookup "core:build-pb" outcomes of
                 Just (Just (TeardownFailed _)) -> pure ()
                 other -> assertFailure ("expected a captured failure, got " ++ show other)
@@ -340,9 +454,9 @@ projectionDriverTests =
 settlementTests :: [TestTree]
 settlementTests =
     [ testCase "a completed destroy forest settles every projected identity" $
-        withPlan $ \plan -> do
-            let projection = teardownPlan plan destroyVerb
-            forest <- openOrFail plan projection
+        withPlan $ \plan current -> do
+            let projection = teardownPlan plan current destroyVerb
+            forest <- openOrFail projection
             completed <- drainToCompletion forest
             case verifyDestroySettled projection completed of
                 Right settled -> do
@@ -371,9 +485,9 @@ settlementTests =
                     ["core:deploy-chart", "core:build-pb", "core:deploy-vm"]
                 )
     , testCase "a truncated traversal cannot be presented as a settled destroy" $
-        withPlan $ \plan -> do
-            let projection = teardownPlan plan destroyVerb
-            forest <- openOrFail plan projection
+        withPlan $ \plan current -> do
+            let projection = teardownPlan plan current destroyVerb
+            forest <- openOrFail projection
             -- settle only the pre-descent step and the two container-frame nodes
             let partial = drainUntil "core:build-pb" (attempt forest TeardownReleased)
             case nextTeardownWork partial of
@@ -477,8 +591,14 @@ acquire something, exactly as a project declares them. @copy-source@
 deliberately declares none, and @deploy-kind@ is core-managed.
 -}
 withReversedPlan ::
-    ( forall planId.
-      LifecyclePlan FixtureScope planId ->
+    ( forall projectId specDigest planId configId frame.
+      ProjectPlan
+        (Production projectId)
+        specDigest
+        planId
+        configId
+        Fixture.ProjectConfig ->
+      CurrentFrame (Production projectId) planId frame ->
       IORef [(Text, TeardownAction)] ->
       IO result
     ) ->
@@ -503,12 +623,21 @@ withReversedPlan consume = do
                     (record "core:deploy-chart")
                     (deployChartStep "chart" containerFrame noop)
                 ]
-    withProductionProjectCodec @Fixture.FixtureProject @Fixture.ProjectConfig $ \codec ->
-        withLifecyclePlan codec plan (\lifecycle -> consume lifecycle observed)
+    withExactPlan id plan (\projectPlan current -> consume projectPlan current observed)
 
 -- | A plan whose @build-pb@ reverse throws, with a later node that must still run.
 withThrowingPlan ::
-    (forall planId. LifecyclePlan FixtureScope planId -> IORef Bool -> IO result) ->
+    ( forall projectId specDigest planId configId frame.
+      ProjectPlan
+        (Production projectId)
+        specDigest
+        planId
+        configId
+        Fixture.ProjectConfig ->
+      CurrentFrame (Production projectId) planId frame ->
+      IORef Bool ->
+      IO result
+    ) ->
     IO result
 withThrowingPlan consume = do
     reached <- newIORef False
@@ -521,8 +650,7 @@ withThrowingPlan consume = do
                     (\_cfg _action -> ioError (userError "boom"))
                     (buildPbStep "build" vmFrame noop)
                 ]
-    withProductionProjectCodec @Fixture.FixtureProject @Fixture.ProjectConfig $ \codec ->
-        withLifecyclePlan codec plan (\lifecycle -> consume lifecycle reached)
+    withExactPlan id plan (\projectPlan current -> consume projectPlan current reached)
 
 {- | A real 'HostConfig' for the host the suite runs on. The reverse effects
 under test never touch a tool, so its resolved set is irrelevant; what matters
@@ -572,37 +700,93 @@ vmFrame = StepFrame "vm-orchestrator-1" "VM"
 containerFrame :: StepFrame
 containerFrame = StepFrame "vm-project-container-2" "Container"
 
-withPlan :: (forall planId. LifecyclePlan FixtureScope planId -> IO ()) -> IO ()
-withPlan use =
-    withProductionProjectCodec @Fixture.FixtureProject @Fixture.ProjectConfig $ \codec ->
-        withLifecyclePlan codec demoShapedPlan use
+withExactPlan ::
+    (Context.BinaryContext -> Context.BinaryContext) ->
+    StepPlan ->
+    ( forall projectId specDigest planId configId frame.
+      ProjectPlan
+        (Production projectId)
+        specDigest
+        planId
+        configId
+        Fixture.ProjectConfig ->
+      CurrentFrame (Production projectId) planId frame ->
+      IO result
+    ) ->
+    IO result
+withExactPlan selectContext stepPlan use =
+    Fixture.withFixtureProjectPlanContext selectContext stepPlan $ \plan exactContext ->
+        case withCurrentFrame plan exactContext (\current _projectFrame _validated -> use plan current) of
+            Left failure -> assertFailure (show failure)
+            Right action -> action
+
+withPlan ::
+    ( forall projectId specDigest planId configId frame.
+      ProjectPlan
+        (Production projectId)
+        specDigest
+        planId
+        configId
+        Fixture.ProjectConfig ->
+      CurrentFrame (Production projectId) planId frame ->
+      IO ()
+    ) ->
+    IO ()
+withPlan = withExactPlan id demoShapedPlan
 
 -- | A plan every one of whose steps preserves on reverse.
-withPreservedPlan :: (forall planId. LifecyclePlan FixtureScope planId -> IO ()) -> IO ()
-withPreservedPlan use =
-    withProductionProjectCodec @Fixture.FixtureProject @Fixture.ProjectConfig $ \codec ->
-        withLifecyclePlan codec allPreservedPlan use
+withPreservedPlan ::
+    ( forall projectId specDigest planId configId frame.
+      ProjectPlan
+        (Production projectId)
+        specDigest
+        planId
+        configId
+        Fixture.ProjectConfig ->
+      CurrentFrame (Production projectId) planId frame ->
+      IO ()
+    ) ->
+    IO ()
+withPreservedPlan = withExactPlan id allPreservedPlan
 
-planDigestOf :: LifecyclePlan FixtureScope planId -> Text
-planDigestOf = lifecyclePlanDigest
+planDigestOf :: ProjectPlan scope specDigest planId configId cfg -> Text
+planDigestOf = stablePlanSnapshotDigest . renderSnapshot
 
 openOrFail ::
-    LifecyclePlan FixtureScope planId ->
-    TeardownPlan FixtureScope planId verb ->
-    IO (TeardownForest FixtureScope planId verb)
-openOrFail plan projection =
-    either (assertFailure . teardownErrorMessage) pure (openTeardownForest plan projection)
+    TeardownPlan scope planId frame verb ->
+    IO (TeardownForest scope planId verb)
+openOrFail projection =
+    either (assertFailure . teardownErrorMessage) pure (openTeardownForest projection)
 
 withDestroyForest ::
-    (forall planId. TeardownForest FixtureScope planId DestroyVerb -> IO ()) -> IO ()
+    ( forall projectId planId.
+      TeardownForest (Production projectId) planId DestroyVerb ->
+      IO ()
+    ) ->
+    IO ()
 withDestroyForest use =
-    withPlan $ \plan -> openOrFail plan (teardownPlan plan destroyVerb) >>= use
+    withPlan $ \plan current -> openOrFail (teardownPlan plan current destroyVerb) >>= use
 
 withDownForest ::
-    (forall planId. TeardownForest FixtureScope planId DownVerb -> IO ()) -> IO ()
+    ( forall projectId planId.
+      TeardownForest (Production projectId) planId DownVerb ->
+      IO ()
+    ) ->
+    IO ()
 withDownForest use =
-    withPlan $ \plan -> openOrFail plan (teardownPlan plan downVerb) >>= use
+    withPlan $ \plan current -> openOrFail (teardownPlan plan current downVerb) >>= use
+
+assertPlanSuffix ::
+    (Context.BinaryContext -> Context.BinaryContext) ->
+    Text ->
+    [Text] ->
+    IO ()
+assertPlanSuffix selectContext expectedFrame expectedKeys =
+    withExactPlan selectContext demoShapedPlan $ \plan current -> do
+        let projection = teardownPlan plan current destroyVerb
+        currentFrameId current @?= expectedFrame
+        teardownPlanFrameId projection @?= expectedFrame
+        teardownPlanStepKeys projection @?= expectedKeys
 
 describeOpen :: Either TeardownError (TeardownForest scope planId verb) -> String
 describeOpen = either teardownErrorMessage (const "an opened forest")
-

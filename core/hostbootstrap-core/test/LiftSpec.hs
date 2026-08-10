@@ -1,25 +1,37 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module LiftSpec (tests) where
 
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, isPrefixOf, nub, sort)
+import qualified Data.Map.Strict as Map
 import qualified HostBootstrap.Config.Vocab as V
+import HostBootstrap.DocValidator (findRepoRoot)
+import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima, Wsl))
-import HostBootstrap.Incus (IncusVM (..))
-import HostBootstrap.Lima (LimaVM (..))
 import HostBootstrap.Lift
-import HostBootstrap.Wsl2 (Wsl2VM (..))
+import HostBootstrap.Substrate (Arch (Amd64), Substrate (..), SubstrateName (LinuxCpu))
+import SourceGuard (haskellImports)
+import System.Directory (getCurrentDirectory)
+#ifndef mingw32_HOST_OS
+import System.Exit (ExitCode (..))
+#endif
+import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
 tests :: TestTree
 tests =
   testGroup
     "LiftSpec"
     [ testGroup "foldLift across context stacks" foldCases,
-      testGroup "foldLeaf places any command in the right frame" foldLeafCases,
+      testGroup "foldLeaf places generic commands in the right frame" foldLeafCases,
+      testGroup "later composition and network leaves use the same fold" additiveLeafCases,
       testGroup "containerRunArgs" containerCases,
-      testGroup "config delivery streams the projection in-place on stdin" configDeliveryCases
+      testGroup "config delivery streams the projection in-place on stdin" configDeliveryCases,
+      testGroup "shared shell quoting boundary" shellQuoteCases,
+      testGroup "local effect seam" effectCases,
+      testGroup "constructive dependency direction" dependencyCases
     ]
 
 -- Fixtures.
@@ -135,6 +147,16 @@ foldCases =
 
 foldLeafCases :: [TestTree]
 foldLeafCases =
+  [ testCase "a raw bash -lc leaf folds into the VM frame verbatim" $
+      foldLeaf (inVM vm localContext) (RawCmd ["bash", "-lc", "echo hi"])
+        @?= DispatchTool Incus ["exec", "demo-vm", "--", "bash", "-lc", "echo hi"],
+    testCase "foldLift is the SelfSub special case of foldLeaf" $
+      foldLeaf (inVM vm localContext) (SelfSub self sub)
+        @?= foldLift self (inVM vm localContext) sub
+  ]
+
+additiveLeafCases :: [TestTree]
+additiveLeafCases =
   [ testCase "reachLeaf locally runs curl directly (no self path)" $
       foldLeaf localContext (reachLeaf "http://localhost:30080/api/budget")
         @?= DispatchLocal "curl" ["-fsS", "-m", "5", "-o", "/dev/null", "http://localhost:30080/api/budget"],
@@ -152,13 +174,7 @@ foldLeafCases =
       foldLeaf (inWsl2VM wslVM localContext) (reachLeaf "http://localhost:30080/api/budget")
         @?= DispatchTool
           Wsl
-          ["-d", "hostbootstrap-demo", "--", "curl", "-fsS", "-m", "5", "-o", "/dev/null", "http://localhost:30080/api/budget"],
-    testCase "a raw bash -lc leaf folds into the VM frame verbatim" $
-      foldLeaf (inVM vm localContext) (RawCmd ["bash", "-lc", "echo hi"])
-        @?= DispatchTool Incus ["exec", "demo-vm", "--", "bash", "-lc", "echo hi"],
-    testCase "foldLift is the SelfSub special case of foldLeaf" $
-      foldLeaf (inVM vm localContext) (SelfSub self sub)
-        @?= foldLift self (inVM vm localContext) sub
+          ["-d", "hostbootstrap-demo", "--", "curl", "-fsS", "-m", "5", "-o", "/dev/null", "http://localhost:30080/api/budget"]
   ]
 
 containerCases :: [TestTree]
@@ -223,3 +239,112 @@ configDeliveryCases =
         ["project", "up"]
         @?= "cat > '/p/x.dhall' && exec '/b/bin' 'project' 'up'"
   ]
+
+shellQuoteCases :: [TestTree]
+shellQuoteCases =
+  [ testCase "quotes empty, whitespace, apostrophe, expansion, glob, and newline arguments" $
+      shellQuoteArgs ["plain", "", "two words", "it's", "$HOME", "*.txt", "line\nbreak"]
+        @?= "'plain' '' 'two words' 'it'\\''s' '$HOME' '*.txt' 'line\nbreak'"
+#ifndef mingw32_HOST_OS
+  , testCase "quoted argv round-trips through a POSIX shell without expansion" $ do
+      let argv = ["two words", "it's", "$HOME", "*.txt", "line\nbreak", ""]
+          script = "set -- " ++ shellQuoteArgs argv ++ "; printf '<%s>\\n' \"$@\""
+      runSelf "/bin/sh" ["-c", script]
+        >>= ( @?= Right
+                ( ExitSuccess
+                , "<two words>\n<it's>\n<$HOME>\n<*.txt>\n<line\nbreak>\n<>\n"
+                , ""
+                )
+            )
+#endif
+  ]
+
+effectCases :: [TestTree]
+#ifdef mingw32_HOST_OS
+effectCases =
+  [ testCase "outer provider dispatch still uses the resolved-tool seam" $ do
+      liftLeaf emptyHostConfig (inVM vm localContext) (RawCmd ["true"])
+        >>= (@?= Left "incus not found on this host")
+  ]
+#else
+effectCases =
+  [ testCase "local raw leaf captures successful stdout through liftLeaf" $ do
+      liftLeaf emptyHostConfig localContext (RawCmd ["/bin/sh", "-c", "printf effect-ok"])
+        >>= (@?= Right (ExitSuccess, "effect-ok", ""))
+  , testCase "local self subcommand captures successful stdout through liftSubcommand" $ do
+      let shellSelf = mkSelfRef "/bin/sh" "/bin/sh"
+      liftSubcommand emptyHostConfig shellSelf localContext ["-c", "printf self-ok"]
+        >>= (@?= Right (ExitSuccess, "self-ok", ""))
+  , testCase "with-stdin forwards bytes and its empty input is identical to the ordinary seam" $ do
+      let leaf = RawCmd ["/bin/cat"]
+      ordinary <- liftLeaf emptyHostConfig localContext leaf
+      emptyInput <- liftLeafWithStdin emptyHostConfig localContext leaf ""
+      payload <- liftLeafWithStdin emptyHostConfig localContext leaf "line one\nline two\n"
+      emptyInput @?= ordinary
+      payload @?= Right (ExitSuccess, "line one\nline two\n", "")
+  , testCase "local exec failure is returned structurally" $ do
+      result <- runSelf "/hostbootstrap/definitely/missing/executable" []
+      case result of
+        Left message -> assertBool message ("could not exec /hostbootstrap/definitely/missing/executable" `isInfixOf` message)
+        Right success -> assertBool ("expected exec failure, got " ++ show success) False
+  , testCase "outer provider dispatch uses the resolved-tool seam" $ do
+      liftLeaf emptyHostConfig (inVM vm localContext) (RawCmd ["true"])
+        >>= (@?= Left "incus not found on this host")
+  ]
+#endif
+
+emptyHostConfig :: HostConfig
+emptyHostConfig = HostConfig (Substrate LinuxCpu Amd64) Map.empty
+
+dependencyCases :: [TestTree]
+dependencyCases =
+  [ testCase "generic Lift has the exact lower import set and no realization dependency" $ do
+      root <- repositoryRoot
+      source <- readFile (root </> "core/hostbootstrap-core/src/HostBootstrap/Lift.hs")
+      let imports = hostBootstrapImports source
+          allowed =
+            [ "HostBootstrap.Config.Vocab",
+              "HostBootstrap.Ensure",
+              "HostBootstrap.HostConfig",
+              "HostBootstrap.HostTool",
+              "HostBootstrap.Lift.Context"
+            ]
+      imports @?= allowed
+      mapM_
+        ( \forbiddenPrefix ->
+            assertBool
+              ("forbidden generic Lift import prefix: " ++ forbiddenPrefix)
+              (not (any (forbiddenPrefix `isPrefixOf`) imports))
+        )
+        [ "HostBootstrap.Incus",
+          "HostBootstrap.Lima",
+          "HostBootstrap.Wsl2",
+          "HostBootstrap.Registry",
+          "HostBootstrap.Substrate.Provider",
+          "HostBootstrap.Cluster"
+        ]
+  , testCase "import scanner covers source pragmas, qualifiers, packages, comments, and line breaks" $
+      hostBootstrapImports
+        ( unlines
+            [ "import {-# SOURCE #-} safe qualified"
+            , "  HostBootstrap.Alpha as Alpha"
+            , "import -- an import may continue after a line comment"
+            , "  qualified"
+            , "  \"hostbootstrap-core\""
+            , "  HostBootstrap.Beta"
+            , "import qualified Data.Map.Strict as Map"
+            , "{- outer import HostBootstrap.Commented {- import HostBootstrap.Nested -} still commented -}"
+            , "literal = \"import HostBootstrap.StringLiteral\""
+            ]
+        )
+        @?= ["HostBootstrap.Alpha", "HostBootstrap.Beta"]
+  ]
+
+repositoryRoot :: IO FilePath
+repositoryRoot = do
+  cwd <- getCurrentDirectory
+  found <- findRepoRoot cwd
+  maybe (fail ("could not locate repository root from " ++ cwd)) pure found
+
+hostBootstrapImports :: String -> [String]
+hostBootstrapImports = sort . nub . filter ("HostBootstrap." `isPrefixOf`) . haskellImports
