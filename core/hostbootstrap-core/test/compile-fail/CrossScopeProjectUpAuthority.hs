@@ -5,7 +5,7 @@ import HostBootstrap.Authority
     , RootInvocationAuthority
     , VerbUp
     )
-import HostBootstrap.Authority.ProjectPlan (authorizeProjectUp)
+import HostBootstrap.Authority.ProjectPlan (authorizeRootProject)
 import HostBootstrap.Lifecycle.Mode (VerifiedPlanSnapshot)
 
 data ScopeA
@@ -18,4 +18,4 @@ crossScope ::
     RootInvocationAuthority ScopeA BrokerGeneration VerbUp ->
     VerifiedPlanSnapshot ScopeB SpecDigest PlanDigest ->
     ()
-crossScope root verified = authorizeProjectUp root ProjectUp verified `seq` ()
+crossScope root verified = authorizeRootProject root ProjectUp verified `seq` ()

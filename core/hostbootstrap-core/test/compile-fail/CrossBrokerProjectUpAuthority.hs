@@ -5,7 +5,7 @@ import HostBootstrap.Authority
     , RootInvocationAuthority
     , VerbUp
     )
-import HostBootstrap.Authority.ProjectPlan (authorizeProjectUp)
+import HostBootstrap.Authority.ProjectPlan (authorizeRootProject)
 import HostBootstrap.Lifecycle.Mode
     ( BoundRunLease
     , VerifiedPlanSnapshot
@@ -30,4 +30,4 @@ crossBroker ::
     BoundRunLease Scope SpecDigest PlanDigest BrokerB ->
     ()
 crossBroker root verified bound binding lease =
-    authorizeProjectUp root ProjectUp verified bound binding lease `seq` ()
+    authorizeRootProject root ProjectUp verified bound binding lease `seq` ()

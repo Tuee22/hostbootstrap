@@ -5,7 +5,7 @@
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`
 
-> **Purpose**: Make every external effect require a value that could only have been minted by one protected
+> **Purpose**: Make every external effect require a value whose only lawful origin is one protected
 > compare-and-swap taken immediately before it, over freshly re-probed evidence.
 
 ## Phase Objective
@@ -31,12 +31,16 @@ The point is not extra checking. It is that a caller has no way to *express* an 
 
 #### Objective
 
-One unforgeable gate whose sole producer performs the durable unknown-phase compare-and-swap.
+One unforgeable gate whose every producer proves the same durable unknown-phase compare-and-swap origin.
 
 #### Deliverables
 
-- `PreparedGate` is opaque and its sole producer records the durable unknown state, so the record that an
-  attempt *may* have happened always precedes the attempt.
+- `PreparedGate` is opaque, and every allowlisted package-private producer follows the exact durable
+  unknown-state compare-and-swap for the same plan, operation, session, fence, attempt, and journal version,
+  so the record that an attempt *may* have happened always precedes the attempt.
+- A routed reifier is lawful only as an allowlisted hidden consumer of an authenticated exact response that
+  proves that same root compare-and-swap and all of the gate's coordinates. Transport receipt, a caller's
+  assertion, or constructor access without that proof cannot mint a gate.
 - The gate carries the attempt number and journal version, so `withPreparedOperation` reads them off it rather
   than accepting two integers a caller could mismatch.
 - A gate recorded under another plan digest or another operation key is refused.
@@ -44,8 +48,9 @@ One unforgeable gate whose sole producer performs the durable unknown-phase comp
 
 #### Validation
 
-`LifecycleSpec` covers the mint, the durable-unknown ordering, and each refusal. `PrepareFixture` supplies the
-recorded states.
+`LifecycleSpec` covers the local mint, the durable-unknown ordering, and each refusal. `PrepareFixture`
+supplies the recorded states. Every package-private mint site retains the same durable-origin obligation;
+adding a hidden routed consumer does not create a second origin rule.
 
 #### Remaining Work
 
@@ -115,10 +120,12 @@ Give a step a value that names its own node, so it can reach a gate.
   than a convention.
 - An action derives its node from the descriptor rather than reconstructing it, so the plan and the effect
   cannot disagree about which node ran.
-- `withStepPreparedGate` is the descriptor's route to the prepare compare-and-swap: it reads the plan digest
-  and the operation key **off the descriptor**, so a step reaches exactly one gate — its own — and cannot
-  name a sibling node's operation. It refuses a descriptor whose plan digest is not the session's, because
-  those indices are phantom on the session side and would otherwise unify.
+- `withStepPreparedGate` is the local descriptor route to the prepare compare-and-swap: it reads the plan
+  digest and the operation key **off the descriptor**, so a step reaches exactly one gate — its own — and
+  cannot name a sibling node's operation. It refuses a descriptor whose plan digest is not the session's,
+  because those indices are phantom on the session side and would otherwise unify. A hidden routed reifier
+  remains subject to Sprint 11.1's same-origin law and must exact-match the authenticated response to the
+  descriptor rather than accepting caller-selected coordinates.
 - `mkRecordName` is the one injective encoding by which a *namespaced* identity reaches the store's key
   alphabet. Both identities the gate needs are namespaced — a plan operation key (`core:deploy-kind`) and a
   plan digest (`<specDigest>:<planBytesDigest>`) — so before it, neither could name a durable record at all

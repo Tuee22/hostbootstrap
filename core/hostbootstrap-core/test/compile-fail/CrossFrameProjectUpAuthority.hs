@@ -6,15 +6,15 @@ import HostBootstrap.Authority
     , RootInvocationAuthority
     , VerbUp
     )
-import HostBootstrap.Authority.ProjectPlan (authorizeProjectUp)
+import HostBootstrap.Authority.ProjectPlan (authorizeRootProject)
 import HostBootstrap.Lifecycle.Mode
     ( AcquisitionJournal
     , BoundRunLease
     , LifecycleCursor
     , VerifiedPlanSnapshot
     )
+import HostBootstrap.Lifecycle.Context (ValidatedLifecycleContext)
 import HostBootstrap.ProjectPlan (ProjectPlan)
-import HostBootstrap.ProjectPlan.Frame (ProjectFrame)
 import HostBootstrap.ProjectPlan.Snapshot
     ( BoundPlanSnapshot
     , PlanDigestBinding
@@ -38,11 +38,11 @@ crossFrame ::
     BoundRunLease Scope SpecDigest PlanDigest BrokerGeneration ->
     ProjectPlan Scope SpecDigest PlanId ConfigId Configuration ->
     AcquisitionJournal Scope PlanId BrokerGeneration ->
-    ProjectFrame Scope SpecDigest PlanId ConfigId FrameA ->
-    LifecycleCursor Scope PlanId FrameB BrokerGeneration VerbUp PreparePhase ->
+    LifecycleCursor Scope PlanId FrameA BrokerGeneration VerbUp PreparePhase ->
+    ValidatedLifecycleContext Scope SpecDigest PlanId ConfigId FrameB ->
     ()
-crossFrame root verified bound binding lease plan journal frame cursor =
-    authorizeProjectUp
+crossFrame root verified bound binding lease plan journal cursor lifecycleContext =
+    authorizeRootProject
         root
         ProjectUp
         verified
@@ -51,6 +51,6 @@ crossFrame root verified bound binding lease plan journal frame cursor =
         lease
         plan
         journal
-        frame
         cursor
+        lifecycleContext
         `seq` ()

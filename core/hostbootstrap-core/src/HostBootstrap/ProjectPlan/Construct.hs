@@ -1,6 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE RoleAnnotations #-}
 
 {- | Authoritative fresh and recovered project-plan admission.
 
@@ -38,12 +37,12 @@ import HostBootstrap.Authority
     , projectVerbName
     )
 import HostBootstrap.Config.Class
-    ( ProjectCfg (withHarnessProjectCodec)
+    ( ProjectCfg
     , ProjectCodec
     , projectCodecSpecDigest
     )
 import HostBootstrap.Config.Fields
-    ( ScopeKind (HarnessScope)
+    ( ScopeKind
     )
 import HostBootstrap.Config.Schema
     ( ValidatedConfig
@@ -100,6 +99,7 @@ import HostBootstrap.Lifecycle.Plan
     , withProjectPlanKernel
     , withRecoveredProjectPlanKernel
     )
+import HostBootstrap.Lift.Context (LiftContext)
 import HostBootstrap.ProjectPlan
     ( PlanDraft
     , PlanError (InvalidProjectPlan, PlanRecoveryEvidenceMismatch)
@@ -122,6 +122,15 @@ import HostBootstrap.ProjectPlan.Child.Internal
     , childPlanAuthorityBindingKernel
     , mintChildPlanAuthorityKernel
     )
+import HostBootstrap.ProjectPlan.Construct.Internal
+    ( FinalizedProjectSpec
+    , finalizedProjectCodecKernel
+    , finalizedProjectServicesKernel
+    , reindexFinalizedProjectSpecKernel
+    , withFinalizedProjectSpecKernel
+    , withFinalizedProjectSpecPartsKernel
+    , withHarnessFinalizedProjectSpecKernel
+    )
 import HostBootstrap.Handoff
     ( HandoffBinding
     , handoffBrokerGeneration
@@ -139,41 +148,11 @@ import HostBootstrap.ProjectRoot
 import HostBootstrap.Service
     ( FinalizedServiceRegistry
     , ServiceRegistry
-    , withFinalizedServiceRegistry
     )
 import HostBootstrap.Step
     ( StepPlan
     , StepPlanError
     )
-
-{- | One jointly finalized, scope-specific runtime view of the static project
-definition.
-
-The full project codec and every service role share the same generative
-@specDigest@.  The scope-specialized plan builder is retained beside them, while
-the original scope-polymorphic service registry and plan builder stay private
-so this exact definition can be instantiated again for one generative Harness
-run.  In particular, a caller cannot pair a Production codec with Harness
-services or choose a specification identity.
--}
-data FinalizedProjectSpec scope specDigest cfg = FinalizedProjectSpec
-    { internalFinalizedProjectCodec :: ProjectCodec scope specDigest cfg
-    , internalFinalizedProjectServices ::
-        FinalizedServiceRegistry scope specDigest (cfg scope)
-    , internalFinalizedProjectPlanBuilder ::
-        forall rootId.
-        CanonicalProjectRoot scope rootId ->
-        cfg scope ->
-        Either StepPlanError StepPlan
-    , internalStaticProjectServices :: ServiceRegistry cfg
-    , internalStaticProjectPlanBuilder ::
-        forall planScope rootId.
-        CanonicalProjectRoot planScope rootId ->
-        cfg planScope ->
-        Either StepPlanError StepPlan
-    }
-
-type role FinalizedProjectSpec nominal nominal nominal
 
 {- | Jointly finalize a scope's project codec, service registry, and static
 plan builder under one fresh specification identity.
@@ -192,26 +171,20 @@ withFinalizedProjectSpec ::
       cfg planScope ->
       Either StepPlanError StepPlan
     ) ->
+    ( forall planScope.
+      cfg planScope ->
+      Text ->
+      Text ->
+      LiftContext ->
+      Either String (FilePath, cfg planScope, StepPlan)
+    ) ->
     ( forall specDigest.
       FinalizedProjectSpec scope specDigest cfg ->
       result
     ) ->
     result
-withFinalizedProjectSpec scopeKind baseCodec staticServices staticPlanBuilder use =
-    withFinalizedServiceRegistry
-        scopeKind
-        baseCodec
-        staticServices
-        ( \finalCodec finalServices ->
-            use
-                FinalizedProjectSpec
-                    { internalFinalizedProjectCodec = finalCodec
-                    , internalFinalizedProjectServices = finalServices
-                    , internalFinalizedProjectPlanBuilder = staticPlanBuilder
-                    , internalStaticProjectServices = staticServices
-                    , internalStaticProjectPlanBuilder = staticPlanBuilder
-                    }
-        )
+withFinalizedProjectSpec
+    = withFinalizedProjectSpecKernel
 
 {- | Re-instantiate the exact static definition retained by a Production
 finalization under one exact generative Harness authority.
@@ -234,14 +207,8 @@ withHarnessFinalizedProjectSpec ::
       result
     ) ->
     result
-withHarnessFinalizedProjectSpec authority productionSpec use =
-    withHarnessProjectCodec authority $ \baseCodec ->
-        withFinalizedProjectSpec
-            HarnessScope
-            baseCodec
-            (internalStaticProjectServices productionSpec)
-            (internalStaticProjectPlanBuilder productionSpec)
-            use
+withHarnessFinalizedProjectSpec
+    = withHarnessFinalizedProjectSpecKernel
 
 {- | Eliminate one finalized specification as a matched codec, service
 registry, and scope-specialized builder.  The callback cannot retain one part
@@ -260,23 +227,19 @@ withFinalizedProjectSpecParts ::
       result
     ) ->
     result
-withFinalizedProjectSpecParts spec use =
-    use
-        (internalFinalizedProjectCodec spec)
-        (internalFinalizedProjectServices spec)
-        (internalFinalizedProjectPlanBuilder spec)
+withFinalizedProjectSpecParts = withFinalizedProjectSpecPartsKernel
 
 -- | The exact full-project codec retained by a finalized specification.
 finalizedProjectCodec ::
     FinalizedProjectSpec scope specDigest cfg ->
     ProjectCodec scope specDigest cfg
-finalizedProjectCodec = internalFinalizedProjectCodec
+finalizedProjectCodec = finalizedProjectCodecKernel
 
 -- | The exact service registry sharing the finalized specification identity.
 finalizedProjectServices ::
     FinalizedProjectSpec scope specDigest cfg ->
     FinalizedServiceRegistry scope specDigest (cfg scope)
-finalizedProjectServices = internalFinalizedProjectServices
+finalizedProjectServices = finalizedProjectServicesKernel
 
 {- | Evaluate the finalized builder against the exact root and opaque validated
 configuration that will own the plan.  This bridge exists while legacy
@@ -288,8 +251,9 @@ projectPlanStepPlan ::
     CanonicalProjectRoot scope rootId ->
     ValidatedConfig scope specDigest configId (cfg scope) ->
     Either StepPlanError StepPlan
-projectPlanStepPlan spec root config =
-    internalFinalizedProjectPlanBuilder spec root (validatedConfigValue config)
+projectPlanStepPlan finalizedSpec root config =
+    withFinalizedProjectSpecPartsKernel finalizedSpec $ \_ _ planBuilder ->
+        planBuilder root (validatedConfigValue config)
 
 {- | Bind the finalized static builder to one exact root and validated
 configuration and return its non-empty, identity-indexed draft stream.
@@ -301,15 +265,11 @@ projectPlanDrafts ::
     Either
         PlanError
         (NonEmpty (PlanDraft scope specDigest (cfg scope)))
-projectPlanDrafts spec root config =
-    case
-        planDraftsFromValidatedBuilder
-            root
-            config
-            (internalFinalizedProjectPlanBuilder spec)
-    of
-        Left failure -> Left (InvalidProjectPlan failure)
-        Right drafts -> Right drafts
+projectPlanDrafts finalizedSpec root config =
+    withFinalizedProjectSpecPartsKernel finalizedSpec $ \_ _ planBuilder ->
+        case planDraftsFromValidatedBuilder root config planBuilder of
+            Left failure -> Left (InvalidProjectPlan failure)
+            Right drafts -> Right drafts
 
 withProjectPlan ::
     LifecycleProfile scope ->
@@ -412,7 +372,8 @@ childProfileName binding
             )
 
 {- | Safely align one independently re-decoded finalized Production
-configuration with the specification identity retained by a recovered profile.
+specification and configuration with the specification identity retained by a
+recovered profile.
 
 Existing-snapshot admission must generate its specification index from the
 protected record, while ordinary configuration decoding generates the same
@@ -420,8 +381,10 @@ stable specification under a different local phantom.  This bridge compares
 the finalized codec and validated configuration's retained specification text
 with the recovered profile, preserves the exact @configId@ and decoded value,
 then regenerates drafts from the finalized specification's private builder
-under the recovered index.  No equality is accepted from caller-supplied
-evidence and no plan identity is generated here.
+under the recovered index.  One token joins both relabellings, so the yielded
+specification, configuration, and drafts share the recovered profile's index by
+construction.  No equality is accepted from caller-supplied evidence and no plan
+identity is generated here.
 -}
 withRecoveredProductionProjectPlanInputs ::
     RecoveredProductionLifecycleProfile
@@ -436,7 +399,11 @@ withRecoveredProductionProjectPlanInputs ::
         candidateSpecDigest
         configId
         (cfg (Production projectId)) ->
-    ( ValidatedConfig
+    ( FinalizedProjectSpec
+        (Production projectId)
+        recoveredSpecDigest
+        cfg ->
+      ValidatedConfig
         (Production projectId)
         recoveredSpecDigest
         configId
@@ -450,41 +417,48 @@ withRecoveredProductionProjectPlanInputs ::
       result
     ) ->
     Either PlanError result
-withRecoveredProductionProjectPlanInputs profile root spec candidateConfig use = do
-    let reindexed =
-            withRecoverySpecReindexKernel
-                recoveredSpec
-                (projectCodecSpecDigest (finalizedProjectCodec spec))
-                (\token -> reindexValidatedConfigKernel token candidateConfig)
-    case reindexed of
-        Left (expected, observed) ->
-            recoveryMismatch
-                "finalized specification"
-                expected
-                observed
-        Right (Left (expected, observed)) ->
-            recoveryMismatch
-                "validated configuration specification"
-                expected
-                observed
-        Right (Right recoveredConfig) -> admitRefined recoveredConfig
-  where
-    recoveredSpec = recoveredProductionProfileSpecDigest profile
-    admitRefined recoveredConfig = do
-        requireText
-            "validated configuration digest"
-            (recoveredProductionProfileConfigDigest profile)
-            (validatedConfigDigest recoveredConfig)
-        drafts <-
-            case
-                planDraftsFromValidatedBuilder
-                    root
-                    recoveredConfig
-                    (internalFinalizedProjectPlanBuilder spec)
-            of
-                Left failure -> Left (InvalidProjectPlan failure)
-                Right exactDrafts -> Right exactDrafts
-        Right (use recoveredConfig drafts)
+withRecoveredProductionProjectPlanInputs
+    profile
+    root
+    finalizedSpec
+    candidateConfig
+    use =
+        withFinalizedProjectSpecPartsKernel finalizedSpec $ \codec _ planBuilder ->
+            let recoveredSpec = recoveredProductionProfileSpecDigest profile
+                admitRefined recoveredSpecification recoveredConfig = do
+                    requireText
+                        "validated configuration digest"
+                        (recoveredProductionProfileConfigDigest profile)
+                        (validatedConfigDigest recoveredConfig)
+                    drafts <-
+                        case planDraftsFromValidatedBuilder root recoveredConfig planBuilder of
+                            Left failure -> Left (InvalidProjectPlan failure)
+                            Right exactDrafts -> Right exactDrafts
+                    Right (use recoveredSpecification recoveredConfig drafts)
+                reindexed =
+                    withRecoverySpecReindexKernel
+                        recoveredSpec
+                        (projectCodecSpecDigest codec)
+                        ( \token ->
+                            ( reindexFinalizedProjectSpecKernel token finalizedSpec
+                            , reindexValidatedConfigKernel token candidateConfig
+                            )
+                        )
+             in case reindexed of
+                    Left (expected, observed) ->
+                        recoveryMismatch "finalized specification" expected observed
+                    Right (Left (expected, observed), _) ->
+                        recoveryMismatch
+                            "finalized specification carriers"
+                            expected
+                            observed
+                    Right (Right _, Left (expected, observed)) ->
+                        recoveryMismatch
+                            "validated configuration specification"
+                            expected
+                            observed
+                    Right (Right recoveredSpecification, Right recoveredConfig) ->
+                        admitRefined recoveredSpecification recoveredConfig
 
 {- | Reconstruct the exact Production project plan named by an existing Open
 recovery package.

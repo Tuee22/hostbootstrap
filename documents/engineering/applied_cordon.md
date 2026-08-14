@@ -14,7 +14,8 @@
 
 - The host-level `<project>.dhall` `resources` value is intended to be a hard ceiling. Current
   CPU/memory application is partial: Lima/Incus/WSL limits are creation-time, direct Linux GPU outer
-  effects are uncapped, the exact Colima adapter is not yet in the recursive command plan, and
+  effects are uncapped, the exact Colima adapter is not yet in the production recursive or demo command
+  path, and
   bare-Linux storage is only preflighted. The prepared Direct provider is only a plan-local admission
   and identity share; it neither supplies an outer wall nor authorizes physical-host stop/delete.
 - One canonical parser, `parseQuantity` in `HostBootstrap.Cluster.Cordon.Foundation`, decodes every
@@ -62,10 +63,13 @@ backend has its own prepared provider/share origin and recovery protocol; live w
 durable CAS/recovery implementations remain owned by the dependent budget/cluster phases. The pure
 effective value alone is never mutation authority.
 
-The Python bootstrapper builds no sizing argv. `colimaSizingArgs project resources` emits the complete
-`colima start --profile <project> --runtime docker --activate=false --cpus N --memory <GiB> --disk
-<GiB>` argv. Haskell owns the complete
-argv; the Python bootstrapper does not size VMs. See
+The Python bootstrapper builds no sizing argv. For an admitted Colima total above 20 GiB,
+`colimaSizingArgsForBudget profile budget` emits the complete closed call:
+`colima start --profile <profile> --runtime docker --activate=false --template=false --ssh-config=false
+--mount none --kubernetes=false --network-address=false --mount-inotify=false --cpus N --memory <GiB>
+--root-disk 20 --disk <total-20 GiB>`. The fixed root disk is provider overhead and the data disk is the
+remaining workload-visible storage; their sum, not either flag alone, is the declared storage ceiling.
+Haskell owns the complete argv; the Python bootstrapper does not size VMs. See
 [build and run model](../architecture/build_and_run_model.md) for where the project binary owns sizing,
 and [resource budgeting](resource_budgeting.md) for the budget field itself.
 
@@ -160,29 +164,50 @@ the node count with integer floors, and refuses the plan if any dimension is sma
 Flooring guarantees the combined node shares never exceed the declared slice; giving both nvkind nodes
 the full slice would double-count it.
 
-That node-level split does not prove the parent-to-cluster slice is valid. The current demo-local
-`clusterSliceOfBudget` can use its minimum floors to return a slice equal to or larger than a below-floor
-parent envelope; the normal root floor masks that path, while the raw child envelope remains separately
-constructible. The target exposes only slices eliminated from `BudgetPartition`, whose constructor proves
+That node-level split alone does not prove the parent-to-cluster slice is valid. The
+[cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)'s
+exact consumer accepts only a `ResourceSlice` eliminated from `BudgetPartition`, whose constructor proves
 positivity, provider/node minima, and
-`sum concurrent slices + explicit provider overhead <= EffectiveBudget`.
+`sum concurrent slices + explicit provider overhead <= EffectiveBudget`. The demo's concrete
+workload/minimum/overhead declaration remains work in the
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md); it cannot bypass the exact consumer with a
+raw envelope.
 
 For each concrete name, `kindNodeCordonArgsFor` emits
 `docker update --cpus N --memory <bytes> --memory-swap <bytes> <node>`. `applyLinuxCordon` runs every argv
 fail-closed after kind/nvkind create (and kubeconfig export) and before workload deployment.
 `--memory-swap == 2 × --memory`, so the node has swap headroom equal to its RAM limit. Storage is
 included in the split and positive-share gate but omitted from `docker update`, which has no storage
-flag. The cluster library can apply this path to either profile. The demo Harness config selects a
-run-scoped profile, but the cluster consumer still derives that profile independently from config rather
-than projecting it from the exact retained Harness plan; the
-[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns that adoption.
+flag. The exact package derives Production or the generative Harness run profile from the retained plan,
+retains the matching slice, and applies every node update under the cluster lock only after re-observing
+the self-bound managed origin and complete retained node-name-to-container-ID map. The closed cluster backend
+invokes Docker with those immutable IDs, not reusable Kind node names; a missing worker or any
+same-name replacement is a conflict before mutation. A replacement or failed update mints no readiness.
+The subsequent fresh probe requires the same durable owner/record and exact Kubernetes node set in addition
+to API/all-node Ready, and advances its observation version only after success. The
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns concrete demo adoption.
 
 On Apple, the pristine path uses `limaSizingArgs` when creating a Lima VM; an already-existing VM is
-started without comparing or updating its sizing. Direct Docker workflows use the separate prepared
-Colima adapter: a plan-bound project profile and admitted wall jointly produce the only accepted start
-argv, observation compares Docker runtime/CPU/memory/disk exactly, a same-name mismatch is refused, and
-Docker calls use the profile's named context. The adapter is intentionally absent from the config-free
-`allReconcilers` list. Recursive command-plan consumption and receipt-conditional cleanup remain open.
+started without comparing or updating its sizing. Direct Docker workflows use the separate exact Colima
+adapter. One plan/provider/topology/budget/fit/partition package plus a journal-derived reservation and
+provider start produces the only prepared call. A stable 128-bit plan/lifecycle token owns an isolated
+`COLIMA_HOME`, reusable profile lock, and isolated `DOCKER_CONFIG`; a short local profile keeps Lima socket
+paths within Darwin's limit without becoming the collision boundary. The private fixed Apple resolver binds
+Python, Colima, Docker, Lima, and helper-directory identities, and the bounded runner closes environment,
+cwd, output, and process-group lifetime.
+
+Under descriptor-held Python `fcntl.flock`, self-bound
+`reserved`/`home-staged`/`home-ready`/`context-staged`/`prepared`/`managed` records publish absence before
+namespaces or `colima start`, then retain the exact invocation, machine/context identity, root/data wall,
+directory chain, and complete Colima/Lima artifact manifest. A profile present from `prepared` without a
+managed stage is outcome-unknown `Conflict`; it is never adopted. Only the hidden successful backend bridge
+can jointly settle the provider start and wall, after which Docker runs through the retained named context.
+Cleanup uses its own journal invocation, enters `releasing` before `colima delete --force --data`, and proves
+profile, data, and context absence before conditionally removing only the bound namespaces and origin. A
+replacement or partial foreign stage remains untouched as `Conflict`; an unavailable clause is
+`Unsupported`. This source boundary remains Active in the
+[cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
+until its focused/full gates pass, and production recursive/demo call-site consumption remains open.
 
 On Windows, the WSL2 wall is **honest about what WSL2 can enforce**. Unlike incus `limits.memory` and
 Lima `--memory`, WSL2 has no per-distro memory/CPU cap — the only lever is the *global*, per-user
@@ -223,7 +248,7 @@ only already-admitted inputs — the `ProviderWallSpec`, the proved `BudgetParti
 
 | Provider | Result |
 |----------|--------|
-| Colima | `ColimaDiskArgument` — `start --profile <name> --disk <GiB>` |
+| Colima | `ColimaDiskArgument` — the canonical full start call binds `--root-disk 20` plus `--disk <total-20 GiB>`; admission rejects totals at or below 20 GiB |
 | Lima | `LimaDiskArgument` — `--disk <GiB>` |
 | Incus | `IncusRootSizeArgument` — `-d root,size=<GiB>GiB` |
 | WSL2 | `Wsl2VhdSizeArgument` — `--vhd-size <GiB>GB` |
@@ -244,7 +269,7 @@ Each substrate cordons storage where it can:
 
 | Substrate | Storage cordon |
 |-----------|----------------|
-| Apple | Lima `--disk` only on initial VM creation; the prepared direct-Colima adapter observes and enforces the exact project-profile `--disk` wall, with command integration still downstream |
+| Apple | Lima `--disk` only on initial VM creation. The implemented exact direct-Colima adapter binds the plan-derived 20-GiB root plus `total-20`-GiB data disks, machine/context identity, and complete owned artifact manifest inside one descriptor-locked origin-before-start transaction. Its separately journaled conditional cleanup runs `colima delete --force --data`, proves exact profile/data/context absence, and removes only manifest-bound namespaces/origin. Production recursive and demo command integration remain downstream |
 | incus VM | `root,size` on initial instance launch; existing sizing is not reconciled |
 | WSL2 VM | The distro's VHDX, capped only at registration through `wsl --install --vhd-size`; existing VHDX sizing is not reconciled. Memory/CPU are global `.wslconfig` settings, not per-distro flags |
 | Bare Linux | `StorageCordonUnsupported BareLinuxQuotaAndImageGcUnavailable`: no hostPath quota or image-garbage-collection cap |
@@ -261,8 +286,13 @@ storage quota, and existing Incus sizing is not reconciled.
 ## Current Status
 
 Capacity reads, the shared parser, and CPU/memory arg builders are implemented. Provider disk walls are
-initial-create behavior for Lima/Incus/WSL2; direct Colima has an exact observed project-profile adapter;
-bare Linux has no runtime storage cordon, and direct Linux GPU outer effects are uncapped. Existing
+initial-create behavior for Lima/Incus/WSL2. Direct Colima's exact root/data wall, indexed live Docker route,
+identity-conditional cleanup, and the [cluster-lifecycle, budgets, and cordoning
+phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) focused/full validation are closed.
+Production recursive adoption remains with the [recursive-lifecycle-command
+phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md), and demo adoption remains with the
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md). Bare Linux has no runtime storage cordon, and
+direct Linux GPU outer effects are uncapped. Existing
 resource sizing is not uniformly compared or reconciled. The prepared Incus/Direct lifecycle boundary
 does not strengthen those wall claims: its four-clause ownership protocol protects provider identity and
 mutation, while exact existing-wall reconciliation remains downstream. Its static gate is closed, while its

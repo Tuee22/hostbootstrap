@@ -68,9 +68,10 @@ reverse effects are three projections of one value. It is above prepare because 
 reach a gate, and above the generic Lift because its Chain consumer dispatches the exact current-frame
 projection through that lower fold.
 
-**Crossing process boundaries (13).** The closed v1 tag vocabulary — config admission, activation
-signing, and the recovery edge a nested teardown or recovery is admitted on — plus the challenge/grant handoff, child admission, and the build and
-activation authorities. Above the plan because a grant is bound to a plan edge.
+**Crossing process boundaries (13).** The closed v1 tag vocabulary — config admission, activation signing,
+recovery packages, rooted lifecycle request/response and receipt frames — plus challenge/grant handoff,
+authenticated scope-first child admission, keyless relay, and the Build and Activation authorities. Above the
+plan because every grant and rooted session is bound to an exact plan edge.
 
 **Ownership (14).** The four ownership clauses and the host-local backends that hold them. Above prepare
 because a reservation is a prepared operation, and above the store because clause 1 is the store's entry.
@@ -79,8 +80,11 @@ because a reservation is a prepared operation, and above the store because claus
 records/renderers and generic Lift (15), then the exact cluster/direct-Colima consumers inside a declared
 budget (16). Above ownership because a provider operation acquires an owned object.
 
-**Interpretation (17).** The recursive lifecycle command: the plan becomes effects across frames, and unwinds
-child-first. Above handoff and clusters because it descends through both.
+**Interpretation (17).** The recursive lifecycle command: one topology-root coordinator retains the durable
+store, lease, catalog, frame journals, prepare/settle transactions, and receipts while long-lived storeless
+frame executors run root-selected local work and unwind child-first. Above handoff and clusters because it
+consumes the authenticated rooted wire and descends through both. Its own gate is host-static and uses real
+local child processes; the worked consumer later owns the live provider/cluster confirmation.
 
 **Recovery (18).** Acting on every durable record the phases below wrote. Above interpretation because
 recovering an interrupted run means resuming or reversing an interpretation.
@@ -95,8 +99,9 @@ the opaque role phase machine (21); then the fixed `service` command that adopts
 the complete gate and proved by pulling the tag and smoking a real consumer.
 
 **The consumer (24).** The worked demo — the real application that proves the library composes, including
-delivery of the reusable build-authority protocol to its actual command/Dockerfile gate. It is last among
-baseline phases because a consumer depends on everything.
+delivery of the reusable build-authority protocol to its actual command/Dockerfile gate and the terminal live
+Production/Harness confirmation of the recursive lifecycle command. It is last among baseline phases because
+a consumer depends on everything.
 
 **Acceptance (25–27).** One phase per non-baseline substrate: Apple Silicon, NVIDIA GPU, Windows/WSL2. Each
 adds the remaining substrate-only pieces and confirms the already-built generic/provider boundaries on real
@@ -119,6 +124,8 @@ only *backwards*:
 - **17** depends on handoff (13) and clusters (16).
 - **21** depends on clusters (16) rather than on the test surface, because reachability is a property of the
   cluster's frames.
+- **24** depends on the recursive lifecycle command (17) and publication (23): its terminal live gate is the
+  first real worked-consumer confirmation of the host-static recursive interpreter.
 - **28** depends on everything.
 
 ## Non-goals

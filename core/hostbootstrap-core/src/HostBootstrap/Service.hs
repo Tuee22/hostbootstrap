@@ -65,16 +65,18 @@ import HostBootstrap.RoleLifecycle (
     RoleEffect,
     declaredEffectList,
  )
+import HostBootstrap.Service.Internal (
+    FinalizedServiceDefinition (FinalizedServiceDefinition),
+    FinalizedServiceRegistry (FinalizedServiceRegistry),
+    ServiceHandler,
+    ServiceId (ServiceId),
+ )
 import HostBootstrap.Dhall.Gen (
     CodecWitness,
     autoCodecWitness,
     codecSchemaText,
     requireCodecWitness,
  )
-
--- | A validated service identity. Its constructor is hidden.
-newtype ServiceId = ServiceId String
-    deriving (Eq, Ord, Show)
 
 serviceId :: String -> Either String ServiceId
 serviceId raw
@@ -86,24 +88,6 @@ serviceId raw
 
 serviceIdText :: ServiceId -> String
 serviceIdText (ServiceId value) = value
-
-{- | What a service handler is handed (§ AA, § P).
-
-Not the framework view, and not the full config: a handler receives only the
-opaque 'RoleParams' bundle its own role's projection produced, indexed by the
-finalized specification, the config and secret identities, and the service it
-belongs to. Everything the role needs is therefore something its own projection
-put there — which is what makes "least authority" a property of the type rather
-than of handler discipline. A handler that needs a framework datum (a source
-root, say) declares it as a role field, and the projection supplies it.
-
-The indices are universally quantified, so a handler sees them as skolems it
-cannot choose and cannot pair a bundle from one finalization with another's.
--}
-type ServiceHandler fields =
-    forall specDigest configId secretDigest service.
-    RoleParams specDigest configId secretDigest fields service ->
-    IO ()
 
 {- | One service's inseparable scope-polymorphic config projection, role-field
 codec, and handler. 'Nothing' means this definition is not selected by the
@@ -193,20 +177,6 @@ serviceVariantNames :: ServiceRegistry cfg -> [String]
 serviceVariantNames (ServiceRegistry definitions) =
     [serviceIdText identity | ServiceDefinition identity _ _ _ _ <- definitions]
 
-data FinalizedServiceDefinition scope specDigest cfg =
-    forall fields effects service.
-    FinalizedServiceDefinition
-        ServiceId
-        (cfg -> Either String (Maybe fields))
-        (DeclaredEffects effects)
-        (ServiceHandler fields)
-        (RoleCodec scope specDigest fields service)
-
-newtype FinalizedServiceRegistry scope specDigest cfg
-    = FinalizedServiceRegistry [FinalizedServiceDefinition scope specDigest cfg]
-
-type role FinalizedServiceRegistry nominal nominal nominal
-
 {- | Jointly finalize the full project codec and the closed service registry.
 The rank-2 continuation prevents callers from selecting or reusing the fresh
 @specDigest@ identity.
@@ -225,7 +195,10 @@ withFinalizedServiceRegistry scopeKind codec registry use =
     withFinalizedProjectCodec codec (registryManifest registry) $ \finalCodec ->
         use
             finalCodec
-            (FinalizedServiceRegistry (map (finalizeDefinition finalCodec) definitions))
+            ( FinalizedServiceRegistry
+                (projectCodecSpecDigest finalCodec)
+                (map (finalizeDefinition finalCodec) definitions)
+            )
   where
     ServiceRegistry definitions = registry
     finalizeDefinition finalCodec (ServiceDefinition identity project effects run wireCodec) =
@@ -244,7 +217,7 @@ withFinalizedServiceRegistry scopeKind codec registry use =
 finalizedServiceVariantNames ::
     FinalizedServiceRegistry scope specDigest cfg ->
     [String]
-finalizedServiceVariantNames (FinalizedServiceRegistry definitions) =
+finalizedServiceVariantNames (FinalizedServiceRegistry _ definitions) =
     [serviceIdText identity | FinalizedServiceDefinition identity _ _ _ _ <- definitions]
 
 {- | Render the role-wire schema registry as distinct descriptive Production
@@ -279,7 +252,7 @@ serviceRoleSchemaFamilies registry =
         [ (T.pack (serviceIdText identity), roleCodecSchemaText codec)
         | FinalizedServiceDefinition identity _ _ _ codec <- definitions
         ]
-    FinalizedServiceRegistry definitions = registry
+    FinalizedServiceRegistry _ definitions = registry
 
 {- | Structurally project exactly one selected role into an opaque request.
 The caller supplies the digest of the already-verified local config/secret
@@ -307,7 +280,7 @@ withSelectedServiceRequest ::
       result
     ) ->
     Either String result
-withSelectedServiceRequest verifiedDigest contextView cfg (FinalizedServiceRegistry definitions) use = do
+withSelectedServiceRequest verifiedDigest contextView cfg (FinalizedServiceRegistry _ definitions) use = do
     matches <- traverse project definitions
     case [match | Just match <- matches] of
         [] ->
@@ -367,7 +340,7 @@ selectServiceAction ::
     cfg ->
     FinalizedServiceRegistry scope specDigest cfg ->
     Either String (ServiceId, [RoleEffect], IO ())
-selectServiceAction cfg (FinalizedServiceRegistry definitions) = do
+selectServiceAction cfg (FinalizedServiceRegistry _ definitions) = do
     matches <- traverse project definitions
     case [match | Just match <- matches] of
         [] ->

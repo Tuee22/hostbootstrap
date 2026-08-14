@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE RankNTypes #-}
 
 {- | The opaque validated step/plan algebra.
@@ -118,6 +119,7 @@ module HostBootstrap.Step (
 where
 
 import Data.List (elemIndex, group, isPrefixOf, sort)
+import Data.Kind (Type)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
@@ -145,7 +147,9 @@ rather than by convention. Until then the real guarantee is the /value/ one:
 every identity on the descriptor is the plan's own, and a caller cannot mint one
 (§ U).
 -}
-type StepAction = forall scope planId. StepExecution scope planId -> IO StepObservation
+type StepAction =
+    forall (scope :: Type) (planId :: Type).
+    StepExecution scope planId -> IO StepObservation
 
 {- | What one step's action observed about its own node.
 
@@ -464,7 +468,7 @@ stepProjectedOperations = map OperationKey . internalStepProjections
 for it. A caller cannot supply a 'StepExecution' of its own: the type has no
 public constructor (§ U).
 -}
-runStep :: Step -> StepExecution scope planId -> IO StepObservation
+runStep :: Step -> StepExecution (scope :: Type) (planId :: Type) -> IO StepObservation
 runStep step execution = internalStepRun step execution
 
 {- | Declare how this step's frame descends into the next frame of the chain

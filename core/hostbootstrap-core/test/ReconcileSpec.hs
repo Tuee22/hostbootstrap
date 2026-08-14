@@ -152,6 +152,17 @@ tests =
         unchangedSummary >>= (@?= Right Unchanged),
       testCase "managed phase transition retains receipt generation" $
         phaseSummary >>= (@?= Right 7),
+      testCase "provider force destroy is journal-prepared from the exact running handle" $
+        providerForceDestroyChecks
+          >>= ( @?=
+                  Right
+                    ( 7,
+                      "core:deploy-vm:provider:create",
+                      True,
+                      True,
+                      True
+                    )
+              ),
       testCase "planned edges retain the exact target and dependency identities" $
         plannedEdgeSummary
           >>= (@?= Right ("core:copy-source", "core:deploy-vm")),
@@ -384,6 +395,7 @@ reconcileRoleInventory =
   , "type role OperationPreconditionSet nominal nominal nominal nominal"
   , "type role PreparedOperation nominal nominal nominal nominal nominal nominal nominal nominal"
   , "type role PreparedPreconditions nominal nominal nominal nominal nominal nominal nominal nominal"
+  , "type role PreparedProviderStart nominal nominal nominal nominal nominal nominal nominal"
   , "type role SomeDependencyObservation nominal nominal"
   , "type role ReconcileResult nominal nominal nominal nominal nominal"
   , "type role VerifiedJournalRecord nominal nominal nominal nominal"
@@ -681,6 +693,118 @@ phaseSummary =
                         fromIntegral (resourceHandleGeneration readyHandle)
                 )
                 (\_ _ -> error "created resource must be managed")
+
+providerForceDestroyChecks ::
+  IO (Either ReconcileError (Word, Text.Text, Bool, Bool, Bool))
+providerForceDestroyChecks =
+  withTestResource dependentTestPlan ProviderResourceKind "core:deploy-vm" $ \projectPlan _ planned -> do
+    let planDigest = stablePlanSnapshotDigest (renderSnapshot projectPlan)
+        operationKey = "core:deploy-vm"
+    createGate <- gateFor planDigest operationKey
+    replacementGate <- gateFor planDigest operationKey
+    destroyGate <- gateFor planDigest operationKey
+    pure $
+      joinReconcile $
+        withObservedProjectResource projectPlan planned 7 3 $ \observed -> do
+          createDescriptor <- plannedProjectOperation projectPlan planned observed "provider:create"
+          createPreconditions <- zeroDependencyPreconditions createDescriptor
+          joinReconcile $
+            withPreparedOperation createDescriptor createPreconditions createGate $ \prepared sealed -> do
+              created <- completeReconcile observed prepared sealed (BackendCreated 7)
+              withReconcileResult
+                created
+                ( \provisioned receipt _ -> do
+                    boot <- planProviderBoot provisioned
+                    runningAdvance <- verifyPhaseTransition provisioned receipt boot 7
+                    withPhaseAdvance runningAdvance $ \running runningReceipt _ ->
+                      joinReconcile $
+                        withObservedProjectResource projectPlan planned 8 4 $ \replacementObserved -> do
+                          replacementDescriptor <-
+                            plannedProjectOperation projectPlan planned replacementObserved "provider:replacement"
+                          replacementPreconditions <- zeroDependencyPreconditions replacementDescriptor
+                          joinReconcile $
+                            withPreparedOperation
+                              replacementDescriptor
+                              replacementPreconditions
+                              replacementGate
+                              (\replacementPrepared replacementSealed -> do
+                                  replacement <-
+                                    completeReconcile
+                                      replacementObserved
+                                      replacementPrepared
+                                      replacementSealed
+                                      (BackendCreated 8)
+                                  withReconcileResult
+                                    replacement
+                                    ( \_ replacementReceipt _ -> do
+                                        destroy <- planProviderForceDestroy running
+                                        destroyDescriptor <-
+                                          plannedProjectPhaseOperation
+                                            projectPlan
+                                            planned
+                                            running
+                                            runningReceipt
+                                            destroy
+                                            "provider:destroy-force"
+                                        destroyPreconditions <- zeroDependencyPreconditions destroyDescriptor
+                                        joinReconcile $
+                                          withPreparedPhaseTransition
+                                            running
+                                            runningReceipt
+                                            destroy
+                                            destroyDescriptor
+                                            destroyPreconditions
+                                            destroyGate
+                                            ( \preparedDestroy -> do
+                                                advance <- completePreparedPhaseTransition preparedDestroy 7
+                                                let exactSummary =
+                                                      withPhaseAdvance advance $ \destroyed destroyedReceipt _ ->
+                                                        ( fromIntegral (resourceHandleGeneration destroyed),
+                                                          ownershipReceiptOperationKey destroyedReceipt
+                                                        )
+                                                    wrongGenerationRefused =
+                                                      isConflict (completePreparedPhaseTransition preparedDestroy 8)
+                                                    emptyDigestRefused =
+                                                      isFailure
+                                                        ( plannedProjectPhaseOperation
+                                                            projectPlan
+                                                            planned
+                                                            running
+                                                            runningReceipt
+                                                            destroy
+                                                            ""
+                                                        )
+                                                    replacementReceiptRefused =
+                                                      isConflict
+                                                        ( plannedProjectPhaseOperation
+                                                            projectPlan
+                                                            planned
+                                                            running
+                                                            replacementReceipt
+                                                            destroy
+                                                            "provider:destroy-force"
+                                                        )
+                                                pure
+                                                  ( fst exactSummary,
+                                                    snd exactSummary,
+                                                    wrongGenerationRefused,
+                                                    emptyDigestRefused,
+                                                    replacementReceiptRefused
+                                                  )
+                                            )
+                                    )
+                                    (\_ _ -> error "replacement provider must be managed")
+                              )
+                )
+                (\_ _ -> error "created provider must be managed")
+  where
+    isConflict outcome = case outcome of
+      Left (Conflict _) -> True
+      _ -> False
+
+    isFailure outcome = case outcome of
+      Left (Failure _) -> True
+      _ -> False
 
 plannedEdgeSummary :: IO (Either PlanError (Text.Text, Text.Text))
 plannedEdgeSummary =

@@ -8,11 +8,13 @@
 module CLISpec (runSchemaFixture, tests) where
 
 import Control.Exception (finally, throwIO, try)
+import Control.Monad (filterM)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
+import Data.List (sort)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TIO
@@ -22,6 +24,7 @@ import HostBootstrap.CLI (
     ProjectSpec,
     ProjectSpecBuilder,
     ProjectSpecError (..),
+    addForwardChildPlan,
     addArtifacts,
     addAssemblyInputs,
     addServices,
@@ -131,11 +134,12 @@ import HostBootstrap.Service (
     serviceRoleSchemaFamilies,
     withFinalizedServiceRegistry,
  )
-import HostBootstrap.Step (ProjectStepId, ReversePolicy (ProjectManagedReverse), Step, StepFrame (..), StepObservation (..), StepPlanError (DuplicateStepIdentities), TeardownAction (DeleteFrame, StopFrame), TeardownOutcome (TeardownReleased), deployVMStep, projectStep, projectStepId, reversedBy, stepLabel, stepPlanSteps)
-import System.Directory (doesFileExist, doesPathExist, getCurrentDirectory, removeFile)
+import HostBootstrap.Lift.Context (IncusVM (IncusVM), inVM, localContext)
+import HostBootstrap.Step (ProjectStepId, ReversePolicy (PreserveOnReverse, ProjectManagedReverse), Step, StepFrame (..), StepObservation (..), StepPlanError (DuplicateStepIdentities), TeardownAction (DeleteFrame, StopFrame), TeardownOutcome (TeardownReleased), deployVMStep, descendsVia, projectStep, projectStepId, reversedBy, stepLabel, stepPlanSteps)
+import System.Directory (doesDirectoryExist, doesFileExist, doesPathExist, getCurrentDirectory, listDirectory, removeFile)
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv, withArgs)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), die)
-import System.FilePath ((</>))
+import System.FilePath (makeRelative, takeExtension, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (readProcessWithExitCode)
 import Test.Tasty (TestTree, testGroup)
@@ -151,8 +155,51 @@ builderWith ::
     IO () ->
     [ConfigArtifact] ->
     ProjectSpecBuilder Fixture.ProjectConfig Fixture.TestConfig
-builderWith suite check arts =
-    projectSpec suite check arts Fixture.testConfigCodec fixtureTestInit fixtureAssemble
+builderWith = builderWithHarnessContext "/workspace/demo" "cli"
+
+-- | A CLI fixture whose restricted Harness assembler retains the exact
+-- canonical root selected by the surrounding runtime test.
+builderWithHarnessContext ::
+    FilePath ->
+    T.Text ->
+    TestSuite ->
+    IO () ->
+    [ConfigArtifact] ->
+    ProjectSpecBuilder Fixture.ProjectConfig Fixture.TestConfig
+builderWithHarnessContext root projectName suite check arts =
+    addForwardChildPlan Fixture.refusingForwardChildPlan $
+        builderWithoutForwardChildPlan root projectName suite check arts
+
+builderWithoutForwardChildPlan ::
+    FilePath ->
+    T.Text ->
+    TestSuite ->
+    IO () ->
+    [ConfigArtifact] ->
+    ProjectSpecBuilder Fixture.ProjectConfig Fixture.TestConfig
+builderWithoutForwardChildPlan root projectName suite check arts =
+    projectSpec
+        suite
+        check
+        arts
+        Fixture.testConfigCodec
+        fixtureTestInit
+        (fixtureAssembleAt root projectName)
+
+{- | A CLI fixture whose forward-child projector really projects one VM
+descent, so the recursive catalog admits a descent entry instead of refusing at
+the first declared edge.
+-}
+builderWithProjectingChild ::
+    FilePath ->
+    [Step] ->
+    TestSuite ->
+    IO () ->
+    [ConfigArtifact] ->
+    ProjectSpecBuilder Fixture.ProjectConfig Fixture.TestConfig
+builderWithProjectingChild descriptor steps suite check arts =
+    addForwardChildPlan (Fixture.projectingForwardChildPlan descriptor steps) $
+        builderWithoutForwardChildPlan "/workspace/demo" "cli" suite check arts
 
 specWith ::
     TestSuite ->
@@ -162,6 +209,17 @@ specWith ::
 specWith suite check arts =
     finalized (addSteps sampleChain (builderWith suite check arts))
 
+specWithHarnessContext ::
+    FilePath ->
+    T.Text ->
+    TestSuite ->
+    IO () ->
+    [ConfigArtifact] ->
+    ProjectSpec Fixture.ProjectConfig Fixture.TestConfig
+specWithHarnessContext root projectName suite check arts =
+    finalized
+        (addSteps sampleChain (builderWithHarnessContext root projectName suite check arts))
+
 finalized ::
     ProjectSpecBuilder Fixture.ProjectConfig Fixture.TestConfig ->
     ProjectSpec Fixture.ProjectConfig Fixture.TestConfig
@@ -170,16 +228,19 @@ finalized = either (error . show) id . finalizeProjectSpec
 fixtureTestInit :: a -> Fixture.TestConfig
 fixtureTestInit _ = Fixture.defaultTestConfig (Fixture.Resources 4 "8GiB" "20GiB")
 
-fixtureAssemble ::
+fixtureAssembleAt ::
+    FilePath ->
+    T.Text ->
     forall projectId scope.
     AssemblyRequest projectId Fixture.TestConfig T.Text scope ->
     ConfigAssembly scope (Fixture.ProjectConfig scope)
-fixtureAssemble request =
+fixtureAssembleAt root projectName request =
     case request of
         ProductionAssembly args ->
             pureConfigAssembly (Fixture.projectInit "cli" args)
         HarnessAssembly _ _ _ ->
-            pureConfigAssembly (Fixture.defaultProjectConfig "cli" "/workspace/demo" HostOrchestrator)
+            pureConfigAssembly
+                (Fixture.defaultProjectConfig projectName (T.pack root) HostOrchestrator)
 
 runHostBootstrapCLI ::
     ProjectSpec Fixture.ProjectConfig Fixture.TestConfig ->
@@ -200,6 +261,38 @@ tests =
                 (addSteps sampleChain (builderWith emptySuiteFixture (pure ()) [])) of
                 Left EmptyProjectTestSuite -> pure ()
                 other -> assertFailure ("expected EmptyProjectTestSuite, got " ++ either show (const "Right ProjectSpec") other)
+        , testCase "real project specs reject a missing forward-child projector" $
+            case
+                finalizeProjectSpec
+                    ( addSteps sampleChain $
+                        builderWithoutForwardChildPlan
+                            "/workspace/demo"
+                            "cli"
+                            passingSuite
+                            (pure ())
+                            []
+                    )
+            of
+                Left MissingForwardChildPlan -> pure ()
+                other -> assertFailure ("expected MissingForwardChildPlan, got " ++ either show (const "Right ProjectSpec") other)
+        , testCase "one forward-child projector completes real project finalization" $
+            case
+                finalizeProjectSpec
+                    (addSteps sampleChain (builderWith passingSuite (pure ()) []))
+            of
+                Right _ -> pure ()
+                Left failure -> assertFailure ("expected one projector to finalize, got " ++ show failure)
+        , testCase "duplicate forward-child projectors refuse instead of replacing" $
+            case
+                finalizeProjectSpec
+                    ( addSteps sampleChain $
+                        addForwardChildPlan
+                            Fixture.refusingForwardChildPlan
+                            (builderWith passingSuite (pure ()) [])
+                    )
+            of
+                Left DuplicateForwardChildPlan -> pure ()
+                other -> assertFailure ("expected DuplicateForwardChildPlan, got " ++ either show (const "Right ProjectSpec") other)
         , testCase "runtime executable identity must match the declared project" $ do
             actualProject <- executableProjectName
             result <-
@@ -388,12 +481,20 @@ tests =
             projectName <- executableProjectName
             cfgPath <- Schema.siblingProjectConfigPath projectName
             testPath <- Schema.siblingTestConfigPath projectName
+            stateRoot <- getCurrentDirectory
+            let spec =
+                    specWithHarnessContext
+                        stateRoot
+                        projectName
+                        failingSuite
+                        (pure ())
+                        []
             ( do
                     _ <-
-                        try (withArgs ["test", "init"] (runHostBootstrapCLI (specWith failingSuite (pure ()) []))) ::
+                        try (withArgs ["test", "init"] (runHostBootstrapCLI spec)) ::
                             IO (Either ExitCode ())
                     result <-
-                        try (withArgs ["test", "run", "all"] (runHostBootstrapCLI (specWith failingSuite (pure ()) []))) ::
+                        try (withArgs ["test", "run", "all"] (runHostBootstrapCLI spec)) ::
                             IO (Either ExitCode ())
                     result @?= Left (ExitFailure 1)
                     doesFileExist cfgPath >>= (@?= False)
@@ -454,7 +555,9 @@ tests =
                         )
                 spec =
                     finalized $
-                        addSteps exactHarnessChain (builderWith suite (pure ()) [])
+                        addSteps
+                            exactHarnessChain
+                            (builderWithHarnessContext stateRoot projectName suite (pure ()) [])
             ( do
                     initialized <-
                         try (withArgs ["test", "init"] (runHostBootstrapCLI spec)) ::
@@ -546,6 +649,7 @@ tests =
             projectName <- executableProjectName
             cfgPath <- Schema.siblingProjectConfigPath projectName
             testPath <- Schema.siblingTestConfigPath projectName
+            stateRoot <- getCurrentDirectory
             forwardCalls <- newIORef (0 :: Int)
             reverseCalls <- newIORef (0 :: Int)
             let refusalChain :: FixtureFragment
@@ -563,7 +667,18 @@ tests =
                             )
                         )
                     ]
-                spec = finalized (addSteps refusalChain (builderWith passingSuite (pure ()) []))
+                spec =
+                    finalized
+                        ( addSteps
+                            refusalChain
+                            ( builderWithHarnessContext
+                                stateRoot
+                                projectName
+                                passingSuite
+                                (pure ())
+                                []
+                            )
+                        )
             ( do
                     initialized <-
                         try (withArgs ["test", "init"] (runHostBootstrapCLI spec)) ::
@@ -660,7 +775,12 @@ tests =
                         [Case (fixtureCaseId "ok") 1 False]
                         (\_ _ -> pure Pass)
                         (modifyIORef' postReverseChecks (+ 1))
-                spec = finalized (addSteps lateRefusalChain (builderWith suite (pure ()) []))
+                spec =
+                    finalized
+                        ( addSteps
+                            lateRefusalChain
+                            (builderWithHarnessContext stateRoot projectName suite (pure ()) [])
+                        )
             ( do
                     initialized <-
                         try (withArgs ["test", "init"] (runHostBootstrapCLI spec)) ::
@@ -908,6 +1028,241 @@ tests =
                 finalImage <- readProtectedStoreImage (isolatedStoreRoot paths)
                 cursor <- expectSingleRecord "cursor." finalImage
                 assertBool "the completed fresh invocation advances its cursor to teardown" (recordImageContains "teardown" cursor)
+        , testCase "project up persists one exact recursive catalog manifest before its first effect" $
+            withIsolatedProjectConfig $ \paths -> do
+                atEffect <- newIORef Nothing
+                let observingChain :: FixtureFragment
+                    observingChain _ _ =
+                        [ projectStep
+                            (fixtureProjectStepId "catalog-admission")
+                            ProjectManagedReverse
+                            "observe the admitted catalog"
+                            (StepFrame "host-orchestrator-0" "metal")
+                            ( \_ -> do
+                                readProtectedStoreImage (isolatedStoreRoot paths)
+                                    >>= writeIORef atEffect . Just
+                                pure StepChanged
+                            )
+                        ]
+                    spec =
+                        finalized $
+                            addSteps observingChain $
+                                builderWith passingSuite (pure ()) []
+                result <-
+                    try (withArgs ["project", "up"] (runHostBootstrapCLI spec)) ::
+                        IO (Either ExitCode ())
+                result @?= Right ()
+                readIORef atEffect >>= \case
+                    Nothing -> assertFailure "the admitted catalog was never observed at the first effect"
+                    Just image -> do
+                        lease <- expectSingleRecord ("lease." <> isolatedProjectName paths <> ".production") image
+                        (epoch, specDigest, planDigest) <-
+                            case recordImageFields lease of
+                                ["bound", epochField, specField, planField] ->
+                                    pure (epochField, specField, planField)
+                                fields -> assertFailure ("expected a bound lease, observed " ++ show fields)
+                        (catalogKey, catalogVersion, catalogBytes) <- expectSingleRecord "catalog." image
+                        catalogKey
+                            @?= "catalog.." <> isolatedProjectName paths <> "..production.." <> epoch
+                        catalogVersion @?= 1
+                        assertBool
+                            "the durable manifest opens with the framed catalog tag"
+                            ( ByteString.isPrefixOf
+                                ( LazyByteString.toStrict
+                                    ( Builder.toLazyByteString
+                                        ( Builder.word64BE
+                                            (fromIntegral (ByteString.length catalogTag))
+                                            <> Builder.byteString catalogTag
+                                            <> Builder.word64BE 1
+                                        )
+                                    )
+                                )
+                                catalogBytes
+                            )
+                        mapM_
+                            ( \(label, value) ->
+                                assertBool
+                                    ("the durable manifest omits its " ++ label)
+                                    ( ByteString.isInfixOf
+                                        (TextEncoding.encodeUtf8 value)
+                                        catalogBytes
+                                    )
+                            )
+                            [ ("installed project", isolatedProjectName paths)
+                            , ("stable profile", "production")
+                            , ("specification digest", specDigest)
+                            , ("root plan digest", planDigest)
+                            , ("root frame", "host-orchestrator-0")
+                            ]
+                        assertBool
+                            "a single-frame root plan admits a descent edge"
+                            ( ByteString.isSuffixOf
+                                (ByteString.replicate 8 0)
+                                catalogBytes
+                            )
+        , testCase "an exact project up retry converges on the recursive catalog it already persisted" $
+            withIsolatedProjectConfig $ \paths -> do
+                effects <- newIORef (0 :: Int)
+                let conflictingChain :: FixtureFragment
+                    conflictingChain _ _ =
+                        [ projectStep
+                            (fixtureProjectStepId "catalog-retry")
+                            ProjectManagedReverse
+                            "reserve then stop"
+                            (StepFrame "host-orchestrator-0" "metal")
+                            ( \_ -> do
+                                modifyIORef' effects (+ 1)
+                                pure (StepConflict "healthy" "conflicting" "repair the fixture")
+                            )
+                        ]
+                    spec = finalized (addSteps conflictingChain (builderWith passingSuite (pure ()) []))
+                    run =
+                        try (withArgs ["project", "up"] (runHostBootstrapCLI spec)) ::
+                            IO (Either ExitCode ())
+                run >>= (@?= Left (ExitFailure 1))
+                readIORef effects >>= (@?= 1)
+                persisted <- readProtectedStoreImage (isolatedStoreRoot paths)
+                catalog <- expectSingleRecord "catalog." persisted
+                run >>= (@?= Left (ExitFailure 1))
+                readIORef effects >>= (@?= 1)
+                replayed <- readProtectedStoreImage (isolatedStoreRoot paths)
+                assertRecordCount "catalog." 1 replayed
+                expectSingleRecord "catalog." replayed >>= (@?= catalog)
+        , testCase "a conflicting durable recursive catalog refuses before the reservation" $
+            withIsolatedProjectConfig $ \paths -> do
+                effects <- newIORef (0 :: Int)
+                let refusedChain :: FixtureFragment
+                    refusedChain _ _ =
+                        [ projectStep
+                            (fixtureProjectStepId "catalog-conflict")
+                            ProjectManagedReverse
+                            "must not run"
+                            (StepFrame "host-orchestrator-0" "metal")
+                            (\_ -> modifyIORef' effects (+ 1) >> pure StepChanged)
+                        ]
+                    spec = finalized (addSteps refusedChain (builderWith passingSuite (pure ()) []))
+                before <- seedBoundExecute paths spec
+                lease <- expectSingleRecord ("lease." <> isolatedProjectName paths <> ".production") before
+                epoch <-
+                    case recordImageFields lease of
+                        ["bound", epochField, _specDigest, _planDigest] -> pure epochField
+                        fields -> assertFailure ("expected a bound seeded lease, observed " ++ show fields)
+                assertRecordCount "catalog." 0 before
+                assertRecordCount "invocation." 0 before
+                let foreignKey =
+                        "catalog.." <> isolatedProjectName paths <> "..production.." <> epoch
+                    foreignBytes = "not-the-admitted-recursive-catalog"
+                writeForeignRecord (isolatedStoreRoot paths) foreignKey foreignBytes
+                result <-
+                    try (withArgs ["project", "up"] (runHostBootstrapCLI spec)) ::
+                        IO (Either ExitCode ())
+                result @?= Left (ExitFailure 1)
+                readIORef effects >>= (@?= 0)
+                after <- readProtectedStoreImage (isolatedStoreRoot paths)
+                assertRecordCount "invocation." 0 after
+                expectSingleRecord "catalog." after
+                    >>= (@?= (foreignKey, 1, foreignBytes))
+        , testCase "a declared descent is recursively projected before any effect or reservation" $
+            withIsolatedProjectConfig $ \paths -> do
+                effects <- newIORef (0 :: Int)
+                let descendingChain :: FixtureFragment
+                    descendingChain _ _ =
+                        [ descendsVia
+                            (inVM (IncusVM "fixture-vm" "images:ubuntu/24.04") localContext)
+                            ( projectStep
+                                (fixtureProjectStepId "catalog-descent-parent")
+                                PreserveOnReverse
+                                "offer the declared descent"
+                                (StepFrame "host-orchestrator-0" "metal")
+                                (\_ -> modifyIORef' effects (+ 1) >> pure StepChanged)
+                            )
+                        , projectStep
+                            (fixtureProjectStepId "catalog-descent-child")
+                            PreserveOnReverse
+                            "work inside the declared child frame"
+                            (StepFrame "vm-orchestrator-1" "VM")
+                            (\_ -> modifyIORef' effects (+ 1) >> pure StepChanged)
+                        ]
+                    spec = finalized (addSteps descendingChain (builderWith passingSuite (pure ()) []))
+                result <-
+                    try (withArgs ["project", "up"] (runHostBootstrapCLI spec)) ::
+                        IO (Either ExitCode ())
+                result @?= Left (ExitFailure 1)
+                readIORef effects >>= (@?= 0)
+                image <- readProtectedStoreImage (isolatedStoreRoot paths)
+                assertRecordCount "catalog." 0 image
+                assertRecordCount "invocation." 0 image
+        , testCase "an admitted one-layer descent is cataloged with its exact edge before the first effect" $
+            withIsolatedProjectConfig $ \paths -> do
+                atEffect <- newIORef Nothing
+                let admittedSteps =
+                        [ descendsVia
+                            (inVM (IncusVM "fixture-vm" "images:ubuntu/24.04") localContext)
+                            ( projectStep
+                                (fixtureProjectStepId "admitted-descent-parent")
+                                PreserveOnReverse
+                                "offer the admitted descent"
+                                (StepFrame "host-orchestrator-0" "metal")
+                                {- The catalog is admitted before the reservation
+                                and before this first effect, so the run is
+                                halted here rather than descending: executing a
+                                real remote frame is later-sprint work and must
+                                not depend on a live provider. -}
+                                ( \_ -> do
+                                    readProtectedStoreImage (isolatedStoreRoot paths)
+                                        >>= writeIORef atEffect . Just
+                                    pure (StepConflict "healthy" "halted" "stop before the descent")
+                                )
+                            )
+                        , projectStep
+                            (fixtureProjectStepId "admitted-descent-child")
+                            PreserveOnReverse
+                            "work inside the admitted child frame"
+                            (StepFrame "vm-orchestrator-1" "VM")
+                            (\_ -> pure StepChanged)
+                        ]
+                    spec =
+                        finalized $
+                            addSteps (\_ _ -> admittedSteps) $
+                                builderWithProjectingChild
+                                    "/workspace/demo"
+                                    admittedSteps
+                                    passingSuite
+                                    (pure ())
+                                    []
+                result <-
+                    try (withArgs ["project", "up"] (runHostBootstrapCLI spec)) ::
+                        IO (Either ExitCode ())
+                result @?= Left (ExitFailure 1)
+                readIORef atEffect >>= \case
+                    Nothing -> assertFailure "the admitted catalog was never observed at the first effect"
+                    Just image -> do
+                        lease <- expectSingleRecord ("lease." <> isolatedProjectName paths <> ".production") image
+                        epoch <-
+                            case recordImageFields lease of
+                                ["bound", epochField, _specDigest, _planDigest] -> pure epochField
+                                fields -> assertFailure ("expected a bound lease, observed " ++ show fields)
+                        (catalogKey, catalogVersion, catalogBytes) <- expectSingleRecord "catalog." image
+                        catalogKey
+                            @?= "catalog.." <> isolatedProjectName paths <> "..production.." <> epoch
+                        catalogVersion @?= 1
+                        let framed value =
+                                let encoded = TextEncoding.encodeUtf8 value
+                                 in Builder.word64BE (fromIntegral (ByteString.length encoded))
+                                        <> Builder.byteString encoded
+                        assertBool
+                            "the durable manifest frames exactly one admitted descent edge"
+                            ( ByteString.isInfixOf
+                                ( LazyByteString.toStrict
+                                    ( Builder.toLazyByteString
+                                        ( Builder.word64BE 1
+                                            <> framed "host-orchestrator-0"
+                                            <> framed "vm-orchestrator-1"
+                                        )
+                                    )
+                                )
+                                catalogBytes
+                            )
         , testCase "project up resumes an exact persisted snapshot whose lease is still unbound" $
             withIsolatedProjectConfig $ \paths -> do
                 effects <- newIORef (0 :: Int)
@@ -978,6 +1333,67 @@ tests =
                 cursorVersionAfter @?= cursorVersionBefore + 1
                 assertBool "the recovered invocation advances the same cursor to teardown" (recordImageContains "teardown" cursorAfter)
                 assertRecordCount "invocation." 1 after
+        , testCase "project up Teardown recovery returns without a second entry, effect, or reservation" $
+            withIsolatedProjectConfig $ \paths -> do
+                effects <- newIORef (0 :: Int)
+                let completedChain :: FixtureFragment
+                    completedChain _ _ =
+                        [ projectStep
+                            (fixtureProjectStepId "completed-entry-replay")
+                            ProjectManagedReverse
+                            "complete once"
+                            (StepFrame "host-orchestrator-0" "metal")
+                            (\_ -> modifyIORef' effects (+ 1) >> pure StepChanged)
+                        ]
+                    spec = finalized (addSteps completedChain (builderWith passingSuite (pure ()) []))
+                    run =
+                        try (withArgs ["project", "up"] (runHostBootstrapCLI spec)) ::
+                            IO (Either ExitCode ())
+                run >>= (@?= Right ())
+                readIORef effects >>= (@?= 1)
+                completed <- readProtectedStoreImage (isolatedStoreRoot paths)
+                completedCursor <- expectSingleRecord "cursor." completed
+                assertBool "the first run reached Teardown" (recordImageContains "teardown" completedCursor)
+                completedInvocation <- expectSingleRecord "invocation." completed
+                run >>= (@?= Right ())
+                readIORef effects >>= (@?= 1)
+                replayed <- readProtectedStoreImage (isolatedStoreRoot paths)
+                expectSingleRecord "cursor." replayed >>= (@?= completedCursor)
+                expectSingleRecord "invocation." replayed >>= (@?= completedInvocation)
+                assertRecordCount "invocation." 1 replayed
+        , testCase "project up Execute recovery refuses a consumed reservation without rerunning its callback" $
+            withIsolatedProjectConfig $ \paths -> do
+                effects <- newIORef (0 :: Int)
+                let conflictingChain :: FixtureFragment
+                    conflictingChain _ _ =
+                        [ projectStep
+                            (fixtureProjectStepId "consumed-entry-replay")
+                            ProjectManagedReverse
+                            "reserve then stop"
+                            (StepFrame "host-orchestrator-0" "metal")
+                            ( \_ -> do
+                                modifyIORef' effects (+ 1)
+                                pure (StepConflict "healthy" "conflicting" "repair the fixture")
+                            )
+                        ]
+                    spec = finalized (addSteps conflictingChain (builderWith passingSuite (pure ()) []))
+                    run =
+                        try (withArgs ["project", "up"] (runHostBootstrapCLI spec)) ::
+                            IO (Either ExitCode ())
+                first <- run
+                first @?= Left (ExitFailure 1)
+                readIORef effects >>= (@?= 1)
+                consumed <- readProtectedStoreImage (isolatedStoreRoot paths)
+                consumedCursor <- expectSingleRecord "cursor." consumed
+                assertBool "the failed interpreter retains Execute" (recordImageContains "execute" consumedCursor)
+                consumedInvocation <- expectSingleRecord "invocation." consumed
+                second <- run
+                second @?= Left (ExitFailure 1)
+                readIORef effects >>= (@?= 1)
+                replayed <- readProtectedStoreImage (isolatedStoreRoot paths)
+                expectSingleRecord "cursor." replayed >>= (@?= consumedCursor)
+                expectSingleRecord "invocation." replayed >>= (@?= consumedInvocation)
+                assertRecordCount "invocation." 1 replayed
         , -- `project down` is the plan's own reverse projection, so the effect it
           -- runs is the one the acquiring step declared — not a whole-project
           -- hook beside the plan (§ W). The chain here owns no `deploy-kind`, so
@@ -1055,9 +1471,17 @@ tests =
             let packageRoot = repoRoot </> "core" </> "hostbootstrap-core"
                 sourceRoot = packageRoot </> "src" </> "HostBootstrap"
             commandSource <- TIO.readFile (sourceRoot </> "Command.hs")
+            entrySource <-
+                TIO.readFile
+                    (sourceRoot </> "Command" </> "LifecycleEntry.hs")
             reconcileSource <- TIO.readFile (sourceRoot </> "Reconcile.hs")
             teardownSource <- TIO.readFile (sourceRoot </> "Teardown.hs")
             cabalSource <- TIO.readFile (packageRoot </> "hostbootstrap-core.cabal")
+            sources <- lifecycleHaskellSources sourceRoot
+            entryImporters <-
+                filterM
+                    (fmap (T.isInfixOf "import HostBootstrap.Command.LifecycleEntry") . TIO.readFile)
+                    sources
             let projectStart = "projectCommandGroup ::"
                 projectEnd = "-- | Whether the current binary frame owns"
                 fromProject = snd (T.breakOn projectStart commandSource)
@@ -1072,6 +1496,10 @@ tests =
                         (label ++ " still contains compatibility shape " ++ T.unpack fragment)
                         (not (fragment `T.isInfixOf` source))
             assertBool "could not isolate projectCommandGroup" (not (T.null fromProject) && projectEnd `T.isInfixOf` fromProject)
+            sort (map (makeRelative sourceRoot) entryImporters)
+                @?= [ "Command.hs"
+                    , "Handoff/Lifecycle.hs"
+                    ]
             mapM_
                 require
                 [ "withProjectPlan profile root validated drafts"
@@ -1079,13 +1507,33 @@ tests =
                 , "case withCurrentFrame plan ctx"
                 , "SnapshotVerificationError (ModeWrongMode \"production\" \"absent\") -> True"
                 , "SnapshotVerificationError (ModeLeaseNotBindable \"production\" \"unbound\") -> True"
-                , "withCurrentLifecycleCursor journal frame Authority.ProjectUp"
-                , "ProjectAuthority.authorizeProjectUp"
-                , "runChainFromFrame cfg self store plan authority executeCursor"
+                , "LifecycleContext.withValidatedLifecycleContext"
+                , "runExactProjectUp"
+                , "withRootProjectUpLifecycleEntry"
+                , "runRootProjectUpLifecycleEntry"
+                , "withRootProjectUpLifecycleEntry exactSpec rootAuthority Authority.ProjectUp verified bound binding lease plan lifecycleContext (runRootProjectUpLifecycleEntry cfg self)"
                 , "Teardown.teardownPlan plan currentFrame verb"
+                ]
+            mapM_
+                ( \fragment ->
+                    assertBool
+                        ("hidden lifecycle entry lost its exact route: " ++ T.unpack fragment)
+                        (fragment `T.isInfixOf` T.unwords (T.words entrySource))
+                )
+                [ "withValidatedRootLifecycleContext"
+                , "withAcquisitionJournal"
+                , "withCurrentLifecycleCursor journal frame verb"
+                , "withRootedPlanCatalogKernel finalized rootAuthority plan current lifecycleContext"
+                , "settleRootedPlanCatalog store catalog"
+                , "compareAndSwapProtectedRecord session key ExpectAbsent manifest"
+                , "rootedPlanCatalogManifestMatchesKernel catalog (protectedRecordBytes record)"
+                , "ProjectAuthority.authorizeRootProject"
+                , "runChainFromFrame cfg self store plan authority cursor"
+                , "withTeardownLifecycleCursor cursor"
                 ]
             T.count "withProjectPlan profile root validated drafts" normalized @?= 1
             T.count "withRecoveredProductionProjectPlan profile root verified bound binding recoveredConfig recoveredDrafts" normalized @?= 1
+            T.count "withRootProjectUpLifecycleEntry" normalized @?= 1
             mapM_
                 (forbid "Production command" productionSlice)
                 [ "projectPlanStepPlan"
@@ -1095,6 +1543,9 @@ tests =
                 , "HostBootstrap.Chain.Compatibility"
                 , "compatibilityStepExecutionFor"
                 , "withCompatibilityTeardownPlan"
+                , "ProjectAuthority.authorizeRootProject"
+                , "runChainFromFrame cfg self store plan"
+                , "withCurrentLifecycleCursor"
                 ]
             assertBool "Command must import the public Chain facade" ("import HostBootstrap.Chain (" `T.isInfixOf` commandSource)
             forbid "Command" commandSource "HostBootstrap.Chain.Compatibility"
@@ -1102,6 +1553,11 @@ tests =
             forbid "Teardown" teardownSource "withCompatibilityTeardownPlan"
             forbid "Teardown" teardownSource "compatibilityReverseStepFor"
             forbid "Cabal" cabalSource "HostBootstrap.Chain.Compatibility"
+            assertBool
+                "the lifecycle entry implementation must remain Cabal-hidden"
+                ( "other-modules: HostBootstrap.Authority.Kernel HostBootstrap.Authority.ProjectPlan.Internal HostBootstrap.Command.LifecycleEntry"
+                    `T.isInfixOf` T.unwords (T.words cabalSource)
+                )
             doesFileExist (sourceRoot </> "Chain" </> "Compatibility.hs") >>= (@?= False)
         , testCase "project up fails fast without a sibling context" $ do
             result <-
@@ -1160,6 +1616,14 @@ sampleChain _ _ =
 
 fixtureProjectStepId :: String -> ProjectStepId
 fixtureProjectStepId = either error id . projectStepId
+
+lifecycleHaskellSources :: FilePath -> IO [FilePath]
+lifecycleHaskellSources directory = do
+    entries <- listDirectory directory
+    let paths = map (directory </>) entries
+    directories <- filterM doesDirectoryExist paths
+    nested <- concat <$> mapM lifecycleHaskellSources directories
+    pure ([path | path <- paths, takeExtension path == ".hs"] <> nested)
 
 {- | One CLI invocation gets its own absolute canonical root and therefore its
 own protected Production store.  The executable-sibling config path is fixed
@@ -1314,6 +1778,7 @@ withExactSeedPlan paths spec use = do
                                                     baseCodec
                                                     emptyServiceRegistry
                                                     (projectStepPlan spec)
+                                                    Fixture.refusingForwardChildPlan
                                                     ( \finalizedSpec -> do
                                                         let value =
                                                                 Fixture.defaultProjectConfig
@@ -1396,6 +1861,25 @@ writeExactStableSnapshot store project plan = do
             </> ".hostbootstrap"
             </> "authority"
             </> T.unpack (installedProjectName project)
+
+-- | The framed vocabulary tag every recursive catalog manifest opens with.
+catalogTag :: ByteString.ByteString
+catalogTag = "hostbootstrap/rooted-plan-catalog"
+
+{- | Publish one foreign durable record under an exact key.
+
+The lifecycle never writes these bytes, so a run that accepts them has stopped
+comparing the durable manifest with the catalog it admitted.
+-}
+writeForeignRecord :: FilePath -> T.Text -> ByteString.ByteString -> IO ()
+writeForeignRecord storeRoot keyText bytes = do
+    store <- openProtectedStore storeRoot >>= either (assertFailure . show) pure
+    key <- either (assertFailure . show) pure (mkRecordKey keyText)
+    written <-
+        withProtectedEntry store $ \session ->
+            compareAndSwapProtectedRecord session key ExpectAbsent bytes
+    _ <- expectRight written
+    pure ()
 
 seedPersistedUnbound ::
     IsolatedProductionPaths ->

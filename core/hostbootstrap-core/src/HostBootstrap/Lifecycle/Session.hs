@@ -55,6 +55,8 @@ module HostBootstrap.Lifecycle.Session (
     validateAcquisitionJournalBindingKernel,
     withAcquisitionJournalPhase,
     openAcquisitionJournalKernel,
+    reopenExistingAcquisitionCursorKernel,
+    reopenExistingReverseAcquisitionJournalKernel,
 
     -- * Same-broker frame cursors
     LifecycleCursor,
@@ -64,6 +66,8 @@ module HostBootstrap.Lifecycle.Session (
     lifecycleCursorPhase,
     lifecycleCursorMatchesCommandAuthority,
     validateCurrentLifecycleCursor,
+    withReverseRootSourceRecordsKernel,
+    withReverseRootTargetLifecycleCursorKernel,
     withLifecycleCursor,
     withCurrentLifecycleCursor,
     withExecuteLifecycleCursor,
@@ -94,6 +98,14 @@ module HostBootstrap.Lifecycle.Session (
     operationSessionId,
     openOperationSession,
     closeOperationSession,
+
+    -- * Rooted frame session rows
+    rootedFrameSessionKeyKernel,
+    openRootedFrameSessionRecordKernel,
+    attachRootedFrameSessionRecordKernel,
+    rootedNodeUnknownKeyKernel,
+    rootedSettlementKeyKernel,
+    publishRootedUnknownRowKernel,
 
     -- * Fences
     FencePhase (..),
@@ -190,8 +202,9 @@ import HostBootstrap.Authority (
     ExecutePhase,
     LifecyclePhase (..),
     PreparePhase,
-    ProjectVerb,
+    ProjectVerb (ProjectDestroy, ProjectDown, ProjectUp),
     TeardownPhase,
+    VerbUp,
     brokerEpochWord,
     lifecyclePhaseName,
     projectVerbName,
@@ -588,6 +601,228 @@ openAcquisitionJournalKernel admission store session validateLive scope project 
                                 )
                             )
 
+-- | Existing-only child acquisition recovery; only Prepare may seed a cursor.
+reopenExistingAcquisitionCursorKernel ::
+    AcquisitionJournalAdmission ->
+    ProtectedStore ->
+    ProtectedSession session ->
+    ( forall liveSession.
+      ProtectedSession liveSession ->
+      Text ->
+      Word64 ->
+      IO (Either SessionError ())
+    ) ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    ProjectFrame scope specDigest planId configId frame ->
+    LifecyclePhase phase ->
+    IO
+        ( Either
+            SessionError
+            ( AcquisitionJournal scope planId brokerGeneration
+            , LifecycleCursor
+                scope planId frame brokerGeneration VerbUp phase
+            )
+        )
+reopenExistingAcquisitionCursorKernel
+    admission store session validateLive stableScope project storeId snapshot run spec epoch frame phase =
+        case consumeAcquisitionJournalAdmissionKernel admission of
+            () -> do
+                reopened <-
+                    reopenExistingAcquisitionJournalInEntry
+                        store
+                        session
+                        validateLive
+                        stableScope
+                        project
+                        storeId
+                        snapshot
+                        run
+                        spec
+                        epoch
+                        (projectVerbName ProjectUp)
+                        Nothing
+                case reopened of
+                    Left failure -> pure (Left failure)
+                    Right journal -> case validateLifecycleCursorRequest journal frame ProjectUp of
+                        Left failure -> pure (Left failure)
+                        Right () -> do
+                            present <- requireChildCursorPresence session journal frame phase
+                            case present of
+                                Left failure -> pure (Left failure)
+                                Right () -> do
+                                    cursor <-
+                                        openLifecycleCursorInEntry session journal frame ProjectUp phase
+                                    pure ((\value -> (journal, value)) <$> cursor)
+
+{- | Strict existing-only admission for one authenticated reverse child.
+
+The hidden admission is consumed before the store, session, coordinates,
+frame, or requested verb can be inspected.  Only an existing Down or Destroy
+record with its original version-one Prepare seed can yield a journal.
+-}
+reopenExistingReverseAcquisitionJournalKernel ::
+    AcquisitionJournalAdmission ->
+    ProtectedStore ->
+    ProtectedSession session ->
+    ( forall liveSession.
+      ProtectedSession liveSession ->
+      Text ->
+      Word64 ->
+      IO (Either SessionError ())
+    ) ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    ProjectFrame scope specDigest planId configId frame ->
+    ProjectVerb verb ->
+    IO (Either SessionError (AcquisitionJournal scope planId brokerGeneration))
+{-# OPAQUE reopenExistingReverseAcquisitionJournalKernel #-}
+reopenExistingReverseAcquisitionJournalKernel admission =
+    case consumeAcquisitionJournalAdmissionKernel admission of
+        () -> \store session validateLive stableScope project storeId snapshot run spec epoch frame verb ->
+            let reopen verbName =
+                    reopenExistingAcquisitionJournalInEntry
+                        store session validateLive stableScope project storeId snapshot
+                        run spec epoch verbName (Just ("prepare", 1))
+             in case verb of
+                    ProjectUp -> pure (Left (SessionCursorVerbMismatch "down or destroy" "up"))
+                    ProjectDown -> do
+                        opened <- reopen (projectVerbName verb)
+                        pure $ opened >>= \journal -> journal <$ validateLifecycleCursorRequest journal frame verb
+                    ProjectDestroy -> do
+                        opened <- reopen (projectVerbName verb)
+                        pure $ opened >>= \journal -> journal <$ validateLifecycleCursorRequest journal frame verb
+
+reopenExistingAcquisitionJournalInEntry ::
+    ProtectedStore ->
+    ProtectedSession session ->
+    ( forall liveSession.
+      ProtectedSession liveSession ->
+      Text ->
+      Word64 ->
+      IO (Either SessionError ())
+    ) ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    Text ->
+    Maybe (Text, Word64) ->
+    IO (Either SessionError (AcquisitionJournal scope planId brokerGeneration))
+reopenExistingAcquisitionJournalInEntry
+    store session validateLive stableScope project storeId snapshot run spec epoch verbName required
+        | storeId /= storeIdentity = mismatch "protected store" storeId storeIdentity
+        | storeId /= sessionIdentity =
+            mismatch "protected session store" storeId sessionIdentity
+        | otherwise = either (pure . Left) reopen (childAcquisitionKey project run epoch)
+      where
+        storeIdentity = protectedStoreIdentityText (protectedStoreIdentity store)
+        sessionIdentity = protectedStoreIdentityText (sessionStoreIdentity session)
+        mismatch field wanted observed =
+            pure (Left (SessionAcquisitionBindingMismatch field wanted observed))
+        reopen recordKey = do
+            observed <- readProtectedRecord session recordKey
+            case observed of
+                Left failure -> pure (Left (SessionStoreFailure failure))
+                Right Nothing -> pure (Left (SessionAcquisitionMissing (recordKeyText recordKey)))
+                Right (Just record) -> case decodeAcquisitionRecord (protectedRecordBytes record) of
+                    Just (binding, SomeLifecyclePhase seed)
+                        | protectedRecordBytes record /= encodeAcquisitionRecord binding seed ->
+                            pure (Left (SessionRecordCorrupt "acquisition journal"))
+                        | acquisitionBindingRootVerb binding /= verbName ->
+                            pure
+                                ( Left
+                                    ( SessionCursorVerbMismatch
+                                        (acquisitionBindingRootVerb binding)
+                                        verbName
+                                    )
+                                )
+                        | binding /= expectedBinding binding ->
+                            mismatch "durable binding" "exact binding" "different binding"
+                        | Just (requiredSeed, _) <- required
+                        , acquisitionPhaseText seed /= requiredSeed ->
+                            mismatch "seed phase" requiredSeed (acquisitionPhaseText seed)
+                        | Just (_, requiredVersion) <- required
+                        , recordVersionWord (protectedRecordVersion record) /= requiredVersion ->
+                            mismatch
+                                "record version"
+                                (showWord requiredVersion)
+                                (showWord (recordVersionWord (protectedRecordVersion record)))
+                        | otherwise -> do
+                            let check :: forall liveSession. ProtectedSession liveSession -> IO (Either SessionError ())
+                                check live =
+                                    validateLive live
+                                        (acquisitionBindingLeaseRecord binding)
+                                        (acquisitionBindingLeaseVersion binding)
+                            valid <- check session
+                            pure $ case valid of
+                                Left failure -> Left failure
+                                Right () ->
+                                    Right
+                                        ( AcquisitionJournal
+                                            store
+                                            check
+                                            recordKey
+                                            (protectedRecordVersion record)
+                                            binding
+                                            seed
+                                        )
+                    _ -> pure (Left (SessionRecordCorrupt "acquisition journal"))
+        expectedBinding binding =
+            AcquisitionJournalBinding
+                stableScope project storeId snapshot
+                (acquisitionBindingLeaseRecord binding)
+                (acquisitionBindingLeaseVersion binding)
+                run spec snapshot epoch verbName
+
+requireChildCursorPresence ::
+    ProtectedSession session ->
+    AcquisitionJournal scope planId brokerGeneration ->
+    ProjectFrame scope specDigest planId configId frame ->
+    LifecyclePhase phase ->
+    IO (Either SessionError ())
+requireChildCursorPresence
+    session
+    (AcquisitionJournal _ _ sourceKey sourceVersion sourceBinding sourcePhase)
+    frame
+    requestedPhase
+        | lifecyclePhaseName requestedPhase == lifecyclePhaseName Prepare = pure (Right ())
+        | otherwise =
+            case lifecycleCursorKey binding of
+                Left failure -> pure (Left failure)
+                Right key -> do
+                    observed <- readProtectedRecord session key
+                    pure $ case observed of
+                        Left failure -> Left (SessionStoreFailure failure)
+                        Right Nothing -> Left (SessionCursorMissing (projectFrameId frame))
+                        Right (Just _) -> Right ()
+      where
+        binding = lifecycleCursorBinding sourceKey sourceVersion sourceBinding sourcePhase frame
+
+childAcquisitionKey :: Text -> Text -> Word64 -> Either SessionError RecordKey
+childAcquisitionKey project run brokerEpoch =
+    keyFor
+        ( "acquisition."
+            <> project
+            <> "."
+            <> run
+            <> "."
+            <> showWord brokerEpoch
+        )
+
 acquisitionSchema :: Text
 acquisitionSchema = "acquisition-journal-v1"
 
@@ -788,6 +1023,129 @@ validateCurrentLifecycleCursor session cursor = do
     case source of
         Left failure -> pure (Left failure)
         Right () -> requireExactCurrentLifecycleCursor session cursor
+
+{- | Package-private exact durable coordinates for a successful @up@ source.
+
+The hidden admission is consumed before either opaque value is inspected.  The
+callback receives only the already-retained acquisition and current-cursor
+records after their complete source binding has been compared; it grants no
+transition, reservation, or mutation authority.
+-}
+withReverseRootSourceRecordsKernel ::
+    AcquisitionJournalAdmission ->
+    AcquisitionJournal scope planId brokerGeneration ->
+    LifecycleCursor scope planId frame brokerGeneration VerbUp TeardownPhase ->
+    ( RecordKey ->
+      RecordVersion ->
+      ByteString ->
+      RecordKey ->
+      RecordVersion ->
+      ByteString ->
+      result
+    ) ->
+    Either SessionError result
+{-# OPAQUE withReverseRootSourceRecordsKernel #-}
+withReverseRootSourceRecordsKernel admission =
+    admission `seq` consumeReverseRootSourceAdmission admission eliminate
+  where
+    eliminate journal cursor use =
+        case validateJournalCursorSource journal cursor of
+            Left failure -> Left failure
+            Right () ->
+                case (journal, cursor) of
+                    ( AcquisitionJournal _ _ journalKey journalVersion binding seed
+                        , LifecycleCursor _ cursorKey cursorVersion cursorBytes _ verb phase
+                        )
+                            | projectVerbName verb == projectVerbName ProjectUp
+                            , lifecyclePhaseName phase == lifecyclePhaseName Teardown ->
+                                Right
+                                    ( use
+                                        journalKey
+                                        journalVersion
+                                        (encodeAcquisitionRecord binding seed)
+                                        cursorKey
+                                        cursorVersion
+                                        cursorBytes
+                                    )
+                            | otherwise ->
+                                Left
+                                    ( SessionCursorBindingMismatch
+                                        "reverse root source"
+                                        "up/teardown"
+                                        (projectVerbName verb <> "/" <> lifecyclePhaseName phase)
+                                    )
+
+consumeReverseRootSourceAdmission :: AcquisitionJournalAdmission -> result -> result
+{-# OPAQUE consumeReverseRootSourceAdmission #-}
+consumeReverseRootSourceAdmission admission result =
+    case consumeAcquisitionJournalAdmissionKernel admission of
+        () -> result
+
+{- | Open or resume only one reverse root target and deliver its exact
+Teardown cursor after monotonically advancing any retained predecessor.
+
+The hidden admission is forced before the journal, frame, or verb is
+inspected.  Up is a total refusal, and the closed phase cases provide no
+generic transition or phase callback to the caller.
+-}
+withReverseRootTargetLifecycleCursorKernel ::
+    AcquisitionJournalAdmission ->
+    AcquisitionJournal scope planId brokerGeneration ->
+    ProjectFrame scope specDigest planId configId frame ->
+    ProjectVerb verb ->
+    (LifecycleCursor scope planId frame brokerGeneration verb TeardownPhase -> IO result) ->
+    IO (Either LifecycleError result)
+{-# OPAQUE withReverseRootTargetLifecycleCursorKernel #-}
+withReverseRootTargetLifecycleCursorKernel admission =
+    case consumeAcquisitionJournalAdmissionKernel admission of
+        () -> \journal@(AcquisitionJournal store validateLive _ sourceVersion _ seedPhase) frame verb use ->
+            let advance = case seedPhase of
+                    Prepare
+                        | recordVersionWord sourceVersion == 1 -> case validateLifecycleCursorRequest journal frame verb of
+                            Left failure -> pure (Left failure)
+                            Right () -> do
+                                terminal <-
+                                    inLifecycleCursorEntry store $ \session -> do
+                                        live <- validateLive session
+                                        case live of
+                                            Left failure -> pure (Left failure)
+                                            Right () -> do
+                                                current <-
+                                                    openCurrentLifecycleCursorInEntry session Nothing journal frame verb
+                                                case current of
+                                                    Left failure -> pure (Left failure)
+                                                    Right (SomeLifecycleCursor phase cursor) -> case phase of
+                                                        Prepare -> case checkedVersion 1 cursor of
+                                                            Left failure -> pure (Left failure)
+                                                            Right prepareCursor -> do
+                                                                executed <- advanceLifecycleCursorInEntry session prepareCursor Execute
+                                                                case executed >>= checkedVersion 2 of
+                                                                    Left failure -> pure (Left failure)
+                                                                    Right executeCursor -> do
+                                                                        teardown <- advanceLifecycleCursorInEntry session executeCursor Teardown
+                                                                        pure (teardown >>= checkedVersion 3)
+                                                        Execute -> case checkedVersion 2 cursor of
+                                                            Left failure -> pure (Left failure)
+                                                            Right executeCursor -> do
+                                                                teardown <- advanceLifecycleCursorInEntry session executeCursor Teardown
+                                                                pure (teardown >>= checkedVersion 3)
+                                                        Teardown -> pure (checkedVersion 3 cursor)
+                                either (pure . Left) (fmap Right . use) terminal
+                        | otherwise -> refuseAcquisition "record version" "1" (showWord (recordVersionWord sourceVersion))
+                    Execute -> refuseAcquisition "seed phase" "prepare" "execute"
+                    Teardown -> refuseAcquisition "seed phase" "prepare" "teardown"
+                refuseAcquisition field expected observed = pure (Left (SessionAcquisitionBindingMismatch field expected observed))
+             in case verb of
+                ProjectUp -> pure (Left (SessionCursorVerbMismatch "down or destroy" "up"))
+                ProjectDown -> advance
+                ProjectDestroy -> advance
+  where
+    checkedVersion expected cursor
+        = cursor
+            <$ requireCursorBindingWord
+                "reverse root target cursor version"
+                expected
+                (lifecycleCursorRecordVersion cursor)
 
 {- | Open or exactly resume one frame-local cursor.
 
@@ -2060,6 +2418,154 @@ sessionOperationNames ::
 sessionOperationNames session planDigest sid state
     | sessionRecordHasExactMembership state = pure (Right (sessionRecordMembers state))
     | otherwise = legacyOperationNames session planDigest sid
+
+{- | Derive the durable record key one rooted frame session is addressed by.
+
+The key is a function of root lineage, catalog identity, and frame alone, so a
+second invocation lineage never addresses the row a live one owns, and no part
+of a request can select which row is opened.
+-}
+rootedFrameSessionKeyKernel :: Text -> Text -> Text -> Either SessionError RecordKey
+rootedFrameSessionKeyKernel rootPlanDigest catalogIdentity frame = do
+    lineage <- recordName rootPlanDigest
+    catalog <- recordName catalogIdentity
+    named <- recordName frame
+    keyFor ("rooted-frame-session." <> lineage <> "." <> catalog <> "." <> named)
+
+{- | Publish one root-opened rooted frame session row, or converge on it.
+
+The bytes are the caller's exact canonical rendering; this operation supplies
+only the durable transition and interprets no framing of its own. A freshly
+opened row expects to be absent, and the decision comes from the strict
+readback rather than from who won the swap, so an exact retry converges on the
+record already present.
+
+What comes back is the version and the exact bytes the store actually holds,
+never a claim that they are the ones presented. A row already advanced to its
+attached successor is returned as it stands; only the caller's own codec can
+say whether that successor nests this opening, so only the caller decides.
+-}
+openRootedFrameSessionRecordKernel ::
+    ProtectedSession session ->
+    RecordKey ->
+    ByteString ->
+    IO (Either SessionError (RecordVersion, ByteString))
+openRootedFrameSessionRecordKernel session key opened = do
+    observed <- readProtectedRecord session key
+    case observed of
+        Left failure -> pure (Left (SessionStoreFailure failure))
+        Right (Just record) -> pure (Right (present record))
+        Right Nothing -> do
+            written <- compareAndSwapProtectedRecord session key ExpectAbsent opened
+            case written of
+                Left _ -> reread
+                Right version
+                    | recordVersionWord version /= 1 -> pure conflict
+                    | otherwise -> reread
+  where
+    present record = (protectedRecordVersion record, protectedRecordBytes record)
+    reread = do
+        readback <- readProtectedRecord session key
+        pure $ case readback of
+            Right (Just record) -> Right (present record)
+            _ -> Left (SessionRecordCorrupt "rooted frame session readback differs")
+    conflict = Left (SessionRecordCorrupt "a conflicting rooted frame session row exists")
+
+{- | Advance one exact opened row to its attached successor, or replay it.
+
+The opened bytes and version presented are the ones the caller read back, so
+the compare-and-swap consumes exactly that row and nothing else. An exact
+replay returns the attached version already present without a second mutation;
+anything that is neither the exact opened row nor the exact attached row
+refuses.
+-}
+attachRootedFrameSessionRecordKernel ::
+    ProtectedSession session ->
+    RecordKey ->
+    RecordVersion ->
+    ByteString ->
+    ByteString ->
+    IO (Either SessionError RecordVersion)
+attachRootedFrameSessionRecordKernel session key openedVersion opened attached = do
+    observed <- readProtectedRecord session key
+    case observed of
+        Left failure -> pure (Left (SessionStoreFailure failure))
+        Right Nothing -> pure conflict
+        Right (Just record)
+            | exactRootedFrameSessionRow 2 attached record ->
+                pure (Right (protectedRecordVersion record))
+            | exactRootedFrameSessionRow 1 opened record
+            , protectedRecordVersion record == openedVersion -> do
+                written <- compareAndSwapProtectedRecord session key (ExpectVersion openedVersion) attached
+                case written of
+                    Left _ -> rereadAttached
+                    Right version
+                        | recordVersionWord version /= 2 -> pure conflict
+                        | otherwise -> rereadAttached
+            | otherwise -> pure conflict
+  where
+    rereadAttached = do
+        readback <- readProtectedRecord session key
+        pure $ case readback of
+            Right (Just record)
+                | exactRootedFrameSessionRow 2 attached record ->
+                    Right (protectedRecordVersion record)
+            _ -> Left (SessionRecordCorrupt "rooted frame session attachment readback differs")
+    conflict = Left (SessionRecordCorrupt "the rooted frame session row conflicts")
+
+{- | Derive the durable key one rooted node's unknown row is addressed by.
+
+The key is a function of root lineage, catalog identity, frame, and the
+operation itself, so the root's own catalog selects which rows exist and a
+request cannot name one.
+-}
+rootedNodeUnknownKeyKernel ::
+    Text -> Text -> Text -> Text -> Either SessionError RecordKey
+rootedNodeUnknownKeyKernel rootPlanDigest catalogIdentity frame operation = do
+    lineage <- recordName rootPlanDigest
+    catalog <- recordName catalogIdentity
+    named <- recordName frame
+    op <- recordName operation
+    keyFor ("rooted-node-unknown." <> lineage <> "." <> catalog <> "." <> named <> "." <> op)
+
+{- | Derive the durable key one rooted node settlement is addressed by.
+
+The ordinal is part of the key, so one node settled at two different session
+ordinals addresses two different rows and neither can overwrite the other.
+-}
+rootedSettlementKeyKernel ::
+    Text -> Text -> Text -> Text -> Word64 -> Either SessionError RecordKey
+rootedSettlementKeyKernel rootPlanDigest catalogIdentity frame node ordinal = do
+    lineage <- recordName rootPlanDigest
+    catalog <- recordName catalogIdentity
+    named <- recordName frame
+    settled <- recordName node
+    at <- recordName (Text.pack (show ordinal))
+    keyFor
+        ( "rooted-node-settlement." <> lineage <> "." <> catalog <> "." <> named
+            <> "." <> settled <> "." <> at
+        )
+
+{- | Publish one exact rooted unknown row and read back what the store holds.
+
+This is the same absent-then-strict-readback transition the rooted frame
+session opens with, and it interprets no framing of its own: the bytes are the
+caller's canonical rendering, and what comes back is the version and the bytes
+actually present rather than a claim they are the ones presented. An exact
+retry converges on the record already there, so publishing the same unknown row
+twice is one preparation rather than two.
+-}
+publishRootedUnknownRowKernel ::
+    ProtectedSession session ->
+    RecordKey ->
+    ByteString ->
+    IO (Either SessionError (RecordVersion, ByteString))
+publishRootedUnknownRowKernel = openRootedFrameSessionRecordKernel
+
+exactRootedFrameSessionRow :: Word64 -> ByteString -> ProtectedRecord -> Bool
+exactRootedFrameSessionRow version bytes record =
+    recordVersionWord (protectedRecordVersion record) == version
+        && protectedRecordBytes record == bytes
 
 {- | Open a session for this plan against the live broker generation.
 
@@ -3747,6 +4253,8 @@ data SessionError
       SessionAcquisitionBindingInvalid Text
     | -- | field, expected value, observed value
       SessionAcquisitionBindingMismatch Text Text Text
+    | -- | the authenticated root acquisition row does not exist
+      SessionAcquisitionMissing Text
     | -- | one cursor binding member is empty or exceeds its canonical bound
       SessionCursorBindingInvalid Text
     | -- | field, expected value, observed value
@@ -3755,6 +4263,8 @@ data SessionError
       SessionCursorVerbMismatch Text Text
     | -- | authoritative current phase, then the requested phase
       SessionCursorPhaseMismatch Text Text
+    | -- | a non-seed child phase was requested before its cursor existed
+      SessionCursorMissing Text
     | -- | retained cursor version, then the current protected version
       SessionStaleCursorVersion Word64 Word64
     deriving (Eq, Show)
@@ -3857,6 +4367,8 @@ sessionErrorMessage err = case err of
             <> Text.unpack expected
             <> " but observed "
             <> Text.unpack observed
+    SessionAcquisitionMissing key ->
+        "session: no authenticated acquisition record exists at " <> Text.unpack key
     SessionCursorBindingInvalid field ->
         "session: the lifecycle cursor "
             <> Text.unpack field
@@ -3878,6 +4390,8 @@ sessionErrorMessage err = case err of
             <> Text.unpack observed
             <> " does not match the authoritative "
             <> Text.unpack expected
+    SessionCursorMissing frame ->
+        "session: no lifecycle cursor exists for frame " <> Text.unpack frame
     SessionStaleCursorVersion expected observed ->
         "session: lifecycle cursor version "
             <> show expected

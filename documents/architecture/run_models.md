@@ -27,12 +27,14 @@ one `ProjectPlan`. Public `HostBootstrap.Chain.renderChain` renders that full pr
 `runChainFromFrame` interprets only its non-empty current-frame segment. No project or test config carries
 a second execution-mode literal.
 
-Production dispatch retains or reconstructs one exact `ProjectPlan` and uses it for dry rendering,
-snapshot persistence/binding, journal/cursor admission, `authorizeProjectUp`, and public Chain
-interpretation. Its current-frame reverse verbs derive work from that same exact representation. Harness
-dispatch now does the same inside each generated-config ownership bracket: it admits one
-`ProjectPlan (Harness projectId runId) ...`, packages that plan's common forward and reverse actions in an
-opaque `HarnessLifecycle`, and lets the engine invoke those actions directly. No Harness lifecycle action
+Production dispatch retains or reconstructs one exact `ProjectPlan` and uses it for dry rendering and
+snapshot persistence/binding. Effectful root Up then admits the root-refined lifecycle context and enters the
+Cabal-private `LifecycleEntry` producer/fixed interpreter, which alone derives the journal/current cursor,
+calls generic `authorizeRootProject`, and reaches the lower public Chain. Its current-frame reverse verbs
+derive work from that same exact representation. Harness does the same inside each generated-config ownership
+bracket: it admits one `ProjectPlan (Harness projectId runId) ...`, packages that plan's fixed root-Up entry
+interpreter and reverse action in an opaque `HarnessLifecycle`, and lets the engine invoke those actions
+directly. No Harness lifecycle action
 re-enters the CLI or a Production plan. These are call-site boundaries around one authored graph, not
 alternate execution selectors. Nested
 lifecycle entry fails closed until authenticated child admission and proof-complete traversal land; exact

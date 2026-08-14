@@ -1,5 +1,5 @@
 module ImportHandoffReceiverInternal where
 
--- Raw relay channels and request identifiers are package-private. Public code
--- receives only the opaque edge and can derive a sealed BrokerLink from it.
+-- The complete received-edge and recovery-descent packages, including their
+-- joint folds and transport coordinates, are package-private.
 import HostBootstrap.Handoff.Receiver.Internal

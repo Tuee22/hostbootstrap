@@ -102,6 +102,14 @@ the cookbook summary:
   handoff before the current frame's chain effects. Outer-frame provider/preparation effects may already
   have occurred (see [dhall_topology](dhall_topology.md)).
 
+The active demo forward projector builds a deterministic child-local full graph rather than copying the
+parent plan. Substrate detection must run before sibling-config decode, but only the root selector consults
+it. Nested Incus uses the Linux-CPU graph with its in-cluster daemon; nested Lima/WSL2 uses the common
+VM-backed graph without the root-only host hook; the direct edge uses the direct graph. VM/container payloads
+share one exact newline-terminated renderer. The direct preview carries its child-derived descriptor and
+durable path through the existing `DemoDurableBind` lineage, not a reused parent mount or a fabricated
+`CanonicalProjectRoot`.
+
 ## Step Kinds
 
 Orthogonal to topology: each entry in the chain is a `Step` of one kind. The **Step algebra is the
@@ -147,8 +155,8 @@ summary for shape 2:
   public boundary executes only the admitted current-frame segment.
 - The standardized harness (`HostBootstrap.Harness`: `runMatrix` + `Seams`) is a **separate** test
   surface. For each generated run it constructs and retains an exact `ProjectPlan (Harness projectId
-  runId) ...`, invokes the common current-frame Chain and reverse boundaries directly, and keeps
-  assertion logic outside lifecycle authority.
+  runId) ...`, drives the Cabal-private fixed root-Up entry into the lower current-frame Chain and the
+  exact reverse boundary, and keeps assertion logic outside lifecycle authority.
 - The demo's remaining Harness gap is not a second forward graph: profile, root, and cluster consumers
   still receive independent config-derived terms rather than projections from that exact retained plan.
   The [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns that final projection and
@@ -195,8 +203,8 @@ Reused across shapes and step kinds:
   control-plane contract.
 - **The test surface drives the deploy** — `test run all` runs the standardized harness
   (`runMatrix` over the project's cases). Each generated run retains an exact Harness-scoped plan and
-  invokes the common current-frame Chain and reverse boundaries directly; it does not construct a
-  second per-case deployment graph. The harness stays frame-agnostic and may lift a case into the
+  drives the hidden fixed root-Up entry into the lower current-frame Chain and the exact reverse boundary;
+  it does not construct a second per-case deployment graph. The harness stays frame-agnostic and may lift a case into the
   cluster as a Job (a finite-job operation); see
   [single representation](#single-representation-the-chain-is-the-representation) and
   [harness_workflow](../architecture/harness_workflow.md).

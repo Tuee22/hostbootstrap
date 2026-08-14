@@ -125,12 +125,41 @@ See [Incus](../engineering/incus.md), [Lima](../engineering/lima.md), and [WSL2]
 
 ## Lifecycle truth
 
-Bring-up has several bounded waits and fail-closed command checks. Plan-indexed readiness is now opaque,
-resource-bound, and unforgeable at the
-[canonical-quantities-and-reconcile-results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md)'s
-API boundary, but live effects are not universally
-type-gated and mostly still consume non-authorizing compatibility observations. Reconcilers mostly
-return `IO ()`, not the implemented explicit create/adopt/repair/no-op/conflict foundation.
+Bring-up has several bounded waits and fail-closed command checks. The exact cluster consumer owned by the
+[cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
+is plan-indexed end to end: it requires backend-minted Running-provider dependency authority, applies the
+exact retained resource slice under identity-checked exclusion, and mints readiness only from a real API/node
+probe of the same control-plane identity. The prepared journal generation and backend container identity are
+distinct retained facts. Its production backend resolves the exact cluster tools through typed
+`HostConfig`/`HostTool`, while command injection remains Cabal-private; the runner closes cwd, environment,
+helper `PATH`, process-group lifetime, and strict output framing. The durable backend publishes self-bound
+`prepared`/`executing`/`managed` records under one no-follow state/lock namespace. The executing record binds
+the exact config and private-kubeconfig snapshot identities before Kind, so a restart can repair only the
+origin-verified identity and must refuse copied records or replaced snapshots. Legacy/demo consumers are
+intentionally not relabelled through that boundary;
+adoption remains with the
+[recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) and
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md). Other live effects are not universally
+type-gated and several still return `IO ()` or consume non-authorizing compatibility observations.
+
+The same [cluster-lifecycle, budgets, and cordoning
+phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) owns the implemented exact
+direct-Colima source boundary. Its prepared start joins one
+plan/provider/topology with the complete budget partition and current journal gate, renders the fixed
+non-activating CPU/memory plus 20-GiB-root/`total-20`-GiB-data call, and derives one 128-bit isolated-home and
+reusable-lock namespace with a socket-safe local profile. A private fixed Apple resolver and bounded
+runner/supervisor close tools, helper `PATH`, environment, cwd, process groups, and output framing. Under the
+descriptor-held reusable `flock(2)` lock, the self-bound durable protocol records namespace/profile/context
+absence before mutation and retains the exact machine, context, directory chain, disk objects, and complete
+artifact manifest. Only the matching closed-backend result can jointly settle the journal-bound provider
+start and wall into `LiveColimaWall`; `runLiveColimaDocker` is the sole Docker route through that exact wall.
+Cleanup has a distinct current teardown gate, durably enters `releasing`, executes
+`colima delete --force --data`, proves profile/data/context absence, and only then completes the exact managed
+provider `Running` to `Destroyed` transition and conditionally releases its namespaces and origin. A
+prepared-but-present, replaced, partial, or invocation-mismatched state grants no authority. The source
+phase's focused/full gates are closed; the [recursive-lifecycle-command
+phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) and
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) own the remaining command adopters.
 
 Teardown is also not recursive. Root `project down`/`destroy` cleans the current cluster only when that
 frame owns it, and every other node runs the reverse its own step declared. VM deletion or

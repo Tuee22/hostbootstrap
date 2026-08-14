@@ -1,18 +1,20 @@
 module CrossConfigProjectUpAuthority where
 
 import HostBootstrap.Authority
-    ( ProjectVerb (ProjectUp)
+    ( PreparePhase
+    , ProjectVerb (ProjectUp)
     , RootInvocationAuthority
     , VerbUp
     )
-import HostBootstrap.Authority.ProjectPlan (authorizeProjectUp)
+import HostBootstrap.Authority.ProjectPlan (authorizeRootProject)
 import HostBootstrap.Lifecycle.Mode
     ( AcquisitionJournal
     , BoundRunLease
+    , LifecycleCursor
     , VerifiedPlanSnapshot
     )
+import HostBootstrap.Lifecycle.Context (ValidatedLifecycleContext)
 import HostBootstrap.ProjectPlan (ProjectPlan)
-import HostBootstrap.ProjectPlan.Frame (ProjectFrame)
 import HostBootstrap.ProjectPlan.Snapshot
     ( BoundPlanSnapshot
     , PlanDigestBinding
@@ -36,10 +38,11 @@ crossConfig ::
     BoundRunLease Scope SpecDigest PlanDigest BrokerGeneration ->
     ProjectPlan Scope SpecDigest PlanId ConfigA Configuration ->
     AcquisitionJournal Scope PlanId BrokerGeneration ->
-    ProjectFrame Scope SpecDigest PlanId ConfigB Frame ->
+    LifecycleCursor Scope PlanId Frame BrokerGeneration VerbUp PreparePhase ->
+    ValidatedLifecycleContext Scope SpecDigest PlanId ConfigB Frame ->
     ()
-crossConfig root verified bound binding lease plan journal frame =
-    authorizeProjectUp
+crossConfig root verified bound binding lease plan journal cursor lifecycleContext =
+    authorizeRootProject
         root
         ProjectUp
         verified
@@ -48,5 +51,6 @@ crossConfig root verified bound binding lease plan journal frame =
         lease
         plan
         journal
-        frame
+        cursor
+        lifecycleContext
         `seq` ()

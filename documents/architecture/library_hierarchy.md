@@ -170,7 +170,8 @@ post-reverse absence assertion); `ProjectSpec` threads that suite into the inher
 The harness **drives the real project plan**: it **generates** the run's `<project>.dhall` functionally
 through the Harness request of the project's single restricted `psAssemble`, under fresh run authority
 and the matching mapped codec, admits one exact `ProjectPlan (Harness projectId runId) ...`, and interprets
-its common Chain forward/reverse projections directly. It never shells the lifecycle CLI, and project
+its hidden fixed root-Up entry and exact reverse projection. The entry alone invokes the lower Chain. It
+never shells the lifecycle CLI, and project
 assertions receive no lifecycle action. A suite may carry **more than one config variant** (the demo's
 two-message run); the harness stands each exact plan up, asserts, and tears it down in turn. The
 terminal reverse must produce settled-destroy closure evidence before the private ownership finalizer may

@@ -24,15 +24,48 @@
   stable step identities, operation keys, reverse policies, and callbacks, omits preserved nodes, and
   schedules only the current-frame suffix. The projection is pure and non-authorizing; receipt-bound
   traversal is a later layer (§ W).
-- **The exact Chain is the current-frame foundation of the recursive, fractal interpreter.** `renderChain` consumes the admitted plan's
-  complete `forward` projection. `runChainFromFrame` consumes that plan plus matching Execute authority
-  and cursor evidence, runs its non-empty current-frame segment, then obtains the child frame and lift
-  context from `DerivedTopology`. Production dispatch retains or reconstructs that exact plan through
-  rendering or through persistence/journal/cursor/authorization/Chain execution. Authenticated child entry
-  and proof-complete traversal remain with the
+- **The exact Chain is the current-frame foundation of the recursive, fractal interpreter.** `renderChain`
+  consumes the admitted plan's complete `forward` projection. In the target rooted runtime, the root process
+  is the sole lifecycle
+  coordinator: it owns one `ProtectedStore`, global lease/snapshot/acquisition, recursive
+  `RootedPlanCatalog`, and every frame journal. Children are long-lived storeless `FrameExecutor`s. For each
+  node, the root durably prepares exact own/projected keys and signs a bounded response; the child
+  exact-compares its locally reconstructed `ExecutionNode`, reifies the same-CAS gate through a hidden
+  allow-listed mint, performs the local effect, and returns an observation for root settlement. Production
+  dispatch retains or reconstructs the exact root plan through rendering and persistence; its Cabal-private
+  root-Up `LifecycleEntry` alone derives durable authority. Rooted child execution and proof-complete
+  traversal remain with the
   [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md);
   topology or command arguments alone mint no child admission. Descent is always the same shape:
   *provision the frame → build/install the `pb` in it → hand off `pb project up`*.
+- **The wire is closed and lower-owned.** The
+  [authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
+  owns `RootedLifecycleRequest`/`RootedLifecycleResponse` v1 and the canonical `RecoveryChildPackage`. The
+  hidden neutral request and exact nine-/eleven-field response codecs are implemented and exact-source-guarded
+  without a semantic/process/durable importer; only neutral Receiver-internal folds serve transport. The
+  implemented no-new-type facade exports the abstract response and renderer,
+  fixed-domain live-broker signer, and installed-key CPS verifier; the opaque signed result remains descriptive
+  rather than authority and has no semantic runtime caller. Implemented keyless transport carries exact
+  singleton request/response bytes through the bounded sealed requester envelope, checks intermediate suffixes
+  and root equality, and verifies the returned signature only at the originating typed operation.
+  Recovery's rooted binding commits separately to the complete package payload and its child-config field; no
+  adapter-only digest is relabelled as configuration. The lower carrier composes no package of its own. The
+  recursive phase's catalog alone produces the package, admits its
+  complete config/digest, and routes the exact Offer through the keyless relay to its installed root signer; it
+  does not add ad hoc tags. Root signatures authenticate the root, while
+  requester path/nonces/ordinals provide cooperating-interpreter routing and replay integrity, not malicious
+  launching-parent identity. The root opens a frame session with no predecessor; four-field `OpenFrame`
+  contains only its nonce and attaches using the sealed external root-nearest-to-leaf requester envelope. That
+  envelope uses the same one-to-256-component, 4,096-byte-per-component grammar as the inner post-open path.
+  Exact nine-field signed `Opened` discloses only the admitted canonical path plus opaque session/stage and next ordinal and
+  contains no digest of itself. The root then hashes and durably reads back the complete signed response; that
+  derived digest becomes the first predecessor for the next request. Only after that verified response can the
+  storeless executor exist.
+  Exact eleven-field post-open responses bind the complete request digest, echo path/session/nonce, carry the
+  root-selected successor stage/ordinal, and admit only their closed request family. `Prepared` nests
+  node/dependencies/operation-gate/projected-gates packages; `FrameComplete` carries the canonical report;
+  `ReceiptRecorded` repeats its predecessor digest; rooted `Refused` is post-open only. The root alone signs
+  catalog-selected prepared grants and settles observations.
 - **`.dhall` is parameters + context + witness, never the shape.** Each `pb` checks the frame its sibling
   `<project>.dhall` describes, and known mismatches fail fast. Those fields are not yet unforgeable
   authority. The chain is a pure function of root parameters, so the shape lives in code and the
@@ -113,10 +146,13 @@ operates over that stack:
    capability never enters preparation or the adapter. The transition returns structured
    `ReconcileResult`. Placement
    is determined by the validated plan/frame, not by a caller-supplied descriptive context.
-3. At a frame boundary, **hand off**: invoke `pb project up` inside the next frame; that child binary owns
-   its own segment of the chain and runs the same interpreter recursively. The current-frame Chain supplies
-   the local projection and dispatch mechanics; the recursive-lifecycle-command phase supplies the
-   authenticated child entry and traversal proof.
+3. At a frame boundary, **hand off**: launch `pb project up` inside the next frame as a storeless
+   child. The root coordinator has already recursively projected that target into its `RootedPlanCatalog` and
+   opened its frame session. The launch goes through a sanitized `LifecycleProcessRoute` rather than the
+   ordinary lift argv, because the child's standard input and output are the protocol channel. The child
+   attaches with `OpenFrame`, verifies the root-signed `Opened`, and only
+   then constructs its `FrameExecutor`; it executes only nodes granted through the closed rooted
+   request/response protocol. Durable record selection and settlement remain at the root.
 
 | Context frame | Hand-off crossing | The binary in that frame |
 |---|---|---|
@@ -136,32 +172,139 @@ VMs use provider stop, while kind clusters use `kind delete cluster`. The exact 
 teardownPlan
   :: ProjectPlan scope specDigest planId configId cfg
   -> CurrentFrame scope planId frame
-  -> TeardownVerb verb
+  -> ProjectVerb verb
   -> TeardownPlan scope planId frame verb
 
 openTeardownForest
   :: TeardownPlan scope planId frame verb
-  -> Either TeardownError (TeardownForest scope planId verb)
+  -> Either TeardownError (TeardownForest scope planId frame verb)
 ```
 
 The projection schedules only the admitted current frame and its descendants, visits frames deepest
 first, reverses forward order within each frame, and omits every `PreserveOnReverse` node. It retains the
 forward plan's stable step identity, operation key, reverse policy, and declared callback; action
 selection is by `StepIdentity`, never presentation text. `openTeardownForest` is projection-only and
-returns the current unframed forest. Neither function accepts an acquisition journal, ownership receipt,
-revision permit, or effect authority, and neither turns a declared callback into authorized release.
+returns a forest whose progress, authorization branches, closed work packages, successors, completion, and
+`SubtreeSettled` proof retain the projection's nominal `frame`. The unframed `DestroySettled` proof exists
+only after the exact plan/current-frame package proves that subtree is the topology's unique root. Neither function accepts an acquisition
+journal, ownership receipt, revision permit, or effect authority, and neither turns a declared callback
+into authorized release.
 Production `HostBootstrap.Command` retains or reconstructs the exact plan/current-frame pair and reaches
 this projection directly. That plan-derived work is not exact teardown command authority; nested entry
 fails closed until [the recursive-lifecycle-command
 phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) supplies the operator/descent gates.
 
 The [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
-is the target for the authenticated child-to-parent unwind. It propagates the `frame` phantom already
-present on `TeardownPlan` through the forest, progress, authorization, cursor, and completion types; it
-does not request or mint a second `CurrentFrame`. A closed local/foreign sum then gives local callbacks
-only local cursors and makes a foreign cursor's sole continuation the authenticated descent. The forest
-still carries every frame's levels: one memoized descent settles the deeper ones, so what makes the
-boundary hold is the index rather than the forest's contents. Cleanup aggregates failures, and neither
+owns the rooted child-to-parent unwind. The root retains the only store, global lease and snapshot, recursive
+catalog, every frame journal, and all prepare, settle, replay, completion, and receipt transitions. Children
+return bounded observations through the closed rooted protocol; they never receive a durable cursor,
+`CommandAuthority`, raw record key, or store operation.
+
+The implemented reverse foundation preserves the frame phantom through `TeardownPlan`, `TeardownForest`,
+closed `LocalWork`/`DescentWork`, completion, and `SubtreeSettled`. A private verb-tagged root intent
+protocol records or resumes exact Down/Destroy source coordinates under root liveness. Durable Prepared and
+Bound reverse-descent rows retain the exact plan-owned adapter and edge, support exact retry and token-free
+rehydration, and expose no child execution authority. Canonical reports, semantic completion, root-resident
+parent acknowledgement, keyless routing, finalized child projection, and inert planned-forward packaging are
+also implemented lower substrate, but remain fail-closed without the rooted runtime adopter.
+
+Recursive admission is implemented on that same footing. One shared VLC-free immediate-target kernel owns
+descriptor, context, configuration, and target-plan validation for a single declared descent, and both the
+inert planned-forward package and the recursive catalog delegate to it. `RootedPlanCatalog` joins the root's
+finalized specification, invocation authority, plan, current frame, and root-resident lifecycle context,
+rechecks root residency and the authority's installed project and store identity, and then admits each
+declared edge in turn — each level's admitted target becoming the next level's parent — until a frame
+declares no further descent. Entries are reachable only through rank-2 folds over the catalog itself, so
+descent evidence cannot be held, forged, or reordered outside the recursion that produced it. The catalog
+has no runtime caller yet, so it too remains fail-closed.
+
+The storeless forward package sits directly on that recursion. One rank-2 catalog fold selects an edge by
+exact parent and child frame: a child frame no entry names is missing, a child frame more than one entry
+names is a duplicate, and a child frame reached from another parent is a sibling of the requested edge
+rather than the edge itself. The selected entry is then rechecked against the parent level's own retained
+plan — the retained parent frame must be that level's current frame, the plan must declare exactly the
+retained raw route as its single descent out of that frame, and the frame's plan-owned projected node keys
+must be the ones the entry retains — so coordinates, routes, or keys projected independently of this
+catalog refuse before any continuation runs. `CatalogForwardHandoff` then rechecks the admitted child
+against the evidence the entry itself retains: the child frame must be the target plan's own current frame
+and its validated configuration's endpoint, the retained child plan digest must be both the digest that plan
+still renders and the digest its binding carries, and the retained configuration and payload digests must
+equal one another and the digest the canonical payload still hashes to. Its eight indices are nominal; it
+retains no lifecycle context, parent plan, or specification index, and its one eliminator exposes only the
+stripped route, binding input, and canonical payload under a fixed unit result. It has no process or command
+call site, so it is fail-closed on the same footing as the catalog it comes from.
+
+Launching that child is a separate closed decision from describing where it runs. The ordinary lift route in
+the table above is free to keep a container's standard input open for an in-place configuration payload, to
+carry plan-authored extra arguments, and to inherit whatever descriptors the host frame held; the rooted
+lifecycle protocol travels on exactly those descriptors, so a route that does any of that is a channel
+somebody else is also writing to. `LifecycleProcessRoute` is therefore derived from a catalog forward package
+or a recovery package and its plan-owned lift route rather than assembled, and it renders exactly one
+argument vector per provider: Docker keeps standard input attached and runs at `/`, while Incus, Lima, and
+WSL run noninteractively at `/`, reaching root through noninteractive sudo where the guest's default user is
+not already root. Its closed grammar refuses `ConfigDelivery`, container extra arguments, a container that
+outlives its own exchange, and any derived name that reads as an option, a separator, or a descriptor
+request, so the detach, TTY, attach, standard-input, entrypoint, working-directory, and signal overrides have
+no path into the rendered vector. The child's command is the invocation's own closed verb under `project`,
+rendered rather than accepted, and every rendered path is absolute and free of the mount delimiter.
+
+Launching that route is one bracket's whole job. The owner resolves the route's host tool to an absolute
+path through the installed configuration, spawns it into a new process group with private stdin/stdout pipes
+and inherited stderr, hands those pipes to the relay for the exchange's lifetime, runs the fixed completion
+operation for the edge's direction, and reaps. Everything that could leave something behind is in the
+release path: group TERM, a fixed grace, group KILL if the group is still there, an unconditional wait, and
+only then the pipes closed. It bounds the launch and the grace and nothing else — the relay bounds the frames
+a peer owes immediately, and the wait between admission and the completed report belongs to the admitted
+effect's own policy — and it treats neither EOF nor a zero exit as completion.
+
+A route points in one direction only: down, at the child a frame is about to launch. It is not that frame's
+own place in the conversation, and the distinction matters because a middle frame holds both at once — it is
+a nested frame of the root and the parent of a deeper child — so a value carrying both edges would let a
+frame open a session for the child it is spawning instead of for itself. Beside the route sits the one
+startup step that has no other owner: a frame's own opening. It is admitted through the nested arm of that
+frame's installed `RecursiveHandoffRuntime` — a root arm speaks for no authenticated frame and is refused
+there — builds the four-field `OpenFrame` from a fresh nonce and nothing else, carries it through the frame's
+own carrier to the root, and verifies the signed answer against the independently installed key and those
+exact request bytes, admitting only an `Opened`. What it yields is that exact request and that exact signed
+response rather than any decoded coordinate, so the storeless executor built from the pair still verifies
+both for itself. Everything after the opening is the executor's: it already owns the root-selected path,
+session, stage, ordinal, and predecessor and the closed post-open request families, so nothing else builds a
+post-open request. The route spawns nothing; it is the description a process owner obeys.
+
+The reverse direction now stands on the same admitted edge. Durable reverse-descent preparation takes the
+canonical child configuration only from the catalog's own entry for exactly this parent and child frame and
+the recovery adapter only from the plan's own reverse projection, then joins them through Phase 13's frozen
+neutral constructor. The complete package is what the prepared record frames, what the binding input's
+child-configuration digest names, and what the offer payload must equal, so an adapter-only reverse input can
+no longer be persisted or offered. The package and child-configuration digests are derived and compared
+separately and a conflation refuses. Both root reverse entries retain the catalog they were admitted under —
+constructed by the same recursion the forward entry admits, and writing no durable manifest, which the Up
+entry alone owns. The private relay's reverse route is that durable transition wrapped in the ordinary
+four-field Offer exchange: it opens the complete package recoverably through the frame's own keyless link,
+proves payload, token, and opened binding agree, records the Bound row, and only then routes the exact Offer
+to the already-installed root signer and serves the existing challenge loop. The route accepts no payload
+argument of its own, so an adapter alone is unrepresentable there rather than rejected, and a repeated
+attempt recovers the binding and token the root already minted instead of opening a second edge.
+
+Recovery sends the [authenticated-handoff
+phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)'s canonical
+`RecoveryChildPackage`, whose exact bytes contain both child configuration and adapter and whose binding
+commits separately to the package payload and child configuration. Its standalone bound is 8 MiB; Relay and
+Receiver impose a 7 MiB embedded Offer-payload sub-ceiling, while Protocol's authoritative 8 MiB total-body
+check may still refuse the other fields and framing overhead. The root selects the catalog edge:
+`EdgeAdmission` authenticates the complete config/digest, `RecoveryAdmission` independently authenticates the
+extracted adapter, and the exact Offer is routed to the signer already installed behind the private relay.
+A storeless executor verifies the authenticated root scope, exact package, root-signed prepared grant, and
+local plan/node plus operation/projected-gate packages before any local teardown effect.
+
+The target coordinator admits every planned or recovery edge into `RootedPlanCatalog` before launching a
+sealed Process/Receiver bracket, opens one `RootedFrameSession` per exact frame, and issues
+`PreparedNodeGrant` only after durable Unknown. Observations settle at the root, and terminal receipt follows
+Published → signed `FrameComplete` → `ReceiptConfirm` → Received → signed `ReceiptRecorded`. Successful
+reverse completion then terminalizes and rearms the durable root intent; failed-Up unwind uses the same
+child-first driver while retaining its original failure as a distinct origin. The forest still carries every
+frame level, and one memoized descent settles the deeper ones; the phantom index, rather than the forest's
+contents, makes the boundary hold. Cleanup aggregates failures, and neither
 verb places the plan's data path in its cluster-teardown removal set — `down`'s removal set is empty and
 `destroy`'s holds only derived paths. The demo creates host
 `<project-root>/.data` and carries it through provider shares and the stable Linux alias, so provider
@@ -224,8 +367,15 @@ model makes explicit rather than hides:
   config from stdin, and `exec`s the binary. That shell can deliver descriptive config but cannot perform
   the target authority handshake. The
   [authenticated-handoff-and-child-admission phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
-  owns the binary's internal framed receiver on a private duplex broker session; the receiver verifies a
-  challenge-bound one-time grant and config hash before writing config or minting scoped authority. The
+  supplies the standalone signed `AuthenticatedRootScope` producer/verifier, and the unchanged four-field
+  Offer plus private Relay/Receiver now adopt it. A root link mints one capsule, nested links copy the exact
+  bytes, and the receiver verifies it with an independently installed key before key, binding,
+  challenge/grant, or payload semantics. That private transport is not yet the live container call site. The
+  same phase now also adopts the rooted binding and complete recovery package in the private receiver and
+  implements the hidden neutral lifecycle-request and lifecycle-response codecs plus the exact-request,
+  fixed-domain live-broker signer and installed-key CPS verifier. Those public response operations mint no
+  authority; the implemented rooted relay adopter uses the fixed verifier only at its originating typed
+  operation, while every hop remains byte-preserving and semantically keyless. The
   container binary then runs
   `deploy-kind`/`deploy-minio`/`deploy-registry`/`push-image`/`deploy-chart`/`expose-port` and selected
   daemon-placement steps.
@@ -408,14 +558,13 @@ data RevisionPermitAuthority
   scope planDigest planId brokerGeneration activeRevisionVersion journalVersion
 data CurrentBrokerSessionAdmission scope planDigest planId brokerGeneration
 
-data ProjectDown
-data ProjectDestroy
-data TeardownVerb verb where
-  DownVerb    :: TeardownVerb ProjectDown
-  DestroyVerb :: TeardownVerb ProjectDestroy
+data ProjectVerb verb where
+  ProjectUp      :: ProjectVerb VerbUp
+  ProjectDown    :: ProjectVerb VerbDown
+  ProjectDestroy :: ProjectVerb VerbDestroy
 data TeardownPlan scope planId frame verb -- implemented pure projection
-data TeardownForest scope planId verb      -- implemented opener result; target adds frame
-data CompletedTeardownForest scope planId verb
+data TeardownForest scope planId frame verb -- implemented opener result
+data CompletedTeardownForest scope planId frame verb
 data TeardownDescentStep
   scope planId verb frame childSet id operation operationKey next
 data TeardownAuthorizationPoint scope planId verb frame childSet next
@@ -622,12 +771,12 @@ activateRecoveredNormalBoundRevision
 teardownPlan
   :: ProjectPlan scope specDigest planId configId cfg
   -> CurrentFrame scope planId frame
-  -> TeardownVerb verb
+  -> ProjectVerb verb
   -> TeardownPlan scope planId frame verb
 
 openTeardownForest
   :: TeardownPlan scope planId frame verb
-  -> Either TeardownError (TeardownForest scope planId verb)
+  -> Either TeardownError (TeardownForest scope planId frame verb)
 
 -- Target durable lifecycle views layered above the pure projection.
 currentGraph
@@ -838,31 +987,39 @@ production config, handle, journal, or receipt therefore cannot enter a harness 
 merely share `Production` cannot mix across `planId`.
 
 `DerivedTopology scope planId` is computed from the accepted steps and cannot be supplied or updated
-independently. `teardownPlan DownVerb` and `teardownPlan DestroyVerb` have distinct result types and
+independently. `teardownPlan ProjectDown` and `teardownPlan ProjectDestroy` have distinct result types and
 derive their nodes only from `forward plan`, the plan's topology, and the exact `CurrentFrame`. Each
 reverse node carries the same stable `StepIdentity` and `OperationKey` as its forward node. The durable
 root remains in the plan with an explicit `PreserveOnReverse` policy and is absent from both projections;
-the verb selects the action for the remaining nodes by typed identity. The retained reverse callback is
-still just the callback declared by that planned step.
+the canonical admitted verb selects the action for the remaining nodes by typed identity. A total
+`teardownPlan ... ProjectUp` retains that exact verb/digest/frame but contains no reverse nodes, and its
+opener returns `TeardownProjectUpHasNoReverse` before considering the empty-plan error. The retained
+reverse callback is still just the callback declared by that planned step.
 
 The pure `TeardownPlan` is not an effect cursor. `openTeardownForest` consumes that projection alone,
-rejects an empty projection, and returns `TeardownForest scope planId verb`; it does not accept or inspect
+rejects an empty projection, and returns `TeardownForest scope planId frame verb`; it does not accept or inspect
 a protected snapshot, acquisition journal, active revision, Open-state version, permit, ownership
-receipt, or effect capability. The opening `frame` index therefore cannot be recovered from the current
-forest type. Production can run retained callbacks in projection order from the exact plan/current-frame
-pair, but that does not turn them into receipt-authorized transitions.
+receipt, or effect capability. The opening `frame` index remains nominal through every current forest
+successor, authorization branch, local/descent work package, completion, and `SubtreeSettled`. Production
+can run retained callbacks in projection order from the exact plan/current-frame pair, but that does not
+turn them into receipt-authorized transitions.
 
-The recursive lifecycle target propagates the existing `frame` index through the forest and all of its
-successors, then exposes an exhaustive local/foreign next-work eliminator. Its local branch alone yields
-the cursor accepted by a reverse runner; its foreign branch alone yields the authenticated child
-descent. A later durable admission layer binds each authorization point to the exact protected snapshot,
+The implemented exhaustive `TeardownWork` eliminator classifies ordinary work from that already
+frame-indexed forest. Its `LocalWork` branch alone exposes the key, action, policy, and runner accepted by
+the local reverse interpreter; its existential `DescentWork` branch exposes only the exact immediate
+parent/child topology edge. Branch-specific attempts retain the originating forest, and the public driver
+classifies work internally before invoking separate pre-descent, local, or descent handlers. A local or
+pre-descent result advances only its originating forest. Descent has no raw-success route: its handler must
+return the exact existential child `SubtreeSettled`, whose ordered observations are validated and
+bulk-imported, while failure keeps the whole child continuation outstanding. A later
+durable admission layer binds each authorization point to the exact protected snapshot,
 active revision, matching Open-state/permit version, journal state, and ownership evidence. Under that
-target, the private eliminator exposes either a destroy-only pre-descent reachability step or the
-plan-derived settled-child proof/cursor for one ordinary step. After `down`, the pre-descent step makes
+target, the current private eliminator exposes either a destroy-only pre-descent reachability step or the
+plan-derived settled-child proof with one closed ordinary-work package. After `down`, the pre-descent step makes
 only the exact stopped provider teardown-reachable; its successor forest exposes retained children, and
 their later settlement exposes the provider's ordinary stop/delete step. Every attempted effect returns
-the successor forest even on typed failure, and `verifyDestroySettled` accepts only the completed
-Destroy forest.
+the appropriate successor/failure value, and `verifySubtreeSettled` accepts only the exact completed
+frame-bound forest.
 
 In that receipt-aware target, recovered ordinary step evidence is a closed sum derived from the bound
 snapshot, complete rehydrated set, and exact forest step: the owned branch yields a managed
@@ -877,10 +1034,11 @@ generation to the session.
 
 Harness terminal cleanup is not an out-of-band exception to that plan. After assertions, ordinary
 `project destroy` settles all project resources but still preserves the run's durable root so
-destroy→up checks within a variant remain meaningful. `verifyDestroySettled` is the sole producer of its
-proof: it checks the complete plan-derived destroy forest, protected journal, terminal release
-observations, absence of unresolved nodes/live prepared operations, and the complete Closed session set at the exact
-current version. A true
+destroy→up checks within a variant remain meaningful. `verifySubtreeSettled` checks the complete
+frame-bound projection and exact ordered terminal observations, preserving Released, ForeignRetained, and
+Refused. `verifyDestroySettled` is the sole producer of unframed project-wide proof: it additionally checks
+the exact plan/current-frame package, unique topology root, digest, and full-root terminal sequence. The
+later closure conversion independently checks the bound lease and complete Closed session set. A true
 pre-effect refusal instead goes through the sole `verifyNoProjectResourcesAcquired` verifier, which
 checks that the bound snapshot has no resource operation/permit/fence/receipt/effect record and that
 every registered session is Closed and empty. The two closed conversions to `ProjectClosureEvidence`
@@ -925,10 +1083,11 @@ partial teardown cannot be relabeled as settled destroy.
   currently introspects projected frame data (see
   [§ Current Status](#current-status)).
 - `test run` is a **driver** of that one representation, not a second one. For each generated configuration,
-  current Harness retains one exact Harness-scoped plan and directly wraps the common current-frame Chain
-  forward/reverse boundaries around assertion-only code; it neither shells `project up` nor claims recursive
+  current Harness retains one exact Harness-scoped plan and drives the same hidden fixed root-Up entry plus
+  the exact current-frame reverse boundary around assertion-only code; it neither shells `project up` nor claims recursive
   child entry. Production consumes the same plan/step algebra through its own current-frame command path.
-  The recursive-lifecycle-command phase owns recursive Production traversal and child acquisition integration.
+  The recursive-lifecycle-command phase owns recursive Production traversal, root catalog/frame-journal
+  integration, and the storeless executor boundary.
 - The standardized test harness (`HostBootstrap.Harness`: `runMatrix` + `Seams`, see
   [harness_workflow](harness_workflow.md)) owns only the case matrix, the per-case **assertions**, and the
   test-config parameters — never a second cluster-bring-up path.
@@ -979,14 +1138,16 @@ it projects that frame and its descendants deepest-first, reverses each frame's 
 stable step/operation identities, and excludes `PreserveOnReverse`. The public plan facade exposes the
 needed `PlannedStep` identity, reverse-policy, and callback projections without exposing its hidden
 representation. `openTeardownForest` consumes only the resulting
-`TeardownPlan scope planId frame verb` and returns the currently unframed
-`TeardownForest scope planId verb`.
+`TeardownPlan scope planId frame verb` and returns
+`TeardownForest scope planId frame verb`; every progress, authorization branch, closed work package, successor,
+completion, and `SubtreeSettled scope planId frame verb` value retains the same nominal opening frame.
+Only the unique-root destroy refinement mints unframed `DestroySettled scope planId`.
 
 The Production `project down`/`destroy` command path drives this exact projection from its retained or
 reconstructed plan/current-frame pair. Neither that consumer nor the pure opener binds reverse work to an
-ownership receipt, journal state, exact teardown authority, or effect capability. Recursive frame
-propagation, the total local/foreign work split, authenticated child
-admission, and proof-complete child-to-parent settlement remain the target owned by the
+ownership receipt, journal state, exact teardown authority, or effect capability. The total local/descent
+work split is implemented; authenticated child admission and proof-complete child-to-parent settlement
+remain the target owned by the
 [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
 
 `context` is read-only introspection (`inspect`/`path`/`show`/

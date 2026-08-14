@@ -221,7 +221,10 @@ Define the opaque result shared by proof-complete lifecycle command gates.
 - `CommandAuthority scope planId frame authorityEpoch verb phase` carries the exact scope, plan, frame,
   authority epoch, verb, and phase indices.
 - Its constructor is package-private; the safe authority facade exposes inspection but no producer. The later
-  proof-complete `authorizeProjectUp`, child, and teardown gates own public production.
+  proof-complete plan, child, and teardown gates own production. Sprint 12.25 first surfaced the local root
+  producer as `authorizeProjectUp`; Sprint 17.8 supersedes that shape with root-refined generic
+  `authorizeRootProject` and a Cabal-private root-Up `LifecycleEntry` consumer without changing this Phase 5
+  constructor/kernel ownership.
 - `commandAuthorityEpoch` returns the indexed epoch value rather than erasing it to an unrelated word.
 - The safe authority facade exports no generic lifecycle command-authority producer; the reservation producer
   remains package-private and proof-complete gates own its use.

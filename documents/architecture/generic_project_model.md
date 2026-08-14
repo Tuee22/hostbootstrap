@@ -39,7 +39,8 @@
 - `<project>.test.dhall` is a **thin override**; `TestCfg` validates the executable cases and pure
   `VariantDraft`s into an opaque total `TestMatrix`. The harness **generates** each run's `<project>.dhall`
   through the scope-aware restricted assembler, retains one exact Harness-scoped `ProjectPlan`, and drives
-  the common Chain forward/reverse interpreters directly. Its five-field `TestSuite` is assertion-only.
+  the hidden fixed root-Up entry plus exact reverse boundary. The entry alone reaches the lower Chain; the
+  five-field `TestSuite` is assertion-only.
   The generated config is unlinked only while its bound kernel identity **and** recorded payload both
   still match; anything else remains in place and is reported. That guard is
   `HostBootstrap.Harness.GeneratedConfig`, which holds all four § EE ownership clauses over the file rather
@@ -47,8 +48,10 @@
   resources and the engine-owned same-run destroy/up cycle are still open.
 - `SecretRef scope` carries references rather than raw secret `Text`, and core never resolves secrets.
   `TestPlaintext` requires exact `HarnessConfigAuthority projectId runId`; the Production schema has no
-  plaintext constructor. Root assembly is scope-safe now. One-time child handoff and child plan
-  authority remain downstream lifecycle work.
+  plaintext constructor. Root assembly is scope-safe now, and authenticated config refinement can produce
+  exact `ChildPlanAuthority`. The standalone `AuthenticatedRootScope` signer/verifier is implemented in the
+  Handoff facade and adopted by the unchanged four-field Offer plus private Relay/Receiver. The recursive
+  catalog, rooted recovery carrier, and storeless child execution remain phase-owned lifecycle work.
 
 ## Current Status
 
@@ -64,14 +67,43 @@ that run's `<project>.dhall`, admits one exact Harness plan, interprets it forwa
 then removes the generated config only while the recorded bytes still match. Project and core step
 identities are disjoint. Production
 dispatch admits the authored `StepPlan` into one exact `ProjectPlan`, retaining or reconstructing that
-value across rendering, persistence/binding, journal/cursor admission, `authorizeProjectUp`, public Chain,
-and current-frame reverse projection. Harness uses those same common boundaries under the distinct
+value across rendering and persistence/binding. Its root-Up path then passes the root-refined lifecycle
+context through the Cabal-private `LifecycleEntry` producer/fixed interpreter, which derives journal/cursor
+admission, calls generic `authorizeRootProject`, and alone reaches public Chain. Current-frame reverse
+projection remains on the same plan. Harness uses those same common boundaries under the distinct
 `Harness projectId runId` scope and never self-invokes a Production lifecycle. Typed service definitions bind projection, role codec, and handler
 without a separately supplied selector. Validated opaque `CaseId`/`VariantId` values, pure
 `VariantDraft`s, and the total non-empty matrix relation are the sole result representation. Rejected
 concrete-config and pre-existing-config alternatives are explained in
 [design rationale](../../DEVELOPMENT_PLAN/rationale.md). The canonical
 contract statement is [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).
+
+The recursive target extends this finalized-project boundary without giving a child durable authority. A real
+project installs `addForwardChildPlan` exactly once; the exact `FinalizedProjectSpec` retains that
+scope-polymorphic projector and the bare default refuses. Cabal-hidden
+`withFinalizedForwardChildProjectionKernel` invokes only the retained projector, canonically validates the
+projected configuration through the exact finalized codec, discards the wire, and supplies only the target
+descriptor/path, exact `ValidatedConfig`, and opaque `StepPlan` to a fixed callback. The existing hidden
+exact-package producer retains `HandoffBindingInput` in `PlannedForwardHandoff`, exposes no live binding or
+caller-polymorphic result, has no process caller, and grants no runtime authority.
+
+The [recursive lifecycle command
+phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) makes the root coordinator recursively
+run that projection for every reachable frame before any remote effect, admitting the canonical config bytes,
+separate config/payload digests, target plan digest, ancestry edge, and projected node keys into one
+`RootedPlanCatalog`. A child independently rebuilds its narrowed config and plan, then exact-matches those
+values and its `ChildPlanAuthority` against the catalog coordinates before the Cabal-private boundary admits a
+storeless `FrameExecutor`. The root alone owns the protected store, journals, prepared transitions,
+settlement, and receipts; the executor compares root-signed node grants, runs only the named local effect, and
+returns a bounded observation.
+
+The [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) installs the demo projector. Its
+provider choice derives from retained topology: Incus builds the Linux-CPU child graph, Lima/WSL2 build the
+common VM-backed graph, and the direct edge builds the direct graph. VM/container configs share one canonical
+newline-terminated rendering helper. Exact catalog admission also retains the special direct-edge durable-path
+rebase only when the ancestry edge, image, arguments, remove policy, socket, target, read-only flag, and
+configuration delivery all match. Descriptive `Text`, `LiftContext`, executable, route, or durable-path values
+alone prove none of those joins.
 
 ## What is universal versus project-defined
 
@@ -106,7 +138,7 @@ parent/locally admitted ValidatedConfig scope specDigest configId (cfg scope)
 ```
 
 The current service process validates one canonical mounted snapshot and mints an opaque request before
-running the closed typed action. Future cross-process child handoff still mints a fresh child identity;
+running the closed typed action. Authenticated cross-process child handoff mints a fresh child identity;
 the parent never transports an opaque request or reuses its `configId`. Core owns no
 project-specific field, and in particular **no generic
 `extra : Map Text Text` slot**: a map would re-couple core to a demo concern, and its lookup is a runtime
@@ -228,10 +260,14 @@ revision but, because the narrowed child bytes differ, mints a fresh child `conf
 parent by an opaque `ProjectionBinding`; it does not reuse an exact-byte parent identity. A
 secrets-strict config uses `SecretRef scope`, whose `TestPlaintext` constructor requires the matching
 harness authority; the reflected Production Dhall schema has no plaintext alternative. A harness Dhall
-payload decodes only to untrusted `HarnessConfigWire`. At a recursive child boundary, grant verification
-yields only transport-level `VerifiedHandoff (Harness projectId runId) brokerGeneration`. Exact-byte
+payload decodes only to untrusted `HarnessConfigWire`. The standalone `AuthenticatedRootScope` primitive and
+its unchanged four-field Offer/Relay/Receiver transport are implemented. The root link mints the capsule,
+nested links copy its exact canonical bytes, and the receiver first verifies
+`AuthenticatedRootScope (Harness projectId runId)` against the independently installed project key;
+received payload bytes cannot choose that phantom. Challenge/grant verification inside the authenticated
+scope yields only transport-level `VerifiedHandoff (Harness projectId runId) brokerGeneration`. Exact-byte
 verification through `ProjectCodec (Harness projectId runId) specDigest cfg` separately mints
-`VerifiedConfigWire (Harness projectId runId) childConfigDigest childConfigId`, a child-local
+`VerifiedConfigWire (Harness projectId runId) childConfigDigest childConfigId`, a fresh local
 `HarnessConfigAuthority projectId runId`, and
 `ValidatedConfig (Harness projectId runId) specDigest childConfigId
 (cfg (Harness projectId runId))`.
@@ -243,13 +279,20 @@ rank-2 continuation. Those values do not directly authorize dispatch:
 (cfg (Harness projectId runId)))` and jointly yields a fresh child
 `ProjectPlan (Harness projectId runId) specDigest childPlanId childConfigId cfg`,
 `PlanDigestBinding (Harness projectId runId) specDigest planDigest childPlanId`, and exact
-opaque `ChildPlanAuthority`; only `Authority.ProjectPlan.authorizeChildProject` consumes that narrow
-authority with the matching journal/frame/cursor/context. The child does not need the root's
-non-serializable authority before verification. The
+opaque `ChildPlanAuthority`. Those values still grant no command or durable authority. The Cabal-private child
+boundary exact-matches the rebuilt config, plan, frame, ancestry, and projected node keys against the root
+catalog and admits only a storeless `FrameExecutor`. It verifies each root-signed prepared response against
+the exact local node and projected keys, performs the selected local effect, and returns a bounded observation;
+the root alone advances journals, settles observations, and confirms terminal receipts. No raw projection,
+store opener, child cursor, or public producer exists. The child does not receive the root's non-serializable
+authority. The
 [authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
-owns this substrate; the
+owns authenticated root scope, config refinement, recovery packaging, and the closed rooted wire; the
+[test-harness-and-run-ownership
+phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md) supplies exact live Harness run
+evidence to its generic scope producer; and the
 [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) owns its
-Production descent and child acquisition integration. There is
+catalog, coordinator, executor, Production process adoption, and traversal. There is
 no raw-wire promotion, direct scoped `FromDhall`,
 unscoped record update, or coercion from a harness config to Production. The detailed secret boundary is defined in
 [secrets](../engineering/secrets.md).
@@ -258,13 +301,29 @@ Bound Production restart has one deliberately narrow specification-brand refinem
 project finalization and config validation after a crash creates a new local `candidateSpecDigest` even when
 its stable text describes the exact protected specification. Independent finalizations remain non-pairable
 by ordinary types. Only `withRecoveredProductionProjectPlanInputs` may re-admit the candidate's
-non-authorizing `ValidatedConfig` under the specification phantom fixed by the recovered profile: its hidden
+non-authorizing `FinalizedProjectSpec` and `ValidatedConfig` under the specification phantom fixed by the
+recovered profile: its hidden
 token is issued after exact profile/finalized-codec digest agreement, the hidden config kernel independently
-checks the config's retained specification, and the public bridge also checks its canonical config digest.
+checks the config's retained specification, one hidden join relabels the specification's codec and finalized
+registry under that same token, and the public bridge also checks its canonical config digest.
 The bridge preserves the existing `configId`, digest, and decoded value and regenerates drafts through the
-candidate `FinalizedProjectSpec`'s private builder. The resulting recovered-spec config/drafts still grant no
+retained private builder, so the yielded specification, configuration, and drafts share the recovered index
+by construction. Both root `project up` entries therefore hold a specification at exactly their plan's index
+— the fresh entry holds the invocation's own, the recovered entry the relabelled one — and each proves that
+agreement against its bound plan snapshot before any lifecycle effect. The resulting recovered-spec config/drafts still grant no
 authority; `withRecoveredProductionProjectPlan` yields a fixed-identity plan only when the exact canonical
 root, bytes, digest, and origin reproduce the verified bound snapshot.
+
+The same token is the only relabelling authority for the two other carriers a finalized specification
+retains. `ProjectCodec scope specDigest cfg` and `FinalizedServiceRegistry scope specDigest (cfg scope)`
+each keep their representation in a Cabal-hidden owner whose sole importer is the facade that re-exports the
+abstract type and every producer and eliminator it already owns. Each owner holds exactly one reindex kernel,
+and a kernel changes only the phantom: it compares the token's digest with the digest the carrier itself
+retains — the finalized registry retains the exact digest its finalization stamped, so a project that
+registers no service is checked too, and every role codec is checked in turn — and preserves the retained
+label, schema, digest, decoders, renderers, service identities, projections, declared effect rows, handlers,
+and role codec terms unchanged. No public facade exposes either kernel, neither kernel mints a token, and
+neither admits a caller-selected index, so an unequal pair is a refusal rather than a silent relabelling.
 
 Every field a project supplies is pure or project-owned. `ProjectCfg cfg` requires only
 `cfgContext :: cfg scope -> BinaryContext`; the raw context updater is gone. Scope-correct

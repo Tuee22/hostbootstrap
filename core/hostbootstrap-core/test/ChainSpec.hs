@@ -1,3 +1,4 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -11,31 +12,26 @@ import Data.ByteString (ByteString)
 import Data.Char (isAlphaNum)
 import Data.Foldable (toList)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
-import Data.List (isInfixOf)
-import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Data.Word (Word64)
 import qualified Fixture
 import HostBootstrap.Authority (
-    CommandAuthority,
-    ExecutePhase,
     InstalledProjectIdentity,
-    VerbUp,
-    commandAuthorityFrame,
     installedProjectName,
-    rootScopeAuthority,
  )
-import qualified HostBootstrap.Authority as Authority
-import HostBootstrap.Authority.ProjectPlan (authorizeProjectUp)
 import HostBootstrap.Chain
-import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
-import HostBootstrap.Config.Fields (ScopeKind (ProductionScope))
-import HostBootstrap.Config.Schema (withValidatedConfig)
+import qualified HostBootstrap.CLI as CLI
+import HostBootstrap.Config.Class (
+    AssemblyRequest (..),
+    ConfigAssembly,
+    pureConfigAssembly,
+ )
+import qualified HostBootstrap.Config.Schema as Schema
 import qualified HostBootstrap.Config.Vocab as V
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.DocValidator (findRepoRoot)
-import HostBootstrap.HostConfig (HostConfig (..))
+import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.HostTool (HostTool (Docker, Incus))
 import qualified HostBootstrap.Harness as Harness
 import HostBootstrap.Incus (IncusVM (..))
@@ -55,19 +51,6 @@ import HostBootstrap.Lifecycle.Prepared (
     preparedGateOperation,
     preparedGatePlan,
  )
-import HostBootstrap.Lifecycle.Mode (
-    LifecycleCursor,
-    productionActiveMode,
-    productionRootAuthority,
-    productionRootModeLease,
-    productionRootUnboundLease,
-    withAcquisitionJournal,
-    withExecuteLifecycleCursor,
-    withLifecycleCursor,
-    withProductionLifecycleProfile,
-    withProductionRoot,
-    withTeardownLifecycleCursor,
- )
 import HostBootstrap.Lifecycle.Session (
     allSessionsClosedCount,
     sessionErrorMessage,
@@ -80,6 +63,7 @@ import HostBootstrap.Protected (
     ProtectedStore,
     listProtectedRecords,
     openProtectedStore,
+    protectedStoreRoot,
     readProtectedRecord,
     recordKeyText,
     withProtectedEntry,
@@ -89,20 +73,9 @@ import HostBootstrap.ProjectPlan (
     forward,
     plannedStepFrameId,
     plannedStepLabel,
-    renderSnapshot,
-    stablePlanSnapshotDigest,
     topology,
  )
-import HostBootstrap.ProjectPlan.Construct (
-    finalizedProjectCodec,
-    projectPlanDrafts,
-    withFinalizedProjectSpec,
-    withProjectPlan,
- )
-import HostBootstrap.ProjectPlan.Frame (withCurrentFrame)
-import HostBootstrap.ProjectPlan.Snapshot (withPersistedPlanSnapshot)
 import HostBootstrap.ProjectRoot (
-    CanonicalProjectRoot,
     canonicalProjectRootPath,
     withCanonicalProjectRoot,
  )
@@ -125,12 +98,6 @@ import HostBootstrap.Reconcile (
     withReconcileResult,
     zeroDependencyPreconditions,
  )
-import HostBootstrap.Service (emptyServiceRegistry)
-import HostBootstrap.Substrate (
-    Arch (Arm64),
-    Substrate (..),
-    SubstrateName (LinuxCpu),
- )
 import HostBootstrap.Lift (
     ContainerLift (..),
     LiftDispatch (DispatchTool),
@@ -141,12 +108,13 @@ import HostBootstrap.Lift (
     mkSelfRef,
  )
 import HostBootstrap.Step
-import System.Directory (getCurrentDirectory)
-import System.FilePath ((</>))
+import System.Directory (doesFileExist, getCurrentDirectory, removeFile)
+import System.Environment (withArgs)
+import System.Exit (ExitCode)
+import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
-import Unsafe.Coerce (unsafeCoerce)
 
 tests :: TestTree
 tests =
@@ -337,13 +305,14 @@ renderCases =
                     ]
     ]
 
-{- | One interpretation starts only after an exact plan, Execute cursor, and
-matching command authority have been admitted.  The interpreter consumes that
-package directly: it neither opens another plan nor reserves another command.
+{- | The public root-Up command is the only honest way for an external caller
+to obtain and consume a 'LifecycleEntry'.  These cases observe that fixed
+boundary through action callbacks and the durable store; the caller never
+receives a plan, authority, journal, or cursor that it could recombine.
 -}
 admissionCases :: [TestTree]
 admissionCases =
-    [ testCase "one admitted plan and one command reservation drive the full current frame" $
+    [ testCase "one root LifecycleEntry and one reservation drive the full current frame" $
         withChainStore $ \store project -> do
             observed <- newIORef ([] :: [T.Text])
             let record label =
@@ -359,126 +328,76 @@ admissionCases =
                         "third"
                         executionFrame
                         (\_ -> modifyIORef' observed (++ ["third"]) >> pure StepChanged)
-                stepPlan = expectPlan (map record ["first", "second"] ++ [post])
-                cfg = HostConfig{hcSubstrate = descriptorSubstrate, hcToolPaths = Map.empty}
-            withExactChainEvidence store project stepPlan $ \plan authority cursor -> do
-                before <- invocationRecordCount store
-                before @?= 1
-                let current = commandAuthorityFrame authority
-                    projectedLabels =
-                        [ plannedStepLabel planned
-                        | planned <- toList (forward plan)
-                        , plannedStepFrameId planned == current
-                        ]
-                projectedLabels @?= ["first", "second", "third"]
-                outcome <- runChainFromFrame cfg self store plan authority cursor
-                outcome @?= Right ()
-                readIORef observed >>= (@?= projectedLabels)
-                after <- invocationRecordCount store
-                after @?= before
-    , testCase "a foreign protected store is refused before any node or durable write" $
-        withChainStore $ \origin project -> do
-            effects <- newIORef (0 :: Int)
-            let stepPlan =
-                    expectPlan
-                        [ countingStep "must-not-run" effects StepChanged
-                        ]
-                cfg = HostConfig{hcSubstrate = descriptorSubstrate, hcToolPaths = Map.empty}
-            withExactChainEvidence origin project stepPlan $ \plan authority cursor ->
-                withSystemTempDirectory "hostbootstrap-chain-foreign-store" $ \directory -> do
-                    foreignStore <-
-                        openProtectedStore (directory </> "authority")
-                            >>= expectSuccess
-                    originBefore <- protectedKeyImage origin
-                    foreignBefore <- protectedKeyImage foreignStore
-                    outcome <- runChainFromFrame cfg self foreignStore plan authority cursor
-                    outcome
-                        @?= Left
-                            "project up: command authority does not belong to the supplied protected store"
-                    readIORef effects >>= (@?= 0)
-                    originAfter <- protectedKeyImage origin
-                    foreignAfter <- protectedKeyImage foreignStore
-                    originAfter @?= originBefore
-                    foreignAfter @?= foreignBefore
-    , testCase "a hostile same-shaped cursor from another admission is refused before I/O" $
+                steps = map record ["first", "second"] ++ [post]
+                projectedLabels = ["first", "second", "third"]
+            before <- invocationRecordCount store
+            before @?= 0
+            outcome <- runFrom store project steps
+            outcome @?= Right ()
+            readIORef observed >>= (@?= projectedLabels)
+            after <- invocationRecordCount store
+            after @?= 1
+    , testCase "a completed root entry is not reconstructed or rerun" $
         withChainStore $ \store project -> do
             effects <- newIORef (0 :: Int)
-            let stepPlan = expectPlan [countingStep "must-not-run" effects StepChanged]
-                cfg = HostConfig{hcSubstrate = descriptorSubstrate, hcToolPaths = Map.empty}
-            withExactChainEvidence store project stepPlan $ \plan authority _cursor ->
-                withChainStore $ \foreignStore foreignProject ->
-                    withExactChainEvidence foreignStore foreignProject stepPlan $
-                        \_foreignPlan _foreignAuthority foreignCursor -> do
-                            originBefore <- protectedKeyImage store
-                            foreignBefore <- protectedKeyImage foreignStore
-                            outcome <-
-                                runChainFromFrame
-                                    cfg
-                                    self
-                                    store
-                                    plan
-                                    authority
-                                    (unsafeCoerce foreignCursor)
-                            outcome
-                                @?= Left
-                                    "project up: command authority and lifecycle cursor origins do not match"
-                            readIORef effects >>= (@?= 0)
-                            originAfter <- protectedKeyImage store
-                            foreignAfter <- protectedKeyImage foreignStore
-                            originAfter @?= originBefore
-                            foreignAfter @?= foreignBefore
-    , testCase "a cursor superseded after authorization is refused before Chain effects" $
+            let steps = [countingStep "complete-once" effects StepChanged]
+                run = runFrom store project steps
+            run >>= (@?= Right ())
+            readIORef effects >>= (@?= 1)
+            completedKeys <- protectedKeyImage store
+            completedInvocations <- invocationRecordCount store
+            completedInvocations @?= 1
+            run >>= (@?= Right ())
+            readIORef effects >>= (@?= 1)
+            protectedKeyImage store >>= (@?= completedKeys)
+            invocationRecordCount store >>= (@?= completedInvocations)
+    , testCase "a consumed Execute reservation refuses replay without rerunning its callback" $
         withChainStore $ \store project -> do
             effects <- newIORef (0 :: Int)
-            let stepPlan = expectPlan [countingStep "must-not-run" effects StepChanged]
-                cfg = HostConfig{hcSubstrate = descriptorSubstrate, hcToolPaths = Map.empty}
-            withExactChainEvidence store project stepPlan $ \plan authority executeCursor -> do
-                advanced <-
-                    withTeardownLifecycleCursor executeCursor (const (pure ()))
-                        >>= expectSuccess
-                advanced @?= ()
-                before <- protectedKeyImage store
-                outcome <- runChainFromFrame cfg self store plan authority executeCursor
-                case outcome of
-                    Left failure ->
-                        assertBool
-                            ("the stale-cursor refusal was not precise: " ++ failure)
-                            (isInfixOf "lifecycle cursor version" failure && isInfixOf "was superseded by" failure)
-                    Right () -> assertFailure "a superseded Execute cursor ran the chain"
-                readIORef effects >>= (@?= 0)
-                after <- protectedKeyImage store
-                after @?= before
-    , testCase "a stale-cursor settlement error outranks a thrown safety refusal" $
-        withChainStore $ \store project -> do
-            supersede <- newIORef (pure () :: IO ())
-            let refusingStep =
-                    countingProbe "refusal-settlement-race" $ \_ -> do
-                        advance <- readIORef supersede
-                        advance
-                        throwIO (Harness.SafetyRefusal "definite provider refusal")
-                stepPlan = expectPlan [refusingStep]
-                cfg = HostConfig{hcSubstrate = descriptorSubstrate, hcToolPaths = Map.empty}
-            withExactChainEvidence store project stepPlan $ \plan authority executeCursor -> do
-                writeIORef supersede $ do
-                    _ <-
-                        withTeardownLifecycleCursor executeCursor (const (pure ()))
-                            >>= expectSuccess
-                    pure ()
-                outcome <- runChainFromFrame cfg self store plan authority executeCursor
-                case outcome of
-                    Left failure -> do
-                        assertBool
-                            ("the settlement error did not report stale cursor state: " ++ failure)
-                            (isInfixOf "lifecycle cursor version" failure && isInfixOf "was superseded by" failure)
-                        assertBool
-                            ("the thrown safety refusal displaced the durable error: " ++ failure)
-                            (not (isInfixOf "definite provider refusal" failure))
-                    Right () -> assertFailure "the stale settlement unexpectedly succeeded"
-                phases <- withProtectedEntry store readOperationPhases
-                either
-                    (assertFailure . show)
-                    (@?= ["EffectOutcomeUnknown"])
-                    phases
+            let steps =
+                    [ countingStep
+                        "consume-once"
+                        effects
+                        (StepConflict "healthy" "foreign" "repair the fixture")
+                    ]
+                run = runFrom store project steps
+            first <- run
+            assertLeft "the first non-success must fail the public command" first
+            readIORef effects >>= (@?= 1)
+            consumedKeys <- protectedKeyImage store
+            consumedInvocations <- invocationRecordCount store
+            consumedInvocations @?= 1
+            second <- run
+            assertLeft "a consumed reservation must refuse replay" second
+            readIORef effects >>= (@?= 1)
+            protectedKeyImage store >>= (@?= consumedKeys)
+            invocationRecordCount store >>= (@?= consumedInvocations)
+    , testCase "the package-private Entry fixes root refinement, authorization, and interpretation" $ do
+        entrySource <- lifecycleEntrySource
+        commandFacade <- commandSource
+        let normalizedEntry = T.unwords (T.words entrySource)
+            normalizedFacade = T.unwords (T.words commandFacade)
+            requiredEntry =
+                [ "withValidatedRootLifecycleContext lifecycleContext"
+                , "settled <- settleRootedPlanCatalog store catalog"
+                , "authorizeRootProject rootAuthority verb verified bound binding lease plan journal executeCursor lifecycleContext"
+                , "use ( RootUpLifecycleEntry rootAuthority verb plan lifecycleContext journal executeCursor authority catalog )"
+                , "runRootProjectUpLifecycleEntry cfg self (RootUpLifecycleEntry _rootAuthority _verb plan lifecycleContext _journal cursor authority _catalog)"
+                , "withTeardownLifecycleCursor cursor"
+                ]
+            requiredFacade =
+                [ "module HostBootstrap.Command ( coreCommands, coreCommandNames, allReconcilers, LifecycleEntry, lifecycleEntryFrameName, lifecycleEntryVerbName, )"
+                , "withRootProjectUpLifecycleEntry exactSpec rootAuthority Authority.ProjectUp verified bound binding lease plan lifecycleContext (runRootProjectUpLifecycleEntry cfg self)"
+                ]
+        mapM_
+            (\fragment -> assertBool ("missing fixed Entry route: " ++ T.unpack fragment) (T.isInfixOf fragment normalizedEntry))
+            requiredEntry
+        mapM_
+            (\fragment -> assertBool ("missing opaque Command facade route: " ++ T.unpack fragment) (T.isInfixOf fragment normalizedFacade))
+            requiredFacade
+        assertBool
+            "the public Command facade must not invoke raw Chain"
+            (not ("runChainFromFrame" `T.isInfixOf` commandFacade))
     ]
 
 {- | A step no longer receives a bare 'HostConfig'; it receives the descriptor
@@ -528,24 +447,15 @@ observationCases =
         outcome <- runInnermostWith [countingStep "first" ran StepUnchanged, countingStep "second" ran StepChanged]
         outcome @?= Right ()
         readIORef ran >>= (@?= 2)
-    , testCase "each non-success outcome names its own node and its own kind" $ do
-        let expectRow observation fragment = do
+    , testCase "each non-success observation stops before the later node" $ do
+        let expectRow observation = do
                 ran <- newIORef (0 :: Int)
                 outcome <- runInnermostWith [countingStep "deploy-kind-probe" ran observation, countingStep "later" ran StepChanged]
-                case outcome of
-                    Left err -> do
-                        assertBool
-                            ("the row names the node: " ++ err)
-                            ("deploy-kind-probe" `isInfixOf` err)
-                        assertBool
-                            ("the row names the outcome: " ++ err)
-                            (fragment `isInfixOf` err)
-                        -- the later node did not run
-                        readIORef ran >>= (@?= 1)
-                    Right () -> assertFailure "expected the chain to stop at the node"
-        expectRow (StepConflict "the run's cluster" "a foreign cluster" "delete it") "conflict:"
-        expectRow (StepUnsupported "no kube toolchain in this frame") "unsupported:"
-        expectRow (StepRefused "the cluster holds state this run does not own") "refused:"
+                assertLeft "expected the public command to stop at the observed node" outcome
+                readIORef ran >>= (@?= 1)
+        expectRow (StepConflict "the run's cluster" "a foreign cluster" "delete it")
+        expectRow (StepUnsupported "no kube toolchain in this frame")
+        expectRow (StepRefused "the cluster holds state this run does not own")
     ]
 
 {- | The durable half of the interpreter's transaction (§ EE).
@@ -558,7 +468,8 @@ transactionCases =
     [ testCase "the unknown phase is durable before the effect, and the entry is free while it runs" $
         withChainStore $ \store project -> do
             observed <- newIORef ([] :: [T.Text])
-            let probe _ = do
+            let probe :: forall scope planId. StepExecution scope planId -> IO StepObservation
+                probe _ = do
                     -- Taking the exclusive entry here is itself the assertion
                     -- that the interpreter is not holding it: a provider call
                     -- or a cluster bring-up can take minutes, and the store
@@ -585,9 +496,7 @@ transactionCases =
                     store
                     project
                     [countingProbe "probe-node" (const (pure (StepUnsupported "no backend here")))]
-            case outcome of
-                Left err -> assertBool ("names the outcome: " ++ err) ("unsupported:" `isInfixOf` err)
-                Right () -> assertFailure "expected the chain to stop at the node"
+            assertLeft "expected the public command to stop at the node" outcome
             -- Terminal, not unknown: an operator resolves it, and a successor
             -- refuses to retry it rather than blocking on an unclassifiable
             -- record.
@@ -596,58 +505,42 @@ transactionCases =
     , testCase "a returned refusal closes its exact session without registering later nodes" $
         withChainStore $ \store project -> do
             ran <- newIORef (0 :: Int)
-            let stepPlan =
-                    expectPlan
-                        [ countingStep
-                            "returned-refusal"
-                            ran
-                            (StepRefused "operator-owned state")
-                        , countingStep "must-not-register" ran StepChanged
-                        ]
-                cfg = HostConfig{hcSubstrate = descriptorSubstrate, hcToolPaths = Map.empty}
-            withExactChainEvidence store project stepPlan $ \plan authority cursor -> do
-                outcome <- runChainFromFrame cfg self store plan authority cursor
-                case outcome of
-                    Left failure ->
-                        assertBool
-                            ("the returned refusal was not preserved: " ++ failure)
-                            ("refused:" `isInfixOf` failure)
-                    Right () -> assertFailure "the returned refusal unexpectedly succeeded"
-                readIORef ran >>= (@?= 1)
-                phases <- withProtectedEntry store readOperationPhases
-                either (assertFailure . show) (@?= ["StepObservedTerminal"]) phases
-                assertExactlyOneClosedSession
-                    store
-                    (stablePlanSnapshotDigest (renderSnapshot plan))
-    , testCase "a thrown safety refusal closes its exact session before it is rethrown" $
+            digest <- newIORef Nothing
+            let returnedRefusal =
+                    countingProbe "returned-refusal" $ \execution -> do
+                        modifyIORef' ran (+ 1)
+                        writeIORef digest (Just (stepExecutionPlanDigest execution))
+                        pure (StepRefused "operator-owned state")
+                steps =
+                    [ returnedRefusal
+                    , countingStep "must-not-register" ran StepChanged
+                    ]
+            outcome <- runFrom store project steps
+            assertLeft "the returned refusal unexpectedly succeeded" outcome
+            readIORef ran >>= (@?= 1)
+            phases <- withProtectedEntry store readOperationPhases
+            either (assertFailure . show) (@?= ["StepObservedTerminal"]) phases
+            readRequiredPlanDigest digest >>= assertExactlyOneClosedSession store
+    , testCase "a thrown safety refusal closes its exact session before the public command reports failure" $
         withChainStore $ \store project -> do
             ran <- newIORef (0 :: Int)
+            digest <- newIORef Nothing
             let reason = "definite provider refusal"
                 refusingStep =
-                    countingProbe "thrown-refusal" $ \_ -> do
+                    countingProbe "thrown-refusal" $ \execution -> do
                         modifyIORef' ran (+ 1)
+                        writeIORef digest (Just (stepExecutionPlanDigest execution))
                         throwIO (Harness.SafetyRefusal reason)
-                stepPlan =
-                    expectPlan
-                        [ refusingStep
-                        , countingStep "must-not-register" ran StepChanged
-                        ]
-                cfg = HostConfig{hcSubstrate = descriptorSubstrate, hcToolPaths = Map.empty}
-            withExactChainEvidence store project stepPlan $ \plan authority cursor -> do
-                attempted <-
-                    Exception.try @Harness.SafetyRefusal $
-                        runChainFromFrame cfg self store plan authority cursor
-                case attempted of
-                    Left (Harness.SafetyRefusal observed) -> observed @?= reason
-                    Right outcome ->
-                        assertFailure
-                            ("the safety refusal was not rethrown after settlement: " ++ show outcome)
-                readIORef ran >>= (@?= 1)
-                phases <- withProtectedEntry store readOperationPhases
-                either (assertFailure . show) (@?= ["StepObservedTerminal"]) phases
-                assertExactlyOneClosedSession
-                    store
-                    (stablePlanSnapshotDigest (renderSnapshot plan))
+                steps =
+                    [ refusingStep
+                    , countingStep "must-not-register" ran StepChanged
+                    ]
+            attempted <- runFrom store project steps
+            assertLeft "the safety refusal unexpectedly succeeded" attempted
+            readIORef ran >>= (@?= 1)
+            phases <- withProtectedEntry store readOperationPhases
+            either (assertFailure . show) (@?= ["StepObservedTerminal"]) phases
+            readRequiredPlanDigest digest >>= assertExactlyOneClosedSession store
     ]
 
 {- | A node's projected operations (§ CC).
@@ -786,15 +679,14 @@ projectionCases =
                                 pure (StepUnsupported "the backend cannot hold the relation")
                             )
                     ]
-            case outcome of
-                Left err -> assertBool ("names the outcome: " ++ err) ("unsupported:" `isInfixOf` err)
-                Right () -> assertFailure "expected the chain to stop at the node"
+            assertLeft "expected the chain to stop at the node" outcome
             settled <- withProtectedEntry store readOperationPhases
             either
                 (assertFailure . show)
                 (@?= replicate 2 "StepObservedTerminal")
                 settled
     , testCase "a declared projection the node never takes leaves the session unable to close" $ do
+        projected <- newIORef ([] :: [[T.Text]])
         outcome <-
             runInnermostWith
                 [ projectsOperation "project:relating-node/relation" $
@@ -803,15 +695,13 @@ projectionCases =
                         ProjectManagedReverse
                         "declare but never perform"
                         executionFrame
-                        (const (pure StepChanged))
+                        ( \execution -> do
+                            modifyIORef' projected (++ [stepExecutionProjectedOperations execution])
+                            pure StepChanged
+                        )
                 ]
-        case outcome of
-            Left err -> do
-                assertBool ("the close is refused: " ++ err) ("has not settled" `isInfixOf` err)
-                assertBool
-                    ("it names the unsettled projection: " ++ err)
-                    ("project:relating-node/relation" `isInfixOf` err)
-            Right () -> assertFailure "a session with an unsettled projection was closed"
+        assertLeft "a session with an unsettled projection was closed" outcome
+        readIORef projected >>= (@?= [["project:relating-node/relation"]])
     ]
 
 {- | Managed handles crossing between nodes in process (§ EE).
@@ -1055,7 +945,7 @@ countingProbe :: String -> (forall scope planId. StepExecution scope planId -> I
 countingProbe name action =
     projectStep (fixtureProjectStepId name) ProjectManagedReverse "probe node" executionFrame action
 
--- | Interpret the one-frame exact plan against a caller-supplied store.
+-- | Interpret one exact root-frame plan through the public @project up@ route.
 runFrom ::
     forall projectId.
     ProtectedStore ->
@@ -1063,10 +953,16 @@ runFrom ::
     [Step] ->
     IO (Either String ())
 runFrom store project steps = do
-    let plan = expectPlan steps
-        cfg = HostConfig{hcSubstrate = descriptorSubstrate, hcToolPaths = Map.empty}
-    withExactChainEvidence store project plan $ \projectPlan authority cursor ->
-        runChainFromFrame cfg self store projectPlan authority cursor
+    let authorityRoot =
+            takeDirectory
+                (takeDirectory (takeDirectory (protectedStoreRoot store)))
+    attempted <-
+        Exception.try @ExitCode $
+            withArgs ["project", "up"] $
+                CLI.runHostBootstrapCLI
+                    (T.unpack (installedProjectName project))
+                    (chainProjectSpec authorityRoot steps)
+    pure (either (Left . show) Right attempted)
 
 -- | A current-frame node that records that it ran and reports @observation@.
 -- Each carries its own project identity, so two can share a plan.
@@ -1084,166 +980,88 @@ runInnermostWith :: [Step] -> IO (Either String ())
 runInnermostWith steps =
     withChainStore $ \store project -> runFrom store project steps
 
-{- | A throwaway protected store plus the fixture's installed identity.
+{- | A throwaway public CLI root plus the fixture's installed identity.
 
-The interpreter runs every node as a real prepared operation, so these cases
-drive the production transaction against a real store on a real filesystem
-rather than a stand-in. -}
+The sibling config names the same canonical root as the store observed by the
+callbacks.  The command itself opens that store and constructs the opaque
+LifecycleEntry; this fixture never imports its hidden implementation module or
+aligns any phantom index by hand. -}
 withChainStore ::
     (forall projectId. ProtectedStore -> InstalledProjectIdentity projectId -> IO result) ->
     IO result
 withChainStore use =
     withSystemTempDirectory "hostbootstrap-chain" $ \directory -> do
-        opened <- openProtectedStore (directory </> "authority")
-        store <- either (assertFailure . show) pure opened
-        Fixture.withFixtureInstalledProject (use store)
-
-{- | Admit one exact Production plan, advance its matching frame cursor to
-Execute, and reserve exactly one command authority before handing all three to
-the interpreter test.
-
-The helper deliberately mirrors the public admission order.  In particular it
-does not use the compatibility lifecycle-plan producer, and every generated
-identity remains inside the rank-2 callback.
--}
-withExactChainEvidence ::
-    forall projectId result.
-    ProtectedStore ->
-    InstalledProjectIdentity projectId ->
-    StepPlan ->
-    ( forall brokerGeneration specDigest planId configId frame.
-      ProjectPlan
-        (V.Production projectId)
-        specDigest
-        planId
-        configId
-        Fixture.ProjectConfig ->
-      CommandAuthority
-        (V.Production projectId)
-        planId
-        frame
-        brokerGeneration
-        VerbUp
-        ExecutePhase ->
-      LifecycleCursor
-        (V.Production projectId)
-        planId
-        frame
-        brokerGeneration
-        VerbUp
-        ExecutePhase ->
-      IO result
-    ) ->
-    IO result
-withExactChainEvidence store project stepPlan use =
-    withSystemTempDirectory "hostbootstrap-exact-chain-plan" $ \directory -> do
-        rooted <-
-            withCanonicalProjectRoot
-                (directory </> "fixture.dhall")
-                "."
-                ( \(projectRoot :: CanonicalProjectRoot (V.Production projectId) rootId) -> do
-                    started <-
-                        withProductionRoot store project Authority.ProjectUp $ \productionRoot -> do
-                            let root = productionRootAuthority productionRoot
-                                unbound = productionRootUnboundLease productionRoot
-                                value =
-                                    Fixture.defaultProjectConfig
-                                        (installedProjectName project)
-                                        (T.pack (canonicalProjectRootPath projectRoot))
-                                        Context.HostOrchestrator
-                                supplied = Fixture.context value
-                            profiled <-
-                                withProductionLifecycleProfile
-                                    (rootScopeAuthority root)
-                                    (productionActiveMode (productionRootModeLease productionRoot))
-                                    unbound
-                                    ( \profile ->
-                                        withProductionProjectCodec @Fixture.ProjectConfig @projectId $ \baseCodec ->
-                                            withFinalizedProjectSpec
-                                                ProductionScope
-                                                baseCodec
-                                                emptyServiceRegistry
-                                                (\_ _ -> Right stepPlan)
-                                                ( \spec -> do
-                                                    validated <-
-                                                        withValidatedConfig
-                                                            (finalizedProjectCodec spec)
-                                                            value
-                                                            ( \_wire config -> do
-                                                                drafts <- expectSuccess (projectPlanDrafts spec projectRoot config)
-                                                                persistedAction <-
-                                                                    expectSuccess
-                                                                        ( withProjectPlan
-                                                                            profile
-                                                                            projectRoot
-                                                                            config
-                                                                            drafts
-                                                                            ( \projectPlan ->
-                                                                                withPersistedPlanSnapshot
-                                                                                    root
-                                                                                    unbound
-                                                                                    projectPlan
-                                                                                    ( \verified bound binding lease _recovery -> do
-                                                                                        framedAction <-
-                                                                                            either (fail . show) pure $
-                                                                                                withCurrentFrame
-                                                                                                    projectPlan
-                                                                                                    supplied
-                                                                                                    ( \_current frame context ->
-                                                                                                        withAcquisitionJournal
-                                                                                                            root
-                                                                                                            lease
-                                                                                                            bound
-                                                                                                            binding
-                                                                                                            projectPlan
-                                                                                                            ( \journal -> do
-                                                                                                                prepared <-
-                                                                                                                    withLifecycleCursor
-                                                                                                                        journal
-                                                                                                                        frame
-                                                                                                                        Authority.ProjectUp
-                                                                                                                        Authority.Prepare
-                                                                                                                        ( \prepareCursor -> do
-                                                                                                                            executed <-
-                                                                                                                                withExecuteLifecycleCursor
-                                                                                                                                    prepareCursor
-                                                                                                                                    ( \executeCursor -> do
-                                                                                                                                        authorized <-
-                                                                                                                                            authorizeProjectUp
-                                                                                                                                                root
-                                                                                                                                                Authority.ProjectUp
-                                                                                                                                                verified
-                                                                                                                                                bound
-                                                                                                                                                binding
-                                                                                                                                                lease
-                                                                                                                                                projectPlan
-                                                                                                                                                journal
-                                                                                                                                                frame
-                                                                                                                                                executeCursor
-                                                                                                                                                context
-                                                                                                                                        authority <- expectSuccess authorized
-                                                                                                                                        use projectPlan authority executeCursor
-                                                                                                                                    )
-                                                                                                                            expectSuccess executed
-                                                                                                                        )
-                                                                                                                expectSuccess prepared
-                                                                                                            )
-                                                                                                    )
-                                                                                        framedAction >>= expectSuccess
-                                                                                    )
-                                                                            )
-                                                                        )
-                                                                persistedAction >>= expectSuccess
-                                                            )
-                                                    either fail pure validated
-                                                )
-                                    )
-                            action <- either (fail . show) pure profiled
-                            result <- action
-                            pure (Right result)
-                    expectSuccess started
+        Fixture.withFixtureInstalledProject $ \project -> do
+            let projectName = installedProjectName project
+            configPath <- Schema.siblingProjectConfigPath projectName
+            rooted <-
+                withCanonicalProjectRoot
+                    configPath
+                    directory
+                    (pure . canonicalProjectRootPath)
+            canonicalRoot <- expectSuccess rooted
+            let config =
+                    Fixture.defaultProjectConfig
+                        projectName
+                        (T.pack canonicalRoot)
+                        Context.HostOrchestrator
+                storeRoot =
+                    canonicalRoot
+                        </> ".hostbootstrap"
+                        </> "authority"
+                        </> T.unpack projectName
+                cleanup = do
+                    present <- doesFileExist configPath
+                    if present then removeFile configPath else pure ()
+            ( do
+                    Schema.writeProjectConfigFile Fixture.projectConfigCodec configPath config
+                    opened <- openProtectedStore storeRoot
+                    store <- either (assertFailure . show) pure opened
+                    use store project
                 )
-        expectSuccess rooted
+                `Exception.finally` cleanup
+
+chainProjectSpec :: FilePath -> [Step] -> CLI.ProjectSpec Fixture.ProjectConfig Fixture.TestConfig
+chainProjectSpec root steps =
+    either (error . show) id $
+        CLI.finalizeProjectSpec $
+            CLI.addSteps (\_root _config -> steps) $
+                CLI.addForwardChildPlan Fixture.refusingForwardChildPlan $
+                    CLI.projectSpec
+                        chainSuite
+                        (pure ())
+                        []
+                        Fixture.testConfigCodec
+                        (const (Fixture.defaultTestConfig (Fixture.Resources 1 "1GiB" "1GiB")))
+                        (chainAssemble root)
+
+chainSuite :: Harness.TestSuite
+chainSuite =
+    Harness.TestSuite
+        (pure (Right ()))
+        (\_ -> pure ())
+        [Harness.Case chainCaseId 1 False]
+        (\_ _ -> pure Harness.Pass)
+        (pure ())
+
+chainCaseId :: Harness.CaseId
+chainCaseId = either (error . show) id (Harness.mkCaseId "chain-fixture")
+
+chainAssemble ::
+    FilePath ->
+    forall projectId scope.
+    AssemblyRequest projectId Fixture.TestConfig T.Text scope ->
+    ConfigAssembly scope (Fixture.ProjectConfig scope)
+chainAssemble root request = case request of
+    ProductionAssembly args ->
+        pureConfigAssembly (Fixture.projectInit "chain-fixture" args)
+    HarnessAssembly _authority _testConfig _variant ->
+        pureConfigAssembly
+            ( Fixture.defaultProjectConfig
+                "chain-fixture"
+                (T.pack root)
+                Context.HostOrchestrator
+            )
 
 -- | A pure exact plan fixture for renderer/topology projections.
 withAdmittedPlan ::
@@ -1263,6 +1081,15 @@ withAdmittedPlan = Fixture.withFixtureProjectPlan
 expectSuccess :: (Show failure) => Either failure result -> IO result
 expectSuccess = either (assertFailure . ("expected exact fixture success, got " ++) . show) pure
 
+assertLeft :: String -> Either failure result -> IO ()
+assertLeft _ (Left _) = pure ()
+assertLeft message (Right _) = assertFailure message
+
+readRequiredPlanDigest :: IORef (Maybe T.Text) -> IO T.Text
+readRequiredPlanDigest sink = do
+    observed <- readIORef sink
+    maybe (assertFailure "the action did not observe its admitted plan digest") pure observed
+
 -- | What one action observed about itself: key, frame, plan digest, edge set.
 type ObservedExecution = (T.Text, T.Text, T.Text, [T.Text])
 
@@ -1281,29 +1108,19 @@ observing sink execution = do
         )
     pure StepChanged
 
-{- | Interpret the exact one-frame plan, which runs its steps and then ends the
-descent, so the recorded descriptors are exactly this frame's. Returns the
-plan's own digest alongside them, read from the same opened plan the interpreter
-ran, so the assertion compares the descriptor against the plan rather than
-against a second computation of it.
--}
+{- | Interpret the exact one-frame plan through the public root entry.  The
+digest comes from the StepExecution minted for that same admitted entry, not a
+second independently opened plan. -}
 runInnermost :: [IORef [ObservedExecution] -> Step] -> IO (T.Text, [ObservedExecution])
 runInnermost build = do
     sink <- newIORef []
-    let plan = expectPlan (map ($ sink) build)
-        cfg = HostConfig{hcSubstrate = descriptorSubstrate, hcToolPaths = Map.empty}
-    (planDigest, outcome) <-
-        withChainStore $ \store project ->
-            withExactChainEvidence store project plan $ \projectPlan authority cursor ->
-                (,)
-                    (stablePlanSnapshotDigest (renderSnapshot projectPlan))
-                    <$> runChainFromFrame cfg self store projectPlan authority cursor
+    outcome <- runInnermostWith (map ($ sink) build)
     outcome @?= Right ()
     observed <- readIORef sink
+    planDigest <- case observed of
+        (_, _, digest, _) : _ -> pure digest
+        [] -> assertFailure "the exact root entry ran no descriptor action"
     pure (planDigest, observed)
-
-descriptorSubstrate :: Substrate
-descriptorSubstrate = Substrate{substrateName = LinuxCpu, substrateArch = Arm64}
 
 descriptorSteps :: [IORef [ObservedExecution] -> Step]
 descriptorSteps =
@@ -1431,6 +1248,12 @@ chainSource = publicModuleSource "Chain.hs"
 projectPlanSource :: IO T.Text
 projectPlanSource = publicModuleSource "ProjectPlan.hs"
 
+commandSource :: IO T.Text
+commandSource = publicModuleSource "Command.hs"
+
+lifecycleEntrySource :: IO T.Text
+lifecycleEntrySource = publicModuleSource ("Command" </> "LifecycleEntry.hs")
+
 publicModuleSource :: FilePath -> IO T.Text
 publicModuleSource moduleName = do
     cwd <- getCurrentDirectory
@@ -1454,7 +1277,4 @@ expectPlan = either (error . show) id . mkStepPlan
 
 -- | Shared exact-chain fixture for an adjacent integration spec.
 interpretExactSteps :: HostConfig -> SelfRef -> [Step] -> IO (Either String ())
-interpretExactSteps cfg exactSelf steps =
-    withChainStore $ \store project ->
-        withExactChainEvidence store project (expectPlan steps) $ \plan authority cursor ->
-            runChainFromFrame cfg exactSelf store plan authority cursor
+interpretExactSteps _cfg _exactSelf = runInnermostWith

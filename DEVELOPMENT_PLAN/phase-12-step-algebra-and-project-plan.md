@@ -409,27 +409,29 @@ withLifecycleCursor
   -> (LifecycleCursor scope planId frame brokerGeneration verb phase -> IO result)
   -> IO (Either LifecycleError result)
 
-authorizeProjectUp
-  :: RootInvocationAuthority scope brokerGeneration VerbUp
-  -> ProjectVerb VerbUp
+authorizeRootProject
+  :: RootInvocationAuthority scope brokerGeneration verb
+  -> ProjectVerb verb
   -> VerifiedPlanSnapshot scope specDigest planDigest
   -> BoundPlanSnapshot scope specDigest planDigest planId
   -> PlanDigestBinding scope specDigest planDigest planId
   -> BoundRunLease scope specDigest planDigest brokerGeneration
   -> ProjectPlan scope specDigest planId configId cfg
   -> AcquisitionJournal scope planId brokerGeneration
-  -> ProjectFrame scope specDigest planId configId frame
-  -> LifecycleCursor scope planId frame brokerGeneration VerbUp phase
-  -> ValidatedContext scope planId frame
+  -> LifecycleCursor scope planId frame brokerGeneration verb phase
+  -> ValidatedLifecycleContext scope specDigest planId configId frame
   -> IO
        (Either
           AuthorityError
           (CommandAuthority
-             scope planId frame brokerGeneration VerbUp phase))
+             scope planId frame brokerGeneration verb phase))
 ```
 
-This phase supplies the exact current-frame evidence and adopts it at the local authority and interpreter
-boundaries. The
+Sprint 12.25 originally exposed this reservation foundation as Up-only `authorizeProjectUp` with a separately
+supplied `ProjectFrame`/`ValidatedContext`. Sprint 17.8 supersedes that public shape with the root-refined generic
+signature above and packages the ordinary root-Up consumer behind Cabal-private `LifecycleEntry`; the atomic
+reservation kernel and durable journal/cursor foundation remain Phase 12 ownership. This phase supplies the exact
+current-frame evidence and reservation substrate. The
 [recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md) owns the proof-complete
 recursive operator/descent authorization gate, authenticated child admission, and complete forward/reverse
 state-machine traversal.
@@ -1457,7 +1459,8 @@ frame evidence.
 
 #### Deliverables
 
-- `authorizeProjectUp` consumes `RootInvocationAuthority scope brokerGeneration VerbUp`, the term constructor
+- The then-public `authorizeProjectUp` originally consumed
+  `RootInvocationAuthority scope brokerGeneration VerbUp`, the term constructor
   `ProjectUp :: ProjectVerb VerbUp`, matching verified and bound snapshot, digest binding,
   bound lease, project plan, acquisition journal, project frame, lifecycle cursor, and validated context.
 - Every input shares its scope, plan, frame, specification, stable digest, configuration, verb, phase, and
@@ -1475,6 +1478,9 @@ frame evidence.
   this exact local gate.
 - The [recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md) composes this current-frame
   substrate with proof-complete operator/descent and recursive traversal authorization.
+- Sprint 17.8 later supersedes only that exposed raw-frame producer: generic `authorizeRootProject` requires the
+  root-refined `ValidatedLifecycleContext`, and ordinary root Up reaches the unchanged reservation foundation
+  solely through its hidden `LifecycleEntry` producer/fixed interpreter.
 
 #### Validation
 
@@ -1524,12 +1530,12 @@ Bind the reverse scheduler's pure projection to the exact project plan and curre
   teardownPlan
     :: ProjectPlan scope specDigest planId configId cfg
     -> CurrentFrame scope planId frame
-    -> TeardownVerb verb
+    -> ProjectVerb verb
     -> TeardownPlan scope planId frame verb
 
   openTeardownForest
     :: TeardownPlan scope planId frame verb
-    -> Either TeardownError (TeardownForest scope planId verb)
+    -> Either TeardownError (TeardownForest scope planId frame verb)
   ```
 
 - The projection consumes the already admitted `CurrentFrame`; it neither derives a second frame witness nor
@@ -1538,17 +1544,18 @@ Bind the reverse scheduler's pure projection to the exact project plan and curre
 - Preserve policy remains a plan-owned projection for both verbs.
 - `HostBootstrap.Command` consumes only the exact plan/current-frame projection; no alternate
   Production reverse-plan producer exists.
-- The [recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md) composes this pure
-  frame-indexed substrate with its recursive authorization points, journal state, and proof-complete forest
-  transitions. Sprint 17.3 propagates this existing `frame` index through the forest and every successor and
-  requests no duplicate `CurrentFrame`.
+- The [recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md) now propagates this
+  existing nominal `frame` index through the forest, progress, both authorization branches, cursor,
+  successor, completion, and settled-destroy proof without requesting a duplicate `CurrentFrame`; its closed
+  local/descent algebra and proof-complete recursive authorization remain downstream.
 
 #### Validation
 
 `TeardownSpec` covers forward/reverse identity agreement, exact projection/frame continuity, per-verb effects,
-preserve policy, and cross-plan/current-frame compile failure. Source and compile-fail guards pin that only
-`TeardownPlan` gains the frame index here, the opener accepts only that projection, and no second frame
-witness is generated or accepted.
+preserve policy, and cross-plan/current-frame compile failure. This sprint's original guards pinned that
+only `TeardownPlan` gained the frame index here, while the current guards additionally pin the later
+frame-preserving forest pipeline. The opener still accepts only the projection, and no second frame witness
+is generated or accepted.
 
 Dated evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4),
 `cabal build hostbootstrap-core --ghc-options=-Werror` passed; the focused `TeardownSpec`, indexed
@@ -1798,8 +1805,12 @@ Make the single-plan boundary mechanically visible in the package and source tre
   remain private to the kernel boundary.
 - Planned-resource construction has only the plan-owned public projection routes, and generic Budget
   admission accepts the exact plan/resource/topology projections rather than caller-supplied digest, frame,
-  resource, or graph terms. Generic `ResourceEnvelope` remains descriptive input to that admission;
-  Sprint 24.5 owns the demo's exact configuration, workload, overhead, partition, and slice projection.
+  resource, or graph terms. The current closed provider family still recognizes only `core:deploy-vm` and
+  inherits that operation's executing frame; worked-demo Sprint 24.5 owns the one closed step declaration
+  extension and plan projection needed to bind a provider resource to its current or unique descended target
+  frame without accepting a raw frame/key. Generic `ResourceEnvelope` remains descriptive input to admission;
+  Sprint 24.7 owns the demo's workload, overhead, partition, and slice projection, while Sprint 24.19 owns its
+  exact cluster configuration and loopback publication.
 - The Production command path contains one fresh or recovered plan admission per invocation.
 - Context evidence remains descriptive, while journal, cursor, and command authority share one broker index.
 - `HostBootstrap.Step`, `HostBootstrap.ProjectPlan`, and `HostBootstrap.Lifecycle.Plan` import only the pure

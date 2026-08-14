@@ -1,3 +1,5 @@
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
 {- | Join one exact admitted project plan to its protected, verified stable
@@ -16,24 +18,32 @@ module HostBootstrap.ProjectPlan.Snapshot
     , withFreshBoundPlanSnapshot
     , withPersistedPlanSnapshot
     , withBoundPlanSnapshot
+    , withReauthorizedBoundPlanSnapshotKernel
     )
 where
 
 import Data.ByteString (ByteString)
 import HostBootstrap.Authority
     ( InstalledProjectIdentity
+    , ProjectVerb (ProjectDestroy, ProjectDown, ProjectUp)
     , RootInvocationAuthority
+    , TeardownPhase
     , VerbUp
+    , installedProjectName
     )
+import HostBootstrap.Lifecycle.Context (ValidatedLifecycleContext)
 import HostBootstrap.Lifecycle.Mode
-    ( BoundInvocationRecovery
+    ( AcquisitionJournal
+    , BoundInvocationRecovery
     , BoundRunLease
     , InvocationCloseKey
+    , LifecycleCursor
     , LeaseConflict
-    , ModeError
+    , ModeError (..)
     , NormalActiveRecovery
     , ProductionMode
     , ProjectModeLease
+    , RecoveredProductionLifecycleProfile
     , UnboundRunLease
     , VerifiedPlanSnapshot
     , bindRunLeaseWithPlanRecovery
@@ -42,24 +52,35 @@ import HostBootstrap.Lifecycle.Mode
     , validateFreshPlanSnapshotEvidence
     , verifyIndexedPlanSnapshot
     , withBoundPlanSnapshotKernel
+    , withFreshExistingBoundReverseRootKernel
+    , withResumedExistingBoundReverseRootKernel
     )
 import HostBootstrap.Lifecycle.Plan
     ( BoundPlanSnapshot
+    , ExistingBoundSnapshotAdmission
     , PlanDigestBinding
     , boundPlanSnapshotBytesKernel
+    , consumeExistingBoundSnapshotAdmissionKernel
     , existingBoundSnapshotAdmissionKernel
     , mintBoundPlanSnapshotKernel
     , mintPlanDigestBindingKernel
     , projectPlanIndexedSnapshotKernel
     )
 import HostBootstrap.ProjectScope (Production)
-import HostBootstrap.Protected (ProtectedStore)
+import HostBootstrap.Protected
+    ( ProtectedError
+    , ProtectedStore
+    , withRunLiveness
+    )
 import HostBootstrap.ProjectPlan (ProjectPlan)
 
 -- | The protected fresh-snapshot protocol refused before yielding authority.
 data SnapshotError
     = SnapshotVerificationError ModeError
     | SnapshotLeaseConflict LeaseConflict
+    | SnapshotLivenessFailure ProtectedError
+    | SnapshotLivenessContended
+    | SnapshotReverseRootTerminal
     deriving (Eq, Show)
 
 {- | Read and verify the already-persisted snapshot for one exact project plan,
@@ -226,3 +247,144 @@ withBoundPlanSnapshot store project terminal useOpen = do
             terminal
             useOpen
     pure (either (Left . SnapshotVerificationError) Right admitted)
+
+{- | Reauthorize one existing-bound Production root for Down or Destroy while
+holding the sole same-name run-liveness extent.
+
+The hidden admission is forced before the verb or any effect.  Absence alone
+may reconstruct the exact source package; an existing reverse-root intent
+instead resumes entirely from its recorded coordinates.  The target callback
+runs before liveness is released and remains the only place its fresh indices
+exist.
+-}
+withReauthorizedBoundPlanSnapshotKernel ::
+    ExistingBoundSnapshotAdmission ->
+    ProtectedStore ->
+    InstalledProjectIdentity projectId ->
+    ProjectVerb verb ->
+    ( forall sourceBrokerGeneration sourceSpecDigest sourcePlanDigest sourcePlanId sourceResult.
+      RootInvocationAuthority (Production projectId) sourceBrokerGeneration VerbUp ->
+      ProjectModeLease projectId ProductionMode sourceBrokerGeneration ->
+      BoundRunLease
+        (Production projectId)
+        sourceSpecDigest
+        sourcePlanDigest
+        sourceBrokerGeneration ->
+      VerifiedPlanSnapshot
+        (Production projectId) sourceSpecDigest sourcePlanDigest ->
+      BoundPlanSnapshot
+        (Production projectId) sourceSpecDigest sourcePlanDigest sourcePlanId ->
+      PlanDigestBinding
+        (Production projectId) sourceSpecDigest sourcePlanDigest sourcePlanId ->
+      BoundInvocationRecovery
+        (Production projectId)
+        sourceSpecDigest
+        sourcePlanDigest
+        sourcePlanId
+        sourceBrokerGeneration ->
+      ( forall sourceConfigId cfg frame.
+        ProjectPlan
+          (Production projectId) sourceSpecDigest sourcePlanId sourceConfigId cfg ->
+        ValidatedLifecycleContext
+          (Production projectId) sourceSpecDigest sourcePlanId sourceConfigId frame ->
+        AcquisitionJournal
+          (Production projectId) sourcePlanId sourceBrokerGeneration ->
+        LifecycleCursor
+          (Production projectId)
+          sourcePlanId
+          frame
+          sourceBrokerGeneration
+          VerbUp
+          TeardownPhase ->
+        IO (Either SnapshotError sourceResult)
+      ) ->
+      IO (Either SnapshotError sourceResult)
+    ) ->
+    ( forall targetBrokerGeneration targetSpecDigest targetPlanDigest targetPlanId.
+      ProjectVerb verb ->
+      RootInvocationAuthority (Production projectId) targetBrokerGeneration verb ->
+      ProjectModeLease projectId ProductionMode targetBrokerGeneration ->
+      BoundRunLease
+        (Production projectId) targetSpecDigest targetPlanDigest targetBrokerGeneration ->
+      VerifiedPlanSnapshot (Production projectId) targetSpecDigest targetPlanDigest ->
+      BoundPlanSnapshot
+        (Production projectId) targetSpecDigest targetPlanDigest targetPlanId ->
+      PlanDigestBinding
+        (Production projectId) targetSpecDigest targetPlanDigest targetPlanId ->
+      RecoveredProductionLifecycleProfile
+        projectId targetSpecDigest targetPlanDigest targetPlanId targetBrokerGeneration ->
+      IO result
+    ) ->
+    IO (Either SnapshotError result)
+{-# OPAQUE withReauthorizedBoundPlanSnapshotKernel #-}
+withReauthorizedBoundPlanSnapshotKernel admission =
+    case consumeExistingBoundSnapshotAdmissionKernel admission of
+        () -> \store project verb initialSource use ->
+            let fromMode = either (Left . SnapshotVerificationError) Right
+                select = do
+                    selected <-
+                        withBoundPlanSnapshotKernel
+                            admission
+                            store
+                            project
+                            (\_closeKey -> pure (Left SnapshotReverseRootTerminal))
+                            ( \root modeLease boundLease verified boundSnapshot binding recovery ->
+                                initialSource
+                                    root
+                                    modeLease
+                                    boundLease
+                                    verified
+                                    boundSnapshot
+                                    binding
+                                    recovery
+                                    ( \plan lifecycleContext journal cursor -> do
+                                        transitioned <-
+                                            withFreshExistingBoundReverseRootKernel
+                                                admission
+                                                store
+                                                project
+                                                verb
+                                                root
+                                                modeLease
+                                                boundLease
+                                                verified
+                                                boundSnapshot
+                                                binding
+                                                recovery
+                                                plan
+                                                lifecycleContext
+                                                journal
+                                                cursor
+                                                use
+                                        pure (fromMode transitioned)
+                                    )
+                            )
+                    case selected of
+                        Left ModeReverseRootInProgress -> do
+                            resumed <-
+                                withResumedExistingBoundReverseRootKernel
+                                    admission
+                                    store
+                                    project
+                                    verb
+                                    use
+                            pure (fromMode resumed)
+                        Left failure -> pure (Left (SnapshotVerificationError failure))
+                        Right outcome -> pure outcome
+
+                underLiveness = do
+                    held <- withRunLiveness store (installedProjectName project) select
+                    pure $ case held of
+                        Left failure -> Left (SnapshotLivenessFailure failure)
+                        Right Nothing -> Left SnapshotLivenessContended
+                        Right (Just outcome) -> outcome
+             in case verb of
+                    ProjectUp ->
+                        pure
+                            ( Left
+                                ( SnapshotVerificationError
+                                    (ModeWrongRecoveryScope "reverse root" "up")
+                                )
+                            )
+                    ProjectDown -> underLiveness
+                    ProjectDestroy -> underLiveness

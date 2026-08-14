@@ -6,7 +6,7 @@
 
 module LifecycleSpec (tests) where
 
-import Control.Exception (SomeException, displayException, finally, try)
+import Control.Exception (SomeException, bracket_, displayException, try)
 import Data.Bits ((.&.), shiftR)
 import qualified Crypto.Hash as Hash
 import qualified Data.ByteArray as ByteArray
@@ -61,7 +61,6 @@ import HostBootstrap.Lifecycle.Mode
     , boundRunLeaseRunText
     , boundRunLeaseSpecDigest
     , normalActiveRecoveryRunText
-    , leaseConflictMessage
     , invocationCloseKeyText
     , mkInvocationCloseKey
     , planSnapshotCanonicalBytes
@@ -89,6 +88,8 @@ import HostBootstrap.Lifecycle.Mode
     , withProductionLifecycleProfile
     , withProductionRoot
     , withBoundPlanSnapshotKernel
+    , withFreshExistingBoundReverseRootKernel
+    , withResumedExistingBoundReverseRootKernel
     , withRecoveredProductionLifecycleProfile
     )
 import HostBootstrap.ProjectPlan
@@ -110,6 +111,7 @@ import HostBootstrap.ProjectPlan.Snapshot
     , withPlanDigestBinding
     , withPersistedPlanSnapshot
     , withBoundPlanSnapshot
+    , withReauthorizedBoundPlanSnapshotKernel
     )
 import HostBootstrap.ProjectRoot
     ( CanonicalProjectRoot
@@ -146,9 +148,8 @@ import System.Directory
     , createDirectoryIfMissing
     , doesDirectoryExist
     , findExecutable
-    , getPermissions
-    , setPermissions
-    , writable
+    , removeFile
+    , renameDirectory
     )
 import System.Exit (ExitCode (..))
 import System.FilePath ((<.>), (</>))
@@ -868,6 +869,69 @@ existingBoundSnapshotCases =
             readIORef terminalCount >>= (@?= 0)
             readIORef openCount >>= (@?= 0)
             mapM (readRecord store) keys >>= (@?= before)
+    , testCase "reverse-root resume forces its hidden admission on partial application" $ do
+        attempted <-
+            try @SomeException
+                ( withResumedExistingBoundReverseRootKernel
+                    (error "bottom reverse-root resume admission")
+                    (error "reverse-root resume forced the store")
+                    (error "reverse-root resume forced the project")
+                    (error "reverse-root resume forced the verb")
+                    (error "reverse-root resume forced the target callback") ::
+                    IO (Either ModeError ())
+                )
+        case attempted of
+            Left failure ->
+                assertBool
+                    "the reverse-root resume admission was forced before any other argument"
+                    ("bottom reverse-root resume admission" `isInfixOf` displayException failure)
+            Right _ -> assertFailure "the reverse-root resume accepted a bottom admission"
+    , testCase "reverse-root fresh admission forces its hidden token on partial application" $ do
+        attempted <-
+            try @SomeException
+                ( withFreshExistingBoundReverseRootKernel
+                    (error "bottom reverse-root fresh admission")
+                    (error "reverse-root fresh admission forced the store")
+                    (error "reverse-root fresh admission forced the project")
+                    (error "reverse-root fresh admission forced the verb")
+                    (error "reverse-root fresh admission forced the source root")
+                    (error "reverse-root fresh admission forced the source mode")
+                    (error "reverse-root fresh admission forced the bound lease")
+                    (error "reverse-root fresh admission forced the verified snapshot")
+                    (error "reverse-root fresh admission forced the bound snapshot")
+                    (error "reverse-root fresh admission forced the digest binding")
+                    (error "reverse-root fresh admission forced the source recovery")
+                    (error "reverse-root fresh admission forced the source plan")
+                    (error "reverse-root fresh admission forced the lifecycle context")
+                    (error "reverse-root fresh admission forced the source journal")
+                    (error "reverse-root fresh admission forced the source cursor")
+                    (error "reverse-root fresh admission forced the target callback") ::
+                    IO (Either ModeError ())
+                )
+        case attempted of
+            Left failure ->
+                assertBool
+                    "the fresh admission token was forced before the remaining function"
+                    ("bottom reverse-root fresh admission" `isInfixOf` displayException failure)
+            Right _ -> assertFailure "the reverse-root fresh wrapper accepted a bottom admission"
+    , testCase "the reverse-root Snapshot facade forces its hidden token on partial application" $ do
+        attempted <-
+            try @SomeException
+                ( withReauthorizedBoundPlanSnapshotKernel
+                    (error "bottom reverse-root Snapshot admission")
+                    (error "reverse-root Snapshot admission forced the store")
+                    (error "reverse-root Snapshot admission forced the project")
+                    (error "reverse-root Snapshot admission forced the verb")
+                    (\_ _ _ _ _ _ _ _ -> pure (Left SnapshotReverseRootTerminal))
+                    (\_ _ _ _ _ _ _ _ -> pure ()) ::
+                    IO (Either SnapshotError ())
+                )
+        case attempted of
+            Left failure ->
+                assertBool
+                    "the Snapshot admission token was forced before the remaining function"
+                    ("bottom reverse-root Snapshot admission" `isInfixOf` displayException failure)
+            Right _ -> assertFailure "the reverse-root Snapshot facade accepted a bottom admission"
     , testCase "the shared compatibility sentinel passes structural snapshot admission" $ do
         admitted <- admitCanonicalRootMutation "<hostbootstrap:unrooted-lifecycle-plan>"
         assertBool "the compatibility snapshot lost its canonical bytes" (not (ByteString.null admitted))
@@ -1442,52 +1506,47 @@ snapshotFilesystemFailureCases = []
 #else
 snapshotFilesystemFailureCases :: [TestTree]
 snapshotFilesystemFailureCases =
-    [ testCase "a real protected snapshot write failure leaves the lease unbound" $
+    [ testCase "a blocked protected snapshot path leaves the lease unbound" $
         withPersistedSnapshotPlan $ \store project root unbound plan -> do
             continued <- newIORef (0 :: Int)
-            let records = protectedStoreRoot store </> "records"
-            permissions <- getPermissions records
-            let readOnly = permissions{writable = False}
             outcome <-
-                ( do
-                    setPermissions records readOnly
+                withBlockedRecordsPath store $
                     withPersistedPlanSnapshot root unbound plan $ \_ _ _ _ _ ->
                         modifyIORef' continued (+ 1)
-                )
-                    `finally` setPermissions records permissions
             case outcome of
                 Left (SnapshotVerificationError (ModeStoreFailure _)) -> pure ()
-                other -> assertFailure ("expected protected write failure, observed " <> show other)
+                other -> assertFailure ("expected protected filesystem failure, observed " <> show other)
             readIORef continued >>= (@?= 0)
             readRecord store (snapshotKey project unbound) >>= (@?= Nothing)
             assertLeaseVersion store project unbound 1
             assertNoPreparedOrEffectRecords store
-    , testCase "a lease-CAS write failure preserves the verified snapshot and unbound lease" $
+    , testCase "an unavailable records directory preserves the verified snapshot and unbound lease" $
         withPersistedSnapshotPlan $ \store project root unbound plan -> do
             continued <- newIORef (0 :: Int)
-            let records = protectedStoreRoot store </> "records"
             writeStableSnapshot store project unbound (renderSnapshot plan)
             snapshot <- requireRecord store (snapshotKey project unbound)
-            permissions <- getPermissions records
-            let readOnly = permissions{writable = False}
             outcome <-
-                ( do
-                    setPermissions records readOnly
+                withBlockedRecordsPath store $
                     withPersistedPlanSnapshot root unbound plan $ \_ _ _ _ _ ->
                         modifyIORef' continued (+ 1)
-                )
-                    `finally` setPermissions records permissions
             case outcome of
-                Left (SnapshotLeaseConflict conflict) ->
-                    assertBool
-                        "the separate lease publish reports its store failure"
-                        ("publish a protected record" `Text.isInfixOf` leaseConflictMessage conflict)
-                other -> assertFailure ("expected separate lease-CAS failure, observed " <> show other)
+                Left (SnapshotVerificationError (ModeStoreFailure _)) -> pure ()
+                other -> assertFailure ("expected protected read/write failure, observed " <> show other)
             requireRecord store (snapshotKey project unbound) >>= (@?= snapshot)
             assertLeaseVersion store project unbound 1
             readIORef continued >>= (@?= 0)
             assertNoPreparedOrEffectRecords store
     ]
+
+withBlockedRecordsPath :: ProtectedStore -> IO result -> IO result
+withBlockedRecordsPath store action =
+    bracket_
+        (renameDirectory records unavailable)
+        (renameDirectory unavailable records)
+        (bracket_ (writeFile records "blocked") (removeFile records) action)
+  where
+    records = protectedStoreRoot store </> "records"
+    unavailable = records <> ".filesystem-refusal"
 #endif
 
 exactPersistedEvidence ::

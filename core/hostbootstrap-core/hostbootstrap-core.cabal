@@ -35,6 +35,52 @@ library harness-lifecycle-internal
   build-depends:
       base >=4.18 && <5
 
+library colima-backend-internal
+  import: warnings
+  visibility: private
+  hs-source-dirs: internal/colima-backend
+  exposed-modules:
+      HostBootstrap.Ensure.Colima.Backend.Internal
+      HostBootstrap.Ensure.Colima.Backend.Resolver
+      HostBootstrap.Ensure.Colima.Backend.Resolver.Install
+      HostBootstrap.Ensure.Colima.Backend.Resolver.Testing
+  other-modules:
+      HostBootstrap.Ensure.Colima.Backend.Program.Acquire
+      HostBootstrap.Ensure.Colima.Backend.Program.Cleanup
+      HostBootstrap.Ensure.Colima.Backend.Program.Common
+      HostBootstrap.Ensure.Colima.Backend.Program.Context
+      HostBootstrap.Ensure.Colima.Backend.Program.Filesystem
+      HostBootstrap.Ensure.Colima.Backend.Program.LiveDocker
+      HostBootstrap.Ensure.Colima.Backend.Program.Namespace
+      HostBootstrap.Ensure.Colima.Backend.Program.Supervisor
+      HostBootstrap.Ensure.Colima.Backend.Resolver.Authority
+      HostBootstrap.Ensure.Colima.Backend.Resolver.Program
+      HostBootstrap.Ensure.Colima.Backend.Resolver.Override
+      HostBootstrap.Ensure.Colima.Backend.Resolver.Protocol
+      HostBootstrap.Ensure.Colima.Backend.Runner
+  build-depends:
+      base >=4.18 && <5
+    , bytestring
+    , filepath
+    , process
+  if !os(windows)
+    build-depends:
+        unix
+
+library cluster-backend-internal
+  import: warnings
+  visibility: private
+  hs-source-dirs: internal/cluster-backend
+  exposed-modules:
+      HostBootstrap.Cluster.Backend.Internal
+  build-depends:
+      base >=4.18 && <5
+    , filepath
+    , process
+  if !os(windows)
+    build-depends:
+        unix
+
 library
   import: warnings
   hs-source-dirs: src
@@ -53,9 +99,8 @@ library
       HostBootstrap.Build
       HostBootstrap.Detached
       HostBootstrap.Handoff
-      HostBootstrap.Handoff.Receiver
-      HostBootstrap.Handoff.Relay
       HostBootstrap.Lifecycle.Closure
+      HostBootstrap.Lifecycle.Context
       HostBootstrap.Lifecycle.Execution
       HostBootstrap.Lifecycle.Prepared
       HostBootstrap.Lifecycle.Session
@@ -123,20 +168,48 @@ library
       HostBootstrap.DocValidator
   other-modules:
       HostBootstrap.Authority.Kernel
+      HostBootstrap.Authority.ProjectPlan.Internal
+      HostBootstrap.Command.LifecycleEntry
+      HostBootstrap.Cluster.Budget.Internal
+      HostBootstrap.Cluster.Observation.Internal
+      HostBootstrap.Ensure.Colima.Settlement.Internal
       HostBootstrap.Config.Authority.Internal
+      HostBootstrap.Config.Class.Internal
       HostBootstrap.Config.Fields.Internal
       HostBootstrap.Config.Install.Native
       HostBootstrap.Config.Schema.Internal
       HostBootstrap.Harness.Ownership.Internal
+      HostBootstrap.Handoff.Completion
+      HostBootstrap.Handoff.Internal
+      HostBootstrap.Handoff.Lifecycle
+      HostBootstrap.Handoff.Process.Route
       HostBootstrap.Handoff.Protocol
+      HostBootstrap.Handoff.Receiver
       HostBootstrap.Handoff.Receiver.Internal
+      HostBootstrap.Handoff.Relay
+      HostBootstrap.Handoff.Recovery
+      HostBootstrap.Handoff.Rooted
+      HostBootstrap.Handoff.Runtime
       HostBootstrap.Lifecycle.Execution.Internal
+      HostBootstrap.Lifecycle.FrameExecutor
+      HostBootstrap.Lifecycle.Context.Internal
       HostBootstrap.Lifecycle.Plan
+      HostBootstrap.Lifecycle.Rooted
+      HostBootstrap.Lifecycle.Rooted.Node
+      HostBootstrap.Lifecycle.Rooted.Receipt
       HostBootstrap.Lifecycle.Prepared.Internal
+      HostBootstrap.Lifecycle.RootedPlan
       HostBootstrap.Lifecycle.Transaction
       HostBootstrap.ProjectPlan.Child.Internal
+      HostBootstrap.ProjectPlan.Construct.Internal
+      HostBootstrap.ProjectPlan.Handoff.Internal
+      HostBootstrap.ProjectPlan.Projection.Internal
+      HostBootstrap.Reconcile.ProviderStart.Internal
+      HostBootstrap.Service.Internal
       HostBootstrap.Substrate.Provider.Internal
+      HostBootstrap.Substrate.Provider.Dependency.Internal
       HostBootstrap.Substrate.Provider.Observation.Internal
+      HostBootstrap.Teardown.Internal
   build-depends:
       aeson
     , base >=4.18 && <5
@@ -146,7 +219,9 @@ library
     , directory
     , dhall
     , filepath
+    , hostbootstrap-core:cluster-backend-internal
     , hostbootstrap-core:harness-lifecycle-internal
+    , hostbootstrap-core:colima-backend-internal
     , memory
     , optparse-applicative
     , process
@@ -155,6 +230,8 @@ library
   if !os(windows)
     exposed-modules:
         HostBootstrap.Wsl2.GlobalWall.Posix
+    other-modules:
+        HostBootstrap.Handoff.Process
     build-depends:
         unix
   if os(windows)
@@ -179,10 +256,7 @@ test-suite hostbootstrap-core-test
       PrepareFixture
       SourceGuard
       AuthoritySpec
-      HandoffProtocolSpec
       HandoffSpec
-      HandoffReceiverSpec
-      HandoffRelaySpec
       SessionSpec
       BuildAuthoritySpec
       ActivationSpec
@@ -196,6 +270,7 @@ test-suite hostbootstrap-core-test
       HostToolSpec
       EnsureSpec
       SchemaSpec
+      SpecIndexSpec
       DhallGenSpec
       CordonSpec
       ProviderSpec
@@ -243,7 +318,9 @@ test-suite hostbootstrap-core-test
     , directory
     , filepath
     , hostbootstrap-core
+    , hostbootstrap-core:cluster-backend-internal
     , hostbootstrap-core:harness-lifecycle-internal
+    , hostbootstrap-core:colima-backend-internal
     , optparse-applicative
     , process
     , tasty

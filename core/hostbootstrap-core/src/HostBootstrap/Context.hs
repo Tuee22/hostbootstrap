@@ -60,6 +60,7 @@ module HostBootstrap.Context
     writeContextFile,
     validateContext,
     validateRuntimeContext,
+    validateLifecycleContext,
     commandAllowed,
     readAndValidateContextFile,
     requireContextFile,
@@ -1154,6 +1155,53 @@ validateRuntimeContext req ctx =
       pure $ case findLeft witnessResults of
         Just err -> Left err
         Nothing -> Right ok
+
+{- | Validate the descriptive context facts needed by lifecycle admission,
+without consulting either of the caller-controlled command-policy lists.
+
+Lifecycle entry is authorized later by indexed plan, frame, store, and command
+packages.  This check therefore owns only the context side of that join: exact
+project and binary identity, the total topology and placement relation, the
+declared required-witness set, and fresh observations of every witness in that
+set.  In particular, changing 'allowedCommandClasses' or 'capabilities' cannot
+grant or revoke this descriptive evidence.
+-}
+validateLifecycleContext ::
+  Text ->
+  Text ->
+  BinaryContext ->
+  IO (Either BinaryContextError BinaryContext)
+validateLifecycleContext expectedProject expectedBinary ctx =
+  case validateLifecycleShape of
+    Left err -> pure (Left err)
+    Right required -> do
+      witnessResults <- traverse checkRuntimeWitness required
+      pure $ case findLeft witnessResults of
+        Just err -> Left err
+        Nothing -> Right ctx
+  where
+    validateLifecycleShape
+      | project ctx /= expectedProject =
+          Left (ContextProjectMismatch expectedProject (project ctx))
+      | binary ctx /= expectedBinary =
+          Left (ContextBinaryMismatch expectedBinary (binary ctx))
+      | Nothing <- currentTopologyFrame ctx =
+          Left (ContextCurrentFrameMissing (currentFrame ctx))
+      | Just frame <- currentTopologyFrame ctx,
+        topologyKind frame /= contextKind ctx =
+          Left
+            ( ContextCurrentFrameKindMismatch
+                (currentFrame ctx)
+                (contextKind ctx)
+                (topologyKind frame)
+            )
+      | Left err <- validateTopology ctx = Left err
+      | Left err <- contextPlacement ctx = Left err
+      | Left err <- checkWitnessSet ctx = Left err
+      | Left err <- ancestorKinds ctx = Left err
+      | Right ancestors <- ancestorKinds ctx,
+        Just err <- requiredAncestorError ctx ancestors = Left err
+      | otherwise = contextRequiredWitnesses ctx
 
 findLeft :: [Either a b] -> Maybe a
 findLeft [] = Nothing

@@ -33,8 +33,9 @@
   `context-init`'s action body is a no-op announcement: the VM config is projected/delivered by the
   composite `build-pb` action, the container config by the descent that same `context-init` step
   declares (`descendsVia`) plus the handoff, and service configs by deployment actions. The announcing
-  row and the container payload are therefore one plan node; the target gives projection and delivery
-  one plan operation.
+  row and the container payload are therefore one plan node. The target root coordinator recursively
+  projects every child config and plan into one exact catalog before effects, then gives a storeless
+  executor only root-signed grants for that catalog node.
 - `deployConfigText` renders a standalone numeric budget/pod artifact carrying a Dhall `fitsWithin`
   assertion. It is not the runtime `<project>.dhall`: that config has text quantities and no resolved pod
   set. Current decode/validation uses private scalar constructors and one project-owned resource value;
@@ -169,12 +170,12 @@ The named `context-init` row does not perform any of those effects; its body pri
 acts as a frame anchor. The plan binds the container payload to the descent that row declares, while full
 projection/delivery ownership remains work in the
 [recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md). The
-target opaque plan node consumes the parent/child relation, source config,
-and exact target/operation/precondition-set/call-digest/journal-indexed
-`PreparedOperation`/`PreparedPreconditions` pair jointly returned after durable permit creation, and owns
-both projection and delivery. Its terminal observation advances through
-`OperationAdvance`, so only the verified result paired with the successor journal state can authorize the
-child handoff.
+root coordinator recursively projects the child config and plan into `RootedPlanCatalog` before the remote
+frame performs an effect. It selects the exact parent/child edge and projected node keys, durably prepares
+the operation, and signs a bounded response. The storeless `FrameExecutor` exact-compares that response with
+its locally rebuilt node, runs only the named effect, and returns a bounded observation for root settlement.
+Projection, config delivery, journal advancement, and terminal receipt confirmation therefore remain one
+root-owned lifecycle relation without giving the child a store or cursor.
 
 The current pure generation helpers project the child from the parent:
 
@@ -192,16 +193,22 @@ The current pure generation helpers project the child from the parent:
   [service runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md) owns the role-specific
   service request. The
   [authenticated handoff and child admission phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
-  uses a private duplex session for the narrowed
-  config wire and a separate opaque `HandoffToken` issued by the validated parent's profile-specific
-  broker only after the exact `UnboundRunLease` has been atomically bound to its verified plan snapshot
-  as `BoundRunLease scope specDigest planDigest brokerGeneration`. The binary receiver returns a fresh challenge; the broker atomically
-  consumes its nonce and authenticates a child/config-hash-bound grant before promotion/write/dispatch.
-  Recorded transcripts and broker loss fail, later invocations get fresh tokens, authority is never
-  encoded in Dhall, and neither payload appears in `argv` or environment.
+  owns the private duplex session, separate payload/config digests, authenticated root-scope capsule,
+  scope-first receiver, exact config refinement, recovery package, and closed rooted request/response wire.
+  The receiver verifies scope against the independently installed key before received config bytes introduce
+  a phantom, then returns a fresh challenge; the root consumes its nonce and authenticates the exact edge.
+  Recorded transcripts and broker loss fail, later invocations get fresh tokens, intermediaries stay keyless,
+  authority is never encoded in Dhall, and neither payload appears in `argv` or environment. The
+  [test harness and run ownership phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md)
+  supplies exact live Harness run evidence to the generic authenticated-scope producer. The
+  [recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) owns
+  the catalog, root coordinator, storeless executor, and process adoption that consume those wire contracts.
 
-The descending binary reads its sibling child `.dhall` before dispatch and checks it is in the frame
-that config describes; observed mismatches fail fast. This is not yet an unforgeable proof (see
+After authenticated scope and exact-byte config refinement, the descending binary checks that its sibling
+child `.dhall` describes the locally witnessed frame. The resulting `ChildPlanAuthority` still grants no
+command or durable authority: the Cabal-private entry exact-matches config, plan, ancestry, frame, and
+projected keys against the root catalog before admitting a storeless executor. Descriptive witness checks
+alone are not an unforgeable proof (see
 [binary_context_config](../architecture/binary_context_config.md) and
 [dhall_topology](dhall_topology.md)).
 
@@ -209,9 +216,10 @@ that config describes; observed mismatches fail fast. This is not yet an unforge
   trusts the config without witnessing its frame. This is wrong because the child could then run
   host-only work in a container after passing only descriptive fields, defeating the per-frame
   fail-fast that keeps the lift honest.
-- **RIGHT (target)**: the plan-authorized projection/delivery operation mints a child only for a
-  plan-related frame and the descending binary verifies the exact handoff plus local witnesses before
-  acting. The sealed capability boundary prevents callers from self-minting or widening it. See
+- **RIGHT (target)**: the root catalog contains only recursively projected plan-related frames; the descending
+  binary verifies authenticated scope, exact config refinement, `ChildPlanAuthority`, local witnesses, and
+  catalog coordinates before becoming a storeless `FrameExecutor`. It acts only on root-signed exact node
+  grants, while the root performs durable prepare, settlement, and receipt transitions. See
   [composition_methodology § Context-Aware Topology](../architecture/composition_methodology.md).
 
 ## `context`: Read-Only Inspection
@@ -305,12 +313,13 @@ hand-written functions remain under evaluation tests.
 The surface that drives them is the recursive lifecycle command: the default `project init` invocation
 writes a fresh root host-orchestrator config and refuses an existing output, while
 `--role`/`--also-role`/`--output` plus `--force` or `--if-missing` select the current explicit writer
-modes. Parent-to-child projection is currently split among composite bootstrap, the plan-declared
-descent plus handoff, and workload deployment actions; the chain's `context-init` action body is only an
-announcement, though it is now the node that carries the container descent. `context schema`/`context render` are ungated
-static inspection verbs; `context inspect` and `context show` perform the decode-only reads described
-above. VM/container child-config delivery uses in-place streaming over the relevant bootstrap/handoff
-`stdin` channel (see
-[binary_context_config](../architecture/binary_context_config.md)). The topology-aware gate checks the per-frame witnesses on
-every descent. `project up` exercises this path; current teardown and live validation limitations are
-tracked in [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
+modes. Parent-to-child projection is currently split among composite bootstrap, the plan-declared descent
+plus handoff, and workload deployment actions; the chain's `context-init` action body is only an
+announcement, though it is the node that carries the container descent. `context schema`/`context render`
+are ungated static inspection verbs; `context inspect` and `context show` perform the decode-only reads
+described above. VM/container child-config delivery uses in-place streaming over the relevant
+bootstrap/handoff `stdin` channel (see
+[binary_context_config](../architecture/binary_context_config.md)). Per-frame descriptive witness checks
+exist; authenticated scope, complete root-catalog admission, storeless execution, and root-signed node grants
+remain the phase-owned target. Current closure is tracked in
+[the development-plan index](../../DEVELOPMENT_PLAN/README.md).

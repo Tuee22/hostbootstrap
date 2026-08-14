@@ -510,8 +510,9 @@ existing record is recovery-required state.  'RoleAdmissionUnknown' reports a
 protected-store operation that returned without enough evidence to classify the
 reservation; it does not rehydrate a reservation.  Likewise, an asynchronous
 interruption can escape after the durable write, and a later attempt reports the
-existing row rather than reopening it.  Phase 21 owns the crash/lost-
-acknowledgement resume protocol.  A session from a different protected store is
+existing row rather than reopening it.  The
+[composition-and-network-algebra phase](../../../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md)
+owns the crash/lost-acknowledgement resume protocol.  A session from a different protected store is
 deterministically 'RoleAdmissionRefused' before any durable operation is
 attempted.
 -}
@@ -533,8 +534,10 @@ arbitrarily long valid coordinates cannot exceed the protected store's key
 limit.  A genuine restart (a different container restart count, or a fresh host
 invocation nonce) therefore gets its own admission while a duplicated
 activation does not.  The reserved value records the verified role-plan digest,
-so a future Phase 21 resumption cannot silently change the plan the admission
-was taken for.  This function itself never reopens an existing reservation.
+so a future resumption owned by the
+[composition-and-network-algebra phase](../../../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md)
+cannot silently change the plan the admission was taken for.  This function
+itself never reopens an existing reservation.
 -}
 withRoleLifecycleAdmission ::
     ProtectedSession session ->
@@ -684,8 +687,9 @@ activation's retained protected-store origin is checked before the
 compare-and-swap, so a valid reservation from one store cannot consume a
 same-shaped row in another.  If the reservation is consumed and the continuation
 or its acknowledgement is then lost, a retry refuses as already consumed; this
-API deliberately does not rehydrate the plan.  Phase 21 owns that resume
-protocol.
+API deliberately does not rehydrate the plan.  The
+[composition-and-network-algebra phase](../../../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md)
+owns that resume protocol.
 -}
 withRuntimeRolePlan ::
     ProtectedSession session ->

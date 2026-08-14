@@ -36,6 +36,13 @@ an unhealthy one is deleted before recreation. Kind creation is followed by a bo
 wait. Nvkind adds the NVIDIA runtime smoke, a control-plane/GPU-worker topology, per-node CPU/memory
 cordons, and a device-plugin/allocatable-GPU gate.
 
+The [cluster-lifecycle-and-cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
+has an independent live linux-cpu gate in `scripts/run-live-cluster-gate.sh`. It creates a fresh kind cluster,
+waits for node readiness, performs a read-only node-status query, deletes the cluster and verifies its labelled
+node containers are absent, then re-reads a durable-root sentinel outside the deletion boundary. The runner
+does not invoke the demo; demo lifecycle integration and end-to-end durable readback remain owned by the
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md), not by this phase gate.
+
 This does not yet satisfy universal typed readiness. `waitNodesReady` and several related waits return
 `IO ()`, and downstream mutations do not all consume the opaque plan/resource-indexed readiness and
 prepared-operation foundation. Those constructors are now private; the open work is live interpreter
@@ -56,31 +63,74 @@ The target result and ownership algebra is defined once in
 
 ### The ownership backend
 
-The typed replacement exists and is exercised, but the imperative path still runs.
+The
+[cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)'s
+typed exact consumer and clause-holding backend are implemented. Legacy command/demo lifecycle call sites
+remain deliberately separate until their owning recursive and worked-demo phases adopt it. The source
+boundary plus its focused, full-static, and linux-cpu live gates are closed; call-site adoption belongs to
+the [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) and
+the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
 
 `HostBootstrap.Cluster.Reconcile` owns the total classification: an absent cluster created is
-`Changed Created`; a healthy same-named cluster with a matching committed proof is `Unchanged`, and
-**without** proof is a `ForeignResult` that is never adopted; an unhealthy or unverifiable same-named
-cluster is a structured `Conflict` that is **never** auto-deleted; a probe fault is a typed `Failure`,
-never a false absence. Conditional cleanup requires a `Managed` handle plus a matching receipt.
+`Changed Created`. An **origin-verified** healthy cluster with a matching committed proof is `Unchanged`;
+the same exact owned identity without a proof is post-effect/pre-commit recovery and settles as
+`Changed Repaired`. A healthy same-named cluster with no exact origin is always `Foreign`, even if a caller
+offers an unrelated prior proof, and grants no managed authority. An unhealthy owned cluster or unverifiable
+same-named cluster is a structured `Conflict` that is **never** auto-deleted; a probe fault is a typed
+`Failure`, never a false absence. The prepared journal generation remains the plan resource generation; the
+immutable control-plane container ID is retained separately in an opaque `ManagedClusterHandle`.
+Conditional cleanup, cordon, and readiness consume that handle rather than a caller-paired generic
+handle/receipt.
 
 `HostBootstrap.Cluster.Backend` supplies the IO that feeds it while holding the four
-[ownership invariant](../architecture/ownership_invariant.md) clauses: an exclusive `flock(2)` across the
-whole observe/create/settle bracket, an origin record naming the exact prior state before the first
-mutation, identity bound to the control-plane node **container ID** rather than the cluster name, and
-deletion conditioned on re-observing that identity. Discovery **probes the frame it will run in** for the
-shell front end that takes that lock — `flock(1)` on a util-linux userland, `lockf(1)` on a BSD one — and
-retains the answer on the capability, so the bracket cannot be built from a tool the frame was never shown
-to have. A frame missing a lock front end, `grep`, the driver, or the container runtime is `Unsupported`
-and mints no capability, as is one whose probe reports a tool the backend does not recognize. Its command
-runner is injected, so the protocol is executed against a real filesystem under test rather than modelled
-— including on macOS, where the clause suite first ran on 2026-08-02.
+[ownership invariant](../architecture/ownership_invariant.md) clauses. The private production backend keeps the executor and
+raw-result constructors in a Cabal-private component. Public production discovery detects the Linux
+substrate, builds the typed `HostConfig`, resolves `Kind`, `Docker`, `Kubectl`, `Flock`, and `Python3` as
+closed `HostTool` values, and passes only their canonical absolute paths to the private validator. That
+validator admits root-owned, non-group/world-writable path chains and executable files, and derives child
+`PATH` solely from those validated executable directories. Children run with a fixed root cwd, sanitized
+engine/provider/config environment, private kubeconfig descriptor, strict LF-only reports, and process-group
+timeouts whose pipe readers and reap are bounded even when the leader exits before a grandchild. The
+injected executor exists only in the private test component; downstream code cannot mint a backend from
+chosen output.
+
+The durable ownership protocol implements the ownership namespace. One exact no-follow directory walk creates and
+parent-fsyncs the plan-derived state leaf, and a retained util-linux `flock(1)` descriptor supplies the
+single Linux `flock(2)` namespace across observe/create/settle. `lockf` is not admitted. The lock, state
+leaf, origin record, and complete node-name-to-container-ID map are kernel-identity-bound across calls.
+Every canonical `prepared`, `executing`, or `managed` origin record also contains and validates its own
+record inode, exact cluster name, owner, config binding, and nonce. Before Kind runs, `executing` durably
+binds the exact config snapshot inode and SHA-256 plus
+the private kubeconfig snapshot inode. Kind receives retained descriptor paths, never a mutable config
+pathname or ambient kubeconfig. Fresh recovery accepts or conditionally removes only those exact objects;
+a copied record, replacement snapshot, config drift, incomplete transition, or foreign stage fails closed.
+The managed transition is published and directory-fsynced only after the created node IDs are re-observed.
+
+Reconciliation and cordoning use that namespace for total reconciliation/status and the raw cordon,
+readiness, and cleanup operations. Cordon re-observes the full retained node map and calls `docker update`
+with immutable container IDs, never reusable node names. Readiness revalidates owner, record, lock, state
+leaf, exact node set, API readiness, every node's Ready condition, and the same container IDs. Cleanup
+independently inspects every retained node ID even when Kind omits the cluster, and removes the origin only
+after exact node absence. Cordon/readiness/cleanup open only the already retained state and lock identities;
+they cannot recreate a missing namespace and then claim idempotent success. A missing required tool or strong
+primitive is `Unsupported` and mints no
+capability; an observation or durable-record failure is never interpreted as absence.
+
+The exact package layer exposes authority over that raw boundary. Preparation accepts only a
+backend-minted Running-provider dependency and reruns that backend's real probe before offering the cluster
+call. Production config bytes are bound by SHA-256 with the exact retained budget in the prepared call;
+Harness has no config and emits no `--config`. After creation, the same lock and origin identity guard the
+budget-backed node-container cordon. Only successful cordon plus a fresh real API/all-node Ready reprobe of
+the exact owner/container identity can mint `ClusterReadiness`; a replacement identity is a `Conflict`, and
+the successful phase-observation counter fails rather than wrapping at exhaustion. Constructors for raw
+backend results, managed/cordon/readiness/cleanup authority, and the running dependency remain hidden and
+nominally indexed. The earlier durable-root foundation supplies the prerequisite this path consumes.
 
 Alongside it, `HostBootstrap.Cluster.Backend` makes a wildcard exposure unrepresentable: a
 `LoopbackExposure` accepts ports only, always renders `127.0.0.1`, and settles a live binding that is
 wider or different as a `Conflict`.
 
-What remains is the wiring. `ensureCluster` still treats any healthy cluster with `clusterName plan` as
+What remains is legacy wiring. `ensureCluster` still treats any healthy cluster with `clusterName plan` as
 the desired cluster without checking a receipt, and still deletes and recreates an unhealthy same-name
 cluster; `clusterDown`/`clusterDelete` still issue `kind delete cluster --name <name>` without proving
 this plan created or adopted the resource. Replacing those call sites belongs to the recursive-plan
@@ -179,18 +229,23 @@ CPU/memory requests/limits. See [resource budgeting](resource_budgeting.md).
 
 ## Validation
 
-Lifecycle closure requires:
+From the repository root, the exact
+[cluster-lifecycle-and-cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
+gate is:
 
-1. a plan-owned closed precondition set consumed by every mutation, carrying exact resource-bound
-   readiness evidence for each declared dependency and using the private zero-dependency branch only
-   when the plan declares no dependency;
-2. explicit reconcile results and ownership receipts, with conflict/refusal/unsupported/failure in the
-   error sum, plus same-name foreign-cluster tests proving no adoption or deletion;
-3. recursive child-to-parent `down` and `destroy`;
-4. a demo test run proving the target `Harness projectId runId` scope, `.test_data`, and a run-scoped cluster;
-5. native Linux CPU and GPU gates, including daemon placement;
-6. the durable pod-write → destroy → up → host-and-pod-readback gate;
-7. a bare-Linux storage wall or an explicit unsupported/refusal result.
+```sh
+(cd core && cabal test all --ghc-options=-Werror) && ./scripts/run-live-cluster-gate.sh
+```
+
+The static leg covers the exact plan-owned precondition, reconcile-result, ownership-receipt, same-name
+foreign-cluster, readiness, status, and teardown cases declared by the phase. The independent live leg covers
+fresh creation, bounded readiness, a read-only status observation, deletion, labelled-node absence, and
+durable-sentinel survival on linux-cpu. It deliberately has no demo dependency.
+
+Recursive child-to-parent lifecycle traversal, the run-scoped demo cluster, end-to-end pod/host durable
+readback, GPU daemon placement, and substrate-specific storage-wall acceptance remain validation owned by
+their respective later integration or acceptance phases. None is a prerequisite for the independent phase
+gate above.
 
 `DEVELOPMENT_PLAN/README.md` owns phase status and closure evidence.
 

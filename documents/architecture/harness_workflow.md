@@ -12,8 +12,9 @@
 The lifecycle root now gives every Harness acquisition a sealed generative run identity and matching
 mode, root, and unbound-lease evidence; its protected profile opener can enter exactly once. Each selected
 variant owns its generated config, admits one exact Harness-scoped project plan, and drives that plan's
-common Chain forward/reverse actions directly. `TestSuite` is assertion-only, and the lifecycle constructor
-is confined to a private Cabal component. The parser still does not enforce the documented root gate,
+hidden fixed root-Up entry plus exact reverse action. The entry alone reaches the lower Chain. `TestSuite`
+is assertion-only, and the lifecycle constructor is confined to a private Cabal component. The parser still
+does not enforce the documented root gate,
 complete resource-indexed ownership remains downstream work, and the configured durable-readback case is
 honestly red until the engine owns a fresh same-run lifecycle invocation for destroy→up.
 
@@ -199,9 +200,11 @@ plan-owned profile/root projection instead of rereading independent terms.
 Authority scope now matches that descriptive profile. The generated-config bracket finalizes and validates
 `cfg (Harness projectId runId)`, admits
 `ProjectPlan (Harness projectId runId) specDigest planId configId cfg`, persists and binds its exact
-snapshot, and retains the matching lease/journal/cursor/frame package. Its forward action calls the common
-exact `runExactProjectUp`; its reverse action derives the destroy projection from that same retained plan
-and current frame. Neither action runs `project up` or `project destroy` as a root-level subprocess, so it
+snapshot, and retains the matching lease, plan, lifecycle context, and reverse frame. Its forward action
+calls the common `runExactProjectUp` wrapper, whose Cabal-private fixed root-Up `LifecycleEntry` alone derives
+the journal/current cursor/authority before reaching the lower Chain; its reverse action derives the destroy
+projection from that same retained plan and current frame. Neither action runs `project up` or
+`project destroy` as a root-level subprocess, so it
 cannot discard the Harness indices and re-enter Production.
 
 The long gate still creates real provider, Docker, and cluster state, so a disposable host remains the
@@ -249,29 +252,42 @@ The generated-config bracket then retains all of those values while Command buil
 from direct common-interpreter calls. No root Harness authority is serialized, inferred from config, or
 reconstructed by a child process.
 
-Self-reference remains only for plan-declared recursive child-frame transitions. That cross-process
-extension mints a one-time token bound to the exact scope, plan revision, broker generation, edge, child
-config digest, verb, and phase. The offer travels over a private duplex lift session, never through Dhall,
-`argv`, an environment variable, or a durable config file. If assembly/codec/plan validation fails before
-binding, the bracket can close the unbound lease only after protected proof that no token, permit, journal,
-or effect exists; a crash leaves an explicit unbound incomplete lease rather than an invented plan digest.
+Self-reference remains only for plan-declared recursive child-frame transitions. The Handoff facade now
+implements the root-signed `AuthenticatedRootScope (Harness projectId runId)` primitive and verifies its
+canonical wire with the independently installed project key before introducing a fresh run phantom. The
+Harness lifecycle has not yet adopted that producer. The existing unchanged four-field Offer/Relay/Receiver
+transport does carry and scope-first verify a capsule once its root producer supplies one: root links mint it
+and nested links copy only the exact canonical bytes. In the target cross-process extension, the Harness root
+signs it from the exact live generative evidence before received payload bytes can introduce that phantom,
+then mints a one-time token bound
+to the exact scope, plan revision, broker generation, edge, separate payload/config digests, verb, and phase. The capsule and
+offer travel over a private duplex lift session, never through Dhall, `argv`, an environment variable, or a
+durable config file. If assembly/codec/plan validation fails before binding, the bracket can close the
+unbound lease only after protected proof that no token, permit, journal, or effect exists; a crash leaves an
+explicit unbound incomplete lease rather than an invented plan digest.
 
-The child binary's internal receiver—not a shell config writer—returns a fresh challenge. The root
-broker verifies every signed binding field, including protected-store identity, consumes the nonce, and
-signs the challenge. Grant verification yields only transport-level
+Inside the authenticated-scope continuation, the child binary's internal receiver—not a shell config
+writer—returns a fresh challenge. The root exact-matches the scope, catalog edge, binding fields, and nonce,
+then signs the grant. Grant verification yields only transport-level
 `VerifiedHandoff scope brokerGeneration`. Exact-byte verification through the scope-correct project-owned
 `ProjectCodec` separately creates `VerifiedConfigWire` under a fresh child `configId` and matching
 `ValidatedConfig`. `Config.Schema.withVerifiedConfigHandoff` checks the signed payload kind,
-wire/config/specification digests, closed verb, and lifecycle phase and alone yields fully indexed
-`VerifiedConfigHandoff` inside a rank-2 continuation.
+separate payload and config digests, the specification digest, closed verb, and lifecycle phase, and alone
+yields fully indexed `VerifiedConfigHandoff` inside a rank-2 continuation.
 
 Those values are not command authority. `ProjectPlan.Construct.withChildProjectPlan` consumes the
 refinement with the same wire/config and non-empty drafts, verifies the stable revision plus signed
-project/store/broker origin, and jointly yields the fresh local `ProjectPlan`, `PlanDigestBinding`, and
-exact opaque `ChildPlanAuthority`. Only `Authority.ProjectPlan.authorizeChildProject` consumes that narrow
-authority with the matching journal/frame/cursor/context. The child never reuses its parent's exact-byte
-identity or receives root/harness-root/signing authority. This substrate is implemented; recursive
-Production descent and child acquisition integration remain with the
+project/catalog/broker origin, and jointly yields the fresh local `ProjectPlan`, `PlanDigestBinding`, and
+exact opaque `ChildPlanAuthority`. The Cabal-private child entry exact-matches those values and the nested
+context against the root catalog, then admits only a storeless `FrameExecutor`. It receives root-signed
+prepared responses one node at a time, independently compares their plan/frame/node/dependency/projected-key
+coordinates, runs the selected local work, and returns bounded observations. The root retains every durable
+journal, cursor, settlement, and receipt transition. No raw projection or public producer exists. The child
+never reuses its parent's exact-byte identity or receives root/Harness-root/signing/store authority. The
+[authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
+owns the implemented generic authenticated root-scope primitive and the still-open scope-first receiver;
+this Harness phase supplies the future live generative producer evidence. Recursive process adoption remains
+with the
 [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
 
 One one-use command/handoff identity opens exactly one versioned operation session only after clean
@@ -292,25 +308,23 @@ current-fence prepare authority, and only the closed retry
 whitelist can receive fenced same-key authority. It withholds admission
 until every operation is settled and every session is Closed, verifies the complete resource-record set,
 and jointly yields fresh rehydrated resources while threading the sole successor state/permit pair.
-Before every child
-reservation/mutation/delete, the child sends a prepare request naming its exact broker/authority epoch,
-verb/phase/frame, session, operation key, journal version, and current authoritative fence. One protected
-compare-and-swap revalidates the project-wide Harness mode, bound lease, active plan revision,
-Open-project state, command/session/fence, and operation record. It consumes the exact plan-owned closed
-precondition set, reruns every target/dependency probe and version, and obtains conditional backend
-versions; stale/replaced/not-ready evidence returns no permit. It records the operation-specific unknown
-journal state—including adoption transfer and adopted release—before jointly returning the only
-`PreparedOperation`/`PreparedPreconditions` pair an adapter accepts and the fresh-versioned successor Open-session,
-Open-project operation state, and revision-permit authority. The consumed journal version cannot
-authorize another prepare or close; retained `Ready`/prerequisite values are not adapter inputs. Every
-adapter terminal observation returns `OperationAdvance` on
-success or typed failure; its eliminator yields the result only with the sole successor Open-project
-state/revision-permit pair. Initial fence creation and crash-time fence rotation persist/resume the same
-proposed epoch and return the sole successor session/state/permit pair; an old or delayed child permit is
-rejected or deduplicated. Terminal acknowledgment first proves every registered
-outcome settled and then compare-and-swaps the exact session version Closed, so it cannot race another
-prepare. Loss before permit refuses; loss after permit leaves an explicit unknown state that recovery
-reprobes. A later teardown invocation receives a **fresh** per-edge token and session.
+Before every remote reservation/mutation/delete, the storeless executor sends a bounded next-node request
+naming its exact requester path, verb/phase/frame, session, ordinal, nonce, and predecessor response. One
+protected compare-and-swap revalidates the project-wide Harness mode, bound lease, active plan revision,
+Open-project state, catalog entry, command/session/fence, and operation record. It consumes the exact
+plan-owned closed precondition set, reruns every target/dependency probe and version, and obtains conditional backend
+versions; stale/replaced/not-ready evidence returns no grant. It records the operation-specific Unknown
+journal state—including adoption transfer and adopted release—before producing the root-signed `Prepared`
+response with the exact node and projected-key coordinates. Only after independently comparing those fields
+may the executor's hidden allow-listed reifier adopt the same durable gate and invoke the local adapter. The
+executor returns only a bounded observation; root settlement validates it and advances through
+`OperationAdvance` with the sole successor project/session state. The consumed journal version cannot
+authorize another prepare or close. Initial fence creation and crash-time fence rotation persist/resume the
+same proposed epoch; an old or delayed response is rejected or deduplicated. Terminal acknowledgment proves
+every registered outcome settled, records the root-owned receipt, and compare-and-swaps the exact session
+version Closed, so it cannot race another prepare. Loss before the signed response refuses; loss after its
+durable Unknown leaves explicit recovery work. A later teardown invocation receives a **fresh** per-edge
+token and session.
 Before allocating a new test run, `recoverAbandonedHarnessRuns` enumerates incomplete unbound and bound
 old leases at one protected-store version. Separate rank-2 fold callbacks receive each exact existential
 `VerifiedIncompleteRunLease`; callers never manufacture the old run/digest phantom, and the sweep
@@ -342,25 +356,34 @@ records `ClosedProject`, closes the invocation lease, and releases mode. Session
 compare-and-swaps that same project-journal version, so it and finalization have exactly one winner;
 partial `up`/`down` work cannot be relabelled as destroy and no mode-cleared partial state exists.
 
-If recovery crosses another child boundary after the old config was edited or removed, the bound
-snapshot derives a signed non-secret recovery wire. The child accepts it only with the exact
-parent→child `RecoveryProjectionBinding`, `VerifiedRecoveryWire`, teardown-only fully indexed
-`VerifiedRecoveryHandoff ... recoveryWireId verb`, recovered frame, and the next
-closed `TeardownAuthorizationPoint` produced only by the forest. Its private branches contain either the
-ordinary settled-child/cursor pair or the destroy-only pre-descent step. The recovered frame and matching
-ordinary-step resource evidence is a closed owned-or-released sum arising only from the bound snapshot
-plus its complete rehydrated set and that exact point/step. The owned branch yields the matching managed
-handle/receipt/resource/operation bindings; the released branch yields only its verified tombstone and
-bindings, receives no backend-call authority, and needs a protected absence recheck plus a distinct new
-acquisition key before `FreshGeneration`. That token grants only eligibility; its sole consumer creates
-the exact reacquisition origin, which intent registration revalidates/consumes atomically with the new
-generation and session membership. Provider reachability is therefore authorizable before retained
-children without weakening their later stop/delete ordering or trusting raw persisted receipts. It does
-not recreate the old normal config or gain `ProjectUp` authority.
+If recovery crosses another child boundary after the old config was edited or removed, the root catalog and
+bound snapshot are the sole producer of the canonical non-secret
+`RecoveryChildPackage {child config bytes, adapter bytes}` for the exact reverse edge. Catalog-backed
+`EdgeAdmission` authenticates its complete configuration and package digest, while `RecoveryAdmission`
+independently authenticates the extracted adapter. Prepared/Bound reverse input and the Offer payload/digest
+name the complete package, and the exact Offer travels over the keyless route to the already-installed root
+signer; `Teardown.Internal` receives no root broker or signing capability. In the target receiver path, the
+child first verifies `AuthenticatedRootScope`, then the rooted binding, exact parent→child
+`RecoveryProjectionBinding`, grant, `VerifiedRecoveryWire`, teardown-only fully indexed
+`VerifiedRecoveryHandoff ... recoveryWireId verb`, and catalog frame coordinates before the storeless executor
+accepts any teardown grant. The root-owned `TeardownForest` supplies the next `TeardownAuthorizationPoint`; no
+forest cursor or store crosses the process boundary.
+
+The recovered frame and matching ordinary-step resource evidence remains a root-held closed
+owned-or-released sum arising only from the bound snapshot and complete rehydrated set. The owned branch can
+produce a signed grant for the matching managed handle/receipt/resource/operation bindings. The released
+branch yields only its verified tombstone, produces no backend-call grant, and requires a protected root-side
+absence recheck plus a distinct new acquisition key before `FreshGeneration`. Its sole root-side consumer
+creates the exact reacquisition origin and atomically revalidates it with the new generation and session
+membership. Provider reachability can therefore precede retained-child teardown without trusting raw
+persisted receipts, recreating the old normal config, or granting `ProjectUp` authority.
 
 The current self-reference lift is used only by plan-declared child descent and streams the
-context-adjusted full config record. It has no authenticated authority-rehydration protocol, so complete
-cross-process recursive scope remains open even though the Harness root lifecycle itself is now direct.
+context-adjusted full config record. The standalone authenticated root-scope and recovery-package primitives,
+their Offer/Relay/Receiver adoption, and the bounded keyless rooted request/response route are implemented.
+The generic Harness scope-capsule producer and the storeless executor remain incomplete. Complete
+cross-process recursive scope therefore remains open even though the Harness root lifecycle itself is direct.
+No child authority-store rehydration is part of the target.
 The full child protocol is specified in
 [lifecycle state model](lifecycle_state_model.md#cross-process-authority-handoff).
 

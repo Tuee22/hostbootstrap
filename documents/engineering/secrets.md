@@ -20,8 +20,9 @@
   `TestPlaintext` construction requires the exact generative
   `HarnessConfigAuthority projectId runId`; the generic harness never resolves it.
 - Root-local scope construction, mapped codec admission, and canonical config validation are
-  implemented. One-time child handoff, child-local plan authority, and runtime secret channels remain
-  downstream lifecycle work and must not be inferred from the root-local proof.
+  implemented. Authenticated config refinement and exact `ChildPlanAuthority` are also implemented;
+  authenticated root-scope admission, catalog-matched storeless execution, recursive process adoption, and
+  runtime secret channels remain phase-owned work and must not be inferred from the root-local proof.
 
 ## Current Status
 
@@ -111,8 +112,9 @@ Pointer-only Harness configs remain Harness-indexed.
 
 ## Downstream child and runtime target
 
-Root-local validation does not authorize a child process. The later handoff/runtime contract adds the
-following opaque relations; these names describe target APIs owned by the lifecycle phases:
+Root-local validation does not authorize a child process. The implemented handoff/refinement boundary and
+the remaining runtime target use the following opaque relations; the phase plan remains the status authority
+for each named API:
 
 ```haskell
 data RuntimeRoleWireBytes
@@ -125,6 +127,7 @@ data ValidatedServiceRequest specDigest configId secretDigest fields service -- 
 data VerifiedRuntimeRoleActivation
   scope planDigest specDigest binaryDigest frame revision instanceId configDigest secretDigest
   service rolePlanDigest permittedEffects -- constructor hidden
+data AuthenticatedRootScope scope -- constructor hidden scope-first admission proof
 data VerifiedHandoff scope brokerGeneration -- constructor hidden transport proof
 data VerifiedConfigHandoff
   scope planDigest brokerGeneration parentFrame childFrame configId verb phase
@@ -173,8 +176,8 @@ withVerifiedHarnessRuntimeRoleWire
 ```
 
 The downstream constructors are also intended to remain opaque. Generative authority must never be
-serialized, and direct `FromDhall` must not construct `TestPlaintext` or a scoped Harness config. A
-future child verifies its granted bytes, mints a fresh child `configId`, and obtains child-local Harness
+serialized, and direct `FromDhall` must not construct `TestPlaintext` or a scoped Harness config. An
+authenticated child verifies its granted bytes, mints a fresh child `configId`, and obtains fresh local Harness
 config authority and `ValidatedConfig` together; it does not receive or reconstruct the root's
 `HarnessAuthority`. The narrowed child's identity is distinct from the parent's exact-byte identity.
 
@@ -258,28 +261,39 @@ test run : <project>.test.dhall --pure matrix validation--> NonEmpty VariantDraf
              cfg (Harness projectId runId)
              --matching mapped ProjectCodec + withAssembledHarnessConfig-->
              VerifiedConfigWire + ValidatedConfig
-             --write--> <project>.dhall --direct current-frame forward--> assert
-             --direct current-frame reverse-->
+             --write--> <project>.dhall --hidden root-Up LifecycleEntry--> assert
+             --exact current-frame reverse-->
              --cleanup--> delete only if the owned bytes still match; otherwise retain and report
 
 downstream target:
 root ValidatedConfig --build/bind root plan-->
-             HarnessConfigWire
+             HarnessAuthority + exact live run evidence
+             --signed root-scope capsule--> AuthenticatedRootScope
              --one-time handoff grant--> VerifiedHandoff
              --exact-byte verification--> VerifiedConfigWire + child HarnessConfigAuthority
              + ValidatedConfig --withVerifiedConfigHandoff--> VerifiedConfigHandoff
              --withChildProjectPlan-->
              ChildPlanAuthority + child ProjectPlan + PlanDigestBinding
-             --authorizeChildProject--> child
+             --exact-match root catalog frame--> storeless FrameExecutor
+             --root-signed prepared grants / bounded observations-->
+             --FrameComplete / ReceiptConfirm / ReceiptRecorded--> completion identity
 ```
 
-The signed handoff binding includes the root protected-store identity. `HostBootstrap.Handoff` owns only
-the transport proof; `HostBootstrap.Config.Schema` owns `VerifiedConfigHandoff`,
-`HostBootstrap.ProjectPlan.Construct` owns the opaque fully indexed `ChildPlanAuthority`, and
-`HostBootstrap.Authority.ProjectPlan` consumes it. The
-[recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) still
-owns recursive Production descent and child journal/cursor acquisition; current Harness uses the direct
-current-frame path shown above.
+The signed `AuthenticatedRootScope` capsule binds installed project and exact Production or Harness run
+evidence before received config bytes introduce a phantom. Later root-signed rooted responses bind the exact
+catalog/session/frame/node coordinates, but a child receives no `ProtectedStore`, cursor, or durable mutation
+capability. `HostBootstrap.Handoff` owns only the scope, transport, recovery-package, and rooted-wire proofs;
+`HostBootstrap.Config.Schema` owns
+`VerifiedConfigHandoff`, and
+`HostBootstrap.ProjectPlan.Construct` owns the opaque fully indexed `ChildPlanAuthority`. The Cabal-private
+child boundary exact-matches that independently rebuilt plan/config/frame against the root catalog and admits
+only a storeless `FrameExecutor`. The root prepares and settles every durable operation and receipt; the
+executor runs only the exact local work named by a signed prepared response. The
+[test-harness-and-run-ownership phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md)
+supplies the generative Harness run evidence to the generic authenticated-scope producer. The
+[recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) owns the
+catalog, coordinator, executor, and recursive process adoption; current Harness uses the hidden root-Up entry
+and exact reverse path shown above.
 
 Core stays secret-agnostic: it offers the scope-indexed `SecretRef` shape, mapped-codec boundary, and
 restricted assembler;

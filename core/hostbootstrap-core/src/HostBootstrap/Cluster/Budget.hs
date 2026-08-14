@@ -45,6 +45,7 @@ module HostBootstrap.Cluster.Budget
     SomeResourceSlice,
     withBudgetPartition,
     forResourceSlices,
+    withResourceSliceFor,
     resourceSliceName,
     resourceSliceFrame,
     resourceSliceBudget,
@@ -52,8 +53,11 @@ module HostBootstrap.Cluster.Budget
     withProviderWallReservation,
     PreparedProviderWallCall,
     prepareProviderWallCall,
+    preparePlanOwnedProviderWallCall,
     providerWallCallArgs,
+    providerWallCallFence,
     WallAcquireObservation (..),
+    ProviderWallSettlementPermit,
     ProviderWallAuthority,
     providerWallEpoch,
     providerWallFence,
@@ -78,6 +82,24 @@ where
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Text as Text
+import HostBootstrap.Cluster.Budget.Internal
+  ( BareLinuxProvider,
+    ColimaProvider,
+    DockerNodeProvider,
+    IncusProvider,
+    LimaProvider,
+    PreparedProviderWallCall (..),
+    ProviderBackend (..),
+    ProviderKey (..),
+    ProviderWallReservation (..),
+    ProviderWallSettlementPermit,
+    WallAcquireObservation (..),
+    Wsl2Provider,
+    providerBackend,
+    samePreparedProviderWallCall,
+    withProviderKeyForBackend,
+    withProviderWallSettlementPermit,
+  )
 import HostBootstrap.Cluster.Cordon (budgetFromResources)
 import qualified HostBootstrap.Cluster.Cordon.Foundation as Cordon
 import HostBootstrap.Cluster.Cordon.Foundation
@@ -88,14 +110,29 @@ import HostBootstrap.Cluster.Cordon.Foundation
   )
 import HostBootstrap.Context (ResourceEnvelope)
 import Data.Word (Word64)
+import HostBootstrap.Lifecycle.Prepared
+  ( PreparedGate,
+    preparedGateAttempt,
+    preparedGateFence,
+    preparedGateJournalVersion,
+    preparedGateOperation,
+    preparedGatePlan,
+    preparedGateSession,
+  )
 import HostBootstrap.ProjectPlan
-  ( PlannedResource,
+  ( DerivedTopology,
+    PlannedResource,
     ProjectPlan,
     ProviderResource,
     plannedResourceFrame,
     plannedResourceKey,
+    renderSnapshot,
+    stablePlanSnapshotDigest,
     topology,
     topologyContainsFrame,
+    topologyDescentEdges,
+    topologyFrameOrder,
+    topologyParentEdges,
   )
 import HostBootstrap.Reconcile
   ( ChangeView (..),
@@ -105,57 +142,9 @@ import HostBootstrap.Reconcile
     ReconcileError (..),
     RecoveryDisposition (..),
     UnsupportedDetail (..),
+    plannedResourcePlanDigest,
   )
 import Numeric.Natural (Natural)
-
-data ProviderBackend
-  = ColimaBackend
-  | LimaBackend
-  | IncusBackend
-  | Wsl2Backend
-  | DockerNodeBackend
-  | BareLinuxBackend
-  deriving (Eq, Show)
-
-data ColimaProvider
-data LimaProvider
-data IncusProvider
-data Wsl2Provider
-data DockerNodeProvider
-data BareLinuxProvider
-
--- | Closed provider/type relation. A caller can select a backend value, but
--- cannot claim that it has another provider phantom.
-data ProviderKey provider where
-  ColimaProviderKey :: ProviderKey ColimaProvider
-  LimaProviderKey :: ProviderKey LimaProvider
-  IncusProviderKey :: ProviderKey IncusProvider
-  Wsl2ProviderKey :: ProviderKey Wsl2Provider
-  DockerNodeProviderKey :: ProviderKey DockerNodeProvider
-  BareLinuxProviderKey :: ProviderKey BareLinuxProvider
-
-providerBackend :: ProviderKey provider -> ProviderBackend
-providerBackend key =
-  case key of
-    ColimaProviderKey -> ColimaBackend
-    LimaProviderKey -> LimaBackend
-    IncusProviderKey -> IncusBackend
-    Wsl2ProviderKey -> Wsl2Backend
-    DockerNodeProviderKey -> DockerNodeBackend
-    BareLinuxProviderKey -> BareLinuxBackend
-
-withProviderKeyForBackend ::
-  ProviderBackend ->
-  (forall provider. ProviderKey provider -> result) ->
-  result
-withProviderKeyForBackend backend consume =
-  case backend of
-    ColimaBackend -> consume ColimaProviderKey
-    LimaBackend -> consume LimaProviderKey
-    IncusBackend -> consume IncusProviderKey
-    Wsl2Backend -> consume Wsl2ProviderKey
-    DockerNodeBackend -> consume DockerNodeProviderKey
-    BareLinuxBackend -> consume BareLinuxProviderKey
 
 data BudgetError
   = InvalidBudget String
@@ -167,6 +156,7 @@ data BudgetError
   | InvalidSlice String
   | PartitionOverflow String Integer Integer
   | InvalidWallReservation String
+  | InvalidProviderPackage String
   deriving (Eq, Show)
 
 data ValidatedBudget scope planId budgetId = ValidatedBudget ResourceBudget
@@ -246,6 +236,12 @@ validateBackendExactness backend budget =
             "bare Linux has no quota/image-GC storage wall"
         )
     DockerNodeBackend -> pure ()
+    ColimaBackend -> do
+      exact "memory" (budgetMemoryBytes budget)
+      exact "storage" (budgetStorageBytes budget)
+      case Cordon.colimaSizingArgsForBudget "provider-admission" budget of
+        Left reason -> Left (InvalidBudget reason)
+        Right _ -> Right ()
     _ -> do
       exact "memory" (budgetMemoryBytes budget)
       exact "storage" (budgetStorageBytes budget)
@@ -520,6 +516,43 @@ forResourceSlices ::
 forResourceSlices slices consume =
   [consume slice | SomeResourceSlice slice <- slices]
 
+{- | Select the one partition slice minted for an exact planned resource.
+
+The returned slice carries the resource's actual @frame@ and @resourceId@
+indices, so a final consumer can require that exact resource rather than
+accepting an existential slice and re-attaching identity from text.  Missing
+and duplicate projections fail closed.
+-}
+withResourceSliceFor ::
+  PlannedResource scope planId resourceId resource frame ->
+  [SomeResourceSlice scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId] ->
+  ( ResourceSlice
+      scope
+      planId
+      budgetId
+      provider
+      capabilityId
+      wallSpecId
+      workloadSetId
+      partitionId
+      frame
+      resourceId ->
+    result
+  ) ->
+  Either BudgetError result
+withResourceSliceFor planned slices consume =
+  case
+      [ budget
+      | SomeResourceSlice (ResourceSlice resource budget) <- slices
+      , plannedResourceKey resource == plannedResourceKey planned
+      , plannedResourceFrame resource == plannedResourceFrame planned
+      ] of
+    [] -> Left (InvalidSlice (name ++ ": the budget partition has no slice for this planned resource"))
+    [budget] -> Right (consume (ResourceSlice planned budget))
+    _ -> Left (InvalidSlice (name ++ ": the budget partition contains duplicate slices for this planned resource"))
+  where
+    name = Text.unpack (plannedResourceKey planned)
+
 resourceSliceName ::
   ResourceSlice scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId frame resourceId ->
   String
@@ -537,38 +570,53 @@ resourceSliceBudget ::
   ResourceBudget
 resourceSliceBudget (ResourceSlice _resource budget) = budget
 
-{- | Journaled, pre-call reservation for one exact wall specification and
-partition. It is the authority for the initial wall call; the live wall
-authority does not exist yet.
+{- | Mint the pre-call reservation only from the exact plan/provider operation's
+durable prepare gate.  The descriptive budget algebra alone cannot produce
+authority to enter a backend.
 -}
-data ProviderWallReservation scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence =
-  ProviderWallReservation Word64
-
-type role ProviderWallReservation nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
-
 withProviderWallReservation ::
+  ProjectPlan scope specDigest planId configId cfg ->
+  PlannedResource scope planId providerResourceId ProviderResource providerFrame ->
   ProviderWallSpec scope planId budgetId provider capabilityId wallSpecId ->
   BudgetPartition scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId ->
-  Word64 ->
+  PreparedGate ->
   ( forall reservationId fence.
     ProviderWallReservation scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
     result
   ) ->
   Either BudgetError result
-withProviderWallReservation _wall _partition fenceValue consume
-  | fenceValue == 0 =
-      Left (InvalidWallReservation "provider wall fence must be positive")
+withProviderWallReservation plan providerResource _wall _partition gate consume
+  | plannedResourcePlanDigest providerResource /= planDigest =
+      invalid "the provider resource does not retain this project's stable plan digest"
+  | preparedGatePlan gate /= planDigest =
+      invalid "the prepare gate belongs to another project plan"
+  | preparedGateOperation gate /= operationKey =
+      invalid "the prepare gate belongs to another provider operation"
+  | Text.null (preparedGateSession gate) =
+      invalid "the prepare gate session must be non-empty"
+  | preparedGateFence gate == 0 =
+      invalid "the prepare gate fence must be positive"
+  | preparedGateAttempt gate == 0 =
+      invalid "the prepare gate attempt must be positive"
+  | preparedGateJournalVersion gate == 0 =
+      invalid "the prepare gate journal version must be positive"
   | otherwise =
-      Right (consume (ProviderWallReservation fenceValue))
-
--- | The sole prepared initial-wall adapter input. Its constructor is hidden.
-data PreparedProviderWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence =
-  PreparedProviderWallCall
-    (ProviderKey provider)
-    [String]
-    Word64
-
-type role PreparedProviderWallCall nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
+      Right
+        ( consume
+            ( ProviderWallReservation
+                planDigest
+                operationKey
+                (preparedGateSession gate)
+                (preparedGateFence gate)
+                (preparedGateAttempt gate)
+                (preparedGateJournalVersion gate)
+            )
+        )
+  where
+    snapshot = renderSnapshot plan
+    planDigest = stablePlanSnapshotDigest snapshot
+    operationKey = plannedResourceKey providerResource
+    invalid = Left . InvalidWallReservation
 
 prepareProviderWallCall ::
   String ->
@@ -578,23 +626,97 @@ prepareProviderWallCall ::
   Either
     BudgetError
     (PreparedProviderWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence)
-prepareProviderWallCall name wall@(ProviderWallSpec providerKey _) _partition (ProviderWallReservation fenceValue) = do
+prepareProviderWallCall
+  name
+  wall@(ProviderWallSpec providerKey _)
+  _partition
+  (ProviderWallReservation plan operation session fenceValue attemptValue journalVersion) = do
   args <- providerWallArgs name wall
-  pure (PreparedProviderWallCall providerKey args fenceValue)
+  pure
+    ( PreparedProviderWallCall
+        providerKey
+        args
+        plan
+        operation
+        session
+        fenceValue
+        attemptValue
+        journalVersion
+    )
+
+{- | Prepare a provider call only after joining the complete plan-owned budget
+package at the final consumer boundary.
+
+The phantom indices already reject a resource, topology, budget, workload-fit,
+partition, or reservation from another admitted plan.  The term checks below
+also defend the internal boundary: the supplied topology must be the exact
+projection retained by the plan, the provider frame must belong to it, the
+capability must have been minted for the supplied provider resource, and the
+wall must retain the validated budget byte-for-byte.
+-}
+preparePlanOwnedProviderWallCall ::
+  ProjectPlan scope specDigest planId configId cfg ->
+  PlannedResource scope planId providerResourceId ProviderResource providerFrame ->
+  DerivedTopology scope planId ->
+  ValidatedBudget scope planId budgetId ->
+  ProviderBudgetCapability scope planId provider capabilityId ->
+  ProviderWallSpec scope planId budgetId provider capabilityId wallSpecId ->
+  VerifiedWorkloadFit scope planId budgetId provider capabilityId wallSpecId workloadSetId ->
+  BudgetPartition scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId ->
+  ProviderWallReservation scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
+  String ->
+  Either
+    BudgetError
+    (PreparedProviderWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence)
+preparePlanOwnedProviderWallCall
+  plan
+  providerResource
+  suppliedTopology
+  (ValidatedBudget validated)
+  (ProviderBudgetCapability capabilityResource _providerKey)
+  wall@(ProviderWallSpec _wallProviderKey wallBudget)
+  VerifiedWorkloadFit
+  partition@BudgetPartition
+  reservation@(ProviderWallReservation _plan _operation _session _fenceValue _attempt _journalVersion)
+  name = do
+    requirePackage
+      "the supplied topology is not the exact topology projected by the project plan"
+      (sameTopology suppliedTopology (topology plan))
+    requirePackage
+      "the provider resource frame is outside the supplied plan topology"
+      (topologyContainsFrame suppliedTopology (plannedResourceFrame providerResource))
+    requirePackage
+      "the provider capability was minted for another provider resource"
+      ( sameResource providerResource capabilityResource
+      )
+    requirePackage
+      "the provider wall does not retain the exact validated budget"
+      (validated == wallBudget)
+    prepareProviderWallCall name wall partition reservation
+  where
+    sameTopology left right =
+      topologyFrameOrder left == topologyFrameOrder right
+        && topologyParentEdges left == topologyParentEdges right
+        && topologyDescentEdges left == topologyDescentEdges right
+    sameResource left right =
+      plannedResourceKey left == plannedResourceKey right
+        && plannedResourceFrame left == plannedResourceFrame right
+    requirePackage detail condition
+      | condition = Right ()
+      | otherwise = Left (InvalidProviderPackage detail)
 
 providerWallCallArgs ::
   PreparedProviderWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
   [String]
-providerWallCallArgs (PreparedProviderWallCall _ args _) = args
+providerWallCallArgs (PreparedProviderWallCall _ args _ _ _ _ _ _) = args
 
-data WallAcquireObservation
-  = WallApplied Word64
-  | WallAlreadyExact Word64
-  | WallMigrated Word64 String
-  | WallRefused ConflictDetail
-  | WallAcquireFailed FailureDetail
-  | WallAcquireUncertain String
-  deriving (Eq, Show)
+-- | The descriptive durable fence retained by the exact reservation that
+-- prepared this call.  It identifies the ownership record namespace but does
+-- not itself grant mutation or settlement authority.
+providerWallCallFence ::
+  PreparedProviderWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
+  Word64
+providerWallCallFence (PreparedProviderWallCall _ _ _ _ _ fenceValue _ _) = fenceValue
 
 data ProviderWallAuthority scope planId provider wallSpecId wallEpoch fence =
   ProviderWallAuthority Word64 Word64
@@ -638,26 +760,57 @@ type role LiveProviderWall nominal nominal nominal nominal nominal nominal
 
 settleProviderWallCall ::
   PreparedProviderWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
-  WallAcquireObservation ->
+  ProviderWallSettlementPermit
+    scope
+    planId
+    providerResourceId
+    budgetId
+    provider
+    capabilityId
+    wallSpecId
+    workloadSetId
+    partitionId
+    reservationId
+    fence
+    operationKey
+    callDigest
+    attempt
+    journalVersion ->
   ( forall wallEpoch.
     LiveProviderWall scope planId provider wallSpecId wallEpoch fence ->
     result
   ) ->
   Either ReconcileError result
-settleProviderWallCall (PreparedProviderWallCall providerKey _ fenceValue) observation consume =
-  case observation of
-    WallApplied epoch -> successful epoch (Changed Created) "applied"
-    WallAlreadyExact epoch -> successful epoch Unchanged "unchanged"
-    WallMigrated epoch receipt -> successful epoch (Changed Repaired) receipt
-    WallRefused detail -> Left (Conflict detail)
-    WallAcquireFailed detail -> Left (Failure detail)
-    WallAcquireUncertain detail ->
-      Left
-        ( Failure
-            (FailureDetail "acquire provider wall" (Text.pack detail) ReprobeBeforeRetry)
-        )
+settleProviderWallCall prepared permit consume =
+  withProviderWallSettlementPermit permit $ \authorized observation ->
+    if samePreparedProviderWallCall prepared authorized
+      then settleAuthorized prepared observation
+      else
+        Left
+          ( Conflict
+              ( ConflictDetail
+                  "settle provider wall"
+                  "the exact journal reservation and provider call enclosed by the backend permit"
+                  "a different prepared provider call"
+                  "settle only the call whose closed backend result produced this permit"
+              )
+          )
   where
-    successful epoch change receipt
+    settleAuthorized
+      (PreparedProviderWallCall providerKey _ _ _ _ fenceValue _ _)
+      observation =
+        case observation of
+          WallApplied epoch -> successful providerKey fenceValue epoch (Changed Created) "applied"
+          WallAlreadyExact epoch -> successful providerKey fenceValue epoch Unchanged "unchanged"
+          WallMigrated epoch receipt -> successful providerKey fenceValue epoch (Changed Repaired) receipt
+          WallRefused detail -> Left (Conflict detail)
+          WallAcquireFailed detail -> Left (Failure detail)
+          WallAcquireUncertain detail ->
+            Left
+              ( Failure
+                  (FailureDetail "acquire provider wall" (Text.pack detail) ReprobeBeforeRetry)
+              )
+    successful providerKey fenceValue epoch change receipt
       | epoch == 0 =
           Left
             ( Failure
@@ -752,14 +905,25 @@ prepareStorageWallCall
   name
   (ProviderWallSpec providerKey budget)
   _partition
-  (ProviderWallReservation fenceValue) =
+  (ProviderWallReservation _plan _operation _session fenceValue _attempt _journalVersion) =
     case providerKey of
       ColimaProviderKey ->
-        exactStorageWall
-          ColimaDiskArgument
-          ["start", "--profile", name, "--disk", show storageGiB]
-          storageBytes
-          fenceValue
+        case Cordon.colimaSizingArgsForBudget name budget of
+          Left reason ->
+            Left
+              ( Failure
+                  ( FailureDetail
+                      "apply storage wall"
+                      (Text.pack reason)
+                      DoNotRetry
+                  )
+              )
+          Right args ->
+            exactStorageWall
+              ColimaDiskArgument
+              args
+              storageBytes
+              fenceValue
       LimaProviderKey ->
         exactStorageWall
           LimaDiskArgument

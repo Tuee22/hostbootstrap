@@ -12,3 +12,14 @@ packages:
 with-compiler: ghc-9.12.4
 
 optimization: 2
+
+-- Bounded host memory, added 2026-08-14. Mirrors what `infernix init` generates for itself in
+-- ~/infernix/cabal.project.local; doctrine in ~/infernix/documents/architecture/bounded_host_memory.md.
+-- A per-process cap is not a host bound on its own: the compiler subtotal here is
+-- 1 job x 6144 MiB. This is precautionary — the 2026-08-14 kernel panic was NOT caused by this
+-- project (its `cabal test all` finished cleanly 39 minutes before the panic, with zero cabal
+-- processes present in either jetsam snapshot).
+jobs: 1
+
+package *
+  ghc-options: +RTS -M6144M -xr18432M -RTS

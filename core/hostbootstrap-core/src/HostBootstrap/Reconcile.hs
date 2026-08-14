@@ -64,6 +64,7 @@ module HostBootstrap.Reconcile
     plannedNodeOperation,
     plannedNodePhaseOperation,
     withObservedPlannedResource,
+    withObservedProjectResource,
     OwnershipReceipt,
     ownershipReceiptOperationKey,
     validateOwnershipReceipt,
@@ -84,6 +85,8 @@ module HostBootstrap.Reconcile
     BackendReconcileObservation (..),
     OperationDescriptor,
     plannedOperation,
+    plannedProjectOperation,
+    plannedProjectPhaseOperation,
     plannedGuestAliasOperation,
     operationDescriptorDependencies,
     DependencyProbe,
@@ -98,6 +101,10 @@ module HostBootstrap.Reconcile
     PreparedOperation,
     PreparedPreconditions,
     withPreparedOperation,
+    PreparedProviderStart,
+    withPreparedProviderStart,
+    withPreparedProviderStartParts,
+    completePreparedProviderStart,
     ReconcileResult,
     completeReconcile,
     withReconcileResult,
@@ -119,6 +126,7 @@ module HostBootstrap.Reconcile
     planStop,
     planRestart,
     planDestroy,
+    planProviderForceDestroy,
     PreparedPhaseTransition,
     withPreparedPhaseTransition,
     preparedPhaseTransitionHandle,
@@ -194,6 +202,10 @@ import HostBootstrap.ProjectPlan (
   ProviderResource,
   RegistryResource,
  )
+import HostBootstrap.Reconcile.ProviderStart.Internal
+  ( ProviderStartBackendResult (..),
+    ProviderStartProjectionAuthority (..),
+  )
 import qualified HostBootstrap.ProjectPlan as ProjectPlan
 import HostBootstrap.Step
   ( StepPlan,
@@ -773,6 +785,24 @@ withObservedPlannedResource ::
   Either ReconcileError result
 withObservedPlannedResource _ = withObservedPlannedResourceValues
 
+{- | Observe a resource projected from one exact admitted project plan.
+
+Unlike the compatibility 'withObservedPlannedResource' route, this producer
+requires the indexed 'ProjectPlan' itself.  The shared @scope@ and @planId@
+indices reject a resource from another admission before the raw backend
+generation can be paired with it.
+-}
+withObservedProjectResource ::
+  ProjectPlan scope specDigest planId configId cfg ->
+  PlannedResource scope planId id resource frame ->
+  Word64 ->
+  Word64 ->
+  ( ResourceHandle scope planId id resource Unclassified Observed ->
+    result
+  ) ->
+  Either ReconcileError result
+withObservedProjectResource _ = withObservedPlannedResourceValues
+
 withObservedPlannedResourceValues ::
   PlannedResource scope planId id resource frame ->
   Word64 ->
@@ -1039,7 +1069,61 @@ plannedOperation ::
   Either
     ReconcileError
     (OperationDescriptor scope planId id resource Observed Provisioned)
-plannedOperation (LifecyclePlan _ plan) planned handle callDigest
+plannedOperation (LifecyclePlan _ plan) = plannedOperationFromGraph plan
+
+{- | Produce an operation descriptor from the exact admitted project plan.
+
+This is the non-compatibility peer of 'plannedOperation'.  It retains the
+caller's existing plan identity and reads the target's ordered resource prefix
+from the graph hidden inside that same 'ProjectPlan'; no caller-supplied plan
+digest, frame, or dependency graph enters the descriptor.
+-}
+plannedProjectOperation ::
+  ProjectPlan scope specDigest planId configId cfg ->
+  PlannedResource scope planId id resource frame ->
+  ResourceHandle scope planId id resource Unclassified Observed ->
+  Text ->
+  Either
+    ReconcileError
+    (OperationDescriptor scope planId id resource Observed Provisioned)
+plannedProjectOperation plan =
+  plannedOperationFromGraph (projectPlanStepPlanKernel plan)
+
+{- | Produce a managed phase descriptor from the exact admitted project plan.
+
+This is the plan-level peer of 'plannedNodePhaseOperation'.  The matching
+ownership receipt and opaque legal transition are validated before the plan's
+ordered resource dependency prefix is read; callers cannot relabel an
+acquisition descriptor as a later mutation.
+-}
+plannedProjectPhaseOperation ::
+  ProjectPlan scope specDigest planId configId cfg ->
+  PlannedResource scope planId id resource frame ->
+  ResourceHandle scope planId id resource Managed fromPhase ->
+  OwnershipReceipt scope planId id resource ->
+  PhaseTransition scope planId id resource fromPhase toPhase ->
+  Text ->
+  Either
+    ReconcileError
+    (OperationDescriptor scope planId id resource fromPhase toPhase)
+plannedProjectPhaseOperation plan planned handle receipt transition callDigest = do
+  validateOwnershipReceipt handle receipt
+  validatePhaseTransitionBinding handle transition
+  plannedOperationFromGraph
+    (projectPlanStepPlanKernel plan)
+    planned
+    handle
+    callDigest
+
+plannedOperationFromGraph ::
+  StepPlan ->
+  PlannedResource scope planId id resource frame ->
+  ResourceHandle scope planId id resource ownership phase ->
+  Text ->
+  Either
+    ReconcileError
+    (OperationDescriptor scope planId id resource fromPhase toPhase)
+plannedOperationFromGraph plan planned handle callDigest
   | plannedResourceKey planned /= resourceHandleKey handle =
       Left
         ( Conflict
@@ -1332,6 +1416,141 @@ data PreparedPreconditions scope planId id resource operationKey callDigest atte
 
 type role PreparedPreconditions nominal nominal nominal nominal nominal nominal nominal nominal
 
+{- | One exact, zero-dependency provider start prepared against the admitted
+project plan.
+
+The package retains the original observed handle and the inseparable journal
+operation/preconditions pair.  Its constructor is private, and completing it
+also requires a capability from a Cabal-hidden module, so a public caller
+cannot turn a descriptive backend observation into @Managed Running@
+authority.
+-}
+data PreparedProviderStart scope planId providerResourceId operationKey callDigest attempt journalVersion =
+  PreparedProviderStart
+    (ResourceHandle scope planId providerResourceId ProviderResource Unclassified Observed)
+    PreparedGate
+    ( PreparedOperation
+        scope
+        planId
+        providerResourceId
+        ProviderResource
+        operationKey
+        callDigest
+        attempt
+        journalVersion
+    )
+    ( PreparedPreconditions
+        scope
+        planId
+        providerResourceId
+        ProviderResource
+        operationKey
+        callDigest
+        attempt
+        journalVersion
+    )
+
+type role PreparedProviderStart nominal nominal nominal nominal nominal nominal nominal
+
+{- | Prepare the real single-effect provider start as @Observed -> Running@.
+
+Direct provider start is structurally dependency-free.  The zero-dependency
+precondition is derived here from the exact plan descriptor; if the provider
+node declares a prefix, preparation refuses rather than accepting a
+caller-assembled snapshot.
+-}
+withPreparedProviderStart ::
+  ProjectPlan scope specDigest planId configId cfg ->
+  PlannedResource scope planId providerResourceId ProviderResource providerFrame ->
+  ResourceHandle scope planId providerResourceId ProviderResource Unclassified Observed ->
+  Text ->
+  PreparedGate ->
+  ( forall operationKey callDigest attempt journalVersion.
+    PreparedProviderStart
+      scope
+      planId
+      providerResourceId
+      operationKey
+      callDigest
+      attempt
+      journalVersion ->
+    result
+  ) ->
+  Either ReconcileError result
+withPreparedProviderStart plan planned handle callDigest gate consume = do
+  descriptor <- plannedProjectProviderStartOperation plan planned handle callDigest
+  preconditions <- zeroDependencyPreconditions descriptor
+  withPreparedOperation descriptor preconditions gate $ \operation sealed ->
+    consume (PreparedProviderStart handle gate operation sealed)
+
+plannedProjectProviderStartOperation ::
+  ProjectPlan scope specDigest planId configId cfg ->
+  PlannedResource scope planId providerResourceId ProviderResource providerFrame ->
+  ResourceHandle scope planId providerResourceId ProviderResource Unclassified Observed ->
+  Text ->
+  Either
+    ReconcileError
+    (OperationDescriptor scope planId providerResourceId ProviderResource Observed Running)
+plannedProjectProviderStartOperation plan =
+  plannedOperationFromGraph (projectPlanStepPlanKernel plan)
+
+{- | Project the prepared journal pair only for a package-private owning
+settlement bridge.  The first argument's module is not exposed by Cabal, so an
+ordinary client cannot call this eliminator.
+-}
+withPreparedProviderStartParts ::
+  ProviderStartProjectionAuthority ->
+  PreparedProviderStart scope planId providerResourceId operationKey callDigest attempt journalVersion ->
+  ( PreparedGate ->
+    PreparedOperation
+      scope
+      planId
+      providerResourceId
+      ProviderResource
+      operationKey
+      callDigest
+      attempt
+      journalVersion ->
+    PreparedPreconditions
+      scope
+      planId
+      providerResourceId
+      ProviderResource
+      operationKey
+      callDigest
+      attempt
+      journalVersion ->
+    result
+  ) ->
+  result
+withPreparedProviderStartParts
+  ProviderStartProjectionAuthority
+  (PreparedProviderStart _ gate operation preconditions)
+  consume = consume gate operation preconditions
+
+{- | Complete a prepared provider start only from a package-private owning
+backend result.  The generic resource generation comes from the retained
+observed handle; provider-specific machine identity is deliberately not used
+as the journal generation.
+-}
+completePreparedProviderStart ::
+  PreparedProviderStart scope planId providerResourceId operationKey callDigest attempt journalVersion ->
+  ProviderStartBackendResult ->
+  Either ReconcileError (ReconcileResult scope planId providerResourceId ProviderResource Running)
+completePreparedProviderStart
+  (PreparedProviderStart handle _ operation preconditions)
+  backendResult =
+    completeReconcileAt
+      handle
+      operation
+      preconditions
+      ( case backendResult of
+          ProviderStartBackendCreated -> BackendCreated generation
+          ProviderStartBackendRepaired -> BackendRepaired generation
+      )
+  where
+    generation = resourceHandleGeneration handle
+
 {- | Mint the prepared operation/preconditions pair for one plan operation.
 
 The attempt and journal version are read off the 'PreparedGate' rather than
@@ -1469,7 +1688,15 @@ completeReconcile ::
   PreparedPreconditions scope planId id resource operationKey callDigest attempt journalVersion ->
   BackendReconcileObservation ->
   Either ReconcileError (ReconcileResult scope planId id resource Provisioned)
-completeReconcile
+completeReconcile = completeReconcileAt
+
+completeReconcileAt ::
+  ResourceHandle scope planId id resource Unclassified Observed ->
+  PreparedOperation scope planId id resource operationKey callDigest attempt journalVersion ->
+  PreparedPreconditions scope planId id resource operationKey callDigest attempt journalVersion ->
+  BackendReconcileObservation ->
+  Either ReconcileError (ReconcileResult scope planId id resource phase)
+completeReconcileAt
   handle
   (PreparedOperation targetKey operationKey callDigest attempt journalVersion)
   (PreparedPreconditions expectedTarget expectedOperation expectedDigest expectedAttempt expectedJournal)
@@ -1899,6 +2126,17 @@ planDestroy ::
   ResourceHandle scope planId id resource Managed Stopped ->
   Either ReconcileError (PhaseTransition scope planId id resource Stopped Destroyed)
 planDestroy handle = namedPhaseTransition handle "stopped" "destroyed"
+
+{- | The single force-delete effect implemented by direct Colima.
+
+Unlike 'planDestroy', this does not pretend that a stop effect occurred.  It is
+restricted to a running provider resource and records the real
+@Running -> Destroyed@ transition performed by @colima delete --force --data@.
+-}
+planProviderForceDestroy ::
+  ResourceHandle scope planId id ProviderResource Managed Running ->
+  Either ReconcileError (PhaseTransition scope planId id ProviderResource Running Destroyed)
+planProviderForceDestroy handle = namedPhaseTransition handle "running" "destroyed-force"
 
 {- | One inseparable managed phase preparation.
 

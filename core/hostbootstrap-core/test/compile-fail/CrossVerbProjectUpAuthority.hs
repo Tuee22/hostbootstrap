@@ -6,10 +6,10 @@ import HostBootstrap.Authority
     , VerbDown
     , VerbUp
     )
-import HostBootstrap.Authority.ProjectPlan (authorizeProjectUp)
+import HostBootstrap.Authority.ProjectPlan (authorizeRootProject)
 
 data Scope
 data BrokerGeneration
 
 crossVerb :: RootInvocationAuthority Scope BrokerGeneration VerbUp -> ()
-crossVerb root = authorizeProjectUp root (ProjectDown :: ProjectVerb VerbDown) `seq` ()
+crossVerb root = authorizeRootProject root (ProjectDown :: ProjectVerb VerbDown) `seq` ()

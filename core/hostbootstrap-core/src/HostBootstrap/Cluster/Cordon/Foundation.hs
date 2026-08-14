@@ -277,28 +277,57 @@ verifyHostBudget b cap
 
 {- | The complete @colima start@ argv that sizes a per-project VM to the budget
 (the canonical arg-builder; the Python bootstrapper does not size VMs).
-Memory and disk must already be exactly representable in whole GiB (Colima's
+Memory and storage must already be exactly representable in whole GiB (Colima's
 unit); an inexact hard ceiling is rejected rather than rounded upward. CPU is
-the whole core count. Storage is cordoned here via @--disk@.
+the whole core count. Colima has two writable disks, so the declared storage
+ceiling is split between a fixed 20 GiB root disk and the remaining runtime data
+disk. A declaration that cannot leave at least one whole GiB for runtime data is
+rejected instead of silently exceeding the declared total.
+
+The fixed false/none flags close Colima defaults that otherwise read templates,
+modify host SSH/Kubernetes state, mount the effective home, or enable a global
+network helper outside the exact provider namespace.
 -}
 colimaSizingArgsForBudget :: String -> ResourceBudget -> Either String [String]
 colimaSizingArgsForBudget project b = do
     memoryGiB <- exactGibibytes "Colima memory" (budgetMemoryBytes b)
     storageGiB <- exactGibibytes "Colima storage" (budgetStorageBytes b)
-    pure
-        [ "start"
-        , "--profile"
-        , project
-        , "--runtime"
-        , "docker"
-        , "--activate=false"
-        , "--cpus"
-        , show (budgetCpu b)
-        , "--memory"
-        , show memoryGiB
-        , "--disk"
-        , show storageGiB
-        ]
+    if storageGiB <= colimaRootDiskGiB
+        then
+            Left
+                ( "Colima storage must exceed the fixed "
+                    ++ show colimaRootDiskGiB
+                    ++ " GiB writable root disk; got "
+                    ++ show storageGiB
+                    ++ " GiB"
+                )
+        else
+            pure
+                [ "start"
+                , "--profile"
+                , project
+                , "--runtime"
+                , "docker"
+                , "--activate=false"
+                , "--template=false"
+                , "--ssh-config=false"
+                , "--mount"
+                , "none"
+                , "--kubernetes=false"
+                , "--network-address=false"
+                , "--mount-inotify=false"
+                , "--cpus"
+                , show (budgetCpu b)
+                , "--memory"
+                , show memoryGiB
+                , "--root-disk"
+                , show colimaRootDiskGiB
+                , "--disk"
+                , show (storageGiB - colimaRootDiskGiB)
+                ]
+
+colimaRootDiskGiB :: Integer
+colimaRootDiskGiB = 20
 
 -- | The Lima VM sizing flags derived from the same canonical resource parser.
 limaSizingArgsForBudget :: ResourceBudget -> Either String [String]

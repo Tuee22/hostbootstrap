@@ -1,3 +1,4 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -11,39 +12,38 @@ it. It runs this exchange on its own duplex channel and ends up holding a
 
 @
 parent                          child (this module)
-  │   Offer(payload, token, binding, keyDigest)   ──▶  parse, check what it
-  │                                                    independently knows
-  │   ◀──  Challenge(fresh nonce)                      mint a fresh challenge
+  │   Offer(payload, token, binding, scope/key/evidence)
+  │                                           ──▶ verify scope capsule first
+  │   ◀──  Challenge(fresh nonce)                      mint inside that scope
   │   Grant(signature, signerKeyDigest)           ──▶  verify against the
   │                                                    /installed/ key
-  │   ◀──  Accepted(config digest)                     admit the exact bytes
+  │   ◀──  Accepted(payload digest)                    classify signed kind,
+  │                                                    verify exact evidence
   │   ◀──  Completed(status) | Refused(code, detail)
 @
 
-Three properties are worth stating because they are what a shell writer cannot
-have. The challenge is minted *here*, after the offer arrives, so a transcript
-recorded from an earlier descent carries a signature over a nonce this receiver
-never issued. The verification key is a separate installed input; the offer's
-key digest is compared against it and is never used as one, so an envelope that
-certifies itself certifies nothing. And every refusal is *sent* before the
-receiver returns, so a parent learns that its child declined rather than
-inferring it from a closed pipe.
+Four properties are worth stating because they are what a shell writer cannot
+have. The root-signed scope capsule is verified before the binding or payload is
+interpreted, so received bytes cannot choose a Production or Harness phantom.
+The challenge is minted *here*, inside that scope after the offer arrives, so a
+transcript recorded from an earlier descent carries a signature over a nonce
+this receiver never issued. The verification key is a separate installed
+input; the offer's key digest is compared against it and is never used as one,
+so an envelope that certifies itself certifies nothing. And every refusal is
+*sent* before the receiver returns, so a parent learns that its child declined
+rather than inferring it from a closed pipe.
 
 The message sequence is checked by 'ChildProtocolState' rather than by the
 order of statements here, so a receiver cannot answer a grant it never asked
 for.
 -}
 module HostBootstrap.Handoff.Receiver (
-    -- * What a receiver independently expects
-    ReceiverExpectation (..),
-
-    -- * The received edge
+    -- * Closed authenticated branches
     ReceivedEdge,
-    receivedEdgeHandoff,
-    receivedEdgeConfig,
-    receivedEdgeBinding,
+    ReceivedRecoveryDescent,
 
     -- * The exchange
+    withIsolatedReceivedHandoffEdge,
     withReceivedHandoffEdge,
 
     -- * Failures
@@ -51,17 +51,28 @@ module HostBootstrap.Handoff.Receiver (
     receiverErrorMessage,
 ) where
 
+import Control.Concurrent.MVar (modifyMVar, modifyMVarMasked, newMVar)
+import qualified Control.Exception as Exception
 import Control.Exception.Safe (SomeException, throwIO, try)
 import Data.ByteString (ByteString)
+import qualified Data.ByteString as ByteString
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
+import GHC.IO.Handle (hDuplicate, hDuplicateTo)
+import HostBootstrap.Authority (
+    InstalledProjectIdentity,
+    ProjectVerb (ProjectDestroy, ProjectDown),
+ )
+import HostBootstrap.Config.Vocab (Harness, Production)
 import HostBootstrap.Handoff (
+    AuthenticatedConfigPayload,
+    AuthenticatedRootScope,
     HandoffBinding,
-    HandoffError,
-    HandoffPayloadKind,
+    HandoffError (HandoffBindingMismatch, HandoffWireTrailingBytes),
+    HandoffPayloadKind (NarrowedProjectConfig, RecoveryAdapterWire),
     HandoffScope,
     ProjectVerificationKey,
     authenticatedConfigDigest,
@@ -70,17 +81,33 @@ import HostBootstrap.Handoff (
     freshChallenge,
     handoffErrorMessage,
     handoffGrantFromSignature,
+    handoffChildConfigDigest,
+    handoffChildFrame,
     handoffInstalledProject,
+    handoffParentFrame,
+    handoffPhase,
+    handoffPlanRevision,
     handoffPayloadKind,
     handoffScope,
     handoffScopeProject,
     handoffScopeTag,
     handoffVerb,
+    mkRecoveryProjectionBindingFromRoute,
+    recoveryWireGrantFromSignature,
+    renderRecoveryProjectionBinding,
+    takeHandoffFrame,
     verificationKeyDigest,
+    VerifiedHandoff,
     verifiedConfigPayload,
     verifiedHandoffBinding,
+    verifiedHandoffRoute,
     verifyHandoff,
+    withAuthenticatedRootScopeFromWire,
     withHandoffBindingFromWire,
+    withRecoveryProjectionBindingInput,
+    withVerifiedRecoveryChildPackage,
+    withVerifiedRecoveryWire,
+    withVerifiedRootedPayloadBinding,
  )
 import HostBootstrap.Handoff.Protocol (
     ChildProtocolState,
@@ -92,6 +119,7 @@ import HostBootstrap.Handoff.Protocol (
     channelSend,
     childProtocolReceive,
     childProtocolSend,
+    handoffChannel,
     initialChildProtocolState,
     protocolErrorMessage,
     protocolMessage,
@@ -101,56 +129,173 @@ import HostBootstrap.Handoff.Protocol (
  )
 import HostBootstrap.Handoff.Receiver.Internal (
     ReceivedEdge,
+    ReceivedRecoveryDescent,
     mkReceivedEdge,
-    receivedEdgeConfig,
-    receivedEdgeHandoff,
+    mkReceivedRecoveryDescent,
  )
-
--- ---------------------------------------------------------------------------
--- What the receiver knows without a config
-
-{- | The part of an edge a descending binary can state before it has received
-anything.
-
-It is deliberately small. A child cannot independently know the plan revision,
-the broker generation, or the digest of a config it has not seen — those are
-authenticated by the root's signature over the canonical binding, not by
-guessing them. Installed project and scope are fixed by the opaque
-'HandoffScope' passed separately; this record repeats them only as descriptive
-process expectations and can narrow, never reindex, that evidence. It also
-names the invoked verb and payload kind. Anything else is a wrong-edge refusal
-before a signature is even considered.
-
-The child frame is checked separately by @authorizeChildProject@, once the
-config the binding names has actually been admitted.
--}
-data ReceiverExpectation = ReceiverExpectation
-    { receiverProject :: Text
-    -- ^ a descriptive assertion narrowed by the opaque scope evidence
-    , receiverScopeTag :: Text
-    -- ^ a descriptive assertion narrowed by the opaque scope evidence
-    , receiverVerb :: Text
-    -- ^ the verb this binary was invoked as
-    , receiverPayloadKind :: HandoffPayloadKind
-    -- ^ the kind of payload this receiver is prepared to admit
-    }
-    deriving (Eq, Show)
-
--- | The authenticated binding this edge was signed for.
-receivedEdgeBinding ::
-    ReceivedEdge scope brokerGeneration ->
-    HandoffBinding scope brokerGeneration
-receivedEdgeBinding = verifiedHandoffBinding . receivedEdgeHandoff
+import System.IO (
+    Handle,
+    IOMode (ReadMode),
+    hClose,
+    hFlush,
+    openFile,
+    stderr,
+    stdin,
+    stdout,
+ )
+import System.Info (os)
 
 -- ---------------------------------------------------------------------------
 -- The exchange
 
+{- | Run the dedicated child exchange on descriptors nothing else can reach.
+
+A child launched for a recursive lifecycle is handed one duplex channel and it
+is the process's own standard input and output. That is a workable transport
+and an unworkable ambient environment: the very descriptors the root's frames
+travel on are also the ones an ordinary @getLine@ reads from and an ordinary
+@putStrLn@ writes to. A single diagnostic line printed by a configuration
+decoder, a plan projection, or a lifecycle effect is not a cosmetic problem —
+it is a byte in the middle of a length-framed protocol message.
+
+So the receiver takes the descriptors before anything else can. It duplicates
+the original standard input and output into private handles, builds its binary
+channel from those, and only then redirects the global ones for the whole
+callback: standard input to the null device, so an ordinary read sees EOF
+rather than a protocol frame, and standard output to standard error, so an
+ordinary write becomes a diagnostic rather than a corruption. Code running
+under this bracket does not need to know any of that, which is the point — it
+cannot steal or corrupt the channel even by accident, because the handles it
+would have to use no longer name it.
+
+The redirection is a bracket, so it is undone on success, on a refusal, on an
+exception, and on asynchronous cancellation alike, and every duplicate is
+closed afterwards. Nothing here inspects, chooses, or accepts a descriptor: the
+entry takes no channel and no handle, so there is no argument through which a
+caller supplies one and no seam through which a test substitutes one.
+-}
+withIsolatedReceivedHandoffEdge ::
+    InstalledProjectIdentity projectId ->
+    -- | the independently installed verification key — never one the offer supplied
+    ProjectVerificationKey ->
+    ( forall receivedGeneration.
+      ReceivedEdge (Production projectId) receivedGeneration ->
+      AuthenticatedConfigPayload (Production projectId) receivedGeneration ->
+      (ByteString -> IO (Either ReceiverError ())) ->
+      IO (Either Text ())
+    ) ->
+    ( forall receivedGeneration planDigest parentFrame childFrame recoveryWireDigest recoveryWireId verb.
+      ReceivedRecoveryDescent
+        (Production projectId) receivedGeneration planDigest parentFrame childFrame
+        recoveryWireDigest recoveryWireId verb ->
+      (ByteString -> IO (Either ReceiverError ())) ->
+      IO (Either Text ())
+    ) ->
+    ( forall runId receivedGeneration.
+      ReceivedEdge (Harness projectId runId) receivedGeneration ->
+      AuthenticatedConfigPayload (Harness projectId runId) receivedGeneration ->
+      (ByteString -> IO (Either ReceiverError ())) ->
+      IO (Either Text ())
+    ) ->
+    ( forall runId receivedGeneration planDigest parentFrame childFrame recoveryWireDigest recoveryWireId verb.
+      ReceivedRecoveryDescent
+        (Harness projectId runId) receivedGeneration planDigest parentFrame childFrame
+        recoveryWireDigest recoveryWireId verb ->
+      (ByteString -> IO (Either ReceiverError ())) ->
+      IO (Either Text ())
+    ) ->
+    IO (Either ReceiverError ())
+withIsolatedReceivedHandoffEdge
+    project key
+    useProductionConfig useProductionRecovery
+    useHarnessConfig useHarnessRecovery =
+    withProtocolStdio $ \channel ->
+        withReceivedHandoffEdge
+            project channel key
+            useProductionConfig useProductionRecovery
+            useHarnessConfig useHarnessRecovery
+
+{- | Hold the private protocol channel open across one isolated callback.
+
+The order is the whole content of this function. Both duplications happen
+before either redirection, because a handle duplicated after the global one has
+been pointed elsewhere would name the wrong descriptor; the saved pair is taken
+separately from the protocol pair, because the protocol handles are closed at
+the end and the globals still have to be restored from something. The inner
+bracket owns only the redirection, so restoration runs before the outer bracket
+closes anything it would restore from.
+-}
+withProtocolStdio ::
+    (HandoffChannel -> IO (Either ReceiverError ())) ->
+    IO (Either ReceiverError ())
+withProtocolStdio use =
+    Exception.bracket openProtocolStdio closeProtocolStdio $
+        \(inbound, outbound, savedIn, savedOut, sink) ->
+            Exception.bracket_
+                (isolateGlobalStdio sink)
+                (restoreGlobalStdio savedIn savedOut)
+                (handoffChannel inbound outbound >>= use)
+
+{- | Take the protocol pair, the restore pair, and the null sink, in that order. -}
+openProtocolStdio :: IO (Handle, Handle, Handle, Handle, Handle)
+openProtocolStdio = do
+    hFlush stdout
+    inbound <- hDuplicate stdin
+    outbound <- hDuplicate stdout
+    savedIn <- hDuplicate stdin
+    savedOut <- hDuplicate stdout
+    sink <- openFile nullDevicePath ReadMode
+    pure (inbound, outbound, savedIn, savedOut, sink)
+
+{- | Close every duplicate this bracket opened, and nothing global. -}
+closeProtocolStdio :: (Handle, Handle, Handle, Handle, Handle) -> IO ()
+closeProtocolStdio (inbound, outbound, savedIn, savedOut, sink) =
+    mapM_ closeQuietly [inbound, outbound, savedIn, savedOut, sink]
+
+{- | Point the global handles away from the protocol for the callback's life. -}
+isolateGlobalStdio :: Handle -> IO ()
+isolateGlobalStdio sink = do
+    hFlush stdout
+    hDuplicateTo sink stdin
+    hDuplicateTo stderr stdout
+
+{- | Put the global handles back, attempting both regardless of either. -}
+restoreGlobalStdio :: Handle -> Handle -> IO ()
+restoreGlobalStdio savedIn savedOut = do
+    flushQuietly stdout
+    restoreQuietly savedIn stdin
+    restoreQuietly savedOut stdout
+
+restoreQuietly :: Handle -> Handle -> IO ()
+restoreQuietly saved global = do
+    restored <- try (hDuplicateTo saved global)
+    either (\(_ :: Exception.IOException) -> pure ()) pure restored
+
+flushQuietly :: Handle -> IO ()
+flushQuietly handle = do
+    flushed <- try (hFlush handle)
+    either (\(_ :: Exception.IOException) -> pure ()) pure flushed
+
+closeQuietly :: Handle -> IO ()
+closeQuietly handle = do
+    closed <- try (hClose handle)
+    either (\(_ :: Exception.IOException) -> pure ()) pure closed
+
+{- | The host's null device: an open descriptor that is already at EOF. -}
+nullDevicePath :: FilePath
+nullDevicePath
+    | os == "mingw32" = "\\\\.\\NUL"
+    | otherwise = "/dev/null"
+
 {- | Run the child half of one handoff exchange, then act under it.
 
-The continuation is rank-2 in the broker generation, while its scope is fixed
-by the independently obtained 'HandoffScope'. An authenticated generation is
-evidence about itself and cannot be laundered into another one; the received
-config can now feed only the codec for that exact known scope.
+The independently installed project identity and key verify the leading scope
+capsule before one of four closed continuations becomes reachable. Production
+remains indexed by the installed @projectId@; each Harness continuation is
+rank-2 in a fresh @runId@ introduced by the verified capsule. Every continuation
+is also rank-2 in the authenticated broker generation. Config and recovery
+evidence are classified only after the ordinary grant succeeds, and the fixed
+unit result leaves no ordinary evidence-return channel.
 
 A continuation that returns 'Left' declines the edge; the reason is sent to the
 parent as a refusal and returned as 'ReceiverDeclined'. An exception it throws
@@ -158,115 +303,245 @@ is announced the same way and then re-thrown, so a parent never sees a child
 that simply stopped talking.
 -}
 withReceivedHandoffEdge ::
-    HandoffScope scope ->
+    InstalledProjectIdentity projectId ->
     HandoffChannel ->
     -- | the independently installed verification key — never one the offer supplied
     ProjectVerificationKey ->
-    ReceiverExpectation ->
-    (forall receivedGeneration. ReceivedEdge scope receivedGeneration -> IO (Either Text result)) ->
-    IO (Either ReceiverError result)
-withReceivedHandoffEdge scope channel key expectation use = do
+    ( forall receivedGeneration.
+      ReceivedEdge (Production projectId) receivedGeneration ->
+      AuthenticatedConfigPayload (Production projectId) receivedGeneration ->
+      (ByteString -> IO (Either ReceiverError ())) ->
+      IO (Either Text ())
+    ) ->
+    ( forall receivedGeneration planDigest parentFrame childFrame recoveryWireDigest recoveryWireId verb.
+      ReceivedRecoveryDescent
+        (Production projectId) receivedGeneration planDigest parentFrame childFrame
+        recoveryWireDigest recoveryWireId verb ->
+      (ByteString -> IO (Either ReceiverError ())) ->
+      IO (Either Text ())
+    ) ->
+    ( forall runId receivedGeneration.
+      ReceivedEdge (Harness projectId runId) receivedGeneration ->
+      AuthenticatedConfigPayload (Harness projectId runId) receivedGeneration ->
+      (ByteString -> IO (Either ReceiverError ())) ->
+      IO (Either Text ())
+    ) ->
+    ( forall runId receivedGeneration planDigest parentFrame childFrame recoveryWireDigest recoveryWireId verb.
+      ReceivedRecoveryDescent
+        (Harness projectId runId) receivedGeneration planDigest parentFrame childFrame
+        recoveryWireDigest recoveryWireId verb ->
+      (ByteString -> IO (Either ReceiverError ())) ->
+      IO (Either Text ())
+    ) ->
+    IO (Either ReceiverError ())
+withReceivedHandoffEdge
+    project channel key
+    useProductionConfig useProductionRecovery
+    useHarnessConfig useHarnessRecovery = do
     active <- newIORef 0
-    outcome <- runAttempt (exchange scope channel key expectation active use)
+    let attempt = do
+            (offer, afterOffer) <- receiveMessage channel initialChildProtocolState
+            liftAttempt (writeIORef active (protocolMessageRequestId offer))
+            let requestId = protocolMessageRequestId offer
+            (payload, token, bindingBytes, authentication) <- offerFields offer
+            (scopeWire, authenticationRemainder) <-
+                fromHandoff (takeHandoffFrame authentication)
+            scoped <-
+                fromHandoff
+                    ( withAuthenticatedRootScopeFromWire
+                        project
+                        key
+                        scopeWire
+                        ( \authenticated scope ->
+                            receiveScopedHandoffEdge
+                                authenticated scope channel key afterOffer requestId active
+                                payload token bindingBytes authenticationRemainder
+                                useProductionConfig useProductionRecovery
+                        )
+                        ( \authenticated scope ->
+                            receiveScopedHandoffEdge
+                                authenticated scope channel key afterOffer requestId active
+                                payload token bindingBytes authenticationRemainder
+                                useHarnessConfig useHarnessRecovery
+                        )
+                    )
+            scoped
+    outcome <- runAttempt attempt
     case outcome of
         Right value -> pure (Right value)
         Left failure -> do
             announceRefusal channel active failure
             pure (Left failure)
 
-exchange ::
+{- | Continue only after the capsule verifier has fixed the execution scope. -}
+receiveScopedHandoffEdge ::
+    AuthenticatedRootScope scope ->
     HandoffScope scope ->
     HandoffChannel ->
     ProjectVerificationKey ->
-    ReceiverExpectation ->
-    IORef Word64 ->
-    (forall brokerGeneration. ReceivedEdge scope brokerGeneration -> IO (Either Text result)) ->
-    Attempt result
-exchange scope channel key expectation active use = do
-    (offer, afterOffer) <- receiveMessage channel initialChildProtocolState
-    liftAttempt (writeIORef active (protocolMessageRequestId offer))
-    let requestId = protocolMessageRequestId offer
-    (payload, token, bindingBytes, offeredKeyDigest) <- offerFields offer
-    requireInstalledKey key offeredKeyDigest
-    continued <-
-        fromHandoff
-            ( withHandoffBindingFromWire scope bindingBytes $ \binding ->
-                exchangeBound
-                    scope
-                    channel
-                    key
-                    expectation
-                    active
-                    use
-                    requestId
-                    payload
-                    token
-                    bindingBytes
-                    afterOffer
-                    binding
-            )
-    continued
-
-exchangeBound ::
-    HandoffScope scope ->
-    HandoffChannel ->
-    ProjectVerificationKey ->
-    ReceiverExpectation ->
-    IORef Word64 ->
-    (forall receivedGeneration. ReceivedEdge scope receivedGeneration -> IO (Either Text result)) ->
-    Word64 ->
-    ByteString ->
-    ByteString ->
-    ByteString ->
     ChildProtocolState ->
-    HandoffBinding scope brokerGeneration ->
-    Attempt result
-exchangeBound scope channel key expectation active use requestId payload token bindingBytes afterOffer binding = do
-    checkExpectation scope expectation binding
-    challenge <- liftAttempt freshChallenge
-    afterChallenge <-
-        sendMessage channel afterOffer ChallengeTag requestId [challengeBytes challenge]
-    (grantMessage, afterGrant) <- receiveMessage channel afterChallenge
-    (signature, signerKeyDigest) <- grantFields grantMessage
-    requireInstalledKey key signerKeyDigest
-    verified <-
-        fromHandoff
-            ( verifyHandoff
-                key
-                (frameWire payload <> frameWire token <> frameWire bindingBytes)
-                binding
-                challenge
-                (handoffGrantFromSignature signature)
+    Word64 ->
+    IORef Word64 ->
+    ByteString ->
+    ByteString ->
+    ByteString ->
+    ByteString ->
+    ( forall receivedGeneration.
+      ReceivedEdge scope receivedGeneration ->
+      AuthenticatedConfigPayload scope receivedGeneration ->
+      (ByteString -> IO (Either ReceiverError ())) ->
+      IO (Either Text ())
+    ) ->
+    ( forall receivedGeneration planDigest parentFrame childFrame recoveryWireDigest recoveryWireId verb.
+      ReceivedRecoveryDescent
+        scope receivedGeneration planDigest parentFrame childFrame
+        recoveryWireDigest recoveryWireId verb ->
+      (ByteString -> IO (Either ReceiverError ())) ->
+      IO (Either Text ())
+    ) ->
+    Attempt ()
+receiveScopedHandoffEdge
+    authenticated scope channel key afterOffer requestId active
+    payload token bindingBytes authentication useConfig useRecovery = do
+        requireOfferPayloadBound payload
+        (offeredKeyDigest, evidence) <- fromHandoff (takeHandoffFrame authentication)
+        requireInstalledKey key offeredKeyDigest
+        bound <-
+            fromHandoff
+                ( withHandoffBindingFromWire scope bindingBytes $ \binding -> do
+                    checkScope scope binding
+                    challenge <- liftAttempt freshChallenge
+                    afterChallenge <-
+                        sendMessage
+                            channel
+                            afterOffer
+                            ChallengeTag
+                            requestId
+                            [challengeBytes challenge]
+                    (grantMessage, afterGrant) <- receiveMessage channel afterChallenge
+                    (signature, signerKeyDigest) <- grantFields grantMessage
+                    requireInstalledKey key signerKeyDigest
+                    verified <-
+                        fromHandoff
+                            ( verifyHandoff
+                                key
+                                (frameWire payload <> frameWire token <> frameWire bindingBytes)
+                                binding
+                                challenge
+                                (handoffGrantFromSignature signature)
+                            )
+                    (acceptedDigest, branch) <-
+                        classifyVerified
+                            authenticated
+                            channel
+                            requestId
+                            key
+                            evidence
+                            verified
+                            useConfig
+                            useRecovery
+                    afterAccepted <-
+                        sendMessage
+                            channel
+                            afterGrant
+                            AcceptedTag
+                            requestId
+                            [TextEncoding.encodeUtf8 acceptedDigest]
+                    used <-
+                        liftAttempt
+                            (try (runTerminalAction channel afterAccepted requestId active branch))
+                    case used of
+                        Left (failure :: SomeException) -> do
+                            liftAttempt
+                                ( announceRefusal
+                                    channel
+                                    active
+                                    (ReceiverCrashed (firstLine (show failure)))
+                                )
+                            liftAttempt (throwIO failure)
+                        Right (Left failure) -> failAttempt failure
+                        Right (Right ()) -> pure ()
+                )
+        bound
+
+runTerminalAction ::
+    HandoffChannel ->
+    ChildProtocolState ->
+    Word64 ->
+    IORef Word64 ->
+    ((ByteString -> IO (Either ReceiverError ())) -> IO (Either Text ())) ->
+    IO (Either ReceiverError ())
+runTerminalAction channel state requestId active useTerminal = Exception.mask $ \restore -> do
+    sendState <- newMVar (False, False, False)
+    let sendReport report = do
+            sent <- modifyMVarMasked sendState $ \current@(closed, attempted, _) ->
+                if closed
+                    then
+                        pure
+                            ( current
+                            , Right (Left (ReceiverDeclined "the terminal report sender is closed"))
+                            )
+                    else
+                        if attempted
+                            then
+                                pure
+                                    ( current
+                                    , Right
+                                        (Left (ReceiverDeclined "the terminal report sender was already used"))
+                                    )
+                            else do
+                                attemptedSend <-
+                                    Exception.try
+                                        (runAttempt (sendMessage channel state CompletedTag requestId [report]))
+                                case attemptedSend of
+                                    Left (failure :: SomeException) ->
+                                        pure ((False, True, False), Left failure)
+                                    Right outcome -> do
+                                        case outcome of
+                                            Right _ -> writeIORef active 0
+                                            Left _ -> pure ()
+                                        pure
+                                            ( (False, True, either (const False) (const True) outcome)
+                                            , Right (() <$ outcome)
+                                            )
+            case sent of
+                Left failure -> throwIO failure
+                Right outcome -> pure outcome
+    used <- Exception.try (restore (useTerminal sendReport))
+    delivered <-
+        Exception.uninterruptibleMask_
+            ( modifyMVar sendState $ \(_, attempted, completed) ->
+                pure ((True, attempted, completed), completed)
             )
-    admitted <- fromHandoff (verifiedConfigPayload verified)
-    let edge = mkReceivedEdge verified admitted channel requestId
-    afterAccepted <-
-        sendMessage
-            channel
-            afterGrant
-            AcceptedTag
-            requestId
-            [TextEncoding.encodeUtf8 (authenticatedConfigDigest admitted)]
-    used <- liftAttempt (try (use edge))
     case used of
-        Left (failure :: SomeException) -> do
-            -- Announce before re-throwing: the parent is entitled to know the
-            -- child accepted the edge and then failed under it, which is a
-            -- different thing from the child never having accepted it.
-            liftAttempt (announceRefusal channel active (ReceiverCrashed (firstLine (show failure))))
-            liftAttempt (throwIO failure)
-        Right (Left reason) -> failAttempt (ReceiverDeclined reason)
-        Right (Right value) -> do
-            _ <- sendMessage channel afterAccepted CompletedTag requestId ["ok"]
-            pure value
+        Left (failure :: SomeException) -> throwIO failure
+        Right (Left reason) -> pure (Left (ReceiverDeclined reason))
+        Right (Right ())
+            | delivered -> pure (Right ())
+            | otherwise ->
+                pure
+                    ( Left
+                        (ReceiverDeclined "the terminal action returned without one successful report send")
+                    )
 
 -- ---------------------------------------------------------------------------
 -- Message shapes
 
 offerFields :: ProtocolMessage -> Attempt (ByteString, ByteString, ByteString, ByteString)
 offerFields message = case protocolMessageFields message of
-    [payload, token, binding, keyDigest] -> pure (payload, token, binding, keyDigest)
+    [payload, token, binding, authentication] ->
+        pure (payload, token, binding, authentication)
     fields -> failAttempt (ReceiverMalformedMessage OfferTag (length fields))
+
+maxEmbeddedOfferPayloadBytes :: Int
+maxEmbeddedOfferPayloadBytes = 7 * 1024 * 1024
+
+requireOfferPayloadBound :: ByteString -> Attempt ()
+requireOfferPayloadBound payload
+    | ByteString.length payload <= maxEmbeddedOfferPayloadBytes = pure ()
+    | otherwise =
+        failAttempt
+            (ReceiverWrongEdge "the embedded Offer payload exceeds its strict sub-ceiling")
 
 grantFields :: ProtocolMessage -> Attempt (ByteString, ByteString)
 grantFields message = case protocolMessageFields message of
@@ -286,36 +561,161 @@ requireInstalledKey key offered
     | TextEncoding.encodeUtf8 (verificationKeyDigest key) == offered = pure ()
     | otherwise = failAttempt ReceiverKeyMismatch
 
-{- | Refuse an edge that does not describe this binary, before any signature
-work.
--}
-checkExpectation ::
+-- | Narrow only the independently installed scope before signature work.
+checkScope ::
     HandoffScope scope ->
-    ReceiverExpectation ->
     HandoffBinding scope brokerGeneration ->
     Attempt ()
-checkExpectation scope expectation binding = do
+checkScope scope binding = do
     require
         (handoffInstalledProject binding == handoffScopeProject scope)
         ("the offered edge names project " <> handoffInstalledProject binding)
     require
         (handoffScope binding == handoffScopeTag scope)
         ("the offered edge names scope " <> handoffScope binding)
-    require
-        (handoffInstalledProject binding == receiverProject expectation)
-        ("the offered edge names project " <> handoffInstalledProject binding)
-    require
-        (handoffScope binding == receiverScopeTag expectation)
-        ("the offered edge names scope " <> handoffScope binding)
-    require
-        (handoffVerb binding == receiverVerb expectation)
-        ("the offered edge authorizes " <> handoffVerb binding)
-    require
-        (handoffPayloadKind binding == receiverPayloadKind expectation)
-        (Text.pack ("the offered payload is " <> show (handoffPayloadKind binding)))
   where
     require True _ = pure ()
     require False detail = failAttempt (ReceiverWrongEdge detail)
+
+{- | Classify only after the ordinary one-use edge is authenticated.
+
+The returned action is deliberately not run here. The caller first advances
+the protocol through 'AcceptedTag'; only then can either callback observe its
+joint branch evidence.
+-}
+classifyVerified ::
+    AuthenticatedRootScope scope ->
+    HandoffChannel ->
+    Word64 ->
+    ProjectVerificationKey ->
+    ByteString ->
+    VerifiedHandoff scope brokerGeneration ->
+    ( ReceivedEdge scope brokerGeneration ->
+      AuthenticatedConfigPayload scope brokerGeneration ->
+      (ByteString -> IO (Either ReceiverError ())) ->
+      IO (Either Text ())
+    ) ->
+    ( forall planDigest parentFrame childFrame recoveryWireDigest recoveryWireId verb.
+      ReceivedRecoveryDescent
+        scope brokerGeneration planDigest parentFrame childFrame
+        recoveryWireDigest recoveryWireId verb ->
+      (ByteString -> IO (Either ReceiverError ())) ->
+      IO (Either Text ())
+    ) ->
+    Attempt (Text, (ByteString -> IO (Either ReceiverError ())) -> IO (Either Text ()))
+classifyVerified authenticated channel requestId key evidence verified useConfig useRecovery =
+    case handoffPayloadKind binding of
+        NarrowedProjectConfig -> do
+            rootedBytes <- configEvidence evidence
+            _ <- fromHandoff (withVerifiedRootedPayloadBinding verified rootedBytes id)
+            admitted <- fromHandoff (verifiedConfigPayload verified)
+            pure
+                ( authenticatedConfigDigest admitted
+                , \sendReport -> do
+                    let edge = mkReceivedEdge authenticated verified channel requestId
+                    useConfig edge admitted sendReport
+                )
+        RecoveryAdapterWire ->
+            case (handoffVerb binding, handoffPhase binding) of
+                ("down", "teardown") ->
+                    classifyRecovery ProjectDown
+                ("destroy", "teardown") ->
+                    classifyRecovery ProjectDestroy
+                ("up", _) ->
+                    failAttempt
+                        (ReceiverWrongEdge "a recovery adapter cannot authorize project up")
+                (_, phase) ->
+                    failAttempt
+                        ( ReceiverWrongEdge
+                            ("a recovery adapter must authorize teardown, received " <> phase)
+                        )
+  where
+    binding = verifiedHandoffBinding verified
+
+    classifyRecovery ::
+        ProjectVerb verb ->
+        Attempt (Text, (ByteString -> IO (Either ReceiverError ())) -> IO (Either Text ()))
+    classifyRecovery verb = do
+        (rootedBytes, projectionBytes, signature) <- recoveryEvidence evidence
+        rooted <- fromHandoff (withVerifiedRootedPayloadBinding verified rootedBytes id)
+        (package, adapter) <-
+            fromHandoff
+                ( withVerifiedRecoveryChildPackage verified rooted $ \package _childConfig adapter ->
+                    (package, adapter)
+                )
+        inputAction <-
+            fromHandoff
+                ( withRecoveryProjectionBindingInput
+                    (handoffPlanRevision binding)
+                    (handoffParentFrame binding)
+                    (handoffChildFrame binding)
+                    ( \input ->
+                        case
+                            mkRecoveryProjectionBindingFromRoute
+                                verb
+                                (verifiedHandoffRoute verified)
+                                input
+                                adapter
+                                ( \projection ->
+                                    if renderRecoveryProjectionBinding projection /= projectionBytes
+                                        then Left
+                                            ( HandoffBindingMismatch
+                                                "the recovery evidence projection is not canonical for the authenticated adapter"
+                                            )
+                                        else do
+                                            grant <- recoveryWireGrantFromSignature projection signature
+                                            withVerifiedRecoveryWire
+                                                key
+                                                projection
+                                                adapter
+                                                grant
+                                                ( \wire sendReport -> do
+                                                        let edge =
+                                                                mkReceivedEdge
+                                                                    authenticated
+                                                                    verified
+                                                                    channel
+                                                                    requestId
+                                                            descent =
+                                                                mkReceivedRecoveryDescent
+                                                                    edge
+                                                                    rooted
+                                                                    package
+                                                                    verb
+                                                                    projection
+                                                                    grant
+                                                                    wire
+                                                        useRecovery descent sendReport
+                                                )
+                                )
+                        of
+                            Left failure -> failAttempt (ReceiverHandoffFailure failure)
+                            Right result -> fromHandoff result
+                    )
+                )
+        action <- inputAction
+        pure (handoffChildConfigDigest binding, action)
+
+configEvidence :: ByteString -> Attempt ByteString
+configEvidence evidence = do
+    (rooted, trailing) <- fromHandoff (takeHandoffFrame evidence)
+    if ByteString.null trailing
+        then pure rooted
+        else failAttempt
+            (ReceiverHandoffFailure (HandoffWireTrailingBytes (ByteString.length trailing)))
+
+recoveryEvidence :: ByteString -> Attempt (ByteString, ByteString, ByteString)
+recoveryEvidence evidence = do
+    (rooted, afterRooted) <- fromHandoff (takeHandoffFrame evidence)
+    (projection, afterProjection) <- fromHandoff (takeHandoffFrame afterRooted)
+    (signature, trailing) <- fromHandoff (takeHandoffFrame afterProjection)
+    if ByteString.null trailing
+        then pure (rooted, projection, signature)
+        else
+            failAttempt
+                ( ReceiverHandoffFailure
+                    (HandoffWireTrailingBytes (ByteString.length trailing))
+                )
 
 -- ---------------------------------------------------------------------------
 -- Sequenced transport

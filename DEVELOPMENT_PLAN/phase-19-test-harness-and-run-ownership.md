@@ -116,7 +116,7 @@ None.
 #### Objective
 
 Retain one exact Harness project plan through generated-config ownership and drive the common lifecycle
-interpreter directly.
+interpreter through its closed command-owned entry.
 
 #### Deliverables
 
@@ -124,10 +124,11 @@ interpreter directly.
   `ProjectPlan (Harness projectId runId) ...`.
 - The generated `runId` remains in every draft, frame, snapshot, lease, journal, cursor, authority, and
   interpreted node index.
-- The generated-config bracket retains that exact plan while the common forward and reverse interpreters run.
+- The generated-config bracket retains that exact plan while the hidden fixed root-Up entry and exact reverse interpreter run.
 - `TestSuite` owns the case matrix and assertions, while project lifecycle resides in the plan and command
   interpreter.
-- Harness dispatch uses the common `forward`, `topology`, snapshot, resource, and chain boundaries directly.
+- Harness dispatch uses the common `forward`, `topology`, snapshot, resource, and Chain foundations through
+  the Sprint 17.8 hidden root-Up entry; only that entry derives raw execute evidence.
 - Test case selection remains outside project-plan construction.
 - Production evidence cannot enter the Harness path.
 
@@ -190,10 +191,53 @@ not, and that `observationDetail`'s own rendering of each observation classifies
 
 None.
 
+### Sprint 19.5: Harness root-scope capsule production [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/harness_workflow.md`,
+`documents/architecture/binary_context_config.md`
+
+#### Objective
+
+Supply the exact generative Harness run evidence to the authenticated root-scope capsule without making the
+child reconstruct a `runId` or authority from text.
+
+#### Deliverables
+
+- The one call-site adoption combines the live `HarnessAuthority projectId runId` with the installed project
+  identity to construct the matching `HandoffScope (Harness projectId runId)`, then passes that scope and its
+  live typed `RootBroker` to the generic capsule producer.
+- Production and Harness capsule production remain closed branches; a Production identity cannot substitute
+  for generative Harness run evidence.
+- The capsule's exact seven frames carry only codec domain/version, installed project, closed Harness kind,
+  canonical run text, installed-key digest, and signature; it does not bind store, broker generation, verb,
+  Offer, edge, payload, or plan coordinates and never serializes `HarnessAuthority` or a signing key.
+- A child obtains its existential Harness scope only through the lower authenticated scope-first receiver;
+  verified run text introduces a fresh `runId` but never reconstructs `HarnessAuthority`, while `argv`, config
+  text, and envelope-supplied keys introduce no phantom.
+- The sprint changes at most two production modules, adds no named type, adopts one call site, targets at most
+  300 production lines, and splits before exceeding 400.
+
+#### Validation
+
+`HarnessSpec`, `HandoffSpec`, and compile-fail fixtures cover Production/Harness separation, wrong-run,
+cross-scope and mismatched-live-broker refusal, signature tampering, rank-2 scope non-escape, and absence of a
+caller-supplied scope or key route. The capsule tests assert that store/generation/verb/edge coordinates remain
+outside this scope-only value; the host-static full suite closes the sprint.
+
+#### Remaining Work
+
+Implement the call-site adoption after the authenticated-handoff phase exposes the generic capsule producer
+and scope-first receiver.
+
 ## Phase Remaining Work
 
-The live half of the phase gate. Every sprint's own deliverables are closed by the host static gate, while the
-phase still owes two linux-cpu confirmations: rerun the recovery phase's deterministic interruption matrix with
+Implement Sprint 19.5, then close the live half of the phase gate. The completed sprints' own deliverables are
+closed by the host static gate, while the phase also owes two linux-cpu confirmations: rerun the recovery
+phase's deterministic interruption matrix with
 `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern recovery-interruption'`
 from `core/`, then run `hostbootstrap run -- test run all` against live harness infrastructure. Dated evidence
 records both results together. This repository's current development host is aarch64-osx.

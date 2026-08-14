@@ -481,9 +481,55 @@ fitsCases =
 
 sizingCases :: [TestTree]
 sizingCases =
-  [ testCase "colima sizing emits the full profiled argv" $
-      colimaSizingArgs "demo" demoResources
-        @?= Right ["start", "--profile", "demo", "--runtime", "docker", "--activate=false", "--cpus", "4", "--memory", "8", "--disk", "20"],
+  [ testCase "colima sizing splits one 40 GiB ceiling across fixed root and data disks" $
+      colimaSizingArgs "demo" (ResourceEnvelope {cpu = 4, memory = "8GiB", storage = "40GiB"})
+        @?= Right
+          [ "start",
+            "--profile",
+            "demo",
+            "--runtime",
+            "docker",
+            "--activate=false",
+            "--template=false",
+            "--ssh-config=false",
+            "--mount",
+            "none",
+            "--kubernetes=false",
+            "--network-address=false",
+            "--mount-inotify=false",
+            "--cpus",
+            "4",
+            "--memory",
+            "8",
+            "--root-disk",
+            "20",
+            "--disk",
+            "20"
+          ],
+    testCase "colima sizing rejects totals that cannot exceed the fixed writable root disk" $ do
+      colimaSizingArgs "demo" (ResourceEnvelope {cpu = 4, memory = "8GiB", storage = "20GiB"})
+        @?= Left "Colima storage must exceed the fixed 20 GiB writable root disk; got 20 GiB"
+      colimaSizingArgs "demo" (ResourceEnvelope {cpu = 4, memory = "8GiB", storage = "19GiB"})
+        @?= Left "Colima storage must exceed the fixed 20 GiB writable root disk; got 19 GiB",
+    testCase "colima sizing rejects an inexact total before splitting the disks" $
+      colimaSizingArgs "demo" (ResourceEnvelope {cpu = 4, memory = "8GiB", storage = "42949672961"})
+        @?= Left "Colima storage must be exactly representable as whole GiB; got 42949672961 bytes",
+    testCase "colima sizing closes ambient templates, host config, mounts, and network helpers" $ do
+      args <-
+        either
+          assertFailure
+          pure
+          (colimaSizingArgs "demo" (ResourceEnvelope {cpu = 4, memory = "8GiB", storage = "40GiB"}))
+      mapM_
+        (\flag -> assertBool ("missing safe Colima flag: " ++ flag) (flag `elem` args))
+        [ "--activate=false",
+          "--template=false",
+          "--ssh-config=false",
+          "--kubernetes=false",
+          "--network-address=false",
+          "--mount-inotify=false"
+        ]
+      assertBool "Colima home mounts must be disabled" (["--mount", "none"] `isInfixOf` args),
     testCase "provider storage policy names each represented wall" $ do
       storageCordonPolicy ColimaVmStorage @?= StorageCordonSupported ColimaDiskFlag
       storageCordonPolicy LimaVmStorage @?= StorageCordonSupported LimaDiskFlag
@@ -493,8 +539,30 @@ sizingCases =
       storageCordonPolicy BareLinuxStorage
         @?= StorageCordonUnsupported BareLinuxQuotaAndImageGcUnavailable,
     testCase "colima handles the bare 8Gi form" $
-      colimaSizingArgs "demo" (ResourceEnvelope {cpu = 2, memory = "8Gi", storage = "20Gi"})
-        @?= Right ["start", "--profile", "demo", "--runtime", "docker", "--activate=false", "--cpus", "2", "--memory", "8", "--disk", "20"],
+      colimaSizingArgs "demo" (ResourceEnvelope {cpu = 2, memory = "8Gi", storage = "40Gi"})
+        @?= Right
+          [ "start",
+            "--profile",
+            "demo",
+            "--runtime",
+            "docker",
+            "--activate=false",
+            "--template=false",
+            "--ssh-config=false",
+            "--mount",
+            "none",
+            "--kubernetes=false",
+            "--network-address=false",
+            "--mount-inotify=false",
+            "--cpus",
+            "2",
+            "--memory",
+            "8",
+            "--root-disk",
+            "20",
+            "--disk",
+            "20"
+          ],
     testCase "lima sizing emits VM resource flags" $
       limaSizingArgs demoResources
         @?= Right ["--cpus", "4", "--memory", "8", "--disk", "20"],

@@ -1381,6 +1381,7 @@ representationCases =
             , "withHarnessLifecycleProfile"
             , "withProjectPlan profile runRoot validated drafts"
             , "withCurrentFrame plan"
+            , "LifecycleContext.withValidatedLifecycleContext runRoot store plan"
             , "beginOwnedHarnessBinding closeControl"
             , "withPersistedPlanSnapshot rootAuthority unbound plan"
             , "armOwnedHarnessBoundClose closeControl lease"
@@ -1404,6 +1405,13 @@ representationCases =
         assertBool
             "the fail-closed binding sentinel must precede durable plan binding"
             (appearsBefore "beginOwnedHarnessBinding closeControl" "withPersistedPlanSnapshot rootAuthority unbound plan" normalized)
+        assertBool
+            "root lifecycle context admission must precede durable plan binding"
+            ( appearsBefore
+                "LifecycleContext.withValidatedLifecycleContext runRoot store plan"
+                "withPersistedPlanSnapshot rootAuthority unbound plan"
+                normalized
+            )
         assertBool
             "the exact bound fallback must be armed before generated-config work"
             (appearsBefore "armOwnedHarnessBoundClose closeControl lease" "acquireOwnedRunConfig" normalized)

@@ -40,6 +40,7 @@ import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import qualified Data.ByteString as ByteString
 import Data.ByteString (ByteString)
 import Data.Word (Word16, Word64, Word8)
+import HostBootstrap.Handoff (renderLifecycleAcknowledgement)
 import System.IO (
     BufferMode (BlockBuffering),
     Handle,
@@ -99,6 +100,11 @@ data ProtocolTag
     | -- | Response field: recovery-domain signature (never a key).
       RecoveryResponseTag
     | RefusedTag
+    | AcknowledgedTag
+    | LifecycleAckRequestTag
+    | LifecycleAckResponseTag
+    | RootedLifecycleRequestTag
+    | RootedLifecycleResponseTag
     deriving (Eq, Ord, Show)
 
 {- | One structurally valid message.  Field bytes are opaque to this layer and
@@ -160,6 +166,11 @@ expectedFieldCount tag = case tag of
     RecoveryRequestTag -> 2
     RecoveryResponseTag -> 1
     RefusedTag -> 2
+    AcknowledgedTag -> 1
+    LifecycleAckRequestTag -> 1
+    LifecycleAckResponseTag -> 1
+    RootedLifecycleRequestTag -> 1
+    RootedLifecycleResponseTag -> 1
 
 -- | Encode one message as a complete outer frame.
 encodeProtocolMessage :: ProtocolMessage -> ByteString
@@ -316,8 +327,23 @@ data ChildProtocolState
     | ChildAwaitingGrant Word64
     | ChildMustSendAccepted Word64
     | ChildRunning Word64
+    | ChildAwaitingResponse Word64 ProtocolTag
+    | ChildAwaitingAcknowledgement Word64 ByteString
     | ChildFinished
-    deriving (Eq, Show)
+    deriving (Eq)
+
+instance Show ChildProtocolState where
+    show state = case state of
+        ChildAwaitingOffer -> "ChildAwaitingOffer"
+        ChildMustSendChallenge request -> "ChildMustSendChallenge " ++ show request
+        ChildAwaitingGrant request -> "ChildAwaitingGrant " ++ show request
+        ChildMustSendAccepted request -> "ChildMustSendAccepted " ++ show request
+        ChildRunning request -> "ChildRunning " ++ show request
+        ChildAwaitingResponse request response ->
+            "ChildAwaitingResponse " ++ show request ++ " " ++ show response
+        ChildAwaitingAcknowledgement request _ ->
+            "ChildAwaitingAcknowledgement " ++ show request ++ " <exact>"
+        ChildFinished -> "ChildFinished"
 
 initialChildProtocolState :: ChildProtocolState
 initialChildProtocolState = ChildAwaitingOffer
@@ -345,10 +371,13 @@ childProtocolReceive state message = case (state, protocolMessageTag message) of
     (ChildAwaitingGrant expected, GrantTag) ->
         requireRequest expected requestId (ChildMustSendAccepted expected)
     (ChildAwaitingGrant expected, RefusedTag) -> requireRequest expected requestId ChildFinished
-    (ChildRunning expected, OfferResponseTag) -> requireRequest expected requestId state
-    (ChildRunning expected, GrantResponseTag) -> requireRequest expected requestId state
-    (ChildRunning expected, ActivationSignResponseTag) -> requireRequest expected requestId state
-    (ChildRunning expected, RecoveryResponseTag) -> requireRequest expected requestId state
+    (ChildAwaitingResponse expected response, observed)
+        | observed == response -> requireRequest expected requestId (ChildRunning expected)
+    (ChildAwaitingResponse expected _, RefusedTag) -> requireRequest expected requestId ChildFinished
+    (ChildAwaitingAcknowledgement expected acknowledgement, AcknowledgedTag) ->
+        requireAcknowledgement expected acknowledgement message
+    (ChildAwaitingAcknowledgement expected _, RefusedTag) ->
+        requireRequest expected requestId ChildFinished
     (ChildRunning expected, RefusedTag) -> requireRequest expected requestId ChildFinished
     _ -> Left (ProtocolInvalidTransition "receive" state (protocolMessageTag message))
   where
@@ -366,17 +395,31 @@ childProtocolSend state message = case (state, protocolMessageTag message) of
         requireRequest expected requestId (ChildAwaitingGrant expected)
     (ChildMustSendAccepted expected, AcceptedTag) ->
         requireRequest expected requestId (ChildRunning expected)
-    (ChildRunning expected, OfferRequestTag) -> requireRequest expected requestId state
-    (ChildRunning expected, GrantRequestTag) -> requireRequest expected requestId state
+    (ChildRunning expected, OfferRequestTag) ->
+        requireRequest expected requestId (ChildAwaitingResponse expected OfferResponseTag)
+    (ChildRunning expected, GrantRequestTag) ->
+        requireRequest expected requestId (ChildAwaitingResponse expected GrantResponseTag)
     -- Only an *admitted* child may ask for a signature. Reachable from
     -- 'ChildRunning' alone, exactly like the other two relay requests: a frame
     -- that has not completed its own admission cannot ask the root to sign
     -- anything.
-    (ChildRunning expected, ActivationSignRequestTag) -> requireRequest expected requestId state
+    (ChildRunning expected, ActivationSignRequestTag) ->
+        requireRequest expected requestId (ChildAwaitingResponse expected ActivationSignResponseTag)
     -- Recovery signing is a relay request, not a new entry.  Only a frame that
     -- completed its own admission reaches 'ChildRunning' and can raise it.
-    (ChildRunning expected, RecoveryRequestTag) -> requireRequest expected requestId state
-    (ChildRunning expected, CompletedTag) -> requireRequest expected requestId ChildFinished
+    (ChildRunning expected, RecoveryRequestTag) ->
+        requireRequest expected requestId (ChildAwaitingResponse expected RecoveryResponseTag)
+    (ChildRunning expected, LifecycleAckRequestTag) ->
+        requireRequest expected requestId (ChildAwaitingResponse expected LifecycleAckResponseTag)
+    (ChildRunning expected, RootedLifecycleRequestTag) ->
+        requireRequest expected requestId (ChildAwaitingResponse expected RootedLifecycleResponseTag)
+    (ChildRunning expected, CompletedTag) -> do
+        requireRequest expected requestId ()
+        case protocolMessageFields message of
+            [report] -> case renderLifecycleAcknowledgement report of
+                Left _ -> Left ProtocolLifecycleReportInvalid
+                Right acknowledgement -> Right (ChildAwaitingAcknowledgement expected acknowledgement)
+            _ -> Left (ProtocolWrongFieldCount CompletedTag 1 (length (protocolMessageFields message)))
     (_, RefusedTag)
         | state /= ChildFinished -> requireStateRequest state requestId ChildFinished
     _ -> Left (ProtocolInvalidTransition "send" state (protocolMessageTag message))
@@ -389,12 +432,27 @@ requireStateRequest state actual successor = case state of
     ChildAwaitingGrant expected -> requireRequest expected actual successor
     ChildMustSendAccepted expected -> requireRequest expected actual successor
     ChildRunning expected -> requireRequest expected actual successor
+    ChildAwaitingResponse expected _ -> requireRequest expected actual successor
+    ChildAwaitingAcknowledgement expected _ -> requireRequest expected actual successor
     _ -> Left (ProtocolInvalidTransition "send" state RefusedTag)
 
 requireRequest :: Word64 -> Word64 -> result -> Either ProtocolError result
 requireRequest expected actual result
     | expected == actual = Right result
     | otherwise = Left (ProtocolRequestMismatch expected actual)
+
+requireAcknowledgement ::
+    Word64 ->
+    ByteString ->
+    ProtocolMessage ->
+    Either ProtocolError ChildProtocolState
+requireAcknowledgement expected acknowledgement message = do
+    requireRequest expected (protocolMessageRequestId message) ()
+    case protocolMessageFields message of
+        [observed]
+            | observed == acknowledgement -> Right ChildFinished
+            | otherwise -> Left ProtocolAcknowledgementMismatch
+        fields -> Left (ProtocolWrongFieldCount AcknowledgedTag 1 (length fields))
 
 -- | Structural and transport failures.  No constructor carries protocol field
 -- bytes, tokens, config text, keys, challenges, or signatures.
@@ -409,6 +467,8 @@ data ProtocolError
     | ProtocolZeroRequestId
     | ProtocolWrongFieldCount ProtocolTag Int Int
     | ProtocolRequestMismatch Word64 Word64
+    | ProtocolLifecycleReportInvalid
+    | ProtocolAcknowledgementMismatch
     | ProtocolInvalidTransition String ChildProtocolState ProtocolTag
     | ProtocolIOFailure String
     deriving (Eq, Show)
@@ -447,6 +507,9 @@ protocolErrorMessage failure = case failure of
             ++ show actual
             ++ " does not match active request "
             ++ show expected
+    ProtocolLifecycleReportInvalid -> "handoff protocol: invalid lifecycle report"
+    ProtocolAcknowledgementMismatch ->
+        "handoff protocol: lifecycle acknowledgement differs"
     ProtocolInvalidTransition direction state tag ->
         "handoff protocol: cannot "
             ++ direction
@@ -489,6 +552,11 @@ tagByte tag = case tag of
     ActivationSignResponseTag -> 12
     RecoveryRequestTag -> 13
     RecoveryResponseTag -> 14
+    AcknowledgedTag -> 15
+    LifecycleAckRequestTag -> 16
+    LifecycleAckResponseTag -> 17
+    RootedLifecycleRequestTag -> 18
+    RootedLifecycleResponseTag -> 19
 
 byteTag :: Word8 -> Either ProtocolError ProtocolTag
 byteTag raw = case raw of
@@ -506,6 +574,11 @@ byteTag raw = case raw of
     12 -> Right ActivationSignResponseTag
     13 -> Right RecoveryRequestTag
     14 -> Right RecoveryResponseTag
+    15 -> Right AcknowledgedTag
+    16 -> Right LifecycleAckRequestTag
+    17 -> Right LifecycleAckResponseTag
+    18 -> Right RootedLifecycleRequestTag
+    19 -> Right RootedLifecycleResponseTag
     _ -> Left (ProtocolUnknownTag raw)
 
 word16BigEndian :: Word16 -> [Word8]

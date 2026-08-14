@@ -61,6 +61,8 @@ module HostBootstrap.ProjectPlan
     , topologyFrameLabel
     , topologyParentFrame
     , topologyDescentFrom
+    , projectPlanProfileName
+    , projectPlanProjectName
     , renderSnapshot
     , stablePlanSnapshotFormatVersion
     , stablePlanSnapshotRoot
@@ -105,6 +107,8 @@ import HostBootstrap.Lifecycle.Plan
     , plannedStepLabelKernel
     , plannedStepOperationKeyKernel
     , plannedStepProjectedOperationKeysKernel
+    , projectPlanProfileNameKernel
+    , projectPlanProfileProjectNameKernel
     , plannedEdgeDependencyKeyKernel
     , plannedEdgeTargetKeyKernel
     , plannedResourceFrameKernel
@@ -425,6 +429,21 @@ topologyDescentFrom ::
     Text ->
     Maybe (Text, LiftContext)
 topologyDescentFrom = topologyDescentFromKernel
+
+-- | The exact lifecycle-profile identity retained when this plan was admitted.
+-- This is a descriptive projection only; it grants no lifecycle authority.
+projectPlanProfileName ::
+    ProjectPlan scope specDigest planId configId cfg ->
+    Text
+projectPlanProfileName = projectPlanProfileNameKernel
+
+-- | The installed-project identity retained when this plan was admitted.
+-- Consumers use this projection when a provider-local name must be derived
+-- from the plan rather than supplied independently by a caller.
+projectPlanProjectName ::
+    ProjectPlan scope specDigest planId configId cfg ->
+    Text
+projectPlanProjectName = projectPlanProfileProjectNameKernel
 
 -- | The pure canonical, non-authorizing snapshot retained by one exact plan.
 renderSnapshot ::

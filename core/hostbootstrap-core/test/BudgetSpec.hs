@@ -12,6 +12,7 @@ import HostBootstrap.Cluster.Cordon
 import HostBootstrap.Config.Vocab (Production)
 import HostBootstrap.Context (ResourceEnvelope (..))
 import HostBootstrap.Lift (localContext)
+import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 import HostBootstrap.ProjectPlan
   ( ClusterResource,
     PlannedResource,
@@ -22,6 +23,8 @@ import HostBootstrap.ProjectPlan
     plannedResourceFrame,
     plannedResourceKey,
     plannedStepOperationKey,
+    renderSnapshot,
+    stablePlanSnapshotDigest,
     withPlannedResourceOfKind,
   )
 import HostBootstrap.Reconcile (
@@ -41,6 +44,7 @@ import HostBootstrap.Step
     descendsVia,
     mkStepPlan,
   )
+import PrepareFixture (gateFor, gateForValues)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -58,6 +62,13 @@ tests =
         let inexact = ResourceEnvelope 4 "8589934593" "20GiB"
         result <- admissionSummary inexact LimaBackend
         result @?= Left (InexactProviderQuantity LimaBackend "memory" (8 * gib + 1)),
+      testCase "Colima admission reserves its fixed writable root disk inside the declared ceiling" $ do
+        result <- admissionSummary (ResourceEnvelope 8 "16GiB" "20GiB") ColimaBackend
+        result
+          @?= Left
+            ( InvalidBudget
+                "Colima storage must exceed the fixed 20 GiB writable root disk; got 20 GiB"
+            ),
       testCase "provider wall argv consumes admitted exact values" $ do
         result <- admissionSummary exactEnvelope IncusBackend
         result @?= Right ["limits.cpu=8", "limits.memory=16GiB", "root,size=100GiB"],
@@ -95,17 +106,18 @@ tests =
                 pure (isLeft (mkSliceRequest providerResource actual required))
             assertBool "expected below-minimum rejection" result
           other -> assertBool ("unexpected fixture construction failure: " ++ show other) False,
-      testCase "WSL wall settlement returns the live authority and global lease inseparably" $ do
-        result <- wallSettlementSummary Wsl2Backend (WallAlreadyExact 9)
-        result @?= Right (Unchanged, 9, 1, True),
-      testCase "ordinary provider migration returns repaired live authority without a WSL lease" $ do
-        result <- wallSettlementSummary LimaBackend (WallMigrated 12 "resized")
-        result @?= Right (Changed Repaired, 12, 1, False),
-      testCase "an uncertain wall call yields no live authority" $ do
-        result <- wallSettlementSummary Wsl2Backend (WallAcquireUncertain "lost acknowledgement")
-        assertBool
-          "uncertain acquisition must fail closed"
-          (isLeft result),
+      testCase "the exact journal gate mints the provider reservation fence" $ do
+        result <- reservationGateSummary ExactReservationGate
+        result @?= Right 1,
+      testCase "a gate from another plan cannot reserve the provider wall" $ do
+        result <- reservationGateSummary WrongReservationPlan
+        result @?= Left (InvalidWallReservation "the prepare gate belongs to another project plan"),
+      testCase "a gate for another operation cannot reserve the provider wall" $ do
+        result <- reservationGateSummary WrongReservationOperation
+        result @?= Left (InvalidWallReservation "the prepare gate belongs to another provider operation"),
+      testCase "a zero journal fence cannot reserve the provider wall" $ do
+        result <- reservationGateSummary ZeroReservationFence
+        result @?= Left (InvalidWallReservation "the prepare gate fence must be positive"),
       testCase "every VM provider applies the declared storage ceiling exactly" $ do
         lima <- storageWallSummary LimaBackend storageWallShape
         lima @?= Right (Right (LimaDiskArgument, ["--disk", "100"], 100 * gib))
@@ -114,7 +126,28 @@ tests =
           @?= Right
             ( Right
                 ( ColimaDiskArgument,
-                  ["start", "--profile", "demo", "--disk", "100"],
+                  [ "start",
+                    "--profile",
+                    "demo",
+                    "--runtime",
+                    "docker",
+                    "--activate=false",
+                    "--template=false",
+                    "--ssh-config=false",
+                    "--mount",
+                    "none",
+                    "--kubernetes=false",
+                    "--network-address=false",
+                    "--mount-inotify=false",
+                    "--cpus",
+                    "8",
+                    "--memory",
+                    "16",
+                    "--root-disk",
+                    "20",
+                    "--disk",
+                    "80"
+                  ],
                   100 * gib
                 )
             )
@@ -219,7 +252,8 @@ storageWallSummaryFor ::
   ) ->
   IO (Either BudgetError (Either ReconcileError result))
 storageWallSummaryFor envelope backend consume =
-  withBudgetProjectPlan $ \plan providerResource clusterResource ->
+  withBudgetProjectPlan $ \plan providerResource clusterResource -> do
+    gate <- exactProviderGate plan providerResource
     pure $ do
       workload <- mkWorkload clusterResource 1 1 gib gib
       overhead <- mapBudgetError (mkResourceBudget 1 gib gib)
@@ -237,7 +271,7 @@ storageWallSummaryFor envelope backend consume =
                     joinBudget $
                       withBudgetPartition effective fit overhead (request :| []) $ \partition _slices ->
                         joinBudget $
-                          withProviderWallReservation wall partition 1 $ \reservation ->
+                          withProviderWallReservation plan providerResource wall partition gate $ \reservation ->
                             Right
                               ( prepareStorageWallCall "demo" wall partition reservation
                                   >>= consume
@@ -245,7 +279,8 @@ storageWallSummaryFor envelope backend consume =
 
 admissionSummary :: ResourceEnvelope -> ProviderBackend -> IO (Either BudgetError [String])
 admissionSummary envelope backend =
-  withBudgetProjectPlan $ \plan providerResource clusterResource ->
+  withBudgetProjectPlan $ \plan providerResource clusterResource -> do
+    gate <- exactProviderGate plan providerResource
     pure $
       joinBudget $ withValidatedBudget plan envelope $ \validated ->
         withProviderKeyForBackend backend $ \providerKey ->
@@ -263,7 +298,7 @@ admissionSummary envelope backend =
                     joinBudget $
                       withBudgetPartition effective fit overhead (request :| []) $ \partition _slices ->
                         joinBudget $
-                          withProviderWallReservation wall partition 1 $ \reservation ->
+                          withProviderWallReservation plan providerResource wall partition gate $ \reservation ->
                             providerWallCallArgs
                               <$> prepareProviderWallCall "demo" wall partition reservation
 
@@ -350,12 +385,22 @@ overflowingPartition =
                   fmap (const ()) $
                     withBudgetPartition effective fit overhead (request :| []) $ \_ _ -> ()
 
-wallSettlementSummary ::
-  ProviderBackend ->
-  WallAcquireObservation ->
-  IO (Either BudgetError (ChangeView, Word64, Word64, Bool))
-wallSettlementSummary backend observation =
-  withBudgetProjectPlan $ \plan providerResource clusterResource ->
+data ReservationGateCase
+  = ExactReservationGate
+  | WrongReservationPlan
+  | WrongReservationOperation
+  | ZeroReservationFence
+
+reservationGateSummary :: ReservationGateCase -> IO (Either BudgetError Word64)
+reservationGateSummary gateCase =
+  withBudgetProjectPlan $ \plan providerResource clusterResource -> do
+    let planDigest = stablePlanSnapshotDigest (renderSnapshot plan)
+        operationKey = plannedResourceKey providerResource
+    gate <- case gateCase of
+      ExactReservationGate -> gateFor planDigest operationKey
+      WrongReservationPlan -> gateFor "another-plan" operationKey
+      WrongReservationOperation -> gateFor planDigest "core:another-provider"
+      ZeroReservationFence -> gateForValues planDigest operationKey "session-1" 0 1
     pure $ do
       workload <- mkWorkload clusterResource 1 1 gib gib
       overhead <- mapBudgetError (mkResourceBudget 1 gib gib)
@@ -363,30 +408,27 @@ wallSettlementSummary backend observation =
       minimumBudget <- mapBudgetError (mkResourceBudget 1 gib gib)
       request <- mkSliceRequest providerResource sliceBudget minimumBudget
       joinBudget $ withValidatedBudget plan exactEnvelope $ \validated ->
-        withProviderKeyForBackend backend $ \providerKey ->
-          withProviderBudgetCapability plan providerResource providerKey $ \capability ->
-            joinBudget $
-              admitProviderBudget validated capability $ \wall effective ->
-                joinBudget $
-                  withPlannedWorkloadSet plan [workload] $ \workloads -> do
-                    fit <- verifyPlannedWorkloadFit effective workloads
-                    joinBudget $
-                      withBudgetPartition effective fit overhead (request :| []) $ \partition _slices ->
-                        joinBudget $
-                          withProviderWallReservation wall partition 1 $ \reservation -> do
-                            prepared <- prepareProviderWallCall "demo" wall partition reservation
-                            case
-                              settleProviderWallCall prepared observation $ \live ->
-                                withLiveProviderWall
-                                  live
-                                  ( \authority change ->
-                                      (change, providerWallEpoch authority, providerWallFence authority, False)
-                                  )
-                                  ( \authority _lease change ->
-                                      (change, providerWallEpoch authority, providerWallFence authority, True)
-                                  ) of
-                              Left err -> Left (InvalidWallReservation (show err))
-                              Right summary -> Right summary
+        withProviderBudgetCapability plan providerResource LimaProviderKey $ \capability ->
+          joinBudget $
+            admitProviderBudget validated capability $ \wall effective ->
+              joinBudget $
+                withPlannedWorkloadSet plan [workload] $ \workloads -> do
+                  fit <- verifyPlannedWorkloadFit effective workloads
+                  joinBudget $
+                    withBudgetPartition effective fit overhead (request :| []) $ \partition _slices ->
+                      joinBudget $
+                        withProviderWallReservation plan providerResource wall partition gate $ \reservation ->
+                          providerWallCallFence
+                            <$> prepareProviderWallCall "demo" wall partition reservation
+
+exactProviderGate ::
+  ProjectPlan scope specDigest planId configId cfg ->
+  PlannedResource scope planId providerResourceId ProviderResource providerFrame ->
+  IO PreparedGate
+exactProviderGate plan providerResource =
+  gateFor
+    (stablePlanSnapshotDigest (renderSnapshot plan))
+    (plannedResourceKey providerResource)
 
 mapBudgetError :: Either String a -> Either BudgetError a
 mapBudgetError = either (Left . InvalidBudget) Right

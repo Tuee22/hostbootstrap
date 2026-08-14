@@ -642,6 +642,7 @@ data CommandReservation scope planId frame brokerGeneration verb phase
         (BrokerEpoch brokerGeneration)
         (ProjectVerb verb)
         (LifecyclePhase phase)
+        Bool
 
 commandReservationKernel ::
     RootInvocationAuthority scope brokerGeneration verb ->
@@ -658,6 +659,7 @@ commandReservationKernel root planDigest phase frameName =
         (rootAuthorityEpoch root)
         (rootAuthorityVerb root)
         phase
+        (reverseRootReplayEligible (rootAuthorityVerb root) phase)
 
 {- | Package-private reservation constructor for an authenticated child.
 
@@ -685,6 +687,7 @@ childCommandReservationKernel project store generation verb planDigest phase fra
         (BrokerEpoch project store generation)
         verb
         phase
+        False
 
 reserveCommandInvocationKernel ::
     ProtectedSession session ->
@@ -697,7 +700,7 @@ reserveCommandInvocationKernel ::
 reserveCommandInvocationKernel
     session
     project
-    (CommandReservation rootProject rootStore planDigest frameName epoch verb phase)
+    (CommandReservation rootProject rootStore planDigest frameName epoch verb phase replayEligible)
     use
         | rootProject /= installedProjectName project =
             pure
@@ -716,6 +719,9 @@ reserveCommandInvocationKernel
                 case observed of
                     Left failure -> pure (Left (AuthorityStoreFailure failure))
                     Right (Just record)
+                        | protectedRecordBytes record == identity
+                        , replayEligible ->
+                            deliver (protectedRecordVersion record)
                         | protectedRecordBytes record == identity ->
                             pure (Left (AuthorityInvocationConsumed invocation))
                         | otherwise ->
@@ -729,20 +735,16 @@ reserveCommandInvocationKernel
                                 identity
                         case written of
                             Left failure -> pure (Left (AuthorityStoreFailure failure))
-                            Right version ->
-                                use
-                                    ( CommandAuthority
-                                        ( InvocationId
-                                            ( invocation
-                                                <> "#"
-                                                <> Text.pack (show (recordVersionWord version))
-                                            )
-                                        )
-                                        frameName
-                                        epoch
-                                        verb
-                                        phase
-                                    )
+                            Right version -> do
+                                readback <- readProtectedRecord session recordKey
+                                case readback of
+                                    Left failure -> pure (Left (AuthorityStoreFailure failure))
+                                    Right (Just record)
+                                        | protectedRecordVersion record == version
+                                        , protectedRecordBytes record == identity ->
+                                            deliver (protectedRecordVersion record)
+                                    Right _ ->
+                                        pure (Left (AuthorityReservationConflict invocation))
   where
     currentStore = protectedStoreIdentityText (sessionStoreIdentity session)
     identity =
@@ -755,6 +757,25 @@ reserveCommandInvocationKernel
             verb
             phase
     invocation = "command-" <> sha256Hex identity
+    deliver version =
+        use
+            ( CommandAuthority
+                ( InvocationId
+                    ( invocation
+                        <> "#"
+                        <> Text.pack (show (recordVersionWord version))
+                    )
+                )
+                frameName
+                epoch
+                verb
+                phase
+            )
+
+reverseRootReplayEligible :: ProjectVerb verb -> LifecyclePhase phase -> Bool
+reverseRootReplayEligible ProjectDown Teardown = True
+reverseRootReplayEligible ProjectDestroy Teardown = True
+reverseRootReplayEligible _ _ = False
 
 reservationIdentity ::
     Text ->

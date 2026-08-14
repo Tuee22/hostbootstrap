@@ -25,11 +25,14 @@
   `DerivedTopology`. It accepts no compatibility `Reconcile.LifecyclePlan`, caller-supplied plan digest,
   frame, resource identity, or topology graph.
 - `ValidatedBudget`, provider capability, workload fit, partition, slice, reservation, prepared call, and
-  live wall carry one nominal plan lineage. Raw provider/cluster observations remain deliberately
-  plan-independent data; prepared and settled packages plus managed/live authority retain the plan indices.
+  live wall carry one nominal plan lineage. A provider-wall reservation now comes only from the exact
+  plan/provider operation's durable `PreparedGate`; a positive caller number is not a reservation. Raw
+  provider/cluster observations remain deliberately plan-independent data and cannot enter public wall
+  settlement. A package-private owning adapter encloses a successful backend observation and the matching
+  prepared operation/preconditions in an opaque settlement permit before live authority can exist.
   The [cluster-lifecycle-and-cordoning
-  phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) owns exact cluster and direct-Colima
-  consumer adoption. The [worked-demo
+  phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) owns the exact cluster consumer
+  and the implemented, gate-closed exact direct-Colima consumer boundary. The [worked-demo
   phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns the concrete demo workload, overhead, partition,
   and slices.
 - On provider-backed lanes, the target effective wall is cordon #1. A `BudgetPartition` exists only after
@@ -49,12 +52,28 @@
   available provider or kind/nvkind-node cordon. Current Lima/Incus sizing is creation-only. Bare Linux has
   no runtime storage quota or image-GC cap. Direct Linux GPU outer host work is uncapped and only the later
   nvkind nodes receive CPU/memory walls.
-- The current direct-Apple Colima adapter is prepared and project-specific, but its profile opener still
-  accepts compatibility `Reconcile.LifecyclePlan` plus independent `BinaryContext`. The
-  [cluster-lifecycle-and-cordoning
-  phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) replaces those terms with the exact
-  plan/provider/topology/partition/reservation package. It never uses the shared `default` profile and does
-  not activate a global Docker context.
+- The implemented direct-Apple `HostBootstrap.Ensure.Colima` adapter prepares a wall only from one exact
+  `ProjectPlan`, its matching provider `PlannedResource` and `DerivedTopology`, and the matching validated
+  budget, capability, wall, workload-fit, partition, and reservation evidence. It accepts no compatibility
+  lifecycle plan, independent binary context, caller-selected profile, raw resource envelope, or separately
+  derived root/profile term. A stable 128-bit plan/lifecycle token determines the isolated Colima home and
+  reusable global-lock identity; a socket-safe local profile is meaningful only inside that home. Total
+  storage must exceed 20 GiB and is rendered as a fixed 20-GiB root disk plus a `total-20`-GiB data disk.
+  Raw list/call/machine/context observations remain plan-independent. The prepared call, provider-start and
+  wall settlement, live route, and cleanup retain the exact journal lineage and complete backend identity.
+  The private fixed resolver admits and fingerprints only canonical Apple Python/Colima/Docker/Lima tools and
+  helper directories. Under descriptor-held Python `fcntl.flock`, the durable protocol records absence before
+  creating the isolated home or Docker config, then binds the exact invocation, root/data wall, machine,
+  named context, record/namespace/disk objects, directory chain, and complete artifact manifest. A profile
+  present from `prepared` without a managed stage is outcome-unknown `Conflict`. Live Docker reacquires that
+  binding; separate teardown lineage enters `releasing` before `colima delete --force --data` and proves
+  profile/data/context absence before conditional namespace/origin release. Missing clauses are
+  `Unsupported`; mismatches are `Conflict`. The adapter never uses `default` or global context activation. The
+  [cluster-lifecycle, budgets, and cordoning
+  phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) focused/full gates are closed.
+  Production recursive adoption remains in the
+  [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md), while
+  demo adoption remains in the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
 - A multi-node cluster receives the cluster envelope once; current lifecycle divides CPU, memory, and storage
   over its nodes and applies the CPU/memory cap to each. `fitsBudget` is tested, but no live bring-up yet
   supplies the demo's complete non-empty concurrent workload set. That concrete projection belongs to the
@@ -91,13 +110,23 @@ consume the exact generic `ResourceSlice`. That value can be eliminated only fro
 proving positivity, provider/node minima, and
 `sum concurrent slices + explicit overhead <= EffectiveBudget`.
 
-On direct Apple Docker paths, `HostBootstrap.Ensure.Colima` observes Colima JSONL state before mutation,
-accepts only matching Docker runtime/CPU/memory/disk state, refuses a conflicting same-name profile, starts
-with `--activate=false`, and routes Docker through `--context colima-<project>`. It is not a config-free
-reconciler and does not appear in `allReconcilers`. Its current profile admission still takes compatibility
-`Reconcile.LifecyclePlan` and independent `BinaryContext`; the [cluster-lifecycle-and-cordoning
-phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) replaces that route with the exact
-provider resource/topology/partition/reservation package and adds cross-plan guards.
+On direct Apple Docker paths, `HostBootstrap.Ensure.Colima` is deliberately not a config-free reconciler and
+does not appear in `allReconcilers`. Its exact prepared boundary consumes the plan/provider/topology plus the
+complete budget/fit/partition and journal-derived reservation/start package. The call fixes all side-effecting
+defaults, disables global activation, and renders CPU, memory, 20-GiB root, and `total-20`-GiB data walls.
+The plan-derived 128-bit namespace owns the isolated Colima home, Docker config, and reusable lock; the local
+`h-<6hex>` profile and `colima-<profile>` context are not standalone authority. A private fixed resolver,
+bounded group runner, self-bound multi-stage origin, stable machine/context observation, and complete
+artifact/directory manifest close the effect. Public settlement accepts only the opaque owned observation
+from that exact invocation, jointly completes provider `Observed` to managed `Running`, and mints the live
+wall. Live Docker and distinct journal-prepared `Running` to `Destroyed` cleanup revalidate the same binding;
+cleanup uses `--force --data` and conditionally removes only exact manifest-listed state. Cross-plan,
+cross-attempt/session/journal, foreign, replacement, partial-stage, and outcome-unknown prepared-state cases
+mint no authority. The [cluster-lifecycle, budgets, and cordoning
+phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) closes this source boundary and its
+focused/full gate evidence. Production recursive adoption remains in the
+[recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md), while
+demo adoption remains in the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
 
 The demo has one descriptive resource value: private `ProjectConfig.resources` constructors and total smart
 constructors feed every VM and cluster sizing path. `BinaryContext` carries no resource envelope.
@@ -110,11 +139,24 @@ acquisition. The [step-algebra-and-project-plan
 phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md) owns closure and validation of the
 exact `ProjectPlan`/resource/topology admission boundary.
 A journal-before-call reservation and matching prepared call are required before provider arguments are
-exposed; a raw wall observation remains plan-independent, only settlement can mint plan-indexed live wall
-authority, and uncertain acquisition mints none. WSL supplies the durable shared-wall journal/CAS backend.
-Exact cluster and Colima consumption remains with the [cluster-lifecycle-and-cordoning
-phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md); the concrete demo partition remains
-with the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
+exposed. The reservation producer consumes the exact `ProjectPlan`, provider `PlannedResource`, wall,
+partition, and durable gate, and derives the session/fence/attempt/journal version from that gate. A raw wall
+observation remains plan-independent and is not a public settlement input. Only a package-private producer
+that joins the exact prepared operation/preconditions with its closed backend result can mint the nominal
+settlement permit consumed by public settlement; uncertain acquisition mints none. WSL supplies the durable
+shared-wall journal/CAS backend.
+The [cluster-lifecycle, budgets, and cordoning
+phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) implements and validates both exact consumers.
+Direct Colima derives its wall request from the matching plan evidence. Cluster reconciliation retains the
+matching `ResourceSlice`, includes its canonical CPU/memory/storage values in the prepared call binding, and
+applies those exact values to the owned node containers under the cluster identity lock before readiness can
+be minted. The managed origin retains the complete declared node-name-to-container-ID map, and the cordon
+re-observes that map under the same exact lock/state/record binding before issuing
+`docker update` against immutable IDs rather than reusable node names. A missing/replaced worker,
+control-plane replacement, config-snapshot drift, or failed update yields no readiness authority. Production
+recursive and demo
+call-site adoption remain open; the concrete demo partition remains with the
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
 
 ## The Budget Field
 
@@ -169,7 +211,11 @@ VerifiedWorkloadFit scope planId budgetId provider capabilityId wallSpecId workl
 BudgetPartition scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId
 ResourceSlice
   scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId frame resourceId
-ProviderWallReservation scope planId provider wallSpecId reservationId fence
+ProviderWallReservation
+  scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence
+ProviderWallSettlementPermit
+  scope planId providerResourceId budgetId provider capabilityId wallSpecId workloadSetId partitionId
+  reservationId fence operationKey callDigest attempt journalVersion
 ProviderWallAuthority scope planId provider wallSpecId wallEpoch fence
 WslGlobalWallLease scope planId wallSpecId wallEpoch fence
 ```
@@ -179,27 +225,36 @@ validated budget and jointly creates the exact `ProviderWallSpec`/`EffectiveBudg
 ownership or write authority. The workload-fit proof, partition, and every slice are constructed before
 effects and can exist only with that exact scope/plan/budget/provider/capability/`wallSpecId` lineage.
 
-After the partition exists, a journaled transition first creates the same-spec
-`ProviderWallReservation`. The initial-wall adapter consumes that reservation with the wall spec and
-partition, may reserve/create/apply or observe the provider wall, and returns
+After the partition exists, the only reservation producer consumes the exact plan/provider resource, wall,
+partition, and `PreparedGate` that durably recorded that provider operation. It checks the gate's plan digest
+and operation key and copies its non-empty session plus positive fence, attempt, and journal version into the
+same-spec `ProviderWallReservation`; the caller supplies none of those fields. The initial-wall adapter
+consumes that reservation with the wall spec and partition, may reserve/create/apply or observe the provider
+wall, and returns
 `ProviderWallAuthority ... wallSpecId wallEpoch fence` only after authoritative applied/unchanged
 observation. It does not circularly require that post-effect authority for the call that mints it. An
 unknown reservation/acquire/apply result exposes only recoverable same-spec state until exact reprobe
 settles it.
 
 The observation crossing the backend boundary is intentionally not plan evidence. A raw
-`WallAcquireObservation` or storage-wall observation contains only measured backend facts;
-`settleProviderWallCall` / `settleStorageWallCall` must consume it together with the exact prepared call before
-an indexed live/applied value exists. Cluster observation follows the same rule. This keeps probes reusable
-without allowing a same-shaped observation to authorize another plan.
+`WallAcquireObservation` or storage-wall observation contains only measured backend facts. Storage settlement
+still validates its descriptive observation against its prepared storage call. Provider-wall settlement is
+stricter: no public function accepts `WallAcquireObservation`. An unexposed provider-specific bridge first
+inspects the closed backend result; only its owning applied/exact branches may enter the provider-neutral
+package-private mint with the exact nominal `PreparedOperation`/`PreparedPreconditions` pair. That mint
+encloses the authorized observation and prepared wall call in `ProviderWallSettlementPermit`, and only
+`settleProviderWallCall prepared permit` can mint an indexed live value. The same hidden bridge completes the
+opaque journal-bound provider start from the retained observed handle, so provider-specific machine identity
+cannot masquerade as generic resource generation. Cluster observation follows its own closed backend-result
+boundary. This keeps probes reusable without allowing a same-shaped observation to authorize another plan.
 
 Later reconcile and dependent mutation permits accept no raw quantities or same-shaped slice from another
 lineage: they require both the exact same-`wallSpecId` partition projection and the live authority, and
-revalidate its epoch/fence. On WSL the `ProviderWallReservation ... reservationId fence` retains the
-OS-released exclusive lock across the initial shared-wall operation. Observed completion
-consumes that reservation and jointly returns the epoch-indexed `WslGlobalWallLease` inseparably with the
-live authority; the capability, spec, partition, or `EffectiveBudget` by itself cannot edit or restore
-`.wslconfig`.
+revalidate its epoch/fence. On WSL the exact owning adapter consumes the journal-derived reservation and
+retains the OS-released exclusive lock across the initial shared-wall operation. Only its successful closed
+backend result may produce the settlement permit that jointly returns the epoch-indexed
+`WslGlobalWallLease` inseparably with the live authority; the reservation itself is journal lineage, not an OS
+handle. The capability, spec, partition, or `EffectiveBudget` by itself cannot edit or restore `.wslconfig`.
 
 `HostBootstrap.Cluster.Cordon.Foundation.parseQuantity` is shared by preflight and argument builders. It
 preserves exact whole-byte values, and provider admission rejects memory/storage a selected whole-GiB
@@ -216,11 +271,16 @@ backend cannot represent exactly. The current defenses are:
   derives the full non-empty concurrent set from the exact plan and requires `fitsBudget` before the first
   effect. The [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns that currently absent
   call.
-- **Runtime ring (partial)** — creation-time Lima/Incus/WSL sizing, a prepared project-specific Colima
-  compatibility adapter, and kind/nvkind-node CPU/memory caps. The [cluster-lifecycle-and-cordoning
-  phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) owns exact cluster/Colima
-  adoption. Existing resources are not uniformly re-cordoned, direct Linux GPU outer effects remain uncapped,
-  and storage is incomplete on bare Linux.
+- **Runtime ring (partial)** — creation-time Lima/Incus/WSL sizing, an exact plan-owned direct-Colima wall
+  adapter, and kind/nvkind-node CPU/memory caps. The Colima adapter's prepared-to-live and origin-bound cleanup
+  package and owning phase's focused/full gates are closed. Production recursive and demo call-site adoption
+  remain open in the [recursive-lifecycle-command
+  phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) and
+  [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md), respectively. The
+  [cluster-lifecycle, budgets, and cordoning
+  phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) owns the exact cluster consumer.
+  Existing resources are not uniformly re-cordoned, direct Linux GPU outer effects remain uncapped, and
+  storage is incomplete on bare Linux.
 
 The applied mechanics, canonical parser, and missing bare-Linux storage wall are documented in
 [applied_cordon](applied_cordon.md).
@@ -281,7 +341,7 @@ below only in the stated places; the project binary applies them, never the Pyth
 
 | Substrate | Cordoning mechanism |
 |-----------|---------------------|
-| `apple-silicon` | For the pristine demo environment, a newly created dedicated Lima VM is sized only after exact whole-GiB admission; an existing VM's sizing is not compared or reconciled. Direct Apple Docker has a prepared project-profile Colima compatibility adapter that observes/reconciles exact CPU, memory, disk, and Docker runtime state and uses the named Docker context without global activation. The [cluster-lifecycle-and-cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) replaces its `LifecyclePlan`/`BinaryContext` profile boundary with the exact project-plan package and adds conditional cleanup authority. |
+| `apple-silicon` | For the pristine demo environment, a newly created dedicated Lima VM is sized only after exact whole-GiB admission; an existing VM's sizing is not compared or reconciled. The implemented exact direct-Colima adapter binds one 128-bit isolated-home/lock namespace, a local profile/context, canonical CPU/memory plus 20-GiB-root/`total-20`-GiB-data argv, fixed trusted tools, stable machine/context, and complete artifacts under descriptor-held Python `fcntl.flock`. Only backend-produced provider-start/wall settlement exposes live Docker; independently journaled conditional `--force --data` cleanup releases exact profile/data/context/namespaces. Production recursive and demo adoption remains open. |
 | `linux-cpu` | A newly created Incus VM receives CPU/memory/storage limits only for exact admitted quantities; existing VM sizing is not reconciled. The later kind-node CPU/memory cap is applied during cluster bring-up. Storage has no runtime cap if a path runs directly on bare Linux. |
 | `linux-gpu` | The outer host-native build and project-container handoff are direct and uncapped. The later nvkind cluster envelope is split across `control-plane` and GPU `worker`, and `docker update --cpus --memory --memory-swap` is applied fail-closed to both nodes. Bare-Linux storage is not capped. |
 | `windows-cpu` / `windows-gpu` | WSL2 memory/CPU use the **global** `%UserProfile%\.wslconfig` `[wsl2]` ceiling; storage is a per-distro VHDX cap applied only at registration. The backend journal records exact original bytes or absence and refuses foreign replacement. `project down` restores that origin and then performs global `wsl --shutdown`, releasing the utility VM balloon; finite idle timeouts backstop an interrupted run. A running distro is not necessarily shut down during reconcile, and an existing VHDX is not resized. See [wsl2](wsl2.md). |
@@ -291,7 +351,8 @@ per-project Colima wall adapter; on Linux the cluster-side cordon is applied aft
 deployment, fail-closed. The lifecycle derives the concrete node names from `ClusterPlan`, splits the
 slice across them, and applies every generated `docker update` argv. Storage participates in the split
 and minimum-share check but has no `docker update` flag. A newly created Lima VM gets `--disk` and a
-newly created Incus VM gets `root,size`; the Colima adapter compares the exact observed disk wall, while
+newly created Incus VM gets `root,size`; the Colima adapter compares the exact observed 20-GiB root plus
+`total-20`-GiB data wall and its owned artifacts, while
 existing Lima/Incus disks are not reconciled. Bare-Linux quota and image GC remain targets, not
 implemented walls.
 The cluster-side enforcement is part of the lifecycle semantics in

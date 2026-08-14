@@ -48,15 +48,15 @@ its row here.
 | 13 | [Authenticated handoff and child admission](phase-13-authenticated-handoff-and-child-admission.md) | Done | linux-cpu | — |
 | 14 | [Ownership clauses and reservations](phase-14-ownership-clauses-and-reservations.md) | Done | linux-cpu | — |
 | 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Done | linux-cpu | — |
-| 16 | [Cluster lifecycle and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Active | linux-cpu | 16.2 exact cluster consumer; 16.4 exact direct-Colima consumer; fresh phase gate |
-| 17 | [Recursive lifecycle command](phase-17-recursive-lifecycle-command.md) | Active | linux-cpu | 17.3 forest/frame-index propagation and local/foreign sum; 17.4 operator/authenticated child entries; 17.5 authenticated forward/reverse traversal and live acceptance |
+| 16 | [Cluster lifecycle, budgets, and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Done | linux-cpu | — |
+| 17 | [Recursive lifecycle command](phase-17-recursive-lifecycle-command.md) | Active | linux-cpu | 17.41–17.51 forward/reverse adoption, cleanup, unwind, gate |
 | 18 | [Recovery and migration](phase-18-recovery-and-migration.md) | Active | linux-cpu | 18.4–18.19 resource records, migration recovery, recovered closure, interruption fixtures |
-| 19 | [Test harness and run ownership](phase-19-test-harness-and-run-ownership.md) | Active | linux-cpu | targeted `recovery-interruption` and live `test run all` acceptance |
+| 19 | [Test harness and run ownership](phase-19-test-harness-and-run-ownership.md) | Active | linux-cpu | 19.5 Harness scope-capsule producer, targeted `recovery-interruption`, and live `test run all` acceptance |
 | 20 | [`test` and `context` commands](phase-20-test-and-context-commands.md) | Active | linux-cpu | live linux-cpu verb sequence (phase gate) |
 | 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Active | linux-cpu | 21.2 blob-leaf arguments; reopened 21.3 role authority/transition/recovery audit; focused suites; fresh gate |
-| 22 | [Service runtime](phase-22-service-runtime.md) | Active | linux-cpu | 22.2/22.3 registry adoption and the deploy step |
+| 22 | [Service runtime](phase-22-service-runtime.md) | Active | linux-cpu | 22.2/22.3 registry adoption, activation installation, and `service run` interpretation |
 | 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
-| 24 | [The worked demo](phase-24-worked-demo.md) | Active | linux-cpu | 24.3 same-run readback; 24.4 plan-owned profile/root; 24.5 workload/slices; 24.6 alias (also restores the demo build); 24.7 authenticated derived-image gate |
+| 24 | [The worked demo](phase-24-worked-demo.md) | Active | linux-cpu | 24.3 readback; 24.4–24.7 exact plan/resources/slices; 24.8–24.18 provider recovery/adopters/transport; 24.19–24.23 cluster config/backend/recovery/adopter; 24.24–24.27 workload/reverse; 24.28 projector; 24.29 image; 24.30 live acceptance |
 | 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Active | **apple-silicon** | 25.3 acceptance re-run |
 | 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Active | **nvidia** | 26.3 acceptance re-run |
 | 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | 27.3 acceptance re-run |
@@ -64,83 +64,192 @@ its row here.
 
 ## The current frontier
 
-The lowest-numbered open phase is **16**. Phase 6 owns the validated provider-neutral canonical
-`ResourceBudget`, capacity, parsing, verification, sizing, and storage-policy foundation. Phase 7 owns the
-validated configuration-facing cordon facade and public pure `HostBootstrap.Lift.Context`. Phase 8 owns the
-validated generic resolved-tool `HostBootstrap.Lift` fold and effect dispatch. Phases 9–15 are also Done, so
-the current constructive boundary is Phase 16's cluster and direct-Colima consumers.
+The lowest-numbered open phase is **17**. Phases 0–16 are Done. The current constructive boundary is the
+[recursive lifecycle command](phase-17-recursive-lifecycle-command.md). The completed
+[authenticated handoff and child admission](phase-13-authenticated-handoff-and-child-admission.md) boundary's
+challenge/grant foundation, exact config refinement, narrow child-plan authority, Build and Activation
+packages, registered edge, keyless relay foundation, and the only two rooted protocol-v1 outer tags are
+implemented. Sprint 13.9 adds the additive `RootedPayloadBinding`: its canonical root-signed bytes preserve
+the existing immediate-edge binding and separately frame complete-payload and child-config digest claims.
+Config signing and verification require exact byte/digest equality, while a signed unequal recovery claim
+alone grants no package or config-field admission. Sprint 13.10 adds the abstract canonical two-frame
+`RecoveryChildPackage`, its distinct hidden-capability live-broker signer, and the package-aware verified join.
+That join treats the supplied rooted value as untrusted signed data, cryptographically reverifies its canonical
+bytes against the exact authenticated handoff and installed key, and only then decodes the authenticated
+payload and recomputes both package/config-field digests. It adds no receiver or catalog producer. Sprint
+13.11 implements the standalone `AuthenticatedRootScope` primitive: its live-broker producer derives the exact
+Production or Harness scope, and its installed-identity/key verifier introduces that scope only through the
+closed rank-2 fold. Sprint 13.12 adopts it without changing the four-field outer Offer. The root Relay mints
+one capsule for its live scope, nested links copy those exact root-issued bytes, and the Receiver structurally
+splits the opaque Offer fields before it verifies the leading capsule against the independently installed
+identity and key. Only inside that closed Production-or-Harness continuation may key, binding, challenge,
+grant, or payload semantics run. This grants no edge or lifecycle authority. Sprint 13.13 adopts the exact
+rooted proof in both receiver branches and retains the recovery package with its typed projection, grant, and
+verified adapter wire. Root signing begins only after the exact Offer exists; nested links relay canonical
+request/response bytes and receive no signing capability. Phase 13's own reverse route composes no package;
+the [recursive lifecycle command](phase-17-recursive-lifecycle-command.md) supplies the sole producer. The 7 MiB embedded Offer
+payload ceiling is only a strict sub-ceiling; Protocol's 8 MiB total-body check remains authoritative and may
+still refuse the other fields and framing overhead. Sprint 13.14 implements the one hidden non-indexed rooted
+request without changing Protocol: pathless `OpenFrame` is four fields, post-open control is nine, and only
+settlement/descent result adds an opaque tenth field. Its strict 7 MiB codec is validated only by exact
+private-source guards: no facade export, testing companion, or semantic/process/durable importer is introduced;
+the neutral Receiver-internal path fold is the sole transport import. The sealed
+external relay envelope is the sole open-time ancestry and uses the same one-to-256-component,
+4,096-byte-per-component grammar as the inner post-open path. Sprint 13.15 implements the one neutral
+non-indexed response: exact nine-field `Opened`, exact eleven-field post-open responses, their closed
+request-family pairing and body/bound grammar, and no cryptography or semantic ownership. Sprint 13.16
+implements the public fixed live-broker signer and installed-key exact-pair CPS verifier without another named
+type or semantic caller. Its signature transcript frames only the fixed domain, installed-key digest, exact
+request, and canonical unsigned response; the opaque result remains descriptive rather than authority. Sprint 13.17
+implements only singleton rooted transport, bounded external requester-envelope construction, exact
+inner-byte preservation, and structural request/response pairing in the keyless relay. Every hop checks the
+authenticated path suffix and the root requires complete-envelope equality; the originating typed operation
+alone verifies the returned signed bytes with the independently installed key. Both the existing outer
+`Refused` and a signed rooted `Refused` remain distinct uninterpreted transport outcomes. Phase 13 validates
+the structure of a rooted request at the root and carries the answer; which answer a request receives is the
+[recursive lifecycle command](phase-17-recursive-lifecycle-command.md)'s rooted relay service, whose live
+endpoint the root link runs. Sprint 13.17 constructs no recursive child and claims no
+successful rooted process exchange, retained session path, durable replay/receipt behavior, or semantic
+lifecycle transition.
 
-**The lower capacity, Lift, and provider boundaries are closed.** The pure context module carries the
-Incus/Lima/WSL2 target records, container/config-delivery data, constructors, canonical mount projection, and
-inner transport argv. Generic Lift reexports that vocabulary, resolves only the outer host tool, folds the
-nested command, and imports no provider realization or Registry module. The host-provider phase owns the
-realization layer that consumes those lower values; its static gate and its declared native Linux/x86_64
-KVM/Incus provider-live run are both closed, with the dated evidence in that phase document. The
-composition/network phase owns the additive reachability/blob helpers and
-Registry-owned authenticated lift entry, and remains Active until its own source guards and fresh gates pass.
+Phase 17 consumes that wire for one root-owned recursive lifecycle. The topology root alone retains the
+`ProtectedStore`, global run lease and snapshot, immutable recursive plan catalog, per-frame journals, and
+all prepare, settlement, replay, and receipt transactions. A nested process is a long-lived storeless frame
+executor: it independently reconstructs its cataloged target plan, receives one exact root-selected grant,
+runs only that local probe or effect, and returns a bounded observation. It receives no protected-store path,
+cursor, command authority, record key, compare-and-swap operation, signing key, or caller-selected operation
+set. Shared authority mounts and generic protected-store RPC are outside the architecture.
 
-**The single indexed project plan is closed.** Phase 12 joins one lifecycle profile,
-scope-correct validated config, canonical root, and non-empty draft stream into the generative
-`ProjectPlan scope specDigest planId configId cfg`. Forward order, topology, the stable snapshot, pure
-plan-local current-frame evidence, the ordered fresh snapshot-persistence/lease-binding protocol, and
-read-only admission of an existing Production snapshot under one local plan identity are implemented. Pure
-refinement of that exact Open package into its five-index recovered Production profile and reconstruction of
-its fixed-identity plan are also implemented. The plan-bound acquisition journal, same-broker cursor,
-plan-owned resource/edge projections, and exact local `authorizeProjectUp` gate are implemented as well. That
-gate checks the lease's complete protected origin, then atomically revalidates live mode, lease, snapshot,
-acquisition source, and current cursor together with its one-use reservation. The exact pure reverse route
-is implemented too: `ProjectPlan` plus its admitted `CurrentFrame` produces the nominally framed
-`TeardownPlan`, and the projection-only forest opener accepts no duplicate plan or frame witness. The
-forest remains deliberately unframed. Production dispatch now retains or reconstructs one exact plan per
-invocation: dry rendering, snapshot persistence/binding, journal and cursor admission, `project up`
-authorization, Chain interpretation, and current-frame teardown all consume that value. The Production
-forward/reverse compatibility modules and the public plan-only command-authority APIs are absent. The exact
-reconciliation descriptor producer now consumes one `ProjectPlan` plus its matching `PlannedStep`; its
-plan/configuration/node/frame/operation views and the carried-resource indices cannot be relabelled with
-`coerce`. Public Chain now consumes the exact plan's current-frame `forward` projection plus matching
-execute-phase command authority and lifecycle cursor, revalidates their protected origin and current row at
-each transition, and keeps rendering, effects, observations, prepared gates, and carried resources on the
-same plan indices. The test-harness phase's Sprint 19.3 owns the Harness consumer: command dispatch retains
-one exact Harness plan through generated-config ownership and drives the common forward/reverse interpreter,
-while assertion-only `TestSuite` code receives no lifecycle action. Its 2026-08-09 focused/static evidence is
-closed; the phase still owes its declared live linux-cpu gate. Sprint 12.29 closes the Production
-current-frame foundation. Sprint 12.30 owns only generic Budget admission from one exact plan's resource and
-topology projections. Sprint 12.31 closes the package- and source-level absence guards; dated gate evidence
-for all three sprints lives in the Phase 12 document. Phase 16 later adopts
-the generic package at the cluster and direct-Colima consumers, and Phase 24 supplies the demo's concrete
-workload and slices. Nested
-`up|down|destroy` entry refuses before
-effects until the authenticated-handoff and recursive-lifecycle phases supply its proof; exact
-`down`/`destroy` authorization is likewise Phase 17 work rather than an authority inferred from the pure
-reverse projection.
+The completed lower Phase 17 artifacts remain useful: root command gates, current-frame/reverse plan
+projections, root-coordinator lifecycle-context evidence, reverse intent/preparation, sealed handoff and
+completion owners, structural acknowledgement/relay machinery, finalized child projection, and exact
+planned-forward packaging, the recursive rooted plan catalog, the digest-proven codec and registry
+reindexes, the recovered finalized specification each root plan's own index now carries, and the durable
+catalog manifest the root entry now persists and strictly re-reads, the storeless forward package an
+admitted descent entry authorizes, and the catalog-produced recovery package the private relay now opens,
+signs, and transmits, and the installed recursive handoff runtime every frame now derives its trust and arm
+from, the root-owned frame session an `OpenFrame` attaches to, the prepared node grant that follows every exact durable unknown row, the exactly-once settlement its observation returns to, the terminal receipt that ends it, the live root endpoint that answers the opening, and the storeless executor that place in the conversation belongs to, and the sanitized process route that carries the whole exchange over a child's standard input and output, and the descriptor isolation that keeps those bytes the receiver's own, and the bracketed POSIX owner that holds one child, its group, and its descriptors for exactly one edge. Sprint 17.41 is current. The remaining Phase 17 sprints add
+forward and reverse adoption, cluster cleanup,
+failed-Up unwind, and the host-static real-process gate. Current nested command entry therefore remains
+fail-closed.
 
-**The authenticated handoff boundary is closed.** Phase 13 owns the closed v1 protocol vocabulary, exact
-config refinement, child-plan authority substrate, ordinary and multi-hop relays, and the reusable Build and
-Activation authority packages. Handoff, Build, and Activation use distinct independently provisioned
-long-lived keys and runtime-closed signer brackets. Recovery binds protected-store origin, broker generation,
-exact teardown verb, plan and frame coordinates, and wire digest; repository-sealed requester paths constrain
-ordinary `BrokerLink` use while exact root admission remains the authorization boundary for deliberately raw
-channel writers. Constructor, escape, hidden-module, protocol-separation, and full-index nominal failures have
-exact diagnostics, and the phase's fresh exact gate passes. A recursive verb has two entries, and they
-are two types rather than one command class asked to mean both: an operator-initiated teardown validates at
-the topology root, and a descent-initiated one is admitted in a nested frame only by verifying the recovery
-wire its parent minted from the forest's own authorization point. Phase 12 has given the reverse projection
-its frame index; Phase 17 propagates that existing index through the forest and supplies the closed
-local/foreign sum, so whether an offered node belongs to this frame is structural rather than a comparison of
-frame names.
+Sprint 17.37 has built what that opening produces. A `FrameExecutor` is deliberately the poorest value in the
+recursive lifecycle: it holds a place in a conversation — the admitted canonical path, the root's opaque
+session and stage, the ordinal the root said comes next, and the digest of the last complete signed response —
+and there is no function from one to a store, journal, lease, snapshot, catalog row, signing key, session
+opener, or settlement. Every entry point turns signed bytes into a response through one helper consuming the
+installed key and the exact request those bytes answer, so no branch reads a coordinate off unverified bytes.
+Opening admits only a verified `Opened`; advancing admits every post-open family but `Opened` and requires a
+strictly greater ordinal; and execution admits only `Prepared`, reads its four packages out of that response
+rather than beside it, and refuses a `Descend` or a signed `Refused` on the same branch — which is what keeps
+"the root answered" apart from "the root authorized this effect". Only after the authorized node, its ordered
+dependencies, and its projections are compared against the frame's own plan does the executor become the sole
+additional caller of `mintPreparedGate`, and what it mints restates a durable row the root already wrote:
+the attempt and journal version come out of the signed package, because a storeless frame has no other way to
+know them.
 
-That shape continues through independently gated downstream phases: the
-[authenticated-handoff phase](phase-13-authenticated-handoff-and-child-admission.md) owns the recovery tag pair
-and is closed; the [recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md) propagates the existing
-frame index through its forest and owns the two entries; and the
-[recovery phase](phase-18-recovery-and-migration.md) finally consumes the same wire at its own nested
-boundary. Until those stages close, `project destroy` settles the frames one binary can reach and reports
-the rest outstanding.
+Sprint 17.36 has made the root endpoint live. `rootBrokerLink` now runs a rooted lifecycle service where it
+previously refused every request, and the one service the repository builds reaches the fixed signer only
+through the recovery signing admission the relay already holds. The runtime gains a root-arm fold, so the arm
+that may reach a signer is chosen by which fold a caller can enter rather than by a boolean beside the
+identity it returns, and a keyless nested arm cannot be read as a root runtime at all. The session owner
+holds the join: it enforces the sealed envelope's one-to-256 component, 4,096-byte grammar before comparing
+that envelope to the path the session itself retains, admits exactly an `OpenFrame`, and renders the
+nine-field unsigned `Opened` from root-selected coordinates alone — the request contributes only the digest
+that names it. Signing arrives as a continuation, so the owner still names no signer, and the existing
+attachment records the complete signed response's digest and reads it back before the caller may release
+those bytes. Because Ed25519 signing is deterministic, an exact replay under the same lineage, catalog,
+envelope, and nonce re-derives the same bytes over a row already attached, and any other bytes are a
+conflicting row rather than a second opening.
+
+Sprint 17.35 has closed the terminal receipt in its own storeless owner. `Lifecycle.Rooted.Receipt` reaches a
+session only through the frame-session owner's fixed-unit coordinate fold and names no `ProtectedStore` at
+all: both durable steps arrive as continuations from the relay that already holds the recovery signing
+admission, so what the owner holds is the join and the two digests rather than the writes. Only a `CloseFrame`
+reaches a terminal report and only a `ReceiptConfirm` confirms one, each answered inside its own paired
+`FrameComplete | Refused` or `ReceiptRecorded | Refused` family; a signed `Refused` is read as an outcome
+rather than minted. The close checks the session's own path, token, ordinal, nonce, and recorded predecessor,
+requires the carried report to eliminate canonically and name the session's verb, and publishes and reads that
+report back before the complete signed-response digest exists. The confirmation names that report by carrying
+the digest as its predecessor, and the recorded receipt repeats it in its own body, so a child that persists
+nothing can still say which terminal report was received and an exact retry converges without reopening
+anything.
+
+Sprint 17.30 has landed the catalog-produced recovery package. Durable reverse-descent
+preparation takes its canonical child configuration only from the admitted catalog edge, joins it to the
+plan's own reverse adapter through Phase 13's frozen constructor, and makes the complete package — never the
+adapter alone — the prepared record's payload, the binding input's child-config digest, and the offer payload.
+Both root reverse entries retain the catalog they were admitted under. The private relay's reverse route is
+that durable Bound transition wrapped in transport: it opens the package recoverably through the frame's own
+keyless link, proves payload, token, and opened binding agree, compare-and-swaps the Bound row, and only then
+routes the exact Offer to the already-installed root signer and enters the existing challenge loop. The route
+takes no payload argument, so an adapter alone is unrepresentable there, and a repeated attempt recovers the
+binding and token the root already minted rather than opening a second edge.
+
+Sprint 17.29 has landed that forward package. One rank-2 catalog fold selects an admitted descent by exact
+parent and child frame — missing, duplicated, and sibling children each refuse — and rechecks the selected
+entry against the parent level's own retained plan, so a parent frame that is not that level's current frame,
+a descent the parent plan does not declare with exactly the retained raw route, and projected node keys that
+are not the parent plan's own all refuse before the continuation. The fold discloses the parent level only as
+its own current frame. `CatalogForwardHandoff` then rechecks the admitted child against the evidence the
+entry retains — target-plan current frame, validated-configuration endpoint, rendered plan digest against the
+binding's, and configuration/payload digests against each other and the canonical payload's own hash — before
+rebuilding the binding input and sealing. It retains no lifecycle context, parent plan, or specification
+index, and has no process or command call site. The same sprint adds the suite's first projecting
+forward-child fixture, so the real `project up` entry now admits a one-layer VM descent and persists a
+manifest that frames that exact edge before the first effect.
+
+Sprint 17.25 has landed the recursive rooted plan catalog. Its hidden all-nominal
+`RootedPlanCatalog scope rootPlanId brokerGeneration catalogId` is its own entry carrier: the base retains
+the root's finalized specification, invocation authority, plan, current frame, and root-resident lifecycle
+context, and each extension retains one admitted descent edge with its exact target plan, digest binding,
+current frame, raw and stripped route, canonical config bytes, config and payload digests, and the parent
+frame's plan-owned projected node keys. Construction rechecks root residency, the frame-evidence join, the
+admitted context endpoint, and the authority's installed project and store identity before descending; the
+descent terminates on a frame with no declared edge and is bounded by the root topology's frame count. The
+same sprint factors descriptor, context, configuration, and target-plan validation into one VLC-free
+immediate-target kernel that the immediate `PlannedForwardHandoff` producer now delegates to. Both modules
+are hidden with no runtime caller, so their coverage is exact source and compile-fail guards; behavioural
+coverage arrives with Sprint 17.28's root entry call site, and positive multi-level admission with Sprint
+17.29's projecting fixture.
+
+Sprint 17.26 has landed the two remaining specification-index relabellings. The installed `ProjectCodec` and
+the jointly finalized service registry each keep their representation in a Cabal-hidden owner whose sole
+importer is the facade that re-exports the abstract type and every producer and eliminator it already owns.
+Each owner holds one reindex kernel that changes only the phantom, compares the digest-equality token against
+the digest the carrier itself retains — the registry retains the exact digest its finalization stamped, so a
+project registering no service is checked rather than relabelled vacuously — and preserves every other
+retained term. Neither kernel reaches a public facade, mints a token, or admits a caller-selected index.
+
+Sprint 17.27 has joined both relabellings under one token. The recovered-inputs boundary now yields the exact
+finalized specification alongside the recovered configuration and drafts, all three at the recovered
+profile's index, and that public boundary is what carries the join's behavioural coverage. `Command` threads
+it through both root `project up` entries — the fresh entry holds the invocation's own specification, the
+recovered entry the relabelled one — and the shared bound body refuses before any lifecycle effect unless the
+threaded specification's digest is the bound plan snapshot's.
+
+Sprint 17.28 has made the catalog durable. That threaded specification now reaches the one root-entry call
+site, where the entry admits the recursive catalog after the acquisition journal has revalidated the live
+global lease, protected snapshot, and plan digest, then compare-and-swaps one bounded canonical manifest
+keyed by the root plan's installed project, stable profile, and broker epoch. The catalog owner renders and
+strictly compares those bytes and names no store, session, record, or compare-and-swap operation, so durable
+authority stays with the entry. An exact retry converges on the record already present because the decision
+comes from the strict readback rather than from who won the swap; conflicting bytes and a refused descent
+projection both refuse before the command reservation and before any effect. The root Up entry retains the
+exact catalog, reachable only through the owner's rank-2 folds.
+
+The accepted security boundary is explicit. Root signatures authenticate coordinator responses, and exact
+requester path, session, stage, ordinal, nonce, predecessor digest, and sealed package-private construction
+prevent malformed, stale, or cross-edge traffic among cooperating interpreters. They do not attest a physical
+child against a malicious same-privilege launcher or intermediary; that stronger claim needs independently
+provisioned descendant identity or platform attestation.
 
 **Live acceptance owed.** Phase 18 builds deterministic interruption fixtures and closes on its host-static
 gate. The later test-harness phase reruns the targeted `recovery-interruption` Cabal group on linux-cpu, then
 runs `hostbootstrap run -- test run all` against live infrastructure. Phase 20 has every deliverable built and
-closed by the host static gate and still owes its own declared live linux-cpu sequence.
+closed by the host static gate and still owes its own declared live linux-cpu sequence. Phase 17 closes on its
+future core host-static gate with real local process-boundary fixtures; Phase 24 Sprint 24.30 separately owns
+the worked-demo Production `up`/`down`/`destroy` and Harness `10/10` confirmation.
 
 **Machinery without a production call site.**
 
@@ -160,23 +269,28 @@ closed by the host static gate and still owes its own declared live linux-cpu se
   it through finalization and selection, and the demo's two roles declare genuinely different rows. What
   remains is the handler return type and the `ServiceBackend` call site, which cannot precede the deploy step
   that installs a signed activation, so they land with **22.3**.
-- **22.3**'s relayed activation signing has **landed**: a distinct `ActivationSignRequest`/`Response` tag pair
-  reachable only from an admitted child, a manifest wire codec so the root signs a value it decoded rather than
-  opaque bytes, `linkSignActivation` on `BrokerLink` with the root signing locally and every other frame
-  relaying, and the round-trip plus negative-path coverage this repository pins for every protocol tag. A
-  nested frame can now reach the root for a signature, so what 22.3 owes is the deploy-step adoption that
-  consumes it — signing one manifest per pod-template revision and having `service run` measure and verify —
-  which is wiring rather than a protocol extension and lands with 22.2's registry adoption.
+- **22.3**'s relayed activation signing has **landed**: a distinct private-protocol
+  `ActivationSignRequest`/`Response` tag pair reachable only from an admitted child, a manifest wire codec so
+  the root signs a value it decoded rather than opaque bytes, and a Cabal-private relay operation with the root
+  signing locally and every other frame relaying. Phase 13's keyless relay foundation owns that lower route;
+  its rooted relay adoption and Phase 17's storeless executor/process adopters supply the complete recursive
+  runtime evidence. What 22.3 owes is activation installation plus `service run` measurement/verification. It
+  does not own the demo chart transaction; worked-demo Sprint 24.26 joins those activation semantics to exact
+  cluster readiness at the chart/workload boundary.
 - **24.4**'s published-base consumption is now enforced: every derived build passes `--pull`, and the
   host-native lane resolves the published tag to its repository digest and builds `FROM` that, refusing an
   image that has no repo digest because that is exactly the stale-local case. The digest is a within-run
   handoff rather than a committed pin, which is what § FF requires. The existing config-derived Harness
   profile/root isolation is not the target boundary: 24.4 still replaces those independent consumer terms with
-  the exact plan-owned projection. **24.5** then projects the demo's concrete workload, overhead, partition,
-  and slices into the Phase-16 consumers. **24.6** adopts the clause-holding guest-alias route with the
-  plan-minted `StepExecution`; that behavior is observable only inside a live guest. **24.7** then connects
-  Phase 13's reusable build protocol to the static command seam and real Docker secret/session channel and
-  proves it inside the derived container.
+  the exact plan-owned projection. **24.5** extends the lower step/plan declaration vocabulary, authors the
+  provider/cluster resources at their exact frames, and proves the unique direct-parent join; **24.6–24.7**
+  seed neutral plan execution and project the concrete workload/partition/slices. **24.8–24.18** establish the
+  invocation-owned canonical/live dependency registries, VM/Direct/share/alias adopters, and authenticated
+  parent-serviced provider reprobe. **24.19–24.23** render exact Kind/nvkind config, bind and discover the
+  closed backend, recover fresh cluster readiness, and adopt reconcile/cordon/readiness. **24.24–24.27** plan,
+  prepare, adopt, and reverse the readiness/activation-gated chart workload. **24.28** installs the frozen demo
+  projector only after those consumers, and **24.29** connects Phase 13's reusable build protocol to the real
+  Docker secret/session channel. **24.30** alone records the worked-demo live acceptance.
 
 Every one of those depends only on lower-numbered phases, so they can be taken in order.
 

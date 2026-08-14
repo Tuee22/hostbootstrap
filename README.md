@@ -59,6 +59,31 @@ operation-indexed evidence. Cross-process config handoff, delayed recovery, cont
 checks each use distinct authenticated gates; config text or a stable resource name cannot mint
 authority.
 
+The Handoff facade supplies an abstract root-signed `AuthenticatedRootScope` capsule for an exact Production
+or Harness scope. Its live-broker producer derives every signed field, and its verifier checks the independently
+installed project identity and verification key before introducing the scope through a closed rank-2 fold. The
+private Relay and Receiver adopt it without changing the existing four-field `Offer`: the root link mints the
+capsule, each nested link copies the exact root-issued bytes, and every Offer authentication value begins with
+its framed capsule. The Receiver verifies the capsule before installed-key, binding, challenge, grant, or
+payload semantics, then exact-verifies the rooted binding in both branches and retains the canonical recovery
+package with its typed projection, grant, and adapter wire. The reverse path transmits only that complete
+package. The hidden neutral rooted codec now implements both the closed six-variant lifecycle request and
+the descriptive seven-variant response, whose exact nine-/eleven-field grammar and request pairing remain
+free of cryptography and runtime semantics. Exact source guards validate both without exposing their
+constructors or assigning semantic ownership; neutral Receiver-internal folds are their sole transport
+import. The implemented response-signing facade adds the fixed-domain live-broker signer and installed-key CPS
+verifier without a second type or semantic caller; its opaque result remains descriptive, not authority.
+Implemented keyless relay adoption is transport-only: it adds singleton fields, bounded sealed
+requester-envelope construction, exact inner-byte preservation, and structural request/response pairing.
+The authenticated-handoff phase's root endpoint remains unavailable and returns the existing outer refusal;
+any signed rooted refusal is carried without interpretation. Root response production/fixed-signer invocation,
+retained session-path checks,
+durable replay/receipt semantics, recursive child construction, and the first successful rooted process
+exchange remain in the [recursive lifecycle command
+phase](DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md). The transport boundary is implemented by the
+[authenticated handoff and child admission
+phase](DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md).
+
 ## Ownership Boundary
 
 In the ordinary `doctor`/`build`/`run` project path, the Python bootstrapper owns only work that must

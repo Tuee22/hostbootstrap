@@ -198,6 +198,46 @@ authority — and no fresh profile, no harness authority, and no unbound lease t
 A fold that resolved nothing must not report a vacuous success. Re-reading the incomplete set after the
 callbacks is what makes "every abandoned run is settled" an observation rather than a claim.
 
+### A shared lifecycle-authority mount is not a recursive transport
+
+A shared directory does not provide one portable protected-store transaction domain. Direct processes on
+one kernel may share a lock and rename implementation, but Incus, Lima, and WSL cross filesystem and VM
+boundaries whose lock, atomic-rename, cache-coherence, ownership, and failure semantics are not one contract.
+An architecture that relies on those semantics therefore changes its authority guarantee with the selected
+lift. Mounting the authority namespace also gives the nested process raw access to records it has no reason
+to name or mutate.
+
+Durable lifecycle authority consequently stays at the topology root. The root owns the protected store,
+bound lease and snapshot, frame catalog, and per-frame journals; a nested executor receives one exact rooted
+grant, performs the selected local probe or effect, and returns an observation.
+
+### A generic protected-store RPC cannot stand in for rooted coordination
+
+A read/list/compare-and-swap service lets a nested caller choose record keys, expected versions, and new
+bytes. That is durable authority, not a narrow execution grant. Restricting the methods does not repair the
+identity mismatch: the global lease and acquisition snapshot are bound to the root plan digest, while an
+independently reconstructed projected child plan has its own digest and local identity. Treating the root
+journal as if it were a child-plan journal either fails the exact binding checks or silently relabels one
+authority as another.
+
+The root instead projects the target plan and operation set into an immutable catalog, selects each frame
+transition itself, records Unknown before the effect, and settles only the observation for that exact grant.
+The executor never chooses a snapshot, journal row, operation set, or compare-and-swap payload.
+
+### An ephemeral child key does not authenticate the child to its launcher
+
+The launcher can generate, retain, and pass any ephemeral private key the child would use. A signature from
+that key therefore proves possession of launcher-supplied bytes; it does not prove that an independently
+identified physical child produced the request, and an immediate parent can impersonate the same key.
+Authenticating that stronger claim requires an independently provisioned per-frame identity or platform
+attestation.
+
+The recursive protocol has a narrower, explicit threat boundary. Root signatures authenticate coordinator
+responses, while sealed package-private request construction plus exact requester path, stage, ordinal,
+nonce, and predecessor digest prevent accidental substitution, cross-edge confusion, malformed traffic, and
+stale replay among cooperating interpreters. They do not defend against a malicious same-privilege launcher
+or intermediate process. Claiming only that boundary keeps the type-level guarantee honest.
+
 ---
 
 ## Configuration and delivery

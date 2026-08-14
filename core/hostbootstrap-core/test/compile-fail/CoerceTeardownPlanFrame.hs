@@ -1,7 +1,8 @@
 module CoerceTeardownPlanFrame where
 
 import Data.Coerce (coerce)
-import HostBootstrap.Teardown (DownVerb, TeardownPlan)
+import HostBootstrap.Authority (VerbDown)
+import HostBootstrap.Teardown (TeardownPlan)
 
 data Scope
 data Plan
@@ -11,6 +12,6 @@ data FrameB
 -- TeardownPlan's frame role is nominal, so representational coercion cannot
 -- relabel a projection admitted for a different current frame.
 coerceTeardownPlanFrame ::
-    TeardownPlan Scope Plan FrameA DownVerb ->
-    TeardownPlan Scope Plan FrameB DownVerb
+    TeardownPlan Scope Plan FrameA VerbDown ->
+    TeardownPlan Scope Plan FrameB VerbDown
 coerceTeardownPlanFrame = coerce

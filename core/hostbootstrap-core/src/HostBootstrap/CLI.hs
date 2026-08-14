@@ -38,6 +38,7 @@ module HostBootstrap.CLI (
     addAssemblyInputs,
     addSteps,
     addServices,
+    addForwardChildPlan,
     finalizeProjectSpec,
     projectServiceVariantNames,
     projectArtifactNames,
@@ -50,6 +51,7 @@ where
 import Control.Monad (foldM, join)
 import Data.List (group, sort)
 import Data.Maybe (fromMaybe)
+import Data.Text (Text)
 import qualified Data.Text as T
 import Dhall (FromDhall, ToDhall)
 import GHC.Generics (Generic)
@@ -84,6 +86,7 @@ import HostBootstrap.Dhall.Gen (
     requireCodecWitness,
  )
 import HostBootstrap.Harness (TestSuite, caseIdText, emptySuite, testSuiteCaseCount, testSuiteCaseIds)
+import HostBootstrap.Lift.Context (LiftContext)
 import HostBootstrap.ProjectPlan.Construct
     ( FinalizedProjectSpec
     , withFinalizedProjectSpec
@@ -126,6 +129,13 @@ data ProjectSpec cfg tcfg = ProjectSpec
     descent it declares — derives its project-relative paths from that one
     authority rather than from @cwd@ or a serialized path.
     -}
+    , psForwardChildPlan ::
+        forall scope.
+        cfg scope ->
+        Text ->
+        Text ->
+        LiftContext ->
+        Either String (FilePath, cfg scope, StepPlan)
     , psTestInit :: InitArgs -> tcfg
     {- ^ Interpret the parsed @init@ flags into the project's test config
     (@test init@) — needs no pre-existing project config.
@@ -160,6 +170,14 @@ data ProjectSpecBuilder cfg tcfg = ProjectSpecBuilder
     , pbAssemblyInputs :: [ConfigInput]
     , pbStepFragments :: [StepFragment cfg]
     , pbServiceRegistries :: [ServiceRegistry cfg]
+    , pbForwardChildPlan ::
+        forall scope.
+        cfg scope ->
+        Text ->
+        Text ->
+        LiftContext ->
+        Either String (FilePath, cfg scope, StepPlan)
+    , pbForwardChildPlanCount :: Int
     , pbTestInit :: InitArgs -> tcfg
     , pbAssemble ::
         forall projectId scope.
@@ -174,6 +192,8 @@ data ProjectSpecError
     | DuplicateProjectArtifacts [String]
     | DuplicateAssemblyInputs [FilePath]
     | MissingStepPlan
+    | MissingForwardChildPlan
+    | DuplicateForwardChildPlan
     | InvalidServiceRegistry ServiceRegistryError
     deriving (Eq, Show)
 
@@ -200,6 +220,8 @@ projectSpec suite check arts testCodec testInit assemble =
         , pbAssemblyInputs = []
         , pbStepFragments = []
         , pbServiceRegistries = []
+        , pbForwardChildPlan = refuseForwardChildPlan
+        , pbForwardChildPlanCount = 0
         , pbTestInit = testInit
         , pbAssemble = assemble
         }
@@ -251,6 +273,30 @@ addServices ::
 addServices registry builder =
     builder{pbServiceRegistries = pbServiceRegistries builder ++ [registry]}
 
+{- | Install the one project-specific forward-child projector.
+
+The builder retains a refusing function even before installation, avoiding an
+impredicative optional field.  The separate count saturates at two so duplicate
+installation remains a closed validation state rather than unbounded input.
+-}
+addForwardChildPlan ::
+    ( forall scope.
+      cfg scope ->
+      Text ->
+      Text ->
+      LiftContext ->
+      Either String (FilePath, cfg scope, StepPlan)
+    ) ->
+    ProjectSpecBuilder cfg tcfg ->
+    ProjectSpecBuilder cfg tcfg
+addForwardChildPlan projector builder =
+    builder
+        { pbForwardChildPlan = projector
+        , pbForwardChildPlanCount = case pbForwardChildPlanCount builder of
+            0 -> 1
+            _ -> 2
+        }
+
 finalizeProjectSpec ::
     ProjectSpecBuilder cfg tcfg ->
     Either ProjectSpecError (ProjectSpec cfg tcfg)
@@ -268,6 +314,7 @@ finalizeProjectSpec builder = do
             , psStepPlan = \root cfg ->
                 mkStepPlan
                     (concatMap (\fragment -> runStepFragment fragment root cfg) (pbStepFragments builder))
+            , psForwardChildPlan = pbForwardChildPlan builder
             , psTestInit = pbTestInit builder
             , psAssemble = pbAssemble builder
             }
@@ -280,6 +327,8 @@ finalizeProjectSpec builder = do
         | not (null duplicateArtifacts) = Left (DuplicateProjectArtifacts duplicateArtifacts)
         | not (null duplicateInputs) = Left (DuplicateAssemblyInputs duplicateInputs)
         | null (pbStepFragments builder) = Left MissingStepPlan
+        | pbForwardChildPlanCount builder == 0 = Left MissingForwardChildPlan
+        | pbForwardChildPlanCount builder /= 1 = Left DuplicateForwardChildPlan
         | otherwise = Right ()
     caseIds = testSuiteCaseIds (pbTestSuite builder)
     duplicateCases = duplicates caseIds
@@ -313,6 +362,15 @@ projectStepPlan ::
     Either StepPlanError StepPlan
 projectStepPlan = psStepPlan
 
+refuseForwardChildPlan ::
+    cfg scope ->
+    Text ->
+    Text ->
+    LiftContext ->
+    Either String (FilePath, cfg scope, StepPlan)
+refuseForwardChildPlan _ _ _ _ =
+    Left "forward-child projection is unavailable"
+
 {- | Run the host-bootstrap CLI for @progName@, extending the core command tree
 with a validated project spec.
 -}
@@ -340,6 +398,7 @@ runHostBootstrapCLI progName spec = do
                         baseCodec
                         (psServices spec)
                         (psStepPlan spec)
+                        (psForwardChildPlan spec)
                         ( \finalizedSpec ->
                             runCLI
                                 project
@@ -394,6 +453,7 @@ runBareHostBootstrapCLI progName = do
                         baseCodec
                         emptyServiceRegistry
                         (\_ _ -> Left EmptyStepPlan)
+                        refuseForwardChildPlan
                         ( \finalizedSpec ->
                             runCLI
                                 project

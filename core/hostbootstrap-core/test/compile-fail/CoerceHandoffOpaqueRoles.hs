@@ -2,7 +2,6 @@ module CoerceHandoffOpaqueRoles where
 
 import Data.Coerce (coerce)
 import HostBootstrap.Handoff
-import HostBootstrap.Handoff.Receiver (ReceivedEdge)
 
 data HandoffScopeA
 data HandoffScopeB
@@ -20,6 +19,23 @@ wrongBindingScope = coerce
 
 wrongBindingBroker :: HandoffBinding BindingScopeA BindingBrokerA -> HandoffBinding BindingScopeA BindingBrokerB
 wrongBindingBroker = coerce
+
+data RootedBindingScopeA
+data RootedBindingScopeB
+data RootedBindingBrokerA
+data RootedBindingBrokerB
+
+wrongRootedBindingScope :: RootedPayloadBinding RootedBindingScopeA RootedBindingBrokerA -> RootedPayloadBinding RootedBindingScopeB RootedBindingBrokerA
+wrongRootedBindingScope = coerce
+
+wrongRootedBindingBroker :: RootedPayloadBinding RootedBindingScopeA RootedBindingBrokerA -> RootedPayloadBinding RootedBindingScopeA RootedBindingBrokerB
+wrongRootedBindingBroker = coerce
+
+data AuthenticatedScopeA
+data AuthenticatedScopeB
+
+wrongAuthenticatedRootScope :: AuthenticatedRootScope AuthenticatedScopeA -> AuthenticatedRootScope AuthenticatedScopeB
+wrongAuthenticatedRootScope = coerce
 
 data RootScopeA
 data RootScopeB
@@ -80,14 +96,3 @@ wrongPayloadScope = coerce
 
 wrongPayloadBroker :: AuthenticatedConfigPayload PayloadScopeA PayloadBrokerA -> AuthenticatedConfigPayload PayloadScopeA PayloadBrokerB
 wrongPayloadBroker = coerce
-
-data ReceivedScopeA
-data ReceivedScopeB
-data ReceivedBrokerA
-data ReceivedBrokerB
-
-wrongReceivedScope :: ReceivedEdge ReceivedScopeA ReceivedBrokerA -> ReceivedEdge ReceivedScopeB ReceivedBrokerA
-wrongReceivedScope = coerce
-
-wrongReceivedBroker :: ReceivedEdge ReceivedScopeA ReceivedBrokerA -> ReceivedEdge ReceivedScopeA ReceivedBrokerB
-wrongReceivedBroker = coerce

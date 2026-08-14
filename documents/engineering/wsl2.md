@@ -75,13 +75,14 @@ declaration is a structured conflict rather than an overwrite. The target is der
 `%UserProfile%` by the backend itself.
 
 Target planning derives a pure exact `ProviderWallSpec ... wallSpecId`, `EffectiveBudget`, and proved
-`BudgetPartition` before touching this shared state. A journaled same-spec reservation plus the
-OS-released exclusive lock of clause 1 authorizes the initial shared-wall call. The
-`ProviderWallReservation ... reservationId
-fence` retains that lock across the call; only authoritative applied/unchanged observation consumes it and
-jointly mints the live `ProviderWallAuthority ... wallSpecId wallEpoch fence` plus epoch-indexed
-`WslGlobalWallLease`. The post-observation lease is not circularly required before it exists. An unknown
-result exposes recovery/reprobe state, not later mutation authority. Subsequent reconciliation or
+`BudgetPartition` before touching this shared state. The same-spec reservation is minted only from the exact
+plan/provider operation's durable `PreparedGate`; it retains that gate's session, fence, attempt, and journal
+version, not an OS handle. The exact WSL owning adapter consumes the reservation and retains the OS-released
+exclusive lock of clause 1 across the initial shared-wall call. Only its package-private backend-result bridge
+may produce the settlement permit that jointly mints the live
+`ProviderWallAuthority ... wallSpecId wallEpoch fence` plus epoch-indexed `WslGlobalWallLease`; a caller-shaped
+raw observation cannot do so. The post-observation lease is not circularly required before it exists. An
+unknown result exposes recovery/reprobe state, not later mutation authority. Subsequent reconciliation or
 restoration requires the live authority, lease, and exact partition projection, with the epoch/fence
 revalidated at the call.
 

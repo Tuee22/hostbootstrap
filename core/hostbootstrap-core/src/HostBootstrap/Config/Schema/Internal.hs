@@ -16,6 +16,7 @@ module HostBootstrap.Config.Schema.Internal
     , mintValidatedConfigKernel
     , RecoverySpecReindex
     , withRecoverySpecReindexKernel
+    , recoverySpecReindexDigestKernel
     , reindexValidatedConfigKernel
     )
 where
@@ -73,6 +74,15 @@ withRecoverySpecReindexKernel ::
 withRecoverySpecReindexKernel expected observed use
     | expected == observed = Right (use (RecoverySpecReindex expected))
     | otherwise = Left (expected, observed)
+
+{- | The exact specification digest a minted reindex token proves equal.
+
+Every package-private carrier that relabels its own specification phantom reads
+its target digest here, so the token stays the single relabelling authority and
+no carrier invents a second comparison source.
+-}
+recoverySpecReindexDigestKernel :: RecoverySpecReindex targetSpecDigest -> Text
+recoverySpecReindexDigestKernel (RecoverySpecReindex expected) = expected
 
 {- | Change only the specification phantom after the token's expected digest
 exactly matches the opaque config's retained specification digest.

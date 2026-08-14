@@ -39,4 +39,4 @@ wrongCandidateScope profile root spec config =
         root
         spec
         config
-        (\_refined _drafts -> ())
+        (\_spec _refined _drafts -> ())

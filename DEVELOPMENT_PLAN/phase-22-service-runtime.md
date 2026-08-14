@@ -139,13 +139,12 @@ observable at selection. `service run` prints the row it would authorize, which 
 before the authorization that will consume it exists. The demo declares two genuinely different rows: the web
 role listens and reaches the durable root, the accelerator listens and runs a worker, and neither is the union.
 
-What is left is the part that cannot land before the deploy step does. Handlers still return `IO ()` and no
+What is left is the part that cannot land before activation installation does. Handlers still return `IO ()` and no
 call site builds a `ServiceBackend`, because `interpretServiceProgram` demands an `EffectAuthorization`, whose
 only producer needs a `VerifiedServicePlacement`, which needs a `VerifiedRuntimeRoleActivation` — and nothing
 installs a signed activation yet. Changing the handler's return type before `service run` can obtain a
 placement would leave the registry producing programs nothing can interpret, so it lands together with Sprint
-22.3's deploy step, along with the demo port that moves listener bind and worker build out of the handlers and
-into the engine's Acquire phase.
+22.3's activation installer and `service run` interpreter.
 
 ### Sprint 22.3: Role-machine adoption at `service run` [Active]
 
@@ -161,57 +160,58 @@ Enter the service through the activation package rather than beside it.
 
 #### Deliverables
 
-- The deploy step signs one activation manifest per pod-template revision and installs the immutable
+- The activation installer signs one manifest per pod-template revision and installs the immutable
   digest-addressed config, secret, and manifest objects the role reads.
 - `service run` measures its own binary, its mounted role wire, and its private bundle digests plus its instance
   identity, verifies the activation against the independently installed Activation key, and enters the phase machine.
 - A verification failure refuses to start rather than starting unverified.
+- This sprint changes only the two declared core modules. It does not edit `HostBootstrapDemo.Commands` or own
+  Helm/chart mutation; the worked-demo phase joins these activation semantics to exact cluster readiness.
 
 #### Validation
 
 `ActivationSpec` and `RoleLifecycleSpec` cover the signing, the measurement comparison, and the refusal.
 
-`HandoffProtocolSpec` covers the activation-signing pair the way it covers every other v1 tag, in the
-phase that owns the vocabulary: both round-trip with their exact field shape, and both are in the
-exhaustive tag list rather than beside it. `HandoffRelaySpec`'s
-`relayed activation signing` group covers the operation itself — the root signs a manifest relayed through its
-own link and the signature is byte-identical to the local signer's, so the relay adds a route rather than a
-second signing rule; a manifest with no rollout revision is refused rather than signed; the manifest
-round-trips through its wire form exactly; a truncated wire and a wire with trailing bytes are each refused
-rather than partially read; and a two-entry effect row survives the wire as a row rather than one joined entry.
+The [authenticated-handoff phase](phase-13-authenticated-handoff-and-child-admission.md) pins the
+activation-signing tag pair, exact field shape, bounded codec, and keyless relay behavior at the private wire
+boundary. The [recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md) proves that route
+through the sealed process/Command adopter. This phase's gate then covers the activation consumer: the root's
+relayed signature is byte-identical to local signing, a manifest without a rollout revision is refused, a
+truncated or trailing wire is refused, and a multi-entry effect row remains distinct. No public test channel,
+signing hook, or private-module exposure is part of that evidence.
 
 #### Remaining Work
 
-The **protocol blocker is gone**. A nested frame can now reach the root for a signature.
+The activation consumer uses the root-coordinated route without lending signing or durable authority to a
+child:
 
-`withActivationBroker` still consumes a `RootInvocationAuthority` that only the root frame mints, and the demo's
-web service and Linux accelerator are still deployed by `deploy-chart` in the *container* frame. What has
-landed is the relayed activation-signing operation that closes that gap:
-
-- The activation-signing tag pair is reachable from an admitted child alone, exactly like the other relay
-  requests, so a frame that has not completed its own admission cannot ask the root to sign anything. The
-  pair itself belongs to the
-  [authenticated-handoff phase](phase-13-authenticated-handoff-and-child-admission.md), which owns every
-  v1 protocol tag and pins each one's field shape and negative paths; this phase owns its consumption.
+- The [authenticated-handoff phase](phase-13-authenticated-handoff-and-child-admission.md) owns authenticated
+  root scope, scope-first receipt of the exact child edge, the activation-signing tags, and the structurally
+  keyless relay. A frame that has not completed admission cannot submit a signing request.
+- The [recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md) owns the installed root
+  runtime, recursive catalog, process route, and sealed root relay service. A storeless `FrameExecutor` receives
+  no project signing key, `ProtectedStore`, journal, cursor, or generic root callback.
 - `activationManifestFromWire` is the decoder that makes the root a signer rather than a blind oracle. It
   rebuilds the manifest from the bytes that arrived and puts it back through the *same*
   `signActivationManifest` validation a local caller faces, so a relayed manifest gets no weaker check than a
   local one. A wire that does not decode is refused before the broker is reached at all.
-- `BrokerLink` gained `linkSignActivation`. The root's link signs locally; every other frame's relays outward
-  and adopts the answer. `relayedBrokerLink` remains structurally keyless, so the asymmetry that makes the
-  whole relay safe is unchanged — and because a received edge already yields a `relayedBrokerLink`, the
-  receiver half needs no separate machinery.
+- Cabal-private `linkSignActivation` signs locally only at the root; every other frame forwards canonical bytes
+  through its already-admitted session and adopts the answer. The derived link is structurally keyless and stays
+  inside a fixed branch-specific callback.
 - `adoptRelayedActivationGrant` lets the relayed half hold its own answer. It is safe because an
   `ActivationGrant` is not authority: the only consumer is `verifyRuntimeRoleActivation`, which checks it
   against the independently installed Activation key, so adopting arbitrary bytes yields a grant that fails
   verification rather than one that authorizes anything.
 
-What remains is the **deploy-step adoption** that consumes it: signing one manifest per pod-template revision,
-installing the immutable digest-addressed config, secret, and manifest objects, and `service run` measuring its
-own binary, mounted role wire, and bundle digests before entering the phase machine. That is wiring now rather
-than a protocol extension, and it lands together with Sprint 22.2's registry adoption — until then
+The remaining work is the **activation and `service run` adoption** that consumes it: signing one manifest per
+pod-template revision, installing the immutable digest-addressed config, secret, and manifest objects, and
+`service run` measuring its own binary, mounted role wire, and bundle digests before entering the phase
+machine. It lands together with Sprint 22.2's registry adoption; until then
 `serviceDefinition` keeps its `IO ()` handler, because changing the registry's shape before there is anything
 that can run a program would break `service run` for no gain.
+
+The [worked-demo phase](phase-24-worked-demo.md) owns the closed readiness-gated chart/workload call after
+the exact cluster consumer can supply `ClusterReadiness`; this sprint owns activation and service execution.
 
 There is still one lane that never needed the relay: the host-resident accelerator daemon is launched by a
 post-handoff step in the metal frame, where the root authority is already in scope. Adopting the engine there

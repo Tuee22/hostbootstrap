@@ -1,4 +1,5 @@
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RoleAnnotations #-}
@@ -22,8 +23,10 @@ where that is made structural:
   removed with it.
 * 'openTeardownForest' is the **sole** initial producer of a forest. It consumes
   only the already-bound projection; there is no second plan or frame argument
-  that could disagree with it. The forest remains deliberately unframed until
-  the recursive-lifecycle-command phase propagates the frame index.
+  that could disagree with it. The forest and every authority, cursor, successor,
+  completion, and 'SubtreeSettled' value retain that projection's nominal
+  frame index. 'DestroySettled' deliberately drops the frame only after the
+  exact plan/current-frame pair proves that subtree is the unique root.
 
 The forest itself enforces child-first recursion. A frame's own teardown step is
 not offered until every deeper frame's node has settled, so a parent is never
@@ -36,8 +39,9 @@ and only their settlement exposes the ordinary provider stop/delete step.
 Failure is constructive. Every attempt returns a successor forest, including on
 failure; a failed node keeps its parent blocked while unrelated siblings stay
 schedulable; and a forest containing a failure never completes. Only a
-**completed Destroy** forest can enter 'verifyDestroySettled', which is the sole
-producer of 'DestroySettled' — the proof
+**completed** forest can enter 'verifySubtreeSettled'. Only a root-frame
+@VerbDestroy@ subtree can then enter 'verifyDestroySettled', the sole producer
+of 'DestroySettled' — the proof
 @HostBootstrap.Lifecycle.Mode.destroySettledClosure@ requires before Production
 mode may be released.
 
@@ -47,25 +51,12 @@ and neither is torn down. Both settle their node — the run never owned the
 object — and both are recorded on the forest so the report can name them.
 -}
 module HostBootstrap.Teardown (
-    -- * The two verbs
-    DownVerb,
-    DestroyVerb,
-    TeardownVerb,
-    downVerb,
-    destroyVerb,
-    teardownVerbName,
-
     -- * The reverse projection
     TeardownAction (..),
     TeardownPlan,
     teardownPlan,
     teardownPlanVerbName,
     teardownPlanFrameId,
-    teardownPlanStepKeys,
-    teardownPlanStepIdentities,
-    teardownPlanOperationKeys,
-    teardownPlanActions,
-    runTeardownProjection,
 
     -- * The forest
     TeardownForest,
@@ -79,31 +70,48 @@ module HostBootstrap.Teardown (
     nextTeardownWork,
     eliminateTeardownProgress,
     CompletedTeardownForest,
-    completedForestSettledKeys,
+    completedForestTerminalObservations,
     TeardownAuthorizationPoint,
-    authorizationPointKey,
     PreDescentStep,
     preDescentStepKey,
     preDescentStepFrame,
     SettledChildren,
     settledChildrenKeys,
-    TeardownCursor,
-    teardownCursorAction,
-    teardownCursorKey,
-    teardownCursorFrame,
-    teardownCursorPolicy,
-    teardownCursorRun,
+    TeardownWork,
+    LocalWork,
+    localWorkAction,
+    localWorkKey,
+    localWorkPolicy,
+    localWorkRun,
+    DescentWork,
+    descentWorkParentFrame,
+    descentWorkChildFrame,
+    withDescentWorkSubtree,
+    eliminateTeardownWork,
     withTeardownAuthorization,
 
     -- * Attempting one step
     TeardownOutcome (..),
-    attemptTeardownStep,
+    renderTeardownObservations,
+    teardownObservationsFromWire,
+    attemptPreDescentStep,
+    attemptLocalWork,
+    settleDescentWork,
+    failDescentWork,
     driveTeardownForest,
 
     -- * Settlement
+    SubtreeSettled,
+    subtreeSettledPlanDigest,
+    subtreeSettledOpeningFrame,
+    subtreeSettledVerbName,
+    subtreeSettledTerminalObservations,
+    subtreeSettledReleasedOperationKeys,
+    verifySubtreeSettled,
     DestroySettled,
     destroySettledPlanDigest,
-    destroySettledReleasedKeys,
+    destroySettledTerminalObservations,
+    destroySettledReleasedOperationKeys,
     verifyDestroySettled,
     settledDestroyEvidence,
 
@@ -112,13 +120,19 @@ module HostBootstrap.Teardown (
     teardownErrorMessage,
 ) where
 
-import Control.Exception (SomeException, displayException)
-import Control.Exception.Safe (try)
-import Data.List (nub)
 import qualified Data.List.NonEmpty as NonEmpty
+import Data.ByteString (ByteString)
+import Data.Kind (Type)
+import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import HostBootstrap.Authority (
+    ProjectVerb (..),
+    VerbDestroy,
+    projectVerbName,
+ )
 import HostBootstrap.HostConfig (HostConfig)
+import HostBootstrap.Handoff (HandoffError, handoffErrorMessage, lifecycleObservationsFromWire, renderLifecycleObservations)
 import HostBootstrap.ProjectPlan (
     OperationKey,
     PlannedStep,
@@ -134,6 +148,7 @@ import HostBootstrap.ProjectPlan (
     stablePlanSnapshotDigest,
     topology,
     topologyFrameOrder,
+    topologyParentEdges,
  )
 import HostBootstrap.ProjectPlan.Frame (CurrentFrame, currentFrameId)
 import HostBootstrap.Step (
@@ -143,30 +158,6 @@ import HostBootstrap.Step (
     TeardownAction (..),
     TeardownOutcome (..),
  )
-
--- ---------------------------------------------------------------------------
--- The verbs
-
-data DownVerb
-data DestroyVerb
-
-{- | Which reverse projection is being taken. The GADT is what gives
-'TeardownPlan' and every downstream forest value a distinct type per verb, so an
-@up@-failure unwind or a @down@ cannot be handed to a destroy-only consumer.
--}
-data TeardownVerb verb where
-    DownTeardown :: TeardownVerb DownVerb
-    DestroyTeardown :: TeardownVerb DestroyVerb
-
-downVerb :: TeardownVerb DownVerb
-downVerb = DownTeardown
-
-destroyVerb :: TeardownVerb DestroyVerb
-destroyVerb = DestroyTeardown
-
-teardownVerbName :: TeardownVerb verb -> Text
-teardownVerbName DownTeardown = "down"
-teardownVerbName DestroyTeardown = "destroy"
 
 -- ---------------------------------------------------------------------------
 -- The reverse projection
@@ -180,13 +171,23 @@ adapter owns it ('CoreManagedReverse') or it acquired nothing this frame must
 release.
 -}
 data ReverseStep = ReverseStep
-    { reverseIdentity :: StepIdentity
+    { _reverseIdentity :: StepIdentity
     , reverseOperationKey :: OperationKey
     , reverseFrame :: Text
+    , reversePlacement :: ReversePlacement
     , reverseAction :: TeardownAction
     , reversePolicy :: ReversePolicy
     , reverseRun :: Maybe (HostConfig -> TeardownAction -> IO TeardownOutcome)
     }
+
+{- | The plan-derived relation between one reverse node and the frame that
+opened this projection. Every descendant node names the opening frame's exact
+immediate child, even when an intervening topology level contributes no
+removable node to the forest.
+-}
+data ReversePlacement
+    = ReverseLocal Text
+    | ReverseDescent Text Text
 
 reverseKey :: ReverseStep -> Text
 reverseKey = Text.pack . operationKeyText . reverseOperationKey
@@ -199,80 +200,20 @@ operation keys — the structural property § W requires of the forward and
 reverse projections.
 -}
 data TeardownPlan scope planId frame verb
-    = TeardownPlan (TeardownVerb verb) Text Text [[ReverseStep]]
+    = TeardownPlan (ProjectVerb verb) Text Text [Text] [[ReverseStep]]
 
 type role TeardownPlan nominal nominal nominal nominal
 
 teardownPlanVerbName :: TeardownPlan scope planId frame verb -> Text
-teardownPlanVerbName (TeardownPlan verb _ _ _) = teardownVerbName verb
+teardownPlanVerbName (TeardownPlan verb _ _ _ _) = projectVerbName verb
 
 -- | The exact semantic frame from which this reverse projection begins.
 teardownPlanFrameId :: TeardownPlan scope planId frame verb -> Text
-teardownPlanFrameId (TeardownPlan _ _ frame _) = frame
+teardownPlanFrameId (TeardownPlan _ _ frame _ _) = frame
 
-{- | The plan's legacy text-key projection, deepest frame first. Every entry is
-rendered from one of the forward plan's own operation keys.
--}
-teardownPlanStepKeys :: TeardownPlan scope planId frame verb -> [Text]
-teardownPlanStepKeys (TeardownPlan _ _ _ levels) =
-    [reverseKey step | level <- levels, step <- level]
-
--- | The exact stable step identities shared with the admitted forward plan.
-teardownPlanStepIdentities :: TeardownPlan scope planId frame verb -> [StepIdentity]
-teardownPlanStepIdentities (TeardownPlan _ _ _ levels) =
-    [reverseIdentity step | level <- levels, step <- level]
-
--- | The exact stable operation keys shared with the admitted forward plan.
-teardownPlanOperationKeys :: TeardownPlan scope planId frame verb -> [OperationKey]
-teardownPlanOperationKeys (TeardownPlan _ _ _ levels) =
+projectedOperationKeys :: TeardownPlan scope planId frame verb -> [OperationKey]
+projectedOperationKeys (TeardownPlan _ _ _ _ levels) =
     [reverseOperationKey step | level <- levels, step <- level]
-
-teardownPlanActions :: TeardownPlan scope planId frame verb -> [(Text, TeardownAction)]
-teardownPlanActions (TeardownPlan _ _ _ levels) =
-    [(reverseKey step, reverseAction step) | level <- levels, step <- level]
-
-{- | Run the verb's reverse projection in its own order — deepest frame first,
-and within a frame the exact reverse of the forward sequence.
-
-Every effect comes from the plan: a node runs the reverse its own step declared
-with 'HostBootstrap.Step.reversedBy', a @CoreManagedReverse@ node that declared
-none is handed to the core adapter @onCoreManaged@, and a node that declared
-none and is not core-managed acquired nothing this frame must release, so it is
-skipped and reported as such. There is no whole-project teardown hook to
-disagree with the plan.
-
-A throwing effect becomes 'TeardownFailed' rather than aborting the traversal,
-so an unrelated later node still gets its turn — the § Y rule that a refusal or
-a failure skips only its own resource.
-
-This drives the pure current-frame-subtree projection, not the
-'TeardownForest'. It can invoke retained callbacks in projection order, but it
-does not provide the forest's child-first scheduling, destroy-only pre-descent,
-or the recursive lifecycle layer's authenticated distinction between local and
-foreign-frame work. Production lifecycle verbs therefore drive the forest and
-cross each declared descendant boundary explicitly.
--}
-runTeardownProjection ::
-    TeardownPlan scope planId frame verb ->
-    -- | how the core releases a node whose reverse it owns
-    (Text -> TeardownAction -> IO TeardownOutcome) ->
-    HostConfig ->
-    IO [(Text, Maybe TeardownOutcome)]
-runTeardownProjection (TeardownPlan _ _ _ levels) onCoreManaged cfg =
-    mapM attempt [step | level <- levels, step <- level]
-  where
-    attempt step = do
-        outcome <- case (reverseRun step, reversePolicy step) of
-            (Just action, _) -> Just <$> guarded (action cfg (reverseAction step))
-            (Nothing, CoreManagedReverse) ->
-                Just <$> guarded (onCoreManaged (reverseKey step) (reverseAction step))
-            (Nothing, _) -> pure Nothing
-        pure (reverseKey step, outcome)
-    guarded effect = do
-        result <- try effect
-        pure $ case result of
-            Right outcome -> outcome
-            Left exc -> TeardownFailed (displayException (exc :: SomeException))
 
 {- | Project the validated plan onto its reverse form for one verb.
 
@@ -284,13 +225,14 @@ preserve policy instead of being removed by either verb's projection.
 teardownPlan ::
     ProjectPlan scope specDigest planId configId cfg ->
     CurrentFrame scope planId frame ->
-    TeardownVerb verb ->
+    ProjectVerb verb ->
     TeardownPlan scope planId frame verb
 teardownPlan plan current verb =
     TeardownPlan
         verb
         (stablePlanSnapshotDigest (renderSnapshot plan))
         currentId
+        frames
         levels
   where
     currentId = currentFrameId current
@@ -302,9 +244,16 @@ teardownPlan plan current verb =
     levels =
         [ level
         | frame <- reverse frames
-        , let level = reverse (map (reverseStepFor verb) (removableIn frame))
+        , let level =
+                reverse
+                    (mapMaybe (reverseStepFor verb (placementFor frame)) (removableIn frame))
         , not (null level)
         ]
+    placementFor frame
+        | frame == currentId = ReverseLocal currentId
+        | otherwise = case frames of
+            (_opening : child : _) -> ReverseDescent currentId child
+            _ -> ReverseLocal currentId
     removableIn frame =
         [ step
         | step <- steps
@@ -313,26 +262,38 @@ teardownPlan plan current verb =
         ]
 
 reverseStepFor ::
-    TeardownVerb verb ->
+    ProjectVerb verb ->
+    ReversePlacement ->
     PlannedStep scope planId configId config ->
-    ReverseStep
-reverseStepFor verb step =
-    ReverseStep
-        { reverseIdentity = plannedStepIdentity step
-        , reverseOperationKey = plannedStepOperationKey step
-        , reverseFrame = plannedStepFrameId step
-        , reverseAction = actionFor verb (plannedStepIdentity step)
-        , reversePolicy = plannedStepReversePolicy step
-        , reverseRun = plannedStepReverseRun step
-        }
+    Maybe ReverseStep
+reverseStepFor verb placement step =
+    ( \action ->
+        ReverseStep
+            { _reverseIdentity = plannedStepIdentity step
+            , reverseOperationKey = plannedStepOperationKey step
+            , reverseFrame = plannedStepFrameId step
+            , reversePlacement = placement
+            , reverseAction = action
+            , reversePolicy = plannedStepReversePolicy step
+            , reverseRun = plannedStepReverseRun step
+            }
+    )
+        <$> actionFor verb (plannedStepIdentity step)
 
-actionFor :: TeardownVerb verb -> StepIdentity -> TeardownAction
-actionFor verb (CoreStepIdentity DeployVMId) = case verb of
-    DownTeardown -> StopFrame
-    DestroyTeardown -> DeleteFrame
--- kind has no reliable stop/restart contract, so both verbs delete it
-actionFor _ (CoreStepIdentity DeployKindId) = DeleteCluster
-actionFor _ _ = ReleaseResource
+{- | Select one reverse action from the exact admitted project verb.
+
+@up@ has no reverse work. A VM is stopped by @down@ and deleted by @destroy@;
+kind is deleted by both non-up verbs because it has no reliable stop/restart
+contract. Every other removable node runs its declared release.
+-}
+actionFor :: ProjectVerb verb -> StepIdentity -> Maybe TeardownAction
+actionFor ProjectUp _ = Nothing
+actionFor ProjectDown (CoreStepIdentity DeployVMId) = Just StopFrame
+actionFor ProjectDestroy (CoreStepIdentity DeployVMId) = Just DeleteFrame
+actionFor ProjectDown (CoreStepIdentity DeployKindId) = Just DeleteCluster
+actionFor ProjectDestroy (CoreStepIdentity DeployKindId) = Just DeleteCluster
+actionFor ProjectDown _ = Just ReleaseResource
+actionFor ProjectDestroy _ = Just ReleaseResource
 
 -- ---------------------------------------------------------------------------
 -- The forest
@@ -354,15 +315,17 @@ data Node = Node
     { nodeStep :: ReverseStep
     , nodeState :: NodeState
     , nodeChildren :: [Node]
-    , nodeNote :: Maybe Text
+    , nodeObservation :: Maybe TeardownOutcome
     }
 
 {- | A live teardown forest. Produced only by 'openTeardownForest' and advanced
-only by 'attemptTeardownStep', so there is no way to fabricate one at an
-arbitrary position.
+only by the branch-specific attempt functions, so there is no way to fabricate
+one at an arbitrary position or apply one branch's outcome to another.
 -}
-data TeardownForest scope planId verb
-    = TeardownForest (TeardownVerb verb) Text [Node]
+data TeardownForest scope planId frame verb
+    = TeardownForest (TeardownPlan scope planId frame verb) [Node]
+
+type role TeardownForest nominal nominal nominal nominal
 
 {- | The sole initial forest producer.
 
@@ -372,16 +335,17 @@ stopped and its retained children are unreachable until it is started again.
 -}
 openTeardownForest ::
     TeardownPlan scope planId frame verb ->
-    Either TeardownError (TeardownForest scope planId verb)
-openTeardownForest (TeardownPlan verb digest _ levels)
-    | null levels = Left (TeardownPlanEmpty (teardownVerbName verb))
-    | otherwise = Right (TeardownForest verb digest (nest verb levels))
+    Either TeardownError (TeardownForest scope planId frame verb)
+openTeardownForest projection@(TeardownPlan verb _ _ _ levels)
+    | ProjectUp <- verb = Left TeardownProjectUpHasNoReverse
+    | null levels = Left (TeardownPlanEmpty (projectVerbName verb))
+    | otherwise = Right (TeardownForest projection (nest verb levels))
 
 {- | Nest the per-frame levels so the deepest frame's nodes are children of the
 next frame out. Levels arrive innermost-first, so the fold attaches each level
 to the one already built beneath it.
 -}
-nest :: TeardownVerb verb -> [[ReverseStep]] -> [Node]
+nest :: ProjectVerb verb -> [[ReverseStep]] -> [Node]
 nest verb = foldl attach []
   where
     attach deeper level =
@@ -389,7 +353,7 @@ nest verb = foldl attach []
             { nodeStep = step
             , nodeState = initialState verb step (childrenOf step)
             , nodeChildren = childrenOf step
-            , nodeNote = Nothing
+            , nodeObservation = Nothing
             }
         | step <- level
         ]
@@ -414,7 +378,7 @@ frameOwner steps =
 isFrameAction :: TeardownAction -> Bool
 isFrameAction action = action == StopFrame || action == DeleteFrame
 
-initialState :: TeardownVerb verb -> ReverseStep -> [Node] -> NodeState
+initialState :: ProjectVerb verb -> ReverseStep -> [Node] -> NodeState
 initialState verb step children
     | needsPreDescent verb step children = PreDescentPending
     | null children = SelfPending
@@ -424,41 +388,46 @@ initialState verb step children
 the pre-descent reachability step; a @down@ never descends past a stopped
 provider, and a childless node has nothing to reach.
 -}
-needsPreDescent :: TeardownVerb verb -> ReverseStep -> [Node] -> Bool
-needsPreDescent DownTeardown _ _ = False
-needsPreDescent DestroyTeardown step children =
+needsPreDescent :: ProjectVerb verb -> ReverseStep -> [Node] -> Bool
+needsPreDescent ProjectUp _ _ = False
+needsPreDescent ProjectDown _ _ = False
+needsPreDescent ProjectDestroy step children =
     isFrameAction (reverseAction step) && not (null children)
 
 -- | Nodes that have not settled, deepest first.
-teardownForestOutstanding :: TeardownForest scope planId verb -> [Text]
-teardownForestOutstanding (TeardownForest _ _ nodes) = concatMap outstandingIn nodes
+teardownForestOutstanding :: TeardownForest scope planId frame verb -> [Text]
+teardownForestOutstanding (TeardownForest _ nodes) = concatMap outstandingIn nodes
   where
     outstandingIn node =
         concatMap outstandingIn (nodeChildren node)
             ++ [reverseKey (nodeStep node) | nodeState node /= Settled]
 
 -- | Every node that was attempted and failed, with its reported cause.
-teardownForestFailures :: TeardownForest scope planId verb -> [(Text, Text)]
-teardownForestFailures (TeardownForest _ _ nodes) = concatMap failuresIn nodes
+teardownForestFailures :: TeardownForest scope planId frame verb -> [(Text, Text)]
+teardownForestFailures (TeardownForest _ nodes) = concatMap failuresIn nodes
   where
     failuresIn node =
         concatMap failuresIn (nodeChildren node)
-            ++ [ (reverseKey (nodeStep node), note)
+            ++ [ (reverseKey (nodeStep node), Text.pack detail)
                | nodeState node == SelfFailed
-               , Just note <- [nodeNote node]
+               , Just (TeardownFailed detail) <- [nodeObservation node]
                ]
 
 {- | Nodes settled as compatible-unowned or policy-refused. They were left
 untouched, which is why they do not block completion but are still reported.
 -}
-teardownForestForeign :: TeardownForest scope planId verb -> [(Text, Text)]
-teardownForestForeign (TeardownForest _ _ nodes) = concatMap foreignIn nodes
+teardownForestForeign :: TeardownForest scope planId frame verb -> [(Text, Text)]
+teardownForestForeign (TeardownForest _ nodes) = concatMap foreignIn nodes
   where
     foreignIn node =
         concatMap foreignIn (nodeChildren node)
-            ++ [ (reverseKey (nodeStep node), note)
+            ++ [ (reverseKey (nodeStep node), Text.pack detail)
                | nodeState node == Settled
-               , Just note <- [nodeNote node]
+               , Just observation <- [nodeObservation node]
+               , detail <- case observation of
+                    TeardownForeignRetained value -> [value]
+                    TeardownRefused value -> [value]
+                    _ -> []
                ]
 
 -- ---------------------------------------------------------------------------
@@ -471,80 +440,164 @@ type NodePath = [Int]
 must go through 'eliminateTeardownProgress', so neither branch can be wrapped or
 skipped.
 -}
-data TeardownProgress scope planId verb
-    = ProgressCompleted (CompletedTeardownForest scope planId verb)
-    | ProgressWork (TeardownAuthorizationPoint scope planId verb)
+data TeardownProgress scope planId frame verb
+    = ProgressCompleted (CompletedTeardownForest scope planId frame verb)
+    | ProgressWork (TeardownAuthorizationPoint scope planId frame verb)
+
+type role TeardownProgress nominal nominal nominal nominal
 
 {- | Proof that every node of this forest settled. Only 'nextTeardownWork'
 produces one, and only for a forest with no outstanding and no failed node.
 -}
-data CompletedTeardownForest scope planId verb
-    = CompletedTeardownForest (TeardownVerb verb) Text [Text] [(Text, Text)]
+data CompletedTeardownForest scope planId frame verb
+    = CompletedTeardownForest
+        (ProjectVerb verb)
+        Text
+        Text
+        [(OperationKey, TeardownOutcome)]
 
--- | The operation keys this forest settled, deepest first.
-completedForestSettledKeys :: CompletedTeardownForest scope planId verb -> [Text]
-completedForestSettledKeys (CompletedTeardownForest _ _ keys _) = keys
+type role CompletedTeardownForest nominal nominal nominal nominal
+
+-- | The exact terminal observations, in projected child-first order.
+completedForestTerminalObservations ::
+    CompletedTeardownForest scope planId frame verb ->
+    [(OperationKey, TeardownOutcome)]
+completedForestTerminalObservations (CompletedTeardownForest _ _ _ observations) = observations
 
 {- | Authority to attempt exactly one step of exactly one forest. It retains the
 forest it came from, so it cannot be replayed against a different one.
 -}
-data TeardownAuthorizationPoint scope planId verb
+data TeardownAuthorizationPoint scope planId frame verb
     = TeardownAuthorizationPoint
-        (TeardownForest scope planId verb)
+        (TeardownForest scope planId frame verb)
         NodePath
         Node
         Bool
 
-authorizationPointKey :: TeardownAuthorizationPoint scope planId verb -> Text
-authorizationPointKey (TeardownAuthorizationPoint _ _ node _) = reverseKey (nodeStep node)
+type role TeardownAuthorizationPoint nominal nominal nominal nominal
+
+authorizationPointStep :: TeardownAuthorizationPoint scope planId frame verb -> ReverseStep
+authorizationPointStep (TeardownAuthorizationPoint _ _ node _) = nodeStep node
+
+authorizationPointKey :: TeardownAuthorizationPoint scope planId frame verb -> Text
+authorizationPointKey = reverseKey . authorizationPointStep
 
 -- | The destroy-only step that makes a stopped provider teardown-reachable.
-newtype PreDescentStep scope planId verb = PreDescentStep ReverseStep
+newtype PreDescentStep scope planId frame verb =
+    PreDescentStep (TeardownAuthorizationPoint scope planId frame verb)
 
-preDescentStepKey :: PreDescentStep scope planId verb -> Text
-preDescentStepKey (PreDescentStep step) = reverseKey step
+type role PreDescentStep nominal nominal nominal nominal
+
+preDescentStepKey :: PreDescentStep scope planId frame verb -> Text
+preDescentStepKey (PreDescentStep point) = authorizationPointKey point
 
 -- | The frame whose provider this reachability step makes reachable again.
-preDescentStepFrame :: PreDescentStep scope planId verb -> Text
-preDescentStepFrame (PreDescentStep step) = reverseFrame step
+preDescentStepFrame :: PreDescentStep scope planId frame verb -> Text
+preDescentStepFrame (PreDescentStep point) = reverseFrame (authorizationPointStep point)
 
 -- | Proof that this node's exact child set has settled.
-newtype SettledChildren scope planId = SettledChildren [Text]
+newtype SettledChildren scope planId frame = SettledChildren [Text]
 
-settledChildrenKeys :: SettledChildren scope planId -> [Text]
+type role SettledChildren nominal nominal nominal
+
+settledChildrenKeys :: SettledChildren scope planId frame -> [Text]
 settledChildrenKeys (SettledChildren keys) = keys
 
--- | The cursor for one ordinary teardown step.
-data TeardownCursor scope planId verb = TeardownCursor ReverseStep
+-- | The private cursor retained only by a local-work package.
+newtype TeardownCursor scope planId frame verb = TeardownCursor ReverseStep
 
-teardownCursorAction :: TeardownCursor scope planId verb -> TeardownAction
-teardownCursorAction (TeardownCursor step) = reverseAction step
+type role TeardownCursor nominal nominal nominal nominal
+
+{- | One exhaustive ordinary-work result. Its constructors are private, and
+'eliminateTeardownWork' is the only reader, so local execution and recursive
+descent cannot be interchanged.
+-}
+data TeardownWork scope planId frame verb where
+    LocalTeardownWork ::
+        LocalWork scope planId frame verb ->
+        TeardownWork scope planId frame verb
+    DescentTeardownWork ::
+        DescentWork scope planId frame (childFrame :: Type) verb ->
+        TeardownWork scope planId frame verb
+
+type role TeardownWork nominal nominal nominal nominal
+
+{- | Local execution authority for one offered node. It privately retains both
+the originating forest point and its cursor; this is the only public value from
+which a reverse key, action, policy, or runner can be projected.
+-}
+data LocalWork scope planId frame verb = LocalWork
+    (TeardownAuthorizationPoint scope planId frame verb)
+    (TeardownCursor scope planId frame verb)
+
+type role LocalWork nominal nominal nominal nominal
+
+{- | Recursive routing authority for the immediate topology edge below the
+opening frame. The child index is existential outside 'eliminateTeardownWork'.
+-}
+data DescentWork scope planId frame (childFrame :: Type) verb = DescentWork
+    (TeardownAuthorizationPoint scope planId frame verb)
+    Text
+    Text
+    (TeardownPlan scope planId childFrame verb)
+
+type role DescentWork nominal nominal nominal nominal nominal
+
+localWorkAction :: LocalWork scope planId frame verb -> TeardownAction
+localWorkAction (LocalWork _ (TeardownCursor step)) = reverseAction step
 
 -- | This node's plan operation key.
-teardownCursorKey :: TeardownCursor scope planId verb -> Text
-teardownCursorKey (TeardownCursor step) = reverseKey step
-
-{- | The frame the plan placed this node in. A driver compares it against the
-frame it is running in: a node of a deeper frame is released by the binary that
-can see it, reached through the descent the plan declares, not by this one.
--}
-teardownCursorFrame :: TeardownCursor scope planId verb -> Text
-teardownCursorFrame (TeardownCursor step) = reverseFrame step
+localWorkKey :: LocalWork scope planId frame verb -> Text
+localWorkKey (LocalWork _ (TeardownCursor step)) = reverseKey step
 
 -- | The reverse policy the node's forward step declared.
-teardownCursorPolicy :: TeardownCursor scope planId verb -> ReversePolicy
-teardownCursorPolicy (TeardownCursor step) = reversePolicy step
+localWorkPolicy :: LocalWork scope planId frame verb -> ReversePolicy
+localWorkPolicy (LocalWork _ (TeardownCursor step)) = reversePolicy step
 
 {- | The reverse effect this node's own forward step declared with
 'HostBootstrap.Step.reversedBy'. 'Nothing' means it declared none: either the
 core adapter owns it (@CoreManagedReverse@) or it acquired nothing this frame
-must release. Exposed so a caller driving the __forest__ runs exactly the effects
-'runTeardownProjection' would, rather than resolving them beside the plan.
+must release. Exposed only through 'LocalWork', so a caller driving the forest
+cannot invoke a descendant node's callback before entering that child frame.
 -}
-teardownCursorRun ::
-    TeardownCursor scope planId verb ->
+localWorkRun ::
+    LocalWork scope planId frame verb ->
     Maybe (HostConfig -> TeardownAction -> IO TeardownOutcome)
-teardownCursorRun (TeardownCursor step) = reverseRun step
+localWorkRun (LocalWork _ (TeardownCursor step)) = reverseRun step
+
+-- | The exact opening frame from which this descent edge leaves.
+descentWorkParentFrame :: DescentWork scope planId frame childFrame verb -> Text
+descentWorkParentFrame (DescentWork _ parent _ _) = parent
+
+-- | The exact immediate topology child into which this descent enters.
+descentWorkChildFrame :: DescentWork scope planId frame childFrame verb -> Text
+descentWorkChildFrame (DescentWork _ _ child _) = child
+
+{- | Eliminate a descent through the exact child projection retained by the
+forest. No caller-supplied frame name or independently admitted 'CurrentFrame'
+can select another subtree.
+-}
+withDescentWorkSubtree ::
+    DescentWork scope planId frame childFrame verb ->
+    (TeardownPlan scope planId childFrame verb -> result) ->
+    result
+withDescentWorkSubtree (DescentWork _ _ _ childProjection) use = use childProjection
+
+descentWorkOperationKeyTexts ::
+    DescentWork scope planId frame childFrame verb ->
+    [Text]
+descentWorkOperationKeyTexts (DescentWork _ _ _ childProjection) =
+    map (Text.pack . operationKeyText) (projectedOperationKeys childProjection)
+
+-- | The exhaustive eliminator for ordinary local-versus-descent work.
+eliminateTeardownWork ::
+    TeardownWork scope planId frame verb ->
+    (LocalWork scope planId frame verb -> result) ->
+    (forall (childFrame :: Type). DescentWork scope planId frame childFrame verb -> result) ->
+    result
+eliminateTeardownWork work onLocal onDescent = case work of
+    LocalTeardownWork local -> onLocal local
+    DescentTeardownWork descent -> onDescent descent
 
 {- | Find the next schedulable step, or prove the forest is complete.
 
@@ -553,8 +606,10 @@ its children has settled. A failed node is not re-offered — it is terminal for
 this forest — but it keeps its parent blocked, while its unrelated siblings stay
 schedulable.
 -}
-nextTeardownWork :: TeardownForest scope planId verb -> TeardownProgress scope planId verb
-nextTeardownWork forest@(TeardownForest verb digest nodes) =
+nextTeardownWork ::
+    TeardownForest scope planId frame verb ->
+    TeardownProgress scope planId frame verb
+nextTeardownWork forest@(TeardownForest (TeardownPlan verb digest frame _ _) nodes) =
     case firstJust [searchAll FreshWork [] nodes, searchAll RetryWork [] nodes] of
         Just (path, node, preDescent) ->
             ProgressWork (TeardownAuthorizationPoint forest path node preDescent)
@@ -563,8 +618,8 @@ nextTeardownWork forest@(TeardownForest verb digest nodes) =
                 ( CompletedTeardownForest
                     verb
                     digest
-                    (settledKeys nodes)
-                    (teardownForestForeign forest)
+                    frame
+                    (terminalObservations nodes)
                 )
   where
     searchAll pass prefix =
@@ -599,18 +654,21 @@ firstJust values = case [value | Just value <- values] of
     (value : _) -> Just value
     [] -> Nothing
 
-settledKeys :: [Node] -> [Text]
-settledKeys = concatMap keysIn
+terminalObservations :: [Node] -> [(OperationKey, TeardownOutcome)]
+terminalObservations = concatMap observationsIn
   where
-    keysIn node =
-        settledKeys (nodeChildren node)
-            ++ [reverseKey (nodeStep node) | nodeState node == Settled]
+    observationsIn node =
+        terminalObservations (nodeChildren node)
+            ++ [ (reverseOperationKey (nodeStep node), observation)
+               | nodeState node == Settled
+               , Just observation <- [nodeObservation node]
+               ]
 
 -- | The exhaustive eliminator. There is no other way to read a progress value.
 eliminateTeardownProgress ::
-    TeardownProgress scope planId verb ->
-    (CompletedTeardownForest scope planId verb -> result) ->
-    (TeardownAuthorizationPoint scope planId verb -> result) ->
+    TeardownProgress scope planId frame verb ->
+    (CompletedTeardownForest scope planId frame verb -> result) ->
+    (TeardownAuthorizationPoint scope planId frame verb -> result) ->
     result
 eliminateTeardownProgress progress onCompleted onWork = case progress of
     ProgressCompleted completed -> onCompleted completed
@@ -619,21 +677,65 @@ eliminateTeardownProgress progress onCompleted onWork = case progress of
 {- | The private eliminator of an authorization point.
 
 It exposes exactly one of two things: the destroy-only pre-descent reachability
-step, or the settled-child proof paired with the ordinary step's cursor. A
+step, or the settled-child proof paired with an exhaustive ordinary-work sum. A
 caller cannot construct either branch, so it cannot claim children settled when
-they have not, nor invent a reachability step for a @down@.
+they have not, invent a reachability step for a @down@, or send descent work to
+the local runner.
 -}
 withTeardownAuthorization ::
-    TeardownAuthorizationPoint scope planId verb ->
-    (PreDescentStep scope planId verb -> result) ->
-    (SettledChildren scope planId -> TeardownCursor scope planId verb -> result) ->
+    TeardownAuthorizationPoint scope planId frame verb ->
+    (PreDescentStep scope planId frame verb -> result) ->
+    (SettledChildren scope planId frame -> TeardownWork scope planId frame verb -> result) ->
     result
-withTeardownAuthorization (TeardownAuthorizationPoint _ _ node preDescent) onPreDescent onOrdinary
-    | preDescent = onPreDescent (PreDescentStep (nodeStep node))
+withTeardownAuthorization point@(TeardownAuthorizationPoint _ _ node preDescent) onPreDescent onOrdinary
+    | preDescent = onPreDescent (PreDescentStep point)
     | otherwise =
         onOrdinary
             (SettledChildren [reverseKey (nodeStep child) | child <- nodeChildren node])
-            (TeardownCursor (nodeStep node))
+            (ordinaryWork point (nodeStep node))
+
+ordinaryWork ::
+    TeardownAuthorizationPoint scope planId frame verb ->
+    ReverseStep ->
+    TeardownWork scope planId frame verb
+ordinaryWork point step = case reversePlacement step of
+    ReverseLocal _ -> LocalTeardownWork (LocalWork point (TeardownCursor step))
+    ReverseDescent parent child ->
+        DescentTeardownWork
+            (DescentWork point parent child (descentProjection point child))
+
+{- | Reindex the exact suffix already retained by a parent forest at its
+immediate child. The child index is introduced only by the private
+'DescentWork' constructor, so descriptive frame text never escapes as
+authority.
+-}
+descentProjection ::
+    TeardownAuthorizationPoint scope planId frame verb ->
+    Text ->
+    TeardownPlan scope planId childFrame verb
+descentProjection (TeardownAuthorizationPoint (TeardownForest parentProjection _) _ _ _) child =
+    case parentProjection of
+        TeardownPlan verb digest _ frames levels ->
+            let exactChildFrames = dropWhile (/= child) frames
+             in TeardownPlan
+                    verb
+                    digest
+                    child
+                    exactChildFrames
+                    [ map (placeForChild exactChildFrames) level
+                    | level <- levels
+                    , any ((`elem` exactChildFrames) . reverseFrame) level
+                    ]
+  where
+    placeForChild exactChildFrames step =
+        step
+            { reversePlacement =
+                if reverseFrame step == child
+                    then ReverseLocal child
+                    else case exactChildFrames of
+                        (_ : immediate : _) -> ReverseDescent child immediate
+                        _ -> ReverseLocal child
+            }
 
 -- ---------------------------------------------------------------------------
 -- Attempting one step
@@ -643,13 +745,13 @@ withTeardownAuthorization (TeardownAuthorizationPoint _ _ node preDescent) onPre
 A successor is returned on **every** outcome, including failure, so the caller
 can keep draining independent siblings instead of aborting the whole cleanup.
 -}
-attemptTeardownStep ::
-    TeardownAuthorizationPoint scope planId verb ->
+advanceAuthorizationPoint ::
+    TeardownAuthorizationPoint scope planId frame verb ->
     TeardownOutcome ->
-    TeardownForest scope planId verb
-attemptTeardownStep (TeardownAuthorizationPoint forest path _ preDescent) outcome =
-    let TeardownForest verb digest nodes = forest
-     in TeardownForest verb digest (updateAt path nodes)
+    TeardownForest scope planId frame verb
+advanceAuthorizationPoint (TeardownAuthorizationPoint forest path _ preDescent) outcome =
+    let TeardownForest projection nodes = forest
+     in TeardownForest projection (updateAt path nodes)
   where
     updateAt [] nodes = nodes
     updateAt (index : rest) nodes =
@@ -661,15 +763,15 @@ attemptTeardownStep (TeardownAuthorizationPoint forest path _ preDescent) outcom
 
     advance node
         | preDescent = case outcome of
-            TeardownReleased -> node{nodeState = descendState node}
-            TeardownForeignRetained detail -> foreignNode node detail
-            TeardownRefused detail -> foreignNode node detail
-            TeardownFailed detail -> failedNode node detail
+            TeardownReleased -> node{nodeState = descendState node, nodeObservation = Nothing}
+            TeardownForeignRetained _ -> terminalNode node outcome
+            TeardownRefused _ -> terminalNode node outcome
+            TeardownFailed _ -> failedNode node outcome
         | otherwise = case outcome of
-            TeardownReleased -> node{nodeState = Settled, nodeNote = Nothing}
-            TeardownForeignRetained detail -> foreignNode node detail
-            TeardownRefused detail -> foreignNode node detail
-            TeardownFailed detail -> failedNode node detail
+            TeardownReleased -> terminalNode node outcome
+            TeardownForeignRetained _ -> terminalNode node outcome
+            TeardownRefused _ -> terminalNode node outcome
+            TeardownFailed _ -> failedNode node outcome
 
     -- A successful pre-descent exposes the children; a childless node would not
     -- have needed one, so this is always the children-pending state.
@@ -677,15 +779,95 @@ attemptTeardownStep (TeardownAuthorizationPoint forest path _ preDescent) outcom
         | null (nodeChildren node) = SelfPending
         | otherwise = ChildrenPending
 
-    foreignNode node detail = node{nodeState = Settled, nodeNote = Just (Text.pack detail)}
-    failedNode node detail = node{nodeState = SelfFailed, nodeNote = Just (Text.pack detail)}
+    terminalNode node observation =
+        node{nodeState = Settled, nodeObservation = Just observation}
+    failedNode node observation =
+        node{nodeState = SelfFailed, nodeObservation = Just observation}
+
+-- | Advance exactly the forest that produced this pre-descent step.
+attemptPreDescentStep ::
+    PreDescentStep scope planId frame verb ->
+    TeardownOutcome ->
+    TeardownForest scope planId frame verb
+attemptPreDescentStep (PreDescentStep point) = advanceAuthorizationPoint point
+
+-- | Advance exactly the forest that produced this local-work package.
+attemptLocalWork ::
+    LocalWork scope planId frame verb ->
+    TeardownOutcome ->
+    TeardownForest scope planId frame verb
+attemptLocalWork (LocalWork point _) = advanceAuthorizationPoint point
+
+{- | Join the exact settled child proof retained by this descent continuation.
+
+The proof is compared with the private child projection before any state is
+changed. On success every exact child terminal observation is imported in one
+transition; a sibling, ancestor, reordered observation sequence, or different
+plan/verb proof advances nothing.
+-}
+settleDescentWork ::
+    DescentWork scope planId frame childFrame verb ->
+    SubtreeSettled scope planId childFrame verb ->
+    Either TeardownError (TeardownForest scope planId frame verb)
+settleDescentWork (DescentWork point _ _ childProjection) settled = do
+    validateSubtreeSettled childProjection settled
+    pure (importChildObservations point (subtreeSettledTerminalObservations settled))
+
+-- | Record only a failed descent; raw success cannot advance this branch.
+failDescentWork ::
+    DescentWork scope planId frame childFrame verb ->
+    Text ->
+    TeardownForest scope planId frame verb
+failDescentWork (DescentWork point _ _ childProjection) detail =
+    failChildObservations
+        point
+        (projectedOperationKeys childProjection)
+        (TeardownFailed (Text.unpack detail))
+
+failChildObservations ::
+    TeardownAuthorizationPoint scope planId frame verb ->
+    [OperationKey] ->
+    TeardownOutcome ->
+    TeardownForest scope planId frame verb
+failChildObservations (TeardownAuthorizationPoint (TeardownForest projection nodes) _ _ _) operations failure =
+    TeardownForest projection (map failNode nodes)
+  where
+    failNode node =
+        let children = map failNode (nodeChildren node)
+         in if reverseOperationKey (nodeStep node) `elem` operations
+                then
+                    node
+                        { nodeState = SelfFailed
+                        , nodeChildren = children
+                        , nodeObservation = Just failure
+                        }
+                else node{nodeChildren = children}
+
+importChildObservations ::
+    TeardownAuthorizationPoint scope planId frame verb ->
+    [(OperationKey, TeardownOutcome)] ->
+    TeardownForest scope planId frame verb
+importChildObservations (TeardownAuthorizationPoint (TeardownForest projection nodes) _ _ _) observations =
+    TeardownForest projection (map importNode nodes)
+  where
+    importNode node =
+        let children = map importNode (nodeChildren node)
+         in case lookup (reverseOperationKey (nodeStep node)) observations of
+                Just observation ->
+                    node
+                        { nodeState = Settled
+                        , nodeChildren = children
+                        , nodeObservation = Just observation
+                        }
+                Nothing -> node{nodeChildren = children}
 
 {- | Drive one forest to completion, or report the nodes that never settled.
 
 The scheduling policy lives here rather than at the call site: the forest is what
 knows the child-first ordering, the destroy-only pre-descent step, and which
-nodes are outstanding, so a lifecycle verb supplies only the effect for one
-offered node and a reporter for its row.
+nodes are outstanding. A lifecycle verb supplies one handler for each closed
+work branch and a reporter for its row; it never receives an unclassified
+'TeardownAuthorizationPoint'.
 
 A node that failed is __not__ retried. 'nextTeardownWork' re-offers it after its
 unrelated siblings have drained — which is what keeps the rest of the cleanup
@@ -694,13 +876,16 @@ outstanding. Retrying inside one run would spin, and the forest could never
 complete either way.
 -}
 driveTeardownForest ::
-    TeardownForest scope planId verb ->
-    -- | attempt exactly the offered node
-    (TeardownAuthorizationPoint scope planId verb -> IO TeardownOutcome) ->
-    -- | report one node's row
+    TeardownForest scope planId frame verb ->
+    (PreDescentStep scope planId frame verb -> IO TeardownOutcome) ->
+    (SettledChildren scope planId frame -> LocalWork scope planId frame verb -> IO TeardownOutcome) ->
+    (forall (childFrame :: Type).
+      SettledChildren scope planId frame ->
+      DescentWork scope planId frame childFrame verb ->
+      IO (Either Text (SubtreeSettled scope planId childFrame verb))) ->
     (Text -> TeardownOutcome -> IO ()) ->
-    IO (Either [Text] (CompletedTeardownForest scope planId verb))
-driveTeardownForest forest attempt report = go [] forest
+    IO (Either [Text] (CompletedTeardownForest scope planId frame verb))
+driveTeardownForest forest attemptPreDescent attemptLocal attemptDescent report = go [] forest
   where
     go failed current =
         eliminateTeardownProgress
@@ -710,13 +895,66 @@ driveTeardownForest forest attempt report = go [] forest
                 let key = authorizationPointKey point
                  in if key `elem` failed
                         then pure (Left (teardownForestOutstanding current))
-                        else do
-                            outcome <- attempt point
-                            report key outcome
-                            go
-                                (failed ++ [key | isTeardownFailure outcome])
-                                (attemptTeardownStep point outcome)
+                        else
+                            withTeardownAuthorization
+                                point
+                                ( \preDescent -> do
+                                    outcome <- attemptPreDescent preDescent
+                                    finish failed key outcome (attemptPreDescentStep preDescent outcome)
+                                )
+                                ( \settled work ->
+                                    eliminateTeardownWork
+                                        work
+                                        ( \local -> do
+                                            outcome <- attemptLocal settled local
+                                            finish failed key outcome (attemptLocalWork local outcome)
+                                        )
+                                        ( \descent -> do
+                                            result <- attemptDescent settled descent
+                                            case result of
+                                                Left detail ->
+                                                    let outcome = TeardownFailed (Text.unpack detail)
+                                                     in finishDescentFailure
+                                                            failed
+                                                            key
+                                                            (descentWorkOperationKeyTexts descent)
+                                                            outcome
+                                                            (failDescentWork descent detail)
+                                                Right childSettled ->
+                                                    case settleDescentWork descent childSettled of
+                                                        Left settlementFailure ->
+                                                            let detail = Text.pack (teardownErrorMessage settlementFailure)
+                                                                outcome = TeardownFailed (Text.unpack detail)
+                                                             in finishDescentFailure
+                                                                    failed
+                                                                    key
+                                                                    (descentWorkOperationKeyTexts descent)
+                                                                    outcome
+                                                                    (failDescentWork descent detail)
+                                                        Right next -> do
+                                                            mapM_
+                                                                (uncurry reportTerminal)
+                                                                (subtreeSettledTerminalObservations childSettled)
+                                                            go failed next
+                                        )
+                                )
             )
+
+    finish failed key outcome next = do
+        report key outcome
+        go
+            (failed ++ [key | isTeardownFailure outcome])
+            next
+
+    finishDescentFailure failed key blockedKeys outcome next = do
+        report key outcome
+        go
+            (failed ++ blockedKeys)
+            next
+
+    reportTerminal operation outcome =
+        report (Text.pack (operationKeyText operation)) outcome
+
 
 isTeardownFailure :: TeardownOutcome -> Bool
 isTeardownFailure (TeardownFailed _) = True
@@ -725,70 +963,266 @@ isTeardownFailure _ = False
 -- ---------------------------------------------------------------------------
 -- Settlement
 
-{- | Proof that a @destroy@ tore down every node the plan named, with no failure
-and no unresolved node. It is the settled half of
-@ProjectClosureEvidence SettledDestroyClose@; without it, Production mode cannot
-be released.
+{- | Proof that one exact frame-bound reverse subtree reached a terminal
+observation for every projected operation, in exact child-first order.
+
+The constructors are hidden and all indices are nominal. Released,
+foreign-retained, and refused observations remain distinct; a failed or
+unresolved node cannot enter this package.
+-}
+data SubtreeSettled scope planId frame verb
+    = SubtreeSettled
+        (ProjectVerb verb)
+        Text
+        Text
+        [(OperationKey, TeardownOutcome)]
+
+type role SubtreeSettled nominal nominal nominal nominal
+
+instance Show (SubtreeSettled scope planId frame verb) where
+    show (SubtreeSettled verb digest frame observations) =
+        "SubtreeSettled "
+            <> show verb
+            <> " "
+            <> show digest
+            <> " "
+            <> show frame
+            <> " "
+            <> show (length observations)
+
+subtreeSettledPlanDigest :: SubtreeSettled scope planId frame verb -> Text
+subtreeSettledPlanDigest (SubtreeSettled _ digest _ _) = digest
+
+subtreeSettledOpeningFrame :: SubtreeSettled scope planId frame verb -> Text
+subtreeSettledOpeningFrame (SubtreeSettled _ _ frame _) = frame
+
+subtreeSettledVerbName :: SubtreeSettled scope planId frame verb -> Text
+subtreeSettledVerbName (SubtreeSettled verb _ _ _) = projectVerbName verb
+
+subtreeSettledTerminalObservations ::
+    SubtreeSettled scope planId frame verb ->
+    [(OperationKey, TeardownOutcome)]
+subtreeSettledTerminalObservations (SubtreeSettled _ _ _ observations) = observations
+
+subtreeSettledReleasedOperationKeys ::
+    SubtreeSettled scope planId frame verb ->
+    [OperationKey]
+subtreeSettledReleasedOperationKeys settled =
+    [ operation
+    | (operation, TeardownReleased) <- subtreeSettledTerminalObservations settled
+    ]
+
+{- | The sole producer of frame-bound subtree settlement.
+
+The completed forest and projection must agree on the exact verb, digest,
+opening frame, and ordered operation-key sequence. A set comparison is
+deliberately insufficient: missing, extra, duplicate, and reordered terminal
+observations all refuse.
+-}
+verifySubtreeSettled ::
+    TeardownPlan scope planId frame verb ->
+    CompletedTeardownForest scope planId frame verb ->
+    Either TeardownError (SubtreeSettled scope planId frame verb)
+verifySubtreeSettled
+    projection
+    (CompletedTeardownForest completedVerb completedDigest completedFrame observations) = do
+        validateCompleted projection completedVerb completedDigest completedFrame observations
+        pure
+            ( SubtreeSettled
+                completedVerb
+                completedDigest
+                completedFrame
+                observations
+            )
+
+validateCompleted ::
+    TeardownPlan scope planId frame verb ->
+    ProjectVerb verb ->
+    Text ->
+    Text ->
+    [(OperationKey, TeardownOutcome)] ->
+    Either TeardownError ()
+validateCompleted projection@(TeardownPlan projectedVerb projectedDigest projectedFrame _ _) completedVerb completedDigest completedFrame observations
+    | projectVerbName completedVerb /= projectVerbName projectedVerb =
+        Left
+            ( TeardownProjectVerbMismatch
+                (projectVerbName projectedVerb)
+                (projectVerbName completedVerb)
+            )
+    | completedDigest /= projectedDigest =
+        Left (TeardownPlanDigestMismatch projectedDigest completedDigest)
+    | completedFrame /= projectedFrame =
+        Left (TeardownOpeningFrameMismatch projectedFrame completedFrame)
+    | any (isTeardownFailure . snd) observations =
+        Left
+            ( TeardownNonTerminalObservations
+                (renderTerminalObservations observations)
+            )
+    | actualKeys /= expectedKeys =
+        Left
+            ( TeardownTerminalObservationsMismatch
+                (map (Text.pack . operationKeyText) expectedKeys)
+                (map (Text.pack . operationKeyText) actualKeys)
+            )
+    | otherwise = Right ()
+  where
+    expectedKeys = projectedOperationKeys projection
+    actualKeys = map fst observations
+
+validateSubtreeSettled ::
+    TeardownPlan scope planId frame verb ->
+    SubtreeSettled scope planId frame verb ->
+    Either TeardownError ()
+validateSubtreeSettled projection (SubtreeSettled verb digest frame observations) =
+    validateCompleted projection verb digest frame observations
+
+renderTerminalObservations ::
+    [(OperationKey, TeardownOutcome)] ->
+    [(Text, TeardownOutcome)]
+renderTerminalObservations =
+    map (\(operation, outcome) -> (Text.pack (operationKeyText operation), outcome))
+
+renderTeardownObservations :: [(Text, TeardownOutcome)] -> Either TeardownError ByteString
+renderTeardownObservations observations =
+    either (Left . observationFailure) Right (renderLifecycleObservations (map render observations))
+  where
+    render (key, outcome) = case outcome of
+        TeardownReleased -> (key, "released", "none")
+        TeardownForeignRetained detail -> (key, "foreign-retained", Text.pack detail)
+        TeardownRefused detail -> (key, "refused", Text.pack detail)
+        TeardownFailed detail -> (key, "failed", Text.pack detail)
+
+teardownObservationsFromWire :: ByteString -> Either TeardownError [(Text, TeardownOutcome)]
+teardownObservationsFromWire raw = do
+    rows <- either (Left . observationFailure) Right (lifecycleObservationsFromWire raw)
+    traverse decode rows
+  where
+    decode (key, status, detail) = case status of
+        "released" -> Right (key, TeardownReleased)
+        "foreign-retained" -> Right (key, TeardownForeignRetained (Text.unpack detail))
+        "refused" -> Right (key, TeardownRefused (Text.unpack detail))
+        "failed" -> Right (key, TeardownFailed (Text.unpack detail))
+        _ -> Left (TeardownObservationWireRefused "an observation status is unknown")
+
+observationFailure :: HandoffError -> TeardownError
+observationFailure = TeardownObservationWireRefused . Text.pack . handoffErrorMessage
+
+{- | Root-only proof that the whole project destroy settled.
+
+Unlike 'SubtreeSettled', this proof has no frame parameter: it is minted only
+after the exact admitted plan topology proves the supplied current frame is
+its unique root and the subtree observations exactly match the full root
+projection.
 -}
 data DestroySettled scope planId
-    = DestroySettled Text [Text]
+    = DestroySettled Text [(OperationKey, TeardownOutcome)]
+
+type role DestroySettled nominal nominal
 
 instance Show (DestroySettled scope planId) where
-    show (DestroySettled digest keys) =
-        "DestroySettled " <> show digest <> " " <> show (length keys)
+    show (DestroySettled digest observations) =
+        "DestroySettled " <> show digest <> " " <> show (length observations)
 
 destroySettledPlanDigest :: DestroySettled scope planId -> Text
 destroySettledPlanDigest (DestroySettled digest _) = digest
 
-destroySettledReleasedKeys :: DestroySettled scope planId -> [Text]
-destroySettledReleasedKeys (DestroySettled _ keys) = keys
+destroySettledTerminalObservations ::
+    DestroySettled scope planId ->
+    [(OperationKey, TeardownOutcome)]
+destroySettledTerminalObservations (DestroySettled _ observations) = observations
 
-{- | The sole producer of 'DestroySettled'.
+destroySettledReleasedOperationKeys :: DestroySettled scope planId -> [OperationKey]
+destroySettledReleasedOperationKeys settled =
+    [ operation
+    | (operation, TeardownReleased) <- destroySettledTerminalObservations settled
+    ]
 
-It accepts only a **completed Destroy** forest — the type refuses a @Down@
-forest outright — and additionally refuses a completed forest that settled fewer
-nodes than the plan projected, so a truncated traversal cannot be presented as a
-settled destroy.
--}
 verifyDestroySettled ::
-    TeardownPlan scope planId frame DestroyVerb ->
-    CompletedTeardownForest scope planId DestroyVerb ->
+    ProjectPlan scope specDigest planId configId cfg ->
+    CurrentFrame scope planId frame ->
+    SubtreeSettled scope planId frame VerbDestroy ->
     Either TeardownError (DestroySettled scope planId)
-verifyDestroySettled projection (CompletedTeardownForest _ digest settled _)
-    | not (null missing) = Left (TeardownIncomplete missing)
-    | otherwise = Right (DestroySettled digest settled)
+verifyDestroySettled plan current settled
+    | roots /= [currentId] = Left (TeardownRootFrameMismatch currentId roots)
+    | subtreeSettledPlanDigest settled /= planDigest =
+        Left
+            ( TeardownPlanDigestMismatch
+                planDigest
+                (subtreeSettledPlanDigest settled)
+            )
+    | subtreeSettledOpeningFrame settled /= currentId =
+        Left
+            ( TeardownOpeningFrameMismatch
+                currentId
+                (subtreeSettledOpeningFrame settled)
+            )
+    | actualKeys /= expectedKeys =
+        Left
+            ( TeardownTerminalObservationsMismatch
+                (map (Text.pack . operationKeyText) expectedKeys)
+                (map (Text.pack . operationKeyText) actualKeys)
+            )
+    | otherwise =
+        Right
+            ( DestroySettled
+                planDigest
+                (subtreeSettledTerminalObservations settled)
+            )
   where
-    missing = [key | key <- nub (teardownPlanStepKeys projection), key `notElem` settled]
+    currentId = currentFrameId current
+    derived = topology plan
+    orderedFrames = map fst (NonEmpty.toList (topologyFrameOrder derived))
+    children = map snd (topologyParentEdges derived)
+    roots = [frame | frame <- orderedFrames, frame `notElem` children]
+    planDigest = stablePlanSnapshotDigest (renderSnapshot plan)
+    rootProjection = teardownPlan plan current ProjectDestroy
+    expectedKeys = projectedOperationKeys rootProjection
+    actualKeys = map fst (subtreeSettledTerminalObservations settled)
 
-{- | The verb-dispatching front end a call site driving either projection uses.
-
-A lifecycle verb is written once for both verbs, so it holds a
-@TeardownVerb verb@ it cannot case on — the constructors are private, which is
-what stops a caller claiming a @Down@ run settled a destroy. This matches on the
-verb index inside the module and hands back 'verifyDestroySettled' only on the
-destroy branch: a @down@ yields 'Nothing', and there is no other way to reach the
-proof.
+{- | Refine a verb-polymorphic subtree proof to root destroy settlement only
+when its retained canonical verb is @destroy@.
 -}
 settledDestroyEvidence ::
-    TeardownPlan scope planId frame verb ->
-    CompletedTeardownForest scope planId verb ->
+    ProjectPlan scope specDigest planId configId cfg ->
+    CurrentFrame scope planId frame ->
+    SubtreeSettled scope planId frame verb ->
     Maybe (Either TeardownError (DestroySettled scope planId))
-settledDestroyEvidence projection@(TeardownPlan verb _ _ _) completed = case verb of
-    DownTeardown -> Nothing
-    DestroyTeardown -> Just (verifyDestroySettled projection completed)
+settledDestroyEvidence plan current settled@(SubtreeSettled verb _ _ _) = case verb of
+    ProjectUp -> Nothing
+    ProjectDown -> Nothing
+    ProjectDestroy -> Just (verifyDestroySettled plan current settled)
 
 -- ---------------------------------------------------------------------------
 -- Failures
 
 data TeardownError
-    = -- | the verb whose projection removed nothing at all
+    = -- | @project up@ has no reverse projection by construction
+      TeardownProjectUpHasNoReverse
+    | -- | the verb whose projection removed nothing at all
       TeardownPlanEmpty Text
     | -- | nodes the plan names that the forest never settled
       TeardownIncomplete [Text]
+    | -- | expected and observed stable plan digests
+      TeardownPlanDigestMismatch Text Text
+    | -- | expected and observed opening frame identifiers
+      TeardownOpeningFrameMismatch Text Text
+    | -- | expected and observed canonical project verbs
+      TeardownProjectVerbMismatch Text Text
+    | -- | expected and observed ordered terminal operation keys
+      TeardownTerminalObservationsMismatch [Text] [Text]
+    | -- | a failed outcome was presented as terminal settlement
+      TeardownNonTerminalObservations [(Text, TeardownOutcome)]
+    | -- | the supplied current frame and the topology's derived root set
+      TeardownRootFrameMismatch Text [Text]
+    | -- | durable reverse-descent preparation refused before exposing work
+      TeardownReverseDescentRefused Text
+    | TeardownObservationWireRefused Text
     deriving (Eq, Show)
 
 teardownErrorMessage :: TeardownError -> String
 teardownErrorMessage failure = case failure of
+    TeardownProjectUpHasNoReverse ->
+        "teardown: project up has no reverse projection"
     TeardownPlanEmpty verb ->
         "teardown: the "
             <> Text.unpack verb
@@ -796,3 +1230,34 @@ teardownErrorMessage failure = case failure of
     TeardownIncomplete missing ->
         "teardown: the forest completed without settling "
             <> Text.unpack (Text.intercalate ", " missing)
+    TeardownPlanDigestMismatch expected observed ->
+        "teardown: plan digest mismatch; expected "
+            <> Text.unpack expected
+            <> ", observed "
+            <> Text.unpack observed
+    TeardownOpeningFrameMismatch expected observed ->
+        "teardown: opening frame mismatch; expected "
+            <> Text.unpack expected
+            <> ", observed "
+            <> Text.unpack observed
+    TeardownProjectVerbMismatch expected observed ->
+        "teardown: project verb mismatch; expected "
+            <> Text.unpack expected
+            <> ", observed "
+            <> Text.unpack observed
+    TeardownTerminalObservationsMismatch expected observed ->
+        "teardown: exact terminal observation order mismatch; expected "
+            <> show expected
+            <> ", observed "
+            <> show observed
+    TeardownNonTerminalObservations observations ->
+        "teardown: failed observations cannot settle a subtree: " <> show observations
+    TeardownRootFrameMismatch current roots ->
+        "teardown: current frame "
+            <> Text.unpack current
+            <> " is not the topology's unique root; roots were "
+            <> show roots
+    TeardownReverseDescentRefused detail ->
+        "teardown: reverse descent refused: " <> Text.unpack detail
+    TeardownObservationWireRefused detail ->
+        "teardown: observation wire refused: " <> Text.unpack detail

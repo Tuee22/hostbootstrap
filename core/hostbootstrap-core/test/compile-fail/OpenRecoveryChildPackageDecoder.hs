@@ -1,0 +1,7 @@
+module OpenRecoveryChildPackageDecoder where
+
+import HostBootstrap.Handoff
+
+decodeRecoveryChildPackage = recoveryChildPackageFromWire
+
+openRecoveryChildPackage = withRecoveryChildPackageFields

@@ -14,7 +14,7 @@ and then reopening the store, exactly as an interrupted invocation leaves it.
 module SessionSpec (tests, runFenceDelayProbe) where
 
 import Control.Concurrent (forkFinally, newEmptyMVar, putMVar, takeMVar, threadDelay)
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeException, evaluate, try)
 import qualified Crypto.Hash as Hash
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
@@ -65,12 +65,14 @@ import HostBootstrap.Lifecycle.Mode (
     boundRunLeasePlanDigest,
     boundRunLeaseRunText,
     boundRunLeaseSpecDigest,
+    bindRunLease,
     lifecycleErrorMessage,
     lifecycleCursorFrame,
     lifecycleCursorPhase,
     lifecycleCursorRecordVersion,
     lifecycleCursorVerb,
     modeErrorMessage,
+    persistCanonicalPlanSnapshot,
     productionActiveMode,
     productionRootAuthority,
     productionRootModeLease,
@@ -108,6 +110,8 @@ import HostBootstrap.Lifecycle.Session hiding (
  )
 import HostBootstrap.Lifecycle.Session.Testing
 import HostBootstrap.Reconcile (
+    lifecyclePlanFromProjectPlan,
+    lifecyclePlanSnapshot,
     stepExecutionFor,
  )
 import HostBootstrap.ProjectPlan (
@@ -129,7 +133,7 @@ import HostBootstrap.ProjectPlan.Snapshot (
     BoundPlanSnapshot,
     PlanDigestBinding,
     withBoundPlanSnapshot,
-    withPersistedPlanSnapshot,
+    withFreshBoundPlanSnapshot,
  )
 import HostBootstrap.ProjectPlan.Frame (
     ProjectFrame,
@@ -376,7 +380,35 @@ data AcquisitionEvidence = AcquisitionEvidence
 
 acquisitionJournalTests :: [TestTree]
 acquisitionJournalTests =
-    [ testCase "fresh admission persists the exact Prepare binding after releasing the lock" $
+    [ testCase "reverse-root source records force hidden admission on partial application" $ do
+        forced <-
+            try @SomeException
+                (evaluate (withReverseRootSourceRecordsKernel (error "forced reverse-root admission")))
+        case forced of
+            Left _ -> pure ()
+            Right _ -> assertFailure "the reverse-root source eliminator accepted a bottom admission"
+    , testCase "reverse acquisition reopen forces hidden admission before every recovery input" $ do
+        forced <-
+            try @SomeException
+                ( reopenExistingReverseAcquisitionJournalKernel
+                    (error "forced reverse acquisition admission")
+                    (error "store evaluated before admission")
+                    (error "session evaluated before admission")
+                    (\_ _ _ -> error "validator evaluated before admission")
+                    "scope"
+                    "project"
+                    "store"
+                    "snapshot"
+                    "run"
+                    "spec"
+                    1
+                    (error "frame evaluated before admission")
+                    Authority.ProjectUp
+                )
+        case forced of
+            Left _ -> pure ()
+            Right _ -> assertFailure "the reverse acquisition opener accepted a bottom admission"
+    , testCase "fresh admission persists the exact Prepare binding after releasing the lock" $
         withAcquisitionPlanFixture $ \store project root lease bound binding projectPlan _projectRoot -> do
             leaseKey <- recordKeyFor ("lease." <> installedProjectName project <> ".production")
             leaseRecord <- readRequiredRecord store leaseKey
@@ -767,6 +799,74 @@ cursorEvidence cursor =
         , cursorEvidencePhase = lifecyclePhaseName (lifecycleCursorPhase cursor)
         }
 
+exerciseReverseLifecycleCursor :: Authority.ProjectVerb verb -> IO ()
+exerciseReverseLifecycleCursor verb =
+    withLifecycleCursorFixtureForVerb verb $ \store root lease bound binding projectPlan journal frame -> do
+        sourceBefore <- snd <$> soleRecordWithPrefix store "acquisition."
+        executed <-
+            withLifecycleCursor journal frame verb Authority.Prepare $ \prepareCursor -> do
+                withExecuteLifecycleCursor prepareCursor $ \executeCursor -> do
+                    assertProtectedReentry store
+                    pure (cursorEvidence prepareCursor, cursorEvidence executeCursor)
+        (prepareEvidence, executeEvidence) <- expect =<< expect executed
+        let expectedVerb = Authority.projectVerbName verb
+        mapM_
+            ((@?= expectedVerb) . cursorEvidenceVerb)
+            [prepareEvidence, executeEvidence]
+        map cursorEvidencePhase [prepareEvidence, executeEvidence]
+            @?= ["prepare", "execute"]
+        cursorEvidenceVersion executeEvidence @?= cursorEvidenceVersion prepareEvidence + 1
+        sourceAfterExecute <- snd <$> soleRecordWithPrefix store "acquisition."
+        sourceAfterExecute @?= sourceBefore
+        beforeExecuteResume <- protectedImage store
+        tornDown <-
+            withAcquisitionJournal root lease bound binding projectPlan $ \resumedJournal -> do
+                withAcquisitionJournalPhase resumedJournal lifecyclePhaseName @?= "prepare"
+                withCurrentLifecycleCursor
+                    resumedJournal
+                    frame
+                    verb
+                    ( \phase cursor -> case phase of
+                        Authority.Prepare -> assertFailure "reverse cursor resumed at Prepare"
+                        Authority.Execute ->
+                            withTeardownLifecycleCursor
+                                cursor
+                                ( \teardownCursor -> do
+                                    assertProtectedReentry store
+                                    pure (cursorEvidence teardownCursor)
+                                )
+                                >>= expect
+                        Authority.Teardown -> assertFailure "reverse cursor skipped Execute"
+                    )
+                    >>= expect
+        teardownEvidence <- expect tornDown
+        cursorEvidenceVerb teardownEvidence @?= expectedVerb
+        cursorEvidencePhase teardownEvidence @?= "teardown"
+        cursorEvidenceVersion teardownEvidence @?= cursorEvidenceVersion executeEvidence + 1
+        sourceAfterTeardown <- snd <$> soleRecordWithPrefix store "acquisition."
+        sourceAfterTeardown @?= sourceBefore
+        afterExecuteResume <- protectedImage store
+        assertBool
+            "the Execute resume did not persist its Teardown successor"
+            (afterExecuteResume /= beforeExecuteResume)
+        beforeTeardownResume <- protectedImage store
+        resumed <-
+            withAcquisitionJournal root lease bound binding projectPlan $ \resumedJournal -> do
+                withAcquisitionJournalPhase resumedJournal lifecyclePhaseName @?= "prepare"
+                withCurrentLifecycleCursor
+                    resumedJournal
+                    frame
+                    verb
+                    ( \phase cursor -> do
+                        assertProtectedReentry store
+                        pure (lifecyclePhaseName phase, cursorEvidence cursor)
+                    )
+                    >>= expect
+        recovered <- expect resumed
+        afterTeardownResume <- protectedImage store
+        recovered @?= ("teardown", teardownEvidence)
+        afterTeardownResume @?= beforeTeardownResume
+
 lifecycleCursorTests :: [TestTree]
 lifecycleCursorTests =
     [ testCase "fresh admission atomically hands the acquisition seed to one exact frame" $
@@ -966,6 +1066,9 @@ lifecycleCursorTests =
             (recoveredPhase, recoveredEvidence) <- expect reopened
             recoveredPhase @?= "teardown"
             recoveredEvidence @?= teardownEvidence
+    , testCase "Down and Destroy cursor foundations advance only Prepare to Execute to Teardown" $ do
+        exerciseReverseLifecycleCursor Authority.ProjectDown
+        exerciseReverseLifecycleCursor Authority.ProjectDestroy
     , testCase "a physical reopen reconstructs a fresh plan/frame and resumes the same cursor without writing" $
         withAcquisitionPlanFixtureFor cursorStepPlan $ \store project root lease bound binding projectPlan projectRoot -> do
             let supplied =
@@ -1124,6 +1227,37 @@ lifecycleCursorTests =
             (recoveredPhase, _) <- expect reopened
             recoveredPhase @?= "execute"
             assertProtectedReentry store
+    , testCase "two absent-row Prepare openers serialize onto one exact cursor" $
+        withLifecycleCursorFixture $ \store _root _lease _bound _binding _projectPlan journal frame -> do
+            readyA <- newEmptyMVar
+            readyB <- newEmptyMVar
+            startA <- newEmptyMVar
+            startB <- newEmptyMVar
+            resultA <- newEmptyMVar
+            resultB <- newEmptyMVar
+            callbacks <- newIORef (0 :: Int)
+            let opener ready start = do
+                    putMVar ready ()
+                    takeMVar start
+                    withLifecycleCursor journal frame Authority.ProjectUp Authority.Prepare $ \cursor -> do
+                        assertProtectedReentry store
+                        atomicModifyIORef' callbacks (\count -> (count + 1, ()))
+                        pure (cursorEvidence cursor)
+            _ <- forkFinally (opener readyA startA) (putMVar resultA)
+            _ <- forkFinally (opener readyB startB) (putMVar resultB)
+            takeMVar readyA
+            takeMVar readyB
+            putMVar startA ()
+            putMVar startB ()
+            results <- sequence [takeMVar resultA, takeMVar resultB]
+            case results of
+                [Right (Right first), Right (Right second)] -> first @?= second
+                _ -> assertFailure ("concurrent cursor openers failed: " <> show results)
+            readIORef callbacks >>= (@?= 2)
+            (_, cursorRecord) <- soleRecordWithPrefix store "cursor."
+            recordVersionWord (protectedRecordVersion cursorRecord) @?= 1
+            image <- protectedImage store
+            Map.size (Map.filterWithKey (\key _ -> "cursor." `Text.isPrefixOf` key) image) @?= 1
     , testCase "identical current readers redeliver while transition contenders have one CAS winner" $
         withLifecycleCursorFixture $ \store _root _lease _bound _binding _projectPlan journal frame -> do
             withLifecycleCursor journal frame Authority.ProjectUp Authority.Prepare $ \prepareCursor -> do
@@ -1463,6 +1597,7 @@ withLifecycleCursorFixtureAt semanticFrameId use =
     withAcquisitionPlanFixtureForConfig
         (cursorStepPlanFor semanticFrameId)
         (\projectName rootPath -> projectConfigForFrame projectName rootPath semanticFrameId)
+        Authority.ProjectUp
         $ \store project root lease bound binding projectPlan projectRoot -> do
             let supplied =
                     Fixture.context
@@ -1470,6 +1605,52 @@ withLifecycleCursorFixtureAt semanticFrameId use =
                             (installedProjectName project)
                             (Text.pack (canonicalProjectRootPath projectRoot))
                             semanticFrameId
+                        )
+            cursorAction <-
+                either (fail . show) pure $
+                    withCurrentFrame projectPlan supplied $ \_current frame _validated ->
+                        withAcquisitionJournal
+                            root
+                            lease
+                            bound
+                            binding
+                            projectPlan
+                            (\journal -> use store root lease bound binding projectPlan journal frame)
+            cursorAction >>= expect
+
+withLifecycleCursorFixtureForVerb ::
+    Authority.ProjectVerb verb ->
+    ( forall projectId brokerGeneration specDigest planDigest planId configId frame.
+      ProtectedStore ->
+      RootInvocationAuthority (Production projectId) brokerGeneration verb ->
+      BoundRunLease (Production projectId) specDigest planDigest brokerGeneration ->
+      BoundPlanSnapshot (Production projectId) specDigest planDigest planId ->
+      PlanDigestBinding (Production projectId) specDigest planDigest planId ->
+      ProjectPlan
+        (Production projectId)
+        specDigest
+        planId
+        configId
+        Fixture.ProjectConfig ->
+      AcquisitionJournal (Production projectId) planId brokerGeneration ->
+      ProjectFrame (Production projectId) specDigest planId configId frame ->
+      IO result
+    ) ->
+    IO result
+withLifecycleCursorFixtureForVerb verb use =
+    withAcquisitionPlanFixtureForConfig
+        cursorStepPlan
+        (\projectName rootPath ->
+            projectConfigForFrame projectName rootPath "host-orchestrator-0"
+        )
+        verb
+        $ \store project root lease bound binding projectPlan projectRoot -> do
+            let supplied =
+                    Fixture.context
+                        ( projectConfigForFrame
+                            (installedProjectName project)
+                            (Text.pack (canonicalProjectRootPath projectRoot))
+                            "host-orchestrator-0"
                         )
             cursorAction <-
                 either (fail . show) pure $
@@ -1527,14 +1708,16 @@ withAcquisitionPlanFixtureFor stepPlan =
     withAcquisitionPlanFixtureForConfig
         stepPlan
         (\projectName rootPath -> Fixture.defaultProjectConfig projectName rootPath Context.HostOrchestrator)
+        Authority.ProjectUp
 
 withAcquisitionPlanFixtureForConfig ::
     StepPlan ->
     (forall scope. Text -> Text -> Fixture.ProjectConfig scope) ->
+    Authority.ProjectVerb verb ->
     ( forall projectId brokerGeneration specDigest planDigest planId rootId configId.
       ProtectedStore ->
       InstalledProjectIdentity projectId ->
-      RootInvocationAuthority (Production projectId) brokerGeneration VerbUp ->
+      RootInvocationAuthority (Production projectId) brokerGeneration verb ->
       BoundRunLease (Production projectId) specDigest planDigest brokerGeneration ->
       BoundPlanSnapshot (Production projectId) specDigest planDigest planId ->
       PlanDigestBinding (Production projectId) specDigest planDigest planId ->
@@ -1548,7 +1731,7 @@ withAcquisitionPlanFixtureForConfig ::
       IO result
     ) ->
     IO result
-withAcquisitionPlanFixtureForConfig stepPlan configFor use =
+withAcquisitionPlanFixtureForConfig stepPlan configFor verb use =
     withSystemTempDirectory "hostbootstrap-acquisition-journal" $ \directory -> do
         store <- openProtectedStore (directory </> "protected") >>= expect
         Fixture.withFixtureInstalledProject $ \(project :: InstalledProjectIdentity projectId) -> do
@@ -1558,7 +1741,7 @@ withAcquisitionPlanFixtureForConfig stepPlan configFor use =
                     "."
                     ( \(projectRoot :: CanonicalProjectRoot (Production projectId) rootId) -> do
                         started <-
-                            withProductionRoot store project Authority.ProjectUp $ \productionRoot -> do
+                            withProductionRoot store project verb $ \productionRoot -> do
                                 let root = productionRootAuthority productionRoot
                                     unbound = productionRootUnboundLease productionRoot
                                 profiled <-
@@ -1573,6 +1756,7 @@ withAcquisitionPlanFixtureForConfig stepPlan configFor use =
                                                     baseCodec
                                                     emptyServiceRegistry
                                                     (\_ _ -> Right stepPlan)
+                                                    Fixture.refusingForwardChildPlan
                                                     ( \spec -> do
                                                         let value =
                                                                 configFor
@@ -1591,12 +1775,25 @@ withAcquisitionPlanFixtureForConfig stepPlan configFor use =
                                                                                 projectRoot
                                                                                 config
                                                                                 drafts
-                                                                                ( \projectPlan ->
-                                                                                    withPersistedPlanSnapshot
-                                                                                        root
+                                                                                ( \projectPlan -> do
+                                                                                    _ <-
+                                                                                        expect
+                                                                                            =<< persistCanonicalPlanSnapshot
+                                                                                                unbound
+                                                                                                1
+                                                                                                ( lifecyclePlanSnapshot
+                                                                                                    (lifecyclePlanFromProjectPlan projectPlan)
+                                                                                                )
+                                                                                    withFreshBoundPlanSnapshot
                                                                                         unbound
                                                                                         projectPlan
-                                                                                        ( \_verified bound binding lease _recovery ->
+                                                                                        ( \verified bound binding -> do
+                                                                                            lease <-
+                                                                                                expect
+                                                                                                    =<< bindRunLease
+                                                                                                        unbound
+                                                                                                        verified
+                                                                                                        pure
                                                                                             use
                                                                                                 store
                                                                                                 project
@@ -1712,6 +1909,7 @@ attemptRecoveredAcquisitionFor stepPlan store project projectRoot use = do
                                         baseCodec
                                         emptyServiceRegistry
                                         (\_ _ -> Right stepPlan)
+                                        Fixture.refusingForwardChildPlan
                                         ( \spec -> do
                                             let value =
                                                     Fixture.defaultProjectConfig
@@ -1730,7 +1928,7 @@ attemptRecoveredAcquisitionFor stepPlan store project projectRoot use = do
                                                                     projectRoot
                                                                     spec
                                                                     candidateConfig
-                                                                    ( \recoveredConfig recoveredDrafts -> do
+                                                                    ( \_recoveredSpec recoveredConfig recoveredDrafts -> do
                                                                         openedAction <-
                                                                             expect
                                                                                 ( withRecoveredProductionProjectPlan

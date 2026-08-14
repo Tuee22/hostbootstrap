@@ -1,5 +1,6 @@
 module DuplicateCurrentFrameTeardown where
 
+import HostBootstrap.Authority (ProjectVerb (ProjectDown), VerbDown)
 import HostBootstrap.ProjectPlan (ProjectPlan)
 import HostBootstrap.ProjectPlan.Frame (CurrentFrame)
 import HostBootstrap.Teardown
@@ -17,5 +18,5 @@ projectWithSecondFrame ::
     ProjectPlan Scope SpecificationDigest Plan ConfigurationIdentity Configuration ->
     CurrentFrame Scope Plan Frame ->
     CurrentFrame Scope Plan Frame ->
-    TeardownPlan Scope Plan Frame DownVerb
-projectWithSecondFrame plan current = teardownPlan plan current downVerb
+    TeardownPlan Scope Plan Frame VerbDown
+projectWithSecondFrame plan current = teardownPlan plan current ProjectDown

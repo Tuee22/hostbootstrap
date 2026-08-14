@@ -37,9 +37,12 @@ project-config variants with different messages and runs the selected compiled c
 
 The [test-harness-and-run-ownership
 phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md) owns both this assertion engine and
-the Harness command consumer that supplies its opaque lifecycle. The shared exact-plan/Chain foundation and
-Production command adoption remain owned by the
+the Harness command consumer that supplies its opaque lifecycle. The shared exact-plan/Chain foundation
+remains owned by the
 [step-algebra-and-project-plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md).
+Production and Harness enter the lower Chain only through the Cabal-private fixed root-Up `LifecycleEntry`;
+the [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) owns
+the root-coordinated extension across child frames.
 
 The lifecycle constructor is not a consumer surface. `HostBootstrap.Harness.Lifecycle.Internal` lives in
 the private `harness-lifecycle-internal` Cabal component. The main library uses it at the command boundary,

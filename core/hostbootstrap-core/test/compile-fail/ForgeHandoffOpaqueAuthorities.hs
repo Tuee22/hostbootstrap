@@ -1,8 +1,6 @@
 module ForgeHandoffOpaqueAuthorities where
 
 import HostBootstrap.Handoff
-import HostBootstrap.Handoff.Receiver
-import HostBootstrap.Handoff.Relay
 
 data Scope
 data Broker
@@ -13,6 +11,15 @@ forgedScope = ProductionHandoffScope undefined
 
 forgedBinding :: HandoffBinding Scope Broker
 forgedBinding = HandoffBinding
+
+forgedRootedBinding :: RootedPayloadBinding Scope Broker
+forgedRootedBinding = RootedPayloadBinding
+
+forgedRecoveryPackage :: RecoveryChildPackage
+forgedRecoveryPackage = RecoveryChildPackage
+
+forgedAuthenticatedRootScope :: AuthenticatedRootScope Scope
+forgedAuthenticatedRootScope = AuthenticatedRootScope
 
 forgedRootBroker :: RootBroker Scope Broker Verb
 forgedRootBroker = RootBroker
@@ -28,12 +35,6 @@ forgedOffer = HandoffOffer
 
 forgedPayload :: AuthenticatedConfigPayload Scope Broker
 forgedPayload = AuthenticatedConfigPayload
-
-forgedReceived :: ReceivedEdge Scope Broker
-forgedReceived = ReceivedEdge
-
-forgedLink :: BrokerLink Scope Broker
-forgedLink = BrokerLink
 
 forgedVerified :: VerifiedHandoff Scope Broker
 forgedVerified = VerifiedHandoff

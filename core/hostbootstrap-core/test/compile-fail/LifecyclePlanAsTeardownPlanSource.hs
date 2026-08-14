@@ -1,9 +1,10 @@
 module LifecyclePlanAsTeardownPlanSource where
 
+import HostBootstrap.Authority (ProjectVerb (ProjectDown), VerbDown)
 import HostBootstrap.ProjectPlan (ProjectPlan)
 import HostBootstrap.ProjectPlan.Frame (CurrentFrame)
 import HostBootstrap.Reconcile (LifecyclePlan)
-import HostBootstrap.Teardown (DownVerb, TeardownPlan, downVerb, teardownPlan)
+import HostBootstrap.Teardown (TeardownPlan, teardownPlan)
 
 data Scope
 data Plan
@@ -20,13 +21,13 @@ projectDownPlan ::
         ConfigurationIdentity
         Configuration ->
     CurrentFrame Scope Plan Frame ->
-    TeardownPlan Scope Plan Frame DownVerb
-projectDownPlan plan current = teardownPlan plan current downVerb
+    TeardownPlan Scope Plan Frame VerbDown
+projectDownPlan plan current = teardownPlan plan current ProjectDown
 
 -- The compatibility LifecyclePlan cannot enter the exact reverse-projection
 -- gate.  Projection requires the indexed ProjectPlan and its CurrentFrame.
 lifecyclePlanCannotProject ::
     LifecyclePlan Scope Plan ->
     CurrentFrame Scope Plan Frame ->
-    TeardownPlan Scope Plan Frame DownVerb
+    TeardownPlan Scope Plan Frame VerbDown
 lifecyclePlanCannotProject plan current = projectDownPlan plan current

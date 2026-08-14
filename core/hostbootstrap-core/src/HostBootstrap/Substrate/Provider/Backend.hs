@@ -44,6 +44,8 @@ module HostBootstrap.Substrate.Provider.Backend (
     -- * Prepared backend calls
     runProviderProvisionCall,
     runProviderReadyCall,
+    RunningProviderDependency,
+    withRunningProviderDependency,
     runProviderStopCall,
     runProviderShareCall,
     runProviderDeleteCall,
@@ -103,6 +105,9 @@ import HostBootstrap.Substrate.Provider.Observation.Internal (
     ProviderStopObservation (..),
     providerOriginOwner,
  )
+import HostBootstrap.Substrate.Provider.Dependency.Internal
+  ( RunningProviderDependency (..),
+  )
 import HostBootstrap.Substrate.Provider.Reconcile (
     PreparedProviderBinding,
     PreparedProviderDelete,
@@ -110,6 +115,9 @@ import HostBootstrap.Substrate.Provider.Reconcile (
     PreparedProviderReady,
     PreparedProviderShare,
     PreparedProviderStop,
+    ProviderPhaseAdvance,
+    managedProviderGeneration,
+    managedProviderKey,
     preparedProviderBindingCallDigest,
     preparedProviderBindingGeneration,
     preparedProviderBindingOperationKey,
@@ -123,6 +131,7 @@ import HostBootstrap.Substrate.Provider.Reconcile (
     preparedProviderShareHandle,
     preparedProviderShareSpec,
     preparedProviderStopBinding,
+    withProviderPhaseAdvance,
     providerShareGuestPath,
     providerShareHostPath,
  )
@@ -460,6 +469,94 @@ runProviderReadyCall backend prepared = case backend of
         ProviderReadyCallResult <$> pollProviderReady exec spec tool binding 60
   where
     binding = preparedProviderReadyBinding prepared
+
+{- | Seal a successful Running transition to the exact backend that minted it.
+The retained reprobe is executed afresh by dependent-operation preconditions;
+public callers can neither supply a probe nor recover the generic handle.
+-}
+withRunningProviderDependency ::
+    StrongProviderBackend backendId ->
+    ProviderPhaseAdvance scope planId backendId providerId Running ->
+    (RunningProviderDependency scope planId providerId -> result) ->
+    Either ReconcileError result
+withRunningProviderDependency backend advance consume =
+    withProviderPhaseAdvance advance $ \managed -> do
+        validateProviderOrigin backend managed
+        Right
+            ( consume
+                ( RunningProviderDependency
+                    managed
+                    (probeRunningProvider backend managed)
+                )
+            )
+
+probeRunningProvider ::
+    StrongProviderBackend backendId ->
+    ManagedProviderHandle scope planId backendId providerId Running ->
+    IO (Either ReconcileError Word64)
+probeRunningProvider backend managed = do
+    observation <- case backend of
+        StrongDirectHostBackend _ exec (DirectHostBackendSpec root python docker image) -> do
+            permission <- runBackendProcess exec python ["-c", directPermissionProgram, root]
+            case directReadyProbeFailure "reprobe the exact Direct provider root" permission of
+                Just failure -> pure (ProviderReadyFailed failure)
+                Nothing -> do
+                    egress <- runBackendProcess exec docker ["manifest", "inspect", image]
+                    pure $ case directReadyProbeFailure "reprobe Direct provider provisioning egress" egress of
+                        Just failure -> ProviderReadyFailed failure
+                        Nothing -> ProviderReadyAlready (managedProviderGeneration managed)
+        StrongDirectHostBackend _ _ (IncusBackendSpec{}) ->
+            pure (ProviderReadyFailed (failed "reprobe Direct provider" "invalid Direct backend state"))
+        StrongIncusBackend _ exec spec tool -> do
+            raw <- runExclusive exec spec tool "ready" (managedOriginOwner managed) []
+            pure
+                ( parseReadyReportFor
+                    (managedProviderKey managed)
+                    (managedProviderGeneration managed)
+                    raw
+                )
+    pure (settleRunningProbe managed observation)
+
+managedOriginOwner :: ManagedProviderHandle scope planId backendId providerId phase -> Text
+managedOriginOwner (ManagedProviderHandle origin _ _) = providerOriginOwner origin
+
+settleRunningProbe ::
+    ManagedProviderHandle scope planId backendId providerId Running ->
+    ProviderReadyObservation ->
+    Either ReconcileError Word64
+settleRunningProbe managed observation = case observation of
+    ProviderReadyObserved generation -> matching generation
+    ProviderReadyAlready generation -> matching generation
+    ProviderReadyNotReady reason ->
+        Left (Failure (FailureDetail "reprobe running provider" reason ReprobeBeforeRetry))
+    ProviderReadyAbsent ->
+        Left (Failure (FailureDetail "reprobe running provider" "the provider is absent" ReprobeBeforeRetry))
+    ProviderReadyReplaced generation foreignState ->
+        Left
+            ( Conflict
+                ( ConflictDetail
+                    (managedProviderKey managed)
+                    ("generation=" <> Text.pack (show (managedProviderGeneration managed)))
+                    ("replacement generation=" <> Text.pack (show generation) <> "; " <> Text.pack (show foreignState))
+                    "reconcile the replacement provider before any dependent mutation"
+                )
+            )
+    ProviderReadyConflict detail -> Left (Conflict detail)
+    ProviderReadyUnsupported detail -> Left (Unsupported detail)
+    ProviderReadyFailed detail -> Left (Failure detail)
+  where
+    matching generation
+        | generation == managedProviderGeneration managed = Right generation
+        | otherwise =
+            Left
+                ( Conflict
+                    ( ConflictDetail
+                        (managedProviderKey managed)
+                        ("generation=" <> Text.pack (show (managedProviderGeneration managed)))
+                        ("generation=" <> Text.pack (show generation))
+                        "reconcile the provider identity before any dependent mutation"
+                    )
+                )
 
 directReadyProbeFailure :: Text -> RawProviderOutcome -> Maybe FailureDetail
 directReadyProbeFailure operation raw = case raw of
@@ -1352,7 +1449,13 @@ parseProvisionReport binding raw = case parseWireReport raw of
     key = preparedProviderBindingResourceKey binding
 
 parseReadyReport :: PreparedProviderBinding scope planId backendId providerId -> RawProviderOutcome -> ProviderReadyObservation
-parseReadyReport binding raw = case parseWireReport raw of
+parseReadyReport binding =
+    parseReadyReportFor
+        (preparedProviderBindingResourceKey binding)
+        (preparedProviderBindingGeneration binding)
+
+parseReadyReportFor :: Text -> Word64 -> RawProviderOutcome -> ProviderReadyObservation
+parseReadyReportFor key generation raw = case parseWireReport raw of
     WireReadyChanged -> ProviderReadyObserved generation
     WireReadyAlready -> ProviderReadyAlready generation
     WireNotReady reason -> ProviderReadyNotReady reason
@@ -1362,9 +1465,6 @@ parseReadyReport binding raw = case parseWireReport raw of
     WireUnsupported reason -> ProviderReadyUnsupported (unsupported "reconcile provider ready" reason)
     WireFailed reason -> ProviderReadyFailed (failed "reconcile provider ready" reason)
     other -> ProviderReadyFailed (failed "reconcile provider ready" (unexpected other))
-  where
-    generation = preparedProviderBindingGeneration binding
-    key = preparedProviderBindingResourceKey binding
 
 parseStopReport :: PreparedProviderBinding scope planId backendId providerId -> RawProviderOutcome -> ProviderStopObservation
 parseStopReport binding raw = case parseWireReport raw of

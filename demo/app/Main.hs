@@ -10,10 +10,10 @@ artifacts, and @check-code@ action. See @documents/operations/demo_runbook.md@.
 -}
 module Main (main) where
 
-import HostBootstrap.CLI (addServices, addSteps, finalizeProjectSpec, projectSpec, runHostBootstrapCLI)
+import HostBootstrap.CLI (addForwardChildPlan, addServices, addSteps, finalizeProjectSpec, projectSpec, runHostBootstrapCLI)
 import HostBootstrap.Registry (withForwardedRegistryAuth)
 import HostBootstrap.Substrate (detect)
-import HostBootstrapDemo.Commands (demoArtifacts, demoChainFor, demoCheckCode, demoServices, demoTestSuite)
+import HostBootstrapDemo.Commands (demoArtifacts, demoChainFor, demoCheckCode, demoForwardChildPlan, demoServices, demoTestSuite)
 import HostBootstrapDemo.Config (demoAssemble, demoTestInit, testConfigCodec)
 import System.Exit (die)
 import System.IO (BufferMode (LineBuffering), hSetBuffering, stderr, stdout)
@@ -36,11 +36,14 @@ main = do
         -- Apple Silicon).
         substrate <- detect >>= either die pure
         let builder =
-                addSteps
-                    (demoChainFor substrate)
-                    ( addServices
-                        demoServices
-                        (projectSpec demoTestSuite demoCheckCode demoArtifacts testConfigCodec demoTestInit demoAssemble)
+                addForwardChildPlan
+                    demoForwardChildPlan
+                    ( addSteps
+                        (demoChainFor substrate)
+                        ( addServices
+                            demoServices
+                            (projectSpec demoTestSuite demoCheckCode demoArtifacts testConfigCodec demoTestInit demoAssemble)
+                        )
                     )
         spec <- either (die . show) pure (finalizeProjectSpec builder)
         runHostBootstrapCLI "hostbootstrap-demo" spec

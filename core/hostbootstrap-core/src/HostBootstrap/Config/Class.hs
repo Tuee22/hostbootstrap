@@ -58,6 +58,18 @@ import qualified Data.Text.IO as TIO
 import qualified Data.ByteString as BS
 import qualified Dhall
 import qualified HostBootstrap.Context as Context
+import HostBootstrap.Config.Class.Internal (
+    ProjectCodec (
+        ProjectCodec,
+        installedCodecDecodeFile,
+        installedCodecDecodeWithSettings,
+        installedCodecLabel,
+        installedCodecRender,
+        installedCodecRenderHoisted,
+        installedCodecSchema,
+        installedCodecSpecDigest
+    ),
+ )
 import HostBootstrap.Config.Vocab (
     Harness,
     HarnessAuthority,
@@ -227,24 +239,6 @@ runConfigAssembly allowed = go
                             )
                         )
                 Right value -> go (next value)
-
-{- | An installed, scope-correct wrapper around the lower admitted
-'CodecWitness'. The constructor and @specDigest@ identity are hidden.
--}
-data ProjectCodec scope specDigest cfg = ProjectCodec
-    { installedCodecLabel :: Text
-    , installedCodecSchema :: Text
-    , installedCodecSpecDigest :: Text
-    , installedCodecDecodeFile :: FilePath -> IO (cfg scope)
-    , installedCodecDecodeWithSettings ::
-        Dhall.InputSettings ->
-        Text ->
-        IO (cfg scope)
-    , installedCodecRender :: cfg scope -> Text
-    , installedCodecRenderHoisted :: [NamedUnion] -> cfg scope -> Text
-    }
-
-type role ProjectCodec nominal nominal nominal
 
 {- | Install a codec under a fresh specification identity. The rank-2 digest
 index cannot be selected or reused by the caller.

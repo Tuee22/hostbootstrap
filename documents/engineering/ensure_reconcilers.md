@@ -149,10 +149,34 @@ still returns a result-free reconciler action:
 - **`ensure docker`** checks that the invoking process can reach the Docker daemon. On Linux the install
   path also grants socket access through group membership and an immediate ACL. On Apple a missing
   daemon is refused at this config-free seam: the plan-bound Colima adapter observes/reconciles the
-  exact project profile and routes Docker through its named context.
-- **Prepared Colima wall** is deliberately not a `Reconciler` row. It requires a validated binary
-  context, lifecycle plan, admitted exact wall, partition, and journal-before-call reservation. It
-  installs the Colima tool when absent, but never probes or starts the shared `default` profile.
+  exact project/profile-run identity and routes Docker through its named context.
+- **Prepared Colima wall** is deliberately not a `Reconciler` row. It joins one exact `ProjectPlan`, its
+  matching provider `PlannedResource` and `DerivedTopology`, and matching validated-budget, capability,
+  wall, workload-fit, partition, and journal-derived reservation/provider-start evidence. No compatibility
+  lifecycle plan, binary context, caller-selected profile, raw envelope, or independently derived root term
+  enters the package. A stable 128-bit plan/lifecycle key owns the isolated `COLIMA_HOME`, reusable global
+  lock, and isolated `DOCKER_CONFIG`; the socket-safe local profile is authority only inside that namespace.
+  Total storage above 20 GiB becomes a fixed 20-GiB root disk plus `total-20`-GiB data disk.
+
+  A private fixed Apple resolver admits canonical Python/Colima/Docker/Lima identities (and Brew only for
+  bounded installation), fingerprints their helper directories, and revalidates the ready toolchain around
+  every effect. A private install kernel orders retained-Brew revalidation, the bounded fixed Brew call, and a
+  complete fresh resolver pass; its structured failures cannot become a ready toolchain. The Cabal-private
+  `Resolver.Testing` seam combines descriptive views with a non-nestable, thread-local, bracket-cleared
+  fixture execution override. It is absent from the public library surface, and each adapter discovery and
+  revalidation still executes, strictly parses, and opaquely settles the fixture resolver rather than
+  accepting an injected toolchain or backend result. The private runner closes environment/cwd and bounds
+  output, process groups, descendants, and reap. Under retained Python `fcntl.flock`, self-bound
+  `reserved`/`home-staged`/`home-ready`/`context-staged`/`prepared`/`managed` records publish absence before
+  namespace creation/start and bind the invocation, machine/context, root/data wall, directory chain, and
+  complete artifact manifest. A present profile from `prepared` is outcome-unknown `Conflict`, not adoption.
+  Only an opaque successful backend result can jointly settle the provider start and wall; only that live
+  result can run Docker through its retained isolated context or derive cleanup authority. Cleanup has a
+  separate journal invocation, records `releasing` before `colima delete --force --data`, and conditionally
+  proves profile/data/context absence before releasing exact namespaces and origin. Missing clauses are
+  `Unsupported`; replacements or partial foreign stages are `Conflict`. The boundary remains Active in the
+  [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
+  pending focused/full validation. Production recursive and demo call-site adoption remains open.
 - **`ensure incus` on Apple and Linux** converges its substrate-specific provider, then probes daemon
   reachability, VM capability, and `images:ubuntu/24.04` metadata egress. Permission, absence,
   reachability, VM capability, and egress failures remain distinct typed statuses; only ready enters the
@@ -186,8 +210,9 @@ is Linux-only and delegates/refuses elsewhere.
 
 The Python bootstrapper asserts Homebrew and uses it to establish the host-native Haskell build
 toolchain before a project binary exists. It does not install Homebrew and does not drive the Colima
-runtime step. The built Haskell project owns the prepared Colima provider adapter and the other runtime
-reconcilers; recursive command-plan integration remains tracked in the development plan. See
+runtime step. The Haskell core owns the exact plan/provider/topology/budget/fit/partition/reservation
+Colima adapter and the other runtime reconcilers. No production recursive or demo call site yet consumes
+the Colima package; that integration remains tracked in the development plan. See
 [python_haskell_boundary](../architecture/python_haskell_boundary.md).
 `ensure-cuda` aligns with the GPU host requirements tracked in [prerequisites](prerequisites.md).
 

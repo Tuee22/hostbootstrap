@@ -1,3 +1,6 @@
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RoleAnnotations #-}
+
 {- | kind/Helm cluster-lifecycle semantics.
 
 The cluster lifecycle drives kind/Helm @up@ / @down@ / @delete@, enforces the
@@ -11,6 +14,19 @@ module HostBootstrap.Cluster.Lifecycle (
     ClusterProfile (..),
     ClusterDriver (..),
     ClusterPlan (..),
+    ClusterPackageError (..),
+    PlanOwnedCluster,
+    withPlanOwnedCluster,
+    planOwnedClusterName,
+    planOwnedClusterStateDirectory,
+    planOwnedClusterDurableRoot,
+    planOwnedClusterPublishesHostPorts,
+    planOwnedClusterConfigPath,
+    planOwnedClusterPlacement,
+    planOwnedClusterProviderKey,
+    planOwnedClusterOwnershipIdentity,
+    planOwnedClusterBudget,
+    planOwnedClusterNodeNames,
     AcceleratorDaemonPlacement (..),
     AcceleratorIngressPlan (..),
     TeardownKind (..),
@@ -40,21 +56,24 @@ module HostBootstrap.Cluster.Lifecycle (
     teardown,
     statusReport,
     clusterHealthyFromProbe,
-    clusterUp,
-    clusterCreate,
-    deployChart,
     clusterDown,
     clusterDelete,
-    clusterStatus,
 )
 where
 
 import Control.Exception (SomeException, displayException)
 import Control.Exception.Safe (try)
 import Control.Monad (forM_, unless, when)
+import Data.Char (isAlphaNum)
 import Data.Maybe (catMaybes, maybeToList)
 import Data.Text (Text)
 import qualified Data.Text as T
+import HostBootstrap.Cluster.Budget
+    ( ResourceSlice
+    , resourceSliceBudget
+    , resourceSliceFrame
+    , resourceSliceName
+    )
 import HostBootstrap.Cluster.Cordon (
     budgetCpu,
     budgetMemoryBytes,
@@ -64,12 +83,34 @@ import HostBootstrap.Cluster.Cordon (
     preflightBudget,
     resolveHostCapacity,
  )
+import HostBootstrap.Cluster.Cordon.Foundation (ResourceBudget)
 import HostBootstrap.Context (ResourceEnvelope (..))
 import HostBootstrap.Ensure (runTool)
 import qualified HostBootstrap.Ensure.Cuda as Cuda
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Docker, Helm, Kind, Kubectl, Nvkind))
 import HostBootstrap.Readiness (ProbeResult (..), nodePoll, pollUntilReady)
+import HostBootstrap.ProjectPlan
+    ( ClusterResource
+    , DerivedTopology
+    , PlannedResource
+    , ProjectPlan
+    , ProviderResource
+    , plannedResourceFrame
+    , plannedResourceKey
+    , projectPlanProfileName
+    , projectPlanProjectName
+    , renderSnapshot
+    , stablePlanSnapshotDigest
+    , stablePlanSnapshotRoot
+    , topology
+    , topologyContainsFrame
+    , topologyDescentEdges
+    , topologyFrameOrder
+    , topologyParentEdges
+    , topologyParentFrame
+    , withPlannedEdge
+    )
 import HostBootstrap.Substrate (Substrate (substrateName), SubstrateName (LinuxGpu), isLinux)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removePathForcibly)
 import System.Exit (ExitCode (..), die)
@@ -112,6 +153,201 @@ data ClusterPlan = ClusterPlan
     , clusterNodeSuffixes :: [String]
     }
     deriving (Eq, Show)
+
+-- | Structural refusal while joining an exact plan-owned cluster package.
+data ClusterPackageError
+    = ClusterPackageMismatch Text
+    deriving (Eq, Show)
+
+{- | The complete cluster package retained by the exact consumer.
+
+Its constructor is private and every identity parameter has a nominal role.
+Consequently a cluster resource, provider dependency, topology, or budget slice
+from another admission cannot be relabelled into this package.  The descriptive
+driver vocabulary is derived once from the admitted plan and is never accepted
+again as independent caller input.
+-}
+data PlanOwnedCluster
+    scope
+    specDigest
+    planId
+    configId
+    cfg
+    clusterId
+    clusterFrame
+    providerId
+    providerFrame
+    budgetId
+    provider
+    capabilityId
+    wallSpecId
+    workloadSetId
+    partitionId
+    = PlanOwnedCluster
+        (ProjectPlan scope specDigest planId configId cfg)
+        (PlannedResource scope planId clusterId ClusterResource clusterFrame)
+        (PlannedResource scope planId providerId ProviderResource providerFrame)
+        (DerivedTopology scope planId)
+        ( ResourceSlice
+            scope
+            planId
+            budgetId
+            provider
+            capabilityId
+            wallSpecId
+            workloadSetId
+            partitionId
+            clusterFrame
+            clusterId
+        )
+        ClusterPlan
+        Text
+        (Text, Text)
+
+type role PlanOwnedCluster nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
+
+{- | Join the one admitted plan to its exact cluster resource, direct provider
+dependency, retained topology, and cluster budget slice.
+
+The shared indices do the cross-plan work statically.  The term checks defend
+the module boundary as well: the supplied topology must be the plan projection,
+the resource frames must describe the direct placement edge, and the slice must
+name the exact cluster resource in that frame.
+-}
+withPlanOwnedCluster ::
+    ProjectPlan scope specDigest planId configId cfg ->
+    PlannedResource scope planId clusterId ClusterResource clusterFrame ->
+    PlannedResource scope planId providerId ProviderResource providerFrame ->
+    DerivedTopology scope planId ->
+    ResourceSlice
+        scope
+        planId
+        budgetId
+        provider
+        capabilityId
+        wallSpecId
+        workloadSetId
+        partitionId
+        clusterFrame
+        clusterId ->
+    Either
+        ClusterPackageError
+        ( PlanOwnedCluster
+            scope
+            specDigest
+            planId
+            configId
+            cfg
+            clusterId
+            clusterFrame
+            providerId
+            providerFrame
+            budgetId
+            provider
+            capabilityId
+            wallSpecId
+            workloadSetId
+            partitionId
+        )
+withPlanOwnedCluster plan cluster provider suppliedTopology slice = do
+    requirePackage
+        "the supplied topology is not the exact topology projected by the project plan"
+        (sameTopology suppliedTopology (topology plan))
+    requirePackage
+        "the cluster resource frame is outside the supplied topology"
+        (topologyContainsFrame suppliedTopology (plannedResourceFrame cluster))
+    requirePackage
+        "the provider resource frame is outside the supplied topology"
+        (topologyContainsFrame suppliedTopology (plannedResourceFrame provider))
+    requirePackage
+        "the cluster is not placed directly inside the supplied provider frame"
+        (topologyParentFrame suppliedTopology (plannedResourceFrame cluster) == Just (plannedResourceFrame provider))
+    case withPlannedEdge plan cluster provider (const ()) of
+        Left _ -> Left (ClusterPackageMismatch "the provider is not the cluster resource's declared dependency")
+        Right () -> Right ()
+    requirePackage
+        "the supplied budget slice belongs to another cluster resource"
+        ( resourceSliceName slice == T.unpack (plannedResourceKey cluster)
+            && resourceSliceFrame slice == T.unpack (plannedResourceFrame cluster)
+        )
+    let snapshot = renderSnapshot plan
+        root = stablePlanSnapshotRoot snapshot
+        profileName = projectPlanProfileName plan
+    profile <- profileFromPlanName profileName
+    let resolved = absolutizeClusterConfig root (resolvePlan (T.unpack (projectPlanProjectName plan)) root profile)
+        placement = (plannedResourceFrame provider, plannedResourceFrame cluster)
+        owner = stablePlanSnapshotDigest snapshot <> ":" <> plannedResourceKey cluster
+    Right (PlanOwnedCluster plan cluster provider suppliedTopology slice resolved owner placement)
+  where
+    sameTopology left right =
+        topologyFrameOrder left == topologyFrameOrder right
+            && topologyParentEdges left == topologyParentEdges right
+            && topologyDescentEdges left == topologyDescentEdges right
+    requirePackage detail condition
+        | condition = Right ()
+        | otherwise = Left (ClusterPackageMismatch detail)
+
+profileFromPlanName :: Text -> Either ClusterPackageError ClusterProfile
+profileFromPlanName "production" = Right Production
+profileFromPlanName profileName =
+    case T.stripPrefix "harness:" profileName of
+        Just runKey
+            | validHarnessRunKey runKey -> Right (TestCase (T.unpack runKey))
+            | otherwise ->
+                Left
+                    ( ClusterPackageMismatch
+                        "the admitted Harness profile carries an invalid run key"
+                    )
+        Nothing ->
+            Left
+                ( ClusterPackageMismatch
+                    "the admitted plan carries an unknown lifecycle profile"
+                )
+  where
+    validHarnessRunKey runKey =
+        not (T.null runKey)
+            && T.length runKey <= 48
+            && T.all (\character -> isAlphaNum character || character == '-') runKey
+
+absolutizeClusterConfig :: FilePath -> ClusterPlan -> ClusterPlan
+absolutizeClusterConfig root resolved =
+    resolved
+        { clusterConfigFile = fmap (root </>) (clusterConfigFile resolved)
+        }
+
+planOwnedClusterName :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> String
+planOwnedClusterName (PlanOwnedCluster _ _ _ _ _ resolved _ _) = clusterName resolved
+
+planOwnedClusterStateDirectory :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> FilePath
+planOwnedClusterStateDirectory (PlanOwnedCluster _ _ _ _ _ resolved _ _) =
+    case derivedPaths resolved of
+        stateDirectory : _ -> stateDirectory
+        [] -> error "a resolved cluster plan must retain one derived state directory"
+
+planOwnedClusterDurableRoot :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> FilePath
+planOwnedClusterDurableRoot (PlanOwnedCluster _ _ _ _ _ resolved _ _) = dataPath resolved
+
+planOwnedClusterPublishesHostPorts :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> Bool
+planOwnedClusterPublishesHostPorts (PlanOwnedCluster _ _ _ _ _ resolved _ _) = publishesHostPorts resolved
+
+planOwnedClusterConfigPath :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> Maybe FilePath
+planOwnedClusterConfigPath (PlanOwnedCluster _ _ _ _ _ resolved _ _) = clusterConfigFile resolved
+
+planOwnedClusterPlacement :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> (Text, Text)
+planOwnedClusterPlacement (PlanOwnedCluster _ _ _ _ _ _ _ placement) = placement
+
+planOwnedClusterProviderKey :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> Text
+planOwnedClusterProviderKey (PlanOwnedCluster _ _ provider _ _ _ _ _) = plannedResourceKey provider
+
+planOwnedClusterOwnershipIdentity :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> Text
+planOwnedClusterOwnershipIdentity (PlanOwnedCluster _ _ _ _ _ _ owner _) = owner
+
+planOwnedClusterBudget :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> ResourceBudget
+planOwnedClusterBudget (PlanOwnedCluster _ _ _ _ slice _ _ _) = resourceSliceBudget slice
+
+planOwnedClusterNodeNames :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> [String]
+planOwnedClusterNodeNames (PlanOwnedCluster _ _ _ _ _ resolved _ _) =
+    clusterNodeNames resolved
 
 -- | Resolve a cluster plan for a project, rooted at @root@, under a profile.
 resolvePlan :: String -> FilePath -> ClusterProfile -> ClusterPlan
@@ -271,8 +507,8 @@ that must sequence other steps between cluster creation and the chart (e.g.
 stand up an in-cluster registry and push the image the chart pulls) calls
 'clusterCreate' and 'deployChart' as separate chain steps instead.
 -}
-clusterUp :: HostConfig -> ClusterPlan -> ResourceEnvelope -> IO ()
-clusterUp cfg plan resources = do
+_clusterUp :: HostConfig -> ClusterPlan -> ResourceEnvelope -> IO ()
+_clusterUp cfg plan resources = do
     clusterCreate cfg plan resources
     deployChart cfg plan []
 
@@ -678,8 +914,8 @@ the data / derived paths. The report states the cluster-teardown omission
 contract for the data path without claiming to have inspected it. Never mutates
 state.
 -}
-clusterStatus :: HostConfig -> ClusterPlan -> IO ()
-clusterStatus cfg plan = do
+_clusterStatus :: HostConfig -> ClusterPlan -> IO ()
+_clusterStatus cfg plan = do
     existing <- runTool cfg Kind ["get", "clusters"]
     let live = case existing of
             Right (ExitSuccess, out, _) -> clusterName plan `elem` lines out

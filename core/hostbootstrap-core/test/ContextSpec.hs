@@ -14,11 +14,13 @@ import qualified Fixture
 import HostBootstrap.Authority
     ( InstalledProjectIdentity
     , ProjectVerb (ProjectUp)
+    , installedProjectName
     , normalizeExecutableIdentity
     , rootScopeAuthority
     )
 import HostBootstrap.CLI (
     ProjectSpec,
+    addForwardChildPlan,
     addSteps,
     finalizeProjectSpec,
     projectSpec,
@@ -32,6 +34,7 @@ import HostBootstrap.Config.Class
     )
 import HostBootstrap.Config.Vocab (Production)
 import HostBootstrap.Context
+import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Harness (Case (Case), CaseResult (Pass), TestSuite (TestSuite), mkCaseId)
 import HostBootstrap.Lifecycle.Mode
     ( ModeError (ModeAuthorityFailure)
@@ -41,6 +44,10 @@ import HostBootstrap.Lifecycle.Mode
     , productionRootUnboundLease
     , withProductionLifecycleProfile
     , withProductionRoot
+    )
+import HostBootstrap.Lifecycle.Context
+    ( LifecycleContextError (..)
+    , withValidatedLifecycleContext
     )
 import HostBootstrap.Lift (localContext)
 import HostBootstrap.ProjectPlan
@@ -65,6 +72,9 @@ import HostBootstrap.Protected
     , ProtectedStore
     , listProtectedRecords
     , openProtectedStore
+    , protectedStoreIdentity
+    , protectedStoreIdentityText
+    , protectedStoreRoot
     , readProtectedRecord
     , recordKeyText
     , withProtectedEntry
@@ -81,8 +91,8 @@ import HostBootstrap.Step
     , ensureStep
     , mkStepPlan
     )
-import System.Directory (removeFile)
-import System.Environment (getExecutablePath, withArgs)
+import System.Directory (getCurrentDirectory, removeFile)
+import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv, withArgs)
 import System.Exit (ExitCode (ExitFailure))
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -141,7 +151,8 @@ fixtureSpec progName =
         finalizeProjectSpec $
             addSteps
                 (\_ _ -> [deployVMStep "fixture step" (StepFrame "host-orchestrator-0" "metal") (const (pure StepChanged))])
-                    ( projectSpec
+                    ( addForwardChildPlan Fixture.refusingForwardChildPlan $
+                        projectSpec
                             passingSuite
                             (pure ())
                             []
@@ -875,6 +886,7 @@ tests =
                 after <- TIO.readFile path
                 after @?= before
         , frameAdmissionTests
+        , lifecycleContextAdmissionTests
         ]
 
 frameAdmissionTests :: TestTree
@@ -999,6 +1011,470 @@ frameAdmissionTests =
                 after <- observeProtectedStore store
                 after @?= before
         ]
+
+lifecycleContextAdmissionTests :: TestTree
+lifecycleContextAdmissionTests =
+    testGroup
+        "exact lifecycle context"
+        [ testCase "admits the exact root context without exposing root authority" $
+            withLifecycleContextPlan id twoFramePlan $ \root store plan context -> do
+                admitted <-
+                    withValidatedLifecycleContext
+                        root
+                        store
+                        plan
+                        context
+                        (const (pure (1 :: Int)))
+                admitted @?= Right 1
+        , testCase "admits the exact nested context without a caller-selected child frame" $
+            withLifecycleContextPlan
+                (\rootContext -> deriveTestHarnessContext rootContext (sourceRoot rootContext))
+                harnessFramePlan
+                (\root store plan context -> do
+                    admitted <-
+                        withValidatedLifecycleContext
+                            root
+                            store
+                            plan
+                            context
+                            (const (pure (2 :: Int)))
+                    admitted @?= Right 2
+                )
+        , testCase "command classes and capabilities do not participate in lifecycle-context admission" $
+            withLifecycleContextPlan
+                (\context -> context{allowedCommandClasses = [], capabilities = []})
+                twoFramePlan
+                (\root store plan context -> do
+                    admitted <-
+                        withValidatedLifecycleContext
+                            root
+                            store
+                            plan
+                            context
+                            (const (pure ()))
+                    admitted @?= Right ()
+                )
+        , testCase "command independence does not weaken the topology-derived witness set" $
+            let unexpected = RuntimeWitness WitnessFileExists "/not/a/root/witness" ""
+             in withLifecycleContextPlan
+                    ( \context ->
+                        context
+                            { allowedCommandClasses = []
+                            , capabilities = []
+                            , runtimeWitnesses = [unexpected]
+                            }
+                    )
+                    twoFramePlan
+                    (\root store plan context -> do
+                        admitted <-
+                            withValidatedLifecycleContext
+                                root
+                                store
+                                plan
+                                context
+                                (const (pure ()))
+                        admitted
+                            @?= Left
+                                ( LifecycleContextBinaryContextError
+                                    (ContextWitnessSetMismatch [] [unexpected])
+                                )
+                    )
+        , testCase "fresh runtime witnesses admit only while the exact observation remains true" $
+            withEnvironmentValue "HOSTBOOTSTRAP_CURRENT_FRAME" (Just "daemon-1") $
+                withLifecycleContextPlan
+                    (\rootContext -> deriveHostDaemonContext rootContext (sourceRoot rootContext))
+                    daemonFramePlan
+                    (\root store plan context -> do
+                        admitted <-
+                            withValidatedLifecycleContext
+                                root
+                                store
+                                plan
+                                context
+                                (const (pure True))
+                        admitted @?= Right True
+                        setEnv "HOSTBOOTSTRAP_CURRENT_FRAME" "replacement-frame"
+                        drifted <-
+                            withValidatedLifecycleContext
+                                root
+                                store
+                                plan
+                                context
+                                (const (pure False))
+                        case drifted of
+                            Left
+                                ( LifecycleContextBinaryContextError
+                                    (ContextRuntimeWitnessFailed witness _)
+                                    ) ->
+                                    witness
+                                        @?= RuntimeWitness
+                                            WitnessEnvEquals
+                                            "HOSTBOOTSTRAP_CURRENT_FRAME"
+                                            "daemon-1"
+                            other ->
+                                assertFailure
+                                    ("expected fresh witness refusal, got " ++ show other)
+                    )
+        , testCase "refuses a context project identity outside the admitted profile" $
+            withLifecycleContextPlan
+                (\context -> context{project = "other-project"})
+                twoFramePlan
+                (\root store plan context -> do
+                    admitted <-
+                        withValidatedLifecycleContext root store plan context (const (pure ()))
+                    admitted
+                        @?= Left
+                            ( LifecycleContextBinaryContextError
+                                (ContextProjectMismatch (binary context) "other-project")
+                            )
+                )
+        , testCase "refuses a context binary identity outside the admitted profile" $
+            withLifecycleContextPlan
+                (\context -> context{binary = "other-binary"})
+                twoFramePlan
+                (\root store plan context -> do
+                    admitted <-
+                        withValidatedLifecycleContext root store plan context (const (pure ()))
+                    admitted
+                        @?= Left
+                            ( LifecycleContextBinaryContextError
+                                (ContextBinaryMismatch (project context) "other-binary")
+                            )
+                )
+        , testCase "refuses a noncanonical context source root" $
+            withLifecycleContextPlan
+                (\context -> context{sourceRoot = sourceRoot context <> "/."})
+                twoFramePlan
+                (\root store plan context -> do
+                    admitted <-
+                        withValidatedLifecycleContext root store plan context (const (pure ()))
+                    admitted
+                        @?= Left
+                            ( LifecycleContextSourceRootMismatch
+                                (canonicalProjectRootPath root)
+                                (T.unpack (sourceRoot context))
+                            )
+                )
+        , testCase "refuses a canonical root other than the plan-retained root before the callback" $
+            withLifecycleContextPlan id twoFramePlan $
+                \(_root :: CanonicalProjectRoot (Production projectId) rootId) store plan context ->
+                    withSystemTempDirectory "hostbootstrap-lifecycle-other-root" $ \directory -> do
+                        called <- newIORef False
+                        rooted <-
+                            withCanonicalProjectRoot
+                                (directory </> "fixture.dhall")
+                                directory
+                                ( \(otherRoot :: CanonicalProjectRoot (Production projectId) otherRootId) ->
+                                    withValidatedLifecycleContext
+                                        otherRoot
+                                        store
+                                        plan
+                                        context
+                                        (\_ -> writeIORef called True)
+                                )
+                        case rooted of
+                            Left failure -> assertFailure ("could not admit other root: " ++ show failure)
+                            Right
+                                ( Left
+                                    (LifecycleContextPlanRootMismatch expected observed)
+                                    ) -> do
+                                        expected @?= directory
+                                        observed @?= T.unpack (sourceRoot context)
+                            Right other ->
+                                assertFailure
+                                    ("expected exact plan-root refusal, got " ++ show other)
+                        readIORef called >>= (@?= False)
+        , testCase "refuses a protected store opened at the wrong path" $
+            withLifecycleContextPlan id twoFramePlan $ \root _store plan context -> do
+                wrongStore <-
+                    openProtectedStore (canonicalProjectRootPath root </> "wrong-store")
+                        >>= either (fail . show) pure
+                admitted <-
+                    withValidatedLifecycleContext
+                        root
+                        wrongStore
+                        plan
+                        context
+                        (const (pure ()))
+                case admitted of
+                    Left (LifecycleContextStoreRootMismatch expected actual) -> do
+                        expected
+                            @?= canonicalProjectRootPath root
+                                </> ".hostbootstrap"
+                                </> "authority"
+                                </> T.unpack (project context)
+                        actual @?= protectedStoreRoot wrongStore
+                    other ->
+                        assertFailure ("expected protected-store path refusal, got " ++ show other)
+        , testCase "refuses a same-path protected store with another durable identity" $
+            withLifecycleContextPlan id twoFramePlan $ \root store plan context -> do
+                let storeRoot = protectedStoreRoot store
+                TIO.writeFile (storeRoot </> "store.identity") "replacement-store-origin\n"
+                replacement <-
+                    openProtectedStore storeRoot >>= either (fail . show) pure
+                protectedStoreRoot replacement @?= storeRoot
+                assertBool
+                    "fixture did not replace the durable store identity"
+                    ( protectedStoreIdentity replacement
+                        /= protectedStoreIdentity store
+                    )
+                admitted <-
+                    withValidatedLifecycleContext
+                        root
+                        replacement
+                        plan
+                        context
+                        (const (pure ()))
+                admitted
+                    @?= Left
+                        ( LifecycleContextStoreIdentityMismatch
+                            (protectedStoreIdentityText (protectedStoreIdentity store))
+                            (protectedStoreIdentityText (protectedStoreIdentity replacement))
+                        )
+        , testCase "refuses context bytes other than the exact plan-retained configuration" $
+            withLifecycleContextPlan id twoFramePlan $ \root store plan context -> do
+                let substituted = context{roleName = "substituted-role"}
+                admitted <-
+                    withValidatedLifecycleContext
+                        root
+                        store
+                        plan
+                        substituted
+                        (const (pure ()))
+                case admitted of
+                    Left
+                        ( LifecycleContextFrameError
+                            (FrameConfigContextMismatch expected observed)
+                            ) -> do
+                                expected @?= context
+                                observed @?= substituted
+                    other ->
+                        assertFailure ("expected retained-config refusal, got " ++ show other)
+        , testCase "wraps topology, placement, and current-frame refusals before the callback" $ do
+            let duplicate context =
+                    case topologyFrames context of
+                        [frame] -> context{topologyFrames = [frame, frame]}
+                        _ -> error "root lifecycle-context fixture invariant violated"
+                illegalPlacement context =
+                    context
+                        { topologyFrames =
+                            [ frame{topologyProvider = ExternalProvider}
+                            | frame <- topologyFrames context
+                            ]
+                        }
+                absentFrame context = context{currentFrame = "absent-frame"}
+                expectWrapped selector expected =
+                    withLifecycleContextPlan selector twoFramePlan $ \root store plan context -> do
+                        called <- newIORef False
+                        admitted <-
+                            withValidatedLifecycleContext
+                                root
+                                store
+                                plan
+                                context
+                                (\_ -> writeIORef called True)
+                        admitted @?= Left (LifecycleContextFrameError expected)
+                        readIORef called >>= (@?= False)
+            expectWrapped
+                duplicate
+                (FrameContextTopologyError (ContextTopologyDuplicateFrame "host-orchestrator-0"))
+            expectWrapped
+                illegalPlacement
+                ( FrameContextTopologyError
+                    ( ContextTopologyIllegalProvider
+                        "host-orchestrator-0"
+                        HostOrchestrator
+                        ExternalProvider
+                    )
+                )
+            expectWrapped
+                absentFrame
+                (FrameContextTopologyError (ContextCurrentFrameMissing "absent-frame"))
+        , testCase "admission retains but does not transition the already-open store" $
+            withLifecycleContextPlan id twoFramePlan $ \root store plan context -> do
+                before <- observeProtectedStore store
+                admitted <-
+                    withValidatedLifecycleContext
+                        root
+                        store
+                        plan
+                        context
+                        (const (pure ()))
+                admitted @?= Right ()
+                after <- observeProtectedStore store
+                after @?= before
+        , testCase "private source separates root and nested refinement without a public projection" $ do
+            cwd <- getCurrentDirectory
+            repoRoot <-
+                findRepoRoot cwd
+                    >>= maybe
+                        (assertFailure ("could not locate repository root from " ++ cwd))
+                        pure
+            let packageSourceRoot = repoRoot </> "core" </> "hostbootstrap-core" </> "src"
+                internalPath =
+                    packageSourceRoot
+                        </> "HostBootstrap"
+                        </> "Lifecycle"
+                        </> "Context"
+                        </> "Internal.hs"
+                facadePath =
+                    packageSourceRoot
+                        </> "HostBootstrap"
+                        </> "Lifecycle"
+                        </> "Context.hs"
+            internal <- unwords . words <$> readFile internalPath
+            facade <- unwords . words <$> readFile facadePath
+            let require label fragment source =
+                    assertBool
+                        ("lifecycle-context source lost " ++ label)
+                        (fragment `isInfixOfS` source)
+                forbid label fragment source =
+                    assertBool
+                        ("lifecycle-context facade exposes " ++ label)
+                        (not (fragment `isInfixOfS` source))
+            require
+                "all five nominal roles"
+                "type role ValidatedLifecycleContext nominal nominal nominal nominal nominal"
+                internal
+            require
+                "root-only evidence branch"
+                "LifecycleRootFrame -> Right (use root store current projectFrame validated)"
+                internal
+            require
+                "root refusal of nested evidence"
+                "LifecycleNestedFrame -> Left (LifecycleContextRootFrameRequired (currentFrameId current))"
+                internal
+            require
+                "nested-only evidence branch"
+                "LifecycleNestedFrame -> Right (use root store current projectFrame validated)"
+                internal
+            require
+                "nested refusal of root evidence"
+                "LifecycleRootFrame -> Left (LifecycleContextNestedFrameRequired (currentFrameId current))"
+                internal
+            forbid "root eliminator" "withValidatedRootLifecycleContext" facade
+            forbid "nested eliminator" "withValidatedNestedLifecycleContext" facade
+            forbid "path-only protected-store reopen" "openProtectedStore" facade
+        ]
+
+withLifecycleContextPlan ::
+    (BinaryContext -> BinaryContext) ->
+    StepPlan ->
+    ( forall projectId rootId specDigest planId configId.
+      CanonicalProjectRoot (Production projectId) rootId ->
+      ProtectedStore ->
+      ProjectPlan
+        (Production projectId)
+        specDigest
+        planId
+        configId
+        Fixture.ProjectConfig ->
+      BinaryContext ->
+      IO result
+    ) ->
+    IO result
+withLifecycleContextPlan selectContext stepPlan use =
+    withSystemTempDirectory "hostbootstrap-lifecycle-context" $ \directory ->
+        Fixture.withFixtureInstalledProject $ \installed -> do
+            rooted <-
+                withCanonicalProjectRoot
+                    (directory </> "fixture.dhall")
+                    directory
+                    ( \root -> do
+                        let projectName = installedProjectName installed
+                            storePath =
+                                canonicalProjectRootPath root
+                                    </> ".hostbootstrap"
+                                    </> "authority"
+                                    </> T.unpack projectName
+                            rootValue =
+                                Fixture.defaultProjectConfig
+                                    projectName
+                                    (T.pack (canonicalProjectRootPath root))
+                                    HostOrchestrator
+                            exactContext = selectContext (Fixture.context rootValue)
+                            value = rootValue{Fixture.context = exactContext}
+                        store <-
+                            openProtectedStore storePath >>= either (fail . show) pure
+                        withProductionRoot store installed ProjectUp $ \productionRoot -> do
+                            opened <-
+                                withProductionLifecycleProfile
+                                    (rootScopeAuthority (productionRootAuthority productionRoot))
+                                    (productionActiveMode (productionRootModeLease productionRoot))
+                                    (productionRootUnboundLease productionRoot)
+                                    ( \profile ->
+                                        withProductionProjectCodec @Fixture.ProjectConfig $ \codec -> do
+                                            validated <-
+                                                Schema.withValidatedConfig codec value $ \_wire config -> do
+                                                    drafts <-
+                                                        either (fail . show) pure
+                                                            ( planDraftsFromValidatedBuilder
+                                                                root
+                                                                config
+                                                                (\_ _ -> Right stepPlan)
+                                                            )
+                                                    action <-
+                                                        either (fail . show) pure
+                                                            ( withProjectPlan
+                                                                profile
+                                                                root
+                                                                config
+                                                                drafts
+                                                                (\plan -> use root store plan exactContext)
+                                                            )
+                                                    action
+                                            either fail pure validated
+                                    )
+                            case opened of
+                                Left failure ->
+                                    pure (Left (ModeAuthorityFailure failure))
+                                Right action -> Right <$> action
+                    )
+            admitted <- either (fail . show) pure rooted
+            either (fail . show) pure admitted
+
+harnessFramePlan :: StepPlan
+harnessFramePlan =
+    expectFrameStepPlan
+        [ descendsVia
+            localContext
+            ( contextInitStep
+                "context"
+                (StepFrame "host-orchestrator-0" "Host")
+                (const (pure StepChanged))
+            )
+        , ensureStep
+            "harness"
+            "test harness"
+            (StepFrame "test-harness-1" "Harness")
+            (const (pure StepChanged))
+        ]
+
+daemonFramePlan :: StepPlan
+daemonFramePlan =
+    expectFrameStepPlan
+        [ descendsVia
+            localContext
+            ( contextInitStep
+                "context"
+                (StepFrame "host-orchestrator-0" "Host")
+                (const (pure StepChanged))
+            )
+        , ensureStep
+            "daemon"
+            "host daemon"
+            (StepFrame "daemon-1" "Daemon")
+            (const (pure StepChanged))
+        ]
+
+withEnvironmentValue :: String -> Maybe String -> IO result -> IO result
+withEnvironmentValue name value action = do
+    previous <- lookupEnv name
+    install value
+    action `finally` install previous
+  where
+    install Nothing = unsetEnv name
+    install (Just selected) = setEnv name selected
 
 hostFrameContext :: BinaryContext
 hostFrameContext =

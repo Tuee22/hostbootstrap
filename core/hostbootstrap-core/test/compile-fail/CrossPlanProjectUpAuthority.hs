@@ -5,7 +5,7 @@ import HostBootstrap.Authority
     , RootInvocationAuthority
     , VerbUp
     )
-import HostBootstrap.Authority.ProjectPlan (authorizeProjectUp)
+import HostBootstrap.Authority.ProjectPlan (authorizeRootProject)
 import HostBootstrap.Lifecycle.Mode (VerifiedPlanSnapshot)
 import HostBootstrap.ProjectPlan.Snapshot
     ( BoundPlanSnapshot
@@ -26,4 +26,4 @@ crossPlan ::
     PlanDigestBinding Scope SpecDigest PlanDigest PlanB ->
     ()
 crossPlan root verified bound binding =
-    authorizeProjectUp root ProjectUp verified bound binding `seq` ()
+    authorizeRootProject root ProjectUp verified bound binding `seq` ()

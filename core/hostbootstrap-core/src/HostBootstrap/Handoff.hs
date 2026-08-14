@@ -41,9 +41,6 @@ Nothing here reads or writes @argv@ or the environment, and no value in this
 module is representable in Dhall.
 -}
 module HostBootstrap.Handoff (
-    -- * Bounded duplex protocol
-    module HostBootstrap.Handoff.Protocol,
-
     -- * Length-delimited framing
     frameWire,
     unframeWire,
@@ -59,6 +56,13 @@ module HostBootstrap.Handoff (
     handoffScopeTag,
     productionScopeTag,
     harnessScopeTagFor,
+
+    -- * Root-authenticated project scope
+    AuthenticatedRootScope,
+    renderAuthenticatedRootScope,
+    signAuthenticatedRootScopeKernel,
+    withAuthenticatedRootScopeFromWire,
+
     HandoffPayloadKind (..),
     HandoffBindingInput (..),
     renderHandoffBindingInput,
@@ -82,6 +86,26 @@ module HostBootstrap.Handoff (
     withHandoffBindingFromWire,
     childConfigDigest,
 
+    -- * Root-signed payload and child-config identity
+    RootedPayloadBinding,
+    rootedPayloadDigest,
+    rootedChildConfigDigest,
+    renderRootedPayloadBinding,
+    signRootedPayloadBindingKernel,
+    withVerifiedRootedPayloadBinding,
+
+    -- * Canonical recovery child package
+    RecoveryChildPackage,
+    renderRecoveryChildPackage,
+    signRecoveryChildPackageBindingKernel,
+    withVerifiedRecoveryChildPackage,
+
+    -- * Rooted lifecycle response authentication
+    RootedLifecycleResponse,
+    renderRootedLifecycleResponse,
+    signRootedLifecycleResponseKernel,
+    withVerifiedRootedLifecycleResponse,
+
     -- * Recovery-wire projection
     RecoveryHandoff,
     RecoveryProjectionBindingInput,
@@ -101,8 +125,7 @@ module HostBootstrap.Handoff (
     recoveryWireGrantFromSignature,
     recoveryResponseFields,
     recoveryResponseFromFields,
-    signRecoveryWire,
-    signAdmittedRecoveryWire,
+    signRecoveryWireKernel,
     VerifiedRecoveryWire,
     verifiedRecoveryWireBytes,
     withVerifiedRecoveryWire,
@@ -135,6 +158,7 @@ module HostBootstrap.Handoff (
     relayBinding,
     registerHandoffEdge,
     registerAdmittedHandoffEdge,
+    registerRecoverableAdmittedHandoffEdgeKernel,
 
     -- * Offer, challenge, grant
     HandoffToken,
@@ -165,6 +189,23 @@ module HostBootstrap.Handoff (
     authenticatedConfigDigest,
     authenticatedConfigBytes,
 
+    -- * Lifecycle completion wire
+    renderLifecycleObservations,
+    lifecycleObservationsFromWire,
+    renderForwardCompletedLifecycleReport,
+    renderForwardRefusedLifecycleReport,
+    renderForwardFailedLifecycleReport,
+    renderReverseCompletedLifecycleReport,
+    renderReverseRefusedLifecycleReport,
+    renderReverseFailedLifecycleReport,
+    eliminateLifecycleReport,
+    renderLifecycleAcknowledgement,
+    verifyLifecycleAcknowledgement,
+    publishLifecycleReportKernel,
+    receiveLifecycleAcknowledgementKernel,
+    prepareLifecycleAcknowledgementKernel,
+    adoptLifecycleAcknowledgementKernel,
+
     -- * Failures
     HandoffError (..),
     handoffErrorMessage,
@@ -182,6 +223,7 @@ import qualified Data.ByteArray as ByteArray
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteStringChar8
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -204,19 +246,29 @@ import HostBootstrap.Config.Vocab (
     Production,
     harnessRunName,
  )
-import HostBootstrap.Handoff.Protocol
+import HostBootstrap.Handoff.Internal
+    ( RecoverySigningKernel
+    , consumeRecoverySigningKernel
+    , consumeRootedLifecycleResponseSigningKernel
+    )
+import HostBootstrap.Handoff.Recovery (RecoveryChildPackage)
+import qualified HostBootstrap.Handoff.Recovery as Recovery
+import HostBootstrap.Handoff.Rooted (RootedLifecycleResponse, RootedPayloadBinding)
+import qualified HostBootstrap.Handoff.Rooted as Rooted
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
     ProtectedError,
     ProtectedRecord (protectedRecordBytes, protectedRecordVersion),
     ProtectedSession,
     ProtectedStore,
+    RecordKey,
     compareAndSwapProtectedRecord,
     mkRecordKey,
     protectedErrorMessage,
     protectedStoreIdentity,
     protectedStoreIdentityText,
     readProtectedRecord,
+    recordVersionWord,
     withProtectedEntry,
  )
 import System.Directory (doesFileExist)
@@ -276,6 +328,674 @@ bigEndianWord64 :: [Word8] -> Word64
 bigEndianWord64 = foldl (\acc byte -> (acc `shiftL` 8) .|. fromIntegral byte) 0
 
 -- ---------------------------------------------------------------------------
+-- Lifecycle completion wire
+
+renderLifecycleObservations :: [(Text, Text, Text)] -> Either HandoffError ByteString
+renderLifecycleObservations rows = do
+    validateLifecycleRows rows
+    bounded "lifecycle observations" wire
+    pure wire
+  where
+    wire = ByteString.concat
+        ( [frameWire "hostbootstrap/lifecycle-observations", lifecycleWord 1, lifecycleWord (fromIntegral (length rows))]
+            ++ concatMap (\(key, status, detail) -> map lifecycleText [key, status, detail]) rows
+        )
+
+lifecycleObservationsFromWire :: ByteString -> Either HandoffError [(Text, Text, Text)]
+lifecycleObservationsFromWire raw = do
+    bounded "lifecycle observations" raw
+    (domain, afterDomain) <- takeFrame raw
+    (version, afterVersion) <- takeFrame afterDomain
+    (countBytes, body) <- takeFrame afterVersion
+    requireLifecycle (domain == "hostbootstrap/lifecycle-observations" && version == lifecycleWordBytes 1)
+        "the lifecycle observations domain or version differs"
+    count <- lifecycleCount countBytes
+    rows <- takeRows count body []
+    validateLifecycleRows rows
+    canonical <- renderLifecycleObservations rows
+    requireLifecycle (canonical == raw) "lifecycle observations are not canonical"
+    pure rows
+  where
+    takeRows 0 trailing rows = requireLifecycle (ByteString.null trailing) "lifecycle observations have trailing bytes" >> pure (reverse rows)
+    takeRows remaining bytes rows = do
+        (keyBytes, afterKey) <- takeFrame bytes
+        (statusBytes, afterStatus) <- takeFrame afterKey
+        (detailBytes, afterDetail) <- takeFrame afterStatus
+        key <- lifecycleTextFromWire "observation key" keyBytes
+        status <- lifecycleTextFromWire "observation status" statusBytes
+        detail <- lifecycleTextFromWire "observation detail" detailBytes
+        takeRows (remaining - 1) afterDetail ((key, status, detail) : rows)
+
+validateLifecycleRows :: [(Text, Text, Text)] -> Either HandoffError ()
+validateLifecycleRows = go Set.empty
+  where
+    go _ [] = Right ()
+    go seen ((key, status, detail) : rest) = do
+        requireLifecycle (not (Text.null key)) "a lifecycle observation key is empty"
+        requireLifecycle (Set.notMember key seen) "lifecycle observation keys contain a duplicate"
+        case status of
+            "released" -> requireLifecycle (detail == "none") "a released observation must carry detail none"
+            "foreign-retained" -> nonemptyDetail
+            "refused" -> nonemptyDetail
+            "failed" -> nonemptyDetail
+            _ -> requireLifecycle False "a lifecycle observation status is unknown"
+        go (Set.insert key seen) rest
+      where
+        nonemptyDetail = requireLifecycle (not (Text.null detail) && detail /= "none")
+            "a non-released observation requires non-none detail"
+
+renderForwardCompletedLifecycleReport :: ByteString -> Either HandoffError ByteString
+renderForwardCompletedLifecycleReport origin = do
+    (binding, _) <- completedOrigin "forward" origin
+    emptyRows >>= renderLifecycleReport "forward" "completed" binding origin "none"
+
+renderForwardRefusedLifecycleReport :: ByteString -> Text -> Either HandoffError ByteString
+renderForwardRefusedLifecycleReport binding detail = emptyRows >>= renderLifecycleReport "forward" "refused" binding (nonterminalOrigin "forward" "refused" binding) detail
+
+renderForwardFailedLifecycleReport :: ByteString -> Text -> Either HandoffError ByteString
+renderForwardFailedLifecycleReport binding detail = emptyRows >>= renderLifecycleReport "forward" "failed" binding (nonterminalOrigin "forward" "failed" binding) detail
+
+renderReverseCompletedLifecycleReport :: ByteString -> ByteString -> Either HandoffError ByteString
+renderReverseCompletedLifecycleReport origin observations = do
+    (binding, _) <- completedOrigin "reverse" origin
+    renderLifecycleReport "reverse" "completed" binding origin "none" observations
+
+renderReverseRefusedLifecycleReport :: ByteString -> ByteString -> Text -> Either HandoffError ByteString
+renderReverseRefusedLifecycleReport binding observations detail =
+    renderLifecycleReport "reverse" "refused" binding (nonterminalOrigin "reverse" "refused" binding) detail observations
+
+renderReverseFailedLifecycleReport :: ByteString -> ByteString -> Text -> Either HandoffError ByteString
+renderReverseFailedLifecycleReport binding observations detail =
+    renderLifecycleReport "reverse" "failed" binding (nonterminalOrigin "reverse" "failed" binding) detail observations
+
+renderLifecycleReport :: Text -> Text -> ByteString -> ByteString -> Text -> ByteString -> Either HandoffError ByteString
+renderLifecycleReport branch status binding origin detail observations = do
+    rows <- lifecycleObservationsFromWire observations
+    requireLifecycle (not (ByteString.null binding)) "a lifecycle report binding is empty"
+    requireLifecycle (not (ByteString.null origin)) "a lifecycle report origin is empty"
+    _ <- bindingVerb branch binding
+    validateLifecycleBranch branch status binding origin rows detail
+    bounded "lifecycle report" wire
+    pure wire
+  where
+    wire = ByteString.concat
+        [ frameWire "hostbootstrap/lifecycle-report", lifecycleWord 1
+        , lifecycleText branch, lifecycleText status, frameWire binding, frameWire origin
+        , frameWire observations, lifecycleText detail
+        ]
+
+validateLifecycleBranch :: Text -> Text -> ByteString -> ByteString -> [(Text, Text, Text)] -> Text -> Either HandoffError ()
+validateLifecycleBranch branch status binding origin rows detail = do
+    case (branch, status) of
+        ("forward", "completed") -> noRows >> validCompletedOrigin >> completed
+        ("forward", "refused") -> noRows >> nonterminal
+        ("forward", "failed") -> noRows >> nonterminal
+        ("reverse", "completed") -> requireLifecycle (not (null rows) && noFailed) "reverse completion requires non-failed observations" >> validCompletedOrigin >> completed
+        ("reverse", "refused") -> requireLifecycle noFailed "reverse refusal cannot carry failed observations" >> nonterminal
+        ("reverse", "failed") -> nonterminal
+        _ -> requireLifecycle False "a lifecycle report branch/status pair is illegal"
+  where
+    noRows = requireLifecycle (null rows) "a forward lifecycle report cannot carry observations"
+    noFailed = all (\(_, rowStatus, _) -> rowStatus /= "failed") rows
+    validCompletedOrigin = do
+        (originBinding, _) <- completedOrigin branch origin
+        requireLifecycle (originBinding == binding) "the terminal origin carries another binding"
+    completed = requireLifecycle (detail == "none") "a completed lifecycle report must carry detail none"
+    nonterminal = do
+        requireLifecycle (not (Text.null detail) && detail /= "none") "a non-completed lifecycle report requires non-none detail"
+        requireLifecycle (origin == nonterminalOrigin branch status binding) "a non-completed lifecycle origin is not canonical"
+
+completedOrigin :: Text -> ByteString -> Either HandoffError (ByteString, Text)
+completedOrigin branch raw
+    | branch == "forward" = forwardOrigin raw
+    | branch == "reverse" = reverseOrigin raw
+    | otherwise = Left (HandoffBindingMismatch "a terminal lifecycle origin has an unknown branch")
+
+forwardOrigin :: ByteString -> Either HandoffError (ByteString, Text)
+forwardOrigin raw = do
+    bounded "forward terminal origin" raw
+    fields <- takeExactFrames 9 raw
+    case fields of
+        [domain, binding, invocationBytes, acquisition, executeVersion, teardownVersion, verbBytes, executePhase, teardownPhase] -> do
+            invocation <- lifecycleTextFromWire "forward invocation" invocationBytes
+            verb <- lifecycleTextFromWire "forward verb" verbBytes
+            requireLifecycle (domain == "forward-terminal-origin-v1") "the forward terminal origin domain differs"
+            requireLifecycle (not (Text.null invocation)) "the forward terminal invocation is empty"
+            versions <- traverse (canonicalPositive "forward terminal version") [acquisition, executeVersion, teardownVersion]
+            requireLifecycle (versions == [1, 2, 3]) "the forward terminal record versions are not 1/2/3"
+            requireLifecycle (verb == "up" && executePhase == "execute" && teardownPhase == "teardown")
+                "the forward terminal verb or phase differs"
+            signedVerb <- bindingVerb "forward" binding
+            requireLifecycle (signedVerb == verb) "the forward terminal binding verb differs"
+            pure (binding, verb)
+        _ -> Left (HandoffBindingMismatch "the forward terminal origin field count differs")
+
+reverseOrigin :: ByteString -> Either HandoffError (ByteString, Text)
+reverseOrigin raw = do
+    bounded "reverse terminal origin" raw
+    fields <- takeExactFrames 16 raw
+    case fields of
+        [domain, version, binding, snapshotBytes, planDigestBytes, invocationBytes, acquisition, cursorVersion, frameBytes, broker, verbBytes, commandVerbBytes, phaseBytes, teardownFrameBytes, teardownVerbBytes, adapterBytes] -> do
+            coordinates <-
+                traverse (uncurry lifecycleTextFromWire)
+                    [ ("reverse snapshot", snapshotBytes), ("reverse digest binding", planDigestBytes)
+                    , ("reverse invocation", invocationBytes), ("reverse frame", frameBytes)
+                    , ("reverse verb", verbBytes), ("reverse command verb", commandVerbBytes)
+                    , ("reverse phase", phaseBytes), ("reverse teardown frame", teardownFrameBytes)
+                    , ("reverse teardown verb", teardownVerbBytes), ("reverse adapter digest", adapterBytes)
+                    ]
+            case coordinates of
+                [snapshot, digest, invocation, frame, verb, commandVerb, phase, teardownFrame, teardownVerb, adapter] -> do
+                    requireLifecycle (domain == "child-recovery-terminal-origin-v1" && version == "1")
+                        "the reverse terminal origin domain or version differs"
+                    requireLifecycle (all (not . Text.null) [snapshot, invocation, frame]) "a reverse terminal coordinate is empty"
+                    versions <- traverse (canonicalPositive "reverse terminal version") [acquisition, cursorVersion]
+                    requireLifecycle (versions == [1, 3]) "the reverse terminal record versions are not 1/3"
+                    brokerGeneration <- canonicalPositive "reverse terminal broker generation" broker
+                    requireLifecycle (snapshot == digest && frame == teardownFrame) "the reverse terminal plan or frame copies differ"
+                    requireLifecycle (verb == commandVerb && verb == teardownVerb && verb `elem` ["down", "destroy"])
+                        "the reverse terminal verb copies differ"
+                    requireLifecycle (phase == "teardown") "the reverse terminal phase differs"
+                    requireLifecycle (Text.length adapter == 64 && Text.all lowerHex adapter) "the reverse adapter digest is not canonical"
+                    signed <- validatedLifecycleBinding "reverse" binding
+                    requireLifecycle
+                        ( snapshot == handoffPlanRevision signed
+                            && frame == handoffChildFrame signed
+                            && brokerGeneration == handoffBrokerGeneration signed
+                            && verb == handoffVerb signed
+                            && adapter == handoffChildConfigDigest signed
+                        )
+                        "the reverse terminal origin differs from its binding"
+                    pure (binding, verb)
+                _ -> Left (HandoffBindingMismatch "the reverse terminal origin coordinate count differs")
+        _ -> Left (HandoffBindingMismatch "the reverse terminal origin field count differs")
+  where
+    lowerHex character = ('0' <= character && character <= '9') || ('a' <= character && character <= 'f')
+
+bindingVerb :: Text -> ByteString -> Either HandoffError Text
+bindingVerb branch raw = handoffVerb <$> validatedLifecycleBinding branch raw
+
+validatedLifecycleBinding :: Text -> ByteString -> Either HandoffError (HandoffBinding scope brokerGeneration)
+validatedLifecycleBinding branch raw = do
+    binding <- decodeHandoffBinding raw
+    requireLifecycle (renderHandoffBinding binding == raw) "the lifecycle report binding is not canonical"
+    requireLifecycle (not (Text.null (handoffTokenCommitment binding))) "the lifecycle report token commitment is empty"
+    case branch of
+        "forward" -> do
+            requireLifecycle (handoffPayloadKind binding == NarrowedProjectConfig) "a forward lifecycle binding has the wrong kind"
+            requireLifecycle (handoffVerb binding == "up" && handoffPhase binding == "execute")
+                "a forward lifecycle binding has the wrong verb or phase"
+        "reverse" -> do
+            requireLifecycle (handoffPayloadKind binding == RecoveryAdapterWire) "a reverse lifecycle binding has the wrong kind"
+            requireLifecycle (handoffVerb binding `elem` ["down", "destroy"] && handoffPhase binding == "teardown")
+                "a reverse lifecycle binding has the wrong verb or phase"
+        _ -> requireLifecycle False "a lifecycle report branch is unknown"
+    pure binding
+
+canonicalPositive :: Text -> ByteString -> Either HandoffError Word64
+canonicalPositive field bytes = do
+    value <- lifecycleTextFromWire field bytes
+    requireLifecycle (Text.length value <= 20) (field <> " is too large")
+    case reads (Text.unpack value) of
+        [(word, "")] | word > (0 :: Word64), Text.pack (show word) == value -> Right word
+        _ -> Left (HandoffBindingMismatch (field <> " is not a canonical positive word"))
+
+eliminateLifecycleReport ::
+    ByteString ->
+    (ByteString -> ByteString -> ByteString -> Text -> Text -> result) ->
+    (ByteString -> ByteString -> ByteString -> Text -> Text -> result) ->
+    (ByteString -> ByteString -> ByteString -> Text -> Text -> result) ->
+    (ByteString -> ByteString -> ByteString -> Text -> Text -> result) ->
+    (ByteString -> ByteString -> ByteString -> Text -> Text -> result) ->
+    (ByteString -> ByteString -> ByteString -> Text -> Text -> result) ->
+    Either HandoffError result
+eliminateLifecycleReport raw forwardCompleted forwardRefused forwardFailed reverseCompleted reverseRefused reverseFailed = do
+    bounded "lifecycle report" raw
+    fields <- takeExactFrames 8 raw
+    case fields of
+        [domain, version, branchBytes, statusBytes, binding, origin, observations, detailBytes] -> do
+            branch <- lifecycleTextFromWire "report branch" branchBytes
+            status <- lifecycleTextFromWire "report status" statusBytes
+            detail <- lifecycleTextFromWire "report detail" detailBytes
+            requireLifecycle (domain == "hostbootstrap/lifecycle-report" && version == lifecycleWordBytes 1)
+                "the lifecycle report domain or version differs"
+            canonical <- renderLifecycleReport branch status binding origin detail observations
+            requireLifecycle (canonical == raw) "the lifecycle report is not canonical"
+            verb <- bindingVerb branch binding
+            case (branch, status) of
+                ("forward", "completed") -> pure (forwardCompleted binding origin observations detail verb)
+                ("forward", "refused") -> pure (forwardRefused binding origin observations detail verb)
+                ("forward", "failed") -> pure (forwardFailed binding origin observations detail verb)
+                ("reverse", "completed") -> pure (reverseCompleted binding origin observations detail verb)
+                ("reverse", "refused") -> pure (reverseRefused binding origin observations detail verb)
+                ("reverse", "failed") -> pure (reverseFailed binding origin observations detail verb)
+                _ -> requireLifecycle False "a lifecycle report branch/status pair is illegal" >> pure (forwardFailed binding origin observations detail verb)
+        _ -> Left (HandoffBindingMismatch "the lifecycle report field count differs")
+
+renderLifecycleAcknowledgement :: ByteString -> Either HandoffError ByteString
+renderLifecycleAcknowledgement report = do
+    validateLifecycleReport report
+    bounded "lifecycle acknowledgement" acknowledgement
+    pure acknowledgement
+  where
+    acknowledgement = ByteString.concat
+        [ frameWire "hostbootstrap/lifecycle-acknowledgement", lifecycleWord 1
+        , lifecycleText (recoveryWireDigest report)
+        ]
+
+verifyLifecycleAcknowledgement :: ByteString -> ByteString -> Either HandoffError ()
+verifyLifecycleAcknowledgement report observed = do
+    expected <- renderLifecycleAcknowledgement report
+    bounded "lifecycle acknowledgement" observed
+    fields <- takeExactFrames 3 observed
+    case fields of
+        [domain, version, digest] -> do
+            requireLifecycle (domain == "hostbootstrap/lifecycle-acknowledgement") "the lifecycle acknowledgement domain differs"
+            requireLifecycle (version == lifecycleWordBytes 1) "the lifecycle acknowledgement version differs"
+            requireLifecycle (digest == TextEncoding.encodeUtf8 (recoveryWireDigest report)) "the lifecycle acknowledgement names another report"
+            requireLifecycle (observed == expected) "the lifecycle acknowledgement is not canonical"
+        _ -> Left (HandoffBindingMismatch "the lifecycle acknowledgement field count differs")
+
+-- ---------------------------------------------------------------------------
+-- Durable lifecycle acknowledgement
+
+{- | Publish one exact child report before it is sent.
+
+The hidden admission is consumed before the store or report is inspected.  An
+exact Published retry converges, as does a retry after that same report has
+already reached Received; no other row can be repaired or replaced here.
+-}
+publishLifecycleReportKernel ::
+    RecoverySigningKernel ->
+    ProtectedStore ->
+    ByteString ->
+    IO (Either HandoffError ())
+{-# OPAQUE publishLifecycleReportKernel #-}
+publishLifecycleReportKernel kernel =
+    case consumeRecoverySigningKernel kernel () of
+        () -> \store report -> case lifecycleChildMaterial store report of
+            Left failure -> pure (Left failure)
+            Right (key, published, received) -> inLifecycleEntry store $ \session -> do
+                observed <- readProtectedRecord session key
+                case observed of
+                    Left failure -> pure (Left (HandoffStoreFailure failure))
+                    Right Nothing -> publishChildRow session key published received
+                    Right (Just record)
+                        | exactLifecycleRow 1 published record || exactLifecycleRow 2 received record ->
+                            pure (Right ())
+                        | otherwise -> pure lifecycleRowConflict
+
+{- | Record the exact acknowledgement returned for one published child report. -}
+receiveLifecycleAcknowledgementKernel ::
+    RecoverySigningKernel ->
+    ProtectedStore ->
+    ByteString ->
+    ByteString ->
+    IO (Either HandoffError ())
+{-# OPAQUE receiveLifecycleAcknowledgementKernel #-}
+receiveLifecycleAcknowledgementKernel kernel =
+    case consumeRecoverySigningKernel kernel () of
+        () -> \store report acknowledgement ->
+            case verifyLifecycleAcknowledgement report acknowledgement
+                >> lifecycleChildMaterial store report of
+                Left failure -> pure (Left failure)
+                Right (key, published, received) -> inLifecycleEntry store $ \session -> do
+                    observed <- readProtectedRecord session key
+                    case observed of
+                        Left failure -> pure (Left (HandoffStoreFailure failure))
+                        Right (Just record)
+                            | exactLifecycleRow 2 received record -> pure (Right ())
+                            | exactLifecycleRow 1 published record ->
+                                do
+                                    written <- writeLifecycleRow session key
+                                        (ExpectVersion (protectedRecordVersion record)) 2 received
+                                    pure (() <$ written)
+                            | otherwise -> pure lifecycleRowConflict
+                        Right Nothing -> pure lifecycleRowConflict
+
+{- | Prepare the root-owned acknowledgement row under the broker lifetime.
+
+Both continuations are fixed-unit and run after the protected entry and broker
+lifetime guard unlock.  An invocation admitted while the broker was live may
+therefore finish its response and synchronously enter adoption; an already
+expired broker refuses before either continuation.
+The first is selected for an exact v2 Acknowledged row; the second for an exact
+v3 Adopted retry.  Relay uses that closed distinction to render the first
+stage of the routed acknowledgement protocol without exposing a durable row.
+-}
+prepareLifecycleAcknowledgementKernel ::
+    RecoverySigningKernel ->
+    RootBroker scope brokerGeneration verb ->
+    HandoffOffer scope brokerGeneration ->
+    HandoffChallenge ->
+    ByteString ->
+    ByteString ->
+    (ByteString -> IO (Either rejection ())) ->
+    (ByteString -> IO (Either rejection ())) ->
+    IO (Either HandoffError (Either rejection ()))
+{-# OPAQUE prepareLifecycleAcknowledgementKernel #-}
+prepareLifecycleAcknowledgementKernel kernel =
+    case consumeRecoverySigningKernel kernel () of
+        () -> \broker offer challenge report acknowledgement pending alreadyAdopted -> do
+            prepared <- withActiveRootBroker broker $ case lifecycleParentMaterial broker offer report acknowledgement of
+                Left failure -> pure (Left failure)
+                Right (key, reported, acknowledged, adopted) -> do
+                    inLifecycleEntry (brokerProtectedStore broker) $ \session -> do
+                        authenticated <- validateGrantedLifecycleOffer session broker offer challenge
+                        case authenticated of
+                            Left failure -> pure (Left failure)
+                            Right () -> prepareParentRow session key reported acknowledged adopted
+            case prepared of
+                Left failure -> pure (Left failure)
+                Right False -> Right <$> pending acknowledgement
+                Right True -> Right <$> alreadyAdopted acknowledgement
+
+{- | Adopt one prepared parent acknowledgement after Relay sent it.
+
+Only the process that wins the v2→v3 compare-and-swap receives the first
+continuation.  An exact v3 retry receives the replay continuation, allowing
+Relay to answer the routed retry without running semantic completion twice.
+Both continuations run after the broker lifetime guard releases.
+-}
+adoptLifecycleAcknowledgementKernel ::
+    RecoverySigningKernel ->
+    RootBroker scope brokerGeneration verb ->
+    HandoffOffer scope brokerGeneration ->
+    HandoffChallenge ->
+    ByteString ->
+    ByteString ->
+    IO (Either rejection ()) ->
+    IO (Either rejection ()) ->
+    IO (Either HandoffError (Either rejection ()))
+{-# OPAQUE adoptLifecycleAcknowledgementKernel #-}
+adoptLifecycleAcknowledgementKernel kernel =
+    case consumeRecoverySigningKernel kernel () of
+        () -> \broker offer challenge report acknowledgement fresh replay -> do
+            advanced <- withActiveRootBroker broker $ case lifecycleParentMaterial broker offer report acknowledgement of
+                Left failure -> pure (Left failure)
+                Right (key, _reported, acknowledged, adopted) -> do
+                    inLifecycleEntry (brokerProtectedStore broker) $ \session -> do
+                        authenticated <- validateGrantedLifecycleOffer session broker offer challenge
+                        case authenticated of
+                            Left failure -> pure (Left failure)
+                            Right () -> adoptParentRow session key acknowledged adopted
+            case advanced of
+                Left failure -> pure (Left failure)
+                Right True -> Right <$> fresh
+                Right False -> Right <$> replay
+
+lifecycleChildMaterial ::
+    ProtectedStore ->
+    ByteString ->
+    Either HandoffError (RecordKey, ByteString, ByteString)
+lifecycleChildMaterial store report = do
+    bindingBytes <- lifecycleReportBinding report
+    binding <- decodeHandoffBinding bindingBytes
+    requireLifecycle
+        (handoffStoreIdentity binding == protectedStoreIdentityText (protectedStoreIdentity store))
+        "the lifecycle report names a different protected store"
+    key <- lifecycleRecordKey "child" bindingBytes
+    published <- lifecycleDurableRow "child" "published" bindingBytes report ByteString.empty
+    acknowledgement <- renderLifecycleAcknowledgement report
+    received <- lifecycleDurableRow "child" "received" bindingBytes report acknowledgement
+    pure (key, published, received)
+
+lifecycleParentMaterial ::
+    RootBroker scope brokerGeneration verb ->
+    HandoffOffer scope brokerGeneration ->
+    ByteString ->
+    ByteString ->
+    Either HandoffError (RecordKey, ByteString, ByteString, ByteString)
+lifecycleParentMaterial broker offer report acknowledgement = do
+    bindingBytes <- lifecycleReportBinding report
+    let binding = handoffOfferBinding offer
+    _ <- brokerRelay broker binding
+    requireLifecycle (bindingBytes == renderHandoffBinding binding)
+        "the lifecycle report does not name the authenticated offer"
+    requireLifecycle (handoffChildConfigDigest binding == childConfigDigest (offerPayload offer))
+        "the lifecycle offer payload differs from its binding"
+    requireLifecycle (handoffTokenCommitment binding == tokenCommitment (offerToken offer))
+        "the lifecycle offer token differs from its binding"
+    verifyLifecycleAcknowledgement report acknowledgement
+    key <- lifecycleRecordKey "parent" bindingBytes
+    reported <- lifecycleDurableRow "parent" "reported" bindingBytes report ByteString.empty
+    acknowledged <- lifecycleDurableRow "parent" "acknowledged" bindingBytes report acknowledgement
+    adopted <- lifecycleDurableRow "parent" "adopted" bindingBytes report acknowledgement
+    pure (key, reported, acknowledged, adopted)
+
+lifecycleReportBinding :: ByteString -> Either HandoffError ByteString
+lifecycleReportBinding report = eliminateLifecycleReport report binding binding binding binding binding binding
+  where
+    binding raw _ _ _ _ = raw
+
+lifecycleRecordKey :: Text -> ByteString -> Either HandoffError RecordKey
+lifecycleRecordKey side binding =
+    either (Left . HandoffStoreFailure) Right
+        (mkRecordKey ("lifecycle-" <> side <> "." <> recoveryWireDigest binding))
+
+lifecycleDurableRow :: Text -> Text -> ByteString -> ByteString -> ByteString -> Either HandoffError ByteString
+lifecycleDurableRow side stage binding report acknowledgement = do
+    bounded "lifecycle durable row" raw
+    pure raw
+  where
+    raw = ByteString.concat
+        [ frameWire "hostbootstrap/lifecycle-durable"
+        , lifecycleWord 1
+        , lifecycleText side
+        , lifecycleText stage
+        , frameWire binding
+        , frameWire report
+        , frameWire acknowledgement
+        ]
+
+validateGrantedLifecycleOffer ::
+    ProtectedSession session ->
+    RootBroker scope brokerGeneration verb ->
+    HandoffOffer scope brokerGeneration ->
+    HandoffChallenge ->
+    IO (Either HandoffError ())
+validateGrantedLifecycleOffer session broker offer challenge =
+    case mkRecordKey (tokenRecordKey binding) of
+        Left failure -> pure (Left (HandoffStoreFailure failure))
+        Right key -> do
+            observed <- readProtectedRecord session key
+            pure $ case observed of
+                Left failure -> Left (HandoffStoreFailure failure)
+                Right (Just record)
+                    | recordVersionWord (protectedRecordVersion record) == 2
+                    , protectedRecordBytes record == grantedEdgeRecord
+                        (TextEncoding.encodeUtf8 (digestBytes material)) -> Right ()
+                _ -> Left (HandoffBindingMismatch "the lifecycle offer is not an authenticated granted edge")
+  where
+    binding = handoffOfferBinding offer
+    material = signedMaterial (rootBrokerVerificationKey broker) binding
+        (tokenFrame (offerToken offer)) challenge
+
+prepareParentRow ::
+    ProtectedSession session ->
+    RecordKey ->
+    ByteString ->
+    ByteString ->
+    ByteString ->
+    IO (Either HandoffError Bool)
+prepareParentRow session key reported acknowledged adopted = do
+    observed <- readProtectedRecord session key
+    case observed of
+        Left failure -> pure (Left (HandoffStoreFailure failure))
+        Right Nothing -> do
+            written <- compareAndSwapProtectedRecord session key ExpectAbsent reported
+            latest <- readProtectedRecord session key
+            case latest of
+                Left failure -> pure (Left (HandoffStoreFailure failure))
+                Right (Just record)
+                    | exactLifecycleRow 1 reported record -> case written of
+                        Right version | recordVersionWord version == 1 -> advance
+                        Left _ -> advance
+                        _ -> pure lifecycleRowConflict
+                    | exactLifecycleRow 2 acknowledged record -> pure (Right False)
+                    | exactLifecycleRow 3 adopted record -> pure (Right True)
+                _ -> pure lifecycleRowConflict
+        Right (Just record)
+            | exactLifecycleRow 1 reported record -> advance
+            | exactLifecycleRow 2 acknowledged record -> pure (Right False)
+            | exactLifecycleRow 3 adopted record -> pure (Right True)
+            | otherwise -> pure lifecycleRowConflict
+  where
+    advance = do
+        current <- readProtectedRecord session key
+        case current of
+            Left failure -> pure (Left (HandoffStoreFailure failure))
+            Right (Just record)
+                | exactLifecycleRow 1 reported record -> do
+                    written <- compareAndSwapProtectedRecord session key
+                        (ExpectVersion (protectedRecordVersion record)) acknowledged
+                    latest <- readProtectedRecord session key
+                    pure $ case latest of
+                        Left failure -> Left (HandoffStoreFailure failure)
+                        Right (Just row)
+                            | exactLifecycleRow 2 acknowledged row -> case written of
+                                Right version | recordVersionWord version == 2 -> Right False
+                                Left _ -> Right False
+                                _ -> lifecycleRowConflict
+                            | exactLifecycleRow 3 adopted row -> Right True
+                        _ -> lifecycleRowConflict
+                | exactLifecycleRow 2 acknowledged record -> pure (Right False)
+                | exactLifecycleRow 3 adopted record -> pure (Right True)
+            _ -> pure lifecycleRowConflict
+
+publishChildRow ::
+    ProtectedSession session ->
+    RecordKey ->
+    ByteString ->
+    ByteString ->
+    IO (Either HandoffError ())
+publishChildRow session key published received = do
+    written <- compareAndSwapProtectedRecord session key ExpectAbsent published
+    observed <- readProtectedRecord session key
+    pure $ case observed of
+        Left failure -> Left (HandoffStoreFailure failure)
+        Right (Just record)
+            | exactLifecycleRow 1 published record -> case written of
+                Right version | recordVersionWord version == 1 -> Right ()
+                Left _ -> Right ()
+                _ -> lifecycleRowConflict
+            | exactLifecycleRow 2 received record -> Right ()
+        _ -> lifecycleRowConflict
+
+adoptParentRow ::
+    ProtectedSession session ->
+    RecordKey ->
+    ByteString ->
+    ByteString ->
+    IO (Either HandoffError Bool)
+adoptParentRow session key acknowledged adopted = do
+    observed <- readProtectedRecord session key
+    case observed of
+        Left failure -> pure (Left (HandoffStoreFailure failure))
+        Right (Just record)
+            | exactLifecycleRow 3 adopted record -> pure (Right False)
+            | exactLifecycleRow 2 acknowledged record -> do
+                written <- compareAndSwapProtectedRecord session key
+                    (ExpectVersion (protectedRecordVersion record)) adopted
+                latest <- readProtectedRecord session key
+                pure $ case latest of
+                    Left failure -> Left (HandoffStoreFailure failure)
+                    Right (Just row) | exactLifecycleRow 3 adopted row -> case written of
+                        Right version | recordVersionWord version == 3 -> Right True
+                        Left _ -> Right False
+                        _ -> lifecycleRowConflict
+                    _ -> lifecycleRowConflict
+            | otherwise -> pure lifecycleRowConflict
+        Right Nothing -> pure lifecycleRowConflict
+
+writeLifecycleRow ::
+    ProtectedSession session ->
+    RecordKey ->
+    Expectation ->
+    Word64 ->
+    ByteString ->
+    IO (Either HandoffError Bool)
+writeLifecycleRow session key expectation expectedVersion bytes = do
+    written <- compareAndSwapProtectedRecord session key expectation bytes
+    observed <- readProtectedRecord session key
+    pure $ case observed of
+        Left failure -> Left (HandoffStoreFailure failure)
+        Right (Just record) | exactLifecycleRow expectedVersion bytes record -> case written of
+            Right version | recordVersionWord version == expectedVersion -> Right True
+            Left _ -> Right False
+            _ -> lifecycleRowConflict
+        _ -> lifecycleRowConflict
+
+exactLifecycleRow :: Word64 -> ByteString -> ProtectedRecord -> Bool
+exactLifecycleRow version bytes record =
+    recordVersionWord (protectedRecordVersion record) == version
+        && protectedRecordBytes record == bytes
+
+inLifecycleEntry ::
+    ProtectedStore ->
+    (forall session. ProtectedSession session -> IO (Either HandoffError result)) ->
+    IO (Either HandoffError result)
+inLifecycleEntry store action = do
+    entered <- withProtectedEntry store $ \session -> do
+        classified <- action session
+        case classified of
+            Left failure -> failure `seq` pure (Right (Left failure))
+            Right result -> result `seq` pure (Right (Right result))
+    case entered of
+        Left failure -> failure `seq` pure (Left (HandoffStoreFailure failure))
+        Right result -> result `seq` pure result
+
+lifecycleRowConflict :: Either HandoffError result
+lifecycleRowConflict = Left (HandoffBindingMismatch "the lifecycle durable row conflicts")
+
+validateLifecycleReport :: ByteString -> Either HandoffError ()
+validateLifecycleReport raw = eliminateLifecycleReport raw done done done done done done
+  where
+    done _ _ _ _ _ = ()
+
+emptyRows :: Either HandoffError ByteString
+emptyRows = renderLifecycleObservations []
+
+nonterminalOrigin :: Text -> Text -> ByteString -> ByteString
+nonterminalOrigin branch status binding = ByteString.concat
+    [ frameWire "hostbootstrap/lifecycle-nonterminal-origin", lifecycleWord 1
+    , lifecycleText branch, lifecycleText status, lifecycleText (recoveryWireDigest binding)
+    ]
+
+takeExactFrames :: Int -> ByteString -> Either HandoffError [ByteString]
+takeExactFrames count raw = go count raw
+  where
+    go 0 trailing = requireLifecycle (ByteString.null trailing) "a lifecycle wire has trailing bytes" >> pure []
+    go remaining bytes = do
+        (field, rest) <- takeFrame bytes
+        (field :) <$> go (remaining - 1) rest
+
+lifecycleText :: Text -> ByteString
+lifecycleText = frameWire . TextEncoding.encodeUtf8
+
+lifecycleTextFromWire :: Text -> ByteString -> Either HandoffError Text
+lifecycleTextFromWire field bytes =
+    either (const (Left (HandoffBindingMismatch (field <> " is not UTF-8")))) Right (TextEncoding.decodeUtf8' bytes)
+
+lifecycleWord :: Word64 -> ByteString
+lifecycleWord = frameWire . lifecycleWordBytes
+
+lifecycleWordBytes :: Word64 -> ByteString
+lifecycleWordBytes = ByteString.pack . word64BigEndian
+
+lifecycleCount :: ByteString -> Either HandoffError Word64
+lifecycleCount bytes
+    | ByteString.length bytes == 8 = Right (bigEndianWord64 (ByteString.unpack bytes))
+    | otherwise = Left (HandoffBindingMismatch "a lifecycle observation count is not one word")
+
+bounded :: Text -> ByteString -> Either HandoffError ()
+bounded subject bytes = requireLifecycle (fromIntegral (ByteString.length bytes) <= maxWireBytes) (subject <> " exceeds the wire bound")
+
+requireLifecycle :: Bool -> Text -> Either HandoffError ()
+requireLifecycle True _ = Right ()
+requireLifecycle False detail = Left (HandoffBindingMismatch detail)
+
+-- ---------------------------------------------------------------------------
 -- Bindings
 
 {- | Opaque typed evidence for the exact config scope a root may hand off.
@@ -291,6 +1011,10 @@ data HandoffScope scope where
     HarnessHandoffScope ::
         InstalledProjectIdentity projectId ->
         HarnessAuthority projectId runId ->
+        HandoffScope (Harness projectId runId)
+    ReceivedHarnessHandoffScope ::
+        InstalledProjectIdentity projectId ->
+        Text ->
         HandoffScope (Harness projectId runId)
 
 type role HandoffScope nominal
@@ -309,6 +1033,7 @@ harnessHandoffScope = HarnessHandoffScope
 handoffScopeProject :: HandoffScope scope -> Text
 handoffScopeProject (ProductionHandoffScope project) = installedProjectName project
 handoffScopeProject (HarnessHandoffScope project _) = installedProjectName project
+handoffScopeProject (ReceivedHarnessHandoffScope project _) = installedProjectName project
 
 {- | The descriptive tag a Production binding carries in its scope field.
 
@@ -326,6 +1051,238 @@ harnessScopeTagFor runName = "Harness " <> runName
 handoffScopeTag :: HandoffScope scope -> Text
 handoffScopeTag (ProductionHandoffScope _) = productionScopeTag
 handoffScopeTag (HarnessHandoffScope _ authority) = harnessScopeTagFor (harnessRunName authority)
+handoffScopeTag (ReceivedHarnessHandoffScope _ run) = harnessScopeTagFor run
+
+-- ---------------------------------------------------------------------------
+-- Root-authenticated project scope
+
+{- | Root-signed evidence for one exact installed Production or Harness scope.
+
+The nominal scope index prevents typed substitution, while the opaque payload
+retains the exact canonical bytes that were signed. This capsule authenticates
+only project scope and installed-key identity; it carries no broker generation,
+Offer, edge, payload, store, command, or Harness authority.
+-}
+newtype AuthenticatedRootScope scope = AuthenticatedRootScope ByteString
+
+type role AuthenticatedRootScope nominal
+
+authenticatedRootScopeCodecDomain :: ByteString
+authenticatedRootScopeCodecDomain = "hostbootstrap/authenticated-root-scope"
+
+authenticatedRootScopeSigningDomain :: ByteString
+authenticatedRootScopeSigningDomain = "hostbootstrap/authenticated-root-scope/v1"
+
+authenticatedRootScopeVersion :: ByteString
+authenticatedRootScopeVersion = ByteString.pack (word64BigEndian 1)
+
+authenticatedRootScopeSignatureBytes :: Int
+authenticatedRootScopeSignatureBytes = 64
+
+-- | Recover the exact seven-frame capsule wire.
+renderAuthenticatedRootScope :: AuthenticatedRootScope scope -> ByteString
+renderAuthenticatedRootScope (AuthenticatedRootScope raw) = raw
+
+{- | Authenticate the exact scope that created a still-live root broker.
+
+The hidden capability keeps signing behind the package-owned root admission.
+All signed fields are derived from the scope and broker; none are supplied as
+descriptive caller input.
+-}
+signAuthenticatedRootScopeKernel ::
+    RecoverySigningKernel ->
+    RootBroker scope brokerGeneration verb ->
+    HandoffScope scope ->
+    IO (Either HandoffError (AuthenticatedRootScope scope))
+{-# OPAQUE signAuthenticatedRootScopeKernel #-}
+signAuthenticatedRootScopeKernel kernel =
+    kernel `seq` consumeRecoverySigningKernel kernel sign
+  where
+    sign broker scope =
+        withActiveRootBroker broker $
+            case authenticatedRootScopeUnsigned broker scope of
+                Left failure -> pure (Left failure)
+                Right (keyDigest, unsigned) -> do
+                    let signature =
+                            convert
+                                ( Ed25519.sign
+                                    (brokerSecret broker)
+                                    (brokerPublic broker)
+                                    (authenticatedRootScopeSignedMaterial keyDigest unsigned)
+                                )
+                        wire = unsigned <> frameWire signature
+                    _ <- evaluate (ByteString.length signature)
+                    pure $ do
+                        bounded "authenticated root scope" wire
+                        pure (AuthenticatedRootScope wire)
+
+authenticatedRootScopeUnsigned ::
+    RootBroker scope brokerGeneration verb ->
+    HandoffScope scope ->
+    Either HandoffError (ByteString, ByteString)
+authenticatedRootScopeUnsigned broker scope = do
+    requireAuthenticatedRootScope
+        (handoffScopeProject scope == brokerProjectName broker)
+        "the scope evidence names a different installed project than the root broker"
+    requireAuthenticatedRootScope
+        (handoffScopeTag scope == brokerScopeTag broker)
+        "the scope evidence differs from the root broker scope"
+    let project = TextEncoding.encodeUtf8 (handoffScopeProject scope)
+        (kind, run) = authenticatedRootScopeKindAndRun scope
+        keyDigest =
+            TextEncoding.encodeUtf8
+                (verificationKeyDigest (rootBrokerVerificationKey broker))
+        unsigned =
+            ByteString.concat
+                ( map
+                    frameWire
+                    [ authenticatedRootScopeCodecDomain
+                    , authenticatedRootScopeVersion
+                    , project
+                    , kind
+                    , TextEncoding.encodeUtf8 run
+                    , keyDigest
+                    ]
+                )
+    validateAuthenticatedRootScopeKindRun kind run
+    bounded "authenticated root scope unsigned wire" unsigned
+    pure (keyDigest, unsigned)
+
+authenticatedRootScopeKindAndRun :: HandoffScope scope -> (ByteString, Text)
+authenticatedRootScopeKindAndRun (ProductionHandoffScope _) = ("production", "")
+authenticatedRootScopeKindAndRun (HarnessHandoffScope _ authority) =
+    ("harness", harnessRunName authority)
+authenticatedRootScopeKindAndRun (ReceivedHarnessHandoffScope _ run) =
+    ("harness", run)
+
+authenticatedRootScopeSignedMaterial :: ByteString -> ByteString -> ByteString
+authenticatedRootScopeSignedMaterial keyDigest unsigned =
+    frameWire authenticatedRootScopeSigningDomain
+        <> frameWire keyDigest
+        <> frameWire unsigned
+
+{- | Verify a received scope capsule against independently installed identity.
+
+Production is closed over the caller's @projectId@. Harness introduces a fresh
+local @runId@ only inside the rank-2 callback and returns matching opaque scope
+evidence; descriptive run text never recreates 'HarnessAuthority'.
+-}
+withAuthenticatedRootScopeFromWire ::
+    InstalledProjectIdentity projectId ->
+    ProjectVerificationKey ->
+    ByteString ->
+    ( AuthenticatedRootScope (Production projectId) ->
+      HandoffScope (Production projectId) ->
+      result
+    ) ->
+    ( forall runId.
+      AuthenticatedRootScope (Harness projectId runId) ->
+      HandoffScope (Harness projectId runId) ->
+      result
+    ) ->
+    Either HandoffError result
+withAuthenticatedRootScopeFromWire project key raw useProduction useHarness = do
+    bounded "authenticated root scope" raw
+    fields <- takeExactFrames 7 raw
+    case fields of
+        [domain, version, projectBytes, kind, runBytes, keyDigest, signatureBytes] -> do
+            run <- authenticatedRootScopeText "run" runBytes
+            let unsigned =
+                    ByteString.concat
+                        (map frameWire [domain, version, projectBytes, kind, runBytes, keyDigest])
+                canonical = unsigned <> frameWire signatureBytes
+                installedProject = TextEncoding.encodeUtf8 (installedProjectName project)
+                installedKeyDigest = TextEncoding.encodeUtf8 (verificationKeyDigest key)
+            requireAuthenticatedRootScope
+                (domain == authenticatedRootScopeCodecDomain)
+                "the authenticated root scope codec domain differs"
+            requireAuthenticatedRootScope
+                (version == authenticatedRootScopeVersion)
+                "the authenticated root scope version differs"
+            requireAuthenticatedRootScope
+                (projectBytes == installedProject)
+                "the authenticated root scope names another installed project"
+            requireAuthenticatedRootScope
+                (keyDigest == installedKeyDigest)
+                "the authenticated root scope names another installed verification key"
+            requireAuthenticatedRootScope
+                (ByteString.length signatureBytes == authenticatedRootScopeSignatureBytes)
+                "the authenticated root scope signature has the wrong width"
+            requireAuthenticatedRootScope
+                (canonical == raw)
+                "the authenticated root scope wire is not canonical"
+            validateAuthenticatedRootScopeKindRun kind run
+            verifyAuthenticatedRootScopeSignature key keyDigest unsigned signatureBytes
+            case kind of
+                "production" ->
+                    pure
+                        ( useProduction
+                            (AuthenticatedRootScope canonical)
+                            (ProductionHandoffScope project)
+                        )
+                "harness" ->
+                    pure
+                        ( useHarness
+                            (AuthenticatedRootScope canonical)
+                            (ReceivedHarnessHandoffScope project run)
+                        )
+                _ -> Left (HandoffBindingMismatch "the authenticated root scope kind is not closed")
+        _ -> Left (HandoffBindingMismatch "the authenticated root scope field count differs")
+
+validateAuthenticatedRootScopeKindRun :: ByteString -> Text -> Either HandoffError ()
+validateAuthenticatedRootScopeKindRun "production" run =
+    requireAuthenticatedRootScope
+        (Text.null run)
+        "a Production authenticated root scope carries a Harness run"
+validateAuthenticatedRootScopeKindRun "harness" run = do
+    requireAuthenticatedRootScope
+        (not (Text.null run))
+        "a Harness authenticated root scope has an empty run"
+    requireAuthenticatedRootScope
+        (Text.length run <= 48)
+        "a Harness authenticated root scope run exceeds 48 characters"
+    requireAuthenticatedRootScope
+        (Text.all isCanonicalRunCharacter run)
+        "a Harness authenticated root scope run is not canonical"
+  where
+    isCanonicalRunCharacter character =
+        character == '-'
+            || ('a' <= character && character <= 'z')
+            || ('A' <= character && character <= 'Z')
+            || ('0' <= character && character <= '9')
+validateAuthenticatedRootScopeKindRun _ _ =
+    Left (HandoffBindingMismatch "the authenticated root scope kind is not closed")
+
+verifyAuthenticatedRootScopeSignature ::
+    ProjectVerificationKey ->
+    ByteString ->
+    ByteString ->
+    ByteString ->
+    Either HandoffError ()
+verifyAuthenticatedRootScopeSignature
+    (ProjectVerificationKey public)
+    keyDigest
+    unsigned
+    signatureBytes =
+        case Ed25519.signature signatureBytes of
+            CryptoFailed _ -> Left HandoffAuthenticatedRootScopeSignatureInvalid
+            CryptoPassed signature
+                | Ed25519.verify
+                    public
+                    (authenticatedRootScopeSignedMaterial keyDigest unsigned)
+                    signature -> Right ()
+                | otherwise -> Left HandoffAuthenticatedRootScopeSignatureInvalid
+
+authenticatedRootScopeText :: Text -> ByteString -> Either HandoffError Text
+authenticatedRootScopeText field bytes =
+    either
+        (const (Left (HandoffBindingMismatch ("the authenticated root scope " <> field <> " is not UTF-8"))))
+        Right
+        (TextEncoding.decodeUtf8' bytes)
+
+requireAuthenticatedRootScope :: Bool -> Text -> Either HandoffError ()
+requireAuthenticatedRootScope True _ = Right ()
+requireAuthenticatedRootScope False detail = Left (HandoffBindingMismatch detail)
 
 {- | The exact tuple a handoff token and grant are bound to.
 
@@ -625,8 +1582,9 @@ type role RecoveryProjectionBindingInput nominal nominal nominal
 plan/frame indices.
 
 The record constructor is private. Text received from a peer therefore cannot
-be labelled as a caller-chosen plan or frame; an eventual Phase 17 producer may
-add a separate constructor that consumes exact plan-derived evidence, while
+be labelled as a caller-chosen plan or frame; the
+[recursive-lifecycle-command phase](../../../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
+may add a separate constructor that consumes exact plan-derived evidence, while
 this wire-facing bracket remains generative.
 -}
 withRecoveryProjectionBindingInput ::
@@ -1126,6 +2084,427 @@ expireRootBroker broker =
     modifyMVar_ (brokerLifetime broker) (const (pure BrokerLifetimeExpired))
 
 -- ---------------------------------------------------------------------------
+-- Rooted payload binding
+
+rootedPayloadBindingDomain :: ByteString
+rootedPayloadBindingDomain = "hostbootstrap/rooted-payload-binding/v1"
+
+-- | Digest of the complete authenticated payload carried by this edge.
+rootedPayloadDigest :: RootedPayloadBinding scope brokerGeneration -> Text
+rootedPayloadDigest = Rooted.rootedPayloadDigestKernel
+
+-- | Digest of the exact child-config bytes inside that complete payload.
+rootedChildConfigDigest :: RootedPayloadBinding scope brokerGeneration -> Text
+rootedChildConfigDigest = Rooted.rootedChildConfigDigestKernel
+
+-- | Canonical signed wire retained in the Offer authentication field.
+renderRootedPayloadBinding ::
+    RootedPayloadBinding scope brokerGeneration ->
+    ByteString
+renderRootedPayloadBinding = Rooted.renderRootedPayloadBindingKernel
+
+{- | Sign one ordinary config binding under the live root broker.
+
+The hidden first argument prevents a public caller from selecting signing
+inputs.  Recovery deliberately refuses here.  The separate
+'signRecoveryChildPackageBindingKernel' derives both claims from one checked
+canonical package.
+-}
+signRootedPayloadBindingKernel ::
+    RecoverySigningKernel ->
+    RootBroker scope brokerGeneration verb ->
+    HandoffOffer scope brokerGeneration ->
+    ByteString ->
+    IO (Either HandoffError (RootedPayloadBinding scope brokerGeneration))
+{-# OPAQUE signRootedPayloadBindingKernel #-}
+signRootedPayloadBindingKernel kernel =
+    kernel `seq` consumeRecoverySigningKernel kernel sign
+  where
+    sign broker offer childConfig =
+        withActiveRootBroker broker $
+            case validateRootedConfigSigning broker offer childConfig of
+                Left failure -> pure (Left failure)
+                Right (edge, payloadDigest, configDigest) ->
+                    case rootedUnsigned edge payloadDigest configDigest of
+                        Left failure -> pure (Left failure)
+                        Right unsigned -> do
+                            let signature =
+                                    convert
+                                        ( Ed25519.sign
+                                            (brokerSecret broker)
+                                            (brokerPublic broker)
+                                            (rootedPayloadSignedMaterial
+                                                (rootBrokerVerificationKey broker)
+                                                unsigned
+                                            )
+                                        )
+                            _ <- evaluate (ByteString.length signature)
+                            pure
+                                ( rootedFailure
+                                    ( Rooted.rootedPayloadBindingKernel
+                                        edge
+                                        payloadDigest
+                                        configDigest
+                                        signature
+                                    )
+                                )
+
+validateRootedConfigSigning ::
+    RootBroker scope brokerGeneration verb ->
+    HandoffOffer scope brokerGeneration ->
+    ByteString ->
+    Either HandoffError (ByteString, Text, Text)
+validateRootedConfigSigning broker offer childConfig = do
+    let binding = handoffOfferBinding offer
+        payload = offerPayload offer
+        payloadDigest = childConfigDigest payload
+        configDigest = childConfigDigest childConfig
+    _ <- brokerRelay broker binding
+    requireRooted (handoffPayloadKind binding == NarrowedProjectConfig)
+        "recovery signing requires canonical RecoveryChildPackage admission"
+    requireRooted (not (ByteString.null payload)) "the complete payload is empty"
+    requireRooted (not (ByteString.null childConfig)) "the child config is empty"
+    requireRooted (payload == childConfig)
+        "a config payload and its child config are not the same exact bytes"
+    requireRooted (handoffChildConfigDigest binding == payloadDigest)
+        "the immediate edge does not bind the complete payload digest"
+    pure (renderHandoffBinding binding, payloadDigest, configDigest)
+
+{- | Verify rooted bytes only after the exact ordinary one-use handoff.
+
+For a config edge this also proves payload/config byte identity.  For a
+recovery edge it authenticates two distinct root claims but alone grants no
+config admission; 'withVerifiedRecoveryChildPackage' independently reverifies
+this value and recomputes the package-field digest before admission.
+-}
+withVerifiedRootedPayloadBinding ::
+    VerifiedHandoff scope brokerGeneration ->
+    ByteString ->
+    (RootedPayloadBinding scope brokerGeneration -> result) ->
+    Either HandoffError result
+withVerifiedRootedPayloadBinding verified raw use = do
+    rooted <- rootedFailure (Rooted.rootedPayloadBindingFromWireKernel raw)
+    let binding = verifiedHandoffBinding verified
+        payloadDigest = childConfigDigest (verifiedHandoffPayload verified)
+        claimedPayloadDigest = rootedPayloadDigest rooted
+        claimedConfigDigest = rootedChildConfigDigest rooted
+    requireRooted
+        (Rooted.rootedPayloadBindingEdgeKernel rooted == renderHandoffBinding binding)
+        "the rooted edge is not the verified one-use edge"
+    requireRooted
+        (claimedPayloadDigest == handoffChildConfigDigest binding)
+        "the rooted payload digest differs from the immediate edge"
+    if claimedPayloadDigest /= payloadDigest
+        then Left (HandoffPayloadDigestMismatch claimedPayloadDigest payloadDigest)
+        else pure ()
+    requireRooted (not (ByteString.null (verifiedHandoffPayload verified)))
+        "the complete payload is empty"
+    case handoffPayloadKind binding of
+        NarrowedProjectConfig ->
+            requireRooted (claimedConfigDigest == claimedPayloadDigest)
+                "a config payload has different payload and child-config digests"
+        RecoveryAdapterWire ->
+            requireRooted (claimedConfigDigest /= claimedPayloadDigest)
+                "a recovery payload has conflated payload and child-config digests"
+    verifyRootedPayloadSignature (verifiedProjectKey verified) rooted
+    pure (use rooted)
+
+verifyRootedPayloadSignature ::
+    ProjectVerificationKey ->
+    RootedPayloadBinding scope brokerGeneration ->
+    Either HandoffError ()
+verifyRootedPayloadSignature key@(ProjectVerificationKey public) rooted =
+    case Ed25519.signature (Rooted.rootedPayloadSignatureKernel rooted) of
+        CryptoFailed _ -> Left HandoffRootedSignatureInvalid
+        CryptoPassed signature
+            | Ed25519.verify
+                public
+                ( rootedPayloadSignedMaterial
+                    key
+                    (Rooted.renderRootedPayloadUnsignedKernel rooted)
+                )
+                signature -> Right ()
+            | otherwise -> Left HandoffRootedSignatureInvalid
+
+rootedPayloadSignedMaterial :: ProjectVerificationKey -> ByteString -> ByteString
+rootedPayloadSignedMaterial key unsigned =
+    frameWire rootedPayloadBindingDomain
+        <> frameWire (TextEncoding.encodeUtf8 (verificationKeyDigest key))
+        <> frameWire unsigned
+
+rootedUnsigned :: ByteString -> Text -> Text -> Either HandoffError ByteString
+rootedUnsigned edge payloadDigest configDigest =
+    rootedFailure
+        (Rooted.renderRootedPayloadUnsignedPartsKernel edge payloadDigest configDigest)
+
+rootedFailure :: Either Text result -> Either HandoffError result
+rootedFailure = either (Left . HandoffBindingMismatch . ("rooted payload binding " <>)) Right
+
+requireRooted :: Bool -> Text -> Either HandoffError ()
+requireRooted True _ = Right ()
+requireRooted False detail = Left (HandoffBindingMismatch detail)
+
+-- ---------------------------------------------------------------------------
+-- Canonical recovery child package
+
+-- | Canonical two-frame recovery package bytes.
+renderRecoveryChildPackage :: RecoveryChildPackage -> ByteString
+renderRecoveryChildPackage = Recovery.renderRecoveryChildPackageKernel
+
+{- | Sign a recovery package whose exact bytes are already carried by an offer.
+
+The caller supplies neither digest nor a separate child configuration. Both
+claims are derived from the checked package, and the hidden first argument
+keeps package signing behind the package-owned recovery admission.
+-}
+signRecoveryChildPackageBindingKernel ::
+    RecoverySigningKernel ->
+    RootBroker scope brokerGeneration verb ->
+    HandoffOffer scope brokerGeneration ->
+    RecoveryChildPackage ->
+    IO (Either HandoffError (RootedPayloadBinding scope brokerGeneration))
+{-# OPAQUE signRecoveryChildPackageBindingKernel #-}
+signRecoveryChildPackageBindingKernel kernel =
+    kernel `seq` consumeRecoverySigningKernel kernel sign
+  where
+    sign broker offer package =
+        withActiveRootBroker broker $
+            case validateRecoveryChildPackageSigning broker offer package of
+                Left failure -> pure (Left failure)
+                Right (edge, payloadDigest, configDigest) ->
+                    case rootedUnsigned edge payloadDigest configDigest of
+                        Left failure -> pure (Left failure)
+                        Right unsigned -> do
+                            let signature =
+                                    convert
+                                        ( Ed25519.sign
+                                            (brokerSecret broker)
+                                            (brokerPublic broker)
+                                            (rootedPayloadSignedMaterial
+                                                (rootBrokerVerificationKey broker)
+                                                unsigned
+                                            )
+                                        )
+                            _ <- evaluate (ByteString.length signature)
+                            pure
+                                ( rootedFailure
+                                    ( Rooted.rootedPayloadBindingKernel
+                                        edge
+                                        payloadDigest
+                                        configDigest
+                                        signature
+                                    )
+                                )
+
+validateRecoveryChildPackageSigning ::
+    RootBroker scope brokerGeneration verb ->
+    HandoffOffer scope brokerGeneration ->
+    RecoveryChildPackage ->
+    Either HandoffError (ByteString, Text, Text)
+validateRecoveryChildPackageSigning broker offer package =
+    Recovery.withRecoveryChildPackageKernel package $ \childConfig _adapter -> do
+        let binding = handoffOfferBinding offer
+            packageBytes = renderRecoveryChildPackage package
+            payloadDigest = childConfigDigest packageBytes
+            configDigest = childConfigDigest childConfig
+        _ <- brokerRelay broker binding
+        requireRooted (handoffPayloadKind binding == RecoveryAdapterWire)
+            "a recovery child package requires a recovery-adapter-wire edge"
+        requireRooted (offerPayload offer == packageBytes)
+            "the recovery offer does not carry the exact canonical package"
+        requireRooted (handoffChildConfigDigest binding == payloadDigest)
+            "the immediate edge does not bind the complete recovery package"
+        requireRooted (payloadDigest /= configDigest)
+            "a recovery package has conflated package and child-config digests"
+        pure (renderHandoffBinding binding, payloadDigest, configDigest)
+
+{- | Admit recovery package fields only after both authentication layers agree.
+
+The supplied rooted value is descriptive despite its opaque type: it is
+rendered and verified again against this exact one-use handoff and its installed
+key before the canonical package is decoded from the already verified payload.
+-}
+withVerifiedRecoveryChildPackage ::
+    VerifiedHandoff scope brokerGeneration ->
+    RootedPayloadBinding scope brokerGeneration ->
+    (RecoveryChildPackage -> ByteString -> ByteString -> result) ->
+    Either HandoffError result
+withVerifiedRecoveryChildPackage verified suppliedRooted use = do
+    rooted <-
+        withVerifiedRootedPayloadBinding
+            verified
+            (renderRootedPayloadBinding suppliedRooted)
+            id
+    let binding = verifiedHandoffBinding verified
+        packageBytes = verifiedHandoffPayload verified
+    requireRooted (handoffPayloadKind binding == RecoveryAdapterWire)
+        "the authenticated payload is not a recovery child package"
+    package <-
+        recoveryPackageFailure
+            (Recovery.recoveryChildPackageFromWireKernel packageBytes)
+    requireRooted (renderRecoveryChildPackage package == packageBytes)
+        "the recovery package is not the exact authenticated payload"
+    requireRooted
+        (Rooted.rootedPayloadBindingEdgeKernel rooted == renderHandoffBinding binding)
+        "the recovery package rooted edge is not the verified one-use edge"
+    Recovery.withRecoveryChildPackageKernel package $ \childConfig adapter -> do
+        requireRooted
+            (rootedPayloadDigest rooted == childConfigDigest packageBytes)
+            "the rooted payload digest does not name the recovery package"
+        requireRooted
+            (rootedChildConfigDigest rooted == childConfigDigest childConfig)
+            "the rooted child-config digest does not name the package field"
+        pure (use package childConfig adapter)
+
+recoveryPackageFailure :: Either Text result -> Either HandoffError result
+recoveryPackageFailure =
+    either (Left . HandoffBindingMismatch . ("recovery child package " <>)) Right
+
+-- ---------------------------------------------------------------------------
+-- Rooted lifecycle response authentication
+
+rootedLifecycleResponseSigningDomain :: ByteString
+rootedLifecycleResponseSigningDomain = "hostbootstrap/rooted-lifecycle-response/v1"
+
+-- | Render one complete descriptive response, including its signature.
+renderRootedLifecycleResponse :: RootedLifecycleResponse -> ByteString
+renderRootedLifecycleResponse = Rooted.renderRootedLifecycleResponseKernel
+
+{- | Sign one exact canonical response under the still-live root broker.
+
+The hidden admission is consumed at partial application.  Request decoding,
+structural pairing, and the lifecycle-report join all occur while the broker is
+live; the caller never selects a signing domain or arbitrary transcript.
+-}
+signRootedLifecycleResponseKernel ::
+    RecoverySigningKernel ->
+    RootBroker scope brokerGeneration verb ->
+    ByteString ->
+    ByteString ->
+    IO (Either HandoffError RootedLifecycleResponse)
+{-# OPAQUE signRootedLifecycleResponseKernel #-}
+signRootedLifecycleResponseKernel kernel =
+    kernel `seq` consumeRootedLifecycleResponseSigningKernel kernel sign
+  where
+    sign broker exactRequest canonicalUnsigned =
+        withActiveRootBroker broker $
+            case rootedLifecycleUnsignedPair exactRequest canonicalUnsigned of
+                Left failure -> pure (Left failure)
+                Right report -> case validateRootedLifecycleResponseReport report of
+                    Left failure -> pure (Left failure)
+                    Right () -> do
+                        let signature =
+                                convert
+                                    ( Ed25519.sign
+                                        (brokerSecret broker)
+                                        (brokerPublic broker)
+                                        ( rootedLifecycleResponseSignedMaterial
+                                            (rootBrokerVerificationKey broker)
+                                            exactRequest
+                                            canonicalUnsigned
+                                        )
+                                    )
+                        _ <- evaluate (ByteString.length signature)
+                        case rootedLifecycleFailure
+                            (Rooted.rootedLifecycleResponseFromUnsignedKernel canonicalUnsigned signature) of
+                            Left failure -> pure (Left failure)
+                            Right response -> pure (Right response)
+
+{- | Verify one response against an independently installed key and request.
+
+The callback is entered only after canonical decoding and pairing, signature
+verification, and any required canonical lifecycle-report validation.
+-}
+withVerifiedRootedLifecycleResponse ::
+    ProjectVerificationKey ->
+    ByteString ->
+    ByteString ->
+    (RootedLifecycleResponse -> result) ->
+    Either HandoffError result
+withVerifiedRootedLifecycleResponse key exactRequest signedWire use = do
+    request <- rootedLifecycleRequestFromExactWire exactRequest
+    response <- rootedLifecycleFailure (Rooted.rootedLifecycleResponseFromWireKernel signedWire)
+    report <-
+        rootedLifecycleFailure
+            ( Rooted.rootedLifecycleResponsePairKernel
+                (childConfigDigest exactRequest)
+                request
+                response
+            )
+    verifyRootedLifecycleResponseSignature key exactRequest response
+    validateRootedLifecycleResponseReport report
+    pure (enterRootedLifecycleResponseFold response use)
+
+enterRootedLifecycleResponseFold :: RootedLifecycleResponse -> (RootedLifecycleResponse -> result) -> result
+enterRootedLifecycleResponseFold response use =
+    Rooted.withRootedLifecycleResponseKernel response opened prepared post post post textPost textPost
+  where
+    accepted = use response
+    opened _ _ _ _ _ _ = accepted
+    prepared _ _ _ _ _ _ _ _ _ _ _ = accepted
+    post _ _ _ _ _ _ _ _ = accepted
+    textPost _ _ _ _ _ _ _ _ = accepted
+
+rootedLifecycleUnsignedPair ::
+    ByteString ->
+    ByteString ->
+    Either HandoffError (Maybe ByteString)
+rootedLifecycleUnsignedPair exactRequest unsigned = do
+    request <- rootedLifecycleRequestFromExactWire exactRequest
+    rootedLifecycleFailure
+        ( Rooted.rootedLifecycleUnsignedResponsePairKernel
+            (childConfigDigest exactRequest)
+            request
+            unsigned
+        )
+
+rootedLifecycleRequestFromExactWire ::
+    ByteString ->
+    Either HandoffError Rooted.RootedLifecycleRequest
+rootedLifecycleRequestFromExactWire =
+    rootedLifecycleFailure . Rooted.rootedLifecycleRequestFromWireKernel
+
+verifyRootedLifecycleResponseSignature ::
+    ProjectVerificationKey ->
+    ByteString ->
+    RootedLifecycleResponse ->
+    Either HandoffError ()
+verifyRootedLifecycleResponseSignature (ProjectVerificationKey public) exactRequest response =
+    case Ed25519.signature (Rooted.rootedLifecycleResponseSignatureKernel response) of
+        CryptoFailed _ -> Left HandoffRootedLifecycleSignatureInvalid
+        CryptoPassed signature
+            | Ed25519.verify
+                public
+                ( rootedLifecycleResponseSignedMaterial
+                    (ProjectVerificationKey public)
+                    exactRequest
+                    (Rooted.renderRootedLifecycleUnsignedResponseKernel response)
+                )
+                signature -> Right ()
+            | otherwise -> Left HandoffRootedLifecycleSignatureInvalid
+
+rootedLifecycleResponseSignedMaterial ::
+    ProjectVerificationKey ->
+    ByteString ->
+    ByteString ->
+    ByteString
+rootedLifecycleResponseSignedMaterial key exactRequest unsigned =
+    ByteString.concat
+        [ frameWire rootedLifecycleResponseSigningDomain
+        , frameWire (TextEncoding.encodeUtf8 (verificationKeyDigest key))
+        , frameWire exactRequest
+        , frameWire unsigned
+        ]
+
+validateRootedLifecycleResponseReport :: Maybe ByteString -> Either HandoffError ()
+validateRootedLifecycleResponseReport Nothing = Right ()
+validateRootedLifecycleResponseReport (Just report) = validateLifecycleReport report
+
+rootedLifecycleFailure :: Either Text result -> Either HandoffError result
+rootedLifecycleFailure =
+    either (Left . HandoffBindingMismatch . ("rooted lifecycle response " <>)) Right
+
+-- ---------------------------------------------------------------------------
 -- Recovery-wire signing
 
 recoveryWireDomain :: ByteString
@@ -1220,45 +2599,20 @@ recoveryResponseFromFields binding [signature] = recoveryWireGrantFromSignature 
 recoveryResponseFromFields _ fields =
     Left (HandoffRecoveryFieldCount "response" 1 (length fields))
 
--- | Sign under a recovery-only domain after root identity and digest checks.
-signRecoveryWire ::
-    RootBroker scope brokerGeneration verb ->
-    RecoveryProjectionBinding
-        scope
-        brokerGeneration
-        verb
-        planDigest
-        parentFrame
-        childFrame
-        recoveryWireDigest ->
-    ByteString ->
-    IO
-        ( Either
-            HandoffError
-            ( RecoveryWireGrant
-                scope
-                brokerGeneration
-                verb
-                planDigest
-                parentFrame
-                childFrame
-                recoveryWireDigest
-            )
-        )
-signRecoveryWire broker binding wire =
-    withActiveRootBroker broker (signRecoveryWireActive broker binding wire)
+{- | Sign one exact plan-admitted recovery envelope.
 
-{- | Run a recovery-plan admission decision and, only when it admits, sign
-under one uninterrupted broker-lifetime guard.
-
-The nested result keeps a plan refusal distinct from a broker or binding
-failure. Most callers use 'signRecoveryWire'; the relay uses this compound
-operation so an escaped root link cannot run its admission callback after the
-broker bracket has expired.
+The first argument is a Cabal-hidden capability.  It is consumed strictly by
+partial application, before the broker, admission action, binding, or adapter
+wire can be inspected.  The remaining operation runs under one uninterrupted
+live-broker guard: root-derived binding and candidate-wire validation precede
+the plan admission callback, the callback returns the exact expected adapter
+bytes, byte equality precedes signing, and the cryptographic result is forced
+before the guard closes.
 -}
-signAdmittedRecoveryWire ::
+signRecoveryWireKernel ::
+    RecoverySigningKernel ->
     RootBroker scope brokerGeneration verb ->
-    IO (Either rejection ()) ->
+    IO (Either rejection ByteString) ->
     RecoveryProjectionBinding
         scope
         brokerGeneration
@@ -1284,14 +2638,66 @@ signAdmittedRecoveryWire ::
                 )
             )
         )
-signAdmittedRecoveryWire broker admission binding wire =
-    withActiveRootBroker broker $ do
-        admitted <- admission
-        case admitted of
-            Left rejection -> pure (Right (Left rejection))
-            Right () -> fmap (fmap Right) (signRecoveryWireActive broker binding wire)
+{-# OPAQUE signRecoveryWireKernel #-}
+signRecoveryWireKernel kernel =
+    kernel `seq` consumeRecoverySigningKernel kernel sign
+  where
+    sign broker admission binding wire =
+        withActiveRootBroker broker $
+            case validateRecoverySigningEnvelopeActive broker binding wire of
+                Left failure -> pure (Left failure)
+                Right () -> do
+                    admitted <- admission
+                    case admitted of
+                        Left rejection -> pure (Right (Left rejection))
+                        Right expectedWire
+                            | expectedWire /= wire ->
+                                pure
+                                    ( Left
+                                        ( HandoffPayloadDigestMismatch
+                                            (recoveryWireDigest expectedWire)
+                                            (recoveryWireDigest wire)
+                                        )
+                                    )
+                            | otherwise ->
+                                fmap (fmap Right) (signValidatedRecoveryWireActive broker binding wire)
 
-signRecoveryWireActive ::
+validateRecoverySigningEnvelopeActive ::
+    RootBroker scope brokerGeneration verb ->
+    RecoveryProjectionBinding
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
+    ByteString ->
+    Either HandoffError ()
+validateRecoverySigningEnvelopeActive broker binding wire
+    | brokerVerbName broker /= "down" && brokerVerbName broker /= "destroy" =
+        Left (HandoffRecoveryVerbInvalid (brokerVerbName broker))
+    | recoveryProjectionInstalledProject binding /= brokerProjectName broker =
+        Left (HandoffBindingMismatch "the recovery projection names a different installed project than the live root broker")
+    | recoveryProjectionScope binding /= brokerScopeTag broker =
+        Left (HandoffBindingMismatch "the recovery projection names a different scope than the live root broker")
+    | recoveryProjectionStoreIdentity binding /= brokerStoreIdentity broker =
+        Left (HandoffBindingMismatch "the recovery projection names a different protected store than the live root broker")
+    | recoveryProjectionBrokerGeneration binding /= brokerEpochValue broker =
+        Left (HandoffBindingMismatch "the recovery projection names a different broker generation than the live root broker")
+    | recoveryProjectionVerb binding /= brokerVerbName broker =
+        Left (HandoffBindingMismatch "the recovery projection names a different verb than the live root broker")
+    | ByteString.null wire =
+        Left (HandoffBindingMismatch "the recovery adapter wire is empty")
+    | recoveryWireDigest wire /= recoveryProjectionWireDigest binding =
+        Left
+            ( HandoffPayloadDigestMismatch
+                (recoveryProjectionWireDigest binding)
+                (recoveryWireDigest wire)
+            )
+    | otherwise = Right ()
+
+signValidatedRecoveryWireActive ::
     RootBroker scope brokerGeneration verb ->
     RecoveryProjectionBinding
         scope
@@ -1315,38 +2721,17 @@ signRecoveryWireActive ::
                 recoveryWireDigest
             )
         )
-signRecoveryWireActive broker binding wire
-    | brokerVerbName broker /= "down" && brokerVerbName broker /= "destroy" =
-        pure (Left (HandoffRecoveryVerbInvalid (brokerVerbName broker)))
-    | recoveryProjectionInstalledProject binding /= brokerProjectName broker =
-        pure (Left (HandoffBindingMismatch "the recovery projection names a different installed project than the live root broker"))
-    | recoveryProjectionScope binding /= brokerScopeTag broker =
-        pure (Left (HandoffBindingMismatch "the recovery projection names a different scope than the live root broker"))
-    | recoveryProjectionStoreIdentity binding /= brokerStoreIdentity broker =
-        pure (Left (HandoffBindingMismatch "the recovery projection names a different protected store than the live root broker"))
-    | recoveryProjectionBrokerGeneration binding /= brokerEpochValue broker =
-        pure (Left (HandoffBindingMismatch "the recovery projection names a different broker generation than the live root broker"))
-    | recoveryProjectionVerb binding /= brokerVerbName broker =
-        pure (Left (HandoffBindingMismatch "the recovery projection names a different verb than the live root broker"))
-    | recoveryWireDigest wire /= recoveryProjectionWireDigest binding =
-        pure
-            ( Left
-                ( HandoffPayloadDigestMismatch
-                    (recoveryProjectionWireDigest binding)
-                    (recoveryWireDigest wire)
+signValidatedRecoveryWireActive broker binding wire = do
+    let signature =
+            convert
+                ( Ed25519.sign
+                    (brokerSecret broker)
+                    (brokerPublic broker)
+                    (recoverySignedMaterial (rootBrokerVerificationKey broker) binding wire)
                 )
-            )
-    | otherwise = do
-        let signature =
-                convert
-                    ( Ed25519.sign
-                        (brokerSecret broker)
-                        (brokerPublic broker)
-                        (recoverySignedMaterial (rootBrokerVerificationKey broker) binding wire)
-                    )
-        -- Do not let the pure cryptographic thunk escape the lifetime lock.
-        _ <- evaluate (ByteString.length signature)
-        pure (Right (RecoveryWireGrant signature))
+    -- Do not let the pure cryptographic thunk escape the lifetime lock.
+    _ <- evaluate (ByteString.length signature)
+    pure (Right (RecoveryWireGrant signature))
 
 recoverySignedMaterial ::
     ProjectVerificationKey ->
@@ -1509,6 +2894,196 @@ registerAdmittedHandoffEdge broker admission input =
         case admitted of
             Left rejection -> pure (Right (Left rejection))
             Right () -> fmap (fmap Right) (registerHandoffEdgeActive broker input)
+
+{- | Recover one exact recovery edge before repairing its ordinary token row.
+
+The existing hidden recovery capability is forced before any broker or input.
+The durable map owns the binding/token choice across crashes; only after that
+choice is read back may the ordinary planned-token record be created or
+reused.  A granted token is never reopened.
+-}
+registerRecoverableAdmittedHandoffEdgeKernel ::
+    RecoverySigningKernel ->
+    RootBroker scope brokerGeneration verb ->
+    IO (Either rejection ()) ->
+    HandoffBindingInput ->
+    ByteString ->
+    IO
+        ( Either
+            HandoffError
+            (Either rejection (BrokerRelay scope brokerGeneration, HandoffToken))
+        )
+{-# OPAQUE registerRecoverableAdmittedHandoffEdgeKernel #-}
+registerRecoverableAdmittedHandoffEdgeKernel kernel =
+    kernel `seq` consumeRecoverySigningKernel kernel recover
+  where
+    recover broker admission input adapter = withActiveRootBroker broker $
+        case recoveryOpenIdentity broker input adapter of
+            Left failure -> pure (Left failure)
+            Right identity -> do
+                admitted <- admission
+                case admitted of
+                    Left rejection -> pure (Right (Left rejection))
+                    Right () -> do
+                        entered <- withProtectedEntry (brokerProtectedStore broker) $ \session ->
+                            Right <$> recoverEdge session broker input identity
+                        pure $ case entered of
+                            Left failure -> Left (HandoffStoreFailure failure)
+                            Right (Left failure) -> Left failure
+                            Right (Right edge) -> Right (Right edge)
+
+    recoverEdge session broker input identity =
+        case mkRecordKey ("recovery-open." <> digestBytes identity) of
+            Left failure -> pure (Left (HandoffStoreFailure failure))
+            Right mapKey -> do
+                selected <- select session mapKey broker input identity
+                case selected of
+                    Left failure -> pure (Left failure)
+                    Right edge@(relay, token) -> do
+                        repaired <- repair session (relayBinding relay)
+                        case repaired of
+                            Left failure -> pure (Left failure)
+                            Right () -> fmap (edge <$) (verify session mapKey identity relay token)
+
+    recoveryOpenIdentity broker input adapter
+        | requestedPayloadKind input /= RecoveryAdapterWire = mismatch "recoverable open requires recovery-adapter-wire"
+        | brokerVerbName broker /= "down" && brokerVerbName broker /= "destroy" =
+            Left (HandoffRecoveryVerbInvalid (brokerVerbName broker))
+        | any Text.null [requestedSpecDigest input, requestedPlanRevision input, requestedParentFrame input, requestedChildFrame input] =
+            mismatch "the recoverable-open binding input contains an empty coordinate"
+        | requestedPhase input /= "teardown" = mismatch "recoverable open requires teardown"
+        | ByteString.null adapter = mismatch "the recovery adapter wire is empty"
+        | requestedChildConfigDigest input /= childConfigDigest adapter =
+            mismatch "the recovery adapter digest differs from the binding input"
+        | fromIntegral (ByteString.length identity) > maxWireBytes =
+            Left (HandoffWireTooLarge (fromIntegral (ByteString.length identity)) maxWireBytes)
+        | otherwise = Right identity
+      where
+        identity = ByteString.concat
+            [ frameWire "hostbootstrap/recovery-open-map"
+            , frameWire (ByteString.pack (word64BigEndian 1))
+            , frameWire (TextEncoding.encodeUtf8 (brokerProjectName broker))
+            , frameWire (TextEncoding.encodeUtf8 (brokerScopeTag broker))
+            , frameWire (TextEncoding.encodeUtf8 (brokerStoreIdentity broker))
+            , frameWire (ByteString.pack (word64BigEndian (brokerEpochValue broker)))
+            , frameWire (TextEncoding.encodeUtf8 (brokerVerbName broker))
+            , frameWire (TextEncoding.encodeUtf8 (verificationKeyDigest (rootBrokerVerificationKey broker)))
+            , frameWire (renderHandoffBindingInput input)
+            , frameWire adapter
+            ]
+        mismatch = Left . HandoffBindingMismatch
+
+    select session key broker input identity = do
+        observed <- readProtectedRecord session key
+        case observed of
+            Left failure -> pure (Left (HandoffStoreFailure failure))
+            Right (Just record)
+                | recordVersionWord (protectedRecordVersion record) /= 1 -> pure mapConflict
+                | otherwise -> pure (decode broker input identity (protectedRecordBytes record))
+            Right Nothing -> do
+                token <- freshHandoffToken
+                case mkHandoffBinding broker input token >>= brokerRelay broker of
+                    Left failure -> pure (Left failure)
+                    Right relay -> do
+                        let bytes = recoveryRecord identity relay token
+                        publishMap session key broker input identity bytes
+
+    publishMap session key broker input identity bytes = do
+        written <- compareAndSwapProtectedRecord session key ExpectAbsent bytes
+        case written of
+            Right version
+                | recordVersionWord version /= 1 -> pure mapConflict
+            _ -> do
+                observed <- readProtectedRecord session key
+                pure $ case observed of
+                    Left failure -> Left (HandoffStoreFailure failure)
+                    Right (Just record)
+                        | recordVersionWord (protectedRecordVersion record) == 1 ->
+                            decode broker input identity (protectedRecordBytes record)
+                    _ -> mapConflict
+
+    recoveryRecord identity relay token = ByteString.concat
+        [ frameWire "hostbootstrap/recovery-open-record"
+        , frameWire (ByteString.pack (word64BigEndian 1))
+        , frameWire identity
+        , frameWire (renderHandoffBinding (relayBinding relay))
+        , frameWire (handoffTokenBytes token)
+        ]
+
+    decode broker input identity raw = do
+        (domain, afterDomain) <- takeFrame raw
+        (version, afterVersion) <- takeFrame afterDomain
+        (storedIdentity, afterIdentity) <- takeFrame afterVersion
+        (bindingBytes, afterBinding) <- takeFrame afterIdentity
+        (tokenBytes, trailing) <- takeFrame afterBinding
+        require (domain == "hostbootstrap/recovery-open-record")
+        require (version == ByteString.pack (word64BigEndian 1))
+        require (storedIdentity == identity)
+        require (ByteString.null trailing)
+        relay <- brokerRelayFromRouteWire (rootBrokerRoute broker) (Just input) bindingBytes
+        token <- handoffTokenFromBytes tokenBytes
+        expected <- mkHandoffBinding broker input token
+        require (renderHandoffBinding expected == bindingBytes)
+        require (recoveryRecord identity relay token == raw)
+        pure (relay, token)
+
+    repair session binding = case mkRecordKey (tokenRecordKey binding) of
+        Left failure -> pure (Left (HandoffStoreFailure failure))
+        Right key -> do
+            observed <- readProtectedRecord session key
+            case observed of
+                Left failure -> pure (Left (HandoffStoreFailure failure))
+                Right (Just record)
+                    | protectedRecordBytes record == plannedEdgeRecord binding
+                    , recordVersionWord (protectedRecordVersion record) == 1 -> pure (Right ())
+                    | "granted:" `ByteString.isPrefixOf` protectedRecordBytes record ->
+                        pure (Left HandoffTokenConsumed)
+                    | otherwise -> pure tokenConflict
+                Right Nothing -> writeExact session key (plannedEdgeRecord binding) tokenConflict
+
+    verify session mapKey identity relay token = do
+        checked <- readExact session mapKey (recoveryRecord identity relay token) mapReadbackConflict
+        case checked of
+            Left failure -> pure (Left failure)
+            Right () -> case mkRecordKey (tokenRecordKey binding) of
+                Left failure -> pure (Left (HandoffStoreFailure failure))
+                Right key -> readToken session key binding tokenReadbackConflict
+      where
+        binding = relayBinding relay
+
+    writeExact session key bytes conflict = do
+        written <- compareAndSwapProtectedRecord session key ExpectAbsent bytes
+        case written of
+            Left _ -> readExact session key bytes conflict
+            Right version
+                | recordVersionWord version /= 1 -> pure conflict
+                | otherwise -> readExact session key bytes conflict
+
+    readExact session key bytes conflict = do
+        observed <- readProtectedRecord session key
+        pure $ case observed of
+            Left failure -> Left (HandoffStoreFailure failure)
+            Right (Just record)
+                | recordVersionWord (protectedRecordVersion record) == 1
+                , protectedRecordBytes record == bytes -> Right ()
+            _ -> conflict
+
+    readToken session key binding conflict = do
+        observed <- readProtectedRecord session key
+        pure $ case observed of
+            Left failure -> Left (HandoffStoreFailure failure)
+            Right (Just record)
+                | recordVersionWord (protectedRecordVersion record) == 1
+                , protectedRecordBytes record == plannedEdgeRecord binding -> Right ()
+                | "granted:" `ByteString.isPrefixOf` protectedRecordBytes record -> Left HandoffTokenConsumed
+            _ -> conflict
+
+    require True = Right ()
+    require False = Left (HandoffBindingMismatch "the recoverable-open map is malformed or conflicting")
+    mapConflict = Left (HandoffBindingMismatch "the recoverable-open map conflicts")
+    tokenConflict = Left (HandoffBindingMismatch "the recoverable token record conflicts")
+    mapReadbackConflict = Left (HandoffBindingMismatch "the recoverable-open map readback differs")
+    tokenReadbackConflict = Left (HandoffBindingMismatch "the recoverable token readback differs")
 
 registerHandoffEdgeActive ::
     RootBroker scope brokerGeneration verb ->
@@ -2274,6 +3849,9 @@ data HandoffError
     | -- | the rank-2 broker bracket has already closed
       HandoffBrokerExpired
     | HandoffSignatureInvalid
+    | HandoffRootedSignatureInvalid
+    | HandoffRootedLifecycleSignatureInvalid
+    | HandoffAuthenticatedRootScopeSignatureInvalid
     | -- | expected digest, then the digest of the bytes received
       HandoffPayloadDigestMismatch Text Text
     | -- | the binding names this frame, but the binary is that one
@@ -2308,6 +3886,12 @@ handoffErrorMessage err = case err of
     HandoffEdgeUnregistered -> "handoff: the root opened no such edge"
     HandoffBrokerExpired -> "handoff: the root broker bracket has expired"
     HandoffSignatureInvalid -> "handoff: the grant signature is invalid for this transcript"
+    HandoffRootedSignatureInvalid ->
+        "handoff: the rooted payload signature is invalid for this binding"
+    HandoffRootedLifecycleSignatureInvalid ->
+        "handoff: the rooted lifecycle response signature is invalid"
+    HandoffAuthenticatedRootScopeSignatureInvalid ->
+        "handoff: the authenticated root scope signature is invalid"
     HandoffPayloadDigestMismatch expected actual ->
         "handoff: payload digest " <> Text.unpack actual <> " does not match the bound " <> Text.unpack expected
     HandoffFrameMismatch bound actual ->

@@ -52,9 +52,30 @@ expressible; `zeroDependencyPreconditions` serves only descriptors that declare 
 that do. `planDependencyProbe` registers a probe rather than binding a retained `Ready`, and rechecks the
 freshly observed generation and observation version against the managed handle on every run.
 
-The repository does not yet enforce that boundary end to end:
+The exact boundary owned by the
+[cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
+has an Active source implementation of that model: preparation accepts only an opaque backend-minted
+`RunningProviderDependency`,
+reruns its retained real provider probe inside `withOperationPreconditions`, and offers cluster readiness
+only after identity-checked application of the plan-retained cordon. Its read-only backend probe checks the
+exact durable owner and self-bound managed record, re-observes the complete retained node-name/container-ID
+map, checks the cluster API, requires the Kubernetes node-name set to equal the exact declared set, and checks
+every node's Ready condition. The opaque readiness value retains the backend-bound function that performs
+that real probe again; it never turns a cached generation into a fresh observation. Only a successful
+same-identity probe atomically advances the phase-observation version, and version exhaustion is a structural
+failure rather than wraparound. A different control-plane or worker container identity is a `Conflict`, not
+a retryable not-ready result; a same-identity API/node health failure remains retryable not-ready. Public
+callers cannot construct the dependency, backend call results, managed cluster, prepared/applied cordon, or
+readiness authorities, and the injected interpreter exists only in the Cabal-private test component. The
+[cluster-lifecycle, budgets, and cordoning
+phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) closes this source boundary plus its
+focused, full-static, and independent linux-cpu gates. Production recursive adoption remains in the
+[recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md), and demo
+adoption remains in the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
 
-- several provider, staging, cluster, chart, NVIDIA, and teardown effects still use compatibility waits
+The repository does not yet enforce that boundary for every effect:
+
+- several staging, chart, NVIDIA, legacy/demo cluster, and teardown effects still use compatibility waits
   or return `IO ()` rather than consuming a prepared operation. A chain step's action does now have every
   input the traversal needs, delivered by the
   [step-algebra phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md): the plan-minted

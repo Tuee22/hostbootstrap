@@ -80,8 +80,10 @@ native validation lives.
   `coerce`.
 
   Production `HostBootstrap.Command` retains or reconstructs one exact plan and keeps render/persist,
-  journal/cursor admission, `authorizeProjectUp`, Chain interpretation, observations, and current-frame
-  reverse work under that identity. No Production plan-only authority, raw-step descriptor, alternate
+  root-refined lifecycle-context admission, fixed root-Up entry interpretation, observations, and current-frame
+  reverse work under that identity. The Cabal-private `LifecycleEntry` producer alone derives the
+  journal/current cursor, invokes generic `authorizeRootProject`, and supplies the raw lower Chain inputs. No
+  Production plan-only authority, raw-step descriptor, alternate
   forward interpreter, or reverse-plan producer exists. This exact representation does not itself mint
   `down`/`destroy` authority; nested lifecycle entry fails closed and
   [the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
@@ -119,9 +121,27 @@ native validation lives.
   provider and declares the derived `<provider>/<share>/guest-alias` operation. The demo still creates the
   alias through its compatibility pathname route; migrating that call site belongs to
   [the worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
-- `HostBootstrap.Cluster.Backend` holds all four clauses for the kind cluster, binding to the
-  control-plane node's container ID. The plan-level cluster interpreter belongs to the
+- `HostBootstrap.Cluster.Backend` holds all four clauses for the kind cluster. Its canonical
+  `prepared`/`executing`/`managed` records self-bind their own inode under the retained state/lock identities;
+  every state binds the exact cluster name/owner/nonce; `executing` binds the exact config digest/inode and
+  private kubeconfig inode before Kind; and `managed`
+  binds the complete declared node-name-to-container-ID map. Cordon mutates immutable IDs, while readiness
+  and cleanup re-observe every retained node. Production tool discovery starts from typed
+  `HostConfig`/`HostTool`; raw executor injection and result constructors are Cabal-private. The exact
+  packages and interpreter belong to sprints 16.1–16.11 of the
   [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
+- The implemented direct-Colima backend applies the four clauses to one 128-bit plan/lifecycle namespace, not to
+  a caller-selected profile. Its reusable global lock contains only its own self-bound profile/lock identity
+  and remains synchronization-only across owners. A fresh self-bound nonce record publishes absence before
+  the isolated Colima home or Docker config is created; descriptor-relative transitions retain the exact
+  acquisition invocation, root/data wall, machine/context, record/namespace/disk objects, directory chain,
+  and complete Colima/Lima artifact manifest. The sole pre-call `prepared` state cannot adopt a present
+  profile after an outcome-unknown start; only a matching managed stage can recover it. Live Docker
+  reacquires that exact binding. Cleanup carries a distinct journal invocation, enters `releasing` before
+  `colima delete --force --data`, and proves profile/data/context absence before conditionally removing only
+  manifest-listed namespaces and origin evidence. This source boundary belongs to the
+  [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
+  and remains non-closing until that phase's focused and full gates pass.
 - The WSL2 global `.wslconfig` wall is a portable driver (`Wsl2.GlobalWall.Host`) over a `Posix` and a
   `Windows` backend; the backup-existence (`.bak`) inference is gone. On 2026-08-01 the Windows-gated
   suite exercised the production entrypoint against a temporary `USERPROFILE` and passed all four
@@ -187,9 +207,12 @@ GHC; the Windows host backend supplements its public surface with a narrow direc
 exact status preservation is required. This adds no Haskell package, C shim, or Cabal `c-sources`, and
 `unix` remains the existing conditional POSIX dependency.
 
-The shell-invoked column is **discovered, never assumed**. A backend's closed discovery plan asks the frame
-it will actually run in which front ends it has; the injected executor returns only raw command outcomes,
-and a private total parser retains the answer on the opaque discovery value. The bracket therefore cannot
+The shell-invoked column is **discovered, never assumed**. Provider/alias discovery asks the frame it will
+actually run in which front ends it has; its package-owned test seam returns only raw command outcomes, and
+a private total parser retains the answer on the opaque discovery value. Cluster production discovery is
+stricter: it detects the Linux frame, builds `HostConfig`, resolves the closed typed `HostTool` set, validates
+the canonical root-owned path chains in a Cabal-private component, and derives child `PATH` only from those
+validated tool directories. Its injected executor is private-test-only. The bracket therefore cannot
 be built from a tool the frame was never shown to have, and an unrecognized report is
 `Unsupported` rather than a guess. Selecting from the build host's `os()` would be wrong in the ordinary
 case, not the exotic one: a macOS host drives a Linux guest, so the host's userland says nothing about the
@@ -198,6 +221,14 @@ kernel namespaces and do not mutually exclude one another. Provider discovery ma
 a descriptive observation, but the strong alias backend refuses it as `Unsupported`; the Incus ownership
 backend likewise requires one resolved `Flock` executable. This prevents two nominally supported front ends
 from guarding the same origin record with non-interoperating locks.
+
+Direct Colima is a POSIX-host realization but does not use the shell-invoked lock frontend. Its fixed private
+Apple resolver admits canonical Python/Colima/Docker/Lima executables and helper directories, and its
+descriptor-owning Python child calls `fcntl.flock` directly on the no-follow reusable lock object. The lock
+inode is retained in every managed/live/cleanup binding but carries no owner/fence tombstone; exact released
+state lives in the separate self-bound origin protocol, so a later plan/fence can reuse the one exclusion
+namespace. Missing `fcntl.flock`, directory fsync/no-replace support, stable identities, or a trustworthy
+tool namespace returns `Unsupported` and mints no authority.
 
 The provider-guest alias record is keyed by a SHA-256 digest of an injective owner binding containing the
 exact provider origin, share key/generation, alias key/generation, alias, and target; the complete binding

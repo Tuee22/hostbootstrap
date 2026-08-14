@@ -20,7 +20,21 @@ and consumes this projection directly. It grants no receipt, journal, exact tear
 authority. The core provider route now has opaque managed provider/share/alias authority and a
 crash-recoverable four-clause guest-alias backend, but the demo still uses its compatibility pathname
 call site. The plan still has to carry all guest, container, kind-node, and pod path projections.
-End-to-end same-run destroy/up/readback remains unproved; the
+The workload `.data` carry is distinct from lifecycle authority storage. In the target rooted runtime, one
+root coordinator process owns
+the only lifecycle `ProtectedStore`, global lease/snapshot/acquisition, recursive `RootedPlanCatalog`, and
+per-frame journals. A child process is a storeless `FrameExecutor` that receives only an exact root-prepared
+node grant. The root catalog structurally retains each target plan/config/current-frame relation and all store
+authority; rooted `ReceiptConfirm`/`ReceiptRecorded` mutates Published/Received only at the root. The terminal
+owner that joins them names no `ProtectedStore`: publishing the exact canonical report and advancing Published
+to Received both arrive as continuations from the relay that already holds the hidden recovery signing
+admission, and the exact digest of the complete signed `FrameComplete` bytes is the only thing a
+`ReceiptConfirm` can name a terminal report with. The
+[authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
+owns the closed wire vocabulary and the
+[recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) consumes
+it. End-to-end same-run
+destroy/up/readback remains unproved; the
 [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns that acceptance.
 
 ## Current Status
@@ -53,6 +67,10 @@ VM/container topology, waits for the share, and reconciles the guest alias. The 
 instead receives the canonical absolute host directory from root admission; it does not substitute the
 guest alias.
 
+Neither path transports lifecycle authority. The root prepares and settles durable frame operations and sends
+only signed, bounded rooted responses; children return observations and receipt confirmations, never raw
+record keys or versions.
+
 ## What is implemented
 
 - `HostPathShare`/`ShareReconcile` describe the provider-specific host-to-guest carry.
@@ -74,11 +92,53 @@ guest alias.
   that frame and its descendants deepest-first and in reverse forward order within each frame. Its
   `TeardownPlan scope planId frame verb` retains the plan's stable step identities, operation keys,
   reverse policies, and declared callbacks without running them.
-- `openTeardownForest` consumes that projection alone. Its current forest result is deliberately
-  unframed and non-authorizing; recursive frame propagation, local-versus-foreign work, authenticated
-  descent, and receipt-bound release remain later lifecycle work.
+- `openTeardownForest` consumes that projection alone. Its forest, progress, authorization branches,
+  closed local/descent work, successors, completion, and settled-destroy proof retain the projection's
+  nominal `frame` index. Only `LocalWork` exposes a declared reverse runner; existential `DescentWork`
+  exposes only the exact immediate topology edge, and branch-specific attempts retain their origin forest.
+  The forest remains non-authorizing; rooted frame execution and receipt-bound release remain later lifecycle
+  work.
 - Project-container, kind/nvkind, and pod configurations carry the directory to the web workload.
 - Cluster teardown excludes its configured data path from its filesystem removal set.
+- The closed cluster backend keeps ownership metadata in the plan-derived removable state leaf, never in or
+  above the durable root. Component-wise no-follow traversal creates and parent-fsyncs only that exact leaf.
+  Self-bound `prepared`/`executing`/`managed` origin records retain the state, lock, record, config/kube
+  snapshot, and complete node-container identities needed for crash recovery and conditional cleanup.
+  Cleanup receives no durable-root pathname and removes the managed origin only after independently proving
+  every retained node container absent. A copied record, replaced namespace object, or uncertain deletion
+  preserves origin state and cannot widen the removal set.
+- The implemented direct-Colima adapter likewise keeps control ownership outside the workload payload. Its
+  self-bound origin and isolated `DOCKER_CONFIG` live under the exact plan root's `.hostbootstrap/colima`
+  state leaf, while one 128-bit plan/lifecycle token names the isolated Colima/Lima/cache/temp home and
+  reusable lock beneath the effective user's home. Before either named namespace is created, the origin
+  records absence and a fresh nonce. Managed state retains both namespace identities, the 20-GiB-root plus
+  `total-20`-GiB-data wall, stable machine/context, and the complete directory/artifact manifest. Separately
+  journaled cleanup enters `releasing` before `colima delete --force --data` and may remove only the exact
+  manifest-listed namespaces after proving profile/data/context absence. Outcome-unknown, replaced, or
+  foreign state retains its evidence and cannot widen cleanup to `.data` or another project namespace. This
+  source boundary and the [cluster-lifecycle, budgets, and cordoning
+  phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) gates are closed. Recursive adoption
+  remains in the [recursive-lifecycle-command
+  phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md), while the
+  [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns its concrete consumer.
+- The one root `project up` entry now persists the recursive plan catalog. After the acquisition journal
+  revalidates the live global lease, protected snapshot, and plan digest, the entry admits the catalog and
+  compare-and-swaps one bounded canonical manifest under a record identity naming the root plan's installed
+  project, stable profile, and broker epoch. That identity is encoded through the store's own injective
+  record-name encoding, so a Harness profile — which names its run — addresses its own record rather than an
+  illegal key. The manifest length-frames every variable-width value, counts every list, refuses rather than
+  truncates at both an admitted-edge and a byte ceiling, and carries digests instead of any raw configuration
+  payload. An exact retry and a compare-and-swap loser both converge on the record already present because the
+  decision comes from the strict readback; conflicting bytes refuse before the command reservation and before
+  any lifecycle effect.
+- One root-owned frame session row now exists per admitted catalog frame, keyed by root lineage, catalog
+  identity, and frame alone, so no part of a request can select which row is addressed. The opened row frames
+  the root-selected requester path, opaque session token, fixed stage, and first nonzero ordinal, and carries
+  no predecessor-response digest, because at that point nothing has been answered. Its attached successor
+  nests the exact opened bytes with the admitted nonce and the lowercase SHA-256 digest of the complete signed
+  `Opened` response, and the compare-and-swap consumes exactly the opened version the caller read back. An
+  exact replay returns the attached version already present without a second mutation; anything that is
+  neither the exact opened row nor the exact attached row refuses.
 
 Together these facts make `.data` host-carried state rather than frame-relative guest state.
 
@@ -107,10 +167,10 @@ The carry is not yet a delivered durability guarantee:
 - The configured `durable-readback` case deliberately fails before lifecycle mutation because the engine
   cannot yet place write/read assertions around a nonterminal same-run destroy → fresh exact up cycle.
   No substrate has passed that end-to-end gate.
-- Teardown is not yet an authenticated recursive child-to-parent interpretation. The pure projection
-  carries its opening frame only on `TeardownPlan`; `TeardownForest` and its successors do not yet carry
-  that index or distinguish local work from a foreign descent. A provider VM can therefore be stopped or
-  removed without first admitting and settling the lifecycle verb in each child frame.
+- Teardown is not yet an authenticated recursive child-to-parent interpretation. The pure projection,
+  `TeardownForest`, and every successor package retain the same nominal opening frame, but the work
+  algebra does not yet distinguish local work from a foreign descent. A provider VM can therefore be
+  stopped or removed without first admitting and settling the lifecycle verb in each child frame.
 
 Documentation must therefore describe the mechanism as **durable carry implemented, end-to-end
 persistence not yet proved**. A statement covering any provider needs that provider's own same-run
@@ -240,11 +300,15 @@ Those claims require the live validation gates below.
    cross-root paths from entering direct-host bind operations.
 4. **Direct half passed:** native Linux reached Docker with the canonical absolute nonsymlink host
    `.data` path. Final plan-indexed provider guest projections remain open.
-5. Every supported native substrate writes a unique value through the pod-mounted `/web` path, destroys
+5. The independent exact-cluster suite creates only the plan-derived removable state leaf, rejects
+   symlink/copied/replaced state, lock, record, and snapshot objects, conditionally removes only exact owned
+   node IDs, and proves the durable root is not an input to cleanup. The separate linux-cpu live gate keeps a
+   sentinel outside cluster teardown and re-reads it after deletion.
+6. Every supported native substrate writes a unique value through the pod-mounted `/web` path, destroys
    the stack, recreates it, and reads the value from both host and pod.
-6. `test run all` proves its cluster name is test-scoped and that neither `.data` nor the production
+7. `test run all` proves its cluster name is test-scoped and that neither `.data` nor the production
    cluster is observed or mutated.
-7. Recursive teardown visits the child cluster/container before stopping or deleting its provider frame.
+8. Recursive teardown visits the child cluster/container before stopping or deleting its provider frame.
 
 Validation status and scheduling belong in
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md).

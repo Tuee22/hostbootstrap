@@ -41,7 +41,9 @@ module HostBootstrap.Lifecycle.Plan
     , BoundPlanSnapshot
     , PlanError (..)
     , planDraftsFromValidatedStepPlanKernel
+    , canonicalProjectedRootKernel
     , withProjectPlanKernel
+    , withProjectedProjectPlanKernel
     , withChildProjectPlanKernel
     , withRecoveredProjectPlanKernel
     , forwardKernel
@@ -188,6 +190,7 @@ import HostBootstrap.Step
     , stepReverses
     )
 import System.FilePath (isAbsolute)
+import qualified System.FilePath.Posix as Posix
 
 {- | One authored node before a local plan identity exists.
 
@@ -863,6 +866,7 @@ data PlanError
     = PlanDraftRootMismatch FilePath FilePath
     | PlanDraftSpecificationMismatch Text Text
     | PlanDraftConfigurationMismatch Text Text
+    | PlanProjectedRootInvalid FilePath
     | PlanRecoveryEvidenceMismatch Text Text Text
     | PlanHandoffEvidenceMismatch Text Text Text
     | PlanResourceOperationMissing Text
@@ -888,6 +892,11 @@ planDraftsFromValidatedStepPlanKernel ::
     StepPlan ->
     NonEmpty (PlanDraft scope specDigest config)
 planDraftsFromValidatedStepPlanKernel root config plan =
+    planDraftsAtRoot (canonicalProjectRootPath root) config plan
+
+planDraftsAtRoot ::
+    FilePath -> ValidatedConfig scope specDigest configId config -> StepPlan -> NonEmpty (PlanDraft scope specDigest config)
+planDraftsAtRoot root config plan =
     case stepPlanSteps plan of
         firstStep : remainingSteps ->
             makeDraft firstStep :| map makeDraft remainingSteps
@@ -896,7 +905,7 @@ planDraftsFromValidatedStepPlanKernel root config plan =
   where
     makeDraft step =
         PlanDraft
-            { internalDraftRoot = canonicalProjectRootPath root
+            { internalDraftRoot = root
             , internalDraftSpecDigest = validatedConfigSpecDigest config
             , internalDraftConfigDigest = validatedConfigDigest config
             , internalDraftStep = step
@@ -931,6 +940,43 @@ withProjectPlanKernel profileName profileEpoch projectName storeIdentity root co
             config
             drafts
     Right (use admitted)
+
+-- | Admit an independently projected plan at a canonical POSIX descriptor.
+withProjectedProjectPlanKernel ::
+    ProjectPlan scope specDigest parentPlanId parentConfigId cfg ->
+    FilePath ->
+    ValidatedConfig scope specDigest childConfigId (cfg scope) ->
+    StepPlan ->
+    ( forall childPlanDigest childPlanId.
+      ProjectPlan scope specDigest childPlanId childConfigId cfg ->
+      PlanDigestBinding scope specDigest childPlanDigest childPlanId ->
+      result
+    ) ->
+    Either PlanError result
+withProjectedProjectPlanKernel parent descriptor config plan use
+    | not (canonicalProjectedRootKernel descriptor) =
+        Left (PlanProjectedRootInvalid descriptor)
+    | otherwise = do
+        admitted <-
+            admitProjectPlanAtRootKernel
+                (projectPlanProfileNameKernel parent)
+                (projectPlanProfileEpochKernel parent)
+                (projectPlanProfileProjectNameKernel parent)
+                (projectPlanProfileStoreIdentityKernel parent)
+                descriptor
+                config
+                (planDraftsAtRoot descriptor config plan)
+        let snapshot = projectPlanIndexedSnapshotKernel admitted
+            digest = projectPlanDigestKernel admitted
+        Right (use admitted (mintPlanDigestBindingKernel snapshot digest))
+canonicalProjectedRootKernel :: FilePath -> Bool
+canonicalProjectedRootKernel descriptor =
+    Posix.isAbsolute descriptor
+        && Posix.isValid descriptor
+        && '\\' `notElem` descriptor
+        && all (`notElem` [".", ".."]) (Posix.splitDirectories descriptor)
+        && Posix.normalise descriptor == descriptor
+        && (descriptor == "/" || not (Posix.hasTrailingPathSeparator descriptor))
 
 {- | Admit a child-local plan directly from the constructor-hidden draft root.
 

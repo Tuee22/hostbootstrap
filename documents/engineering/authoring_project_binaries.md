@@ -81,7 +81,7 @@
    enforce that root-frame restriction. A suite may declare more than one config variant; for each, the harness **generates**
    the run's `<project>.dhall` functionally via the Harness request of the same restricted `psAssemble`,
    under fresh exact-run authority and its matching mapped codec. It never shells the CLI: it retains the
-   exact Harness plan, invokes the common current-frame Chain, asserts the real workload in-frame, and
+   exact Harness plan, drives the hidden fixed root-Up entry into the common current-frame Chain, asserts the real workload in-frame, and
    invokes the matching current-frame reverse projection when an in-process body failure is caught before
    moving to the next variant. A hard
    interruption does not run `finally`; the recovery sweep reopens the incomplete run before a new
@@ -177,8 +177,11 @@ project step actions; the demo supplies
 `demoChainFor :: Substrate -> CanonicalProjectRoot scope rootId -> ProjectConfig scope -> [Step]`
 in `demo/src/HostBootstrapDemo/Commands.hs`, wired into the builder with `addSteps` and
 `finalizeProjectSpec`.
-Production `project up` admits or reconstructs one exact plan and uses it for dry rendering, snapshot
-persistence, journal/cursor admission, `authorizeProjectUp`, and its current-frame Chain segment.
+Production `project up` admits or reconstructs one exact plan and uses it for dry rendering and snapshot
+persistence, then admits the root-refined lifecycle context and enters the Cabal-private root-Up
+`LifecycleEntry` producer. That producer derives the journal/current cursor, calls generic
+`authorizeRootProject`, and invokes the fixed current-frame Chain interpreter without exposing those raw
+inputs to dispatch.
 `down`/`destroy` use the same exact plan representation for current-frame reverse work. Nested lifecycle
 entry is fail-closed until authenticated recursive admission is implemented. Harness directly retains and
 interprets its exact plan through the same current-frame boundaries; demo profile/root consumers still
@@ -193,7 +196,7 @@ generates the PureScript types folds into the build-image step) and its VM/provi
 `ensure` is a reconciler library; core exposes `ensureStep`, but the demo calls `runEnsure` inside
 larger provider/build/accelerator actions. The forward-representation doctrine holds:
 `demoChainFor substrate` produces one forward plan definition, and `test run all` admits that definition
-under an exact Harness scope and invokes the common current-frame Chain rather than standing up a
+under an exact Harness scope and drives the hidden fixed root-Up entry into the common current-frame Chain rather than standing up a
 separate per-case deployment graph.
 
 Under

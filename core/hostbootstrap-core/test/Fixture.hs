@@ -1,6 +1,7 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -38,6 +39,8 @@ module Fixture (
     projectConfigSchemaText,
     projectConfigCodec,
     testConfigCodec,
+    refusingForwardChildPlan,
+    projectingForwardChildPlan,
     deriveProjectConfigForKind,
     projectConfigForRole,
     initArgsFor,
@@ -47,6 +50,7 @@ module Fixture (
     withFixtureProjectRoot,
     withFixtureProjectPlan,
     withFixtureProjectPlanContext,
+    withFixtureHarnessProjectPlan,
     withFixtureHarnessAuthority,
 )
 where
@@ -84,14 +88,21 @@ import HostBootstrap.Harness.Ownership (
     protectedProjectRunOwnership,
     withOwnedHarnessRoot,
  )
+import HostBootstrap.Lift.Context (LiftContext)
 import HostBootstrap.Lifecycle.Mode (
+    harnessActiveMode,
+    harnessRootAuthority,
     harnessRootHarnessAuthority,
+    harnessRootModeLease,
+    harnessRootRunId,
+    harnessRootUnboundLease,
     productionActiveMode,
     productionRootAuthority,
     productionRootModeLease,
     productionRootUnboundLease,
     withProductionLifecycleProfile,
     withProductionRoot,
+    withHarnessLifecycleProfile,
  )
 import HostBootstrap.ProjectPlan (
     ProjectPlan,
@@ -104,7 +115,7 @@ import HostBootstrap.ProjectRoot (
     withCanonicalProjectRoot,
  )
 import HostBootstrap.Protected (openProtectedStore)
-import HostBootstrap.Step (StepPlan)
+import HostBootstrap.Step (Step, StepPlan, mkStepPlan)
 import Numeric.Natural (Natural)
 import System.Environment (getExecutablePath)
 import System.FilePath ((</>))
@@ -180,6 +191,84 @@ withFixtureProjectPlan ::
     IO result
 withFixtureProjectPlan stepPlan use =
     withFixtureProjectPlanContext id stepPlan (\plan _context -> use plan)
+
+{- | Admit one real generative Harness project plan.  This follows the same
+protected ownership/profile/config/plan path as the command rather than
+relabeling a Production fixture.
+-}
+withFixtureHarnessProjectPlan ::
+    StepPlan ->
+    ( forall projectId runId specDigest planId configId.
+      ProjectPlan
+        (V.Harness projectId runId)
+        specDigest
+        planId
+        configId
+        ProjectConfig ->
+      IO result
+    ) ->
+    IO result
+withFixtureHarnessProjectPlan stepPlan use =
+    withFixtureInstalledProject $ \project ->
+        withSystemTempDirectory "hostbootstrap-fixture-harness-plan" $ \directory -> do
+            rooted <-
+                withCanonicalProjectRoot directory directory $ \ownershipRoot ->
+                    runWithOwnedRun
+                        ( protectedProjectRunOwnership
+                            project
+                            ownershipRoot
+                            directory
+                            (directory </> ".test_data")
+                        )
+                        ( \owned ->
+                            withOwnedHarnessRoot owned $ \_store _ownedProject harnessRoot _closeControl -> do
+                                let authority = harnessRootHarnessAuthority harnessRoot
+                                scoped <-
+                                    withCanonicalProjectRoot directory directory $ \runRoot -> do
+                                        opened <-
+                                            withHarnessLifecycleProfile
+                                                (Authority.rootScopeAuthority (harnessRootAuthority harnessRoot))
+                                                authority
+                                                (harnessRootRunId harnessRoot)
+                                                (harnessActiveMode (harnessRootModeLease harnessRoot))
+                                                (harnessRootUnboundLease harnessRoot)
+                                                ( \profile ->
+                                                    withHarnessProjectCodec @ProjectConfig
+                                                        (V.harnessConfigAuthority authority)
+                                                        ( \codec -> do
+                                                            let value =
+                                                                    defaultProjectConfig
+                                                                        (Authority.installedProjectName project)
+                                                                        (T.pack (canonicalProjectRootPath runRoot))
+                                                                        Context.TestHarness
+                                                            validated <-
+                                                                withValidatedConfig codec value $ \_wire config -> do
+                                                                    drafts <-
+                                                                        either
+                                                                            (fail . show)
+                                                                            pure
+                                                                            ( planDraftsFromValidatedBuilder
+                                                                                runRoot
+                                                                                config
+                                                                                (\_ _ -> Right stepPlan)
+                                                                            )
+                                                                    action <-
+                                                                        either
+                                                                            (fail . show)
+                                                                            pure
+                                                                            (withProjectPlan profile runRoot config drafts (pure . use))
+                                                                    action
+                                                            either fail pure validated
+                                                        )
+                                                )
+                                        either (fail . show) id opened
+                                either (fail . show) id scoped
+                        )
+            ownershipResult <- either (fail . show) pure rooted
+            case ownershipResult of
+                Left reason -> fail reason
+                Right (result, Nothing) -> pure result
+                Right (_, Just failure) -> fail ("Harness fixture cleanup failed: " ++ show failure)
 
 {- | Admit one real Production project plan whose validated configuration
 retains the exact context selected from the fixture's canonical host context.
@@ -268,12 +357,14 @@ data Resources = Resources
 newtype DeployConfig = DeployConfig
     { haReplicas :: Natural
     }
-    deriving (Eq, Show, Generic, FromDhall, ToDhall)
+    deriving stock (Eq, Show, Generic)
+    deriving anyclass (FromDhall, ToDhall)
 
 newtype TestConfig = TestConfig
     { testResources :: Resources
     }
-    deriving (Eq, Show, Generic, FromDhall, ToDhall)
+    deriving stock (Eq, Show, Generic)
+    deriving anyclass (FromDhall, ToDhall)
 
 instance TestCfg TestConfig where
     type TestVariant TestConfig = Text
@@ -379,6 +470,44 @@ projectConfigCodec =
 testConfigCodec :: CodecWitness TestConfig
 testConfigCodec =
     requireCodecWitness "fixture TestConfig" (autoCodecWitness @TestConfig)
+
+-- | An explicitly installed projector for tests whose subject never reaches
+-- forward-child planning.  It preserves the production requirement that a
+-- real ProjectSpec installs exactly one projector without inventing runtime
+-- projection coverage in unrelated fixtures.
+refusingForwardChildPlan ::
+    ProjectConfig scope ->
+    Text ->
+    Text ->
+    LiftContext ->
+    Either String (FilePath, ProjectConfig scope, StepPlan)
+refusingForwardChildPlan _ _ _ _ =
+    Left "the fixture does not exercise forward-child projection"
+
+{- | A forward-child projector that really projects one VM descent.
+
+The project-owned projector is the only function the immediate-target kernel
+calls to obtain a child descriptor, configuration, and step plan, so a suite
+whose every fixture refuses can never reach admitted recursive descent.  This
+one derives the child configuration from the parent's own retained context
+exactly as the kernel's expected-context derivation does, roots it at the
+supplied canonical POSIX descriptor, and rebuilds the same declared chain so
+the projected plan's frame labels, parent edges, and descent lifts are the
+parent's own.
+-}
+projectingForwardChildPlan ::
+    FilePath ->
+    [Step] ->
+    ProjectConfig scope ->
+    Text ->
+    Text ->
+    LiftContext ->
+    Either String (FilePath, ProjectConfig scope, StepPlan)
+projectingForwardChildPlan descriptor steps parent _parentFrame _childFrame _route = do
+    childConfig <-
+        deriveProjectConfigForKind Context.VMOrchestrator parent (T.pack descriptor)
+    childPlan <- either (Left . show) Right (mkStepPlan steps)
+    Right (descriptor, childConfig, childPlan)
 
 defaultResources :: Resources
 defaultResources = Resources{cpu = 4, memory = "8GiB", storage = "20GiB"}
