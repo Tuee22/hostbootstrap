@@ -22,10 +22,12 @@ import qualified Crypto.PubKey.Ed25519 as Ed25519
 import Data.ByteArray (convert)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteStringChar8
-import Data.Char (isSpace)
+import Data.Char (isSpace, toUpper)
 import Data.Foldable (traverse_)
 import Data.Kind (Type)
 import Data.List (isInfixOf, isPrefixOf, sort)
+import qualified Data.Map.Strict as Map
+import Data.Maybe (isJust, isNothing)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word8)
@@ -61,6 +63,16 @@ import HostBootstrap.Config.Vocab (
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Handoff
+import HostBootstrap.Handoff.Transaction (
+    FrameAnswer (FrameOutcome, FrameRefusal, FrameUnexpected),
+    classifyFrameChild,
+    frameChildArguments,
+    readFrameAnswer,
+    withFrameChildTransaction,
+ )
+import HostBootstrap.HostConfig (HostConfig (..))
+import HostBootstrap.Lift (localContext, mkSelfRef)
+import HostBootstrap.Lift.Context (IncusVM (..), inVM)
 import HostBootstrap.Lifecycle.Mode (
     ModeError,
     VerifiedIncompleteRunLease,
@@ -78,9 +90,11 @@ import HostBootstrap.Protected (
     protectedStoreIdentity,
     protectedStoreIdentityText,
  )
+import HostBootstrap.Substrate (Arch (Amd64), Substrate (..), SubstrateName (LinuxCpu))
 import qualified SourceGuard
 import System.Directory (doesDirectoryExist, doesPathExist, getCurrentDirectory, listDirectory, removePathForcibly)
-import System.FilePath ((</>), makeRelative, takeExtension)
+import System.Environment (getExecutablePath)
+import System.FilePath ((</>), takeExtension)
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -96,7 +110,152 @@ tests =
         , testGroup "the lifecycle completion wire" lifecycleCompletionWireTests
         , testGroup "the durable lifecycle acknowledgement substrate" lifecycleAcknowledgementSubstrateTests
         , testGroup "the sealed facade" sealedFacadeTests
+        , testGroup "the frame-child entry" frameCrossingTests
         ]
+
+-- ---------------------------------------------------------------------------
+-- The frame-child entry
+
+{- | The far side of a frame crossing, and the near side that reaches it.
+
+The classifier is covered over its whole argument space rather than over the
+one vector that works, because everything it must /not/ recognize is the part
+an operator can reach: the marker is in the binary on every host, and the only
+thing standing between an ordinary invocation and the child body is this
+comparison.
+
+The crossing itself is run as a real process. The parent folds a local lift
+context, launches this suite's own executable at the leaf argv, sends one
+transaction, and reads what comes back — through the production classifier and
+the production child body, so what the case proves is a process boundary rather
+than a description of one.
+-}
+frameCrossingTests :: [TestTree]
+frameCrossingTests =
+    [ testCase "a frame child is exactly the folded leaf argument vector" $ do
+        length frameChildArguments @?= 1
+        assertBool
+            "the marker is not a verb an operator would reach for"
+            (all ("--hostbootstrap-" `isPrefixOf`) frameChildArguments)
+        assertBool
+            "the folded leaf argv is a frame child"
+            (isJust (classifyFrameChild frameChildArguments))
+        traverse_
+            ( \argv ->
+                assertBool
+                    (show argv <> " is not a frame child")
+                    (isNothing (classifyFrameChild argv))
+            )
+            [ []
+            , [""]
+            , ["project", "up"]
+            , ["--help"]
+            , ["--version"]
+            , frameChildArguments <> ["up"]
+            , "project" : frameChildArguments
+            , frameChildArguments <> frameChildArguments
+            , map (<> "x") frameChildArguments
+            , map (drop 1) frameChildArguments
+            , map (" " <>) frameChildArguments
+            , map (<> "=") frameChildArguments
+            , map (map toUpper) frameChildArguments
+            ]
+    , testCase "the marker names nothing the parser or the command tree offers" $
+        withHandoffSourceRoot $ \_packageRoot sourceRoot -> do
+            sources <- readHaskellSources sourceRoot
+            traverse_
+                ( \marker ->
+                    sort
+                        [ sourcePath sourceRoot path
+                        | (path, source) <- sources
+                        , show marker `isInfixOf` source
+                        ]
+                        @?= ["HostBootstrap/Handoff/Transaction.hs"]
+                )
+                frameChildArguments
+    , testCase "one answer is read against the one request it must answer" $ do
+        readFrameAnswer 1 1 (FrameOutcome "settled") @?= Right "settled"
+        readFrameAnswer 1 1 (FrameOutcome "") @?= Right ""
+        readFrameAnswer 1 1 (FrameRefusal "unavailable" "no interpreter")
+            @?= Left "frame child: the frame refused the transaction: unavailable: no interpreter"
+        readFrameAnswer 1 1 (FrameUnexpected "OfferTag" 4)
+            @?= Left "frame child: the child answered OfferTag with 4 fields"
+        readFrameAnswer 1 2 (FrameOutcome "settled")
+            @?= Left "frame child: the child answered request 2 rather than 1"
+        readFrameAnswer 1 2 (FrameRefusal "unavailable" "no interpreter")
+            @?= Left "frame child: the child answered request 2 rather than 1"
+        readFrameAnswer 7 7 (FrameOutcome "settled") @?= Right "settled"
+    , testCase "a crossing whose host tool resolves nowhere never launches" $ do
+        executable <- getExecutablePath
+        crossed <-
+            withFrameChildTransaction
+                unresolvedHostConfig
+                (mkSelfRef executable executable)
+                (inVM IncusVM{vmName = "absent", vmImage = "absent"} localContext)
+                "one transaction"
+        crossed @?= Left "frame child: the crossing's host tool resolves to no absolute path"
+    , testCase "a local crossing answers one transaction across a real process boundary" $ do
+        executable <- getExecutablePath
+        crossed <-
+            withFrameChildTransaction
+                unresolvedHostConfig
+                (mkSelfRef executable executable)
+                localContext
+                "one transaction"
+        crossed
+            @?= Left
+                ( "frame child: the frame refused the transaction: unavailable: "
+                    <> "no transaction interpreter is installed at this frame"
+                )
+    , testCase "the argument vector is read once, by the classifier, before the parser" $
+        withHandoffSourceRoot $ \_packageRoot sourceRoot -> do
+            cliSource <- readFile (sourceRoot </> "HostBootstrap" </> "CLI.hs")
+            SourceGuard.countHaskellIdentifier "getArgs" cliSource @?= 2
+            SourceGuard.countHaskellIdentifier "classifyFrameChild" cliSource @?= 2
+            SourceGuard.countHaskellIdentifier "runFrameChildEntry" cliSource @?= 2
+            assertContains
+                "runCLI classifies argv once and otherwise runs the parser"
+                ( "argv <- getArgs case classifyFrameChild argv of "
+                    <> "Just entry -> runFrameChildEntry entry "
+                    <> "Nothing -> join (customExecParser (prefs showHelpOnEmpty) opts)"
+                )
+                (normalizeWhitespace cliSource)
+            traverse_
+                (\identifier -> SourceGuard.countHaskellIdentifier identifier cliSource @?= 0)
+                ["getProgName", "lookupEnv", "getEnvironment", "withArgs"]
+            transactionSource <-
+                readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Transaction.hs")
+            traverse_
+                (\identifier -> SourceGuard.countHaskellIdentifier identifier transactionSource @?= 0)
+                [ "ProtectedStore"
+                , "BrokerLink"
+                , "RootBroker"
+                , "InstalledProjectIdentity"
+                , "ProjectSigningKey"
+                , "ProjectVerificationKey"
+                , "ProjectSpec"
+                , "CommandAuthority"
+                , "lookupEnv"
+                , "getEnvironment"
+                , "getArgs"
+                , "unsafeCoerce"
+                ]
+            (significantHaskellLineCount transactionSource, significantHaskellLineCount cliSource)
+                @?= (275, 451)
+    ]
+
+{- | A configuration that resolves no host tool at all.
+
+A local crossing consults none of it, which is the point: the case that does
+cross a frame is refused by the resolver rather than by a missing binary, and
+the case that does not cross one is unaffected by either.
+-}
+unresolvedHostConfig :: HostConfig
+unresolvedHostConfig =
+    HostConfig
+        { hcSubstrate = Substrate{substrateName = LinuxCpu, substrateArch = Amd64}
+        , hcToolPaths = Map.empty
+        }
 
 -- ---------------------------------------------------------------------------
 -- Framing
@@ -2439,7 +2598,11 @@ lifecycleAcknowledgementSubstrateTests =
                     significantHaskellLineCount durableSource
                         + length (filter (`elem` exports) kernels)
                         + length (filter (== "RecordKey") protectedImports)
-                protocolFrozenSignificantLines = 392
+                -- Protocol is shared across this phase, so what this sprint added
+                -- to it is the file less everything its siblings own — the
+                -- 392 lines standing before it and the 63 the frame-crossing
+                -- vocabulary and its descriptor isolation added after it.
+                protocolFrozenSignificantLines = 455
                 protocolAttribution = significantHaskellLineCount protocolSource - protocolFrozenSignificantLines
             namedDeclarations
                 @?= [ "data ProtocolTag"
@@ -2609,7 +2772,7 @@ lifecycleAcknowledgementSubstrateTests =
                 , "HostBootstrap.Handoff.Protocol.Testing"
                 , "HostBootstrap.Handoff.Process.Testing"
                 ]
-            significantHaskellLineCount protocolSource @?= 463
+            significantHaskellLineCount protocolSource @?= 526
             (handoffAttribution, protocolAttribution, handoffAttribution + protocolAttribution)
                 @?= (313, 71, 384)
     , testCase "Relay retains the frozen caller-free canonical routed-ack transport" $
@@ -3446,8 +3609,15 @@ sealedFacadeTests =
                         , '/' `notElem` sourcePath (packageRoot </> "test") path
                         , SourceGuard.importsModule moduleName source
                         ]
+            -- The handoff *machinery* is sealed; the frame-child entry is not
+            -- machinery but an entry, and `runCLI` — a public entry — routes to
+            -- it. It is also the only module in this family a process that is
+            -- not this library's own `main` has to be able to reach, because
+            -- the far side of a crossing is reached by launching a binary. Its
+            -- public surface grants nothing `HostBootstrap.Lift` and
+            -- `HostBootstrap.CLI` do not already grant.
             filter ("HostBootstrap.Handoff" `isPrefixOf`) exposed
-                @?= ["HostBootstrap.Handoff"]
+                @?= ["HostBootstrap.Handoff", "HostBootstrap.Handoff.Transaction"]
             traverse_
                 (\moduleName -> assertBool (moduleName <> " is hidden") (moduleName `notElem` exposed))
                 hiddenHandoffModules
@@ -3964,12 +4134,14 @@ sealedFacadeTests =
     , testCase "rooted lifecycle request ownership is neutral, single-owner, budgeted, and freezes shared surfaces" $
         withHandoffSourceRoot $ \packageRoot sourceRoot -> do
             sources <- readHaskellSources sourceRoot
-            handoffSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff.hs")
+            (handoffSource, handoffDigest) <-
+                readFrozenSource (sourceRoot </> "HostBootstrap" </> "Handoff.hs")
             rootedSource <-
                 readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Rooted.hs")
-            protocolSource <-
-                readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Protocol.hs")
+            (protocolSource, protocolDigest) <-
+                readFrozenSource (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Protocol.hs")
             cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
+            cabalRows <- handoffPackageRows cabalSource
             librarySource <-
                 maybe
                     (assertFailure "hostbootstrap-core.cabal has no main library stanza")
@@ -3997,9 +4169,6 @@ sealedFacadeTests =
                 frozenRootedRequestDigest = "45ca89f24b43cbf4b02e2d82186e8c33db5e2aaedb6978d2111e039ae6933281"
                 rootedRequestDelta :: Int
                 rootedRequestDelta = frozenRootedRequestLines - frozenRootedPayloadLines
-                protocolDigest = childConfigDigest (TextEncoding.encodeUtf8 (Text.pack protocolSource))
-                handoffDigest = childConfigDigest (TextEncoding.encodeUtf8 (Text.pack handoffSource))
-                cabalDigest = childConfigDigest (TextEncoding.encodeUtf8 (Text.pack cabalSource))
             importers "HostBootstrap.Handoff.Rooted"
                 @?= [ "HostBootstrap/Handoff.hs"
                     , "HostBootstrap/Handoff/Internal.hs"
@@ -4072,10 +4241,10 @@ sealedFacadeTests =
             (frozenRootedRequestLines, rootedRequestDelta) @?= (504, 335)
             assertBool "the historical request attribution remains within the 340-line sprint budget" (rootedRequestDelta <= 340)
             frozenRootedRequestDigest @?= "45ca89f24b43cbf4b02e2d82186e8c33db5e2aaedb6978d2111e039ae6933281"
-            significantHaskellLineCount protocolSource @?= 463
-            protocolDigest @?= "c125f3471ea90fd11fd8d1145ffc211e7f4ae1eb2207ccb427b51b797f3a32c8"
+            significantHaskellLineCount protocolSource @?= 526
+            protocolDigest @?= "04f069429b164e3d6b99ff68b900996c090e73947bc5c874859049ce49a696a4"
             handoffDigest @?= "6bbbd828b453173cf8f4be9cd1989eb0a6ddfc2cc5a9639b29d76558c0121fe5"
-            cabalDigest @?= "2bfaaf04c03ba96adfd7401c7468f6ddba337abc4cf53834709b50f5c2ac5e5f"
+            cabalRows @?= frozenHandoffPackageRows
             assertFragmentsInOrder
                 "Protocol retains the pre-existing singleton rooted outer request field and tags"
                 [ "RootedLifecycleRequestTag -> 1"
@@ -4308,14 +4477,16 @@ sealedFacadeTests =
     , testCase "rooted lifecycle response pairing is exact, neutral, single-owner, budgeted, and freezes shared surfaces" $
         withHandoffSourceRoot $ \packageRoot sourceRoot -> do
             sources <- readHaskellSources sourceRoot
-            handoffSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff.hs")
-            handoffInternalSource <-
-                readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Internal.hs")
-            rootedSource <-
-                readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Rooted.hs")
-            protocolSource <-
-                readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Protocol.hs")
+            (handoffSource, handoffDigest) <-
+                readFrozenSource (sourceRoot </> "HostBootstrap" </> "Handoff.hs")
+            (handoffInternalSource, handoffInternalDigest) <-
+                readFrozenSource (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Internal.hs")
+            (rootedSource, rootedDigest) <-
+                readFrozenSource (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Rooted.hs")
+            (protocolSource, protocolDigest) <-
+                readFrozenSource (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Protocol.hs")
             cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
+            cabalRows <- handoffPackageRows cabalSource
             librarySource <-
                 maybe
                     (assertFailure "hostbootstrap-core.cabal has no main library stanza")
@@ -4343,11 +4514,6 @@ sealedFacadeTests =
                 rootedLines = significantHaskellLineCount rootedSource
                 responseDelta :: Int
                 responseDelta = rootedLines - frozenRootedRequestLines
-                rootedDigest = childConfigDigest (TextEncoding.encodeUtf8 (Text.pack rootedSource))
-                handoffDigest = childConfigDigest (TextEncoding.encodeUtf8 (Text.pack handoffSource))
-                handoffInternalDigest = childConfigDigest (TextEncoding.encodeUtf8 (Text.pack handoffInternalSource))
-                protocolDigest = childConfigDigest (TextEncoding.encodeUtf8 (Text.pack protocolSource))
-                cabalDigest = childConfigDigest (TextEncoding.encodeUtf8 (Text.pack cabalSource))
             assertFragmentsInOrder
                 "pairing fixes the exact request digest, admits only the closed family matrix, echoes post-open coordinates, and keeps successor stage and ordinal independent"
                 [ "rootedLifecycleResponsePairKernel expected request = rootedLifecycleUnsignedResponsePairKernel expected request . renderRootedLifecycleUnsignedResponseKernel"
@@ -4485,9 +4651,9 @@ sealedFacadeTests =
             rootedDigest @?= "c035f05ec6c0951165d9141c8d6fccd1ce45b00266f88e5d9753dbbdf618460e"
             handoffDigest @?= "6bbbd828b453173cf8f4be9cd1989eb0a6ddfc2cc5a9639b29d76558c0121fe5"
             handoffInternalDigest @?= "305dc09a9e9ae617161f0b7ec35309aeb31d0152894988a8bc53f415cebca2bf"
-            significantHaskellLineCount protocolSource @?= 463
-            protocolDigest @?= "c125f3471ea90fd11fd8d1145ffc211e7f4ae1eb2207ccb427b51b797f3a32c8"
-            cabalDigest @?= "2bfaaf04c03ba96adfd7401c7468f6ddba337abc4cf53834709b50f5c2ac5e5f"
+            significantHaskellLineCount protocolSource @?= 526
+            protocolDigest @?= "04f069429b164e3d6b99ff68b900996c090e73947bc5c874859049ce49a696a4"
+            cabalRows @?= frozenHandoffPackageRows
     , testCase "rooted lifecycle response verification independently authenticates all seven closed families" $
         withHandoff 92 ProjectUp $ \broker -> do
             (binding, _offer) <- newOffer broker childPayload
@@ -5059,9 +5225,10 @@ sealedFacadeTests =
             digest handoffSource @?= "6bbbd828b453173cf8f4be9cd1989eb0a6ddfc2cc5a9639b29d76558c0121fe5"
             digest internalSource @?= "305dc09a9e9ae617161f0b7ec35309aeb31d0152894988a8bc53f415cebca2bf"
             digest rootedSource @?= "c035f05ec6c0951165d9141c8d6fccd1ce45b00266f88e5d9753dbbdf618460e"
-            significantHaskellLineCount protocolSource @?= 463
-            digest protocolSource @?= "c125f3471ea90fd11fd8d1145ffc211e7f4ae1eb2207ccb427b51b797f3a32c8"
-            digest cabalSource @?= "2bfaaf04c03ba96adfd7401c7468f6ddba337abc4cf53834709b50f5c2ac5e5f"
+            significantHaskellLineCount protocolSource @?= 526
+            digest protocolSource @?= "04f069429b164e3d6b99ff68b900996c090e73947bc5c874859049ce49a696a4"
+            cabalRows <- handoffPackageRows cabalSource
+            cabalRows @?= frozenHandoffPackageRows
     , testCase "rooted relay envelopes are bounded before splitting and match exact authenticated paths" $
         withHandoffSourceRoot $ \_packageRoot sourceRoot -> do
             relaySource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Relay.hs")
@@ -5365,14 +5532,15 @@ sealedFacadeTests =
                 (transportDelta <= 400)
             digest relaySource @?= "1f7953c8813f44f20f84e96b691fd8ec2d7f5f65d40a783fc1221acd03aaed13"
             digest receiverInternalSource @?= "0a481b39e02ef02f4e1c4e47ca306794e8727ff8e15f2baae6d579e6554a2834"
-            digest receiverSource @?= "bed98bee39f3e41c3f3adf91fc5d2ffea842b78e4d3ffc823f5647cf6b0ccebe"
+            digest receiverSource @?= "514941f9d28ccb29ab6acb883f5f4797e6552842f9cc5e40c089684415544615"
             digest recoverySource @?= "15244530789cfe080ff84c543881158422143758cf9e15885ad47f08839424d1"
             digest handoffInternalSource @?= "305dc09a9e9ae617161f0b7ec35309aeb31d0152894988a8bc53f415cebca2bf"
             digest handoffSource @?= "6bbbd828b453173cf8f4be9cd1989eb0a6ddfc2cc5a9639b29d76558c0121fe5"
             digest rootedSource @?= "c035f05ec6c0951165d9141c8d6fccd1ce45b00266f88e5d9753dbbdf618460e"
-            significantHaskellLineCount protocolSource @?= 463
-            digest protocolSource @?= "c125f3471ea90fd11fd8d1145ffc211e7f4ae1eb2207ccb427b51b797f3a32c8"
-            digest cabalSource @?= "2bfaaf04c03ba96adfd7401c7468f6ddba337abc4cf53834709b50f5c2ac5e5f"
+            significantHaskellLineCount protocolSource @?= 526
+            digest protocolSource @?= "04f069429b164e3d6b99ff68b900996c090e73947bc5c874859049ce49a696a4"
+            cabalRows <- handoffPackageRows cabalSource
+            cabalRows @?= frozenHandoffPackageRows
     , testCase "recovery child package ownership is bounded, hidden, additive, and exactly attributed" $
         withHandoffSourceRoot $ \packageRoot sourceRoot -> do
             sources <- readHaskellSources sourceRoot
@@ -7095,6 +7263,7 @@ sealedFacadeTests =
                     , "HostBootstrap/Handoff/Receiver.hs"
                     , "HostBootstrap/Handoff/Receiver/Internal.hs"
                     , "HostBootstrap/Handoff/Relay.hs"
+                    , "HostBootstrap/Handoff/Transaction.hs"
                     ]
             importers "HostBootstrap.Handoff.Rooted"
                 @?= [ "HostBootstrap/Handoff.hs"
@@ -7549,6 +7718,8 @@ sealedFacadeTests =
     , testCase "the dedicated child receiver takes its protocol descriptors before any callback runs" $
         withHandoffSourceRoot $ \packageRoot sourceRoot -> do
             receiverSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Receiver.hs")
+            protocolSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Protocol.hs")
+            transactionSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Transaction.hs")
             cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
             librarySource <-
                 maybe
@@ -7558,9 +7729,20 @@ sealedFacadeTests =
             isolationSource <-
                 requiredSourceSection
                     "the protocol standard-I/O isolation"
+                    "withPrivateProtocolStdio ::"
+                    "-- | Read one complete message from the channel's inbound stream."
+                    protocolSource
+            entryIsolationSource <-
+                requiredSourceSection
+                    "the receiver's adoption of that isolation"
                     "withIsolatedReceivedHandoffEdge ::"
                     "{- | Run the child half of one handoff exchange"
                     receiverSource
+            protocolExports <-
+                maybe
+                    (assertFailure "HostBootstrap.Handoff.Protocol has no explicit export list")
+                    pure
+                    (SourceGuard.moduleExportTokens "HostBootstrap.Handoff.Protocol" protocolSource)
             entrySignature <-
                 requiredSourceSection
                     "the dedicated entry signature"
@@ -7573,6 +7755,7 @@ sealedFacadeTests =
                     pure
                     (SourceGuard.moduleExportTokens "HostBootstrap.Handoff.Receiver" receiverSource)
             let isolation = normalizeWhitespace isolationSource
+                entryIsolation = normalizeWhitespace entryIsolationSource
                 exposed = fieldModules "exposed-modules:" librarySource
                 private = fieldModules "other-modules:" librarySource
             normalizedModuleExports receiverExports
@@ -7594,12 +7777,12 @@ sealedFacadeTests =
                     && not ("Handle" `isInfixOf` entrySignature)
                 )
             assertContains
-                "the dedicated entry runs the ordinary exchange on the channel it built itself"
-                "withProtocolStdio $ \\channel -> withReceivedHandoffEdge project channel key"
-                isolation
+                "the dedicated entry runs the ordinary exchange on the channel the one owner built"
+                "withPrivateProtocolStdio $ \\channel -> withReceivedHandoffEdge project channel key"
+                entryIsolation
             assertContains
                 "one outer bracket owns the duplicates and one inner bracket owns the redirection"
-                "Exception.bracket openProtocolStdio closeProtocolStdio $ \\(inbound, outbound, savedIn, savedOut, sink) -> Exception.bracket_ (isolateGlobalStdio sink) (restoreGlobalStdio savedIn savedOut) (handoffChannel inbound outbound >>= use)"
+                "bracket openProtocolStdio closeProtocolStdio $ \\(inbound, outbound, savedIn, savedOut, sink) -> bracket_ (isolateGlobalStdio sink) (restoreGlobalStdio savedIn savedOut) (handoffChannel inbound outbound >>= use)"
                 isolation
             assertFragmentsInOrder
                 "the protocol pair, the restore pair, and the sink are taken before any redirection"
@@ -7653,18 +7836,39 @@ sealedFacadeTests =
                 , "unsafeCoerce"
                 ]
             assertBool
-                "the isolation is the receiver's only channel construction and its only duplication policy"
-                ( SourceGuard.countHaskellIdentifier "handoffChannel" receiverSource == 2
-                    && SourceGuard.countHaskellIdentifier "withProtocolStdio" receiverSource == 3
+                "the receiver builds no channel of its own and reaches the isolation once"
+                ( SourceGuard.countHaskellIdentifier "handoffChannel" receiverSource == 0
+                    && SourceGuard.countHaskellIdentifier "withPrivateProtocolStdio" receiverSource == 2
                 )
+            assertBool
+                "the frame-child entry reaches the same isolation once and builds no channel of its own"
+                ( SourceGuard.countHaskellIdentifier "withPrivateProtocolStdio" transactionSource == 2
+                    && SourceGuard.countHaskellIdentifier "hDuplicate" transactionSource == 0
+                    && SourceGuard.countHaskellIdentifier "hDuplicateTo" transactionSource == 0
+                    && SourceGuard.countHaskellIdentifier "stdioHandoffChannel" transactionSource == 0
+                )
+            assertBool
+                "the isolation itself is the one entry the owner publishes"
+                ("withPrivateProtocolStdio" `elem` normalizedModuleExports protocolExports)
             mapM_
                 ( \identifier ->
                     assertBool
-                        (identifier <> " stays private to the receiver")
-                        (identifier `notElem` normalizedModuleExports receiverExports)
+                        (identifier <> " stays private to the isolation's owner")
+                        (identifier `notElem` normalizedModuleExports protocolExports)
                 )
-                [ "withProtocolStdio"
-                , "openProtocolStdio"
+                [ "openProtocolStdio"
+                , "closeProtocolStdio"
+                , "isolateGlobalStdio"
+                , "restoreGlobalStdio"
+                , "nullDevicePath"
+                ]
+            mapM_
+                ( \identifier ->
+                    assertBool
+                        (identifier <> " has exactly one implementation, in the isolation's owner")
+                        (SourceGuard.countHaskellIdentifier identifier receiverSource == 0)
+                )
+                [ "openProtocolStdio"
                 , "closeProtocolStdio"
                 , "isolateGlobalStdio"
                 , "restoreGlobalStdio"
@@ -7934,22 +8138,21 @@ sealedFacadeTests =
     , testCase "scope-first transport remains acyclic and leaves Protocol and facade frozen" $
         withHandoffSourceRoot $ \packageRoot sourceRoot -> do
             sources <- readHaskellSources sourceRoot
-            handoffSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff.hs")
-            protocolSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Protocol.hs")
+            (handoffSource, handoffDigest) <-
+                readFrozenSource (sourceRoot </> "HostBootstrap" </> "Handoff.hs")
+            (protocolSource, protocolDigest) <-
+                readFrozenSource (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Protocol.hs")
             relaySource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Relay.hs")
             receiverSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Receiver.hs")
             receiverInternalSource <-
                 readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Receiver" </> "Internal.hs")
-            cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
+            cabalRows <- handoffPackageRows =<< readFile (packageRoot </> "hostbootstrap-core.cabal")
             let users identifier =
                     sort
                         [ sourcePath sourceRoot path
                         | (path, source) <- sources
                         , SourceGuard.countHaskellIdentifier identifier source > 0
                         ]
-                protocolDigest = childConfigDigest (TextEncoding.encodeUtf8 (Text.pack protocolSource))
-                handoffDigest = childConfigDigest (TextEncoding.encodeUtf8 (Text.pack handoffSource))
-                cabalDigest = childConfigDigest (TextEncoding.encodeUtf8 (Text.pack cabalSource))
             assertBool
                 "the private scope-first dependency graph is one-way"
                 ( SourceGuard.importsModule "HostBootstrap.Handoff" relaySource
@@ -7982,10 +8185,10 @@ sealedFacadeTests =
                 @?= [ "HostBootstrap/Handoff/Receiver/Internal.hs"
                     , "HostBootstrap/Handoff/Relay.hs"
                     ]
-            significantHaskellLineCount protocolSource @?= 463
-            protocolDigest @?= "c125f3471ea90fd11fd8d1145ffc211e7f4ae1eb2207ccb427b51b797f3a32c8"
+            significantHaskellLineCount protocolSource @?= 526
+            protocolDigest @?= "04f069429b164e3d6b99ff68b900996c090e73947bc5c874859049ce49a696a4"
             handoffDigest @?= "6bbbd828b453173cf8f4be9cd1989eb0a6ddfc2cc5a9639b29d76558c0121fe5"
-            cabalDigest @?= "2bfaaf04c03ba96adfd7401c7468f6ddba337abc4cf53834709b50f5c2ac5e5f"
+            cabalRows @?= frozenHandoffPackageRows
             mapM_
                 (\source -> do
                     SourceGuard.countHaskellTokenSequence ["data", "AuthenticatedRootScope"] source @?= 0
@@ -8196,14 +8399,15 @@ sealedFacadeTests =
     , testCase "rooted carrier adoption is bounded, acyclic, exactly attributed, and freezes shared surfaces" $
         withHandoffSourceRoot $ \packageRoot sourceRoot -> do
             sources <- readHaskellSources sourceRoot
-            handoffSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff.hs")
-            protocolSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Protocol.hs")
+            handoffDigest <- frozenSourceDigest (sourceRoot </> "HostBootstrap" </> "Handoff.hs")
+            (protocolSource, protocolDigest) <-
+                readFrozenSource (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Protocol.hs")
             recoverySource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Recovery.hs")
             relaySource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Relay.hs")
             receiverSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Receiver.hs")
             receiverInternalSource <-
                 readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Receiver" </> "Internal.hs")
-            cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
+            cabalRows <- handoffPackageRows =<< readFile (packageRoot </> "hostbootstrap-core.cabal")
             offerBound <-
                 requiredSourceSection
                     "sender-side Offer payload bound"
@@ -8247,9 +8451,6 @@ sealedFacadeTests =
                     (frozenCarrierRelayLines - 1733)
                         + (frozenCarrierReceiverLines - 570)
                         + (frozenCarrierReceiverInternalLines - 105)
-                protocolDigest = childConfigDigest (TextEncoding.encodeUtf8 (Text.pack protocolSource))
-                handoffDigest = childConfigDigest (TextEncoding.encodeUtf8 (Text.pack handoffSource))
-                cabalDigest = childConfigDigest (TextEncoding.encodeUtf8 (Text.pack cabalSource))
                 productionOwners = [relaySource, receiverSource, receiverInternalSource]
             assertBool
                 "the carrier dependency graph remains one-way and excludes catalog/application producers"
@@ -8351,10 +8552,10 @@ sealedFacadeTests =
             assertBool
                 "the embedded Offer package bound is strictly smaller than both standalone and protocol bounds"
                 (7 * 1024 * 1024 < (8 * 1024 * 1024 :: Int))
-            significantHaskellLineCount protocolSource @?= 463
-            protocolDigest @?= "c125f3471ea90fd11fd8d1145ffc211e7f4ae1eb2207ccb427b51b797f3a32c8"
+            significantHaskellLineCount protocolSource @?= 526
+            protocolDigest @?= "04f069429b164e3d6b99ff68b900996c090e73947bc5c874859049ce49a696a4"
             handoffDigest @?= "6bbbd828b453173cf8f4be9cd1989eb0a6ddfc2cc5a9639b29d76558c0121fe5"
-            cabalDigest @?= "2bfaaf04c03ba96adfd7401c7468f6ddba337abc4cf53834709b50f5c2ac5e5f"
+            cabalRows @?= frozenHandoffPackageRows
     , testCase "the token is forced before one live validation/admission/signing sequence" $
         withHandoffSourceRoot $ \_packageRoot sourceRoot -> do
             handoffSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff.hs")
@@ -9443,10 +9644,120 @@ readHaskellSources directory = do
                     else pure []
 
 sourcePath :: FilePath -> FilePath -> FilePath
-sourcePath sourceRoot = map slash . makeRelative sourceRoot
+sourcePath = SourceGuard.repoRelativePath
+
+{- | Read a governed source once, as its own bytes and as the text of those bytes.
+
+A frozen digest names what a file /is/, so it is a digest of that file's own
+bytes (§ JJ). Decoded through the gate host's active code page and re-encoded, a
+frozen digest becomes a property of the host instead of the file, and a source
+shape assertion beside it reads a differently newline-translated text than the
+digest covers. Both come from the one byte read here, so a freeze means the same
+thing on every gate host.
+-}
+readFrozenSource :: FilePath -> IO (String, Text.Text)
+readFrozenSource path = do
+    bytes <- ByteString.readFile path
+    pure (Text.unpack (TextEncoding.decodeUtf8 bytes), childConfigDigest bytes)
+
+-- | The frozen digest of a governed source whose text no guard beside it reads.
+frozenSourceDigest :: FilePath -> IO Text.Text
+frozenSourceDigest = fmap snd . readFrozenSource
+
+{- | The rows of the package description a handoff sprint owns: its own module
+rows in the main library, and that library's dependency set.
+
+§ C: a sprint freezes the bytes of a module, a stanza, or a set of rows it is
+responsible for, and may not freeze a whole shared file whose other parts belong
+to other phases. A digest over the complete package description makes every
+sprint that adds a module anywhere in the package break the evidence of every
+handoff sprint that froze it — a coupling no dependency edge justifies and that
+numerical order cannot express. These rows prove the same two things about the
+same subject: this sprint introduced no handoff module and no dependency.
+-}
+handoffPackageRows :: String -> IO [String]
+handoffPackageRows cabalText = do
+    library <-
+        maybe
+            (assertFailure "hostbootstrap-core.cabal has no main library stanza")
+            pure
+            (mainLibraryStanza cabalText)
+    pure
+        ( sort
+            [ moduleName
+            | field <- ["exposed-modules:", "other-modules:"]
+            , moduleName <- fieldModules field library
+            , "HostBootstrap.Handoff" `isPrefixOf` moduleName
+            ]
+            ++ libraryDependencyNames library
+        )
+
+{- | Every package the main library depends on, by name and in order, including
+the platform-conditional rows nested inside the stanza.
+
+The stanza is read as text rather than evaluated, so both arms of a
+platform condition are present on every gate host (§ JJ) — the Windows-only and
+the POSIX-only dependency alike. A list that varied by gate host would be a
+freeze that means a different thing on each one.
+-}
+libraryDependencyNames :: String -> [String]
+libraryDependencyNames library = sort (go (lines library))
   where
-    slash '\\' = '/'
-    slash character = character
+    go [] = []
+    go (line : rest)
+        | trim line == "build-depends:" =
+            let fieldIndent = indentation line
+                (continuation, remaining) =
+                    span
+                        (\next -> null (trim next) || indentation next > fieldIndent)
+                        rest
+             in dependencyNames continuation <> go remaining
+        | otherwise = go rest
+
+    dependencyNames = concatMap (take 1 . words . dropLeadingComma . trim)
+
+    dropLeadingComma (',' : rest) = rest
+    dropLeadingComma value = value
+
+{- | The exact rows the handoff surface is frozen at. One list, so a sprint that
+adds a handoff module or a library dependency updates one place rather than six.
+-}
+frozenHandoffPackageRows :: [String]
+frozenHandoffPackageRows =
+    [ "HostBootstrap.Handoff"
+    , "HostBootstrap.Handoff.Completion"
+    , "HostBootstrap.Handoff.Internal"
+    , "HostBootstrap.Handoff.Lifecycle"
+    , "HostBootstrap.Handoff.Process"
+    , "HostBootstrap.Handoff.Process.Route"
+    , "HostBootstrap.Handoff.Protocol"
+    , "HostBootstrap.Handoff.Receiver"
+    , "HostBootstrap.Handoff.Receiver.Internal"
+    , "HostBootstrap.Handoff.Recovery"
+    , "HostBootstrap.Handoff.Relay"
+    , "HostBootstrap.Handoff.Rooted"
+    , "HostBootstrap.Handoff.Runtime"
+    , "HostBootstrap.Handoff.Transaction"
+    , "Win32"
+    , "aeson"
+    , "base"
+    , "bytestring"
+    , "containers"
+    , "crypton"
+    , "dhall"
+    , "directory"
+    , "filepath"
+    , "hostbootstrap-core:cluster-backend-internal"
+    , "hostbootstrap-core:colima-backend-internal"
+    , "hostbootstrap-core:effect-internal"
+    , "hostbootstrap-core:harness-lifecycle-internal"
+    , "memory"
+    , "optparse-applicative"
+    , "process"
+    , "safe-exceptions"
+    , "text"
+    , "unix"
+    ]
 
 mainLibraryStanza :: String -> Maybe String
 mainLibraryStanza cabalText =

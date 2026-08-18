@@ -44,6 +44,11 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
+import HostBootstrap.Effect (
+    CapturedRun (CapturedRun),
+    renderRunFailure,
+    runCaptured,
+ )
 import HostBootstrap.Ensure (runEnsure, runTool)
 import qualified HostBootstrap.Ensure.AppleMetal as AppleMetal
 import qualified HostBootstrap.Ensure.CudaWin as CudaWin
@@ -87,7 +92,6 @@ import System.Process (
     StdStream (CreatePipe, Inherit),
     createProcess,
     proc,
-    readProcessWithExitCode,
     std_err,
     std_in,
     std_out,
@@ -500,15 +504,15 @@ runWorkerProcess spec (AcceleratorAddRequest _ leftVal rightVal) = do
         Nothing ->
             pure (Left ("accelerator worker executable not found near " <> T.pack (workerExecutablePath spec)))
         Just exe -> do
-            result <- try (readProcessWithExitCode exe [] (show leftVal ++ " " ++ show rightVal ++ "\n"))
-            pure $ case (result :: Either SomeException (ExitCode, String, String)) of
-                Left err -> Left (T.pack (show err))
-                Right (ExitSuccess, out, _) ->
+            outcome <- runCaptured exe [] (show leftVal ++ " " ++ show rightVal ++ "\n")
+            pure $ case outcome of
+                Left failure -> Left (T.pack (renderRunFailure failure))
+                Right (CapturedRun ExitSuccess out _) ->
                     maybe
                         (Left ("accelerator worker returned non-numeric output: " <> T.pack out))
                         Right
                         (readMaybe (headDef "" (words out)))
-                Right (ExitFailure n, out, err) ->
+                Right (CapturedRun (ExitFailure n) out err) ->
                     Left ("accelerator worker failed (exit " <> T.pack (show n) <> "): " <> T.pack (out <> err))
   where
     headDef def [] = def

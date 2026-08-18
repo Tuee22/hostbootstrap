@@ -167,7 +167,8 @@ foundationCases =
       let importedModules = sort (hostbootstrapImports source)
       importedModules
         @?= sort
-          [ "HostBootstrap.HostConfig",
+          [ "HostBootstrap.Effect.Run",
+            "HostBootstrap.HostConfig",
             "HostBootstrap.HostTool",
             "HostBootstrap.Substrate"
           ]

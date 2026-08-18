@@ -12,20 +12,19 @@ module HostBootstrap.Ensure.Cuda (reconciler, installSteps, repositorySetupScrip
 
 import Data.List (isInfixOf)
 import HostBootstrap.Ensure (
+    FramePlan (InstallHere),
     InstallStep (..),
     Reconciler (..),
+    frameTable,
     installAndVerify,
+    linuxGpuRow,
+    reconcilerInstallSteps,
     runTool,
     toolPresent,
  )
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.HostTool (HostTool (Docker, NvidiaSmi, Sudo))
-import HostBootstrap.Substrate (
-    Substrate,
-    SubstrateName (LinuxGpu),
-    renderSubstrateName,
-    substrateName,
- )
+import HostBootstrap.Substrate (Substrate)
 import System.Exit (ExitCode (..), die)
 
 reconciler :: Reconciler
@@ -33,8 +32,9 @@ reconciler =
     Reconciler
         { reconcilerName = "cuda"
         , reconcilerSummary = "Ensure the NVIDIA driver and Docker runtime (linux-gpu)"
-        , appliesTo = \sub -> substrateName sub == LinuxGpu
-        , requirement = "linux-gpu"
+        , -- One row, and the only one in the package that requires an
+          -- accelerator of the frame it runs in rather than naming a tag.
+          reconcilerFrames = frameTable [linuxGpuRow (InstallHere linuxGpuSteps)]
         , reconcile = \cfg -> do
             if not (toolPresent cfg NvidiaSmi)
                 then die "ensure cuda: nvidia-smi not found; install the NVIDIA driver, then re-run."
@@ -85,20 +85,19 @@ register it as Docker's default with CDI, enable the volume-mount injection
 @nvkind@ consumes, and restart the daemon.
 -}
 installSteps :: Substrate -> Either String [InstallStep]
-installSteps sub
-    | substrateName sub == LinuxGpu =
-        Right
-            [ InstallStep Sudo ["apt-get", "update"]
-            , InstallStep Sudo ["apt-get", "install", "-y", "--no-install-recommends", "curl", "gnupg2"]
-            , InstallStep Sudo ["/bin/sh", "-c", repositorySetupScript]
-            , InstallStep Sudo ["apt-get", "update"]
-            , InstallStep Sudo ["apt-get", "install", "-y", "nvidia-container-toolkit"]
-            , InstallStep Sudo ["nvidia-ctk", "runtime", "configure", "--runtime=docker", "--set-as-default", "--cdi.enabled"]
-            , InstallStep Sudo ["nvidia-ctk", "config", "--set", "accept-nvidia-visible-devices-as-volume-mounts=true", "--in-place"]
-            , InstallStep Sudo ["systemctl", "restart", "docker"]
-            ]
-    | otherwise =
-        Left ("cuda is only applicable on linux-gpu, not " ++ renderSubstrateName (substrateName sub))
+installSteps = reconcilerInstallSteps reconciler
+
+linuxGpuSteps :: [InstallStep]
+linuxGpuSteps =
+    [ InstallStep Sudo ["apt-get", "update"]
+    , InstallStep Sudo ["apt-get", "install", "-y", "--no-install-recommends", "curl", "gnupg2"]
+    , InstallStep Sudo ["/bin/sh", "-c", repositorySetupScript]
+    , InstallStep Sudo ["apt-get", "update"]
+    , InstallStep Sudo ["apt-get", "install", "-y", "nvidia-container-toolkit"]
+    , InstallStep Sudo ["nvidia-ctk", "runtime", "configure", "--runtime=docker", "--set-as-default", "--cdi.enabled"]
+    , InstallStep Sudo ["nvidia-ctk", "config", "--set", "accept-nvidia-visible-devices-as-volume-mounts=true", "--in-place"]
+    , InstallStep Sudo ["systemctl", "restart", "docker"]
+    ]
 
 {- | NVIDIA's signed Debian repository setup, expressed as one fail-closed root
 shell step because the official procedure is a pair of pipelines. Every

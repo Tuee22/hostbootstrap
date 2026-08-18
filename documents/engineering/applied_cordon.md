@@ -196,7 +196,7 @@ paths within Darwin's limit without becoming the collision boundary. The private
 Python, Colima, Docker, Lima, and helper-directory identities, and the bounded runner closes environment,
 cwd, output, and process-group lifetime.
 
-Under descriptor-held Python `fcntl.flock`, self-bound
+Under the ownership row's descriptor-held kernel lock, self-bound
 `reserved`/`home-staged`/`home-ready`/`context-staged`/`prepared`/`managed` records publish absence before
 namespaces or `colima start`, then retain the exact invocation, machine/context identity, root/data wall,
 directory chain, and complete Colima/Lima artifact manifest. A profile present from `prepared` without a

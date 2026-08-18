@@ -654,6 +654,16 @@ complete suite 1913/1913 in 388.65 seconds, and `DocValidatorSpec` 2/2. Frozen S
 148 + 120 + 67 source lines plus two Cabal rows = 337; the lower 62-line bound-observation verifier belongs
 to the preceding canonical-wire sprint.
 
+`CLISpec` pins the two importers this split leaves the Cabal-private `LifecycleEntry` — `Command.hs` and
+`Handoff/Lifecycle.hs` — as a separator-neutral repo-relative allow-list, so the same two modules are
+named on every supported outer host realization (§ JJ). It builds those names with
+`SourceGuard.repoRelativePath`, the helper the
+[Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md) owns; the module ownership the
+sprint states is unchanged. On 2026-08-17 the gate passed host-native on Windows 11 Home 10.0.26200
+x86_64 (GHC 9.12.4, Cabal 3.16.1.0) at 1,877/1,877, which is the first run to exercise this allow-list
+from a native-separator gate host. Cross-family confirmation is the
+[host-portability acceptance phase](phase-28-host-portability-acceptance.md)'s (§ JJ).
+
 #### Remaining Work
 
 None.
@@ -838,6 +848,10 @@ carries the projecting forward-child fixture that admission needs.
 `cabal test all --ghc-options=-Werror` from `core/` passed warning-clean on macOS/aarch64 on 2026-08-12 at
 `1950 tests passed`.
 
+#### Remaining Work
+
+None.
+
 ### Sprint 17.26: Digest-proven codec and registry reindex [Done]
 
 **Status**: Done
@@ -895,6 +909,10 @@ through the public recovered-inputs boundary.
 `cabal test all --ghc-options=-Werror` from `core/` passed warning-clean on macOS/aarch64 on 2026-08-12 at
 `1960 tests passed`.
 
+#### Remaining Work
+
+None.
+
 ### Sprint 17.27: Recovered finalized-specification reindex [Done]
 
 **Status**: Done
@@ -944,6 +962,10 @@ are re-pinned, and `CrossConfigSpecRecoveredProjectPlan.hs` and
 `1962 tests passed`, alongside `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` at `231 passed`. The join adds 46 significant lines across the
 two shared owners.
+
+#### Remaining Work
+
+None.
 
 ### Sprint 17.28: Root catalog persistence and readback [Done]
 
@@ -1008,6 +1030,10 @@ Sprint 17.29's, which is the first sprint whose deliverable consumes an admitted
 `cabal test all --ghc-options=-Werror` from `core/` passed warning-clean on macOS/aarch64 on 2026-08-12 at
 `1966 tests passed`, alongside `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` at `231 passed`.
+
+#### Remaining Work
+
+None.
 
 ### Sprint 17.29: Catalog-admitted forward package [Done]
 
@@ -1181,6 +1207,10 @@ bind/open/authenticate/transmit route, and the absence of any broker, store, or 
 `1968 tests passed`, alongside `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` at `231 passed`.
 
+#### Remaining Work
+
+None.
+
 ### Sprint 17.31: Installed recursive handoff runtime [Done]
 
 **Status**: Done
@@ -1246,6 +1276,10 @@ boundary, because the module has no public surface a behavioural test could reac
 `cabal test all --ghc-options=-Werror` from `core/` passed warning-clean on macOS/aarch64 on 2026-08-13 at
 `1970 tests passed`, alongside `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` at `231 passed`.
+
+#### Remaining Work
+
+None.
 
 ### Sprint 17.32: Rooted frame session [Done]
 
@@ -1331,6 +1365,10 @@ hidden-module boundary.
 `1972 tests passed`, alongside `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` at `231 passed`.
 
+#### Remaining Work
+
+None.
+
 ### Sprint 17.33: Prepared node grant [Done]
 
 **Status**: Done
@@ -1400,6 +1438,10 @@ three-owner mint allowlist, and the absence of any response builder, signer, or 
 `1973 tests passed`, alongside `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` at `231 passed`.
 
+#### Remaining Work
+
+None.
+
 ### Sprint 17.34: Root settlement and replay [Done]
 
 **Status**: Done
@@ -1463,6 +1505,10 @@ ordinal-keyed row, the absence of any gate mint, and both owners' line budgets.
 `1973 tests passed`, alongside `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` at `231 passed`. After the split `Lifecycle.Rooted` stands at
 286 significant lines and `Lifecycle.Rooted.Node` at 231.
+
+#### Remaining Work
+
+None.
 
 ### Sprint 17.35: Root terminal receipt confirmation [Done]
 
@@ -1542,6 +1588,10 @@ digests across the change. `CompileFailSpec` pins the new owner's hidden-module 
 `poetry run python -m hostbootstrap.test_all` at `231 passed`. `Lifecycle.Rooted.Receipt` stands at 202
 significant lines, `Lifecycle.Rooted` is unchanged at 286, `Lifecycle.Rooted.Node` at 231, and the
 `Handoff.Relay` call site adds 35.
+
+#### Remaining Work
+
+None.
 
 ### Sprint 17.36: Rooted relay service [Done]
 
@@ -1943,6 +1993,16 @@ command gate once Sprints 17.41–17.50 have adopted it.
 lines and `Handoff.Process.Route` at 398; the relay increment is 13 lines, so every owner is inside the
 sprint's 400-line bound.
 
+The owner's placement is what makes its fixture platform-conditional. `Handoff.Process` is a
+POSIX-conditional module, so on a Windows outer host it is unreachable because the package does not build
+it rather than because it is hidden, and `ImportHandoffProcess.hs` expects the diagnostic its host
+actually produces (§ JJ): `Could not load module … it is a hidden module` on POSIX, and
+`Could not find module …` on Windows. The guard asserts unreachability from a public importer on both,
+and the sibling `ImportHandoffProcessRoute.hs` stays unconditional because `Handoff.Process.Route` is
+built and hidden everywhere. On 2026-08-17 the gate passed host-native on Windows 11 Home 10.0.26200
+x86_64 (GHC 9.12.4, Cabal 3.16.1.0) at 1,877/1,877, including both fixtures. Cross-family confirmation is
+the [host-portability acceptance phase](phase-28-host-portability-acceptance.md)'s (§ JJ).
+
 #### Remaining Work
 
 None.
@@ -1951,7 +2011,6 @@ None.
 
 **Status**: Planned
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command/Child.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/FrameExecutor.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`,
@@ -1959,18 +2018,21 @@ None.
 
 #### Objective
 
-Adopt authenticated forward child packages into a long-lived storeless frame executor.
+Adopt authenticated forward child packages into a long-lived storeless frame executor, over the
+frame-child entry the handoff phase supplies.
 
 #### Deliverables
 
-- `Command` recognizes one fixed internal lifecycle-child marker before sibling-config I/O and delegates to
-  `Command.Child`, which derives exact child config and frame plan from the authenticated scope-first,
-  catalog-bound forward package and isolated receiver channel; the marker carries no coordinates, path,
-  authority, or user-selected action.
+- The frame-child entry the
+  [authenticated-handoff phase](phase-13-authenticated-handoff-and-child-admission.md) supplies delegates a
+  lifecycle conversation to `Command.Child`, which derives exact child config and frame plan from the
+  authenticated scope-first, catalog-bound forward package and isolated receiver channel. This sprint adds
+  the conversation, not the entry: the marker it arrives through already carries no coordinates, path,
+  authority, or user-selected action, and this sprint gives it none.
 - It verifies authenticated root scope and opens one `FrameExecutor` for repeated rooted requests.
 - Each Prepared response drives only its exact local node effect and returns one typed observation.
 - Descend and terminal branches return closed protocol results without local settlement or receipt persistence.
-- Work is limited to the three named production modules, targets at most 400 significant lines, adds no named
+- Work is limited to the two named production modules, targets at most 400 significant lines, adds no named
   type, and adopts only the one forward child receiver call site.
 
 #### Validation
@@ -2312,13 +2374,16 @@ Close the recursive command with static proofs and real local process-boundary b
 Run `cabal test all --ghc-options=-Werror` from `core/`. The named recursive-lifecycle group must execute real
 local process fixtures on linux-cpu; record dated counts and source/compile-fail evidence after the gate passes.
 
+#### Objective boundary
+
+Consuming root `DestroySettled` as `ProjectClosureEvidence SettledDestroyClose` also requires the bound run
+lease and the all-sessions-closed proof, and recovery beyond the retained live plan belongs to the
+[recovery phase](phase-18-recovery-and-migration.md). This sprint's gate is the host-static real-process
+one and nothing beyond it.
+
 #### Remaining Work
 
 All fixtures, adversarial cases, proof guards, documentation reconciliation, and the exact host-static gate.
-
-Consuming root `DestroySettled` as `ProjectClosureEvidence SettledDestroyClose` also requires the bound run
-lease and all-sessions-closed proof. The [recovery phase](phase-18-recovery-and-migration.md) owns recovery
-beyond the retained live plan.
 
 ## Remaining Work
 
@@ -2345,6 +2410,14 @@ the frames a peer owes immediately, and leaving the admitted effect's own wait a
 Sprints 17.41–17.45 add forward/reverse receiver adoption and semantic completion. Sprints
 17.46–17.50 adopt cluster cleanup, terminalization, shared reverse execution, and failed-Up cleanup/unwind.
 Sprint 17.51 closes the host-static real-process gate. Live worked-demo confirmation remains Phase 24 work.
+
+Two of this phase's own guards are stated for one outer host and hold on every supported one (§ JJ):
+Sprint 17.20's `LifecycleEntry` importer allow-list takes the separator-neutral repo-relative path
+helper, and Sprint 17.40's `ImportHandoffProcess.hs` fixture takes the platform-conditional expectation
+its POSIX-conditional owner requires. Both follow the harness foundation the
+[Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md) owns. Sprint 17.51's gate drives
+real local child processes through that POSIX-conditional owner, so it runs on a POSIX outer host or a
+realized Linux substrate; the sprints between close on the host static gate.
 
 ## Documentation Requirements
 

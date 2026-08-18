@@ -32,22 +32,20 @@ import Data.Char (toLower)
 import Data.List (find, intercalate, isInfixOf)
 import Data.Maybe (mapMaybe)
 import HostBootstrap.Ensure
-  ( InstallStep (..),
+  ( FramePlan (InstallHere),
+    InstallStep (..),
     Reconciler (..),
+    appleRow,
+    frameTable,
     installAndVerify,
+    linuxRow,
+    reconcilerInstallSteps,
     runTool,
     toolPresent,
   )
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig, resolveMaybe)
 import HostBootstrap.HostTool (HostTool (Brew, Colima, Incus, Sudo), absExePath)
-import HostBootstrap.Substrate
-  ( Substrate,
-    SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu),
-    isAppleSilicon,
-    isLinux,
-    renderSubstrateName,
-    substrateName,
-  )
+import HostBootstrap.Substrate (Substrate, isAppleSilicon, isLinux)
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..), die)
 #ifndef mingw32_HOST_OS
@@ -178,9 +176,32 @@ reconciler =
       reconcilerSummary =
         "Ensure the incus host-provider is usable "
           ++ "(Colima on apple-silicon, native daemon on linux)",
-      -- The first reconciler applicable on BOTH apple-silicon and linux.
-      appliesTo = \sub -> isAppleSilicon sub || isLinux sub,
-      requirement = "apple-silicon or linux",
+      -- The first reconciler with two rows. On apple-silicon a dedicated
+      -- @incus@ Colima profile runs Incus as its runtime, so it coexists with
+      -- the default Docker profile; on linux the native daemon is installed and
+      -- initialized. Homebrew formula installs are intentionally expressed as
+      -- @brew install@ steps, because Homebrew treats an already installed
+      -- formula as a successful no-op — the idempotent path this wants.
+      --
+      -- Windows is an absent row rather than a refusal: the WSL2 frame owns the
+      -- Windows host provider, and saying so twice is how two answers to one
+      -- question start to differ.
+      reconcilerFrames =
+        frameTable
+          [ appleRow
+              ( InstallHere
+                  [ InstallStep Brew ["install", "incus"],
+                    InstallStep Brew ["install", "colima"],
+                    InstallStep Colima ["start", appleIncusProfile, "--runtime", "incus"]
+                  ]
+              ),
+            linuxRow
+              ( InstallHere
+                  [ InstallStep Sudo ["apt-get", "install", "-y", "incus", "acl"],
+                    InstallStep Sudo ["incus", "admin", "init", "--minimal"]
+                  ]
+              )
+          ],
       reconcile = reconcileIncus
     }
 
@@ -304,31 +325,8 @@ ensureBridgeForwarding cfg =
             ++ direction
             ++ " incusbr0 -j ACCEPT"
         ]
--- | The substrate-branched install plan. Homebrew formula installs are
--- intentionally expressed as @brew install@ steps; Homebrew treats an already
--- installed formula as a successful no-op, which is the idempotent path we want.
--- On apple-silicon, start a dedicated @incus@ Colima profile with Incus as the
--- runtime so it can coexist with the default Docker Colima profile. On linux,
--- @apt-get install -y incus@ then @sudo incus admin init --minimal@.
 installSteps :: Substrate -> Either String [InstallStep]
-installSteps sub = case substrateName sub of
-  AppleSilicon ->
-    Right
-      [ InstallStep Brew ["install", "incus"],
-        InstallStep Brew ["install", "colima"],
-        InstallStep Colima ["start", appleIncusProfile, "--runtime", "incus"]
-      ]
-  LinuxCpu -> Right linuxSteps
-  LinuxGpu -> Right linuxSteps
-  WindowsCpu ->
-    Left ("incus is not the Windows host-provider; use the WSL2 provider on " ++ renderSubstrateName WindowsCpu)
-  WindowsGpu ->
-    Left ("incus is not the Windows host-provider; use the WSL2 provider on " ++ renderSubstrateName WindowsGpu)
-  where
-    linuxSteps =
-      [ InstallStep Sudo ["apt-get", "install", "-y", "incus", "acl"],
-        InstallStep Sudo ["incus", "admin", "init", "--minimal"]
-      ]
+installSteps = reconcilerInstallSteps reconciler
 
 ensureIncusAdminGroup :: HostConfig -> IO ()
 ensureIncusAdminGroup cfg = do

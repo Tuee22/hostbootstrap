@@ -43,17 +43,21 @@ module HostBootstrap.DocValidator
     checkPhaseHeader,
     checkPhaseStatusHarmony,
     checkPhaseOrdering,
+    checkRemainingWorkOrdering,
     checkNoReversal,
     checkSprintStructure,
+    checkActivePhaseRemainingWork,
+    checkDoneSprintRemainingWork,
     checkSubstrateBudget,
     checkLegacyLedger,
+    checkContractOwnership,
   )
 where
 
 import Control.Monad (filterM, foldM)
 import Data.Char (isDigit)
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf, nub, sort, sortOn)
-import Data.Maybe (isNothing)
+import Data.Maybe (isJust, isNothing)
 import System.Directory
   ( doesDirectoryExist,
     doesFileExist,
@@ -104,10 +108,14 @@ validateRepo root = do
   headerV <- concatMapM (checkPhaseHeader root) phaseDocs
   statusHarmonyV <- checkPhaseStatusHarmony root phaseDocs
   orderingV <- concatMapM (checkPhaseOrdering root) phaseDocs
+  rwOrderingV <- concatMapM (checkRemainingWorkOrdering root) phaseDocs
   reversalV <- concatMapM (checkNoReversal root) phaseDocs
   sprintV <- concatMapM (checkSprintStructure root) phaseDocs
+  doneSprintV <- concatMapM (checkDoneSprintRemainingWork root) phaseDocs
+  activeRemainingV <- concatMapM (checkActivePhaseRemainingWork root) phaseDocs
   substrateV <- concatMapM (checkSubstrateBudget root) phaseDocs
   ledgerV <- checkLegacyLedger root
+  contractV <- checkContractOwnership root
   pure
     ( sortOn
         (\v -> (vFile v, vMessage v))
@@ -120,12 +128,16 @@ validateRepo root = do
             ++ namingV
             ++ taxonomyV
             ++ ledgerV
+            ++ contractV
             ++ numberingV
             ++ headerV
             ++ statusHarmonyV
             ++ orderingV
+            ++ rwOrderingV
             ++ reversalV
             ++ sprintV
+            ++ doneSprintV
+            ++ activeRemainingV
             ++ substrateV
         )
     )
@@ -593,21 +605,145 @@ checkSprintStructure root file = do
         | (title, tag) <- titles,
           takeWhile (/= ']') tag `notElem` ["Done", "Active", "Planned"]
         ]
+      sections = documentSections ls
       activeWithoutWork =
-        [ Violation rel "an Active sprint has an empty '#### Remaining Work' section"
-        | any emptyActiveRemaining (sprintBlocks ls)
+        [ Violation rel ("an Active " ++ sprint ++ " has an empty '#### Remaining Work' section")
+        | sprint <- activeSprints sections,
+          s <- remainingWorkOf sections sprint,
+          all (null . trim) (sectionBody s)
         ]
   pure (blocked ++ badTag ++ activeWithoutWork)
+
+{- | § A: a Remaining Work section never cites a later phase.
+
+@Depends on@ is not the only place a phase can claim a later one gates it.
+"This closes when phase 15 lands", written in a @Remaining Work@ section, is the
+same claim in prose, and 'checkPhaseOrdering' cannot see it. That is the claim
+§ A forbids outright — there is nothing later for a phase to wait on — so a
+document making it is describing an order the numbering does not have.
+
+The scope is the whole precision of the check. A forward link in
+@## Phase Objective@ or @#### Validation@ is a __scope statement__ — "the row
+that ships a transaction to another frame is the providers phase's" — and stays
+legal, because saying who owns what is not saying what blocks you. No predicate
+over prose can separate the two, so the section a sentence sits in is what
+decides: Remaining Work states what /this/ phase owes, and a boundary belongs
+where the phase says what it is.
+-}
+checkRemainingWorkOrdering :: FilePath -> FilePath -> IO [Violation]
+checkRemainingWorkOrdering root file = do
+  ls <- readLines file
+  let rel = rrel root file
+  pure $ case phaseNumberOf file of
+    Nothing -> []
+    Just self ->
+      [ Violation
+          rel
+          ( scopeLabel section
+              ++ " cites phase "
+              ++ show linked
+              ++ " ("
+              ++ target
+              ++ "); a Remaining Work section states only what this phase owes,"
+              ++ " so a scope boundary belongs in the Objective"
+          )
+      | section <- documentSections ls,
+        sectionLevel section `elem` [2, 4],
+        isRemainingWorkTitle (sectionTitle section),
+        line <- sectionBody section,
+        target <- linkTargets line,
+        Just linked <- [phaseNumberOf target],
+        linked > self
+      ]
   where
-    emptyActiveRemaining block =
-      any (\l -> "**Status**: Active" `isPrefixOf` trim l) block
-        && null (filter (not . null . trim) (remainingWorkBody block))
-    -- The section body stops at the next heading of any level. Without that
-    -- bound, a phase's trailing '## Documentation Requirements' counts as content
-    -- and this check is vacuous for the last sprint of every phase.
-    remainingWorkBody block =
-      takeWhile (not . isHeading) (drop 1 (dropWhile (not . isPrefixOf "#### Remaining Work" . trim) block))
-    isHeading l = "#" `isPrefixOf` trim l
+    scopeLabel section = case sectionSprint section of
+      Just sprint -> sprint ++ "'s '#### Remaining Work'"
+      Nothing -> "the phase's '## Remaining Work'"
+
+{- | § C: an @Active@ phase carries a non-empty @## Remaining Work@, spelled one
+way.
+
+§ C says "@Active@ requires a @Remaining Work@ section" without fixing the
+heading, and the plan drifted into two spellings. The presence test accepts both,
+so a drifted document reports its spelling and nothing else; a separate violation
+is what makes @## Phase Remaining Work@ illegal. Splitting it that way keeps one
+defect to one message with the correction in it — treating the drifted spelling
+as /absent/ would tell an author to add a second section.
+
+The status comes from 'phaseHeaderFieldValue', never 'fieldValue': a sprint's own
+@**Status**: Active@ must not decide whether the phase owes a section.
+-}
+checkActivePhaseRemainingWork :: FilePath -> FilePath -> IO [Violation]
+checkActivePhaseRemainingWork root file = do
+  ls <- readLines file
+  let rel = rrel root file
+      sections =
+        [ section
+        | section <- documentSections ls,
+          sectionLevel section == 2,
+          isRemainingWorkTitle (sectionTitle section)
+        ]
+      drift =
+        [ Violation
+            rel
+            "phase-level remaining work is headed '## Phase Remaining Work'; § C's section is '## Remaining Work'"
+        | section <- sections,
+          sectionTitle section == "Phase Remaining Work"
+        ]
+      active = phaseHeaderFieldValue "Status" ls == Just "Active"
+      missing =
+        [ Violation rel "an Active phase has no '## Remaining Work' section"
+        | active,
+          null sections
+        ]
+      empty =
+        [ Violation rel "an Active phase has an empty '## Remaining Work' section"
+        | active,
+          section <- sections,
+          all (null . trim) (sectionBody section)
+        ]
+  pure (drift ++ missing ++ empty)
+
+{- | § C and § G: a @Done@ sprint has a @#### Remaining Work@ and it reads
+"None".
+
+§ C says @Done@ requires "no remaining work in its scope", and § G makes the
+section mandatory. The convention the plan already keeps is @None. <scope
+note>@ — the note says which phase owns what this sprint does not, which is
+useful and is not work this sprint owes. So the check pins the first word rather
+than demanding an empty section.
+
+A sprint that genuinely still owes something is not @Done@; a sprint whose owed
+item is a live confirmation belongs to the acceptance phase that declares the
+hardware (§ II), named there rather than parked here.
+-}
+checkDoneSprintRemainingWork :: FilePath -> FilePath -> IO [Violation]
+checkDoneSprintRemainingWork root file = do
+  ls <- readLines file
+  let rel = rrel root file
+      sections = documentSections ls
+      done = sprintsWithStatus "Done" sections
+      missing =
+        [ Violation rel ("Done " ++ sprint ++ " has no '#### Remaining Work' section")
+        | sprint <- done,
+          null (remainingWorkOf sections sprint)
+        ]
+      declaresWork =
+        [ Violation
+            rel
+            ( "Done "
+                ++ sprint
+                ++ " declares remaining work; a Done sprint's '#### Remaining Work' begins with 'None'"
+            )
+        | sprint <- done,
+          section <- remainingWorkOf sections sprint,
+          not (beginsWithNone (sectionBody section))
+        ]
+  pure (missing ++ declaresWork)
+  where
+    beginsWithNone body = case dropWhile (null . trim) body of
+      (l : _) -> "None" `isPrefixOf` trim l
+      [] -> False
 
 {- | § II: a phase declares at most one substrate beyond the @linux-cpu@
 baseline, so no phase is unclosable on a single machine.
@@ -625,6 +761,57 @@ checkSubstrateBudget root file = do
               ("phase declares more than one non-baseline substrate: " ++ unwords special)
           | length special > 1
           ]
+
+{- | The plan standards' rule that each contract names its owning phase.
+
+Read as "any @phase-NN-@ link somewhere in the section", the rule would be
+satisfied by a citation that means nothing — § O mentions ten phases and is owned
+by one — so the naming is a declared field and this reads that field. A contract
+whose owner is not stated is a contract nobody's closure makes true.
+
+Scoped to the sections beneath @## hostbootstrap-Specific Contracts@. § A–§ J and
+§ II are core principles about how the plan is written; they own no phase and
+must not be asked to.
+-}
+checkContractOwnership :: FilePath -> IO [Violation]
+checkContractOwnership root = do
+  let standards = root </> "DEVELOPMENT_PLAN" </> "development_plan_standards.md"
+      rel = rrel root standards
+  exists <- doesFileExist standards
+  if not exists
+    then pure [Violation rel "required plan standards document is missing"]
+    else do
+      ls <- readLines standards
+      let contractLines =
+            drop 1 (dropWhile ((/= "## hostbootstrap-Specific Contracts") . trim) ls)
+      pure
+        [ Violation
+            rel
+            ( "contract section "
+                ++ letters
+                ++ " names no owning phase; each contract opens with an '**Owning phase**:' line linking one"
+            )
+        | section <- documentSections contractLines,
+          sectionLevel section == 3,
+          Just letters <- [letteredSection (sectionTitle section)],
+          null
+            [ target
+            | line <- sectionBody section,
+              "**Owning phase**:" `isPrefixOf` trim line,
+              target <- linkTargets line,
+              isJust (phaseNumberOf target)
+            ]
+        ]
+
+{- | @"K. Host-Tool Resolution Doctrine"@ yields @Just "K"@.
+
+Only an all-caps run followed by a period and a space counts, so an ordinary
+prose heading inside the contracts is not mistaken for one.
+-}
+letteredSection :: String -> Maybe String
+letteredSection title = case span (\c -> c >= 'A' && c <= 'Z') title of
+  (letters@(_ : _), '.' : ' ' : _) -> Just letters
+  _ -> Nothing
 
 {- | § I: every row of the legacy ledger names a __deleting phase__ that resolves.
 
@@ -657,17 +844,39 @@ isTrackedRow l =
     && not ("| Shape" `isPrefixOf` trimStart l)
     && not ("|---" `isPrefixOf` filter (/= ' ') (trimStart l))
 
--- | The deleting phase a row names must resolve to a phase document.
+{- | The deleting phase a row names must resolve, and there must be exactly one.
+
+Read from the row's last cell — its @Deleted by@ column — rather than from the
+whole line, so a phase cited in the @Why@ column can neither satisfy the
+requirement nor inflate the count.
+
+Two owners is the same failure as none. A row is the unit of "who removes this",
+and a shape whose pieces two phases remove is two shapes; leaving them in one row
+means neither phase's completion empties it, which is the standing cleanup
+obligation § A forbids. The fix is always to split the row.
+-}
 rowViolations :: FilePath -> FilePath -> String -> IO [Violation]
 rowViolations root rel row =
-  case linkTargets row of
+  case linkTargets (deletingCell row) of
     [] ->
       pure
         [ Violation
             rel
             "legacy ledger row names no deleting phase; § I requires every row to name one"
         ]
-    targets -> concatMapM (resolveTarget root rel) targets
+    targets -> do
+      unresolved <- concatMapM (resolveTarget root rel) targets
+      let arity =
+            [ Violation
+                rel
+                ( "legacy ledger row names "
+                    ++ show (length targets)
+                    ++ " deleting phases; § I requires exactly one, so split the row: "
+                    ++ unwords targets
+                )
+            | length targets > 1
+            ]
+      pure (arity ++ unresolved)
   where
     resolveTarget r f target = do
       let candidate = r </> "DEVELOPMENT_PLAN" </> target
@@ -676,6 +885,22 @@ rowViolations root rel row =
         [ Violation f ("legacy ledger row names an unresolvable deleting phase: " ++ target)
         | not present
         ]
+
+{- | A ledger row's @Deleted by@ cell.
+
+The table's declared shape is four columns between leading and trailing pipes.
+Taking the last cell rather than indexing keeps this robust to a pipe inside an
+earlier cell's code span.
+-}
+deletingCell :: String -> String
+deletingCell row = case reverse (filter (not . null . trim) (splitOn '|' row)) of
+  (cell : _) -> cell
+  [] -> row
+
+splitOn :: Char -> String -> [String]
+splitOn sep xs = case break (== sep) xs of
+  (chunk, _ : rest) -> chunk : splitOn sep rest
+  (chunk, []) -> [chunk]
 
 -- | Markdown link targets in one line, unadorned by anchors or titles.
 linkTargets :: String -> [String]
@@ -853,17 +1078,87 @@ referencedPhaseNumbers = go
       | p `isPrefixOf` xs = Just (drop (length p) xs)
       | otherwise = Nothing
 
-{- | Split a phase document into its sprint blocks, each running from its
-@### Sprint@ heading to the next one.
+{- | One markdown section: its heading level, its title, the sprint it sits
+inside, and its body up to the next heading of __any__ level.
+
+Sprint attribution is the subtle part. A phase's own @## Remaining Work@ follows
+the last @### Sprint@ heading in the file, so a scan that splits only on sprint
+headings attributes it to that sprint and every phase-level check over it goes
+vacuous. A level-two heading therefore closes the enclosing sprint, so a
+phase-level section is attributed to the phase and a sprint-level one to its
+sprint, and one parser serves both.
 -}
-sprintBlocks :: [String] -> [[String]]
-sprintBlocks ls = case dropWhile (not . isSprintHeading) ls of
-  [] -> []
-  (h : rest) ->
-    let (body, remaining) = break isSprintHeading rest
-     in (h : body) : sprintBlocks remaining
+data DocSection = DocSection
+  { sectionLevel :: Int,
+    sectionTitle :: String,
+    -- | @Just "Sprint 3.7"@ when the section sits inside one.
+    sectionSprint :: Maybe String,
+    sectionBody :: [String]
+  }
+
+{- | Every section of a document.
+
+Fenced code is removed first, so a comment inside a @```@ block cannot
+masquerade as a heading and truncate a body.
+-}
+documentSections :: [String] -> [DocSection]
+documentSections = go Nothing . stripFencedCode
   where
-    isSprintHeading l = "### Sprint " `isPrefixOf` trim l
+    go _ [] = []
+    go sprint (l : rest) = case headingOf l of
+      Nothing -> go sprint rest
+      Just (level, title) ->
+        let sprint'
+              | level <= 2 = Nothing
+              | "Sprint " `isPrefixOf` title = Just (trim (takeWhile (/= ':') title))
+              | otherwise = sprint
+            (body, remainder) = break (isJust . headingOf) rest
+         in DocSection level title sprint' body : go sprint' remainder
+
+-- | @(level, title)@ for an ATX heading line.
+headingOf :: String -> Maybe (Int, String)
+headingOf raw = case span (== '#') (trim raw) of
+  (hashes@(_ : _), ' ' : title) -> Just (length hashes, trim title)
+  _ -> Nothing
+
+{- | The sprints a document declares with a given @**Status**@.
+
+The status is read from the sprint heading's own body — the lines between
+@### Sprint N.M@ and its first @####@ subsection — which is exactly where § G
+puts it. 'fieldValue' takes the first occurrence, so a later field cannot shadow
+it.
+-}
+sprintsWithStatus :: String -> [DocSection] -> [String]
+sprintsWithStatus status sections =
+  [ sprint
+  | s <- sections,
+    sectionLevel s == 3,
+    Just sprint <- [sectionSprint s],
+    "Sprint " `isPrefixOf` sectionTitle s,
+    fieldValue "Status" (sectionBody s) == Just status
+  ]
+
+activeSprints :: [DocSection] -> [String]
+activeSprints = sprintsWithStatus "Active"
+
+-- | The @#### Remaining Work@ sections belonging to one sprint.
+remainingWorkOf :: [DocSection] -> String -> [DocSection]
+remainingWorkOf sections sprint =
+  [ s
+  | s <- sections,
+    sectionLevel s == 4,
+    isRemainingWorkTitle (sectionTitle s),
+    sectionSprint s == Just sprint
+  ]
+
+{- | Both spellings the plan has used for a remaining-work heading.
+
+'checkActivePhaseRemainingWork' is what makes the second one illegal; every
+other check accepts both, so a spelling drift reports as one violation naming
+the correction rather than as a missing section.
+-}
+isRemainingWorkTitle :: String -> Bool
+isRemainingWorkTitle t = t `elem` ["Remaining Work", "Phase Remaining Work"]
 
 firstIsTitle :: [String] -> Bool
 firstIsTitle ls = case dropWhile (null . trim) ls of

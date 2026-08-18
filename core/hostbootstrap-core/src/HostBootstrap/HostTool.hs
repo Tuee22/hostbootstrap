@@ -29,12 +29,12 @@ import Data.List (isPrefixOf, sort)
 import System.FilePath (isAbsolute)
 import qualified System.FilePath.Posix as Posix
 #ifdef mingw32_HOST_OS
+import HostBootstrap.Effect.Run (CapturedRun (capturedExit, capturedStdout), runCaptured)
 import System.Exit (ExitCode (ExitSuccess))
 -- Every native-separator join below is a Windows fallback path, so importing
 -- '(</>)' unconditionally is an unused import on every other host and fails the
 -- gate's own @-Werror@ on a tree that compiles this module from scratch.
 import System.FilePath ((</>))
-import System.Process (readProcessWithExitCode)
 #endif
 
 -- | The closed set of external tools @hostbootstrap-core@ resolves.
@@ -182,8 +182,12 @@ discoverWindowsMsvcClViaVswhere =
       case mVswhere of
         Nothing -> pure Nothing
         Just vswhere -> do
-          (exitCode, out, _) <-
-            readProcessWithExitCode
+          -- Discovery runs before any tool is resolved, so it names no described
+          -- effect (§ KK): a described effect's target /is/ a resolved tool, and
+          -- this probe is what produces one. It still spawns through the one
+          -- runner, so the descriptor and exception disposition is the same.
+          outcome <-
+            runCaptured
               (absExePath vswhere)
               [ "-latest",
                 "-products",
@@ -194,8 +198,10 @@ discoverWindowsMsvcClViaVswhere =
                 "VC\\Tools\\MSVC\\**\\bin\\Hostx64\\x64\\cl.exe"
               ]
               ""
-          case exitCode of
-            ExitSuccess -> firstExisting (filter (not . null) (lines out))
+          case outcome of
+            Right run
+              | capturedExit run == ExitSuccess ->
+                  firstExisting (filter (not . null) (lines (capturedStdout run)))
             _ -> pure Nothing
   )
     `catch` \(_ :: IOException) -> pure Nothing

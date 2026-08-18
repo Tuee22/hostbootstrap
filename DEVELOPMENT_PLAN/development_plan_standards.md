@@ -26,6 +26,12 @@ phases ≤ *n* available at phase *n*, must produce the current architecture.
 - **Numerical order is executable order.** A phase declares `Depends on` naming only **strictly
   lower-numbered** phases. There is no separate landing-order graph, and a later phase never gates an
   earlier one.
+- **A `Remaining Work` section never cites a later phase.** The `Depends on` field is not the only place
+  the forbidden claim can be made: "this closes when phase 15 lands", written in `Remaining Work`, is the
+  same claim in prose. A `Remaining Work` section therefore states only what *this* phase owes. Saying who
+  owns what is different and stays legal — but it belongs in `## Phase Objective`, or in the sprint's own
+  `#### Objective`, because no reading of prose can separate "I am blocked by 16" from "16 owns that", and
+  the section a sentence sits in can.
 - **The narrative is strictly additive.** No phase removes, retires, replaces, reverses, or supersedes
   a surface an earlier phase introduced. *Extending* an earlier phase's contract is expected;
   *contradicting* it is not. If work would delete or replace something an earlier phase built, that
@@ -78,16 +84,24 @@ Rules:
 
 - `Done` requires the phase's own declared gate to pass, aligned governed documentation, and no
   remaining work in its scope.
-- `Active` requires a `Remaining Work` section.
+- `Active` requires a non-empty `## Remaining Work` section, spelled exactly that. One heading means a
+  reader and a validator find the same thing in every phase.
 - **A phase closes on its own gate.** A phase never carries a closure obligation that needs hardware it
-  does not declare. Confirmation on a non-baseline substrate is owned by the substrate phase that runs
-  it (§ II), which lists what it confirms.
+  does not declare. Confirmation of a non-baseline host or accelerator dimension is owned by the acceptance
+  phase that runs it (§ II), which lists what it confirms; the universal `linux-cpu` gate itself remains
+  runnable through every supported host realization.
 - Statuses are **derived by checking the repository**, never inherited from an earlier version of the
   plan. When phase boundaries are re-cut, every status is re-verified against the code.
 - A phase's status must match its row in the [README](README.md) table, which is the sole cross-phase
   roll-up (§ J).
 - Exact test counts and real-run results are dated validation evidence recorded against the gate that
   produced them. They are never promoted to a repository-wide "current count".
+- **A frozen digest covers only what its sprint owns.** A sprint may freeze the bytes of a module, a
+  stanza, or a set of rows it is responsible for; it may not freeze a whole shared file whose other parts
+  belong to other phases. A digest over the complete package description makes any sprint that adds a test
+  module break the evidence of every sprint that froze it — a coupling between phases that no dependency
+  edge justifies, and that § A's numerical order cannot express. The narrower freeze proves the same
+  thing about the same subject.
 
 ### D. Declarative Current-State Language
 
@@ -122,7 +136,7 @@ DEVELOPMENT_PLAN/
 ├── phase-2-haskell-core-scaffolding.md
 ├── phase-3-host-tools-and-substrate-detection.md
 ├── phase-4-protected-store.md
-├── phase-5-operator-root-and-command-authority.md
+├── phase-5-installed-identity-and-authority-kernels.md
 ├── phase-6-canonical-quantities-and-reconcile-results.md
 ├── phase-7-dhall-configuration-and-project-model.md
 ├── phase-8-ensure-reconcilers.md
@@ -145,7 +159,8 @@ DEVELOPMENT_PLAN/
 ├── phase-25-apple-silicon-substrate.md
 ├── phase-26-nvidia-gpu-substrate.md
 ├── phase-27-windows-and-wsl2-substrate.md
-└── phase-28-documentation-reconciliation.md
+├── phase-28-host-portability-acceptance.md
+└── phase-29-documentation-reconciliation.md
 ```
 
 The `phase-NN-*.md` set is **contiguous from 0 with no gaps and no duplicates**, and `NN` is the
@@ -192,8 +207,14 @@ A phase document opens with this header, then groups its sprints under one `## S
 
 ## Sprints
 
+## Remaining Work
+
 ## Documentation Requirements
 ```
+
+`## Remaining Work` is required while the phase is `Active` (§ C) and says "None." once it is not. It
+states what this phase owes and nothing else (§ A); a boundary with another phase belongs in
+`## Phase Objective`.
 
 Each sprint is nested one level deeper:
 
@@ -214,16 +235,22 @@ Each sprint is nested one level deeper:
 #### Remaining Work
 ```
 
-Additional sections (`Module Surface`, `Command Surface`, `Reconciler Contract`) are encouraged when
-they clarify closure criteria.
+Additional sections (`Module Surface`, `Command Surface`, `Reconciler Contract`, `Objective boundary`) are
+encouraged when they clarify closure criteria.
+
+Every sprint carries `#### Remaining Work`, including a `Done` one, where it begins with "None." — often
+followed by the boundary note saying which phase owns what this sprint does not. A `Done` sprint that
+declares work is not done, and one whose only outstanding item is a live confirmation is closed here with
+that confirmation listed by the acceptance phase declaring the hardware (§ II).
 
 **Sprint size budget.** A sprint is one working session. It lands **at most one new named
 contract/type, or one call-site adoption**, and stays within:
 
 - ≤ 8 deliverable bullets;
 - ≤ ~400 lines of production Haskell across ≤ 3 source modules, plus their specs;
-- closable by the host static gate alone — `cabal test all --ghc-options=-Werror` from `core/`,
-  `poetry run python -m hostbootstrap.check_code`, and `poetry run python -m hostbootstrap.test_all`.
+- closable by the **host static gate** alone (§ II) — `cabal test all --ghc-options=-Werror` from
+  `core/`, `poetry run python -m hostbootstrap.check_code`, and
+  `poetry run python -m hostbootstrap.test_all`.
 
 A live-substrate confirmation is never in the same sprint as the change it confirms; it belongs to a
 substrate phase (§ II). A sprint whose `#### Remaining Work` has grown into a chronicle has exceeded the
@@ -308,43 +335,124 @@ implemented unless the plan marks the owning phase `Done`.
 - `README.md`, `AGENTS.md`, and `CLAUDE.md` are governed root documents; root docs that are not
   canonical for a topic summarize and link to the canonical `documents/` home.
 
-### II. Substrate Baseline and Acceptance Phases
+### II. Universal Baseline, Host Realizations, and Acceptance Phases
 
-`linux-cpu` is the **baseline substrate**. Every phase that builds a contract targets it, and its gate
-runs there or is pure-static.
+`linux-cpu` is the **universal baseline substrate** and the one substrate invariant. It names the
+Linux/container environment available on every supported host for portable project code, static gates, and
+ordinary CPU work; it does not mean that the outer physical host must itself be Linux, and it is not the only
+hardware context the DSL can target. Every supported host realizes that floor through its platform provider:
+
+| Outer host realization | Universal `linux-cpu` realization |
+|---|---|
+| native Linux | native Linux container/runtime path |
+| Apple Silicon | Lima/Colima Linux VM and container path |
+| Windows | WSL2 Linux VM and container path |
+
+`hostbootstrap` is a DSL for lifting an arbitrary application into a selected hardware context. The plan and
+project configuration describe that context and the typed route into it; the host-native bootstrap detects
+and manages the outer host, establishes the required provider, and re-establishes the project binary at each
+declared frame. A target may be the universal `linux-cpu` floor or a more specific context such as Apple
+Metal, NVIDIA GPU, or Windows-host CUDA. Those contexts are real execution targets, not mere validation
+labels, and their additional capabilities never weaken the portable `linux-cpu` contract.
+
+For the baseline route, the host-native bootstrap binary establishes the provider, re-establishes the
+project binary inside the Linux environment, and runs the baseline gate there.
+
+The plan therefore distinguishes two gates, and a phase says which one closes it:
+
+- the **host static gate** — `cabal test all --ghc-options=-Werror` from `core/`,
+  `poetry run python -m hostbootstrap.check_code`, and `poetry run python -m hostbootstrap.test_all`,
+  each run as an ordinary process of the **outer host**. It proves the pure, typed, and lexical
+  contracts: type boundaries, compile-fail diagnostics, codecs, source-shape guards, plan projections,
+  and the documentation validator. Because § N builds every binary host-native, this gate must pass
+  host-native on **every** supported outer host realization — macOS, Linux, and Windows alike (§ JJ);
+- the **`linux-cpu` substrate gate** — a gate whose gated process and its POSIX/container effects
+  execute inside the realized Linux substrate. It may be launched from any supported host, but a
+  native Windows or macOS process is not one of these merely because its assertions are otherwise
+  static.
+
+Neither substitutes for the other. A host static gate proves nothing about a provider, a container, or
+a POSIX process boundary; a substrate gate on one realization proves nothing about whether the same
+sources build and self-test on another outer host.
+
+Running the host static gate natively on Windows or macOS is **not** a substrate declaration. A phase
+does not acquire `**Substrates**: windows` by having its static gate pass on a Windows outer host, and
+outer-host portability never counts against the one-substrate budget below.
+
+This distinction is normative vocabulary throughout the plan:
+
+- **baseline substrate** means the invariant `linux-cpu` environment every supported host can realize;
+- **hardware context** means the concrete target selected by the DSL, including its substrate,
+  accelerator, provider, topology, and capabilities;
+- **outer host realization** means the physical host and provider used to realize it. It is not the unit a
+  host static gate run is evidence about — that is the **gate host** (§ JJ), the OS, architecture, and
+  toolchain the gate process itself runs on, which may be metal, a virtual machine, a container, or a WSL2
+  distribution. Substrate selection and acceptance phases speak of outer hosts; gate evidence speaks of
+  gate hosts;
+- **host static gate** and **`linux-cpu` substrate gate** mean exactly the two gates defined above;
+- the closed `SubstrateName` detector classifies the outer host realization for provider selection and does
+  not redefine the universal baseline;
+- provider differences may affect transport and ownership mechanics, while the selected hardware context
+  may add real capabilities beyond `linux-cpu`; neither may contradict the baseline contract.
+
+Every baseline phase that builds a contract targets the universal `linux-cpu` substrate, and its gate runs
+in one realization of that substrate or is pure-static. A hardware-context acceptance phase additionally
+targets the one context it declares.
 
 - A phase declares `**Substrates**:` and may name **at most one** substrate beyond `linux-cpu`.
-- Non-baseline substrates — `apple-silicon`, `nvidia`, `windows` — are each owned by exactly one
-  **acceptance phase**, placed at the end of the narrative. An acceptance phase adds any remaining
-  substrate-only realizations and confirms the lower generic/provider implementation on real hardware.
-- **Acceptance phases are terminal**: nothing depends on them, so a machine without that hardware stops
-  at the last baseline phase rather than being blocked.
+- Non-baseline hardware contexts and acceptance dimensions — Apple/Metal, NVIDIA acceleration, and
+  Windows-host CUDA — are each owned by exactly one **acceptance phase**, placed at the end of the narrative. An
+  acceptance phase adds any remaining host/provider- or accelerator-only realization and confirms both the
+  universal `linux-cpu` floor and the selected context's additional behavior on real hardware.
+- **Acceptance phases are terminal**: nothing depends on them. Lack of Apple, NVIDIA, or Windows hardware
+  prevents only that realization's acceptance; it never prevents a supported host from realizing and
+  validating the universal `linux-cpu` baseline through its own provider.
 - An acceptance phase lists what it confirms, so a baseline phase closing on its static gate does not
   silently drop live coverage.
 
-Two limits are recorded here because they are easy to assume away. `fourmolu` and `hlint` run only inside
+Three limits are recorded here because they are easy to assume away. `fourmolu` and `hlint` run only inside
 the container `check-code`, so the host static gate is not the complete quality gate — the phase that owns
-the container gate owns those two. And the long demo gate brings up real provider and cluster state under
-the project's own identity, so it runs on a disposable host, never a working one.
+the container gate owns those two. The long demo gate brings up real provider and cluster state under
+the project's own identity, so it runs on a disposable host, never a working one. And a host static gate
+run is evidence for the one outer host that ran it, so its dated evidence names that host and a passing
+run on one outer host is not a claim about another.
 
 ## hostbootstrap-Specific Contracts
 
-Sections K–HH are the normative contracts. They define what a phase's closure makes true; they are not
+Sections K–NN are the normative contracts. They define what a phase's closure makes true; they are not
 blanket claims that every invariant is already enforced. The [README phase table](README.md) and each
 phase's own `**Status**` distinguish what is built from what is still ahead in the narrative. When a
 contract below conflicts with current code, the owning phase is `Active` — the contract is never weakened
 and the illegal state is never described as supported.
 
-Each contract names its owning phase **by name**. A contract is stated once, in its final form: there is
-no earlier weaker version of it anywhere in the plan (§ A).
+Each contract opens with an `**Owning phase**:` line naming that phase by name and link. The field is
+required because inferring an owner from any phase a section happens to cite is not the same claim — § O
+mentions ten phases and is owned by one. Where a contract genuinely has two halves with different owners,
+the field says so and says which half is whose. A contract is stated once, in its final form: there is no
+earlier weaker version of it anywhere in the plan (§ A).
 
 ### K. Host-Tool Resolution Doctrine
+
+**Owning phase**: the [host-tools-and-substrate-detection phase](phase-3-host-tools-and-substrate-detection.md)
+owns the boundary; the [cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md)
+owns the enumeration's membership.
 
 External tools use a closed package-owned resolver and are invoked by absolute path. The ordinary resolver is
 the closed `HostTool` enumeration in `hostbootstrap-core`; no library or project code calls
 `proc "<bare-command-name>"` against ambient `$PATH`, and ordinary invocations read their absolute path from
-typed host configuration. The enum includes provider tools such as `incus` plus host-side ownership tools
-such as `python3`, `flock`, and `lockf` (§ U, § EE). A consumer-specific resolver is admissible only when its
+typed host configuration.
+
+Two things are owned separately here, and conflating them is what makes the boundary look like it waits on
+its consumers. That the set is **closed** — that entry is by construction, that resolution is absolute, and
+that a failure is a typed refusal — is a property of the boundary, settled where the boundary is built.
+**Which** tools are in the set is a description of what the binary drives, and that is settled by the phases
+that drive them; the enumeration narrows when the last driver stops driving a name, and the phase holding
+that driver ships the membership pin as its own absence guard (§ I). The enum names the external tools the binary drives — provider tools such as
+`incus`, cluster tools such as `kind` and `kubectl`, and the compilers and package managers the reconcilers
+reach. It does **not** name an interpreter or a locking front end: ownership is the binary's own typed
+operation over one platform row (§ EE, § LL), so no clause is held by a resolved `python3`, `flock`, or
+`lockf`. A tool the enum names is one the project genuinely delegates to, not one it uses to reimplement
+something it already owns. A consumer-specific resolver is admissible only when its
 candidate table is fixed in an unexposed component, callers can select neither candidates nor results, every
 admitted executable and helper directory is opened without following links and bound to its canonical
 owner/mode/device/inode, the complete namespace is fingerprinted and revalidated around effects, and child
@@ -360,13 +468,15 @@ override, and no public module exposes it or a trusted-result constructor. Produ
 dispatches to remain the VM's own `$PATH` binaries reached through that single absolute host-provider command
 (the VM is a separate machine — the doctrine governs host invocation).
 
-This section governs *which* executable an invocation names. The *shape* of the invocation — stdio
-disposition, descriptor inheritance, session, environment, and working directory — is a separate closed
-boundary under § HH, and resolving a path absolutely says nothing about it. A child that outlives its
-launcher is the case where the two axes come apart most sharply.
+This section governs *which* executable an invocation names. Two neighbouring axes are separate closed
+boundaries, and resolving a path absolutely says nothing about either. The *shape* of the invocation —
+stdio disposition, descriptor inheritance, session, environment, and working directory — is § HH's; a
+child that outlives its launcher is where those two come apart most sharply. *How the command is
+expressed* — as a value in one closed vocabulary rather than as interpreter text — is § KK's.
 
 ### L. Substrate and Ensure-Reconciler Contract
 
+**Owning phase**: [the ensure-reconcilers phase](phase-8-ensure-reconcilers.md)
 Substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`, `windows-cpu`, `windows-gpu`) is owned
 by `hostbootstrap-core`.
 **The purpose of the `ensure` suite is that an absent dependency with a supported install plan is
@@ -376,7 +486,9 @@ projects as library primitives
 (`ensureDocker`, `ensureLima`, `ensureCuda`, `ensureCudaWin`, `ensureWsl2`,
 `ensureHomebrew`, `ensureGhc`, `ensureIncus`, and the accelerator build-stack reconciler
 `ensureAppleMetal`) and as `ensure-*` step kinds composed into the lift chain. There is no
-top-level `ensure` command and there are no hidden commands. The target reconcile action **installs** the
+top-level `ensure` command, and no reconciler is reachable as a verb. The command surface is exactly the
+tree § P fixes; the one internal marker § P admits is not a command and cannot reach a reconciler.
+The target reconcile action **installs** the
 dependency when its total probe reports absence and a plan exists, then re-probes; a satisfied capability
 is a verified, typed no-op. Current install-and-reprobe behavior is idempotent only to the strength of
 each probe or package-manager no-op path; several probes and raw `IO ()` results do not yet prove
@@ -416,6 +528,7 @@ phase's observation types.
 
 ### M. Python-Thin / Haskell-Core Boundary
 
+**Owning phase**: [the Python-pre-binary-floor phase](phase-1-python-pre-binary-floor.md)
 In the ordinary `doctor`/`build`/`run` project path, the Python bootstrapper does only the **minimum to
 build the project binary**: discover the single Cabal file and executable stanza, assert the fail-fast
 host minimums, ensure the host toolchain prerequisites needed to **build** the binary, then build the
@@ -465,6 +578,7 @@ freshness, or fail merely because the wrapper is not at the latest commit.
 
 ### N. Host-Native Binary Build
 
+**Owning phase**: [the Python-pre-binary-floor phase](phase-1-python-pre-binary-floor.md)
 Every project's binary is built **host-native** on every substrate — it is **not** built inside a Linux
 container and copied out, because a binary built in a Linux container cannot exec on a general host (e.g.
 Apple silicon). The universal pre-binary host dependency is therefore the **build toolchain**, not Docker.
@@ -494,6 +608,7 @@ Apple silicon). The universal pre-binary host dependency is therefore the **buil
 
 ### O. Resource Budget and Cordoning
 
+**Owning phase**: [the step-algebra-and-project-plan phase](phase-12-step-algebra-and-project-plan.md)
 The target has one opaque validated per-project budget (`cpu`, `memory`, `storage`) and no independently
 editable copy. Admission rejects a declaration that the selected provider cannot represent exactly, so
 the byte-valued `EffectiveBudget` equals the user-visible `ValidatedBudget`; no builder may silently
@@ -658,13 +773,26 @@ build-phase limit is not an interpreter of `<project>.dhall`; see
 
 ### P. Fixed Command Surface And The Extension Streams
 
+**Owning phase**: [the Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md)
 `hostbootstrap-core` exposes a **fixed** command surface plus a project entrypoint
 (`runHostBootstrapCLI progName projectSpec`). Every project binary — and the bare `hostbootstrap` binary —
 surfaces the **same** tree: the three DSL-driven commands `project init|up|down|destroy`,
 `test init|run`, and `service init|schema|run` (§ Y, § Z, § AA), plus the read-only `context`
 introspection command and `check-code`. There are **no per-project verbs**: `hostbootstrap-core` is a
 **library of composable tools** (step kinds, reconcilers, the self-reference lift, service handlers), not a
-CLI topology, so a project never adds a command. A project extends the core only through the
+CLI topology, so a project never adds a command.
+
+**One internal marker is not a command.** A binary that crosses into a frame must be able to recognize
+that *it is* the process on the far side, and no verb can express that: a verb is something an operator
+types, and this is something only the lift fold produces. The marker is therefore classified out of argv
+before the parser runs, and it is bounded by what it cannot carry — no coordinates, no path, no authority,
+no caller-selected action, and no route to a `ProjectSpec` extension stream. It is absent from `--help`,
+it names nothing an operator could usefully type, and it refuses unless its standard input and output
+decode as the protocol channel. It carries a transaction the caller already holds and returns that
+transaction's outcome; it opens no second surface. Exactly one such marker exists, and a second would be
+a per-project verb wearing a different hat.
+
+A project extends the core only through the
 **extension streams** finalized into opaque `ProjectSpec`: additive step fragments resolved to one
 validated **lift plan** (`StepPlan`, § Y),
 the **Dhall vocabulary**, the **schema-gen** `ConfigArtifact` registry, the **test seams** (a non-empty
@@ -695,6 +823,7 @@ built like any project binary, not baked into the base image.
 
 ### Q. Configuration via Dhall
 
+**Owning phase**: [the Dhall-configuration-and-generic-project-model phase](phase-7-dhall-configuration-and-project-model.md)
 Configuration is typed Dhall in distinct roles:
 
 - the **local runtime config** `<project>.dhall`, generated by the built project binary, read from next to
@@ -775,6 +904,7 @@ route can choose the wrong second-stage decoder.
 
 ### R. Quality Gate Contract
 
+**Owning phase**: [the base-image-and-warm-store phase](phase-23-base-image-and-warm-store.md)
 Static quality is a first-class requirement. The Haskell formatter is `ormolu`/`fourmolu` and
 `hlint` runs against supported source roots, both installed in the base image from current compatible
 upstream releases selected by the rolling build. Every image build, base
@@ -782,10 +912,13 @@ or derived, gates on the project's canonical `check-code` — for a derived imag
 `RUN <project> check-code` stage whose body is project-defined. The standardized test harness's
 `<project> test` report card is the project-level validation gate. The mechanical documentation
 validator (`HostBootstrap.DocValidator`) runs through the code-check. The plan
-distinguishes mechanically enforced gates from editor-only guidance.
+distinguishes mechanically enforced gates from editor-only guidance, and § II from § JJ: the container
+`check-code` owns the formatter and linter, while the host static gate owns the behavioural and
+source-shape suites on every supported outer host.
 
 ### S. Imported Practices and Explicit Non-Adoption
 
+**Owning phase**: [the governance-and-documentation-standards phase](phase-0-governance-and-documentation-standards.md)
 `hostbootstrap` borrows the governance shape (metadata blocks, phase plan structure, completion
 tracking, declarative current-state language) from the consumer projects. It does not adopt any
 consumer's product features, runtime surfaces, daemon-role model, or hardware-correctness
@@ -796,6 +929,7 @@ lifecycle plan rather than a parallel selector or Dhall literal (§ T).
 
 ### T. Library Hierarchy, Extension Streams, and Execution Shapes
 
+**Owning phase**: [the Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md)
 `hostbootstrap-core` is a **library of composable tools**, not a CLI topology; the command surface is
 fixed (§ P) and is **not** an extension point. The reusable surface is a three-level Cabal library
 hierarchy: `hostbootstrap-core` (L0) ◄ `daemon-substrate` (L1) ◄ `{jitML, infernix}` (L2); `mcts` consumes
@@ -833,6 +967,7 @@ single representation.
 
 ### U. Host-Provider Axis And The Self-Reference Lift
 
+**Owning phase**: [the ensure-reconcilers phase](phase-8-ensure-reconcilers.md)
 A project binary crosses an execution-context boundary by invoking its **own** subcommand in the nested
 context — the self-reference lift. Its dependency layers are constructive and one-way:
 
@@ -898,6 +1033,7 @@ is the metal-frame instance. See
 
 ### V. Opportunistic Warm Store
 
+**Owning phase**: [the base-image-and-warm-store phase](phase-23-base-image-and-warm-store.md)
 The base image pre-builds a broad Cabal dependency set as a best-effort performance cache. The store is
 not a public version, freeze, or offline-build contract: consumers use their ordinary host-compatible
 `cabal.project` unchanged inside a derived container, do not import `/opt/basecontainer/...` project or
@@ -908,6 +1044,7 @@ requirement.
 
 ### W. Single Representation And The Harness That Drives The Chain
 
+**Owning phase**: [the step-algebra-and-project-plan phase](phase-12-step-algebra-and-project-plan.md)
 An operation has exactly **one** representation. Sprints 12.7–12.26 provide an opaque
 `ProjectPlan scope specDigest planId configId cfg` constructed inside a rank-2 continuation from a
 lifecycle profile, `ValidatedConfig scope specDigest configId (cfg scope)`, and a non-empty validated
@@ -965,6 +1102,7 @@ and the in-frame assertions are built from).
 
 ### X. Binary Context Configuration And Command Gating
 
+**Owning phase**: [the Dhall-configuration-and-generic-project-model phase](phase-7-dhall-configuration-and-project-model.md)
 `sourceRoot` is descriptive configuration, never host-path authority. Root-config admission resolves it
 exactly once against the stable project-home anchor owned by the selected root config (never the
 caller's current working directory), verifies that it denotes the intended project tree, and
@@ -993,7 +1131,7 @@ config file:
 Python currently discovers the Cabal-file stem and sole executable stanza separately, builds the
 host-native executable, and invokes it using the platform-specific handoff in § M; it does not initialize
 or trigger config creation (the binary owns its Dhall, § M). The
-[installed-identity, operator-verification, and authority-kernels phase](phase-5-operator-root-and-command-authority.md)
+[installed-identity, operator-verification, and authority-kernels phase](phase-5-installed-identity-and-authority-kernels.md)
 supplies one executable-bound `InstalledProjectIdentity`, and the
 [Dhall-configuration-and-generic-project-model phase](phase-7-dhall-configuration-and-project-model.md)
 carries that identity through configuration and plan construction. The built
@@ -1030,7 +1168,7 @@ while `project up|down|destroy` consult the closed `placementAllowsCommand` rela
 validated topology rather than trusting the declared command-class list. The
 [Dhall-configuration-and-generic-project-model phase](phase-7-dhall-configuration-and-project-model.md)
 owns that descriptive placement relation. The
-[installed-identity, operator-verification, and authority-kernels phase](phase-5-operator-root-and-command-authority.md)
+[installed-identity, operator-verification, and authority-kernels phase](phase-5-installed-identity-and-authority-kernels.md)
 supplies the independent lower root and reservation vocabulary. Sprint 12.14 supplies the pure plan/context
 admission, and Sprint 12.21 supplies the broker-indexed plan-bound acquisition journal. Sprints 12.22–12.26
 supply the journal's canonical cursor record, same-broker frame-local admission/transitions, plan-owned
@@ -1202,6 +1340,7 @@ there is no build-then-copy or config-mount path.
 
 ### Y. Project Lifecycle Command And The Step Chain
 
+**Owning phase**: [the step-algebra-and-project-plan phase](phase-12-step-algebra-and-project-plan.md)
 A project's lifecycle is a pure, **opaque** `ProjectPlan scope specDigest planId configId cfg`, where
 `cfg :: Type -> Type`. Sprints 12.7–12.29 implement scope finalization, fresh non-empty plan admission, the
 plan's retained root/config/nodes, pure `PlannedStep` forward order, `DerivedTopology`, public stable
@@ -1302,7 +1441,7 @@ construction is a pure function of validated root parameters.
   closed placement relation and validating `addRole` constructor; an incompatible primary/additional role
   pair is refused during assembly. The current parser maps `--force` to replacement, `--if-missing` to
   keeping an existing file, and gives `--force` precedence if both are supplied. The
-  [installed-identity, operator-verification, and authority-kernels phase](phase-5-operator-root-and-command-authority.md)
+  [installed-identity, operator-verification, and authority-kernels phase](phase-5-installed-identity-and-authority-kernels.md)
   contributes no init-request or role-selection constructor. Python builds
   and invokes the host-native binary using the platform-specific handoff in § M; it does not initialize
   or trigger config creation. A normal
@@ -1425,6 +1564,7 @@ role) is expressed as steps in the chain, not as separate top-level verbs.
 
 ### Z. Chain-Driven Test Surface And Context Introspection
 
+**Owning phase**: [the test-and-context-commands phase](phase-20-test-and-context-commands.md)
 The test surface consumes the project's real lifecycle rather than re-expressing bring-up (§ W). It is
 the one test engine. The command retains one exact Harness-scoped `ProjectPlan` through generated-config
 ownership and calls the shared current-frame forward/reverse interpreter directly. `TestSuite` owns only
@@ -1575,6 +1715,7 @@ mutation. Child-config creation is internal `project up` work, currently split f
 
 ### AA. Service Runtime Command
 
+**Owning phase**: [the service-runtime phase](phase-22-service-runtime.md)
 `service` is the third DSL-driven core command (alongside `project` and `test`). It runs a project's
 **long-running roles** — the `HostDaemon`/service run-model (§ T) — and is driven by a **service-configured**
 `<project>.dhall`:
@@ -1773,6 +1914,7 @@ variant, and an image-bridging step is a node of the build chain.
 
 ### BB. Generic Project Model and No Core Defaults
 
+**Owning phase**: [the Dhall-configuration-and-generic-project-model phase](phase-7-dhall-configuration-and-project-model.md)
 `hostbootstrap-core` is a **library of pure shapes plus the lift algebra and the harness**; it owns **no
 default config values and no fixed config type**. The reusable substrate is the compositional lift
 (`BinaryContext`, `childContext`, the `Step`/frame graph, `ProviderKind`) and the test engine — **not** the
@@ -1923,6 +2065,7 @@ and removes core-owned defaults.
 
 ### CC. Readiness-Gated Lifecycle Steps and Legible Failure
 
+**Owning phase**: [the canonical-quantities-and-reconcile-results phase](phase-6-canonical-quantities-and-reconcile-results.md)
 Every lifecycle step that **mutates a frame** — provisions it, stages into it, installs into it, or
 reconciles its state — runs only behind a proof that the dependency it needs is ready. That proof is a
 **sealed, lifecycle-plan- and resource-instance-bound
@@ -1950,7 +2093,7 @@ registry, or generation cannot authorize another resource with the same phantom 
 `Ready DockerDaemon` already gates the in-VM project-image build and `Ready RegistryServing` already gates
 the image push, so must the durable-share mount gate the alias step (§ DD).
 
-The the canonical-quantities-and-reconcile-results phase foundation now removes `HostBootstrap.Readiness.Internal`, keeps every readiness constructor
+The canonical-quantities-and-reconcile-results phase foundation now removes `HostBootstrap.Readiness.Internal`, keeps every readiness constructor
 private, validates `Micros` and `PollPolicy`, and fixes each `BackendProbeKey` to a closed planned-resource
 family. A plan-indexed probe can be constructed only with the matching `PlannedResource` and positive
 generation, phase, and observation versions; tests drive the real polling transition rather than minting
@@ -1995,6 +2138,7 @@ canonical homes are [readiness](../documents/architecture/readiness.md) and
 
 ### DD. The Durable-Share Primitive
 
+**Owning phase**: [the host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md)
 A host directory reaches a guest through **one** per-substrate share primitive on `SubstrateProvider` /
 `HostPathShare`, modeled as pure data and interpreted generically (the lifecycle peer of the launch/cordon
 effect lists, § U). It has three parts, and the substrates differ only in which parts they need:
@@ -2024,6 +2168,7 @@ validated (§ C, § J). The canonical home is
 
 ### EE. Opaque Capabilities and Phase-Indexed Lifecycle State
 
+**Owning phase**: [the installed-identity, operator-verification, and authority-kernels phase](phase-5-installed-identity-and-authority-kernels.md)
 Capabilities are authority, not descriptive labels. `Capability`, readiness witnesses, ownership
 witnesses, adoption authority, and lifecycle-state tokens expose no constructors or record updates from a
 public or `Internal` library module. They are minted only by validated transitions, narrowed when crossing
@@ -2057,10 +2202,18 @@ platform will not report — reports `Unsupported` and mints no receipt. A pathn
 or immediate re-probe substitutes for none of the four. No plan may claim compile-time exactly-once
 effects from phantom types alone.
 
+**One implementation, not one per object.** The clauses are a single transaction — observe, record the
+origin, mutate, bind the identity, release conditionally — and it is written once, in Haskell, over one
+closed platform seam. What differs between a POSIX host, a Windows host, and a frame reached through a
+provider command is the *primitive* each supplies, which is a row of the frame table (§ LL); it is never a
+second implementation of a clause, and it is never an interpreter program (§ KK). The clause order is a
+property of the types rather than of review: a mutation consumes the recorded origin, and a release
+consumes the bound identity, so performing either out of order has no term.
+
 The direct-Colima realization applies these clauses to one 128-bit plan/lifecycle namespace authority and its
-socket-safe local profile. A reusable profile-global lock is synchronization-only: the private backend opens
-its exact no-follow object and applies Python's `fcntl.flock` to the retained descriptor; no external
-`flock`/`lockf` frontend participates. Before any named namespace exists, a self-bound nonce origin records
+socket-safe local profile. A reusable profile-global lock is synchronization-only: the ownership row opens
+its exact no-follow object and holds the kernel lock on the retained descriptor for the whole bracket; no
+external `flock`/`lockf` frontend participates. Before any named namespace exists, a self-bound nonce origin records
 absence and the exact acquisition invocation. Descriptor-relative, parent-fsynced transitions then bind the
 isolated Colima home, isolated Docker config, fixed root/data wall, stable machine and context, every required
 Lima/Colima artifact identity, and a complete directory-chain digest. The sole `prepared` pre-call state does
@@ -2071,9 +2224,9 @@ Cleanup carries a distinct journal invocation, durably enters `releasing` before
 removing only manifest-listed namespace objects and retaining a released tombstone for replay. Missing
 primitives or unprovable identities are
 `Unsupported`; foreign profiles, copied records, replacements, partial foreign stages, and invocation drift
-are `Conflict` and remain untouched. This boundary is implemented by the completed
-[cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md), while Production
-recursive/demo consumption remains downstream.
+are `Conflict` and remain untouched. This boundary is owned by the
+[cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md), which
+adopts the ownership seam for it; Production recursive and demo consumption remain downstream.
 
 The canonical statement of this contract, with its per-substrate realization, is
 [ownership_invariant](../documents/architecture/ownership_invariant.md).
@@ -2188,7 +2341,7 @@ Execution profile is also indexed typed authority. Fresh construction uses
 abandoned Production `ProjectUp` uses the distinct
 `RecoveredProductionLifecycleProfile projectId specDigest planDigest planId brokerGeneration`;
 constructors are opaque to consumers. The
-[installed-identity, operator-verification, and authority-kernels phase](phase-5-operator-root-and-command-authority.md)'s
+[installed-identity, operator-verification, and authority-kernels phase](phase-5-installed-identity-and-authority-kernels.md)'s
 non-config authority layer verifies executable-bound installed identity and exact-store
 `VerifiedOsPrincipal`, then combines them with the fresh epoch and exact verb before minting
 `RootInvocationAuthority (Production projectId) brokerGeneration verb`; it does not mint a profile. The
@@ -2563,6 +2716,7 @@ non-attesting path. The canonical full algebra is
 
 ### FF. Rolling Base Selection and Native Compatibility
 
+**Owning phase**: [the base-image-and-warm-store phase](phase-23-base-image-and-warm-store.md)
 `hostbootstrap` is greenfield and intentionally uses rolling
 `basecontainer-<flavor>-<arch>` tags. Each base rebuild discovers and selects the current/latest
 compatible upstream parent, tools, and package sets at build time; rebuilding the same source revision
@@ -2582,12 +2736,13 @@ checks compatibility only; it is not reproducibility or complete-cache evidence.
 Host-native and container builds use the same consumer `cabal.project`. A derived Dockerfile never swaps
 in a container-only project and never imports base-owned freeze files. The inherited Cabal store is an
 opportunistic cache: matching artifacts may be reused, while cache misses may resolve, download, and
-compile normally. Offline builds and guaranteed cache hits are not acceptance criteria. the canonical-quantities-and-reconcile-results phase owns
-rolling publication, native-architecture enforcement, source gates, pull, and the compatibility-smoke
-workflow; the base-image-and-warm-store phase owns the single-project and opportunistic-store policy.
+compile normally. Offline builds and guaranteed cache hits are not acceptance criteria. Rolling publication,
+native-architecture enforcement, the source gates, the pull, the compatibility smoke, and the
+single-project and opportunistic-store policy are all this section's owning phase's.
 
 ### GG. Scope-Indexed Network Reachability and Blob Delivery
 
+**Owning phase**: [the composition-and-network-algebra phase](phase-21-composition-and-network-algebra.md)
 A network endpoint is not interchangeable text. Core models the scope from which a client can reach an
 endpoint (`ClusterOnly`, `ProviderLocal`, `HostLocal`, or `Public`) and keeps that index on opaque
 endpoint, exposure, and client values. A finalized registry plan jointly binds the client, verified
@@ -2611,6 +2766,7 @@ host-client→NodePort→cluster-only-MinIO proof. The canonical architecture is
 
 ### HH. Unrepresentable Illegal State
 
+**Owning phase**: [the installed-identity, operator-verification, and authority-kernels phase](phase-5-installed-identity-and-authority-kernels.md)
 A boundary is a type, not a convention. Where a value has exactly one lawful shape, the unlawful shapes
 have no constructor: a private constructor with a validating smart producer, a rank-2 continuation that
 prevents a value escaping the scope that authorized it, a closed sum with a total eliminator, and
@@ -2680,11 +2836,275 @@ made to do. The
 host-invocation boundary, the
 [canonical-quantities-and-reconcile-results phase](phase-6-canonical-quantities-and-reconcile-results.md)
 owns the readiness foundation, the
-[installed-identity, operator-verification, and authority-kernels phase](phase-5-operator-root-and-command-authority.md)
+[installed-identity, operator-verification, and authority-kernels phase](phase-5-installed-identity-and-authority-kernels.md)
 owns the lower authority boundary, and the
 [lifecycle-modes-and-run-leases phase](phase-9-lifecycle-modes-and-run-leases.md) plus the
 [cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md) own the
 lifecycle instances. The
-[documentation-reconciliation-and-drift-guards phase](phase-28-documentation-reconciliation.md) owns the
+[documentation-reconciliation-and-drift-guards phase](phase-29-documentation-reconciliation.md) owns the
 mechanical guards that keep a sealed surface sealed. The canonical architecture is
 [unrepresentable_state](../documents/architecture/unrepresentable_state.md).
+
+### JJ. Host-Portable Static Gate And Test Harness
+
+**Owning phase**: [the Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md)
+The repository builds every project binary host-native on every substrate (§ N), so the sources that
+binary is built from — and the suites that gate them — are host-portable. The **host static gate** (§ II)
+runs as an ordinary process of the outer host, and it passes host-native on macOS, Linux, and Windows
+alike. A suite that only builds and self-tests on POSIX cannot gate a binary the plan says is built
+host-native everywhere.
+
+The harness therefore holds five rules. Each is a property of the test harness, never a weakening of the
+contract a guard asserts: a host-portable guard proves the same thing on every host, which is exactly why
+it may not be written in terms of one.
+
+- **A guard over source bytes reads bytes.** A frozen source digest is computed from the file's own
+  bytes, so it is a property of the file rather than of the process locale. The suite driver also fixes
+  the locale encoding, so a spec that reads a source file or captured command output decodes the same
+  text on every host.
+- **A repo-relative module path is separator-neutral.** An import allow-list, importer set, or
+  module-ownership list compares canonical forward-slash paths, so a native path separator cannot make
+  an otherwise-satisfied allow-list fail.
+- **A host tool-path fixture is absolute on the host that runs it; a guest path stays POSIX.** § K
+  already draws this line for invocation: a host tool is resolved and invoked by the outer host, while a
+  guest path names a file on a different machine reached through one host-provider command. A fixture
+  respects the same split, and the host side is admitted by the same total constructor production uses.
+- **A conditional expectation follows the subject, not the package.** A platform row exists on every gate
+  host, so what varies is what it *answers* there: the kernel result where the row can hold its
+  obligations, the total refusal where it cannot. A case reads that from the row's own declaration
+  rather than from a build symbol the suite repeats, so the expectation cannot drift from the subject it
+  is about, and a compile-fail fixture expects one diagnostic because the module it names is built
+  everywhere.
+- **No case is skipped, and no module is excluded from the build.** A case whose subject is unavailable
+  on this gate host asserts the refusal its row declares; it does not disappear. A conditional that
+  changes an *expectation* keeps the evidence, while one that removes the case removes it — and a green
+  total that quietly shrank on one family is the most complete form of spoofing available, because the
+  number reads the same. Platform rows are therefore compiled everywhere and stubbed to a total
+  `Unsupported` where they cannot apply, rather than excluded by a Cabal `os` condition. The suite
+  reports what it did not run, and the gate compares that against a declared per-family expectation, so a
+  case vanishing is a failure rather than a smaller number nobody reads.
+
+#### The gate host
+
+A host static gate run is evidence about a **gate host**: the operating system, architecture, and
+toolchain the gate *process* runs on. That is a different unit from § II's **outer host**, which pairs a
+physical machine with the provider it realizes a hardware context through, and which selects substrates
+and owns acceptance phases. Conflating them makes the plan unreadable in both directions — a container
+run would have to be reported as evidence about the machine hosting the container, and a Linux VM the
+project itself provisions would be a substrate that somehow also proves outer-host portability.
+
+A gate host is therefore identified by what it *is*, never by how it came to exist. Bare metal, a virtual
+machine, a container, and a WSL2 distribution are each a gate host, and a run on any of them is evidence
+for its own OS family and for no other. There are three supported families — Windows, macOS, and Linux —
+and a phase's dated evidence names the family and the machine that produced it.
+
+This is not a way to obtain a substrate gate cheaply. § II's distinction is untouched: a substrate gate is
+about where the *effects of the lifecycle under test* execute, and running a static suite on a Linux gate
+host proves nothing about a provider, a container, or a POSIX process boundary. Nor is provisioning
+machinery a source of gate hosts: `ensure wsl2`, `ensure lima`, and the provider reconcilers exist to
+establish the substrate the project under test runs in, never to obtain a development environment for the
+repository's own gates. How a developer or CI comes by a gate host is outside the plan.
+
+#### What a phase owes, and what it does not
+
+A phase closes when its own suites hold the four rules above and its declared gate passes on the gate host
+that ran it. It does **not** owe evidence from every family: requiring three gate hosts to close a
+baseline sprint is exactly the closure obligation § C forbids, because the hardware is not something the
+phase declares. Cross-family confirmation is owned by one terminal acceptance phase, the
+[host-portability acceptance phase](phase-28-host-portability-acceptance.md), which runs the gate on each
+supported family and lists what it confirms — so a baseline phase closing on one family's evidence does
+not silently drop the portability claim.
+
+A phase whose own suites do not hold these rules is `Active` until they do, and its `Remaining Work`
+names the assertions it owes. The
+[Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md) owns this contract and the shared
+harness foundation every suite draws on: the fixture-path constructor, the separator-neutral
+repo-relative path helper, the suite driver's locale, and the absence guards that keep each shape from
+returning. The
+[installed-identity, operator-verification, and authority-kernels phase](phase-5-installed-identity-and-authority-kernels.md),
+the [host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md), the
+[cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md), and the
+[recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md) each own their own suites'
+conformance. The canonical engineering home is
+[testing](../documents/engineering/testing.md); the design justification is in
+[rationale.md](rationale.md).
+
+### KK. One Effect Vocabulary, And No Scripts
+
+**Owning phase**: [the host-tools-and-substrate-detection phase](phase-3-host-tools-and-substrate-detection.md)
+§ K fixes *which* executable an invocation names and § HH fixes the *shape* it is launched with. This
+section fixes *how the command is expressed*: as a value in one closed vocabulary, interpreted by one
+runner in the binary.
+
+**The repository contains no script.** There is no `.sh`, `.ps1`, `.bat`, `.cmd`, or `.psm1` file in the
+tree, and no build, test, gate, release, or operator procedure depends on one. A capability an operator or
+an agent needs is a surface on the binary, reached through the fixed command tree (§ P). Scaffolding that
+belongs to a particular development harness rather than to the project lives in that harness's own
+configuration, outside the repository.
+
+**A host-level command is a value, not text.** One closed effect vocabulary describes every host command
+the binary issues — the tool, its exact argument vector, its stdio disposition, and its frame — and one
+interpreter executes it. Argument construction is pure and separately testable; execution is the
+interpreter's alone. A function that builds an argument vector does not run it, and a described effect
+never sits beside an ad-hoc path that performs the same work without being described. There is one shell
+quoter, one process runner, and one rendering of "cross into this frame" (§ LL).
+
+**Interpreter text is not a substitute for the binary.** A shell string, a compiled-in Python program, or
+a PowerShell expression is an untyped, unversioned, per-platform fork of logic the binary already owns. It
+cannot be type-checked, cannot participate in the prepared-operation and authority machinery (§ EE), and
+must reimplement in another language every invariant the Haskell surface already states. Where a host
+capability looks like it needs an interpreter — file locking, descriptor passing, process groups,
+no-follow opens, atomic replace — the binary uses the platform binding for it behind one seam (§ LL), the
+way the host-wall backend already does.
+
+**The one irreducible residue is the guest bootstrap.** Establishing the binary inside a fresh frame needs
+commands to run there *before* the binary exists there, and § N forbids copying a binary across hosts. That
+bootstrap is therefore a closed, typed vocabulary of its own — install these packages, fetch this pinned
+toolchain, build, install the binary — owned by exactly one module, ordered, and re-probed like any other
+reconciler (§ L). It is not a general escape hatch: once the binary is established in a frame, every
+further command in that frame is the binary's own typed operation, lifted (§ LL). Free-form text in that
+module is as forbidden as it is anywhere else.
+
+The [host-tools-and-substrate-detection phase](phase-3-host-tools-and-substrate-detection.md) owns the
+vocabulary and its single runner; the
+[ensure-reconcilers phase](phase-8-ensure-reconcilers.md) owns the guest bootstrap vocabulary. Absence
+guards (§ I) assert that the tree carries no script file, that interpreter-invocation tokens appear only in
+the guest bootstrap module, that exactly one quoter, one runner, and one crossing renderer exist, and that
+each computation the ownership rows share — the identity read, the no-replace publication, the
+identity-conditional act, and the record codec — has exactly one definition site.
+
+### LL. The Frame Table: The Substrate Axis Is A Lift, Not A Fork
+
+**Owning phase**: [the host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md)
+A provider does not own a workflow. It owns a **frame**: a way to reach a context, plus the small closed
+table of facts that context differs by. Every lifecycle behaviour is written once against an abstract
+frame and instantiated from that table. Adding a provider adds a **row**; it never adds a parallel copy of
+a workflow.
+
+The table is closed and small, and each entry is a value rather than a code path:
+
+- the host tool that reaches the frame, and the exact argument shape it takes;
+- the frame's path grammar (§ MM);
+- the frame's sizing renderer, mapping one `EffectiveBudget` to that provider's own wall vocabulary (§ O);
+- the frame's ownership primitive — the platform seam beneath the four clauses (§ EE), never a second
+  implementation of them;
+- the frame's file-transfer and share primitives.
+
+The ownership primitive is the entry most easily mistaken for a workflow, so it is worth stating what its
+row contains. Three rows exist: a POSIX one, a Windows one, and one that ships the transaction to this
+same binary at the frame that interprets it. The third is a **transport**, not a third implementation —
+every frame the project reaches is Linux, so what runs on the far side is the POSIX row. The transaction
+travels as one value and the process that receives it lives exactly as long as the lock it holds, which is
+what keeps § EE clause 1 a kernel fact rather than an application-level release that has to be correct on
+every error path.
+
+Anything that differs and is not in that table is one of two things. A genuine capability difference is an
+explicit typed `Unsupported` or `Conflict` at the point of use, so a caller sees a decision rather than a
+gap. Anything else is a defect: a second copy of a workflow that will drift from the first, and whose
+drift no gate can see, because each copy passes its own tests.
+
+**WSL2 is Linux.** So is a Lima VM, an Incus instance, and a container. A behaviour that is true of Linux
+is written once for Linux and reached through whichever frame the outer host realizes it with. A
+provider-specific module contains only what is true of that provider's *own* ownership problem — for WSL2,
+that a Windows host owns a single utility VM every distribution shares — and never a second copy of the
+Linux behaviour underneath it. The five-constructor `SubstrateName` detector classifies an outer host for
+frame selection; it is not a licence to re-spell the same predicate at each site that needs it, and
+`isLinux`/`isWindows`/`isAppleSilicon` are the derived predicates that exist so it is not.
+
+**One rendering of "cross into this frame".** The lift fold that turns a layer stack into a dispatch is the
+only place a frame-crossing argument vector is produced. A second renderer — for a different call site, a
+sanitized route, or an authenticated descent — derives from that fold or is the same defect as a second
+workflow: two answers to one question, differing where nobody looks.
+
+The [step-algebra-and-project-plan phase](phase-12-step-algebra-and-project-plan.md) owns the frame as the
+unit its algebra composes over; the
+[four-ownership-clauses-and-host-local-reservations phase](phase-14-ownership-clauses-and-reservations.md)
+owns the one ownership seam; the
+[host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md) owns the rows and
+the single fold; the
+[ensure-reconcilers phase](phase-8-ensure-reconcilers.md) owns reconcilers as rows rather than as
+per-platform modules.
+
+### MM. A Path Belongs To The Frame That Interprets It
+
+**Owning phase**: [the host-tools-and-substrate-detection phase](phase-3-host-tools-and-substrate-detection.md)
+§ K draws the host/guest line for *invocation*. It is the same line for every path, and the deciding
+question is the same one: **which frame's process will interpret this path?** Not which frame constructed
+the string, and not which frame's filesystem the bytes happen to live on.
+
+A **host path** is interpreted by a process of the machine the binary is currently running on: a resolved
+executable, a canonical project root, a durable root the current frame opens. It is admitted by that
+machine's own path grammar, so it is drive-qualified on Windows and rooted at `/` on POSIX, and the total
+constructor that admits it is the platform-aware one.
+
+A **guest path** is interpreted by a process in another frame, reached through one absolute host-provider
+command: a path inside a managed VM, a node container, a mounted share as the guest sees it, or an
+argument to an ownership driver running in the realized Linux substrate. It stays POSIX on every outer
+host, and its validator is POSIX for the same reason.
+
+Two consequences are worth stating because both have been got wrong by reasoning from the wrong end. A
+path derived from a host value can still be a guest path — the derivation says nothing, the interpretation
+says everything. And a validator that admits a path must use the grammar of the frame that will read it,
+so a POSIX-only absoluteness check over a guest path is correct rather than a portability defect, while
+the same check over a host path is a defect that only shows on the outer hosts nobody ran.
+
+Test fixtures respect the same split (§ JJ): a host tool-path fixture is rendered onto the gate host that
+runs it, and a guest path fixture is written POSIX and left alone.
+
+The [host-tools-and-substrate-detection phase](phase-3-host-tools-and-substrate-detection.md) owns the
+host-path constructors, the
+[host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md) owns the guest-path
+grammar and the host-to-guest translations a frame declares, and the
+[cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md) owns the
+in-frame cluster paths. The design justification is in [rationale.md](rationale.md).
+
+### NN. Evidence, And What Cannot Count As It
+
+**Owning phase**: [the Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md)
+A gate is worth exactly what its evidence is worth. § JJ governs whether a guard proves the same thing on
+every host; this section governs whether it proves anything at all.
+
+**A fake exists because a decision is trapped inside an effect.** A suite needs a stand-in binary when the
+logic deciding what to do with that binary's output lives inside a subprocess; it needs an injected
+executor when the classification that follows a command lives beside the command. Lift the decision into a
+total function over a closed sum and there is nothing left to stand in for — the test applies the real
+function to real values. So the rule below is not an extra burden on the harness. It is the harness
+consequence of § KK's pure/impure split, and a phase that cannot satisfy it has usually not finished
+separating its decisions from its effects.
+
+Four things count as evidence:
+
+- **applying a pure total function to values** — not spoofable, because there is no stand-in: the function
+  under test *is* the function;
+- **exercising a platform row against the real kernel**, in a temporary directory it created — not
+  spoofable, because it is the real syscall. Clause 1's "the OS releases the lock on process death" is
+  proved by a real process actually dying;
+- **a compile-fail fixture that fails for its named reason** (§ HH), expecting one contiguous diagnostic
+  phrase rather than a list of tokens an unrelated error could also satisfy;
+- **a row reporting `Unsupported` on a gate host where it genuinely cannot hold a clause** — the row is
+  real; only the host differs.
+
+Four things do not:
+
+- an executable a spec wrote and placed on `PATH` so production would resolve it;
+- an injected seam standing in for a subject the gate claims to cover — and a seam whose only production
+  instance lives in an opt-in component *is* that, whatever it is called;
+- a case a conditional removed (§ JJ);
+- a branch in production code that exists for a test — a crash point, a fault token, an execution
+  override. It is a spoofable path shipped to operators, and it makes the gate agree with a shape
+  production never takes.
+
+The `Unsupported` decision needs no injected row, because "a backend that cannot hold a clause mints no
+receipt" is itself a total function from a declared capability value to a refusal. Applying it to every
+capability combination is stronger than injecting one fake that returns the answer it was written to
+return.
+
+Where a capability cannot be exercised on any available gate host, the honest disposition is to test the
+pure classification with values and record the live confirmation as **owed to the acceptance phase that
+declares that hardware** (§ II). Coverage that is owed and named is a smaller claim than coverage that is
+simulated, and it is a true one.
+
+The [Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md) owns this contract with the rest
+of the shared harness foundation, and each phase ships the absence guard for the shape its own work
+removes (§ I). The canonical engineering home is [testing](../documents/engineering/testing.md); the
+design justification is in [rationale.md](rationale.md).

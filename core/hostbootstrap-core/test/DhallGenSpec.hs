@@ -40,7 +40,8 @@ import HostBootstrap.Dhall.Gen (
  )
 import HostBootstrap.DocValidator (findRepoRoot)
 import System.Directory (doesPathExist, getCurrentDirectory)
-import System.FilePath (makeRelative, normalise, (</>))
+import SourceGuard (repoRelativePath)
+import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -49,8 +50,7 @@ import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 corePath :: FilePath -> IO Text
 corePath root = do
     cwd <- getCurrentDirectory
-    let rel = makeRelative cwd (root </> "core" </> "hostbootstrap-core" </> "dhall" </> "Core.dhall")
-        slashy = map (\c -> if c == '\\' then '/' else c) (normalise rel)
+    let slashy = repoRelativePath cwd (root </> "core" </> "hostbootstrap-core" </> "dhall" </> "Core.dhall")
         importPath =
             if "." `T.isPrefixOf` T.pack slashy
                 then slashy

@@ -22,22 +22,58 @@ The sections below describe the working two-build chain and identify its open li
 Delivery status and closure evidence live in
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
+## One universal floor, multiple hardware contexts
+
+`linux-cpu` is the universal project baseline. It is a Linux/container contract, not a synonym for a
+physically Linux host. It is also not the complete execution model: hostbootstrap is a DSL that lifts an
+arbitrary application into a plan-selected hardware context. The outer
+host-native binary first classifies the host so it can select the realization:
+
+| Outer host classification | Provider realization of `linux-cpu` |
+|---|---|
+| Linux CPU | native Linux container/runtime path |
+| Apple Silicon | Lima/Colima Linux VM and container path |
+| Windows CPU | WSL2 Linux VM and container path |
+
+The selected hardware context combines substrate, accelerator, provider, topology, placement, and typed
+capabilities. GPU or Metal contexts are genuine targets for lifted application roles; they add behavior to
+the applicable host realization without weakening or replacing the CPU floor. Host-native work is limited
+to bootstrap, provider ownership, transport, and roles the context explicitly places on the host. Project
+compilation, baseline gates, and ordinary CPU workload effects re-enter the project binary in the realized
+Linux environment.
+
+The existing closed `SubstrateName` vocabulary is therefore an outer-host/provider dispatch vocabulary.
+Its `LinuxCpu` spelling describes the native realization branch; it does not make the universal baseline
+unavailable when the outer classifier returns `AppleSilicon` or `WindowsCpu`.
+
 ## Two builds and one Cabal project
 
-The outer Python bootstrap builds the project executable **host-native** into
-`<project-root>/.build/<executable>` and hands the requested arguments to it. The project binary later
-builds the Linux project image from the same source. In this repository, `demo/cabal.project` includes
+The outer Python bootstrap builds the first project executable **host-native** into
+`<project-root>/.build/<executable>` and hands the requested arguments to it. That binary establishes the
+host's `linux-cpu` realization and re-establishes the same project binary inside the Linux environment;
+the Linux-side binary then builds the project image from the same source. In this repository,
+`demo/cabal.project` includes
 the demo package and local `hostbootstrap-core`; the Docker build copies both packages into matching
 relative locations and uses that same file unchanged.
 
 | Build | Project file | Store/pins |
 |---|---|---|
-| Host-native binary | `demo/cabal.project` | host `.build/cabal-store`; local core source |
+| Host-native bootstrap/provider binary | `demo/cabal.project` | host `.build/cabal-store`; local core source |
+| Realized `linux-cpu` binary | `demo/cabal.project` | realization-local Cabal store; local core source |
 | Linux project image | `demo/cabal.project` | inherited `/opt/cache/cabal`; local core source; online misses allowed |
 
 No project file imports `/opt/basecontainer/...`, and the Dockerfile does not swap in a
 container-specific configuration. The inherited store improves performance when keys match; it does not
 control the consumer solver.
+
+Because the first build in that table is host-native on every supported outer host — macOS, Linux, and
+Windows — the sources it compiles are host-portable, and so are the suites that gate them. That is the
+**host static gate**: the fast Haskell and Python suites run as ordinary processes of the outer host and
+are expected to pass on each of them. It is a separate thing from a **`linux-cpu` substrate gate**, whose
+process and POSIX/container effects execute inside the realized Linux environment established in the next
+row. Running the static suites natively on Windows is an outer host realization rather than a substrate,
+and it proves nothing about a provider, a container, or a real POSIX process boundary. The gate kinds and
+the portability rules the harness holds are canonical in [testing](../engineering/testing.md).
 
 ## Network behavior
 
@@ -85,6 +121,66 @@ container with GPU access, creates nvkind, and deploys the in-cluster GPU daemon
 registry. Linux CPU/GPU deploy an in-cluster daemon after the web service; Apple Silicon/Windows GPU start
 a host daemon after the private ingress is reachable.
 
+## One quoter
+
+Three axes are separate boundaries: *which* executable an invocation names, the *shape* it is launched
+with, and *how the command is expressed*. Quoting belongs to the third. An argument that crosses into a
+shell is quoted by `HostBootstrap.Effect.Quote`, and by nothing else — the private leaf sublibrary every
+library in the package depends on, re-exported to consumers as `HostBootstrap.Effect`.
+
+Two grammars are there because two interpreters read them. POSIX `sh` closes a single-quoted string at the
+first quote and offers no escape inside it, so `shellQuoteArg` leaves and re-enters the quoting; Windows
+PowerShell doubles the quote in place, so `powerShellQuoteArg` is a separate function rather than a flag.
+`shellQuoteArgs` joins a quoted argv, so an argv built in Haskell reaches the far side as the same argv.
+
+A second copy is what the guards refuse. Two quoters agree on every input both were written for and
+disagree on the first character only one of them met, and no gate compares them, because each passes its
+own test. The [host-tools-and-substrate-detection phase](../../DEVELOPMENT_PLAN/phase-3-host-tools-and-substrate-detection.md)
+owns the quoter and its single definition site.
+
+## One command vocabulary, one interpreter, one runner
+
+The third axis is more than quoting. A host-level command is a value: `HostCommand` names the target, the
+exact argument vector, the stdio disposition, and the frame whose process will interpret it. The type is
+pure and names no runner, so building an argument vector and running one are different things a caller
+cannot confuse. There is no constructor for a bare command name; a target is a resolved `HostTool` or the
+binary's own path — the latter being how the binary reaches itself at another frame, which is a
+self-invocation the lift fold produces rather than a verb an operator types (see
+[hostbootstrap core library](hostbootstrap_core_library.md)).
+
+`HostBootstrap.Effect.Interpreter` is the one interpreter. `resolveLaunch` is pure and total: it turns a
+described command into the executable and argument vector the host launches, and it is where the single
+outer-host reframing lives — on Windows a WSL command is launched through PowerShell, built with the one
+PowerShell quoter. `interpretHostEffects` runs an effect list under one of two failure policies: a launch
+or staging list stops at the first failure, an idempotent teardown continues under one intent line. A
+consumer supplies only what a library cannot know — the global WSL wall's project-owned ownership
+identity, and where a run's transcript goes.
+
+`HostBootstrap.Effect.Run` is the one process runner, and it offers exactly two dispositions because two
+are genuinely distinct. `runCaptured` feeds a stdin string and reads both output streams. `runBoundedGrouped`
+is what a driver needs when its child may hang, talk forever, or leave descendants: the child leads its own
+process group, receives a complete environment and working directory rather than inheriting the launcher's,
+and is bounded by a wall clock, a per-stream output ceiling, and a termination grace. A caller that needs
+different numbers supplies a different `RunBounds` row, not a different runner. The two other lawful shapes
+are separately sealed: `HostBootstrap.Detached` owns a child that outlives its launcher, and the handoff
+process route owns a child holding an inherited descriptor pair.
+
+Failure to *start* stays distinct from failure to *succeed*. A child that ran and exited non-zero carries
+its own diagnostic in the streams it wrote; only a child that never existed is a launch failure. Collapsing
+the two loses the difference between "the tool refused" and "the tool is not there".
+
+## Which frame reads a path
+
+A described command's frame is not decoration. `framePathGrammar` answers, from the frame alone, whether a
+path in that command obeys the outer host's grammar — drive-qualified on Windows — or the POSIX grammar
+every frame reached through a host-provider command uses. The deciding question is which process will
+interpret the path, never which frame constructed the string: a path derived from a host value is still a
+guest path when a guest process reads it.
+
+The crossing itself is rendered once. `foldLeafCommand` pairs the lift fold's own dispatch with
+`liftContextFrame`'s description of where it lands, so nothing re-derives a frame-crossing argument vector
+in order to explain it.
+
 ## Provider dispatch
 
 The provider axis has four one-way layers. Public pure `HostBootstrap.Lift.Context` describes target
@@ -94,6 +190,21 @@ policy. `HostBootstrap.Incus`/`Lima`/`Wsl2` provide lifecycle-specific builders 
 and the abstract `SubstrateProvider` selects their pure operation plans without exposing its constructor or
 record fields. Network/registry code may add leaf helpers by importing generic Lift; generic Lift never
 imports it.
+
+A provider is a **row** rather than a workflow. What genuinely differs between frames is small and
+enumerable — the tool that reaches the frame and its argument shape, the frame's path grammar, its sizing
+vocabulary, and its ownership primitive — and a behaviour true of every frame is written once and
+instantiated from that table. `HostBootstrap.Substrate.Frame` holds the shared computations; the guarded
+destructive delete is one of them, so a provider module supplies only the noun its refusal reads in and the
+argument vector for a name the guard has already admitted. Anything that differs and is not in the table is
+either an explicit typed `Unsupported`/`Conflict` at the point of use, or a second copy of a workflow that
+will drift where no gate looks.
+
+The **ownership primitive** is the table's most consequential column, and it has exactly three rows: POSIX,
+Windows, and one that runs a transaction at the frame owning the object. The third is a transport rather
+than a third implementation — every frame this project reaches is Linux, so what executes there is the
+POSIX row, carried by a process of this same binary. [Ownership seam](ownership_seam.md) is its canonical
+home.
 
 The lifecycle provider kind is a closed, total four-way sum: Incus, Lima, WSL2, or Direct. A selected
 opaque descriptor retains a complete `LiftContext`; the three guest providers contribute exactly one VM
@@ -199,9 +310,20 @@ applies a root context gate. The actual demo `<project>.test.dhall` contains a s
 resources; compiled Haskell owns the case bodies and the selector (currently one case ID or `all`, despite
 the source help's stale suite terminology).
 
+That surface is the whole of what an operator can type, and it is not the whole of how this binary is
+started. A frame crossing launches this binary in the target frame with one marker argument vector,
+which `runCLI` classifies before the parser ever runs. The marker is absent from `--help`, is the whole
+argument vector or nothing, and refuses unless standard input and output are the handoff protocol
+channel — so it adds no verb to the surface above and nothing an operator can usefully type reaches it.
+The near side of the crossing folds the lift context to the invocation that performs it, so the argument
+vector, the executable, and the frame all come from the one fold rather than from a caller. See
+[the core library's frame-child entry](hostbootstrap_core_library.md#the-frame-child-entry).
+
 ## Validation
 
-Static unit suites validate many pure builders and classifiers. They do not close:
+Static unit suites validate many pure builders and classifiers. They are the host static gate and are
+expected to pass host-native on every supported outer host; see
+[testing](../engineering/testing.md#gate-kinds). They do not close:
 
 - remaining native rolling-base publication/compatibility lanes;
 - universal readiness/ownership typing;

@@ -83,7 +83,8 @@ Make "the old generation's permits are dead" a durable fact that survives a cras
 #### Validation
 
 `SessionSpec` covers creation, each rotation phase, resumption of the persisted epoch, and both the rejection
-and the deduplication of a delayed old permit. Kill points cover both sides of every rotation write.
+and the deduplication of a delayed old permit. Each rotation phase is entered from the durable record that
+phase leaves, so both sides of every rotation write are covered by a state rather than by a throw.
 
 The out-of-process half is `--hostbootstrap-fence-delay-probe`: a competitor process takes the plan's
 generation token in one entry, **releases the store** while the parent rotates the fence in an ordinary
@@ -122,7 +123,6 @@ Classify every persisted operation totally, so recovery has no default branch.
   after old permits are fenced.
 - A terminal acknowledgment first verifies every registered outcome settled, then compare-and-swaps the exact
   session version closed, so a concurrent prepare or a retained proof cannot win.
-- `Session.Testing` exposes only what a fixture needs to construct a recorded state; it mints no authority.
 - The classifier is the **input** the recovery phase's protected recorded-session interpreter consumes: this
   sprint owns the total classification of a persisted operation, and the phase that has a reopened run's
   records owns rebinding and closing them.
@@ -136,13 +136,79 @@ terminal-acknowledgment race.
 
 None.
 
+### Sprint 10.4: The interrupted coordinator state is a value [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Transaction.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session/Testing.hs`,
+`core/hostbootstrap-core/test/SessionSpec.hs`,
+`core/hostbootstrap-core/test/PortabilitySpec.hs`,
+`core/hostbootstrap-core/test/compile-fail/ForgeTransactionPermitFromDescriptor.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`,
+`documents/engineering/testing.md`
+
+#### Objective
+
+Let a fixture reach every point the redo coordinator can be interrupted at without the coordinator
+carrying a branch that exists for the fixture (§ NN).
+
+#### Deliverables
+
+- What an interruption leaves behind is a **value**: the coordinator record at `Applying` naming a
+  descriptor, plus the first *n* of that descriptor's targets already stamped. A fixture writes exactly
+  that through the protected store's own compare-and-swap and then re-enters the ordinary entry point,
+  so the recovery driver under test is the one production runs and nothing in it knows a fixture exists.
+- The descriptor a fixture writes is the **transition's own**, not one it invented. The fixture runs the
+  real transition once, reads the records it stamped — their keys, their roles, their exact payloads, and
+  its transaction id — restores the store's directory from the snapshot taken before it ran, and rebuilds
+  the descriptor against those same pre-transition versions. A snapshot restore is what makes the
+  expectations faithful: a store rebuilt through the API would carry later record versions than the
+  coordinator saw.
+- `Session.Testing` holds the vocabulary that state is written in — the coordinator record's two states,
+  the descriptor, the closed transaction kind, the target constructors, and the two encoders — and
+  nothing else. It is the encoding production writes rather than a second implementation that could agree
+  with itself while disagreeing with the writer, and it mints no authority: there is no permit
+  constructor, no record-key minter beyond the coordinator's own, and no transaction runner.
+- `runLifecycleTransaction`, `recoverApplying`, and `applyTargets` carry no crash point, and the library
+  exposes no module whose purpose is to install one. The per-target counter goes with them, because it
+  existed only to name a crash point.
+- `PortabilitySpec` gains the § NN absence guard this sprint's work makes true, naming its
+  [rationale.md](rationale.md) § Gates and validation entry: no module the package ships names a
+  transaction crash point.
+- The eight recovery families keep every case they had — open project, open session, register intent,
+  prepare, acknowledge, close session, begin project close, and record project closed, at each
+  interruption point — so what changed is what the evidence is worth, not how much of it there is. A
+  ninth case pins the faithfulness the other twenty-five rest on: the reproduced state carries the exact
+  bytes the completed transition wrote, under the same transaction id.
+
+#### Validation
+
+`SessionSpec`'s twenty-six recovery cases, run against constructed durable state rather than an injected
+exception; `ForgeTransactionPermitFromDescriptor.hs` proving a descriptor is not a permit; and the new
+absence guard proved non-vacuous by naming the shape and finding none.
+
+Dated evidence: on 2026-08-18, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0
+passed `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/` host-native at
+1,951/1,951 in 237.07 seconds, plus `poetry run python -m hostbootstrap.check_code` and
+`poetry run python -m hostbootstrap.test_all` at 231 passed.
+
+#### Remaining Work
+
+None.
+
+## Remaining Work
+
+None.
+
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
 - `documents/architecture/lifecycle_state_model.md` — the journal, sessions, fences, and the total classifier.
 
 **Engineering docs to create/update:**
-- `documents/engineering/testing.md` — the kill-point matrix and what in-process coverage cannot reach.
+- `documents/engineering/testing.md` — the interruption matrix built from durable values, and what
+  in-process coverage cannot reach.
 
 **Cross-references to add:**
 - `development_plan_standards.md` § EE names this phase as the owner of the session/fence protocol.

@@ -12,6 +12,12 @@ they bind is the same @(volume, index)@ pair read the same way.  It lives here s
 the two protocols cannot drift apart, and so a substrate that cannot supply the
 identity refuses both at one place.
 
+The identity itself, its bounds, and its hex journal codec belong to
+"HostBootstrap.Ownership.Object", which is the one vocabulary every owner speaks;
+this module adds the host seam the two harness protocols read it through and
+maps that vocabulary's faults into its own. One type means a record one owner
+writes is comparable with an identity another owner read.
+
 The constructor is private: an 'ObjectIdentity' exists only where a backend read
 a non-empty identity out of the kernel, so an empty or fabricated value can never
 be compared as though it were one.
@@ -33,62 +39,42 @@ module HostBootstrap.Harness.Identity (
 ) where
 
 import Data.ByteString (ByteString)
-import qualified Data.ByteString as ByteString
-import Data.Char (isHexDigit)
 import Data.Text (Text)
-import qualified Data.Text as Text
-import Data.Word (Word8)
+import HostBootstrap.Ownership.Object (
+    ObjectIdentity,
+    objectIdentityBytes,
+    objectIdentityText,
+    ownershipFault,
+ )
+import qualified HostBootstrap.Ownership.Object as Object
 
-{- | A filesystem object's stable kernel identity: @device:inode@ on POSIX, the
-volume serial number plus file index on Windows.
+{- | Admit raw identity bytes, in this module's fault vocabulary.
+
+The bounds are the shared vocabulary's; only the fault type differs, and it
+differs through that vocabulary's total eliminator rather than through a pattern
+match that could quietly stop covering a case.
 -}
-newtype ObjectIdentity = ObjectIdentity ByteString
-    deriving (Eq, Ord)
-
-instance Show ObjectIdentity where
-    show identity = "ObjectIdentity " <> show (objectIdentityText identity)
-
--- | Admit raw identity bytes.  Empty is not an identity, and an over-long value
--- is a host reporting something this protocol does not understand.
 mkObjectIdentity :: ByteString -> Either IdentityFault ObjectIdentity
-mkObjectIdentity raw
-    | ByteString.null raw =
-        Left (IdentityUnsupported "the host reported an empty object identity")
-    | ByteString.length raw > 64 =
-        Left (IdentityUnsupported "the host reported an over-long object identity")
-    | otherwise = Right (ObjectIdentity raw)
+mkObjectIdentity = either (Left . identityFaultFrom) Right . Object.mkObjectIdentity
 
-objectIdentityBytes :: ObjectIdentity -> ByteString
-objectIdentityBytes (ObjectIdentity raw) = raw
-
--- | The identity as lowercase hex, which is how it is journalled and reported.
-objectIdentityText :: ObjectIdentity -> Text
-objectIdentityText (ObjectIdentity raw) =
-    Text.pack (concatMap hexByte (ByteString.unpack raw))
-
-hexByte :: Word8 -> String
-hexByte value = [hexDigit (value `div` 16), hexDigit (value `mod` 16)]
-
-hexDigit :: Word8 -> Char
-hexDigit value
-    | value < 10 = toEnum (fromEnum '0' + fromIntegral value)
-    | otherwise = toEnum (fromEnum 'a' + fromIntegral value - 10)
-
--- | Read back a journalled identity.  A value that is not exactly lowercase hex
--- is a malformed record, never a guess.
+-- | Read back a journalled identity, in this module's fault vocabulary.
 parseObjectIdentityHex :: Text -> Either IdentityFault ObjectIdentity
-parseObjectIdentityHex raw
-    | Text.null raw || odd (Text.length raw) || not (Text.all isHexDigit raw) =
-        Left (IdentityMalformed ("identity is not lowercase hex: " <> raw))
-    | otherwise = mkObjectIdentity (ByteString.pack (bytes (Text.unpack raw)))
-  where
-    bytes (high : low : rest) = (nibble high * 16 + nibble low) : bytes rest
-    bytes _ = []
-    nibble character
-        | character >= '0' && character <= '9' =
-            fromIntegral (fromEnum character - fromEnum '0')
-        | otherwise =
-            fromIntegral (fromEnum character - fromEnum 'a' + 10)
+parseObjectIdentityHex = either (Left . identityFaultFrom) Right . Object.parseObjectIdentityHex
+
+{- | Carry a shared-vocabulary fault into this protocol's own.
+
+An occupied target and a conflict have no meaning to an identity probe, so both
+arrive as the probe fault they in fact are rather than as a case this vocabulary
+would have to invent a name for.
+-}
+identityFaultFrom :: Object.OwnershipFault -> IdentityFault
+identityFaultFrom =
+    ownershipFault
+        IdentityUnsupported
+        IdentityProbeFailed
+        IdentityMalformed
+        (IdentityProbeFailed "read an unoccupied object identity")
+        (IdentityProbeFailed "read one object identity" . Object.conflictSubject)
 
 {- | How a driver reads a path's stable kernel identity.
 

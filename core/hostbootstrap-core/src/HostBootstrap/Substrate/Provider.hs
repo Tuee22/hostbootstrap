@@ -1,7 +1,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RoleAnnotations #-}
 
-{- | One pure provider route into each host substrate.
+{- | One pure provider route from each outer host into universal linux-cpu.
 
 Apple Silicon (Lima), native Linux (Incus), Windows (WSL2), and the direct host
 share one lifecycle interface: probe existence, provision, reconcile-to-ready,
@@ -32,8 +32,7 @@ module HostBootstrap.Substrate.Provider (
     providerTopologyKind,
 
     -- * Pure effect vocabulary
-    HostEffect (..),
-    DirectHostAction (..),
+    module HostBootstrap.Effect.Vocabulary,
     Membership (..),
     ExistsProbe (..),
     WaitProbe (..),
@@ -117,6 +116,7 @@ import HostBootstrap.Cluster.Cordon (
     limaSizingArgs,
     wsl2SizingArgs,
  )
+import HostBootstrap.Effect.Vocabulary
 import HostBootstrap.Context (ResourceEnvelope)
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.HostTool (HostTool (Incus, Lima, Wsl))
@@ -198,7 +198,7 @@ data ProviderKind
     | ProviderDirectHost
     deriving (Eq, Show)
 
--- | Select the lifecycle provider implied by a concrete host substrate.
+-- | Select the lifecycle provider that realizes linux-cpu for a concrete outer host.
 providerKindForSubstrate :: Substrate -> ProviderKind
 providerKindForSubstrate sub = case substrateName sub of
     AppleSilicon -> ProviderLima
@@ -214,40 +214,6 @@ providerTopologyKind kind = case kind of
     ProviderLima -> Context.LimaVMProvider
     ProviderWsl2 -> Context.Wsl2VMProvider
     ProviderDirectHost -> Context.HostProvider
-
-{- | A single pure host-side effect the lifecycle interpreter runs.
-'ApplyGlobalWslWall' and 'ReleaseGlobalWslWall' are the WSL2 @.wslconfig@ wall (a
-/global/ user file); 'RunHostTool' is a resolved VM-provider tool invocation,
-and 'RunDirectHost' makes an already-local host transition explicit.
-
-Neither wall effect carries a pathname.  The wall is the current user's one
-@%UserProfile%\\.wslconfig@, derived by
-'HostBootstrap.Wsl2.GlobalWall.Windows' itself, and it is acquired through the
-identity-owning host-wall backend rather than a backup copy: an origin record is
-journalled before the first mutation and release is conditioned on re-observing
-the same object.  Release therefore carries the same managed body it was applied
-with, because the wall's specification identity binds owner and body together —
-a different declaration is a structured conflict, not an overwrite.
--}
-data HostEffect
-    = -- | acquire the per-user global WSL wall with this managed body
-      ApplyGlobalWslWall [String]
-    | -- | release the per-user global WSL wall applied with this managed body
-      ReleaseGlobalWslWall [String]
-    | -- | run a resolved host tool with these args
-      RunHostTool HostTool [String]
-    | -- | perform an explicit lifecycle transition on the already-local host
-      RunDirectHost DirectHostAction
-    deriving (Eq, Show)
-
-{- | Direct-host lifecycle transitions are explicit effects, not silent empty
-lists. The generic interpreter can therefore distinguish "the local host is the
-selected frame" from "the provider forgot to implement this operation".
--}
-data DirectHostAction
-    = RealizeDirectHost
-    | ReconcileDirectHostReady
-    deriving (Eq, Show)
 
 -- | How to read membership of a VM name out of an existence-probe's stdout.
 data Membership
@@ -1020,15 +986,15 @@ selectProviderKind kind h = case kind of
                 , spLaunch = \env share -> do
                     sizing <- limaSizingArgs env
                     let mount = maybe [] (Lima.writableMountArgs . hpsHostPath) share
-                    pure [RunHostTool Lima (Lima.startVMArgs vm (sizing ++ ["--vm-type", "vz"] ++ mount))]
+                    pure [hostToolEffect Lima (Lima.startVMArgs vm (sizing ++ ["--vm-type", "vz"] ++ mount))]
                 , spShare = \source -> HostPathShare source source Nothing
-                , spStartExisting = [RunHostTool Lima ["start", limaName vm]]
+                , spStartExisting = [hostToolEffect Lima ["start", limaName vm]]
                 , spReconcileCordon = Nothing
                 , spWait = WaitProbe Lima (Lima.shellVMArgs vm ["true"])
                 , spTransfer = LimaFileTransfer vm
-                , spStop = \_ -> Right [RunHostTool Lima (Lima.stopVMArgs vm)]
+                , spStop = \_ -> Right [hostToolEffect Lima (Lima.stopVMArgs vm)]
                 , spDestroy =
-                    \_ -> (\argv -> [RunHostTool Lima argv]) <$> Lima.deleteVMArgs prefix vm
+                    \_ -> (\argv -> [hostToolEffect Lima argv]) <$> Lima.deleteVMArgs prefix vm
                 }
 
     linux =
@@ -1040,7 +1006,7 @@ selectProviderKind kind h = case kind of
                 , spExists = ExistsProbe Incus ["list", "--format", "csv", "-c", "n"] LinesMember
                 , spLaunch = \env _ -> do
                     sizing <- incusSizingArgs env
-                    pure [RunHostTool Incus (createVMArgs vm (concatMap toLaunchFlag sizing))]
+                    pure [hostToolEffect Incus (createVMArgs vm (concatMap toLaunchFlag sizing))]
                 , spShare = \source ->
                     let device = "durable-data"
                         target = source
@@ -1052,16 +1018,16 @@ selectProviderKind kind h = case kind of
                                     ShareReconcile
                                         { srProbe = ExistsProbe Incus (deviceListArgs vm) LinesMember
                                         , srMember = device
-                                        , srWhenMissing = [RunHostTool Incus (addDiskDeviceArgs vm device source target)]
+                                        , srWhenMissing = [hostToolEffect Incus (addDiskDeviceArgs vm device source target)]
                                         }
                             }
-                , spStartExisting = [RunHostTool Incus (startVMArgs vm)]
+                , spStartExisting = [hostToolEffect Incus (startVMArgs vm)]
                 , spReconcileCordon = Nothing
                 , spWait = WaitProbe Incus (execVMArgs vm ["true"])
                 , spTransfer = IncusFileTransfer vm
-                , spStop = \_ -> Right [RunHostTool Incus (stopVMArgs vm)]
+                , spStop = \_ -> Right [hostToolEffect Incus (stopVMArgs vm)]
                 , spDestroy =
-                    \_ -> (\argv -> [RunHostTool Incus argv]) <$> destroyVMArgs prefix vm
+                    \_ -> (\argv -> [hostToolEffect Incus argv]) <$> destroyVMArgs prefix vm
                 }
 
     windows =
@@ -1078,8 +1044,8 @@ selectProviderKind kind h = case kind of
                     let vhd = show (gibibytes (budgetStorageBytes budget)) ++ "GB"
                     pure
                         [ ApplyGlobalWslWall body
-                        , RunHostTool Wsl Wsl2.wslShutdownArgs
-                        , RunHostTool Wsl (Wsl2.wslInstallArgs distro vhd)
+                        , hostToolEffect Wsl Wsl2.wslShutdownArgs
+                        , hostToolEffect Wsl (Wsl2.wslInstallArgs distro vhd)
                         ]
                 , spShare = \source ->
                     HostPathShare
@@ -1097,7 +1063,7 @@ selectProviderKind kind h = case kind of
                   spReconcileCordon =
                     Just
                         ( ExistsProbe Wsl ["--list", "--verbose"] WslRunningMember
-                        , [RunHostTool Wsl Wsl2.wslShutdownArgs]
+                        , [hostToolEffect Wsl Wsl2.wslShutdownArgs]
                         )
                 , spWait = WaitProbe Wsl (Wsl2.wslExecArgs distro ["true"])
                 , spTransfer = Wsl2MountTransfer vm
@@ -1117,12 +1083,12 @@ selectProviderKind kind h = case kind of
                     body <- wsl2SizingArgs env
                     pure
                         [ ReleaseGlobalWslWall body
-                        , RunHostTool Wsl Wsl2.wslShutdownArgs
+                        , hostToolEffect Wsl Wsl2.wslShutdownArgs
                         ]
                 , spDestroy = \env -> do
                     body <- wsl2SizingArgs env
                     argv <- Wsl2.wslUnregisterArgs prefix distro
-                    pure [RunHostTool Wsl argv, ReleaseGlobalWslWall body]
+                    pure [hostToolEffect Wsl argv, ReleaseGlobalWslWall body]
                 }
 
     direct =
@@ -1196,9 +1162,9 @@ reads @src@ through @/mnt@, and direct host reads the same path in place.
 -}
 stageFileEffects :: FileTransfer -> FilePath -> FilePath -> StagedFile
 stageFileEffects (IncusFileTransfer vm) src dst =
-    StagedFile [RunHostTool Incus (pushFileArgs vm src dst)] dst True
+    StagedFile [hostToolEffect Incus (pushFileArgs vm src dst)] dst True
 stageFileEffects (LimaFileTransfer vm) src dst =
-    StagedFile [RunHostTool Lima (Lima.copyToVMArgs vm src dst)] dst True
+    StagedFile [hostToolEffect Lima (Lima.copyToVMArgs vm src dst)] dst True
 stageFileEffects (Wsl2MountTransfer _) src _ =
     StagedFile [] (windowsPathToWslMount src) False
 stageFileEffects DirectHostTransfer src _ = StagedFile [] src False

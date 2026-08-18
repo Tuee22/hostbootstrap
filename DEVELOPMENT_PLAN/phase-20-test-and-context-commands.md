@@ -9,11 +9,6 @@
 > **Purpose**: Fix the exact grammar and side-effect boundary of `test init`, `test run <case-id>|all`,
 > `context`, and `check-code`.
 
-Every sprint below is `Done` and the static half of the gate passes. What the phase still owes is its own
-declared **live linux-cpu sequence**: `test init`, `test run`, and `context` run against a real host. The
-overwrite policy and the case-selector surface are exactly what that sequence exercises, so it is owed against
-their exact current shape.
-
 ## Phase Objective
 
 The engine exists; this phase is the surface an operator actually types. Two properties matter: each verb's
@@ -114,6 +109,42 @@ Show the composition without touching anything.
 #### Remaining Work
 
 None.
+
+### Sprint 20.4: Live verb-sequence acceptance [Planned]
+
+**Status**: Planned
+**Implementation**: none — this sprint changes no source
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Record the live sequence this phase's grammar owes, as a sprint rather than as a preamble nothing counts.
+
+#### Deliverables
+
+- Zero production lines. Sprints 20.1 through 20.3 close on the host static gate; what is left is running
+  the verbs where their side effects are real.
+- `test init`, `test run`, and `context` run in order inside a realized Linux substrate. The sequence is
+  what proves the side-effect boundary each verb's name implies — `context` reads and never writes,
+  `test init` writes only the test config, and `test run` is the only verb that mutates infrastructure.
+- The overwrite policy and the case-selector surface are exercised against their exact current shape,
+  because a sequence run against an older grammar is evidence about that grammar.
+- Dated evidence names the substrate realization and the outer host.
+
+#### Validation
+
+The sequence itself. It asserts nothing `CLISpec` and `ContextSpec` do not already assert; it confirms that
+what they assert holds where an operator types it.
+
+#### Remaining Work
+
+The run.
+
+## Remaining Work
+
+Sprints 20.1 through 20.3 are complete and closed by the host static gate. Sprint 20.4 records the live
+linux-cpu sequence they owe, so the obligation is a sprint the suite counts rather than a preamble.
 
 ## Documentation Requirements
 

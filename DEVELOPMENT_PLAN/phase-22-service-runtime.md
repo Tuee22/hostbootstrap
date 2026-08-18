@@ -61,12 +61,18 @@ Give a handler exactly one immutable, config-derived input.
   decode refusal rather than a runtime lookup miss.
 - One immutable config-derived payload is handed to the handler; a handler reads no ambient state and cannot
   mutate its input.
-- Role parameters are least-authority: a handler receives only what its declared role needs. `ServiceHandler`
-  is `RoleParams specDigest configId secretDigest fields service -> IO ()` — the opaque bundle the role's own
-  projection produced, and nothing else. It carries no `LocalContextView`, so a handler that needs a framework
-  datum declares it as a role field and the projection supplies it; the demo's accelerator takes its source root
-  that way. The indices are universally quantified, so a handler cannot pair a bundle from one finalization with
-  another's.
+- Role parameters are least-authority: a handler receives only what its declared role needs. A
+  `ServiceHandler` takes the opaque `RoleParams specDigest configId secretDigest fields service` bundle the
+  role's own projection produced, and nothing else. It carries no `LocalContextView`, so a handler that
+  needs a framework datum declares it as a role field and the projection supplies it; the demo's
+  accelerator takes its source root that way. The indices are universally quantified, so a handler cannot
+  pair a bundle from one finalization with another's.
+- **What** a handler may do is bounded by the same discipline: it returns the effect-indexed
+  `ServiceProgram` of Sprint 22.2, where an undeclared effect is a compile error. Least authority over the
+  input and an unbounded result would be half a boundary — a web role could spawn a process and an
+  accelerator role could reopen the sibling config — so the return type is part of this contract rather
+  than a later tightening of it. Sprint 22.3 installs the signed activation the interpreter demands, which
+  is why the two land together.
 - The handler runs on the same bundle the validated request carries, not on a second projection of the config
   beside it, and `selectServiceAction` no longer takes a framework view at all.
 - A missing service configuration produces a service-specific recovery message naming the variant and the field.
@@ -180,6 +186,12 @@ relayed signature is byte-identical to local signing, a manifest without a rollo
 truncated or trailing wire is refused, and a multi-entry effect row remains distinct. No public test channel,
 signing hook, or private-module exposure is part of that evidence.
 
+#### Objective boundary
+
+This sprint owns activation installation and service execution. The closed readiness-gated chart/workload
+call is the [worked-demo phase](phase-24-worked-demo.md)'s, and it can only exist once the exact cluster
+consumer can supply a `ClusterReadiness`.
+
 #### Remaining Work
 
 The activation consumer uses the root-coordinated route without lending signing or durable authority to a
@@ -210,13 +222,19 @@ machine. It lands together with Sprint 22.2's registry adoption; until then
 `serviceDefinition` keeps its `IO ()` handler, because changing the registry's shape before there is anything
 that can run a program would break `service run` for no gain.
 
-The [worked-demo phase](phase-24-worked-demo.md) owns the closed readiness-gated chart/workload call after
-the exact cluster consumer can supply `ClusterReadiness`; this sprint owns activation and service execution.
-
 There is still one lane that never needed the relay: the host-resident accelerator daemon is launched by a
 post-handoff step in the metal frame, where the root authority is already in scope. Adopting the engine there
 first remains possible but is the Apple/Windows placement only, so it stays a deliberate choice rather than an
 obvious one.
+
+## Remaining Work
+
+Sprints 22.2 and 22.3 land together, because neither half stands alone: handlers still return `IO ()`
+and no call site builds a `ServiceBackend`, since `interpretServiceProgram` demands an
+`EffectAuthorization` whose only producer needs a `VerifiedServicePlacement`, which needs a
+`VerifiedRuntimeRoleActivation` — and nothing installs a signed activation yet. Sprint 22.3 installs it
+and interprets `service run`; Sprint 22.2's registry adoption and handler return type follow in the same
+change.
 
 ## Documentation Requirements
 

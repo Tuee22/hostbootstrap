@@ -20,8 +20,8 @@ module HostBootstrap.Incus (
 )
 where
 
-import Data.List (isPrefixOf)
 import HostBootstrap.Lift.Context (IncusVM (..), execVMArgs)
+import HostBootstrap.Substrate.Frame (FrameNoun (IncusInstance), guardedDeleteArgs)
 
 {- | @incus launch <image> <name> --vm [sizing...]@ — create + start a VM, sized
 by the budget args ('HostBootstrap.Cluster.Cordon.incusSizingArgs').
@@ -61,17 +61,11 @@ addDiskDeviceArgs vm device source target =
     , "path=" ++ target
     ]
 
--- \| The name-prefix delete-guard used by the lifecycle ownership checks:
--- @incus delete <name> --force@ is
--- refused unless the VM name carries the guard prefix, so a destroy can never
--- remove a VM outside the managed namespace.
+{- | This frame's row in the one guarded destructive delete (§ LL). The guard is
+what keeps @incus delete \<name\> --force@ inside the managed namespace; this
+module supplies only the noun and the argv.
+-}
 destroyVMArgs :: String -> IncusVM -> Either String [String]
-destroyVMArgs prefix vm
-    | prefix `isPrefixOf` vmName vm = Right ["delete", vmName vm, "--force"]
-    | otherwise =
-        Left
-            ( "refusing to delete incus VM not carrying the guard prefix '"
-                ++ prefix
-                ++ "': "
-                ++ vmName vm
-            )
+destroyVMArgs prefix vm =
+    guardedDeleteArgs IncusInstance prefix (vmName vm) $
+        \name -> ["delete", name, "--force"]

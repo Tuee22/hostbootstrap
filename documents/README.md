@@ -73,9 +73,12 @@ defers to it rather than re-deriving it. The command surface is summarized in
   with its still-open demo adoption, and the destroy/up/readback proof.
 - [architecture/ownership_invariant.md](architecture/ownership_invariant.md) — the **canonical home of
   the ownership invariant**: the four Locked-Origin Identity Ownership clauses (exclusive entry, durable
-  origin record, identity binding, conditional release), their per-substrate realization, and the exact
-  guarantee they do and do not provide. Replaces the platform-primitive rule that no substrate could
-  satisfy.
+  origin record, identity binding, conditional release) and the exact guarantee they do and do not
+  provide. Replaces the platform-primitive rule that no substrate could satisfy.
+- [architecture/ownership_seam.md](architecture/ownership_seam.md) — the **canonical home of the
+  ownership realization**: the one transaction those clauses compose, the closed seam of kernel
+  primitives beneath it, the POSIX and Windows rows, the row that runs a transaction at the frame owning
+  the object, the atomic no-replace publication, and what each individual owner adds on top.
 - [architecture/readiness.md](architecture/readiness.md) — opaque resource-indexed witnesses, validated
   polling, the implemented closed raw provider-discovery boundary, and the remaining live adapters that
   have not yet adopted plan-owned prepared operations.
@@ -187,7 +190,10 @@ defers to it rather than re-deriving it. The command surface is summarized in
 ## Command Surface
 
 The fixed core command surface is exactly five user-facing verbs: `project`, `test`, `service`, `context`,
-and `check-code`. There are no hidden commands. `ensure` is a reconciler library, not a command. The target
+and `check-code`. `ensure` is a reconciler library, not a command, and a project adds no verb. The
+canonical statement — including the one internal marker that lets a binary recognize it is the process on
+the far side of a frame crossing, and the bounds that keep that marker from being a command — is
+[architecture/hostbootstrap_core_library.md](architecture/hostbootstrap_core_library.md). The target
 `project up` recursively interprets the project's opaque validated plan: it runs the current frame and
 authenticates `pb project up` in the next. Current Chain interpretation stops after the exact current-frame
 segment and declared descent because nested entry fails closed. Current `project down`/`destroy` do **not** mirror recursive

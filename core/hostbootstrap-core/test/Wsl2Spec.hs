@@ -52,10 +52,19 @@ providerBoundaryCases :: [TestTree]
 providerBoundaryCases =
   [ testCase "Wsl2 consumes the lower target/renderer and delegates prerequisite helpers" $ do
       source <- providerSource "Wsl2.hs"
+      -- Three lower modules, and only three: the prerequisite helpers this
+      -- module delegates to, the frame's own target and renderer, and the shared
+      -- frame table this row's destructive delete goes through (§ LL). All three
+      -- are below the realization, which is what this guard is for.
       hostBootstrapImports source
-        @?= ["HostBootstrap.Ensure.Wsl2", "HostBootstrap.Lift.Context"]
+        @?= [ "HostBootstrap.Ensure.Wsl2"
+            , "HostBootstrap.Lift.Context"
+            , "HostBootstrap.Substrate.Frame"
+            ]
       fmap withoutCommas (SourceGuard.moduleImportTokens "HostBootstrap.Lift.Context" source)
         @?= Just ["Wsl2VM", "(", "..", ")", "wslExecArgs"]
+      fmap withoutCommas (SourceGuard.moduleImportTokens "HostBootstrap.Substrate.Frame" source)
+        @?= Just ["FrameNoun", "(", "Wsl2Distribution", ")", "guardedDeleteArgs"]
       fmap withoutCommas (SourceGuard.moduleImportTokens "HostBootstrap.Ensure.Wsl2" source)
         @?= Just prerequisiteHelpers
       exports <-

@@ -20,42 +20,28 @@ module HostBootstrap.Cluster.Backend.Internal
   )
 where
 
-import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, threadDelay, tryReadMVar)
+#if defined(linux_HOST_OS)
 import Control.Exception
   ( SomeAsyncException,
     SomeException,
-    evaluate,
     fromException,
-    mask,
-    onException,
     throwIO,
     try,
-    uninterruptibleMask_,
   )
+#endif
 import Data.IORef (IORef, newIORef)
 import Data.List (intercalate, nub)
 import Data.Word (Word64)
+import HostBootstrap.Effect.Quote (shellQuoteArg)
+import HostBootstrap.Effect.Run
+  ( BoundedRun (..),
+    CapturedRun (capturedExit, capturedStderr, capturedStdout),
+    RunBounds (..),
+    RunNamespace (..),
+    runBoundedGrouped,
+  )
 import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath (takeDirectory)
-import System.IO (Handle, hClose, hGetChar, hIsEOF)
-import System.Process
-  ( CreateProcess (create_group, cwd, env, std_err, std_in, std_out),
-    ProcessHandle,
-    Pid,
-    StdStream (CreatePipe),
-    createProcess,
-    proc,
-    getPid,
-    waitForProcess,
-  )
-
-#if defined(mingw32_HOST_OS)
-import System.Process (terminateProcess)
-#endif
-
-#if !defined(mingw32_HOST_OS)
-import System.Posix.Signals (Signal, sigKILL, sigTERM, signalProcessGroup)
-#endif
 
 #if defined(linux_HOST_OS)
 import System.Posix.Files
@@ -218,74 +204,36 @@ runClosedClusterCommandForTest seconds arguments =
 runClosedClusterCommandWithPath :: Int -> FilePath -> [String] -> IO ClusterCommandResult
 runClosedClusterCommandWithPath _ _ [] = pure (ClusterCommandResult False "" "empty cluster command")
 runClosedClusterCommandWithPath seconds toolPath (executable : arguments) = do
-  attempted <-
-    trySynchronous (runGroupedProcess seconds toolPath executable arguments)
-  case attempted of
-    Left failure -> pure (ClusterCommandResult False "" (show failure))
-    Right Nothing -> pure (ClusterCommandResult False "" "cluster command exceeded the outer 240 second watchdog")
-    Right (Just (exitCode, out, err)) -> pure (ClusterCommandResult (exitCode == ExitSuccess) out err)
+  outcome <-
+    runBoundedGrouped (clusterBounds seconds) (clusterNamespace toolPath) executable arguments
+  pure $ case outcome of
+    BoundedFailed failure -> ClusterCommandResult False "" failure
+    BoundedTimedOut -> ClusterCommandResult False "" "cluster command exceeded the outer 240 second watchdog"
+    BoundedOutputLimit -> ClusterCommandResult False "" "cluster command exceeded the output ceiling"
+    BoundedCompleted run ->
+      ClusterCommandResult
+        (capturedExit run == ExitSuccess)
+        (capturedStdout run)
+        (capturedStderr run)
 
-runGroupedProcess :: Int -> FilePath -> FilePath -> [String] -> IO (Maybe (ExitCode, String, String))
-runGroupedProcess seconds toolPath executable arguments =
-  mask $ \restore -> do
-    (input, output, errors, process) <- createProcess processSpec
-    processId <- getPid process
-    case (input, output, errors) of
-      (Just inputHandle, Just outputHandle, Just errorHandle) -> do
-        outputResult <- newEmptyMVar
-        errorResult <- newEmptyMVar
-        let cleanup = do
-              terminateProcessGroup processId process
-              closeQuietly inputHandle
-              closeQuietly outputHandle
-              closeQuietly errorHandle
-              _ <- collectReadersFor 100 outputResult errorResult
-              pure ()
-            run = do
-              hClose inputHandle
-              _ <- forkIO (readPipe outputHandle >>= putMVar outputResult)
-              _ <- forkIO (readPipe errorHandle >>= putMVar errorResult)
-              collected <- collectReadersFor (max 1 seconds * 100) outputResult errorResult
-              case collected of
-                Nothing -> uninterruptibleMask_ cleanup >> pure Nothing
-                Just (outcome, errorsOutcome) -> do
-                  completed <- waitForProcessBounded 2 process
-                  case completed of
-                    Just (Right exitCode) -> do
-                      closeQuietly outputHandle
-                      closeQuietly errorHandle
-                      out <- either throwIO pure outcome
-                      err <- either throwIO pure errorsOutcome
-                      pure (Just (exitCode, out, err))
-                    Just (Left failure) -> throwIO failure
-                    Nothing -> uninterruptibleMask_ cleanup >> pure Nothing
-        restore run `onException` uninterruptibleMask_ cleanup
-      _ -> do
-        terminateProcessGroup processId process
-        mapM_ closeQuietly [handle | Just handle <- [input, output, errors]]
-        fail "the cluster backend did not create all requested pipes"
-  where
-    processCommand =
-#if defined(darwin_HOST_OS)
-      -- process-1.6.26 cannot combine @create_group@, an explicit environment,
-      -- and @cwd@ on macOS.  Keep the same closed root working directory via
-      -- an absolute shell that immediately execs the requested leader; the
-      -- exec preserves the newly-created process-group identity.
-      proc "/bin/sh" (["-c", "cd / && exec \"$@\"", "hostbootstrap-cluster-runner", executable] ++ arguments)
-    processWorkingDirectory = Nothing
-#else
-      proc executable arguments
-    processWorkingDirectory = Just "/"
-#endif
-    processSpec =
-      processCommand
-        { create_group = True,
-          cwd = processWorkingDirectory,
-          env = Just (closedEnvironment toolPath),
-          std_in = CreatePipe,
-          std_out = CreatePipe,
-          std_err = CreatePipe
-        }
+{- | The cluster driver's row of the bounded-run table: the caller's own wall
+with a one second floor, a 1 MiB transcript ceiling, and two seconds of grace
+before the group is killed. The numbers are the driver's; the runner is not.
+-}
+clusterBounds :: Int -> RunBounds
+clusterBounds seconds =
+  RunBounds
+    { boundWallMicros = max 1 seconds * 1000 * 1000,
+      boundOutputBytes = 1024 * 1024,
+      boundTerminationGraceMicros = 2 * 1000 * 1000
+    }
+
+clusterNamespace :: FilePath -> RunNamespace
+clusterNamespace toolPath =
+  RunNamespace
+    { runWorkingDirectory = "/",
+      runEnvironment = closedEnvironment toolPath
+    }
 
 closedEnvironment :: FilePath -> [(String, String)]
 closedEnvironment toolPath =
@@ -300,106 +248,7 @@ closedEnvironment toolPath =
     ("KIND_EXPERIMENTAL_PROVIDER", "docker")
   ]
 
-readPipe :: Handle -> IO (Either SomeException String)
-readPipe handle = trySynchronous (drainBounded 0 [])
-  where
-    outputLimit :: Int
-    outputLimit = 1024 * 1024
-    drainBounded :: Int -> String -> IO String
-    drainBounded retained reversed = do
-      done <- hIsEOF handle
-      if done
-        then do
-          let contents = reverse reversed
-          _ <- evaluate (length contents)
-          pure contents
-        else do
-          character <- hGetChar handle
-          if retained < outputLimit
-            then drainBounded (retained + 1) (character : reversed)
-            else drainBounded retained reversed
-
-collectReadersFor ::
-  Int ->
-  MVar (Either SomeException String) ->
-  MVar (Either SomeException String) ->
-  IO (Maybe (Either SomeException String, Either SomeException String))
-collectReadersFor attempts outputResult errorResult = go attempts Nothing Nothing
-  where
-    go remaining outputValue errorValue = do
-      nextOutput <- maybe (tryReadMVar outputResult) (pure . Just) outputValue
-      nextError <- maybe (tryReadMVar errorResult) (pure . Just) errorValue
-      case (nextOutput, nextError) of
-        (Just out, Just err) -> pure (Just (out, err))
-        _
-          | remaining <= 0 -> pure Nothing
-          | otherwise -> threadDelay 10000 >> go (remaining - 1) nextOutput nextError
-
-closeQuietly :: Handle -> IO ()
-closeQuietly handle = do
-  _ <- trySynchronous (hClose handle)
-  pure ()
-
-terminateProcessGroup :: Maybe Pid -> ProcessHandle -> IO ()
-#if defined(mingw32_HOST_OS)
-terminateProcessGroup _processId process = do
-  _ <- trySynchronous (terminateProcess process)
-  _ <- waitForProcessBounded 2 process
-  pure ()
-#else
-terminateProcessGroup processId process = do
-  signalTermGroup processId process
-  threadDelay (2 * 1000 * 1000)
-  signalKillGroup processId process
-  _ <- waitForProcessBounded 2 process
-  pure ()
-#endif
-
-waitForProcessBounded :: Int -> ProcessHandle -> IO (Maybe (Either SomeException ExitCode))
-waitForProcessBounded seconds process = do
-  exitResult <- newEmptyMVar
-  _ <- forkIO (trySynchronous (waitForProcess process) >>= putMVar exitResult)
-  waitForResultBounded seconds exitResult
-
-waitForResultBounded :: Int -> MVar value -> IO (Maybe value)
-waitForResultBounded seconds result = go (max 1 seconds * 100)
-  where
-    go remaining = do
-      observed <- tryReadMVar result
-      case observed of
-        Just outcome -> pure (Just outcome)
-        Nothing
-          | remaining <= 0 -> pure Nothing
-          | otherwise -> threadDelay 10000 >> go (remaining - 1)
-
-signalTermGroup :: Maybe Pid -> ProcessHandle -> IO ()
-#if !defined(mingw32_HOST_OS)
-signalTermGroup processId _process = signalGroup sigTERM processId
-#else
-signalTermGroup _ process = do
-  _ <- trySynchronous (terminateProcess process)
-  pure ()
-#endif
-
-signalKillGroup :: Maybe Pid -> ProcessHandle -> IO ()
-#if !defined(mingw32_HOST_OS)
-signalKillGroup processId _process = signalGroup sigKILL processId
-#else
-signalKillGroup _ process = do
-  _ <- trySynchronous (terminateProcess process)
-  pure ()
-#endif
-
-#if !defined(mingw32_HOST_OS)
-signalGroup :: Signal -> Maybe Pid -> IO ()
-signalGroup signal processId = do
-  case processId of
-    Nothing -> pure ()
-    Just value -> do
-      _ <- trySynchronous (signalProcessGroup signal value)
-      pure ()
-#endif
-
+#if defined(linux_HOST_OS)
 trySynchronous :: IO value -> IO (Either SomeException value)
 trySynchronous action = do
   result <- try action
@@ -407,6 +256,7 @@ trySynchronous action = do
     Left failure
       | Just _ <- (fromException failure :: Maybe SomeAsyncException) -> throwIO failure
     _ -> pure result
+#endif
 
 absolutePath :: FilePath -> Bool
 absolutePath ('/' : _) = True
@@ -433,17 +283,11 @@ ownershipToolProbe driver runtime kubectl =
       "flock_version=$(\"$flock_path\" --version 2>/dev/null) || exit 1",
       "case \"$flock_version\" in *util-linux*) ;; *) exit 1;; esac",
       "\"$python_path\" -c 'import hashlib,json,os,secrets,stat,subprocess,sys' >/dev/null 2>&1 || exit 1",
-      "test -x " ++ quoteShell driver ++ " || exit 1",
-      "test -x " ++ quoteShell runtime ++ " || exit 1",
-      "test -x " ++ quoteShell kubectl ++ " || exit 1",
+      "test -x " ++ shellQuoteArg driver ++ " || exit 1",
+      "test -x " ++ shellQuoteArg runtime ++ " || exit 1",
+      "test -x " ++ shellQuoteArg kubectl ++ " || exit 1",
       "printf 'HB_CLUSTER_TOOLS_V1\\n%s\\n%s\\n' \"$flock_path\" \"$python_path\""
     ]
-
-quoteShell :: String -> String
-quoteShell value = "'" ++ concatMap escape value ++ "'"
-  where
-    escape '\'' = "'\\''"
-    escape character = [character]
 
 contains :: String -> String -> Bool
 contains needle haystack = any (needle `prefixOf`) (tails haystack)

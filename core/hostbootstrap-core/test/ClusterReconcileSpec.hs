@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
@@ -30,6 +31,7 @@ import HostBootstrap.Config.Vocab (Harness, Production)
 import HostBootstrap.Context (ResourceEnvelope (..))
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (AbsExe, HostTool (Docker, Python3), mkAbsExe)
+import PlatformPath (hostFixturePath)
 import qualified HostBootstrap.Lifecycle.Execution as Execution
 import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 import HostBootstrap.Lift (localContext)
@@ -133,9 +135,16 @@ type HarnessClusterPreparedConsumer summary =
     IO (Either ReconcileError summary)
 
 tests :: TestTree
-tests =
-    testGroup
-        "ClusterReconcileSpec"
+tests = testGroup "ClusterReconcileSpec" (packageCases <> inFrameReconcileCases)
+
+{- | Preparation and projection: what the plan hands the backend.
+
+These read the exact package the plan projects and reach no cluster spec, so
+they hold as ordinary static assertions on every supported outer host
+realization (§ JJ).
+-}
+packageCases :: [TestTree]
+packageCases =
         [ testCase "preparation projects the complete exact cluster package" $
             withClusterFixture (pure . packageSummary) >>= \case
                 Right (name, stateDirectory, durableRoot, ports, placement, providerKey, owner, budget) -> do
@@ -163,7 +172,40 @@ tests =
                     configPath @?= Nothing
                     ports @?= False
                 other -> assertFailure ("expected exact Harness package, got " ++ show other)
-        , testCase "an absent cluster is created and managed" $
+        , testCase "an unverifiable same-named cluster fails closed" $
+            withClusterFixture (\prepared -> asError prepared "FAILED kubectl-timeout\n") >>= \case
+                Left (Failure _) -> pure ()
+                other -> assertFailure ("expected a typed failure, got " ++ show other)
+        , testCase "the exact provider probe is run internally before preparation is offered" $
+            withClusterFixtureUsing
+                (pure (Left (Failure (FailureDetail "probe provider" "vm stopped answering" ReprobeBeforeRetry))))
+                (pure . const (Right ()))
+                >>= \case
+                    Left (Failure detail) -> do
+                        failedOperation detail @?= "reprobe Direct provider provisioning egress"
+                        assertBool
+                            "the retained backend probe surfaces its injected failure"
+                            ("probe provider" `Text.isInfixOf` failureCause detail)
+                    other -> assertFailure ("expected the provider probe failure, got " ++ show other)
+        ]
+
+{- | Settlement, readiness, and cleanup: what the backend does with that package.
+
+Each of these admits a 'ClusterSpec', whose state directory is the path the
+locked ownership program receives inside the realized Linux substrate. Its
+absoluteness check is POSIX for that reason, and the production resolved backend
+is itself Linux-only, so the frame these assert about is Linux wherever the
+outer host is. The fixture's project root is the outer host's own canonical
+root, so a native Windows process cannot present one: it is not a frame that can
+hold a cluster. Skipped there rather than failed (§ JJ), because the contract is
+unchanged and the gate that proves it is the `linux-cpu` one.
+-}
+inFrameReconcileCases :: [TestTree]
+#if defined(mingw32_HOST_OS)
+inFrameReconcileCases = []
+#else
+inFrameReconcileCases =
+        [ testCase "an absent cluster is created and managed" $
             withClusterFixture settleCreated >>= \case
                 Right (Changed Created, operationKey) ->
                     assertBool "the receipt carries a real operation key" (not (Text.null operationKey))
@@ -196,10 +238,6 @@ tests =
                 Left (Conflict detail) ->
                     assertBool "the conflict refuses auto-delete" ("never auto-deleted" `Text.isInfixOf` conflictRemedy detail)
                 other -> assertFailure ("expected a conflict, got " ++ show other)
-        , testCase "an unverifiable same-named cluster fails closed" $
-            withClusterFixture (\prepared -> asError prepared "FAILED kubectl-timeout\n") >>= \case
-                Left (Failure _) -> pure ()
-                other -> assertFailure ("expected a typed failure, got " ++ show other)
         , testCase "ownership reports require one LF-terminated line and empty stderr" $
             withClusterFixture strictOwnershipReportCases >>= \case
                 Right (True, True, True) -> pure ()
@@ -233,18 +271,8 @@ tests =
                         Left (Conflict _) -> pure ()
                         other -> assertFailure ("expected a cleanup conflict, got " ++ show other)
                 other -> assertFailure ("expected cleanup outcomes, got " ++ show other)
-        , testCase "the exact provider probe is run internally before preparation is offered" $
-            withClusterFixtureUsing
-                (pure (Left (Failure (FailureDetail "probe provider" "vm stopped answering" ReprobeBeforeRetry))))
-                (pure . const (Right ()))
-                >>= \case
-                    Left (Failure detail) -> do
-                        failedOperation detail @?= "reprobe Direct provider provisioning egress"
-                        assertBool
-                            "the retained backend probe surfaces its injected failure"
-                            ("probe provider" `Text.isInfixOf` failureCause detail)
-                    other -> assertFailure ("expected the provider probe failure, got " ++ show other)
         ]
+#endif
 
 packageSummary ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
@@ -265,6 +293,7 @@ packageSummary prepared =
               )
             )
 
+#if !defined(mingw32_HOST_OS)
 settleCreated ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
     IO (Either ReconcileError (ChangeView, Text.Text))
@@ -379,6 +408,7 @@ matchingClusterPriorCommit plan prepared receipt = do
                 , persistedPhase = Committed
                 }
     withPriorCommitProof verified id
+#endif
 
 asError ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
@@ -389,6 +419,7 @@ asError prepared report =
         result <- runClusterReconcileCall backend prepared
         pure (settleClusterReconcile Nothing prepared result >> Right ())
 
+#if !defined(mingw32_HOST_OS)
 strictOwnershipReportCases ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
     IO (Either ReconcileError (Bool, Bool, Bool))
@@ -586,6 +617,7 @@ ownedClusterReport status identity =
         , replicate 64 'a'
         ]
         ++ "\n"
+#endif
 
 withStrongClusterReports :: [String] -> (StrongClusterBackend -> IO result) -> IO result
 withStrongClusterReports reports =
@@ -616,6 +648,11 @@ withStrongClusterCommandResults reports consume = do
     discovered <-
         discoverInjectedStrongClusterBackend
             executor
+            -- The injected cluster tools are in-frame paths, not host paths:
+            -- the driver, runtime, and kubectl this backend names are files
+            -- inside the realized Linux substrate, reached from there. They stay
+            -- POSIX on every outer host, and the backend's own absoluteness
+            -- check is POSIX for the same reason.
             "/test/bin/kind"
             "/test/bin/docker"
             "/test/bin/kubectl"
@@ -643,11 +680,13 @@ withClusterFixtureM ::
 withClusterFixtureM =
     withClusterFixtureUsingM (pure (Right 23))
 
+#if !defined(mingw32_HOST_OS)
 withClusterPlanFixtureM ::
     ClusterPlanPreparedConsumer summary ->
     IO (Either ReconcileError summary)
 withClusterPlanFixtureM =
     withClusterFixtureUsingPlanM (pure (Right 23))
+#endif
 
 withHarnessClusterFixtureM ::
     HarnessClusterPreparedConsumer summary ->
@@ -821,8 +860,8 @@ withRunningProviderDependencyFixture reprobeResult gate plan planned consume = d
                 { runProviderBackendExec = \request ->
                     case providerBackendRequestView request of
                         ProviderBackendProcess executable _argv
-                            | executable == "/test/bin/python3" -> pure providerSuccess
-                            | executable == "/test/bin/docker" -> do
+                            | executable == fixturePython -> pure providerSuccess
+                            | executable == fixtureDocker -> do
                                 invocation <- atomicModifyIORef' manifestCount (\count -> let next = count + 1 in (next, next))
                                 if invocation == 1
                                     then pure (providerSuccessWith "{}")
@@ -898,13 +937,24 @@ providerHostConfig =
         { hcSubstrate = Substrate LinuxCpu Arm64
         , hcToolPaths =
             Map.fromList
-                [ (Python3, mustAbs "/test/bin/python3")
-                , (Docker, mustAbs "/test/bin/docker")
+                [ (Python3, fixtureExe fixturePython)
+                , (Docker, fixtureExe fixtureDocker)
                 ]
         }
 
-mustAbs :: FilePath -> AbsExe
-mustAbs = either error id . mkAbsExe
+{- | The host tools this suite's fixtures name.
+
+Each is rendered onto the host that runs the suite, so the same total 'AbsExe'
+constructor production uses admits it wherever the static gate runs (§ JJ). The
+runner dispatch below selects its response by comparing these same values, so a
+host-neutral fixture cannot weaken the absolute-backend-path projection guard.
+-}
+fixturePython, fixtureDocker :: FilePath
+fixturePython = hostFixturePath "/test/bin/python3"
+fixtureDocker = hostFixturePath "/test/bin/docker"
+
+fixtureExe :: FilePath -> AbsExe
+fixtureExe = either error id . mkAbsExe
 
 providerSuccess :: RawProviderOutcome
 providerSuccess = providerSuccessWith ""

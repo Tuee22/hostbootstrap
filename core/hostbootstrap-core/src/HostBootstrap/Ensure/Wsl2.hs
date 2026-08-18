@@ -14,20 +14,18 @@ where
 import Data.Char (toLower)
 import Data.List (isInfixOf)
 import HostBootstrap.Ensure
-  ( InstallStep (..),
+  ( FramePlan (InstallHere),
+    InstallStep (..),
     Reconciler (..),
+    frameTable,
     installAndVerify,
+    reconcilerInstallSteps,
     runTool,
+    windowsRow,
   )
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.HostTool (HostTool (Bcdedit, PowerShell, Winget, Wsl), toolCommandName)
-import HostBootstrap.Substrate
-  ( Substrate,
-    SubstrateName (WindowsCpu, WindowsGpu),
-    isWindows,
-    renderSubstrateName,
-    substrateName,
-  )
+import HostBootstrap.Substrate (Substrate)
 import System.Exit (ExitCode (ExitSuccess), die)
 
 wslReportsVirtualizationDisabled :: (ExitCode, String, String) -> Bool
@@ -53,8 +51,18 @@ reconciler =
   Reconciler
     { reconcilerName = "wsl2",
       reconcilerSummary = "Ensure the WSL2 Ubuntu-24.04 host-provider is available",
-      appliesTo = isWindows,
-      requirement = "windows-cpu or windows-gpu",
+      -- One row. The accelerator makes no difference to installing WSL2, so the
+      -- row does not name it.
+      reconcilerFrames =
+        frameTable
+          [ windowsRow
+              ( InstallHere
+                  [ InstallStep Winget ["install", "--id", "Microsoft.WSL", "--exact", "--accept-package-agreements", "--accept-source-agreements"],
+                    InstallStep Wsl ["--install", "--no-distribution"],
+                    InstallStep Wsl ["--set-default-version", "2"]
+                  ]
+              )
+          ],
       reconcile = reconcileWsl2
     }
 
@@ -135,13 +143,4 @@ parsePowerShellBool expr out =
         . dropWhile (`elem` [' ', '\r', '\n', '\t'])
 
 installSteps :: Substrate -> Either String [InstallStep]
-installSteps sub = case substrateName sub of
-  WindowsCpu -> Right windowsSteps
-  WindowsGpu -> Right windowsSteps
-  other -> Left ("wsl2 is only applicable on Windows, not " ++ renderSubstrateName other)
-  where
-    windowsSteps =
-      [ InstallStep Winget ["install", "--id", "Microsoft.WSL", "--exact", "--accept-package-agreements", "--accept-source-agreements"],
-        InstallStep Wsl ["--install", "--no-distribution"],
-        InstallStep Wsl ["--set-default-version", "2"]
-      ]
+installSteps = reconcilerInstallSteps reconciler

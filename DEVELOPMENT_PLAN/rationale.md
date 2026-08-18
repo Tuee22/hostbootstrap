@@ -318,3 +318,181 @@ baseline, and keeps the confirmation obligation explicit instead of dropping it.
 A sprint with no size limit becomes the place all remaining work accumulates: its remaining-work section
 grows into a chronicle, its dependencies become the union of everything it bundles, and bundling is what
 manufactures dependency cycles between sprints that individually have none.
+
+---
+
+## Gates and validation
+
+### A source-byte guard reads bytes, because a locale-decoded read freezes the wrong thing
+
+A frozen source digest exists to say "this module has not drifted". Computing it by decoding the file to
+text through the process locale and re-encoding makes the digest a property of the host's active code
+page as much as of the file: the same bytes hash differently on a UTF-8 host and a legacy-code-page one,
+and on Windows the read additionally strips carriage returns, so a guard meant to freeze a module instead
+freezes a console setting and a newline convention, and the failure it reports names the wrong culprit.
+Reading the bytes removes both. The suite driver still fixes the encoding once, because the same
+reasoning covers a golden comparison over captured command output, and fixing it centrally is what stops
+each spec fixing it locally and differently.
+
+A frozen digest also has a subject, and the subject is what the sprint owns. Freezing a whole shared
+package description instead of the stanza a sprint claims couples every later sprint to that evidence:
+adding a test module to the file falsifies a digest owned by phases that have nothing to do with the
+change, and § A's numerical order has no edge to express that (§ C).
+
+*Absence guard:* the suite asserts that no spec derives a frozen digest from a locale-decoded read, and
+that the driver **applies** the locale fix rather than merely importing it (§ JJ).
+
+### A host fixture is absolute on its own host, because a POSIX literal asserts a platform
+
+A `HostConfig` tool table names executables the **outer host** resolves and invokes, and § K requires
+every one of them to be an absolute path admitted by one total constructor. A fixture that writes
+`/usr/bin/python3` into that table is not stating the contract; it is stating that the developer's host
+is POSIX. On Windows the same value is drive-relative and the constructor correctly rejects it, so the
+suite reports a broken contract where there is none — while the actual guard, that no bare command name
+can be invoked, was never in question.
+
+The split that makes this safe already exists in the architecture: a guest path names a file on a
+different machine, reached through one host-provider command, and stays POSIX. Only the host side is a
+host path.
+
+*Absence guard:* the suite asserts that no host tool-path fixture bypasses the fixture-path constructor,
+and that repo-relative module allow-lists are compared separator-neutrally (§ JJ).
+
+### Outer-host portability is not a substrate, and a static gate is not a substrate gate
+
+Two claims are easy to conflate. "These sources build and self-test on this outer host" is a portability
+claim; "these effects ran inside the realized Linux substrate" is a substrate claim. Treating a native
+static run as a substrate gate would let a phase claim provider, container, and POSIX-process coverage it
+never exercised. Treating outer-host portability as a *substrate* would be the opposite error: every
+phase would appear to declare `windows` merely for compiling there, exhausting the one-substrate budget
+that exists to keep acceptance obligations legible.
+
+Keeping them apart is what makes § N honest. A binary the plan builds host-native on every substrate is
+built from sources that compile and self-test on every supported outer host; a repository whose own
+suites only run on POSIX cannot claim that.
+
+A third term is needed to say either sentence without ambiguity. § II's *outer host* pairs a physical
+machine with the provider it realizes a hardware context through, because that pairing is what selects a
+substrate and what an acceptance phase confirms. But a gate run is evidence about the machine the gate
+*process* ran on, whatever created it — which is why the same words could not describe a container run on
+macOS: read one way it is Linux evidence, read the other it is macOS evidence, and the plan already
+records it both ways in different places. § JJ's *gate host* names the second reading, so provisioning
+machinery stops looking like a source of gate hosts: `ensure wsl2` establishes the substrate the project
+under test runs in, and a distribution a developer installs to compile on Linux is a development machine
+that the plan has no opinion about.
+
+*Absence guard:* the substrate budget check, plus the § JJ rule that a phase whose suites do not hold the
+harness rules is `Active` until they do.
+
+---
+
+## Effects, frames, and paths
+
+### A script is a fork of the binary, and it is the fork nothing can check
+
+A `.sh` or `.ps1` file in the tree is host-level logic the binary is supposed to own, written in a
+language with no types, no tests, no access to the prepared-operation and authority machinery, and one
+copy per platform. Its failure modes are the ones the Haskell surface was built to make unrepresentable:
+an unquoted argument, a bare command name resolved against ambient `PATH`, an effect that runs twice
+because a retry could not tell whether the first attempt landed. It also splits the operator surface —
+some capabilities are verbs and some are files you must know to run — which is exactly what § P's fixed
+command tree exists to prevent.
+
+Compiled-in interpreter text is the same fork with the file inlined. A Python program in a string literal
+is not more typed for living inside a Haskell module; it still parses its own protocol, still reimplements
+the invariants the caller already states, and still has to be read in two languages to be reviewed. Where
+it exists because the host capability looked unreachable — locking, descriptor passing, process groups,
+no-follow opens, atomic replace — the platform binding was always there, and the host-wall backend proves
+it by using it.
+
+The one place the argument does not reach is a frame the binary has not been established in yet, because
+§ N forbids copying a binary across hosts and a fresh guest has no toolchain. That bootstrap is small,
+ordered, and finite, so it is a closed vocabulary with one owner rather than a licence (§ KK).
+
+*Absence guard:* the tree carries no script file; interpreter-invocation tokens appear only in the guest
+bootstrap module; exactly one shell quoter, one process runner, and one crossing renderer exist.
+
+### A provider is a row, not a workflow, because two copies drift where no gate looks
+
+The tempting shape is a module per provider: `Lima.hs`, `Incus.hs`, `Wsl2.hs`, each owning "how this
+provider does the lifecycle". It reads well and it is wrong, because almost none of the lifecycle is
+per-provider. The guarded destructive delete, the existence probe, the readiness wait, the budget-to-wall
+rendering, and the four ownership clauses are one computation each, and writing them once per provider
+produces copies that pass their own tests while disagreeing with each other — which is undetectable,
+since no gate compares two providers' answers to the same question.
+
+The guarded delete shows the shape of the failure exactly. Three copies each asked whether the name carries
+the project's prefix, and each was tested by asking whether a differently-prefixed name refused. None of
+them was asked what an **empty** prefix does, under which the guard is a prefix of every name and removes
+whatever it is pointed at. One computation can be asked that question once; three copies have to be asked it
+three times, by someone who thought to.
+
+What genuinely differs is small and enumerable: the tool that reaches the frame, its argument shape, the
+frame's path grammar, its sizing vocabulary, and its ownership primitive. That is a table, and a table has
+the property the modules do not: a new provider cannot silently omit a behaviour, because a missing row
+entry is a type error rather than an absent file.
+
+WSL2 is where the cost is clearest. A WSL2 distribution is a Linux machine; treating it as a fourth
+platform means writing Linux behaviour a fourth time and maintaining it against three others. Treating it
+as a Windows-owned frame onto Linux leaves exactly one genuinely new problem — a single utility VM every
+distribution shares, so its wall is host-global — which is a real, and realistically sized, module.
+
+*Absence guard:* one crossing renderer; no per-substrate `case` outside the frame table and the detector;
+no second implementation of an ownership clause.
+
+### A fake is a symptom of an effect that swallowed a decision
+
+A suite reaches for a stand-in binary when the logic that decides what to do with that binary's output
+lives inside a subprocess, and for an injected executor when the classification that follows a command
+lives beside the command. In both cases the fake is not the problem; it is the only way left to test a
+decision that has nowhere else to be called from.
+
+That is why "remove the fakes" and "lift the logic into pure functions" are one task rather than two.
+Once the decision is a total function over a closed sum, the test applies the real function to real
+values, and the stand-in has nothing left to stand in for. What remains impure is a short enumerated list
+of kernel operations, and those are tested against the real kernel in a temporary directory — because a
+fake `open` proves nothing that the real one would not prove more cheaply.
+
+The failure this prevents is specific and quiet. A gate that drives a stand-in proves the stand-in works.
+When the real tool changes behaviour, or the real kernel refuses where the fake agreed, every test still
+passes and the number at the bottom of the run is unchanged. A seam whose only production instance lives
+in an opt-in component has the same shape: the ordinary gate exercises the substitute, and the thing it
+claims to cover is covered somewhere nobody runs.
+
+*Absence guard:* no spec writes an executable into a directory it then places on `PATH`; no production
+module carries a crash point, a fault token, or an execution override.
+
+### A skipped case is worse than a failing one, because the total does not change
+
+A conditional that changes an *expectation* keeps the evidence: the row is real, the host differs, and the
+case still runs. A conditional that removes the case removes the evidence and leaves nothing behind that a
+reader could notice — the suite reports a smaller number, and a smaller number looks exactly like a
+smaller suite.
+
+This is the most complete form of spoofing available, because it requires no bad faith at all. A module
+excluded by a Cabal `os` condition is not compiled, so nothing about it is asserted; a group behind a
+platform `#ifdef` is not counted, so its absence is invisible. A gate can report every test passing while
+the whole subject of the phase went untested on that family.
+
+Platform rows are therefore compiled everywhere and stubbed to a total refusal where they cannot apply,
+and the suite reports what it did not run so the gate can compare that against a declared expectation.
+The point is not to run impossible cases; it is to make an unrun case say so.
+
+*Absence guard:* no `if os(...)` module stanza in the package description; the skip manifest matches the
+declared per-family expectation.
+
+### A path belongs to the frame that reads it, because derivation says nothing
+
+Asking "is this a host path or a guest path?" by looking at where the string was built gives the wrong
+answer often enough to be a trap. A cluster state directory is derived from the canonical project root
+with the host's own separator, which looks decisive — and is not, because the path is handed to an
+ownership driver running inside the realized Linux substrate, which is the only process that will ever
+interpret it. The frame that reads a path is the frame whose grammar admits it.
+
+Getting this backwards is expensive in both directions. Validate a guest path with the host's grammar and
+the suite fails on an outer host where nothing is actually wrong. Validate a host path with a POSIX
+grammar and it silently passes everywhere the author ran it, failing only on the platform nobody tried —
+which is the same defect class § JJ exists to catch, arriving through a door § K did not cover.
+
+*Absence guard:* a path validator's grammar matches the frame its value is declared to belong to, and
+fixtures respect the same split (§ MM, § JJ).

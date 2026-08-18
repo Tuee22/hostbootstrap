@@ -8,7 +8,16 @@ import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import HostBootstrap.Command (allReconcilers)
-import HostBootstrap.Ensure (InstallStep (..), Reconciler (..), decide, installAndVerifyWith, runReconciler)
+import HostBootstrap.Ensure
+    ( InstallStep (..)
+    , Reconciler (..)
+    , appliesTo
+    , decide
+    , installAndVerifyWith
+    , reconcilerInstallSteps
+    , requirement
+    , runReconciler
+    )
 import qualified HostBootstrap.Ensure.AppleMetal as AppleMetal
 import qualified HostBootstrap.Ensure.Cuda as Cuda
 import qualified HostBootstrap.Ensure.CudaWin as CudaWin
@@ -46,6 +55,7 @@ tests =
     testGroup
         "EnsureSpec"
         [ testGroup "applicability matrix" applicabilityCases
+        , testGroup "the frame table a reconciler is a row over" frameTableCases
         , testGroup "decide" decideCases
         , testGroup "runReconciler" runCases
         , testGroup "install-and-verify driver" installDriverCases
@@ -79,6 +89,62 @@ applicabilityCases =
     , testCase "wsl2 applies to Windows only" $
         map (appliesTo (findR "wsl2")) [apple, cpu, gpu, winCpu, winGpu] @?= [False, False, False, True, True]
     ]
+
+{- | § LL: applicability, the diagnostic's requirement, and the install plan are
+three views of one table rather than three fields that can disagree. These cases
+assert the agreement itself, on every reconciler and every host — which is the
+thing a per-module @case@ over the substrate tag could never state.
+-}
+frameTableCases :: [TestTree]
+frameTableCases =
+    [ testCase "an applicable host has a plan, and an inapplicable one has the diagnostic" $
+        sequence_
+            [ case (appliesTo r sub, reconcilerInstallSteps r sub) of
+                (True, Left err) ->
+                    assertBool
+                        (reconcilerName r ++ " applies to this host but refuses a plan: " ++ err)
+                        (not ("not applicable" `isInfixOf` err))
+                (False, Left err) ->
+                    err @?= renderDiagnostic r sub
+                (False, Right steps) ->
+                    assertBool
+                        (reconcilerName r ++ " has no row here but produced " ++ show (length steps) ++ " step(s)")
+                        False
+                (True, Right _) -> pure ()
+            | r <- allReconcilers
+            , sub <- [apple, cpu, gpu, winCpu, winGpu]
+            ]
+    , testCase "the requirement a diagnostic quotes is the rows' own rendering" $
+        map (\name -> (name, requirement (findR name))) (map reconcilerName allReconcilers)
+            @?= [ ("docker", "all substrates")
+                , ("apple-metal", "apple-silicon")
+                , ("cuda", "linux-gpu")
+                , ("cudawin", "windows-gpu")
+                , ("homebrew", "apple-silicon")
+                , ("ghc", "apple-silicon")
+                , ("lima", "apple-silicon")
+                , ("incus", "apple-silicon or linux")
+                , ("wsl2", "windows")
+                ]
+    , testCase "an accelerator row is selected ahead of its frame's general row" $ do
+        -- cuda has only a linux-gpu row, so the plain linux host has no row at
+        -- all: the accelerator is a requirement of the row, not a second frame.
+        appliesTo (findR "cuda") cpu @?= False
+        appliesTo (findR "cuda") gpu @?= True
+    , testCase "a frame another frame owns is an absent row, not a second refusal" $ do
+        -- incus is the linux and apple host provider; the WSL2 frame owns the
+        -- Windows one. Saying so twice is how two answers to one question start
+        -- to differ, so Windows is simply not a row.
+        appliesTo (findR "incus") winCpu @?= False
+        case reconcilerInstallSteps (findR "incus") winCpu of
+            Left err -> err @?= renderDiagnostic (findR "incus") winCpu
+            Right steps ->
+                assertBool ("incus has no Windows plan: " ++ show steps) False
+    ]
+  where
+    renderDiagnostic r sub = case decide r sub of
+        Left err -> err
+        Right _ -> "<applicable>"
 
 decideCases :: [TestTree]
 decideCases =

@@ -49,6 +49,9 @@ module HostBootstrap.Lift
     LiftDispatch (..),
     LiftLeaf (..),
     foldLeaf,
+    foldLeafCommand,
+    liftContextFrame,
+    selfCommand,
     foldLift,
     containerRunArgs,
     configWriteScript,
@@ -70,11 +73,21 @@ module HostBootstrap.Lift
   )
 where
 
-import Control.Exception (SomeException)
-import Control.Exception.Safe (try)
 import qualified Data.Text as T
 import qualified HostBootstrap.Config.Vocab as Vocab
-import HostBootstrap.Ensure (runTool, runToolWithStdin)
+import HostBootstrap.Effect.Interpreter (interpretHostCommand)
+import HostBootstrap.Effect.Quote (shellQuoteArgs)
+import HostBootstrap.Effect.Run (capturedTriple)
+import HostBootstrap.Effect.Vocabulary
+  ( EffectFrame (CrossedInto, OuterHost),
+    EffectStdio (CaptureStreams),
+    EffectTarget (SelfTarget),
+    FrameCrossing (CrossContainer, CrossIncusVM, CrossLimaVM, CrossWsl2VM),
+    HostCommand (..),
+    hostCommand,
+    inFrame,
+    withCommandStdin,
+  )
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima, Wsl), toolCommandName)
 import HostBootstrap.Lift.Context
@@ -97,7 +110,6 @@ import HostBootstrap.Lift.Context
   )
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode)
-import System.Process (readProcessWithExitCode)
 
 -- | How to invoke /this binary/ per context. The local path is the running
 -- executable; the in-VM path is a deployment fact (e.g. the pipx/ghcup-installed
@@ -323,30 +335,61 @@ liftStdin (LiftContext layers) = case reverse layers of
   (ViaContainer c : _) -> maybe "" (T.unpack . cdPayload) (clConfigDelivery c)
   _ -> ""
 
--- | Run a 'LiftLeaf' in a context: fold to a 'LiftDispatch', then exec — a host
--- tool via 'runTool' (absolute path), or a local command via 'runSelf'.
+-- | The frame a context stack lands in, outermost crossing first (§ MM).
+--
+-- Descriptive rather than constructive: the argument vector that performs each
+-- crossing comes from 'foldLeaf' and from nowhere else. This says only /where/
+-- that argv is interpreted, which is what decides the grammar of the paths it
+-- carries.
+liftContextFrame :: LiftContext -> EffectFrame
+liftContextFrame (LiftContext layers) = case map crossingOf layers of
+  [] -> OuterHost
+  (outermost : inner) -> CrossedInto outermost inner
+  where
+    crossingOf (ViaVM vm) = CrossIncusVM (vmName vm)
+    crossingOf (ViaLimaVM vm) = CrossLimaVM (limaName vm)
+    crossingOf (ViaWsl2VM vm) = CrossWsl2VM (wsl2Distro vm)
+    crossingOf (ViaContainer c) = CrossContainer (clImage c)
+
+-- | The described command a leaf folds down to in a context (§ KK): the one
+-- fold's dispatch, together with the frame that interprets it.
+foldLeafCommand :: LiftContext -> LiftLeaf -> HostCommand
+foldLeafCommand ctx leaf =
+  inFrame (liftContextFrame ctx) $ case foldLeaf ctx leaf of
+    DispatchLocal exe args -> selfCommand exe args
+    DispatchTool tool args -> hostCommand tool args
+
+-- | A command naming this binary — or any executable the caller already holds an
+-- absolute path for — rather than a resolved 'HostTool'.
+selfCommand :: FilePath -> [String] -> HostCommand
+selfCommand exe args =
+  HostCommand
+    { commandTarget = SelfTarget exe,
+      commandArguments = args,
+      commandStdio = CaptureStreams "",
+      commandFrame = OuterHost
+    }
+
+-- | Run a 'LiftLeaf' in a context: fold to the described command, then hand it
+-- to the one interpreter.
 liftLeaf ::
   HostConfig ->
   LiftContext ->
   LiftLeaf ->
   IO (Either String (ExitCode, String, String))
-liftLeaf cfg ctx leaf = case foldLeaf ctx leaf of
-  DispatchLocal exe args -> runSelf exe args
-  DispatchTool tool args -> runTool cfg tool args
+liftLeaf cfg ctx leaf = liftLeafWithStdin cfg ctx leaf ""
 
 -- | Like 'liftLeaf', but feed @input@ to the folded invocation on @stdin@ (the
--- streamed child-config channel). 'liftLeaf' is @liftLeafWithStdin … ""@ (and
--- @runTool@/@runSelf@ are the empty-stdin cases of their @…WithStdin@ peers), so
--- an empty @input@ is byte-identical to 'liftLeaf'.
+-- streamed child-config channel). 'liftLeaf' is @liftLeafWithStdin … ""@, so an
+-- empty @input@ is byte-identical to it.
 liftLeafWithStdin ::
   HostConfig ->
   LiftContext ->
   LiftLeaf ->
   String ->
   IO (Either String (ExitCode, String, String))
-liftLeafWithStdin cfg ctx leaf input = case foldLeaf ctx leaf of
-  DispatchLocal exe args -> runSelfWithStdin exe args input
-  DispatchTool tool args -> runToolWithStdin cfg tool args input
+liftLeafWithStdin cfg ctx leaf input =
+  fmap capturedTriple <$> interpretHostCommand cfg (withCommandStdin input (foldLeafCommand ctx leaf))
 
 -- | Run a subcommand of this binary in a context — the 'SelfSub' special case of
 -- 'liftLeaf'.
@@ -371,24 +414,14 @@ liftSubcommandWithStdin ::
 liftSubcommandWithStdin cfg self ctx sub = liftLeafWithStdin cfg ctx (SelfSub self sub)
 
 -- | Run a local executable (the binary itself — not a 'HostTool') capturing its
--- exit/stdout/stderr; 'Left' on an exec failure.
-runSelf :: FilePath -> [String] -> IO (Either String (ExitCode, String, String))
-runSelf exe args = runSelfWithStdin exe args ""
+-- exit/stdout/stderr; 'Left' on an exec failure. The configuration is the one
+-- every described command is interpreted against; a self target consults none of
+-- it.
+runSelf :: HostConfig -> FilePath -> [String] -> IO (Either String (ExitCode, String, String))
+runSelf cfg exe args = runSelfWithStdin cfg exe args ""
 
 -- | Like 'runSelf', but feed @stdin@ to the binary — the channel a streamed child
 -- config travels on when the innermost frame is local.
-runSelfWithStdin :: FilePath -> [String] -> String -> IO (Either String (ExitCode, String, String))
-runSelfWithStdin exe args input = do
-  result <- try (readProcessWithExitCode exe args input)
-  pure $ case (result :: Either SomeException (ExitCode, String, String)) of
-    Right ok -> Right ok
-    Left err -> Left ("could not exec " ++ exe ++ ": " ++ show err)
-
--- | Single-quote each argument and join with spaces, so an argv can be embedded
--- verbatim in a @bash -lc@ script without re-splitting or glob expansion. Pure.
-shellQuoteArgs :: [String] -> String
-shellQuoteArgs = unwords . map quote
-  where
-    quote s = "'" ++ concatMap escape s ++ "'"
-    escape '\'' = "'\\''"
-    escape ch = [ch]
+runSelfWithStdin :: HostConfig -> FilePath -> [String] -> String -> IO (Either String (ExitCode, String, String))
+runSelfWithStdin cfg exe args input =
+  fmap capturedTriple <$> interpretHostCommand cfg (withCommandStdin input (selfCommand exe args))

@@ -56,8 +56,12 @@ pure `Lift.Context` vocabulary describes provider targets and nested frame stack
 performing an effect.
 
 **Host dependencies (8).** With the binary, the tool boundary, and typed config in place, the binary can
-reconcile what it needs. This layer also folds a self-reference command through the pure context stack,
-resolving only the outer host tool; it has no provider-realization or Registry dependency.
+reconcile what it needs. A reconciler is a **row** over the closed host-frame table, so which hosts it
+applies to, how they are named in its diagnostic, and what it installs on each are three views of one value.
+This layer also folds a self-reference command through the pure context stack, resolving only the outer host
+tool; it has no provider-realization or Registry dependency. It owns the one **guest bootstrap vocabulary**
+as well — the ordered, separately probeable steps that establish the binary inside a frame that has never run
+it, which is the one thing a frame cannot express as the binary's own typed operation.
 
 **Lifecycle state (9–11).** One mode and one lease per project (9); versioned sessions, the single-writer
 journal, and durable fences (10); and the prepare compare-and-swap that every external effect must pass (11).
@@ -73,12 +77,18 @@ recovery packages, rooted lifecycle request/response and receipt frames — plus
 authenticated scope-first child admission, keyless relay, and the Build and Activation authorities. Above the
 plan because every grant and rooted session is bound to an exact plan edge.
 
-**Ownership (14).** The four ownership clauses and the host-local backends that hold them. Above prepare
-because a reservation is a prepared operation, and above the store because clause 1 is the store's entry.
+**Ownership (14).** The four ownership clauses, the one seam that holds them, and the platform rows
+beneath it. Above prepare because a reservation is a prepared operation, and above the store because
+clause 1 is the store's entry. The clauses are one transaction, so they are written once and instantiated
+per platform: what a POSIX kernel and a Windows kernel differ by is the primitive each supplies, and the
+clause order is a property of the types rather than of review.
 
 **Providers and clusters (15–16).** Provider lifecycle realizations that consume the already-defined target
 records/renderers and generic Lift (15), then the exact cluster/direct-Colima consumers inside a declared
-budget (16). Above ownership because a provider operation acquires an owned object.
+budget (16). Above ownership because a provider operation acquires an owned object. This layer adds the
+frame table's third ownership row — the one that runs a transaction at the frame that owns the object —
+which is a transport rather than a third implementation, because every frame the project reaches is Linux
+and what executes there is the same POSIX row.
 
 **Interpretation (17).** The recursive lifecycle command: one topology-root coordinator retains the durable
 store, lease, catalog, frame journals, prepare/settle transactions, and receipts while long-lived storeless
@@ -103,11 +113,18 @@ delivery of the reusable build-authority protocol to its actual command/Dockerfi
 Production/Harness confirmation of the recursive lifecycle command. It is last among baseline phases because
 a consumer depends on everything.
 
-**Acceptance (25–27).** One phase per non-baseline substrate: Apple Silicon, NVIDIA GPU, Windows/WSL2. Each
-adds the remaining substrate-only pieces and confirms the already-built generic/provider boundaries on real
-hardware. They are terminal, so a machine without that hardware stops at 24.
+**Acceptance (25–28).** The baseline remains one universal `linux-cpu` execution substrate on every host:
+native on Linux, Lima/Colima-backed on Apple Silicon, and WSL2-backed on Windows. Three terminal phases
+accept the additional Apple-host, NVIDIA-acceleration, and Windows-host realization behavior on real
+hardware; they do not define three competing project substrates. Each confirms the already-built universal
+contract through its provider and adds only realization-specific pieces. A fourth terminal phase (28)
+declares no substrate at all and confirms the other axis: that the sources § N builds host-native
+everywhere do in fact build and self-test on a Windows, a macOS, and a Linux gate host. It exists because
+that claim needs three machines while § C forbids a baseline phase owing hardware it does not declare,
+and it is one sprint per family because the three runs are independent evidence from independent
+machines.
 
-**Reconciliation (28).** The governed-document sweep and the drift guards. Last because its subject is every
+**Reconciliation (29).** The governed-document sweep and the drift guards. Last because its subject is every
 other phase.
 
 ## Dependency edges worth naming

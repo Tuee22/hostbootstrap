@@ -44,9 +44,33 @@
 
 A reconciler is a value, not a free function, and carries two parts:
 
-- a **host-applicability predicate** over the detected substrate (`apple-silicon`, `linux-cpu`,
-  `linux-gpu`, `windows-cpu`, `windows-gpu`); and
+- a **frame table** — the rows the reconciler is written for; and
 - a **reconcile action** that brings the host to the desired state and is safe to re-run.
+
+### The frame table
+
+A reconciler is a **row**, not a module of parallel logic. The frame axis is closed and has three
+constructors — `LinuxFrame`, `AppleFrame`, `WindowsFrame` — and `substrateFrame` is the one place the five
+classification tags (`apple-silicon`, `linux-cpu`, `linux-gpu`, `windows-cpu`, `windows-gpu`) collapse onto
+it, which is what makes `isLinux`, `isWindows`, and `isAppleSilicon` one derived fact rather than three
+independently maintained ones. The accelerator is a **capability of a frame**, not a frame of its own: a row
+that needs an NVIDIA device says so, and a table carrying both a general and an accelerator row for one frame
+selects the specific one.
+
+Three things a reader might expect to be separate fields are three views of the same rows, so they cannot
+disagree:
+
+- **whether the reconciler applies** — does the table have a row for this host;
+- **what its diagnostic says it requires** — rendered from the rows themselves, so `ensure incus` reads
+  `apple-silicon or linux` and `ensure docker` reads `all substrates` without either being written twice;
+- **what it installs here** — the row's own plan.
+
+A row's plan is either `InstallHere` (this frame installs the dependency, with these steps) or
+`ProvidedElsewhere` (the dependency is probed here but another frame owns installing it — Docker on
+apple-silicon comes from the prepared project Colima wall). A frame the reconciler has **no** row for is
+"not applicable", which is a decision rather than a refusal a caller has to read out of a failed install:
+`ensure incus` has apple and linux rows and no Windows row at all, because the WSL2 frame owns the Windows
+host provider and stating that twice is how two answers to one question start to differ.
 
 Idempotence is the target contract: running a reconciler when the host is already in the desired state
 must be a successful, verified no-op. The shared driver is probe-first, and the strongest reconcilers
@@ -158,15 +182,15 @@ still returns a result-free reconciler action:
   lock, and isolated `DOCKER_CONFIG`; the socket-safe local profile is authority only inside that namespace.
   Total storage above 20 GiB becomes a fixed 20-GiB root disk plus `total-20`-GiB data disk.
 
-  A private fixed Apple resolver admits canonical Python/Colima/Docker/Lima identities (and Brew only for
+  A private fixed Apple resolver admits canonical Colima/Docker/Lima identities (and Brew only for
   bounded installation), fingerprints their helper directories, and revalidates the ready toolchain around
   every effect. A private install kernel orders retained-Brew revalidation, the bounded fixed Brew call, and a
-  complete fresh resolver pass; its structured failures cannot become a ready toolchain. The Cabal-private
-  `Resolver.Testing` seam combines descriptive views with a non-nestable, thread-local, bracket-cleared
-  fixture execution override. It is absent from the public library surface, and each adapter discovery and
-  revalidation still executes, strictly parses, and opaquely settles the fixture resolver rather than
-  accepting an injected toolchain or backend result. The private runner closes environment/cwd and bounds
-  output, process groups, descendants, and reap. Under retained Python `fcntl.flock`, self-bound
+  complete fresh resolver pass; its structured failures cannot become a ready toolchain. The resolver's
+  candidate policy, its owner and mode rules, and its path normalization are total functions, so they are
+  covered by application rather than through an execution override (see [testing](testing.md)); the
+  directory walk beneath them runs against a real filesystem. The private runner closes environment/cwd and
+  bounds output, process groups, descendants, and reap. Under the ownership row's retained kernel lock,
+  self-bound
   `reserved`/`home-staged`/`home-ready`/`context-staged`/`prepared`/`managed` records publish absence before
   namespace creation/start and bind the invocation, machine/context, root/data wall, directory chain, and
   complete artifact manifest. A present profile from `prepared` is outcome-unknown `Conflict`, not adoption.
@@ -201,12 +225,35 @@ observations. See
 | `ensure-ghc` | `apple-silicon` | Errors on Linux: reconciles the Apple host GHC toolchain. The host build toolchain itself is ensured pre-binary by the bootstrapper, since every substrate builds host-native. |
 | `ensure-cudawin` | `windows-gpu` | Errors on `windows-cpu`, `linux-*`, and `apple-silicon`: verifies the non-installable NVIDIA driver/GPU prerequisite, reconciles CUDA Toolkit + MSVC VCTools + LLVM clang for the headless host build, and compiles a CUDA smoke artifact through `nvcc -ccbin <MSVC>`; it has no meaning off a Windows GPU host. |
 | `ensure-wsl2` | `windows-cpu` and `windows-gpu` | Errors off Windows: enables WSL/VMP and reconciles Windows hypervisor launch readiness. A separate project-owned `deploy-VM` step registers that project's own named `Ubuntu-24.04` distro that is the Windows VM frame, peer of Lima/Incus. See [wsl2](wsl2.md). |
-| `ensure-incus` | `apple-silicon` and `linux` | Applies on both: `appliesTo = isAppleSilicon || isLinux`. It converges the substrate-specific provider and requires the total final daemon/permission/VM-capability/egress status to be ready. See [incus](incus.md). |
+| `ensure-incus` | `apple-silicon` and `linux` | Two rows, and no Windows row. It converges the frame-specific provider and requires the total final daemon/permission/VM-capability/egress status to be ready. See [incus](incus.md). |
 
-`ensure-incus` has an explicit Apple-or-Linux predicate
-(`appliesTo = isAppleSilicon || isLinux`). It is not the first/only cross-substrate predicate:
-`ensure-docker` currently declares `appliesTo = const True`, even though its absent-daemon install plan
-is Linux-only and delegates/refuses elsewhere.
+`ensure-incus` is the first reconciler with two rows. `ensure-docker` has a row for every frame, which is
+what makes its diagnostic read `all substrates`; only its Linux row installs, while the apple and Windows
+rows delegate through `ProvidedElsewhere`.
+
+## Guest Bootstrap Vocabulary
+
+Every command the binary issues in a frame is one of the binary's own typed operations, lifted — except in a
+frame that has never run the binary, which cannot issue one, and into which no binary may be copied because
+every binary is built host-native. The steps that **establish** the binary in a fresh frame are therefore
+their own closed, ordered, typed vocabulary, owned by `HostBootstrap.Ensure.GuestBootstrap` and by nothing
+else.
+
+It is a reconciler in shape — probe, plan, act, re-probe — over a frame instead of a host, and it has five
+steps because each is separately probeable: the distribution floor, the pinned toolchain, the Python
+bootstrapper, the host-native build in the frame, and installing the result where the next lift invokes it.
+`guestBootstrapPlan` is total over the step constructors and fixes the order, so a caller chooses the target
+and never the sequence.
+
+Nothing in it is a shell string. Each step renders to argument vectors: the probe answers with its exit
+status alone, so nothing parses output, and the actions are a list precisely because the two shapes that
+otherwise reach for an interpreter do not need one — a piped installer is a fetch step followed by a run
+step, and a working directory is an argument to `env` rather than a `cd`.
+
+Every path in a step is a **guest** path: it is interpreted by a process of the frame being bootstrapped,
+which is Linux on every outer host. `mkGuestBootstrapTarget` is the only constructor and admits
+POSIX-absolute paths alone, so the drive-qualified path a Windows outer host holds cannot reach a Linux guest
+process — where it would be a relative path, silently created wherever the guest happened to start.
 
 The Python bootstrapper asserts Homebrew and uses it to establish the host-native Haskell build
 toolchain before a project binary exists. It does not install Homebrew and does not drive the Colima

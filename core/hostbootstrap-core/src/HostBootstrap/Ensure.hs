@@ -1,22 +1,46 @@
-{-# LANGUAGE CPP #-}
-
 -- | The @Reconciler@ value type and runner used by @ensure-*@ chain steps.
 --
--- A reconciler is a host-applicability predicate plus a reconcile action (see
--- @development_plan_standards.md § L@). Implementations are probe-first; their
--- no-op guarantee is only as strong as the probe or package-manager no-op path.
--- Running a
--- reconciler whose predicate rejects the host fails fast — a one-line
--- diagnostic on stderr and a non-zero exit — before any side effect. The
--- applicability decision ('decide') is pure so it can be tested without
--- exiting the process; 'runReconciler' is the IO wrapper that performs the
--- exit.
+-- A reconciler is a frame table plus a reconcile action (see
+-- @development_plan_standards.md § L@ and @§ LL@). Implementations are
+-- probe-first; their no-op guarantee is only as strong as the probe or
+-- package-manager no-op path. Running a reconciler on a host it has no row for
+-- fails fast — a one-line diagnostic on stderr and a non-zero exit — before any
+-- side effect. The applicability decision ('decide') is pure so it can be
+-- tested without exiting the process; 'runReconciler' is the IO wrapper that
+-- performs the exit.
+--
+-- A reconciler is a __row__, not a module of parallel logic. Which hosts it
+-- applies to, how those hosts are described in a diagnostic, and what it
+-- installs on each are three views of one 'FrameTable' rather than three fields
+-- that can disagree — and they did disagree: a reconciler could claim to apply
+-- everywhere while its own plan refused two of the five tags, so the wrong-host
+-- answer arrived as an install failure instead of as a decision.
 module HostBootstrap.Ensure
-  ( Reconciler (..),
+  ( -- * The reconciler
+    Reconciler (..),
+    appliesTo,
+    requirement,
     decide,
     diagnostic,
     runReconciler,
     runEnsure,
+
+    -- * The frame table a reconciler is a row over
+    FrameTable,
+    FrameRow,
+    FramePlan (..),
+    frameTable,
+    linuxRow,
+    linuxGpuRow,
+    appleRow,
+    windowsRow,
+    windowsGpuRow,
+    tableRows,
+    tableApplies,
+    tableRequirement,
+    reconcilerInstallSteps,
+
+    -- * Tools and install steps
     toolPresent,
     runTool,
     runToolWithStdin,
@@ -26,21 +50,28 @@ module HostBootstrap.Ensure
   )
 where
 
-import Control.Exception (SomeException)
-import Control.Exception.Safe (try)
 import Control.Monad (foldM)
 import Data.Char (toLower)
-import Data.List (isInfixOf)
+import Data.List (find, intercalate, isInfixOf)
 import Data.Maybe (isJust)
+import HostBootstrap.Effect.Interpreter (interpretHostCommand)
+import HostBootstrap.Effect.Run (capturedTriple)
+import HostBootstrap.Effect.Vocabulary (hostCommand, withCommandStdin)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig, resolveMaybe)
-import HostBootstrap.HostTool (HostTool (Winget, Wsl), absExePath, toolCommandName)
-#ifdef mingw32_HOST_OS
-import HostBootstrap.HostTool (HostTool (PowerShell))
-#endif
-import HostBootstrap.Substrate (Substrate, detect, renderSubstrateName, substrateName)
+import HostBootstrap.HostTool (HostTool (Winget, Wsl), toolCommandName)
+import HostBootstrap.Substrate
+  ( HostFrame (AppleFrame, LinuxFrame, WindowsFrame),
+    Substrate,
+    allHostFrames,
+    detect,
+    hasGpu,
+    renderHostFrame,
+    renderSubstrateName,
+    substrateFrame,
+    substrateName,
+  )
 import System.Exit (ExitCode (..), die, exitWith)
 import System.IO (hPutStrLn, stderr)
-import System.Process (readProcessWithExitCode)
 
 -- | A host-dependency reconciler.
 data Reconciler = Reconciler
@@ -48,16 +79,34 @@ data Reconciler = Reconciler
     reconcilerName :: String,
     -- | one-line human summary of what the reconciler ensures
     reconcilerSummary :: String,
-    -- | host-applicability predicate
-    appliesTo :: Substrate -> Bool,
-    -- | human description of applicable hosts, for the diagnostic
-    requirement :: String,
+    -- | the frames this reconciler is a row over, and what each contributes
+    reconcilerFrames :: FrameTable,
     -- | the idempotent reconcile action
     reconcile :: HostConfig -> IO ()
   }
 
--- | The one-line diagnostic emitted when a reconciler is run on a host its
--- predicate rejects.
+-- | Whether the reconciler has a row for this host. Derived, never declared.
+appliesTo :: Reconciler -> Substrate -> Bool
+appliesTo = tableApplies . reconcilerFrames
+
+-- | How the reconciler's applicable hosts are described in a diagnostic.
+-- Derived from the same rows the predicate reads, so the two cannot disagree.
+requirement :: Reconciler -> String
+requirement = tableRequirement . reconcilerFrames
+
+-- | The reconciler's install plan for a host: its row's own steps, or the one
+-- derived refusal. Every reconciler's @installSteps@ is this function applied
+-- to its own record, so no module writes a wrong-host message of its own.
+reconcilerInstallSteps :: Reconciler -> Substrate -> Either String [InstallStep]
+reconcilerInstallSteps r sub = case frameRowFor (reconcilerFrames r) sub of
+  Nothing -> Left (diagnostic r sub)
+  Just row -> case rowPlan row of
+    InstallHere steps -> Right steps
+    ProvidedElsewhere instruction -> Left instruction
+
+-- | The one-line diagnostic emitted when a reconciler is run on a host it has
+-- no row for. It is also the plan's refusal, so a caller cannot be told two
+-- different things about the same absent row.
 diagnostic :: Reconciler -> Substrate -> String
 diagnostic r sub =
   "ensure "
@@ -74,6 +123,84 @@ decide :: Reconciler -> Substrate -> Either String (HostConfig -> IO ())
 decide r sub
   | appliesTo r sub = Right (reconcile r)
   | otherwise = Left (diagnostic r sub)
+
+-- ---------------------------------------------------------------------------
+-- The frame table (§ LL)
+-- ---------------------------------------------------------------------------
+
+-- | What a reconciler's row contributes in the frame it is written for.
+data FramePlan
+  = -- | the row installs the dependency itself, with these steps
+    InstallHere [InstallStep]
+  | -- | the row applies — the dependency is probed here — but this frame does
+    -- not install it, and the string says who does, or what the operator must
+    -- do instead
+    ProvidedElsewhere String
+  deriving (Eq, Show)
+
+-- | One row: a frame, what the row requires of it, and the row's plan there.
+data FrameRow = FrameRow
+  { rowFrame :: HostFrame,
+    rowRequiresNvidia :: Bool,
+    rowPlan :: FramePlan
+  }
+  deriving (Eq, Show)
+
+-- | The frames a reconciler is a row over. An absent row is "not applicable",
+-- which is a decision rather than a refusal a caller has to read out of a
+-- failed install.
+newtype FrameTable = FrameTable {tableRows :: [FrameRow]}
+  deriving (Eq, Show)
+
+-- | Build a table, ordering accelerator rows first so that a table carrying
+-- both a general and an accelerator row for one frame selects the specific one
+-- rather than whichever happened to be written first.
+frameTable :: [FrameRow] -> FrameTable
+frameTable rows =
+  FrameTable (filter rowRequiresNvidia rows ++ filter (not . rowRequiresNvidia) rows)
+
+linuxRow :: FramePlan -> FrameRow
+linuxRow = FrameRow LinuxFrame False
+
+linuxGpuRow :: FramePlan -> FrameRow
+linuxGpuRow = FrameRow LinuxFrame True
+
+appleRow :: FramePlan -> FrameRow
+appleRow = FrameRow AppleFrame False
+
+windowsRow :: FramePlan -> FrameRow
+windowsRow = FrameRow WindowsFrame False
+
+windowsGpuRow :: FramePlan -> FrameRow
+windowsGpuRow = FrameRow WindowsFrame True
+
+-- | The row that governs this host, if the table has one.
+frameRowFor :: FrameTable -> Substrate -> Maybe FrameRow
+frameRowFor (FrameTable rows) sub = find governs rows
+  where
+    governs row =
+      rowFrame row == substrateFrame sub
+        && (not (rowRequiresNvidia row) || hasGpu sub)
+
+tableApplies :: FrameTable -> Substrate -> Bool
+tableApplies table = isJust . frameRowFor table
+
+-- | Render the applicable hosts from the rows themselves.
+--
+-- A table with a general row for every frame reads "all substrates" rather than
+-- the three names spelled out, because that is what a reader of the diagnostic
+-- needs to know.
+tableRequirement :: FrameTable -> String
+tableRequirement (FrameTable rows)
+  | universal = "all substrates"
+  | otherwise = intercalate " or " (map renderRow rows)
+  where
+    universal =
+      not (any rowRequiresNvidia rows)
+        && all (`elem` map rowFrame rows) allHostFrames
+    renderRow row
+      | rowRequiresNvidia row = renderHostFrame (rowFrame row) ++ "-gpu"
+      | otherwise = renderHostFrame (rowFrame row)
 
 -- | Run a reconciler against a resolved host configuration. On the wrong host it
 -- prints the diagnostic to stderr and exits non-zero before any side effect; on
@@ -218,33 +345,5 @@ runTool cfg t args = runToolWithStdin cfg t args ""
 -- travels on, and it is consumed by the wrapped command (see
 -- 'HostBootstrap.Registry.dockerAuthStdinWrapper').
 runToolWithStdin :: HostConfig -> HostTool -> [String] -> String -> IO (Either String (ExitCode, String, String))
-#ifdef mingw32_HOST_OS
-runToolWithStdin cfg Wsl args input = runWslThroughPowerShell cfg args input
-#endif
-runToolWithStdin cfg t args input = case resolveMaybe cfg t of
-  Nothing -> pure (Left (toolCommandName t ++ " not found on this host"))
-  Just exe -> do
-    result <- try (readProcessWithExitCode (absExePath exe) args input)
-    pure $ case (result :: Either SomeException (ExitCode, String, String)) of
-      Right ok -> Right ok
-      Left err -> Left ("could not exec " ++ absExePath exe ++ ": " ++ show err)
-
-#ifdef mingw32_HOST_OS
-runWslThroughPowerShell :: HostConfig -> [String] -> String -> IO (Either String (ExitCode, String, String))
-runWslThroughPowerShell cfg args input =
-  case (resolveMaybe cfg PowerShell, resolveMaybe cfg Wsl) of
-    (Nothing, _) -> pure (Left (toolCommandName PowerShell ++ " not found on this host"))
-    (_, Nothing) -> pure (Left (toolCommandName Wsl ++ " not found on this host"))
-    (Just ps, Just wsl) -> do
-      let command = unwords ("&" : map psQuote (absExePath wsl : args)) ++ "; exit $LASTEXITCODE"
-      result <- try (readProcessWithExitCode (absExePath ps) ["-NoProfile", "-Command", command] input)
-      pure $ case (result :: Either SomeException (ExitCode, String, String)) of
-        Right ok -> Right ok
-        Left err -> Left ("could not exec " ++ absExePath wsl ++ " through " ++ absExePath ps ++ ": " ++ show err)
-
-psQuote :: String -> String
-psQuote s = "'" ++ concatMap escape s ++ "'"
-  where
-    escape '\'' = "''"
-    escape c = [c]
-#endif
+runToolWithStdin cfg t args input =
+  fmap capturedTriple <$> interpretHostCommand cfg (withCommandStdin input (hostCommand t args))

@@ -6,7 +6,10 @@
 
 module LifecycleSpec (tests) where
 
-import Control.Exception (SomeException, bracket_, displayException, try)
+import Control.Exception (SomeException, displayException, try)
+#ifndef mingw32_HOST_OS
+import Control.Exception (bracket_)
+#endif
 import Data.Bits ((.&.), shiftR)
 import qualified Crypto.Hash as Hash
 import qualified Data.ByteArray as ByteArray
@@ -148,8 +151,10 @@ import System.Directory
     , createDirectoryIfMissing
     , doesDirectoryExist
     , findExecutable
+#ifndef mingw32_HOST_OS
     , removeFile
     , renameDirectory
+#endif
     )
 import System.Exit (ExitCode (..))
 import System.FilePath ((<.>), (</>))

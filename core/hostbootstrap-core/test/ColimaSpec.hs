@@ -14,7 +14,10 @@ import Control.Concurrent
     threadDelay,
     tryReadMVar,
   )
-import Control.Exception (IOException, SomeAsyncException, SomeException, bracket, fromException, try)
+import Control.Exception (SomeAsyncException, SomeException, fromException, try)
+#if !defined(mingw32_HOST_OS)
+import Control.Exception (IOException, bracket)
+#endif
 import Control.Monad (unless)
 import Data.Bifunctor (first)
 import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf, nub)
@@ -77,8 +80,10 @@ import HostBootstrap.Step
   )
 import System.Directory
   ( Permissions (executable),
+#if !defined(mingw32_HOST_OS)
     copyFile,
     createDirectory,
+#endif
     createDirectoryIfMissing,
     createFileLink,
     doesDirectoryExist,
@@ -86,7 +91,9 @@ import System.Directory
     findExecutable,
     getPermissions,
     listDirectory,
+#if !defined(mingw32_HOST_OS)
     removePathForcibly,
+#endif
     removeFile,
     renameDirectory,
     setPermissions,
@@ -1183,6 +1190,7 @@ createShortFixtureRoot = do
         Right () -> setFileMode candidate 0o700 >> pure candidate
 #endif
 
+#if !defined(mingw32_HOST_OS)
 preparePublicFlowTools :: ResolverHarness -> IO FilePath
 preparePublicFlowTools harness = do
   let layout = resolverHarnessLayout harness
@@ -1215,6 +1223,7 @@ pythonToolWrapper python script =
       "import os,sys",
       "os.execv(" ++ show python ++ ",[" ++ show python ++ "," ++ show script ++ "]+sys.argv[1:])"
     ]
+#endif
 
 resolverExecutionFixture :: BoundedToolResult -> ResolverExecutionFixture
 resolverExecutionFixture result = case result of

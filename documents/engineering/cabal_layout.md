@@ -49,9 +49,14 @@ real consumer smoke. The demo's one project references local core source and imp
 The library takes `optparse-applicative` (the composable command tree) and `dhall` (the in-process
 project-local config decoder/generator) as its defining dependencies, plus the small set used by host-tool
 resolution and the reconcilers (`aeson`, `base`, `bytestring`, `containers`, `directory`, `filepath`, `process`,
-`safe-exceptions`, `text`, and `unix` — the last conditional on `!os(windows)` and backing the POSIX prereq checks in
-`HostPrereqs` via `System.Posix`). Every one of these is already warmed into the base-image Cabal
-store.
+`safe-exceptions`, and `text`), plus two platform dependencies: `unix` on non-Windows and `Win32` on
+Windows, backing the POSIX prereq checks and the two ownership rows. Every one of these is already warmed
+into the base-image Cabal store.
+
+**Only `build-depends` is conditional.** No stanza excludes a module from a host family: a platform row is
+compiled everywhere and stubbed to a total refusal where it cannot apply, so its importers are
+unconditional and the suite states an unavailable capability rather than omitting it. See
+[testing](testing.md).
 
 ## Editor And HLS Cradles
 

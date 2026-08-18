@@ -17,14 +17,20 @@ but never a partial logical transition to a cooperating lifecycle caller.
 The target builders and runner are package-internal. 'TxnKind' is closed and
 records the reserved Mode terminal-close extension points; recovery never
 executes an untyped caller-supplied write list.
+
+Nothing here knows that a test exists. What a process death leaves behind is a
+/value/ — an @Applying@ coordinator record naming a descriptor, plus however
+many of that descriptor's targets were already stamped — so a fixture reaches
+any interruption point by writing that value through the store's own
+compare-and-swap and then re-entering the ordinary entry point. The coordinator
+needs no crash point for that, and would be weaker evidence if it had one: a
+branch that exists for a test is a path production never takes, so a gate that
+drives it agrees with a shape nothing else produces.
 -}
 module HostBootstrap.Lifecycle.Transaction (
     TransactionPermit,
     transactionPermitVersion,
-    TransactionRecord,
-    transactionRecordVersion,
-    transactionRecordPayload,
-    transactionRecordStamp,
+    TransactionRecord (..),
     readTransactionRecord,
     TxnKind (..),
     TransactionTarget,
@@ -33,21 +39,19 @@ module HostBootstrap.Lifecycle.Transaction (
     operationTransactionTarget,
     ensureTransactionCoordinator,
     runLifecycleTransaction,
-    TransactionFailpoint (..),
-    TransactionInterrupted (..),
-    withTransactionFailpoint,
+    CoordinatorState (..),
+    TransactionDescriptor (..),
+    coordinatorKey,
+    encodeCoordinator,
+    stampTarget,
     TransactionError (..),
     transactionErrorMessage,
 ) where
 
-import Control.Concurrent (ThreadId, myThreadId)
-import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar, readMVar)
-import Control.Exception (Exception, bracket, throwIO)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import Data.Char (isHexDigit)
-import Data.List (find)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64, Word8)
@@ -66,7 +70,6 @@ import HostBootstrap.Protected (
     recordVersionWord,
  )
 import Numeric (readHex, showHex)
-import System.IO.Unsafe (unsafePerformIO)
 
 -- Coordinator permits -------------------------------------------------------------
 
@@ -308,12 +311,10 @@ runLifecycleTransaction session plan presented kind targets = do
                                         case applying of
                                             Left failure -> pure (Left (TransactionStoreFailure failure))
                                             Right applyingVersion -> do
-                                                checkFailpoint TransactionAfterApplying
                                                 materialized <- applyTargets session descriptor
                                                 case materialized of
                                                     Left failure -> pure (Left failure)
                                                     Right () -> do
-                                                        checkFailpoint TransactionBeforeCommit
                                                         committed <-
                                                             compareAndSwapProtectedRecord
                                                                 session
@@ -343,7 +344,6 @@ recoverApplying session key coordinator descriptor =
             case materialized of
                 Left failure -> pure (Left failure)
                 Right () -> do
-                    checkFailpoint TransactionBeforeCommit
                     committed <-
                         compareAndSwapProtectedRecord
                             session
@@ -361,16 +361,17 @@ applyTargets ::
     ProtectedSession session ->
     TransactionDescriptor ->
     IO (Either TransactionError ())
-applyTargets session descriptor = go 1 (descriptorTargets descriptor)
+applyTargets session descriptor = go (descriptorTargets descriptor)
   where
-    go _ [] = pure (Right ())
-    go index (target : rest) = do
+    -- In descriptor order, and stopping at the first failure: a redo that
+    -- skipped ahead would leave a gap the next recovery could not tell from a
+    -- target the descriptor never named.
+    go [] = pure (Right ())
+    go (target : rest) = do
         applied <- applyTarget session (descriptorSequence descriptor) target
         case applied of
             Left failure -> pure (Left failure)
-            Right () -> do
-                checkFailpoint (TransactionAfterTarget index)
-                go (index + 1) rest
+            Right () -> go rest
 
 applyTarget ::
     ProtectedSession session ->
@@ -634,39 +635,6 @@ decodeHex raw
     decodePair pair = case readHex pair of
         [(value, "")] -> Right (fromIntegral (value :: Int) :: Word8)
         _ -> Left (TransactionMalformed "a target payload contains an invalid byte")
-
--- Failpoints ---------------------------------------------------------------------
-
-data TransactionFailpoint
-    = TransactionAfterApplying
-    | TransactionAfterTarget Int
-    | TransactionBeforeCommit
-    deriving (Eq, Show)
-
-data TransactionInterrupted = TransactionInterrupted TransactionFailpoint
-  deriving (Show)
-
-instance Exception TransactionInterrupted
-
-{-# NOINLINE installedFailpoints #-}
-installedFailpoints :: MVar [(ThreadId, TransactionFailpoint)]
-installedFailpoints = unsafePerformIO (newMVar [])
-
-withTransactionFailpoint :: TransactionFailpoint -> IO result -> IO result
-withTransactionFailpoint point action = do
-    thread <- myThreadId
-    bracket
-        (modifyMVar installedFailpoints (\entries -> pure ((thread, point) : entries, ())))
-        (\() -> modifyMVar_ installedFailpoints (pure . filter ((/= thread) . fst)))
-        (const action)
-
-checkFailpoint :: TransactionFailpoint -> IO ()
-checkFailpoint point = do
-    thread <- myThreadId
-    entries <- readMVar installedFailpoints
-    case find ((== thread) . fst) entries of
-        Just (_, installed) | installed == point -> throwIO (TransactionInterrupted point)
-        _ -> pure ()
 
 -- Failures -----------------------------------------------------------------------
 

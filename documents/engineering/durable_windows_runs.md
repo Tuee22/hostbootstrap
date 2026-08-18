@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents index](../README.md), [WSL2](wsl2.md), [../../CLAUDE.md](../../CLAUDE.md), [../../AGENTS.md](../../AGENTS.md)
+**Referenced by**: [documents index](../README.md), [WSL2](wsl2.md), [testing](testing.md), [../../CLAUDE.md](../../CLAUDE.md), [../../AGENTS.md](../../AGENTS.md)
 
 > **Purpose**: Explain why a long agent-driven run (the ~25–50 min demo gate) gets killed on Windows
 > under a Claude Code / agentic-CLI session, give the Windows-only procedure that makes it survive, and
@@ -11,17 +11,19 @@
 ## TL;DR
 
 - **Windows only.** macOS and Linux are unaffected; run the gate normally there.
-- **Two tiers of tests.** The fast suites (`hostbootstrap.test_all`, `cabal test`) run foreground on
-  every platform and are unaffected — iterate on them normally. Only the long demo gate
-  (`hostbootstrap run -- test run all` / `project up`, ~25–50 min) needs the procedure below.
+- **Two tiers of tests.** The fast suites (`hostbootstrap.test_all`, `cabal test`) are the host static
+  gate: they run foreground as ordinary Windows processes and are expected to pass there, exactly as on
+  macOS and Linux — iterate on them normally, with no WSL2 distro and no durable launcher involved. See
+  [testing](testing.md#gate-kinds). Only the long demo gate
+  (`hostbootstrap run -- test run all` / `project up`, ~25–50 min) needs the procedure below, because it
+  is a live gate that drives WSL2, Docker, and a real cluster.
 - **Root cause (source-proven).** Claude Code launches a `run_in_background` shell as a *descendant of
   `claude.exe`*, and its own idle/lifecycle reaper terminates it on Windows with
   `taskkill /PID <pid> /T /F` — a grace-less kill of the whole descendant tree, which severs the
   `python → hostbootstrap-demo.exe → wsl.exe` orchestrator.
-- **Fix.** Launch the gate *out of `claude.exe`'s process tree* with
-  [`scripts/Start-DurableRun.ps1`](../../scripts/Start-DurableRun.ps1) (WMI `Win32_Process.Create` →
-  child of `WmiPrvSE.exe`), then poll the exit-code sentinel with the `ScheduleWakeup` tool. Never use
-  a `run_in_background` "waiter".
+- **Fix.** Launch the gate *out of `claude.exe`'s process tree* with the harness-owned
+  `Start-DurableRun.ps1` (WMI `Win32_Process.Create` → child of `WmiPrvSE.exe`), then poll the
+  exit-code sentinel with the `ScheduleWakeup` tool. Never use a `run_in_background` "waiter".
 
 ## Root cause
 
@@ -59,11 +61,12 @@ admin (the child is parented to `WmiPrvSE.exe`).
 
 ## The procedure (Windows)
 
-1. **Launch out of the tree.** Run [`scripts/Start-DurableRun.ps1`](../../scripts/Start-DurableRun.ps1)
-   as a normal foreground tool call (it returns immediately after spawning):
+1. **Launch out of the tree.** Run the harness-owned `Start-DurableRun.ps1` as a normal foreground
+   tool call (it returns immediately after spawning):
 
    ```powershell
-   scripts\Start-DurableRun.ps1 -Command 'hostbootstrap run -- test run all' `
+   & "$env:USERPROFILE\.claude\hostbootstrap\Start-DurableRun.ps1" `
+       -Command 'hostbootstrap run -- test run all' `
        -Label 'gate-testrun' -WorkingDirectory 'C:\Users\Matt\hostbootstrap\demo' `
        -OutputDir '<session scratchpad dir>'
    ```
@@ -84,13 +87,36 @@ admin (the child is parented to `WmiPrvSE.exe`).
 
 ## Guardrail
 
-A `PreToolUse` hook ([`scripts/hooks/guard-durable-run.ps1`](../../scripts/hooks/guard-durable-run.ps1))
-blocks a direct `hostbootstrap run -- (test run all | project up)` on Windows that does not go through
-`Start-DurableRun.ps1`, and redirects to this procedure. The hook is registered in the Windows user's
-Claude Code settings (`~/.claude/settings.json`), **not** in the committed repo, so it never burdens a
-macOS/Linux checkout — the hook command `uname`-gates to Windows and only invokes the guard for
-`hostbootstrap`-mentioning commands, so ordinary commands and the fast suites pay no cost. What travels
-with the repo is this doc plus `Start-DurableRun.ps1`; install the hook once per Windows machine.
+A `PreToolUse` hook (`guard-durable-run.ps1`) blocks a direct
+`hostbootstrap run -- (test run all | project up)` on Windows that does not go through
+`Start-DurableRun.ps1`, and redirects to this procedure. It is registered in the Windows user's Claude
+Code settings (`~/.claude/settings.json`) — the hook command `uname`-gates to Windows and only invokes
+the guard for `hostbootstrap`-mentioning commands, so ordinary commands and the fast suites pay no cost.
+
+## Where the two files live, and why not here
+
+Both `Start-DurableRun.ps1` and `guard-durable-run.ps1` live in the Claude harness's own configuration
+directory — `%USERPROFILE%\.claude\hostbootstrap\` — and **not** in this repository. § KK is the
+reason, and it is not a filing preference: the repository contains no script, and scaffolding that
+exists because of one particular development harness belongs to that harness's configuration. The
+reaper these two files work around is a property of `claude.exe`, not of `hostbootstrap`; a macOS or
+Linux checkout, a CI runner, and an operator using any other tool all need neither. Nothing in the
+build, the gates, or the operator surface depends on them.
+
+What travels with the repository is this document. To install on a fresh Windows machine:
+
+1. Create `%USERPROFILE%\.claude\hostbootstrap\`.
+2. Author `Start-DurableRun.ps1` there: it takes `-Command`, `-Label`, `-WorkingDirectory`, and
+   `-OutputDir`, writes a small launcher into `OutputDir`, spawns it through
+   `Invoke-CimMethod Win32_Process Create` (falling back to a one-shot Scheduled Task), and prints
+   `{ "pid", "label", "out", "exit", "method" }`. The launcher merges every stream into `<label>.out`
+   and writes the integer exit code to `<label>.exit` when the run finishes.
+3. Author `guard-durable-run.ps1` there: it reads the `PreToolUse` payload as JSON on stdin, allows
+   everything on non-Windows and everything not matching
+   `hostbootstrap(-demo)?(\.exe)?…(test run all|project up)`, allows anything already mentioning
+   `Start-DurableRun`, and otherwise writes the redirect message to stderr and exits 2.
+4. Register the hook in `~/.claude/settings.json` under `hooks.PreToolUse` for the `Bash|PowerShell`
+   matcher, `uname`-gated to Windows and filtered to commands mentioning `hostbootstrap`.
 
 ## Attended runs
 

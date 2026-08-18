@@ -13,11 +13,14 @@ import qualified HostBootstrap.Context as Context
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.HostTool (HostTool (Incus, Lima, Wsl))
 import HostBootstrap.Incus (IncusVM (..))
+import qualified HostBootstrap.Incus as Incus
 import HostBootstrap.Lift (LiftLayer (ViaWsl2VM), inLimaVM, inVM, inWsl2VM, localContext)
 import HostBootstrap.Lima (LimaVM (..))
+import qualified HostBootstrap.Lima as Lima
 import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..))
 import HostBootstrap.Substrate.Provider
 import HostBootstrap.Wsl2 (Wsl2VM (..))
+import qualified HostBootstrap.Wsl2 as Wsl2
 import qualified SourceGuard
 import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>))
@@ -67,6 +70,7 @@ tests =
     testGroup
         "ProviderSpec"
         [ testGroup "closed dispatch" dispatchCases
+        , testGroup "the one guarded destructive delete" guardedDeleteCases
         , testGroup "pure lifecycle plans" lifecycleCases
         , testGroup "host-path shares" shareCases
         , testGroup "probe descriptions" probeCases
@@ -74,6 +78,67 @@ tests =
         , testGroup "guest alias state machine" aliasCases
         , testGroup "provider-live client boundary" providerLiveBoundaryCases
         ]
+
+{- | § LL: every frame's destructive delete is one computation, so these cases
+ask the same questions of all three rows at once. That is the point — three
+copies each passed a test that only asked whether a differently-prefixed name
+refused, and none of them was ever asked what an empty guard prefix does.
+-}
+guardedDeleteCases :: [TestTree]
+guardedDeleteCases =
+    [ testCase "an admitted name reaches the row's own argv" $
+        map (\row -> rowDelete row "hostbootstrap-demo-" "hostbootstrap-demo-vm") rows
+            @?= [ Right ["delete", "hostbootstrap-demo-vm", "--force"]
+                , Right ["delete", "hostbootstrap-demo-vm", "--force"]
+                , Right ["--unregister", "hostbootstrap-demo-vm"]
+                ]
+    , testCase "a name outside the guard refuses in the frame's own noun" $
+        sequence_
+            [ case rowDelete row "hostbootstrap-demo-" "personal-ubuntu" of
+                Right argv -> assertBool (rowLabel row ++ " deleted an unguarded name: " ++ show argv) False
+                Left message -> do
+                    assertBool
+                        (rowLabel row ++ " names what it refused: " ++ message)
+                        ("personal-ubuntu" `isInfixOf` message)
+                    assertBool
+                        (rowLabel row ++ " names its own frame: " ++ message)
+                        (rowNoun row `isInfixOf` message)
+            | row <- rows
+            ]
+    , testCase "an empty guard prefix refuses, because it admits every name" $
+        sequence_
+            [ case rowDelete row "" "hostbootstrap-demo-vm" of
+                Right argv ->
+                    assertBool
+                        (rowLabel row ++ " deleted under a vacuous guard: " ++ show argv)
+                        False
+                Left message ->
+                    assertBool
+                        (rowLabel row ++ " says why the guard is vacuous: " ++ message)
+                        ("admits every name" `isInfixOf` message)
+            | row <- rows
+            ]
+    , testCase "an empty name refuses before the prefix is compared" $
+        sequence_
+            [ case rowDelete row "hostbootstrap-demo-" "" of
+                Right argv ->
+                    assertBool (rowLabel row ++ " rendered a nameless delete: " ++ show argv) False
+                Left message ->
+                    assertBool
+                        (rowLabel row ++ " says the frame has no name: " ++ message)
+                        ("no name" `isInfixOf` message)
+            | row <- rows
+            ]
+    ]
+  where
+    rows =
+        [ ("Lima", "Lima VM", \prefix name -> Lima.deleteVMArgs prefix (LimaVM name))
+        , ("Incus", "incus VM", \prefix name -> Incus.destroyVMArgs prefix (IncusVM name "images:ubuntu/24.04"))
+        , ("WSL2", "WSL2 distro", Wsl2.wslUnregisterArgs)
+        ]
+    rowLabel (label, _, _) = label
+    rowNoun (_, noun, _) = noun
+    rowDelete (_, _, delete) = delete
 
 dispatchCases :: [TestTree]
 dispatchCases =
@@ -124,7 +189,7 @@ lifecycleCases =
     [ testCase "provision plans retain the exact provider argv" $ do
         planProviderProvision apple env (Just appleShare)
             @?= Right
-                [ RunHostTool
+                [ hostToolEffect
                     Lima
                     [ "start"
                     , "-y"
@@ -148,7 +213,7 @@ lifecycleCases =
                 ]
         planProviderProvision linux env (Just linuxShare)
             @?= Right
-                [ RunHostTool
+                [ hostToolEffect
                     Incus
                     [ "launch"
                     , "images:ubuntu/24.04"
@@ -168,8 +233,8 @@ lifecycleCases =
         planProviderProvision windows env (Just windowsShare)
             @?= Right
                 [ ApplyGlobalWslWall wallBody
-                , RunHostTool Wsl ["--shutdown"]
-                , RunHostTool
+                , hostToolEffect Wsl ["--shutdown"]
+                , hostToolEffect
                     Wsl
                     ["--install", "-d", "Ubuntu-24.04", "--name", "demo-vm", "--no-launch", "--vhd-size", "80GB"]
                 ]
@@ -177,7 +242,7 @@ lifecycleCases =
         planProviderRebootReady linux
             @?= Right
                 RebootReadyPlan
-                    { rebootStartEffects = [RunHostTool Incus ["start", "demo-vm"]]
+                    { rebootStartEffects = [hostToolEffect Incus ["start", "demo-vm"]]
                     , rebootCordonReconcile = Nothing
                     , rebootWaitProbe = WaitProbe Incus ["exec", "demo-vm", "--", "true"]
                     }
@@ -189,14 +254,14 @@ lifecycleCases =
                     , rebootWaitProbe = DirectHostReadyProbe
                     }
     , testCase "stop and guarded delete are explicit" $ do
-        planProviderStop apple env @?= Right [RunHostTool Lima ["stop", "demo-vm"]]
-        planProviderStop linux env @?= Right [RunHostTool Incus ["stop", "demo-vm"]]
+        planProviderStop apple env @?= Right [hostToolEffect Lima ["stop", "demo-vm"]]
+        planProviderStop linux env @?= Right [hostToolEffect Incus ["stop", "demo-vm"]]
         planProviderStop windows env
-            @?= Right [ReleaseGlobalWslWall wallBody, RunHostTool Wsl ["--shutdown"]]
-        planProviderDelete apple env @?= Right [RunHostTool Lima ["delete", "demo-vm", "--force"]]
-        planProviderDelete linux env @?= Right [RunHostTool Incus ["delete", "demo-vm", "--force"]]
+            @?= Right [ReleaseGlobalWslWall wallBody, hostToolEffect Wsl ["--shutdown"]]
+        planProviderDelete apple env @?= Right [hostToolEffect Lima ["delete", "demo-vm", "--force"]]
+        planProviderDelete linux env @?= Right [hostToolEffect Incus ["delete", "demo-vm", "--force"]]
         planProviderDelete windows env
-            @?= Right [RunHostTool Wsl ["--unregister", "demo-vm"], ReleaseGlobalWslWall wallBody]
+            @?= Right [hostToolEffect Wsl ["--unregister", "demo-vm"], ReleaseGlobalWslWall wallBody]
     , testCase "Direct stop/delete and Direct guest alias are structured refusals" $ do
         assertUnsupported ProviderStop (planProviderStop direct env)
         assertUnsupported ProviderDelete (planProviderDelete direct env)
@@ -237,7 +302,7 @@ shareCases =
                     { srProbe = ExistsProbe Incus ["config", "device", "list", "demo-vm"] LinesMember
                     , srMember = "durable-data"
                     , srWhenMissing =
-                        [ RunHostTool
+                        [ hostToolEffect
                             Incus
                             [ "config"
                             , "device"
@@ -284,9 +349,9 @@ interpreterCases =
             @?= ["demo-vm"]
     , testCase "file staging retains each transport" $ do
         stageFileEffects (LimaFileTransfer (LimaVM "demo-vm")) "src.tgz" "/tmp/x.tgz"
-            @?= StagedFile [RunHostTool Lima ["copy", "src.tgz", "demo-vm:/tmp/x.tgz"]] "/tmp/x.tgz" True
+            @?= StagedFile [hostToolEffect Lima ["copy", "src.tgz", "demo-vm:/tmp/x.tgz"]] "/tmp/x.tgz" True
         stageFileEffects (IncusFileTransfer (IncusVM "demo-vm" "images:ubuntu/24.04")) "src.tgz" "/tmp/x.tgz"
-            @?= StagedFile [RunHostTool Incus ["file", "push", "src.tgz", "demo-vm/tmp/x.tgz"]] "/tmp/x.tgz" True
+            @?= StagedFile [hostToolEffect Incus ["file", "push", "src.tgz", "demo-vm/tmp/x.tgz"]] "/tmp/x.tgz" True
         stageFileEffects DirectHostTransfer "/srv/demo/src.tgz" "/tmp/x.tgz"
             @?= StagedFile [] "/srv/demo/src.tgz" False
     , testCase "VM shell and Windows mount folds are descriptive" $ do

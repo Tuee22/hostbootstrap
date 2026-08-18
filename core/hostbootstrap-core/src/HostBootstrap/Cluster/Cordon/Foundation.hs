@@ -47,13 +47,19 @@ import Data.Char (digitToInt, isDigit)
 import Data.Int (Int64)
 import Data.List (isPrefixOf)
 import qualified Data.Text as T
+import HostBootstrap.Effect.Run (CapturedRun (CapturedRun), renderRunFailure, runCaptured)
 import HostBootstrap.HostConfig (HostConfig (..), resolveMaybe)
 import HostBootstrap.HostTool (HostTool (Df, PowerShell, Sysctl), absExePath)
-import HostBootstrap.Substrate (Substrate, SubstrateName (..), renderSubstrateName, substrateName)
+import HostBootstrap.Substrate (
+    HostFrame (AppleFrame, LinuxFrame, WindowsFrame),
+    Substrate,
+    renderSubstrateName,
+    substrateFrame,
+    substrateName,
+ )
 import Numeric.Natural (Natural)
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (..))
-import System.Process (readProcessWithExitCode)
 
 {- | A resolved resource budget in canonical units: whole CPU cores, and memory
 / storage in bytes.
@@ -441,13 +447,12 @@ managedWslIdleTimeoutMillis = managedWslIdleTimeoutHours * 60 * 60 * 1000
 
 -- | Select the host-capacity read sources for a detected substrate.
 capacityReadPlan :: Substrate -> CapacityReadPlan
-capacityReadPlan sub = case substrateName sub of
-    AppleSilicon -> CapacityReadPlan (SysctlKey "hw.ncpu") (SysctlKey "hw.memsize") posixFreeStorage
-    LinuxCpu -> linuxReadPlan
-    LinuxGpu -> linuxReadPlan
-    WindowsCpu -> windowsReadPlan
-    WindowsGpu -> windowsReadPlan
+capacityReadPlan sub = case substrateFrame sub of
+    AppleFrame -> appleReadPlan
+    LinuxFrame -> linuxReadPlan
+    WindowsFrame -> windowsReadPlan
   where
+    appleReadPlan = CapacityReadPlan (SysctlKey "hw.ncpu") (SysctlKey "hw.memsize") posixFreeStorage
     linuxReadPlan = CapacityReadPlan ProcCpuinfo ProcMemAvailable posixFreeStorage
     windowsReadPlan = CapacityReadPlan WindowsLogicalProcessors WindowsTotalMemory WindowsSystemDriveFreeSpace
     -- The root filesystem's free space stands in for the project root's — the
@@ -540,19 +545,17 @@ readDfFreeBytes cfg path = case resolveMaybe cfg Df of
     Nothing ->
         pure $ Left ("host capacity: df is not resolved for " ++ renderSubstrateName (substrateName (hcSubstrate cfg)))
     Just exe -> do
-        result <-
-            try (readProcessWithExitCode (absExePath exe) ["-P", "-k", path] "") ::
-                IO (Either SomeException (ExitCode, String, String))
-        pure $ case result of
-            Right (ExitSuccess, out, _) ->
+        outcome <- runCaptured (absExePath exe) ["-P", "-k", path] ""
+        pure $ case outcome of
+            Right (CapturedRun ExitSuccess out _) ->
                 maybe
                     (Left ("host capacity: could not parse df output for " ++ path))
                     (\kb -> Right (kb * 1024))
                     (parseDfAvailableKBytes out)
-            Right (ExitFailure n, _, err) ->
+            Right (CapturedRun (ExitFailure n) _ err) ->
                 Left ("host capacity: df -k " ++ path ++ " failed (exit " ++ show n ++ "): " ++ T.unpack (T.strip (T.pack err)))
-            Left e ->
-                Left ("host capacity: failed to run df -k " ++ path ++ ": " ++ displayException e)
+            Left failure ->
+                Left ("host capacity: failed to run df -k " ++ path ++ ": " ++ renderRunFailure failure)
 
 {- | Parse the available-1K-blocks field (4th column) of the data line (2nd line)
 of @df -k@ output. Pure.
@@ -571,13 +574,11 @@ readPowerShellPositiveInteger cfg expr = case resolveMaybe cfg PowerShell of
     Nothing ->
         pure $ Left ("host capacity: powershell.exe is not resolved for " ++ renderSubstrateName (substrateName (hcSubstrate cfg)))
     Just exe -> do
-        result <-
-            try (readProcessWithExitCode (absExePath exe) ["-NoProfile", "-Command", expr] "") ::
-                IO (Either SomeException (ExitCode, String, String))
-        pure $ case result of
-            Right (ExitSuccess, out, _) ->
+        outcome <- runCaptured (absExePath exe) ["-NoProfile", "-Command", expr] ""
+        pure $ case outcome of
+            Right (CapturedRun ExitSuccess out _) ->
                 parsePositiveInteger ("powershell " ++ expr) (T.unpack (T.strip (T.pack out)))
-            Right (ExitFailure n, _, err) ->
+            Right (CapturedRun (ExitFailure n) _ err) ->
                 Left
                     ( "host capacity: powershell "
                         ++ expr
@@ -586,8 +587,8 @@ readPowerShellPositiveInteger cfg expr = case resolveMaybe cfg PowerShell of
                         ++ "): "
                         ++ T.unpack (T.strip (T.pack err))
                     )
-            Left e ->
-                Left ("host capacity: failed to run powershell " ++ expr ++ ": " ++ displayException e)
+            Left failure ->
+                Left ("host capacity: failed to run powershell " ++ expr ++ ": " ++ renderRunFailure failure)
 
 readSysctlPositiveInteger :: HostConfig -> String -> IO (Either String Integer)
 readSysctlPositiveInteger cfg key = do
@@ -605,12 +606,10 @@ readSysctl cfg key = case resolveMaybe cfg Sysctl of
                     ++ renderSubstrateName (substrateName (hcSubstrate cfg))
                 )
     Just exe -> do
-        result <-
-            try (readProcessWithExitCode (absExePath exe) ["-n", key] "") ::
-                IO (Either SomeException (ExitCode, String, String))
-        pure $ case result of
-            Right (ExitSuccess, out, _) -> Right (T.unpack (T.strip (T.pack out)))
-            Right (ExitFailure n, _, err) ->
+        outcome <- runCaptured (absExePath exe) ["-n", key] ""
+        pure $ case outcome of
+            Right (CapturedRun ExitSuccess out _) -> Right (T.unpack (T.strip (T.pack out)))
+            Right (CapturedRun (ExitFailure n) _ err) ->
                 Left
                     ( "host capacity: sysctl "
                         ++ key
@@ -619,8 +618,8 @@ readSysctl cfg key = case resolveMaybe cfg Sysctl of
                         ++ "): "
                         ++ T.unpack (T.strip (T.pack err))
                     )
-            Left e ->
-                Left ("host capacity: failed to run sysctl " ++ key ++ ": " ++ displayException e)
+            Left failure ->
+                Left ("host capacity: failed to run sysctl " ++ key ++ ": " ++ renderRunFailure failure)
 
 parsePositiveInteger :: String -> String -> Either String Integer
 parsePositiveInteger label raw = case reads raw of

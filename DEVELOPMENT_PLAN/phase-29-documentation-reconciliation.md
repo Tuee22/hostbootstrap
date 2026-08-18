@@ -1,4 +1,4 @@
-# Phase 28 — Documentation reconciliation and drift guards
+# Phase 29 — Documentation reconciliation and drift guards
 
 **Status**: Planned
 **Depends on**: every preceding phase
@@ -18,7 +18,7 @@ It is last because it is the only phase whose subject is every other phase. It a
 
 ## Sprints
 
-### Sprint 28.1: Reconcile the governed documents [Planned]
+### Sprint 29.1: Reconcile the governed documents [Planned]
 
 **Status**: Planned
 **Implementation**: `documents/**`
@@ -56,7 +56,7 @@ ledger's rows resolve; the read-through checks the ledger is empty.
 
 Not started; it runs after the preceding phases close.
 
-### Sprint 28.2: Reconcile comments and help text [Planned]
+### Sprint 29.2: Reconcile comments and help text [Planned]
 
 **Status**: Planned
 **Implementation**: `core/hostbootstrap-core/src/**`, `demo/src/**`, `hostbootstrap/**`
@@ -82,7 +82,7 @@ A grep-backed check that no source comment carries a bare phase number, plus `CL
 
 Not started.
 
-### Sprint 28.3: Install the drift guards [Planned]
+### Sprint 29.3: Install the drift guards [Planned]
 
 **Status**: Planned
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`,
@@ -100,6 +100,9 @@ Make the reconciled state mechanically hard to lose.
   entry.
 - The doctrine checks are enforced rather than reviewed: dependency ordering, reversal vocabulary, sprint
   structure, the substrate budget, status harmony with the README table, and contiguous phase numbering.
+- The § KK script and interpreter-text guards, the § LL frame-table guards, and the § MM path-frame guards
+  are part of that set, so a reintroduced script, a second crossing renderer, or a host-grammar check over a
+  guest path fails the gate rather than a review.
 - A guard that fires names the phase to rewrite, not a cleanup task to add — because under § A there is no
   cleanup task.
 

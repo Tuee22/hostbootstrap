@@ -39,6 +39,7 @@ import HostBootstrap.Substrate.Provider.Reconcile
 import PrepareFixture (gateFor)
 import System.Directory
 import System.Exit (ExitCode (..))
+import PlatformPath (hostFixturePath)
 import System.FilePath (isAbsolute, takeFileName, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (readProcessWithExitCode)
@@ -110,9 +111,9 @@ portableCases =
                 emptyHostConfig
                     { hcToolPaths =
                         Map.fromList
-                            [ (Incus, mustAbs "/usr/bin/incus")
-                            , (Python3, mustAbs "/usr/bin/python3")
-                            , (Lockf, mustAbs "/usr/bin/lockf")
+                            [ (Incus, fixtureExe fixtureIncus)
+                            , (Python3, fixtureExe fixturePython)
+                            , (Lockf, fixtureExe fixtureLockf)
                             ]
                     }
         case mkIncusBackendSpec vmName imageName config "/state" 2 "4GiB" "40GiB" of
@@ -155,8 +156,8 @@ directReadyValidationCase = do
         [ ProviderBackendProcess python ["-c", program, root]
             , ProviderBackendProcess docker ["manifest", "inspect", image]
             ] -> do
-                python @?= "/usr/bin/python3"
-                docker @?= "/usr/bin/docker"
+                python @?= fixturePython
+                docker @?= fixtureDocker
                 root @?= "/srv/hostbootstrap"
                 image @?= imageName
                 assertBool "the closed permission program checks the exact canonical directory" ("os.lstat" `contains` program && "os.path.realpath(root)==root" `contains` program)
@@ -196,8 +197,8 @@ directReadySymlinkCase =
                 directHostConfig
                     { hcToolPaths =
                         Map.fromList
-                            [ (Python3, mustAbs python)
-                            , (Docker, mustAbs "/opt/hostbootstrap-test/docker")
+                            [ (Python3, fixtureExe python)
+                            , (Docker, fixtureExe (hostFixturePath "/opt/hostbootstrap-test/docker"))
                             ]
                     }
         createDirectory actual
@@ -981,9 +982,9 @@ resolvedHostConfig host = do
         emptyHostConfig
             { hcToolPaths =
                 Map.fromList
-                    [ (Incus, mustAbs (fakeIncusPath host))
-                    , (Python3, mustAbs python)
-                    , (Flock, mustAbs (fakeFlockPath host))
+                    [ (Incus, fixtureExe (fakeIncusPath host))
+                    , (Python3, fixtureExe python)
+                    , (Flock, fixtureExe (fakeFlockPath host))
                     ]
             }
 
@@ -1144,7 +1145,7 @@ emptyHostConfig = HostConfig (Substrate LinuxCpu Arm64) Map.empty
 directHostConfig :: HostConfig
 directHostConfig =
     emptyHostConfig
-        { hcToolPaths = Map.fromList [(Python3, mustAbs "/usr/bin/python3"), (Docker, mustAbs "/usr/bin/docker")]
+        { hcToolPaths = Map.fromList [(Python3, fixtureExe fixturePython), (Docker, fixtureExe fixtureDocker)]
         }
 
 fakeResolvedHostConfig :: HostConfig
@@ -1152,11 +1153,25 @@ fakeResolvedHostConfig =
     emptyHostConfig
         { hcToolPaths =
             Map.fromList
-                [ (Incus, mustAbs "/usr/bin/incus")
-                , (Python3, mustAbs "/usr/bin/python3")
-                , (Flock, mustAbs "/usr/bin/flock")
+                [ (Incus, fixtureExe fixtureIncus)
+                , (Python3, fixtureExe fixturePython)
+                , (Flock, fixtureExe fixtureFlock)
                 ]
         }
+
+{- | The host tools this suite's fixtures name.
+
+Each is rendered onto the host that runs the suite, so the same total 'AbsExe'
+constructor production uses admits it on every supported outer host realization
+(§ JJ), and the request assertions compare those same values rather than a
+POSIX literal the host would call relative.
+-}
+fixturePython, fixtureDocker, fixtureIncus, fixtureFlock, fixtureLockf :: FilePath
+fixturePython = hostFixturePath "/usr/bin/python3"
+fixtureDocker = hostFixturePath "/usr/bin/docker"
+fixtureIncus = hostFixturePath "/usr/bin/incus"
+fixtureFlock = hostFixturePath "/usr/bin/flock"
+fixtureLockf = hostFixturePath "/usr/bin/lockf"
 
 providerGate :: Execution.StepExecution scope planId -> IO PreparedGate
 providerGate execution = gateFor (Execution.stepExecutionPlanDigest execution) (Execution.stepExecutionOperationKey execution)
@@ -1189,8 +1204,8 @@ replacementIdentity = "uuid-replaced-9999999999999999\n"
 setExecutable :: FilePath -> IO ()
 setExecutable path = getPermissions path >>= setPermissions path . setOwnerExecutable True
 
-mustAbs :: FilePath -> AbsExe
-mustAbs = either error id . mkAbsExe
+fixtureExe :: FilePath -> AbsExe
+fixtureExe = either error id . mkAbsExe
 
 requireExecutable :: String -> IO FilePath
 requireExecutable name = findExecutable name >>= maybe (assertFailure ("missing test executable " <> name)) pure

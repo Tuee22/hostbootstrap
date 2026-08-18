@@ -1,7 +1,9 @@
-"""Substrate detection.
+"""Outer-host realization detection.
 
-Frozen substrates describe the host detected at runtime; projects do not
-declare a substrate matrix in the Python bootstrapper.
+Frozen values describe the host detected at runtime so the bootstrapper can
+select the provider that realizes the universal ``linux-cpu`` project
+substrate. They are provider-dispatch facts, not competing project execution
+contracts; projects do not declare a host matrix in the Python bootstrapper.
 Detection reads the platform and a small set of files
 (``/proc/driver/nvidia/version`` etc.), falling back to an ``nvidia-smi -L``
 subprocess probe when those markers are absent, and returns one frozen value.
@@ -29,7 +31,7 @@ class SubstrateName(StrEnum):
 
 @dataclass(frozen=True)
 class Substrate:
-    """The detected host substrate.
+    """The detected outer-host realization.
 
     ``arch`` is the Docker-style architecture (``amd64`` / ``arm64``). For
     apple-silicon it is always ``arm64``.

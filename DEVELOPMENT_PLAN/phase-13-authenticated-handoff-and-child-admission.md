@@ -24,7 +24,9 @@ exchange. Phase 13 owns only those authentication, codec, and transport contract
 lifecycle command) owns the root catalog, retained session path, response production and fixed-signer
 invocation at the root
 endpoint, durable prepare/settle/replay/receipt semantics, storeless frame execution, process ownership, and
-recursive command adoption.
+recursive command adoption. Recursive child construction, a successful rooted process exchange, and the
+rooted service the root endpoint runs are that phase's too: this one validates the structure of a rooted
+request and carries whatever answer comes back.
 
 ## Sprints
 
@@ -860,7 +862,9 @@ project key.
 Exactly three `HandoffSpec` cases cover public installed-key/domain verification and exact-request pairing,
 every signature/request/family/body cross-pair and canonical-report refusal, and exact source/ownership guards
 for the live-broker signer, specialized existing capability, no new named type, no generic unsigned/signing
-surface, frozen Protocol/Cabal bytes, three production owners, and the 180-line budget.
+surface, frozen Protocol bytes, frozen handoff package rows, three production owners, and the 180-line
+budget. The package rows are this phase's own — its module rows in the main library, plus that library's
+dependency set — rather than the whole package description, because a sprint freezes what it owns (§ C).
 
 Dated 2026-08-12 production/API evidence: the response-authentication additions to the public facade are
 exactly the abstract `RootedLifecycleResponse`, `renderRootedLifecycleResponse`, the fixed
@@ -970,11 +974,88 @@ None. Protocol remains frozen, this boundary validates a rooted request's struct
 whatever answer comes back, and which answer a request receives, along with every semantic or process
 adopter, is Phase 17 work.
 
+### Sprint 13.18: The frame-child entry [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Transaction.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Handoff/Protocol.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Handoff/Receiver.hs`
+**Production budget**: at most 400 significant lines across the owners above
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/hostbootstrap_core_library.md`,
+`documents/architecture/build_and_run_model.md`, `documents/README.md`
+
+#### Objective
+
+Let a process of this binary recognize that it is the one on the far side of a frame crossing, so the
+channel this phase already frames has an end that can be reached.
+
+#### Deliverables
+
+- One total pure classifier over `argv` decides whether this process is a frame child. It runs before the
+  parser, takes no coordinates, and returns a value carrying none: no path, no authority, no
+  caller-selected action, and no route to a `ProjectSpec` extension stream (§ P).
+- The classifier is the only argv reader outside the parser, and `runCLI` consults it once. The bare
+  binary and every project binary use the same route, because a frame child is a frame child regardless of
+  which spec built it.
+- The marker is absent from `--help`, names nothing an operator could usefully type, and refuses unless
+  standard input and output decode as the protocol channel.
+- Two tags pair and join the closed vocabulary — one carrying a transaction, one carrying its outcome,
+  each with exactly one field — so a frame child speaks the framing this phase already owns rather than a
+  second one. Extending the vocabulary is what re-stamps the shared `Handoff.Protocol` digest and line
+  count the phase's other sprints pin, and each of those keeps its own attribution by measuring the file
+  less what its siblings own (§ C).
+- `Handoff.Transaction` brackets a child on a dispatch the lift fold produced, sends one request, reads one
+  outcome, and terminates the group. It is compiled on every host and conditionalized at its signal call
+  sites, so no host family loses it from the build (§ JJ).
+- The child's descriptor isolation is *the* one this phase owns rather than a copy of it: the private-pair
+  bracket becomes `Handoff.Protocol`'s single entry, the receiver and the frame child both reach it, and
+  the protocol pair is private while the global streams are redirected — so guest bytes cannot forge a
+  control report and no report needs encoding to prevent it.
+- Phase 13 interprets no transaction. A frame with no interpreter installed answers a refusal on the wire
+  rather than falling silent, and the near side's answer reader is a total function of the request it must
+  answer and the answer it received, so an outcome, a refusal, and a reply to another request are three
+  decisions rather than one branch reachable only by launching a process (§ NN).
+
+#### Validation
+
+The classifier is total and is covered exhaustively over its argument space, including every shape that
+must **not** be a marker. A source guard pins `runCLI`'s exact argv-reading body, so a second reader is a
+gate failure rather than a review note. The child body is exercised across a real process boundary through
+the suite's own re-invocation route.
+
+Stated honestly: the seam between "argv was classified" and "the child body ran" is proved by source shape
+rather than by execution, because the suite executable's own `main` is not `runCLI`. The
+[recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md) proves the joined path when it
+adopts this entry for a lifecycle conversation.
+
+Dated 2026-08-18 production evidence (x86_64-windows, GHC 9.12.4): the entry adds 343/400 significant
+lines across its owners and removes 63 from the receiver that now shares the isolation.
+`HostBootstrap.Handoff.Transaction` is 275 significant lines with SHA-256
+`a79ff17159608e65392de29817ea39e1463ce0832205d13e1f14f39fa94ae8b6`;
+`HostBootstrap.Handoff.Protocol` grows by 63 to 526 significant lines and
+`HostBootstrap.CLI` by 5 to 451. Their SHA-256 values are
+`04f069429b164e3d6b99ff68b900996c090e73947bc5c874859049ce49a696a4` and
+`ced91a317786e5c19f05bd14b52b70094fd7180a29774a79e3ee582d1e47d95a`, and
+`HostBootstrap.Handoff.Receiver` is `514941f9d28ccb29ab6acb883f5f4797e6552842f9cc5e40c089684415544615`.
+The entry names no protected store, broker link, installed identity, signing or verification key, project
+spec, command authority, environment lookup, or second argv reader.
+
+Dated 2026-08-18 validation evidence (x86_64-windows 11 Home 10.0.26200, GHC 9.12.4, Cabal 3.16.1.0):
+canonical `cabal test all --ghc-options=-Werror` from `core/` passed 1,957/1,957 in 238.84 seconds;
+`poetry run python -m hostbootstrap.check_code` passed; and
+`poetry run python -m hostbootstrap.test_all` passed 231.
+
+#### Remaining Work
+
+None. The crossing carries whatever transaction it is given and returns whatever answer comes back;
+which transactions exist, and which frame answers them with an outcome rather than a refusal, belong to
+the phases that own the objects a transaction concerns.
+
 ## Remaining Work
 
-None. The keyless transport preserves the frozen request, response, Protocol, and Cabal contracts. Recursive
-child construction, a successful rooted process exchange, session/durable semantics, and the rooted service
-the root endpoint runs remain Phase 17 work.
+None.
 
 ## Documentation Requirements
 

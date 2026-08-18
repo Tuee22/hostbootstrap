@@ -3,14 +3,13 @@
 **Status**: Authoritative source
 **Supersedes**: the platform-primitive ownership rule that admitted a backend only with an OS-protected
 namespace plus an identity-bound conditional kernel mutation, and returned `Unsupported` otherwise
-**Referenced by**: [lifecycle state model](lifecycle_state_model.md), [durable state](durable_state.md),
-[readiness](readiness.md), [WSL2](../engineering/wsl2.md),
+**Referenced by**: [ownership seam](ownership_seam.md), [lifecycle state model](lifecycle_state_model.md),
+[durable state](durable_state.md), [readiness](readiness.md), [WSL2](../engineering/wsl2.md),
 [applied cordon](../engineering/applied_cordon.md), [Incus](../engineering/incus.md),
 [Lima](../engineering/lima.md), [documents index](../README.md)
 
 > **Purpose**: Define the one ownership invariant every substrate must satisfy before mutating shared
-> state — its four clauses, its per-substrate realization, and the exact guarantee it does and does not
-> provide.
+> state — its four clauses and the exact guarantee it does and does not provide.
 
 ## TL;DR
 
@@ -190,84 +189,18 @@ Restore and delete re-observe the recorded identity and act only on an exact mat
 observation is a structured `Conflict` carrying expected and observed identity, and the object is left
 untouched. The invariant never removes state because its pathname matched.
 
-## Per-substrate realization
+## How the clauses are realized
 
-The clauses are uniform; the mechanism that supplies each is per-platform. All three provider guests run
-the same Ubuntu image, so the guest column is one implementation, not three.
+The clauses are uniform; the mechanism that supplies each belongs to a **row** of the frame table, and the
+transaction they compose is written once above those rows. [Ownership seam](ownership_seam.md) is the
+canonical home for that structure: the seam of kernel primitives, the two platform rows, the row that runs
+a transaction at the frame owning the object, the atomic no-replace publication, and what each individual
+owner adds on top.
 
-| Clause | Windows host | POSIX host | Shell-invoked frame (provider guest, project container) |
-|---|---|---|---|
-| 1 — exclusive entry | `LockFileEx` byte-range lock | `flock` via `unix` | the provider/alias routes admit only util-linux `flock(1)` over the `flock(2)` namespace; a discovered `lockf(1)` remains descriptive `Unsupported` |
-| 2 — durable origin record | journal under the project state directory: write-temp, fsync, rename | same | create-if-absent record with a fresh 256-bit nonce inside the host-backed durable target; file and directory fsync plus exact readback before the alias effect |
-| 3 — identity binding | `getFileInformationByHandle` → `bhfiVolumeSerialNumber` + `bhfiFileIndex` | `deviceID` / `fileID` from `getFileStatus` | `stat -c '%d:%i'` (GNU coreutils) or `stat -f '%d:%i'` (BSD); neither follows a symlink |
-| 4 — conditional release | re-observe through the retained handle, compare, act | same | under the retained lock, `stat` the symlink itself, compare exact device/inode, unlink only on equality, flush the parent, then conditionally remove the exact managed record |
-
-Every mechanism above uses a dependency or platform API already present. `Win32` ships with the pinned
-GHC; the Windows host backend supplements its public surface with a narrow direct `kernel32` FFI where
-exact status preservation is required. This adds no Haskell package, C shim, or Cabal `c-sources`, and
-`unix` remains the existing conditional POSIX dependency.
-
-The shell-invoked column is **discovered, never assumed**. Provider/alias discovery asks the frame it will
-actually run in which front ends it has; its package-owned test seam returns only raw command outcomes, and
-a private total parser retains the answer on the opaque discovery value. Cluster production discovery is
-stricter: it detects the Linux frame, builds `HostConfig`, resolves the closed typed `HostTool` set, validates
-the canonical root-owned path chains in a Cabal-private component, and derives child `PATH` only from those
-validated tool directories. Its injected executor is private-test-only. The bracket therefore cannot
-be built from a tool the frame was never shown to have, and an unrecognized report is
-`Unsupported` rather than a guess. Selecting from the build host's `os()` would be wrong in the ordinary
-case, not the exotic one: a macOS host drives a Linux guest, so the host's userland says nothing about the
-guest's. On Linux, `flock(2)` locks and the POSIX record locks commonly used by `lockf(1)` are distinct
-kernel namespaces and do not mutually exclude one another. Provider discovery may retain `GuestLockf` as
-a descriptive observation, but the strong alias backend refuses it as `Unsupported`; the Incus ownership
-backend likewise requires one resolved `Flock` executable. This prevents two nominally supported front ends
-from guarding the same origin record with non-interoperating locks.
-
-Direct Colima is a POSIX-host realization but does not use the shell-invoked lock frontend. Its fixed private
-Apple resolver admits canonical Python/Colima/Docker/Lima executables and helper directories, and its
-descriptor-owning Python child calls `fcntl.flock` directly on the no-follow reusable lock object. The lock
-inode is retained in every managed/live/cleanup binding but carries no owner/fence tombstone; exact released
-state lives in the separate self-bound origin protocol, so a later plan/fence can reuse the one exclusion
-namespace. Missing `fcntl.flock`, directory fsync/no-replace support, stable identities, or a trustworthy
-tool namespace returns `Unsupported` and mints no authority.
-
-The provider-guest alias record is keyed by a SHA-256 digest of an injective owner binding containing the
-exact provider origin, share key/generation, alias key/generation, alias, and target; the complete binding
-is also stored and checked, so the digest is only a bounded filename. Its `prepared` state records explicit
-absence plus a fresh 64-hex-digit nonce before the first alias mutation. A nonce-named staging symlink is
-flushed and published at the final pathname with `link(..., follow_symlinks=False)`, which is atomic
-no-replace and preserves the staging symlink's device/inode. The `managed` record is then written and
-fsynced separately, atomically replaces the prepared record, and is read back after directory fsync.
-Release first persists and reads back a version-fenced `releasing` record, then conditionally unlinks the
-same identity and durably proves record/alias absence. A retry after any boundary resumes only the exact
-`prepared`, `managed`, or `releasing` state and nonce; a correct-looking foreign symlink with no matching
-durable record is reported foreign. No pathname sidecar participates in ownership.
-
-Publishing a file under a name that must not already exist uses the platform's atomic **no-replace
-link**: `link(2)` on POSIX and `CreateHardLinkW` on Windows. A hard link publishes the written bytes under
-the final name in one kernel operation and fails when the name is taken. A *symbolic* link is not a
-substitute: it publishes a reference rather than the bytes, and a destination that reads as a link is
-refused by the same inspector that enforces "reparse points and symlinks at the target are rejected rather
-than followed". `rename(2)` is not a substitute either, because it replaces the destination. The WSL2
-global wall was the first user of this primitive (`link` then identity-conditional `unlink` of the
-source); the authenticated sibling config is the second.
-
-Host **directories** — the harness data root is one — use the same host columns with two refinements.
-Clause 1 is the protected store's own OS-released entry (`hLock`, `flock`/`fcntl` on POSIX and
-`LockFileEx` on Windows), so the store's compare-and-swap and the directory's mutation share one
-bracket by construction. Clause 3 reads the directory's identity without following a link:
-`lstat` on POSIX, and on Windows a handle opened with `FILE_FLAG_BACKUP_SEMANTICS` (required to open a
-directory at all) plus `FILE_FLAG_OPEN_REPARSE_POINT`. The harness's generated sibling config — a
-**file** — uses the identical columns through the same `HostBootstrap.Harness.Identity` seam, and adds
-the payload digest to its origin record, because a file's bytes are part of what "the object this run
-owns" means. A found object there is refused rather than adopted: a generated config cannot share a
-path with a config that is already present.
-
-Guest-side probes obey the probe discipline in [readiness](readiness.md): one observation per probe, no
-compound `set -eu`, no nested `"$(…)"`, so they survive the Windows PowerShell → `wsl` → `bash` path.
-`stat` and the lock front end meet that bar; branching and retry stay in Haskell. Where a private marker,
-tool path, identity, or backend report is required, success means exactly one LF-terminated stdout line and
-empty stderr. Extra lines, carriage returns, missing newlines, unexpected arity, and unknown tags are typed
-failure rather than partially accepted evidence.
+Two consequences belong here rather than there, because they are properties of the contract rather than of
+its realization. A backend that cannot supply a clause returns `Unsupported` and mints no receipt — never a
+weaker receipt. And the clause *order* is not a convention a reviewer checks: a mutation consumes the
+recorded origin and a release consumes the bound identity, so performing either out of order has no term.
 
 ## What the invariant excludes
 
@@ -322,7 +255,9 @@ hostile same-privilege process.
 ## Validation
 
 The invariant is proved by the criteria below. They are not `os(windows)`-gated: a uniform contract
-requires a uniform gate, so the ownership suite runs on every substrate.
+requires a uniform gate, so the ownership suite runs on every substrate, and a case whose subject is
+unavailable on the gate host asserts the refusal its row declares rather than disappearing. What counts as
+evidence for each criterion — and what cannot — is in [testing](../engineering/testing.md).
 
 1. An adversary replaces the object between observation and mutation. The backend reports `Conflict`
    with structured expected/observed identity, does **not** clobber the object, and mints no receipt.
@@ -342,6 +277,8 @@ whose gate produced it.
 
 ## Related
 
+- [ownership seam](ownership_seam.md) — the one transaction, the seam beneath it, and the rows that
+  supply each clause's mechanism.
 - [lifecycle state model](lifecycle_state_model.md) — the handle/receipt/phase algebra a satisfying
   backend settles into, and the total error branches.
 - [durable state](durable_state.md) — the provider-guest durable alias, the first consumer.

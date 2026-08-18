@@ -20,7 +20,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
-import Data.List (find)
+import Data.List (find, sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -182,10 +182,17 @@ import HostBootstrap.Protected (
     withProtectedEntry,
  )
 import qualified Fixture
-import System.Directory (doesFileExist)
+import System.Directory (
+    copyFile,
+    createDirectoryIfMissing,
+    doesDirectoryExist,
+    doesFileExist,
+    listDirectory,
+    removePathForcibly,
+ )
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitSuccess, exitWith)
-import System.FilePath ((</>))
+import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (readProcessWithExitCode)
 import Test.Tasty (TestTree, testGroup)
@@ -2892,81 +2899,75 @@ writeOrphanOperation session sid opKey =
 transactionRecoveryTests :: [TestTree]
 transactionRecoveryTests =
     concat
-        [ map openProjectRecoveryCase oneTargetFailpoints
-        , map openSessionRecoveryCase oneTargetFailpoints
-        , map registerIntentRecoveryCase registerIntentFailpoints
-        , map prepareRecoveryCase oneTargetFailpoints
-        , map acknowledgeRecoveryCase oneTargetFailpoints
-        , map closeSessionRecoveryCase oneTargetFailpoints
-        , map beginProjectCloseRecoveryCase oneTargetFailpoints
-        , map recordProjectClosedRecoveryCase oneTargetFailpoints
+        [ map openProjectRecoveryCase oneTargetPoints
+        , map openSessionRecoveryCase oneTargetPoints
+        , map registerIntentRecoveryCase twoTargetPoints
+        , map prepareRecoveryCase oneTargetPoints
+        , map acknowledgeRecoveryCase oneTargetPoints
+        , map closeSessionRecoveryCase oneTargetPoints
+        , map beginProjectCloseRecoveryCase oneTargetPoints
+        , map recordProjectClosedRecoveryCase oneTargetPoints
         ]
         <> [ testCase "exact session membership ignores an unregistered prefix-shaped record" exactMembershipCase
            , testCase "a prepare/session-close race yields exactly one successor permit" prepareCloseRaceCase
-           , testCase "the failpoint bracket alone cannot mutate protected records" inertFailpointCase
+           , testCase "the reproduced interruption is the transition's own descriptor" faithfulDescriptorCase
            ]
 
-oneTargetFailpoints :: [TransactionFailpoint]
-oneTargetFailpoints =
-    [ TransactionAfterApplying
-    , TransactionAfterTarget 1
-    , TransactionBeforeCommit
+oneTargetPoints :: [InterruptionPoint]
+oneTargetPoints =
+    [ AfterApplying
+    , AfterTarget 1
+    , BeforeCommit
     ]
 
-registerIntentFailpoints :: [TransactionFailpoint]
-registerIntentFailpoints =
-    [ TransactionAfterApplying
-    , TransactionAfterTarget 1
-    , TransactionAfterTarget 2
-    , TransactionBeforeCommit
+twoTargetPoints :: [InterruptionPoint]
+twoTargetPoints =
+    [ AfterApplying
+    , AfterTarget 1
+    , AfterTarget 2
+    , BeforeCommit
     ]
 
-openProjectRecoveryCase :: TransactionFailpoint -> TestTree
+openProjectRecoveryCase :: InterruptionPoint -> TestTree
 openProjectRecoveryCase point =
-    testCase ("open project recovers after " <> show point) $
+    testCase ("open project recovers when " <> show point) $
         withStore $ \store -> do
-            expectInterrupted point $
-                inEntry store $ \session ->
-                    withTransactionFailpoint point $
+            reopened <-
+                withInterruptedTransaction point TxnOpenProject store $
+                    runEntry store $ \session ->
                         fmap (fmap (const ())) (openProjectJournal session plan)
-            reopened <- reopenStore store
             permit <- expect =<< inEntry reopened (\session -> openProjectJournal session plan)
             assertBool "recovery returns the committed successor permit" (projectPermitVersion permit > 0)
             state <- expect =<< inEntry reopened (\session -> readProjectJournalState session plan)
             state @?= OpenProject
 
-openSessionRecoveryCase :: TransactionFailpoint -> TestTree
+openSessionRecoveryCase :: InterruptionPoint -> TestTree
 openSessionRecoveryCase point =
-    testCase ("open session recovers after " <> show point) $
+    testCase ("open session recovers when " <> show point) $
         withStore $ \store -> do
-            expectInterrupted point $
-                inEntry store $ \session -> do
-                    permit <- openProjectJournal session plan
-                    case permit of
-                        Left failure -> pure (Left failure)
-                        Right current ->
-                            withEpoch session $ \epoch ->
-                                withTransactionFailpoint point $
-                                    fmap (fmap (const ()))
-                                        (openOperationSession session epoch plan "session-a" current)
-            reopened <- reopenStore store
+            SomeProjectPermit current <- openProjectFixture store
+            reopened <-
+                withInterruptedTransaction point TxnOpenSession store $
+                    runEntry store $ \session ->
+                        withEpoch session $ \epoch ->
+                            fmap (fmap (const ()))
+                                (openOperationSession session epoch plan "session-a" current)
             swept <- inEntry reopened (\session -> recoverAbandonedSessions session plan)
             recovered <- expect swept
             recoveredSessionCount recovered @?= 1
             recoveredContinuableCount recovered @?= 0
 
-registerIntentRecoveryCase :: TransactionFailpoint -> TestTree
+registerIntentRecoveryCase :: InterruptionPoint -> TestTree
 registerIntentRecoveryCase point =
-    testCase ("register intent recovers after " <> show point) $
+    testCase ("register intent recovers when " <> show point) $
         withStore $ \store -> do
             SomeOpenSession sess oldPermit <- openSessionFixture store
-            expectInterrupted point $
-                inEntry store $ \session ->
-                    withTransactionFailpoint point $
+            reopened <-
+                withInterruptedTransaction point TxnRegisterIntent store $
+                    runEntry store $ \session ->
                         fmap (fmap (const ()))
                             (registerOperationIntent session sess "op-1" NoHistory oldPermit)
 
-            reopened <- reopenStore store
             current <- expect =<< inEntry reopened (\session -> openProjectJournal session plan)
 
             -- Recovery committed exactly one successor. The consumed permit
@@ -2991,14 +2992,14 @@ registerIntentRecoveryCase point =
             recoveredSessionCount recovered @?= 1
             recoveredContinuableCount recovered @?= 2
 
-prepareRecoveryCase :: TransactionFailpoint -> TestTree
+prepareRecoveryCase :: InterruptionPoint -> TestTree
 prepareRecoveryCase point =
-    testCase ("prepare recovers after " <> show point) $
+    testCase ("prepare recovers when " <> show point) $
         withStore $ \store -> do
             SomePrepareInput epoch sess fence permit <- prepareInputFixture store
-            expectInterrupted point $
-                inEntry store $ \session ->
-                    withTransactionFailpoint point $
+            reopened <-
+                withInterruptedTransaction point TxnPrepareOperation store $
+                    runEntry store $ \session ->
                         withPreparedGate
                             session
                             sess
@@ -3008,7 +3009,6 @@ prepareRecoveryCase point =
                             "EffectOutcomeUnknown"
                             permit
                             (\_ _ -> pure (Right ()))
-            reopened <- reopenStore store
             swept <- inEntry reopened (\session -> recoverAbandonedSessions session plan)
             case swept of
                 Left (SessionUnclassifiedPhase opKey phase) -> do
@@ -3016,72 +3016,58 @@ prepareRecoveryCase point =
                     phase @?= "EffectOutcomeUnknown"
                 other -> assertFailure ("expected the recovered durable unknown phase, got " <> show other)
 
-acknowledgeRecoveryCase :: TransactionFailpoint -> TestTree
+acknowledgeRecoveryCase :: InterruptionPoint -> TestTree
 acknowledgeRecoveryCase point =
-    testCase ("acknowledgment recovers after " <> show point) $
+    testCase ("acknowledgment recovers when " <> show point) $
         withStore $ \store -> do
-            expectInterrupted point $
-                inEntry store $ \session ->
-                    withPrepared session $ \_ sess _ gate permit ->
-                        withTransactionFailpoint point $
-                            fmap (fmap (const ()))
-                                (acknowledgeOutcome session sess gate "Committed" () permit)
-            reopened <- reopenStore store
+            SomeAcknowledgeInput sess gate permit <- acknowledgeInputFixture store
+            reopened <-
+                withInterruptedTransaction point TxnAcknowledgeOutcome store $
+                    runEntry store $ \session ->
+                        fmap (fmap (const ()))
+                            (acknowledgeOutcome session sess gate "Committed" () permit)
             swept <- inEntry reopened (\session -> recoverAbandonedSessions session plan)
             recovered <- expect swept
             recoveredSessionCount recovered @?= 1
             recoveredContinuableCount recovered @?= 0
 
-closeSessionRecoveryCase :: TransactionFailpoint -> TestTree
+closeSessionRecoveryCase :: InterruptionPoint -> TestTree
 closeSessionRecoveryCase point =
-    testCase ("session close recovers after " <> show point) $
+    testCase ("session close recovers when " <> show point) $
         withStore $ \store -> do
             SomeOpenSession sess permit <- openSessionFixture store
-            expectInterrupted point $
-                inEntry store $ \session ->
-                    withTransactionFailpoint point $
+            reopened <-
+                withInterruptedTransaction point TxnCloseSession store $
+                    runEntry store $ \session ->
                         fmap (fmap (const ()))
                             (closeOperationSession session sess permit)
-            reopened <- reopenStore store
             verified <- inEntry reopened (\session -> verifyAllSessionsClosed session plan)
             proof <- expect verified
             allSessionsClosedCount proof @?= 1
 
-beginProjectCloseRecoveryCase :: TransactionFailpoint -> TestTree
+beginProjectCloseRecoveryCase :: InterruptionPoint -> TestTree
 beginProjectCloseRecoveryCase point =
-    testCase ("begin project close recovers after " <> show point) $
+    testCase ("begin project close recovers when " <> show point) $
         withStore $ \store -> do
-            expectInterrupted point $
-                inEntry store $ \session -> do
-                    permit <- openProjectJournal session plan
-                    case permit of
-                        Left failure -> pure (Left failure)
-                        Right current ->
-                            withTransactionFailpoint point $
-                                fmap (fmap (const ()))
-                                    (beginClosingProject session plan 7 current)
-            reopened <- reopenStore store
+            SomeProjectPermit current <- openProjectFixture store
+            reopened <-
+                withInterruptedTransaction point TxnBeginProjectClose store $
+                    runEntry store $ \session ->
+                        fmap (fmap (const ()))
+                            (beginClosingProject session plan 7 current)
             state <- expect =<< inEntry reopened (\session -> readProjectJournalState session plan)
             state @?= ClosingProject 7
 
-recordProjectClosedRecoveryCase :: TransactionFailpoint -> TestTree
+recordProjectClosedRecoveryCase :: InterruptionPoint -> TestTree
 recordProjectClosedRecoveryCase point =
-    testCase ("record project closed recovers after " <> show point) $
+    testCase ("record project closed recovers when " <> show point) $
         withStore $ \store -> do
-            expectInterrupted point $
-                inEntry store $ \session -> do
-                    permit <- openProjectJournal session plan
-                    case permit of
-                        Left failure -> pure (Left failure)
-                        Right current -> do
-                            closing <- beginClosingProject session plan 7 current
-                            case closing of
-                                Left failure -> pure (Left failure)
-                                Right closePermit ->
-                                    withTransactionFailpoint point $
-                                        fmap (fmap (const ()))
-                                            (recordClosedProject session plan 7 closePermit)
-            reopened <- reopenStore store
+            SomeClosingPermit closePermit <- closingProjectFixture store
+            reopened <-
+                withInterruptedTransaction point TxnRecordProjectClosed store $
+                    runEntry store $ \session ->
+                        fmap (fmap (const ()))
+                            (recordClosedProject session plan 7 closePermit)
             state <- expect =<< inEntry reopened (\session -> readProjectJournalState session plan)
             state @?= ClosedProject
 
@@ -3162,17 +3148,57 @@ prepareCloseRaceCase =
         current <- inEntry reopened (\session -> openProjectJournal session plan)
         assertBool "reopening observes the committed successor" (isRight current)
 
-inertFailpointCase :: IO ()
-inertFailpointCase =
+{- | The reproduction is faithful: it is the transition's own descriptor.
+
+The fixture below never invents a descriptor. It runs the real transition,
+reads the records it stamped, and rebuilds the descriptor from those — so this
+case pins the property the whole matrix rests on. Interrupting an @open
+project@ at 'BeforeCommit' must leave the project record already carrying the
+exact bytes the completed transition wrote, under the same transaction id;
+anything else would mean the matrix is recovering a state production never
+produces.
+-}
+faithfulDescriptorCase :: IO ()
+faithfulDescriptorCase =
     withStore $ \store -> do
-        before <- expect =<< inEntry store protectedKeys
-        withTransactionFailpoint TransactionAfterApplying (pure ())
-        after <- expect =<< inEntry store protectedKeys
-        after @?= before
-  where
-    protectedKeys session = do
-        listed <- listProtectedRecords session
-        pure (either (Left . SessionStoreFailure) Right listed)
+        reopened <-
+            withInterruptedTransaction BeforeCommit TxnOpenProject store $
+                runEntry store $ \session ->
+                    fmap (fmap (const ())) (openProjectJournal session plan)
+
+        -- The project target carries exactly the bytes the completed transition
+        -- wrote, stamped with that transition's own id.
+        materialized <- expect =<< inEntry reopened (\session -> readProjectTarget session)
+        case materialized of
+            Nothing -> assertFailure "expected the project target to be materialized"
+            Just record -> do
+                transactionRecordPayload record @?= encodeFields ["open"]
+                transactionRecordStamp record @?= Just 1
+
+        -- And the coordinator has not committed. The journal reader drives
+        -- recovery itself, so the state it reports is the recovered one.
+        state <- expect =<< inEntry reopened (\session -> readProjectJournalState session plan)
+        state @?= OpenProject
+
+-- | The project journal record, read through the transaction stamp decoder.
+readProjectTarget ::
+    ProtectedSession session ->
+    IO (Either SessionError (Maybe TransactionRecord))
+readProjectTarget session = do
+    listed <- listProtectedRecords session
+    case listed of
+        Left failure -> pure (Left (SessionStoreFailure failure))
+        Right keys -> case filter (isRole ProjectRole) keys of
+            [key] -> do
+                observed <- readTransactionRecord session key
+                pure (either (Left . SessionRecordCorrupt . transactionErrorMessage) Right observed)
+            other ->
+                pure
+                    ( Left
+                        ( SessionRecordCorrupt
+                            ("expected one project record, found " <> Text.pack (show (length other)))
+                        )
+                    )
 
 data SomeOpenSession where
     SomeOpenSession ::
@@ -3187,6 +3213,49 @@ data SomePrepareInput where
         FenceEpoch scope planId ->
         ProjectPermit scope planId ->
         SomePrepareInput
+
+{- | A permit escaping its entry, so a case can put the transition under test
+alone inside the interruption fixture.
+
+The fixture below reproduces one transaction, so anything the case needs
+/before/ that transaction has to be durable before the snapshot is taken.
+-}
+data SomeProjectPermit where
+    SomeProjectPermit :: ProjectPermit scope planId -> SomeProjectPermit
+
+data SomeClosingPermit where
+    SomeClosingPermit :: ClosingProjectPermit scope planId -> SomeClosingPermit
+
+data SomeAcknowledgeInput where
+    SomeAcknowledgeInput ::
+        OperationSession scope planId ->
+        PreparedGate ->
+        ProjectPermit scope planId ->
+        SomeAcknowledgeInput
+
+openProjectFixture :: ProtectedStore -> IO SomeProjectPermit
+openProjectFixture store = do
+    opened <-
+        inEntry store $ \session ->
+            fmap (fmap SomeProjectPermit) (openProjectJournal session plan)
+    expect opened
+
+closingProjectFixture :: ProtectedStore -> IO SomeClosingPermit
+closingProjectFixture store = do
+    closing <- inEntry store $ \session -> do
+        permit <- openProjectJournal session plan
+        case permit of
+            Left failure -> pure (Left failure)
+            Right current ->
+                fmap (fmap SomeClosingPermit) (beginClosingProject session plan 7 current)
+    expect closing
+
+acknowledgeInputFixture :: ProtectedStore -> IO SomeAcknowledgeInput
+acknowledgeInputFixture store = do
+    prepared <- inEntry store $ \session ->
+        withPrepared session $ \_ sess _ gate permit ->
+            pure (Right (SomeAcknowledgeInput sess gate permit))
+    expect prepared
 
 openSessionFixture :: ProtectedStore -> IO SomeOpenSession
 openSessionFixture store = do
@@ -3211,12 +3280,221 @@ prepareInputFixture store = do
                         )
     expect prepared
 
-expectInterrupted :: TransactionFailpoint -> IO result -> IO ()
-expectInterrupted point action = do
-    outcome <- try @TransactionInterrupted action
-    case outcome of
-        Left _ -> pure ()
-        Right _ -> assertFailure ("expected transaction interruption at " <> show point)
+-- ---------------------------------------------------------------------------
+-- Reproducing an interrupted transaction
+
+{- | Where a process death can leave a lifecycle transaction.
+
+The redo coordinator publishes an @Applying@ descriptor, materializes that
+descriptor's targets in order, then publishes @Idle@. Those are the only three
+places a death is distinguishable, and each leaves a different durable state.
+-}
+data InterruptionPoint
+    = -- | The descriptor is published and no target is materialized.
+      AfterApplying
+    | -- | The first @n@ of the descriptor's targets are materialized.
+      AfterTarget Int
+    | -- | Every target is materialized and the commit has not happened.
+      BeforeCommit
+    deriving (Eq)
+
+instance Show InterruptionPoint where
+    show AfterApplying = "the descriptor is published and no target is materialized"
+    show (AfterTarget count) = "the first " <> show count <> " target(s) are materialized"
+    show BeforeCommit = "every target is materialized and the commit has not happened"
+
+{- | The role a record key names, which is also the descriptor's target order.
+
+Every record key the journal owns begins with its role, so the role of a
+materialized target is a property of the key rather than something the fixture
+has to be told. The order below is the order the coordinator applies them in for
+the one multi-target transition — an operation's intent is durable before the
+session that lists it, so a crash between the two leaves an unlisted member
+rather than a member with no record.
+-}
+data RecordRole = OperationRole | SessionRole | ProjectRole
+    deriving (Eq, Ord, Show, Enum, Bounded)
+
+isRole :: RecordRole -> RecordKey -> Bool
+isRole role key = roleOf key == Just role
+
+roleOf :: RecordKey -> Maybe RecordRole
+roleOf key
+    | "op." `Text.isPrefixOf` text = Just OperationRole
+    | "session." `Text.isPrefixOf` text = Just SessionRole
+    | "project." `Text.isPrefixOf` text = Just ProjectRole
+    | otherwise = Nothing
+  where
+    text = recordKeyText key
+
+{- | Leave the store holding the durable state a death at @point@ leaves.
+
+Nothing in the coordinator participates, because a dead process leaves a record
+and nothing else. The transition runs once, normally, so the descriptor is the
+one production publishes rather than one the fixture invented: its sequence, its
+targets, their roles, and their exact desired payloads all come out of the
+records the real transaction wrote. The store's whole directory is then restored
+from the snapshot taken before it ran — which is a pre-transition store,
+versions included — and the coordinator is compare-and-swapped to @Applying@
+with that descriptor, with the first @n@ of its targets stamped.
+
+The returned store is the reopened one, exactly as a fresh invocation finds it.
+-}
+withInterruptedTransaction ::
+    InterruptionPoint ->
+    TxnKind ->
+    ProtectedStore ->
+    IO () ->
+    IO ProtectedStore
+withInterruptedTransaction point kind store transition = do
+    let root = protectedStoreRoot store
+        snapshot = takeDirectory root </> "interrupted-snapshot"
+    copyTree root snapshot
+    transition
+    published <- publishedTransaction store
+    removePathForcibly root
+    copyTree snapshot root
+    restored <- reopenStore store
+    installApplying restored point kind published
+    reopenStore restored
+
+-- | Copy a directory tree, so a snapshot is the store itself rather than a
+-- reconstruction of it — record versions and all.
+copyTree :: FilePath -> FilePath -> IO ()
+copyTree from to = do
+    removePathForcibly to
+    createDirectoryIfMissing True to
+    entries <- listDirectory from
+    mapM_ copyEntry entries
+  where
+    copyEntry name = do
+        let source = from </> name
+            destination = to </> name
+        nested <- doesDirectoryExist source
+        if nested
+            then copyTree source destination
+            else copyFile source destination
+
+{- | What the completed transition wrote: its id, and its targets in order. -}
+data PublishedTransaction = PublishedTransaction
+    { publishedSequence :: Word64
+    , publishedTargets :: [(RecordKey, ByteString)]
+    }
+
+publishedTransaction :: ProtectedStore -> IO PublishedTransaction
+publishedTransaction store = do
+    stamped <- expect =<< inEntry store stampedRecords
+    case stamped of
+        [] -> assertFailure "the transition stamped no target"
+        _ -> do
+            let latest = maximum (map (\(_, sequenceNumber, _) -> sequenceNumber) stamped)
+                mine =
+                    [ (key, payload)
+                    | (key, sequenceNumber, payload) <- stamped
+                    , sequenceNumber == latest
+                    ]
+            pure
+                PublishedTransaction
+                    { publishedSequence = latest
+                    , publishedTargets = sortOn (roleOf . fst) mine
+                    }
+
+-- | Every record carrying a transaction stamp, with that stamp and its payload.
+stampedRecords ::
+    ProtectedSession session ->
+    IO (Either SessionError [(RecordKey, Word64, ByteString)])
+stampedRecords session = do
+    listed <- listProtectedRecords session
+    case listed of
+        Left failure -> pure (Left (SessionStoreFailure failure))
+        Right keys -> collect keys []
+  where
+    collect [] found = pure (Right (reverse found))
+    collect (key : rest) found = do
+        observed <- readTransactionRecord session key
+        case observed of
+            Left failure -> pure (Left (SessionRecordCorrupt (transactionErrorMessage failure)))
+            Right (Just record)
+                | Just sequenceNumber <- transactionRecordStamp record ->
+                    collect rest ((key, sequenceNumber, transactionRecordPayload record) : found)
+            _ -> collect rest found
+
+{- | Publish the @Applying@ descriptor, then stamp the chosen prefix of it.
+
+The expectation each target carries is read from the restored store, so it is
+the expectation the real transition recorded: the descriptor is rebuilt against
+the same pre-transition versions the coordinator saw.
+-}
+installApplying :: ProtectedStore -> InterruptionPoint -> TxnKind -> PublishedTransaction -> IO ()
+installApplying store point kind published = do
+    outcome <- withProtectedEntry store $ \session -> do
+        targets <- traverse (restoredTarget session) (publishedTargets published)
+        let descriptor =
+                TransactionDescriptor
+                    { descriptorSequence = publishedSequence published
+                    , descriptorPlan = plan
+                    , descriptorKind = kind
+                    , descriptorTargets = targets
+                    }
+        key <-
+            either
+                (assertFailure . Text.unpack . transactionErrorMessage)
+                pure
+                (coordinatorKey plan)
+        current <- readProtectedRecord session key >>= either (assertFailure . show) pure
+        -- A first transition creates the coordinator on the way in, so before
+        -- it there is no record at all; every later one finds the committed
+        -- Idle record it advances from.
+        let expectation = maybe ExpectAbsent (ExpectVersion . protectedRecordVersion) current
+        applying <-
+            compareAndSwapProtectedRecord
+                session
+                key
+                expectation
+                (encodeCoordinator (CoordinatorApplying descriptor))
+        _ <- either (assertFailure . show) pure applying
+        mapM_ (materialize session) (take materializedCount (publishedTargets published))
+        pure (Right ())
+    either (assertFailure . show) pure outcome
+  where
+    restoredTarget ::
+        ProtectedSession session ->
+        (RecordKey, ByteString) ->
+        IO TransactionTarget
+    restoredTarget session (key, payload) = do
+        observed <- readTransactionRecord session key
+        record <-
+            either
+                (assertFailure . Text.unpack . transactionErrorMessage)
+                pure
+                observed
+        pure (targetFor key record payload)
+
+    targetFor key record payload = case roleOf key of
+        Just ProjectRole -> projectTransactionTarget key record payload
+        Just SessionRole -> sessionTransactionTarget key record payload
+        _ -> operationTransactionTarget key record payload
+
+    materialize ::
+        ProtectedSession session ->
+        (RecordKey, ByteString) ->
+        IO ()
+    materialize session (key, payload) = do
+        observed <- readProtectedRecord session key >>= either (assertFailure . show) pure
+        let expectation = maybe ExpectAbsent (ExpectVersion . protectedRecordVersion) observed
+        written <-
+            compareAndSwapProtectedRecord
+                session
+                key
+                expectation
+                (stampTarget (publishedSequence published) payload)
+        _ <- either (assertFailure . show) pure written
+        pure ()
+
+    materializedCount = case point of
+        AfterApplying -> 0
+        AfterTarget count -> count
+        BeforeCommit -> length (publishedTargets published)
 
 reopenStore :: ProtectedStore -> IO ProtectedStore
 reopenStore store = do

@@ -6,13 +6,14 @@
 **Gate**: live `hostbootstrap run -- test run all` reporting `10/10 passed` on an Apple Silicon host, plus a
 focused live exact-plan direct-Colima adapter lane
 
-> **Purpose**: Add the Apple-only Metal accelerator realization, exercise the lower Lima provider realization,
-> and confirm the whole build on that substrate.
+> **Purpose**: Add the Apple-only Metal accelerator realization, exercise Lima/Colima as the Apple-host
+> realization of universal `linux-cpu`, and confirm the additional Apple behavior.
 
 ## Phase Objective
 
-This is an **acceptance phase** (§ II). Nothing depends on it, so a machine without Apple Silicon stops at the
-worked-demo phase rather than being blocked. It carries exactly one substrate beyond the baseline.
+This is an **acceptance phase** (§ II). It does not create a second CPU substrate: it confirms the universal
+`linux-cpu` contract through the Apple provider and accepts the additional Metal and host-native behavior.
+Nothing depends on that Apple-only dimension.
 
 It has two jobs: supply the accelerator realization only this substrate has, and confirm on real hardware
 the lower Phase 15 (host providers and the self-reference lift) Lima provider and every behavior the
@@ -31,7 +32,10 @@ listing them here is what keeps a static closure from silently dropping live cov
 - the guest-alias ownership clauses executing on a BSD host userland, with the locking primitive and `stat`
   dialect taken from the discovery probe rather than assumed;
 - host-native accelerator placement behind a local-only node port, rather than an in-cluster service address;
-- the harness ownership bracket's full release path against a real provider, from a pristine host.
+- the harness ownership bracket's full release path against a real provider, from a pristine host;
+- the bounded process runner's macOS branch, whose working-directory handling both backends now share.
+  A gate host that is not Apple never takes that branch, so one answer where there were two is
+  confirmed here rather than asserted by the phase that unified it.
 
 ## Sprints
 
@@ -132,6 +136,12 @@ Run the complete acceptance gate after the recursive-lifecycle-command, prepared
 authenticated-handoff, recovery, and worked-demo dependencies are closed. The run must exercise typed
 frame-indexed teardown descent across the real provider boundary, terminal Harness destroy, and the focused
 exact-plan direct-Colima adapter lane.
+
+## Remaining Work
+
+Sprint 25.3, the acceptance run itself. Sprints 25.1 and 25.2 are closed with their own dated live
+evidence; what is left is the pristine-host re-run of the complete matrix against the current tree,
+which is owed to Apple Silicon hardware and to nothing else.
 
 ## Documentation Requirements
 

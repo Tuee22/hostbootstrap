@@ -226,13 +226,17 @@ deliberately does not maintain a second copy of the operation-prepare algebra.
 ## Probe discipline
 
 Guest probes should remain simple because the Windows path crosses PowerShell, `wsl`, and `bash -lc`.
-One probe performs one observation, such as `test -e`, `readlink`, GNU/BSD `stat`, `docker info`, or
-`kubectl get`. Branching and retry live in Haskell. The ownership primitives the guest lane needs —
-`flock` for exclusive entry and `stat` for identity binding, per
-[ownership_invariant](ownership_invariant.md) — are single trivial commands and meet this bar without a
-compound shell. `lockf` may be retained as a descriptive discovery result, but it is `Unsupported` for
-provider-guest alias authority because its common Linux `fcntl` namespace does not interoperate with
-`flock(2)`. A successful tool, marker, identity, or backend report is exactly one LF-terminated stdout
+One probe performs one observation, such as `test -e`, `docker info`, or `kubectl get`. Branching and
+retry live in Haskell.
+
+Ownership is not a probe and does not travel this way. A clause is held by the row the frame declares, and
+a transaction addressed to a frame is carried to a process of this same binary there — so exclusive entry
+and identity binding are kernel calls made by that process, not commands whose output a caller parses (see
+[ownership seam](ownership_seam.md)). That removes the question of which lock front end a guest happens to
+have, and with it the possibility of two nominally supported front ends guarding one record with
+non-interoperating locks.
+
+A successful tool, marker, identity, or backend report is exactly one LF-terminated stdout
 line with empty stderr; extra lines, carriage returns, unknown tags, and unexpected arity are failures
 rather than readiness evidence.
 

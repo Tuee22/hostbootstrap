@@ -1,10 +1,13 @@
 # Phase 15 — Host providers and the self-reference lift
 
-**Status**: Done
+**Status**: Active
+**Current sprint**: Sprint 15.25 — The shipped ownership row
 **Depends on**: Phase 8 (ensure reconcilers), Phase 12 (step algebra and plan-owned resource
-projections), Phase 14 (the four ownership clauses and host-local reservations)
+projections), Phase 13 (authenticated handoff and the frame-child entry), Phase 14 (the four ownership
+clauses and host-local reservations)
 **Substrates**: linux-cpu
-**Gate**: `cabal test all --ghc-options=-Werror` from `core/`,
+**Gate**: `cabal test all --ghc-options=-Werror` from `core/` host-native on every supported outer host
+realization,
 `cabal build -fprovider-live hostbootstrap-provider-live-linux-cpu --ghc-options=-Werror` from
 `core/`, and
 `HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host cabal test -fprovider-live
@@ -22,6 +25,15 @@ alias remain indexed to the same plan resource and backend realization. Incus ho
 clauses over VM and share mutation; Direct admits an already-local frame without claiming authority over
 the host. Lima and WSL2 consume the same lower target and rendering contracts here and receive native
 confirmation in their terminal substrate acceptance phases.
+
+The frame table's rows and the one fold that reaches a frame are this phase's; the seam those rows plug
+into is the
+[four-ownership-clauses-and-host-local-reservations phase](phase-14-ownership-clauses-and-reservations.md)'s.
+Which drivers hold their clauses through the table is decided by whose objects they own: the cluster and
+Colima drivers belong to the
+[cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md), and the
+guest alias driver to the [worked-demo phase](phase-24-worked-demo.md), because replacing it needs the
+project binary established inside the guest and § N forbids copying one in.
 
 ## Sprints
 
@@ -727,6 +739,188 @@ after the prepared stop refusal. The phase's baseline acceptance below records t
 
 None.
 
+### Sprint 15.23: Provider suite host neutrality [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/test/ProviderAliasSpec.hs`,
+`core/hostbootstrap-core/test/ProviderBackendSpec.hs`,
+`core/hostbootstrap-core/test/ProviderReconcileSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/testing.md`, `documents/engineering/incus.md`
+
+#### Objective
+
+Assert this phase's provider boundary from every supported outer host realization.
+
+#### Deliverables
+
+- Every host `HostConfig` tool table in the phase's suites builds its paths through the fixture-path
+  constructor the [Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md) owns, so the
+  same total `AbsExe` constructor production uses admits them on the host that runs them.
+- Every assertion that compares a rendered argument vector against one of those paths compares the same
+  constructed value, so a host-neutral fixture cannot weaken a retained-tool or no-bare-command guard.
+- Guest paths stay POSIX. A guest alias spec, an in-VM `which` result, and a guest argument vector name
+  files on a different machine reached through one host-provider command, which is the invocation split
+  § K already draws; only the host side moves.
+- The POSIX-only cases the suites already separate — the real `flock(2)` namespace, the crash-resume
+  fixtures, and the symlink-root probe — keep their existing platform conditions and are skipped rather
+  than failed on an outer host that cannot run them.
+- The work is test-harness only: no production module, no named type, and no change to any provider
+  contract the phase already states.
+
+#### Validation
+
+`cabal test all --ghc-options=-Werror` from `core/`, run host-native and recorded against the outer host
+that ran it (§ II), on a POSIX outer host and on Windows. The phase's existing static evidence below
+records the POSIX side; the Windows side is what this sprint adds. The provider-live component and the
+live KVM/Incus route are unaffected, because both are declared Linux/x86_64 and keep their own gate.
+
+`ProviderAliasSpec`, `ProviderBackendSpec`, and `ProviderReconcileSpec` each name their host tools as
+`fixture*` bindings built by `PlatformPath.hostFixturePath` and hand those exact values to the production
+`mkAbsExe`; the Direct Ready request assertion compares the same constructed values rather than a POSIX
+literal. The guest side is left alone and is now stated where it is written: the in-VM `which` result,
+the guest argument vector, the Incus provider state directory, and the Direct already-local root name
+files inside the Linux substrate the provider realizes, so they stay POSIX and the backend's own
+POSIX absoluteness check matches them.
+
+Dated evidence: on 2026-08-17, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0
+passed `cabal test all --ghc-options=-Werror` from `core/` host-native at 1,877/1,877 in 211.76 seconds,
+including every case in the three suites above. Confirming the same gate on the remaining gate host
+families belongs to the
+[host-portability acceptance phase](phase-28-host-portability-acceptance.md) (§ JJ), not to this sprint.
+
+#### Remaining Work
+
+None.
+
+### Sprint 15.24: The one guarded destructive delete [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Frame.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lima.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Incus.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Wsl2.hs`,
+`core/hostbootstrap-core/test/ProviderSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/incus.md`, `documents/engineering/lima.md`,
+`documents/engineering/wsl2.md`
+
+#### Objective
+
+Write the frame table's first shared computation once, so the three providers that remove a frame answer the
+same question the same way (§ LL).
+
+#### Deliverables
+
+- `HostBootstrap.Substrate.Frame` owns `guardedDeleteArgs`: the guard, the refusal, and the noun table. A
+  provider module supplies only its own noun and its own argument vector, and receives the name after the
+  guard has admitted it — so a row cannot render a delete for a name the guard would have refused.
+- `FrameNoun` is the closed table of what each frame calls the thing it removes, so a refusal reads in the
+  operator's own terms without the computation being written again to say so.
+- Two degenerate inputs refuse before the prefix is compared: an empty guard prefix, which is a prefix of
+  every name, and an empty name. Each of the three rows independently admitted an empty prefix, and each
+  passed its own test, because each test only asked whether a differently-prefixed name refused.
+- Lima's `deleteVMArgs`, Incus's `destroyVMArgs`, and WSL2's `wslUnregisterArgs` are three rows over that one
+  computation. The frames still spell the removal differently — WSL2's is `--unregister` — and that
+  difference is the row's argv rather than a second guard.
+- The dependency direction is unchanged: the shared table is below the realizations, and each provider
+  suite's import guard names it explicitly rather than admitting an open set.
+
+#### Validation
+
+`ProviderSpec`'s guarded-delete group asks all three rows the same four questions at once — an admitted name
+reaches the row's own argv, an unguarded name refuses in the frame's own noun, an empty prefix refuses as
+vacuous, and an empty name refuses before the prefix is compared. `IncusSpec`, `LimaSpec`, and `Wsl2Spec`
+each pin the exact import token set their realization takes from the shared table.
+
+Dated evidence: on 2026-08-17, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0 passed
+`cabal test all --ghc-options=-Werror` from `core/` host-native at 1,922/1,922 in 234.62 seconds. The
+declared native Linux/x86_64 provider-live build and live KVM/Incus route are unaffected by this sprint and
+keep the evidence recorded below.
+
+#### Remaining Work
+
+None.
+
+### Sprint 15.25: The shipped ownership row [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Row.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Frame.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_seam.md`,
+`documents/architecture/build_and_run_model.md`
+
+#### Objective
+
+Add the frame table's third ownership row: the one that runs a transaction where the object is, rather
+than where the caller is.
+
+#### Deliverables
+
+- A transaction addressed to a lift context is carried to a process of this same binary at that context
+  and interpreted there. An empty context is a local self-fork on this machine; a one-layer context is a
+  frame crossing.
+- It is a **transport**, not a third implementation of the clauses. Every frame this project reaches is
+  Linux, so what executes on the far side is the POSIX row.
+- The transaction travels as one value and the receiving process lives exactly as long as the lock it
+  holds, so clause 1 stays a kernel fact rather than a release that must be correct on every error path.
+- The argument vector comes from the lift's one fold, so the row adds no rendering of "cross into this
+  frame" (§ LL). The sanitizing predicates the process route already owns are applied as a check over the
+  fold's output rather than as a second renderer.
+- The frame table gains the ownership-primitive column, so a frame declares which row holds its clauses
+  beside the tool that reaches it and the grammar its paths obey.
+
+#### Validation
+
+The addressing decision, the transaction encoding, and the outcome decoding are pure and are covered by
+application over values, including every refusal. The empty-context row is exercised against the real
+kernel through a real child process. A crossing into a provider frame is the
+[worked-demo phase](phase-24-worked-demo.md)'s to confirm live, and is recorded as owed here rather than
+simulated (§ NN).
+
+#### Remaining Work
+
+All implementation, tests, guards, and documentation.
+
+### Sprint 15.26: The provider and direct ownership drivers [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Reconcile.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/incus.md`,
+`documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+The provider's own ownership transaction, held through the seam.
+
+#### Deliverables
+
+- Provider provision, readiness, share, stop, and delete hold their clauses through the seam's producers
+  and the row the frame declares.
+- The provider effect that must happen between the origin record and the identity binding — launching,
+  starting, or deleting the instance — travels as a described `HostCommand` through the one interpreter,
+  so the outcome-unknown window keeps its existing durable meaning.
+- The direct host's canonical-root admission is a pure decision over a real observation, so the check that
+  a root is absolute, unfollowed, a directory, and accessible is applied rather than delegated.
+- Classification of a provider observation is a total function over a closed sum, so the report a driver
+  returns and the decision a caller makes are the same value rather than a rendering and a parser.
+- Every clause the provider holds is the seam's; this phase's modules supply the provider's own vocabulary
+  and nothing beneath it.
+
+#### Validation
+
+Every classification is covered by application over values, including each refusal and each conflict, so
+no substitution point is needed to reach them (§ NN). The clause-holding effects are exercised against the
+real kernel. The declared native Linux/x86_64 KVM/Incus route continues to confirm the live path, and the
+crash-window coverage that no longer has a patchable instruction point is **named as owed** here.
+
+#### Remaining Work
+
+All adoption, tests, guards, and documentation.
+
 ## Static Validation Evidence
 
 On 2026-08-08, macOS 26.5 arm64 with GHC 9.12.4 and Cabal 3.16.1.0 passed
@@ -772,6 +966,24 @@ restart, the conditional alias release, and the identity-conditional delete. The
 exactly four requests — two canonical-root `lstat`/`realpath` probes and two `docker manifest inspect` egress
 probes — and created no provider state. After teardown the run's VM, alias, staging paths, origin records,
 and its whole `/var/tmp` root were absent.
+
+## Remaining Work
+
+Every implementation sprint through 15.24 is complete and the baseline acceptance above is confirmed. What
+the phase still owes is the rest of its shape rather than its behaviour. § LL makes a provider a **row** over
+one closed frame table — the tool that reaches the frame and its argument shape, the frame's path grammar
+(§ MM), its sizing renderer, its ownership primitive, and its transfer and share primitives. The guarded
+destructive delete is now one computation over that table (Sprint 15.24); the existence probe, the readiness
+wait, and the budget-to-wall rendering are already values rather than code paths, each in one module.
+
+The **ownership primitive** is the entry still owed here. Sprint 15.25 adds the frame table's third row —
+the one that runs a transaction at the frame that owns the object — and Sprint 15.26 has the provider and
+direct drivers hold their clauses through it.
+
+Sprints 15.6 through 15.19 describe the mechanism their own boundaries hold today. § A rewrites a phase in
+place rather than appending a correction, so those sprints are restated in the same change that moves them
+onto the seam — not before it. A plan that described the seam while the code held something else would be
+the intended future state rather than the current one, which § C forbids.
 
 ## Documentation Requirements
 

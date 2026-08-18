@@ -6,39 +6,37 @@
 module HostBootstrap.Ensure.Ghc (reconciler, installSteps) where
 
 import HostBootstrap.Ensure
-  ( InstallStep (..),
+  ( FramePlan (InstallHere),
+    InstallStep (..),
     Reconciler (..),
+    appleRow,
+    frameTable,
     installAndVerify,
+    reconcilerInstallSteps,
     toolPresent,
   )
 import HostBootstrap.HostTool (HostTool (Brew, Ghc, Ghcup))
-import HostBootstrap.Substrate
-  ( Substrate,
-    SubstrateName (AppleSilicon),
-    isAppleSilicon,
-    renderSubstrateName,
-    substrateName,
-  )
+import HostBootstrap.Substrate (Substrate)
 
 reconciler :: Reconciler
 reconciler =
   Reconciler
     { reconcilerName = "ghc",
       reconcilerSummary = "Ensure the host GHC toolchain (Apple silicon native build)",
-      appliesTo = isAppleSilicon,
-      requirement = "apple-silicon",
+      -- One row. @brew install ghcup@ then @ghcup install ghc@; the tools are
+      -- re-resolved after each step, so @ghcup@ is discoverable for the second
+      -- step once @brew@ has laid it down.
+      reconcilerFrames =
+        frameTable
+          [ appleRow
+              ( InstallHere
+                  [ InstallStep Brew ["install", "ghcup"],
+                    InstallStep Ghcup ["install", "ghc"]
+                  ]
+              )
+          ],
       reconcile = installAndVerify "ghc" (\cfg -> pure (toolPresent cfg Ghc)) installSteps
     }
 
--- | The substrate-branched install plan: @brew install ghcup@ then
--- @ghcup install ghc@. The tools are re-resolved after each step, so @ghcup@ is
--- discoverable for the second step once @brew@ has laid it down.
 installSteps :: Substrate -> Either String [InstallStep]
-installSteps sub
-  | substrateName sub == AppleSilicon =
-      Right
-        [ InstallStep Brew ["install", "ghcup"],
-          InstallStep Ghcup ["install", "ghc"]
-        ]
-  | otherwise =
-      Left ("ghc host-toolchain install is only applicable on apple-silicon, not " ++ renderSubstrateName (substrateName sub))
+installSteps = reconcilerInstallSteps reconciler

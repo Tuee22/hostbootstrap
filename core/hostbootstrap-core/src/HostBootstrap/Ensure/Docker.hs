@@ -14,20 +14,20 @@ import Control.Monad (when)
 import Data.List (find)
 import Data.Maybe (mapMaybe)
 import HostBootstrap.Ensure
-  ( InstallStep (..),
+  ( FramePlan (InstallHere, ProvidedElsewhere),
+    InstallStep (..),
     Reconciler (..),
+    appleRow,
+    frameTable,
     installAndVerify,
+    linuxRow,
+    reconcilerInstallSteps,
     runTool,
+    windowsRow,
   )
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Docker, Sudo))
-import HostBootstrap.Substrate
-  ( Substrate,
-    SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu),
-    isLinux,
-    renderSubstrateName,
-    substrateName,
-  )
+import HostBootstrap.Substrate (Substrate, isLinux)
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..), die)
 
@@ -36,8 +36,27 @@ reconciler =
   Reconciler
     { reconcilerName = "docker",
       reconcilerSummary = "Ensure the Docker daemon is installed and reachable",
-      appliesTo = const True,
-      requirement = "all substrates",
+      -- Three rows, because a reachable daemon is required on every frame but
+      -- installed on only one. Apple and Windows are probe-only rather than
+      -- absent: an already-reachable daemon there is a verified no-op, and only
+      -- an absent one is refused, naming the frame that owns it.
+      reconcilerFrames =
+        frameTable
+          [ linuxRow
+              ( InstallHere
+                  [ InstallStep Sudo ["apt-get", "install", "-y", "docker.io", "acl"],
+                    InstallStep Sudo ["systemctl", "enable", "--now", "docker"]
+                  ]
+              ),
+            appleRow
+              ( ProvidedElsewhere
+                  "on Apple silicon Docker is provided by the prepared per-project Colima provider wall"
+              ),
+            windowsRow
+              ( ProvidedElsewhere
+                  "docker is reconciled by the Windows WSL2 host-provider path, not `ensure docker`"
+              )
+          ],
       reconcile = reconcileDocker
     }
 
@@ -73,24 +92,8 @@ sudoDockerInfo cfg = do
     Right (ExitSuccess, _, _) -> True
     _ -> False
 
--- | The substrate-branched install plan. On Linux, @apt-get install docker.io@
--- and enable the daemon. On Apple silicon, Docker is the prepared per-project
--- Colima provider wall's responsibility.
 installSteps :: Substrate -> Either String [InstallStep]
-installSteps sub = case substrateName sub of
-  AppleSilicon ->
-    Left "on Apple silicon Docker is provided by the prepared per-project Colima provider wall"
-  LinuxCpu -> Right linuxSteps
-  LinuxGpu -> Right linuxSteps
-  WindowsCpu ->
-    Left ("docker is reconciled by the Windows WSL2 host-provider path, not `ensure docker` on " ++ renderSubstrateName WindowsCpu)
-  WindowsGpu ->
-    Left ("docker is reconciled by the Windows WSL2 host-provider path, not `ensure docker` on " ++ renderSubstrateName WindowsGpu)
-  where
-    linuxSteps =
-      [ InstallStep Sudo ["apt-get", "install", "-y", "docker.io", "acl"],
-        InstallStep Sudo ["systemctl", "enable", "--now", "docker"]
-      ]
+installSteps = reconcilerInstallSteps reconciler
 
 ensureDockerGroup :: HostConfig -> IO ()
 ensureDockerGroup cfg = do

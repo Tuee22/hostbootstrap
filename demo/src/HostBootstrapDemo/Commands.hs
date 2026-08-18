@@ -134,6 +134,17 @@ import HostBootstrap.Detached (
     withDetachedChild,
  )
 import HostBootstrap.Dhall.Gen (CodecWitness, ConfigArtifact, artifactOf, autoCodecWitness, requireCodecWitness)
+import HostBootstrap.Effect (
+    CapturedRun (capturedExit, capturedStderr, capturedStdout),
+    EffectEnvironment (..),
+    EffectFailure,
+    EffectFailurePolicy (BestEffort, FailFast),
+    interpretHostEffects,
+    renderEffectFailure,
+    renderRunFailure,
+    runCaptured,
+    shellQuoteArg,
+ )
 import HostBootstrap.Ensure (runEnsure, runTool, runToolWithStdin, toolPresent)
 import qualified HostBootstrap.Ensure.Cuda as EnsureCuda
 import qualified HostBootstrap.Ensure.Docker as EnsureDocker
@@ -322,7 +333,6 @@ import System.FilePath (normalise, takeDirectory, (</>))
 import System.IO (hFlush, hPutStr, stderr, stdout)
 import System.IO.Error (tryIOError)
 import System.Info (os)
-import System.Process (readProcessWithExitCode)
 
 {- | One SPA tab as typed data: its label and the API endpoint it reads (empty
 for a static tab).
@@ -396,12 +406,16 @@ demoCheckCode = do
 runCheck :: String -> FilePath -> [String] -> IO ()
 runCheck label exe args = do
     putStrLn ("check-code: " ++ label)
-    (code, out, err) <- readProcessWithExitCode exe args ""
-    unless (null out) (putStr out)
-    unless (null err) (hPutStr stderr err)
-    case code of
-        ExitSuccess -> pure ()
-        ExitFailure n -> die (label ++ " failed (exit " ++ show n ++ "): " ++ exe ++ " " ++ unwords args)
+    outcome <- runCaptured exe args ""
+    case outcome of
+        Left failure -> die (label ++ ": " ++ renderRunFailure failure)
+        Right run -> do
+            unless (null (capturedStdout run)) (putStr (capturedStdout run))
+            unless (null (capturedStderr run)) (hPutStr stderr (capturedStderr run))
+            case capturedExit run of
+                ExitSuccess -> pure ()
+                ExitFailure n ->
+                    die (label ++ " failed (exit " ++ show n ++ "): " ++ exe ++ " " ++ unwords args)
 
 {- | The demo's harness case matrix (the app supplies only this; the L0 engine
 drives it). The headline @pristine-bootstrap@ case plus the web/e2e cases.
@@ -717,10 +731,17 @@ retainedProvider cfg =
         | otherwise =
             frameById (Context.topologyParentId current) >>= providerFromCurrentAncestry
     currentFrameOf currentContext =
-        maybe (Left "demo chain: retained current frame is absent") Right (frameById (Context.currentFrame currentContext))
+        maybe
+            (Left "demo chain: retained current frame is absent")
+            Right
+            (findFrame (Context.currentFrame currentContext))
     frameById frameId =
-        maybe (Left "demo chain: retained ancestry parent is absent") Right
-            (find ((== frameId) . Context.topologyFrameId) (Context.topologyFrames ctx))
+        maybe
+            (Left "demo chain: retained ancestry parent is absent")
+            Right
+            (findFrame frameId)
+    findFrame frameId =
+        find ((== frameId) . Context.topologyFrameId) (Context.topologyFrames ctx)
     vmProviders = [Context.IncusVMProvider, Context.LimaVMProvider, Context.Wsl2VMProvider]
 
 validateDirectParentLift :: FilePath -> T.Text -> LiftContext -> Either String ()
@@ -2590,10 +2611,10 @@ assertE2EInVM cfg frame expectedMessage = do
         Right mBackend -> do
             let acceleratorEnv = case mBackend of
                     Nothing -> ""
-                    Just backend -> " -e EXPECTED_ACCELERATOR_BACKEND=" ++ shellQuote (T.unpack backend)
+                    Just backend -> " -e EXPECTED_ACCELERATOR_BACKEND=" ++ shellQuoteArg (T.unpack backend)
                 script =
                     "docker run --rm --network host --entrypoint sh -e BASE_URL=http://localhost:30080 -e EXPECTED_MESSAGE="
-                        ++ shellQuote (T.unpack expectedMessage)
+                        ++ shellQuoteArg (T.unpack expectedMessage)
                         ++ acceleratorEnv
                         ++ " -e NODE_PATH="
                         ++ baseNodeModulesPath
@@ -2913,7 +2934,7 @@ awaitDurableShareMounted _net cfg provider share =
                 pure
                 outcome
   where
-    q = shellQuote (hpsGuestPath share)
+    q = shellQuoteArg (hpsGuestPath share)
     mountProbe = "test -d " ++ q ++ " && test -w " ++ q
 
 {- | Mint the stable Docker-visible alias to the host-backed share, from the pure
@@ -2933,7 +2954,7 @@ mintDurableAlias _mounted cfg provider share = do
         Right AliasLeaveLinked ->
             putStrLn ("vm up: durable alias " ++ durableDockerHostPath ++ " already links to the share")
         Right AliasCreateLink -> do
-            runInDemoVM cfg provider ("ln -s " ++ shellQuote shareTarget ++ " " ++ shellQuote durableDockerHostPath)
+            runInDemoVM cfg provider ("ln -s " ++ shellQuoteArg shareTarget ++ " " ++ shellQuoteArg durableDockerHostPath)
             putStrLn ("vm up: linked durable alias " ++ durableDockerHostPath ++ " -> " ++ shareTarget)
 
 {- | Gather the alias facts from the guest via trivial probes (§ CC): @test -L@ for
@@ -2942,7 +2963,7 @@ simple command. The pure 'classifyAlias' does the branching.
 -}
 gatherVMAliasFacts :: HostConfig -> SubstrateProvider -> FilePath -> IO AliasFacts
 gatherVMAliasFacts cfg provider aliasPath = do
-    let q = shellQuote aliasPath
+    let q = shellQuoteArg aliasPath
     isSym <- inVMExitZero cfg provider ("test -L " ++ q)
     linkTarget <-
         if isSym
@@ -2995,38 +3016,37 @@ staging path). The two wall effects acquire and release the current user's one
 global @.wslconfig@ through the identity-owning host-wall backend.
 -}
 runEffects :: HostConfig -> [HostEffect] -> IO ()
-runEffects cfg = mapM_ go
-  where
-    go (RunHostTool tool args) = runOrDie cfg tool args
-    go (ApplyGlobalWslWall body) = acquireDemoWslWall body
-    go (ReleaseGlobalWslWall body) = releaseDemoWslWall body
-    go (RunDirectHost action) = runDirectHostAction action
+runEffects cfg effects =
+    interpretHostEffects demoEffectEnvironment FailFast cfg effects >>= dieOnEffectFailure
 
 {- | Run teardown effects best-effort under one intent message: a missing or
 already-stopped VM is not a failure for idempotent teardown.
 -}
 runEffectsBestEffort :: HostConfig -> String -> [HostEffect] -> IO ()
-runEffectsBestEffort cfg intent = mapM_ go
-  where
-    go (RunHostTool tool args) = bestEffortTool cfg tool args intent
-    go (ApplyGlobalWslWall body) = acquireDemoWslWall body
-    -- The wall release is NOT best-effort: leaving the shared utility VM
-    -- cordoned, or leaving the operator's original .wslconfig unrestored, is a
-    -- durable global side effect a green teardown must not report.
-    go (ReleaseGlobalWslWall body) = releaseDemoWslWall body
-    go (RunDirectHost action) = runDirectHostAction action
+runEffectsBestEffort cfg intent effects =
+    interpretHostEffects demoEffectEnvironment (BestEffort intent) cfg effects >>= dieOnEffectFailure
 
-{- | Interpret an explicit direct-host lifecycle transition. The local frame
-requires no guest mutation, but acknowledging the closed action keeps this
-truthful realization distinct from an unimplemented empty effect list.
+{- | The two seams the library's one effect interpreter cannot supply for itself.
+
+The wall is acquired under the /demo's/ ownership identity, which no library
+knows, and the transcript of a run belongs to whoever is reporting it. Every
+other decision — how a tool is resolved, how a command is launched, and how a
+failure is judged — is the interpreter's, once (§ KK).
 -}
-runDirectHostAction :: DirectHostAction -> IO ()
-runDirectHostAction action =
-    case action of
-        RealizeDirectHost ->
-            putStrLn "provider: selected the already-local direct-host frame; no guest provisioning is required"
-        ReconcileDirectHostReady ->
-            putStrLn "provider: reconciled the already-local direct-host frame to ready"
+demoEffectEnvironment :: EffectEnvironment
+demoEffectEnvironment =
+    EffectEnvironment
+        { effectAcquireGlobalWall = acquireDemoWslWall
+        , effectReleaseGlobalWall = releaseDemoWslWall
+        , effectEcho = putStr
+        }
+
+{- | A failed host-effect list surfaces a structured 'LifecycleFailure' carrying
+its captured output (§ CC) rather than a message-less @die@: the common
+interpreter carries the structured cause to the harness report card.
+-}
+dieOnEffectFailure :: Either EffectFailure () -> IO ()
+dieOnEffectFailure = either (throwIO . LifecycleFailure . renderEffectFailure) pure
 
 {- | The demo's identity for the one per-user global WSL2 wall.
 
@@ -3131,7 +3151,7 @@ wallEffectsOnly = filter isWall
   where
     isWall (ApplyGlobalWslWall _) = True
     isWall (ReleaseGlobalWslWall _) = True
-    isWall (RunHostTool _ _) = False
+    isWall (RunHostCommand _) = False
     isWall (RunDirectHost _) = False
 
 {- | Disclose that applying the WSL2 @.wslconfig@ ceiling runs @wsl --shutdown@ — a
@@ -3523,19 +3543,19 @@ runVmBootstrap stepCfg = demoConfigContext stepCfg Context.HostOrchestratorComma
         "test -x \"$HOME/.ghcup/bin/ghcup\" || { export BOOTSTRAP_HASKELL_NONINTERACTIVE=1 BOOTSTRAP_HASKELL_GHC_VERSION=9.12.4 BOOTSTRAP_HASKELL_INSTALL_NO_STACK=1; curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | sh; }"
     vmStep
         "pipx install the local hostbootstrap CLI"
-        ("pipx install --force " ++ shellQuote vmRepoRoot)
+        ("pipx install --force " ++ shellQuoteArg vmRepoRoot)
     vmStep
         "hostbootstrap build (build #2: the demo binary, host-native in the VM)"
         ( "export PATH=/root/.ghcup/bin:/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; cd "
-            ++ shellQuote (vmRepoRoot ++ "/demo")
+            ++ shellQuoteArg (vmRepoRoot ++ "/demo")
             ++ " && hostbootstrap build && test -x .build/hostbootstrap-demo"
         )
     vmStep
         "install the in-VM pb + its sibling vm-orchestrator-1 config at /usr/local/bin (the metal->VM handoff SelfRef path)"
         ( "sudo install -m 0755 "
-            ++ shellQuote (vmRepoRoot ++ "/demo/.build/hostbootstrap-demo")
+            ++ shellQuoteArg (vmRepoRoot ++ "/demo/.build/hostbootstrap-demo")
             ++ " /usr/local/bin/hostbootstrap-demo && sudo cp "
-            ++ shellQuote (vmRepoRoot ++ "/demo/.build/hostbootstrap-demo.dhall")
+            ++ shellQuoteArg (vmRepoRoot ++ "/demo/.build/hostbootstrap-demo.dhall")
             ++ " /usr/local/bin/hostbootstrap-demo.dhall"
         )
     vmStep
@@ -3549,7 +3569,7 @@ runVmBootstrap stepCfg = demoConfigContext stepCfg Context.HostOrchestratorComma
     -- `waitVMNetwork`/`substrateWait` use safely.
     dockerReady <- waitDockerReady cfg provider
     let buildImageScript =
-            "cd " ++ shellQuote vmRepoRoot ++ " && " ++ dockerCommand (dockerBuildArgs repoRootCfg (demoBaseImage cfg))
+            "cd " ++ shellQuoteArg vmRepoRoot ++ " && " ++ dockerCommand (dockerBuildArgs repoRootCfg (demoBaseImage cfg))
         repoRootCfg =
             parentCfg{dockerfile = "demo/" <> dockerfile parentCfg}
     buildProjectImage dockerReady cfg provider mAuth buildImageScript
@@ -3621,13 +3641,13 @@ streamVMConfig _vmReady cfg provider parentCfg ctx = do
     let remotePath = vmDemoRoot ++ "/.build/hostbootstrap-demo.dhall"
         script =
             "mkdir -p "
-                ++ shellQuote (vmDemoRoot ++ "/.build")
+                ++ shellQuoteArg (vmDemoRoot ++ "/.build")
                 ++ " && sudo mkdir -p /run/hostbootstrap"
                 ++ " && printf %s "
-            ++ shellQuote (providerVmId provider)
+            ++ shellQuoteArg (providerVmId provider)
             ++ " | sudo tee /run/hostbootstrap/vm-provider >/dev/null"
                 ++ " && cat > "
-                ++ shellQuote remotePath
+                ++ shellQuoteArg remotePath
     case demoGuestShellArgs provider ["bash", "-lc", script] of
         Left refusal ->
             throwIO
@@ -3736,39 +3756,33 @@ stageSource _vmReady cfg provider = do
     -- was pushed. The per-substrate difference is the pure 'stageFileEffects' plan.
     ( do
             let staged = stageFileEffects (providerFileTransfer provider) tarball "/tmp/hostbootstrap-src.tgz"
-                cleanup = if sfPushedTemp staged then " && rm -f " ++ shellQuote (sfGuestPath staged) else ""
+                cleanup = if sfPushedTemp staged then " && rm -f " ++ shellQuoteArg (sfGuestPath staged) else ""
             runEffects cfg (sfHostEffects staged)
             runInDemoVM
                 cfg
                 provider
                 ( "rm -rf "
-                    ++ shellQuote vmRepoRoot
+                    ++ shellQuoteArg vmRepoRoot
                     ++ " && mkdir -p "
-                    ++ shellQuote vmRepoRoot
+                    ++ shellQuoteArg vmRepoRoot
                     ++ " && tar -xzf "
-                    ++ shellQuote (sfGuestPath staged)
+                    ++ shellQuoteArg (sfGuestPath staged)
                     ++ " -C "
-                    ++ shellQuote vmRepoRoot
+                    ++ shellQuoteArg vmRepoRoot
                     ++ cleanup
                     -- Guard against a truncated stage (a host-side tar that dropped
                     -- entries, e.g. on an unreadable file): fail loudly here rather
                     -- than letting `pipx install` fail later with a confusing
                     -- "not installable" error (§ C).
                     ++ " && { test -f "
-                    ++ shellQuote (vmRepoRoot ++ "/pyproject.toml")
+                    ++ shellQuoteArg (vmRepoRoot ++ "/pyproject.toml")
                     ++ " || { echo 'pristine-bootstrap: staged source is truncated (pyproject.toml missing at repo root) — the host staging tar dropped entries' >&2; exit 1; }; }"
                 )
         )
         `finally` removeFile tarball
 
-shellQuote :: String -> String
-shellQuote s = "'" ++ concatMap quoteChar s ++ "'"
-  where
-    quoteChar '\'' = "'\\''"
-    quoteChar c = [c]
-
 dockerCommand :: [String] -> String
-dockerCommand args = unwords (map shellQuote ("docker" : args))
+dockerCommand args = unwords (map shellQuoteArg ("docker" : args))
 
 {- | The reverse effect of the demo's @deploy-vm@ step (§ W).
 

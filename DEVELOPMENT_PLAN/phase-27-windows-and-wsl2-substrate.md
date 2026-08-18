@@ -5,27 +5,34 @@
 **Substrates**: windows
 **Gate**: live `hostbootstrap run -- test run all` reporting `10/10 passed` on a native Windows host
 
-> **Purpose**: Add the Windows-only native host-wall backend and CUDA worker, exercise the lower WSL2
-> provider realization, and confirm the whole build on that substrate.
+> **Purpose**: Add the Windows-only native host-wall backend and CUDA worker, exercise WSL2 as the Windows
+> realization of the universal `linux-cpu` substrate, and confirm the additional Windows behavior.
 
 ## Phase Objective
 
 This is an **acceptance phase** (§ II). Nothing depends on it, so a machine without Windows stops at the
 worked-demo phase. It carries exactly one substrate beyond the baseline.
 
-Windows is the substrate that most exercises the exclusive-global-state machinery, because the WSL2 wall is a
+Windows is the outer host realization that most exercises the exclusive-global-state machinery, because the WSL2 wall is a
 single host-global configuration file every distro shares — which is why the portable host-wall driver exists at
 all.
 
 ## What this phase confirms
 
 - the WSL2 provider's full lifecycle, including that teardown restores the wall **before** any global shutdown;
-- the native host-wall backend against the real Win32 surface, with exact status preservation;
+- the Windows ownership row — declared by the
+  [four-ownership-clauses-and-host-local-reservations phase](phase-14-ownership-clauses-and-reservations.md)
+  and compiled on every gate host — against the real Win32 surface, with exact status preservation;
 - the managed wall body whose idle timeouts determine whether the wall can be released, sized against the
   observed gate duration rather than an assumed one;
 - host-native accelerator placement behind a local-only node port with the CUDA worker on Windows;
 - that a long-running gate launched from an agent harness survives, using the durable-run mechanism rather than a
   naive background launch.
+
+What this phase does **not** confirm is that the host static gate passes on a Windows outer host. That is
+a § JJ obligation every phase holds over its own suites, discharged on the ordinary host static gate long
+before this acceptance phase is reached, and Windows is an outer host realization there rather than a
+declared substrate. This phase's gate is the live `10/10` demo run and the Windows-only behavior above.
 
 ## Sprints
 
@@ -64,32 +71,36 @@ native Windows/WSL host surface.
 
 None.
 
-### Sprint 27.2: The native host-wall backend [Done]
+### Sprint 27.2: The Windows row against a real Windows kernel [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall/Windows.hs`,
-`core/hostbootstrap-core/test/WslGlobalWallWindowsSpec.hs`
+**Implementation**: `core/hostbootstrap-core/test/WslGlobalWallWindowsSpec.hs`
 **Substrates**: windows
 **Docs to update**: `documents/engineering/wsl2.md`
 
 #### Objective
 
-Realize the portable driver's platform seam on Windows, without a shim.
+Confirm the Windows ownership row against the kernel it names, which no other host can do.
 
 #### Deliverables
 
-- The backend uses public `Win32` APIs plus a narrow direct `kernel32` foreign import for exact status
-  preservation, so a failure's real cause is not flattened into a generic error.
-- There is no C shim, no Cabal `c-sources`, and no private-module import.
-- The managed body is produced by the same pure byte transformer the POSIX backend uses, so the two cannot render
-  different walls.
-- Finite idle timeouts are derived from one constant coupled to the provider-owned restore-then-shutdown effect,
-  so the wall is releasable rather than held indefinitely.
+- The row itself belongs to the
+  [four-ownership-clauses-and-host-local-reservations phase](phase-14-ownership-clauses-and-reservations.md),
+  which declares both platform rows and the one selector between them. This sprint introduces no
+  implementation of it; a second one would be the second answer § LL exists to prevent.
+- What this sprint owns is the confirmation: `Win32` handle identity, reparse-point refusal, atomic
+  no-replace publication, and write-through replacement exercised where those calls are real. On every
+  other gate host the same cases assert the row's declared refusal (§ JJ), which is a smaller claim and a
+  true one.
+- Exact status preservation is confirmed rather than flattened, so a recovery decision that depends on
+  distinguishing two failures can actually make it.
+- The finite idle timeouts and the restore-then-shutdown order are observed against a live WSL utility VM,
+  which is the only place "the wall is releasable" is a fact rather than a constant.
 
 #### Validation
 
 `WslGlobalWallWindowsSpec` covers the entrypoints, status preservation, and the shared transformer. Dated
-evidence: the adapter passed its focused entrypoint gate and passed inside the complete Windows core suite.
+evidence: the row passed its focused entrypoint gate and passed inside the complete Windows core suite.
 
 #### Remaining Work
 
@@ -127,6 +138,12 @@ Run the complete acceptance gate after the recursive-lifecycle-command, prepared
 authenticated-handoff, recovery, and worked-demo dependencies are closed. The run must exercise typed
 frame-indexed teardown descent across the real WSL boundary, the complete current test matrix, and a current
 provider-lifecycle observation including wall restoration before shutdown.
+
+## Remaining Work
+
+Sprint 27.3, the acceptance run itself. Sprints 27.1 and 27.2 are closed; what is left is the
+pristine-host re-run of the complete matrix against the current tree, together with the end-state audit
+that the host wall is restored to its prior body and the distribution is gone.
 
 ## Documentation Requirements
 

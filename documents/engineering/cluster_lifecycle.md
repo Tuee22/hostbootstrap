@@ -37,10 +37,13 @@ wait. Nvkind adds the NVIDIA runtime smoke, a control-plane/GPU-worker topology,
 cordons, and a device-plugin/allocatable-GPU gate.
 
 The [cluster-lifecycle-and-cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
-has an independent live linux-cpu gate in `scripts/run-live-cluster-gate.sh`. It creates a fresh kind cluster,
-waits for node readiness, performs a read-only node-status query, deletes the cluster and verifies its labelled
-node containers are absent, then re-reads a durable-root sentinel outside the deletion boundary. The runner
-does not invoke the demo; demo lifecycle integration and end-to-end durable readback remain owned by the
+has an independent live linux-cpu gate, reached as a case behind the fixed `test` verb:
+`hostbootstrap test run cluster-live`. It creates a fresh kind cluster, waits for node readiness, performs a
+read-only node-status query, deletes the cluster and verifies its labelled node containers are absent, then
+re-reads a durable-root sentinel outside the deletion boundary. The exclusive run, the lease, the
+clause-holding cleanup, and the report card come from the harness rather than from anything the case
+arranges itself. The case does not invoke the demo; demo lifecycle integration and end-to-end durable
+readback remain owned by the
 [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md), not by this phase gate.
 
 This does not yet satisfy universal typed readiness. `waitNodesReady` and several related waits return
@@ -85,18 +88,22 @@ handle/receipt.
 `HostBootstrap.Cluster.Backend` supplies the IO that feeds it while holding the four
 [ownership invariant](../architecture/ownership_invariant.md) clauses. The private production backend keeps the executor and
 raw-result constructors in a Cabal-private component. Public production discovery detects the Linux
-substrate, builds the typed `HostConfig`, resolves `Kind`, `Docker`, `Kubectl`, `Flock`, and `Python3` as
-closed `HostTool` values, and passes only their canonical absolute paths to the private validator. That
+substrate, builds the typed `HostConfig`, resolves `Kind`, `Docker`, and `Kubectl` as closed `HostTool`
+values, and passes only their canonical absolute paths to the private validator. That
 validator admits root-owned, non-group/world-writable path chains and executable files, and derives child
 `PATH` solely from those validated executable directories. Children run with a fixed root cwd, sanitized
-engine/provider/config environment, private kubeconfig descriptor, strict LF-only reports, and process-group
-timeouts whose pipe readers and reap are bounded even when the leader exits before a grandchild. The
-injected executor exists only in the private test component; downstream code cannot mint a backend from
-chosen output.
+engine/provider/config environment, private kubeconfig descriptor, and process-group
+timeouts whose pipe readers and reap are bounded even when the leader exits before a grandchild.
+
+A caller cannot mint a backend from chosen output, and the reason is structural rather than a matter of
+who may reach a seam: the classification that turns a tool's result into a decision is a total function
+over a closed sum, so it is reached by application and there is nothing to substitute for it. See
+[testing](testing.md) for what that makes admissible as evidence.
 
 The durable ownership protocol implements the ownership namespace. One exact no-follow directory walk creates and
-parent-fsyncs the plan-derived state leaf, and a retained util-linux `flock(1)` descriptor supplies the
-single Linux `flock(2)` namespace across observe/create/settle. `lockf` is not admitted. The lock, state
+parent-fsyncs the plan-derived state leaf, and the row the frame declares supplies exclusive entry — held
+on a retained descriptor across observe/create/settle and released by the kernel if the holder dies (see
+[ownership seam](../architecture/ownership_seam.md)). The lock, state
 leaf, origin record, and complete node-name-to-container-ID map are kernel-identity-bound across calls.
 Every canonical `prepared`, `executing`, or `managed` origin record also contains and validates its own
 record inode, exact cluster name, owner, config binding, and nonce. Before Kind runs, `executing` durably
@@ -234,7 +241,7 @@ From the repository root, the exact
 gate is:
 
 ```sh
-(cd core && cabal test all --ghc-options=-Werror) && ./scripts/run-live-cluster-gate.sh
+(cd core && cabal test all --ghc-options=-Werror) && hostbootstrap test run cluster-live
 ```
 
 The static leg covers the exact plan-owned precondition, reconcile-result, ownership-receipt, same-name

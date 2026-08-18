@@ -373,7 +373,7 @@ interpreters do not yet enforce the complete model end to end:
   `PreparedGate`-derived reservation and opaque provider start. The stable 128-bit plan/lifecycle namespace
   owns an isolated Colima home, reusable lock, isolated Docker config, and socket-safe local profile; the
   canonical wall binds CPU/memory plus a 20-GiB root and `total-20`-GiB data disk. A fixed private resolver
-  and bounded runner feed one descriptor-held Python `fcntl.flock` transaction. Its self-bound
+  and bounded runner feed one transaction held under the ownership row's descriptor-held kernel lock. Its self-bound
   `reserved`/`home-staged`/`home-ready`/`context-staged`/`prepared`/`managed` protocol records absence before
   namespace creation/start and retains the acquisition invocation, machine/context, lock/record/namespaces,
   complete directory chain, and Colima/Lima artifact manifest. Only a managed stage may recover a successful
@@ -2791,7 +2791,7 @@ those exact proofs.
 
 The public root brackets are deliberately **composite APIs**, not evidence that one module owns both
 halves. The
-[installed identity, operator verification, and authority kernels phase](../../DEVELOPMENT_PLAN/phase-5-operator-root-and-command-authority.md)
+[installed identity, operator verification, and authority kernels phase](../../DEVELOPMENT_PLAN/phase-5-installed-identity-and-authority-kernels.md)
 owns the non-config verifier and opaque lower capabilities: it checks the independently opened installed
 project identity, local OS principal, protected-store identity, executable identity, and exact requested
 verb without trusting `BinaryContext`. The

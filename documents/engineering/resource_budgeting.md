@@ -61,8 +61,8 @@
   storage must exceed 20 GiB and is rendered as a fixed 20-GiB root disk plus a `total-20`-GiB data disk.
   Raw list/call/machine/context observations remain plan-independent. The prepared call, provider-start and
   wall settlement, live route, and cleanup retain the exact journal lineage and complete backend identity.
-  The private fixed resolver admits and fingerprints only canonical Apple Python/Colima/Docker/Lima tools and
-  helper directories. Under descriptor-held Python `fcntl.flock`, the durable protocol records absence before
+  The private fixed resolver admits and fingerprints only canonical Apple Colima/Docker/Lima tools and
+  helper directories. Under the ownership row's descriptor-held kernel lock, the durable protocol records absence before
   creating the isolated home or Docker config, then binds the exact invocation, root/data wall, machine,
   named context, record/namespace/disk objects, directory chain, and complete artifact manifest. A profile
   present from `prepared` without a managed stage is outcome-unknown `Conflict`. Live Docker reacquires that

@@ -27,9 +27,11 @@ is absent. The prepared route:
 - hand off the project subcommand with `incus exec`;
 - stop on `project down`, or force-delete the guarded project VM on `project destroy`.
 
-Host-side `incus`, `python3`, and `flock` are resolved through `HostTool` and retained as typed absolute
-executables by the provider backend. The backend admits one Linux `flock(2)` namespace; `lockf` is not a
-fallback because its common `fcntl` namespace does not mutually exclude `flock`. Commands inside the guest
+Host-side `incus` is resolved through `HostTool` and retained as a typed absolute executable by the
+provider backend. The backend holds no ownership clause through a front-end process: exclusive entry,
+the durable origin record, identity binding, and conditional release come from the row the frame declares
+(see [ownership seam](../architecture/ownership_seam.md)), so there is one exclusion namespace by
+construction rather than one admitted front end and one refused alternative. Commands inside the guest
 intentionally use the guest's own tool lookup.
 
 Before that provider value is used, `HostBootstrap.Ensure.Incus` converges the native provider and runs
@@ -68,6 +70,15 @@ after ready, share, stop, guest execution, and conditional delete. The
 [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
 carries the closure evidence: its static gate and its native Linux/x86_64 KVM/Incus gate both pass. See
 [lifecycle state model](../architecture/lifecycle_state_model.md).
+
+## Destructive deletion
+
+`incus delete <name> --force` is prefix-guarded, and the guard is one computation every frame's removal goes
+through rather than one written per provider. This module supplies only the noun its refusal reads in and
+the argument vector for a name the guard has already admitted, so it cannot render a destructive command for
+a name the guard would have refused. An instance outside the project's namespace refuses, and so do the two
+degenerate inputs that make the guard vacuous: an empty prefix, which is a prefix of every name, and an empty
+instance name. `incus stop` carries no guard because it is not destructive.
 
 ## Lifecycle caveat
 

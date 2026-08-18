@@ -2,10 +2,11 @@
 
 **Status**: Authoritative source
 **Supersedes**: the root-gated suite-selector and isolated-`.test_data` descriptions
-**Referenced by**: [documents index](../README.md), [harness workflow](../architecture/harness_workflow.md), [cluster lifecycle](cluster_lifecycle.md), [demo runbook](../operations/demo_runbook.md)
+**Referenced by**: [documents index](../README.md), [harness workflow](../architecture/harness_workflow.md), [cluster lifecycle](cluster_lifecycle.md), [demo runbook](../operations/demo_runbook.md), [code-check doctrine](code_check_doctrine.md), [build and run model](../architecture/build_and_run_model.md), [durable Windows runs](durable_windows_runs.md), [Haskell toolchain](../languages/haskell.md)
 
-> **Purpose**: Define the supported fast test entry points and describe the exact-plan demo lifecycle
-> harness, including its command gate, assertion boundary, ownership, and remaining live-validation gaps.
+> **Purpose**: Define the supported fast test entry points, name the gate kinds and what each proves, and
+> describe the exact-plan demo lifecycle harness, including its command gate, assertion boundary,
+> ownership, and remaining live-validation gaps.
 
 ## TL;DR
 
@@ -13,6 +14,12 @@
   `poetry run python -m hostbootstrap.test_all`; do not invoke `pytest` directly.
 - Run Haskell suites from their Cabal project roots with `cabal test all`. The complete Haskell
   quality gate also includes formatter, linter, and warnings-as-errors build checks.
+- Those fast suites are the **host static gate**. Because the project binary is built host-native on
+  every substrate, they run as ordinary processes of the outer host and pass host-native on macOS,
+  Linux, and Windows alike. Running them natively on Windows is an outer host realization, not a
+  substrate.
+- A **`linux-cpu` substrate gate** is a different thing: its process and POSIX/container effects execute
+  inside the realized Linux substrate. Neither gate substitutes for the other.
 - The demo command is `test init` followed by `test run <case-id>|all`. Cases are compiled Haskell with
   validated `CaseId`s; the current `<project>.test.dhall` contains resource overrides and declarative
   variants, not case bodies or lifecycle actions.
@@ -22,6 +29,123 @@
   lifecycle callback.
 - `durable-readback` is deliberately non-passing until the engine owns the fresh same-run lifecycle
   invocation needed for write → destroy → up → read.
+
+## Gate Kinds
+
+Four gates exist, and confusing them is how coverage silently disappears. Each proves a different class
+of thing, and none substitutes for another.
+
+| Gate | Command | Where it runs | What it proves | What it cannot prove |
+|---|---|---|---|---|
+| Host static gate | `cabal test all --ghc-options=-Werror` from `core/`; `poetry run python -m hostbootstrap.check_code`; `poetry run python -m hostbootstrap.test_all` | an ordinary process of the outer host — macOS, Linux, or Windows | type boundaries, compile-fail diagnostics, codecs, source-shape guards, plan projections, argv builders, the documentation validator | anything about a provider, a container, a cluster, or a real POSIX process boundary |
+| `linux-cpu` substrate gate | the phase's own declared command | inside the realized Linux substrate — native Linux, a Lima/Colima VM, or WSL2 | that the gated process and its POSIX/container effects actually ran on the baseline substrate | that the same sources build and self-test on another outer host |
+| Container `check-code` | `<project> check-code` in the derived image | inside the built container | the formatter (`fourmolu`) and linter (`hlint`), which are installed in the base image only | behaviour; it is a build-time guardrail |
+| Live demo gate | `hostbootstrap run -- test init` then `test run all` | a disposable host with real Docker, provider, and cluster state | end-to-end lifecycle over real infrastructure | anything on a host it did not run on |
+
+The host static gate is not the complete quality gate: `fourmolu` and `hlint` live only in the container
+`check-code`. See [code-check doctrine](code_check_doctrine.md).
+
+A host static gate run is evidence for the one outer host that ran it. Dated results therefore name that
+host, and a pass on macOS is not a claim about Windows. Delivery status, exact totals, and dated evidence
+live in [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
+
+### Harness portability
+
+The host static gate must pass host-native on every supported outer host, so the harness itself is
+host-portable. Five rules hold, and each is a property of how a guard is *written* — a host-portable
+guard proves the same thing everywhere, which is exactly why it may not be written in terms of one host.
+
+- **A guard over source bytes reads bytes.** A frozen source digest is computed from the file's own
+  bytes rather than by decoding to text and re-encoding, so it is a property of the file and not of the
+  process locale or the platform's newline translation. The suite driver additionally fixes the locale
+  encoding to UTF-8 before the runner starts, so a spec that reads a source file or captured command
+  output decodes the same text on every gate host and a governed golden containing non-ASCII text
+  compares equal everywhere.
+- **A repo-relative module path is separator-neutral.** An import allow-list, importer set, or
+  module-ownership list compares canonical forward-slash paths, so a native path separator cannot make a
+  satisfied allow-list fail.
+- **A host tool-path fixture is absolute on the host that runs it; a guest path stays POSIX.** A host
+  tool is resolved and invoked by the outer host and is admitted by the same total absolute-path
+  constructor production uses. A guest path names a file on a different machine reached through one
+  host-provider command, so it is unaffected. Fixtures respect the same split the invocation boundary
+  does.
+- **A conditional expectation follows the subject, not the package.** A platform row exists on every gate
+  host, so what varies is what it *answers* there: the kernel result where the row can hold its
+  obligations, the total refusal where it cannot. A case reads that from the row's own declaration —
+  `posixGlobalWallSupported`, `windowsGlobalWallSupported` — rather than from a build symbol the suite
+  repeats, so the expectation cannot drift from the subject it is about. A compile-fail fixture expects
+  one diagnostic, because the module it names is built everywhere.
+- **No case is skipped, and no module is excluded from the build.** A case whose subject is unavailable on
+  this gate host asserts the refusal its row declares; it does not disappear. A conditional that changes
+  an *expectation* keeps the evidence, while one that removes the case removes it — and a green total that
+  quietly shrank on one family is the most complete form of spoofing available, because the number reads
+  the same. Platform rows are therefore compiled everywhere and stubbed to a total refusal where they
+  cannot apply, so the package description carries no `os()`- or `arch()`-conditional module or
+  `buildable` field; only the platform library a row binds to is conditional.
+
+Cases that genuinely need POSIX — the real kernel lock namespace, process-group signal and reap probes,
+symlink-root probes, and the fork-based cross-process races — carry explicit platform conditions. On a
+gate host that cannot run one, the case asserts the declared refusal and is counted, so the manifest and
+the total both stay honest.
+
+`CoverageManifest` is where that declaration lives. Each row names a family, the number of cases it has
+on *every* gate host, how many of those drive a platform row, and why the row is conditional; the driver
+assembles the manifest from the same list it hands the runner, so what the manifest counts is what runs.
+The report is the case name itself, which is why reading a gate's output tells you which families
+exercised a real kernel and which recorded a refusal:
+
+```text
+CoverageManifest
+  WslGlobalWallHostSpec / crash resume: 3 cases, 3 asserting the row's declared refusal
+    on this gate host (the POSIX row needs fcntl record locks and device:inode identity): OK
+  WslGlobalWallWindowsSpec: 4 cases, 3 exercising the row against this gate host's kernel: OK
+```
+
+A family that lost a case on one host fails its declared count there rather than reporting a smaller
+total. A family whose subject is available everywhere is not declared, because a manifest listing every
+family would be a second copy of the suite.
+
+### What counts as evidence
+
+A gate is worth exactly what its evidence is worth. The rule above governs whether a guard proves the same
+thing on every host; this one governs whether it proves anything at all.
+
+**A fake exists because a decision is trapped inside an effect.** A suite reaches for a stand-in binary
+when the logic deciding what to do with that binary's output lives inside a subprocess, and for an
+injected executor when the classification that follows a command lives beside the command. Lift the
+decision into a total function over a closed sum and there is nothing left to stand in for.
+
+Four things count as evidence:
+
+- **applying a pure total function to values** — not spoofable, because the function under test *is* the
+  function;
+- **exercising a platform row against the real kernel**, in a temporary directory the case created. The
+  ownership invariant's "the OS releases the lock on process death" is proved by a real process dying;
+- **a compile-fail fixture that fails for its named reason**, expecting one contiguous diagnostic phrase
+  rather than a token list an unrelated error could also satisfy;
+- **a row reporting `Unsupported` on a gate host where it genuinely cannot hold a clause** — the row is
+  real; only the host differs.
+
+Four things do not:
+
+- an executable a spec wrote and placed on `PATH` so production would resolve it;
+- an injected seam standing in for a subject the gate claims to cover — and a seam whose only production
+  instance lives in an opt-in component *is* that, whatever it is called;
+- a case a conditional removed;
+- a branch in production code that exists for a test — a crash point, a fault token, an execution
+  override. It is a spoofable path shipped to operators, and it makes the gate agree with a shape
+  production never takes.
+
+The `Unsupported` decision needs no injected row, because "a backend that cannot hold a clause mints no
+receipt" is itself a total function from a declared capability value to a refusal. Applying it to every
+capability combination is stronger than injecting one stand-in that returns the answer it was written to
+return.
+
+Where a capability cannot be exercised on any available gate host, the honest disposition is to test the
+pure classification with values and record the live confirmation as **owed to the acceptance phase that
+declares that hardware**. Coverage that is owed and named is a smaller claim than coverage that is
+simulated, and it is a true one. The normative statement is
+[development_plan_standards.md § NN](../../DEVELOPMENT_PLAN/development_plan_standards.md).
 
 ## Current Status
 
@@ -98,6 +222,28 @@ to the observed epoch instead of opening a second generation.
 Every refusal case has a control that runs the same probe with nothing to be refused by — an empty store
 for the mode probe, an uncrossed boundary for the fence probe — and requires it to *succeed*, so a refusal
 exit code cannot be satisfied vacuously.
+
+### The interruption matrix
+
+A process death inside a lifecycle transaction is not an event the suite reproduces; it is a **value** the
+store is left holding. The redo coordinator publishes an `Applying` descriptor, materializes that
+descriptor's targets in order, then publishes `Idle`, so the only durable states a death is distinguishable
+in are "the descriptor is published and no target is materialized", "the first *n* targets are
+materialized", and "every target is materialized and the commit has not happened".
+
+`SessionSpec` writes those states directly and re-enters the ordinary entry point. The descriptor it writes
+is the transition's own: the fixture snapshots the store's directory, runs the real transition once, reads
+the records it stamped — their keys, their roles, their exact payloads, and its transaction id — restores
+the directory from the snapshot, and rebuilds the descriptor against those same pre-transition versions. The
+snapshot restore is what makes the expectations faithful, because a store rebuilt through the API would
+carry later record versions than the coordinator saw. One case pins that faithfulness directly: the
+reproduced state carries the exact bytes the completed transition wrote, under the same transaction id.
+
+The coordinator therefore carries no crash point, and no shipped module installs one. That is not a smaller
+claim than an injected exception would support — it is a larger one, because the recovery driver under test
+needs no cooperation from the code under test, and there is no branch in production that only a gate takes.
+`HostBootstrap.Lifecycle.Session.Testing` exposes the vocabulary that state is written in and mints no
+authority: a compile-fail fixture proves a descriptor cannot become a transaction permit.
 
 ### Authority-kernel evidence
 
@@ -176,7 +322,8 @@ Cabal-stanza assertion so removing that runtime contract fails the same canonica
 These static suites validate pure plans, argv builders, schema round trips, exact Harness lifecycle
 ordering, private-constructor/public-surface separation, generated-config lifetime, closure-evidence gates,
 and many failure branches. They cannot substitute for native provider, recursive teardown, or durable
-readback gates.
+readback gates. They are the host static gate described above, so they are expected to pass host-native on
+macOS, Linux, and Windows.
 
 ## Demo Command Surface
 
@@ -275,6 +422,10 @@ rehydration, is canonical in
 
 ## Related
 
+- [build and run model](../architecture/build_and_run_model.md) — the host-native build the gate kinds follow from.
+- [code-check doctrine](code_check_doctrine.md) — the container-only formatter and linter leg.
+- [durable Windows runs](durable_windows_runs.md) — why only the long gate needs a durable launcher on Windows.
+- [Haskell toolchain](../languages/haskell.md) — the host-portability idioms a suite uses.
 - [harness workflow](../architecture/harness_workflow.md) — command/DSL/profile contract.
 - [durable state](../architecture/durable_state.md) — `.data` carry and readback gap.
 - [readiness](../architecture/readiness.md) — delivered opaque witness foundation and remaining live-effect integration.

@@ -2,7 +2,7 @@
 
 **Status**: Supporting reference
 **Supersedes**: N/A
-**Referenced by**: [../README.md](../README.md), [../engineering/warm_store.md](../engineering/warm_store.md), [../engineering/code_check_doctrine.md](../engineering/code_check_doctrine.md), [../engineering/linking_and_optimization.md](../engineering/linking_and_optimization.md)
+**Referenced by**: [../README.md](../README.md), [../engineering/warm_store.md](../engineering/warm_store.md), [../engineering/code_check_doctrine.md](../engineering/code_check_doctrine.md), [../engineering/linking_and_optimization.md](../engineering/linking_and_optimization.md), [../engineering/testing.md](../engineering/testing.md)
 
 > **Purpose**: Document the Haskell toolchain the base image ships and how derived projects build
 > against it.
@@ -67,9 +67,36 @@ fixture rather than a comment.
 Building `hostbootstrap-core` **host-native on Windows** — the native `hostbootstrap.exe`, the peer of
 the macOS arm64 binary — uses the native (mingw32) Windows GHC, which reports
 `System.Info.os == "mingw32"` rather than `"linux"` or `"darwin"`. The POSIX-only `unix` dependency is
-conditionalized at its call sites (and with the matching `build-depends` guard) so the mingw32 build can
-compile without it. Current Windows gates and dated evidence live in
+conditionalized at its call sites, with the matching conditional `build-depends`, so the mingw32 build can
+compile without it — the *dependency* is conditional, never the module. Current Windows gates and dated
+evidence live in
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md). Which layer owns the native binary
 versus the thin Python bootstrapper that builds and invokes it (POSIX process replacement with `exec`;
 Windows child subprocess) is the
 [python_haskell_boundary](../architecture/python_haskell_boundary.md).
+
+### Host-portability idioms
+
+Because the binary is built host-native everywhere, the sources and the suites that gate them are
+host-portable. Four idioms carry most of that weight:
+
+- **`System.FilePath` versus `System.FilePath.Posix`.** The unqualified module follows the host. Use it
+  for a **host** path — an executable the outer host resolves and invokes — and use the `Posix` module
+  for a **guest** path, which names a file on a different machine reached through one host-provider
+  command. `isAbsolute "/usr/bin/x"` is `False` on Windows under `filepath` 1.5 and later, because a
+  drive-less path there is relative to the current drive; that is correct for a host path and wrong for
+  a guest one.
+- **Read source bytes for a digest.** A frozen source digest computed by decoding to `String` through
+  the locale and re-encoding is a property of the host's active code page and of its newline
+  translation, not of the file. Read the bytes.
+- **Fix the encoding once at an entry point.** `HostBootstrap.CLI` sets `stdout`/`stderr` to UTF-8, and
+  the test driver calls `setLocaleEncoding utf8` before the runner starts, so every later text read
+  decodes the same characters and output containing non-ASCII text neither mojibakes nor throws on a
+  legacy-code-page console.
+- **Stub a platform module; do not exclude it.** A module a Cabal `os` condition removes is a module
+  nothing on that family asserts, and the suite total reads the same either way — so a platform row is
+  compiled everywhere and CPP-stubbed to a total refusal where it cannot apply. Only `build-depends` is
+  conditional. That keeps every importer unconditional and makes an unavailable capability something the
+  suite states rather than something it omits.
+
+The rules these idioms serve are canonical in [testing](../engineering/testing.md#harness-portability).

@@ -11,11 +11,47 @@ module SourceGuard
     , moduleExportTokens
     , countHaskellIdentifier
     , countHaskellTokenSequence
+    , countPosixAbsoluteLiteralApplications
+    , repoRelativePath
+    , repoRelativeModuleName
     )
 where
 
 import Data.Char (isAlphaNum, isSpace, isUpper)
 import Data.List (intercalate)
+import System.FilePath (dropExtension, makeRelative, normalise)
+
+{- | Render a source path as a repo-relative path with canonical @\/@ separators.
+
+An import allow-list, an importer set, and a module-ownership list all name
+modules by path, and 'makeRelative' returns the host's own separator. A list
+written with forward slashes therefore names the intended modules on a POSIX
+outer host and nothing at all on a Windows one, which turns a real boundary
+guard into a host-shaped one (§ JJ).
+
+This is the one way a guard turns an absolute source path into the name it
+compares, so the same list names the same modules on every supported outer host
+realization.
+-}
+repoRelativePath :: FilePath -> FilePath -> FilePath
+repoRelativePath sourceRoot = map forwardSlash . normalise . makeRelative sourceRoot
+  where
+    forwardSlash '\\' = '/'
+    forwardSlash character = character
+
+{- | Render a source path as the module name that file declares.
+
+The same reason as 'repoRelativePath': a module-ownership list names modules,
+and the path a host hands back names them with the host's own separator.
+-}
+repoRelativeModuleName :: FilePath -> FilePath -> String
+repoRelativeModuleName sourceRoot =
+    intercalate "." . splitOnSlash . dropExtension . repoRelativePath sourceRoot
+  where
+    splitOnSlash path =
+        case break (== '/') path of
+            (segment, _slash : rest) -> segment : splitOnSlash rest
+            (segment, []) -> [segment]
 
 importsModule :: String -> String -> Bool
 importsModule imported = elem imported . haskellImports
@@ -66,6 +102,25 @@ moduleImportTokens expected source =
 
 countHaskellIdentifier :: String -> String -> Int
 countHaskellIdentifier identifier = length . filter (== identifier) . haskellTokens
+
+{- | Count applications of one named function directly to a POSIX-absolute
+string literal.
+
+The same lexical pass the import guards use removes comments and treats a string
+literal as one token, so a shell-quoting helper that merely mentions a slash
+inside a larger literal is not a match and a commented-out example is not either.
+-}
+countPosixAbsoluteLiteralApplications :: String -> String -> Int
+countPosixAbsoluteLiteralApplications name = count . haskellTokens
+  where
+    count (applied : argument : remaining)
+        | applied == name && isPosixAbsoluteLiteral argument =
+            1 + count (argument : remaining)
+        | otherwise = count (argument : remaining)
+    count _ = 0
+
+    isPosixAbsoluteLiteral token =
+        isQuotedToken token && take 2 token == "\"/"
 
 countHaskellTokenSequence :: [String] -> String -> Int
 countHaskellTokenSequence [] _source = 0

@@ -61,10 +61,14 @@ limactl delete <instance> --force
 Lima's managed containerd/rootless containerd boot scripts are not part of the runtime contract.
 `--timeout 15m` prevents a provider readiness problem from becoming an unbounded lifecycle hang.
 
-Deletion is prefix-guarded. A caller supplies the project guard prefix, and the builder refuses to
-emit a destructive command for any instance name outside that namespace. `limactl stop` carries no such
-guard because it is non-destructive — it halts the instance and leaves it (and its disk) intact for a
-later `project up` to bring back to running.
+Deletion is prefix-guarded, and the guard is one computation every frame's removal goes through rather
+than one written per provider. A caller supplies the project guard prefix; this module supplies only what
+Lima calls the thing being removed and the argument vector for a name the guard has already admitted, so
+it cannot render a destructive command for a name the guard would have refused. A name outside the
+namespace refuses, and so do the two degenerate inputs that make the guard vacuous: an empty prefix, which
+is a prefix of every name, and an empty instance name. `limactl stop` carries no such guard because it is
+non-destructive — it halts the instance and leaves it (and its disk) intact for a later `project up` to
+bring back to running.
 
 ## VM Lifecycle In The Chain
 
@@ -101,12 +105,14 @@ A host directory reaches the Lima guest through the same host-path share primiti
 Lima declares its **host-side share** as the create-time mount argument on `limactl start` (its
 `HostPathShare` has no post-create `ShareReconcile`); the **guest-side alias** — the stable Docker-visible
 symlink to the share — uses the common prepared alias boundary. That core boundary accepts only the exact
-opaque managed provider/share authorities, admits retained guest `flock` rather than a non-interoperating
-`lockf` namespace, and recovers `prepared`/`managed`/`releasing` origin states before
+opaque managed provider/share authorities, holds its clauses through the row the frame declares rather
+than a front-end process, and recovers `prepared`/`managed`/`releasing` origin states before
 identity-conditional release. The demo's current Lima call site still threads compatibility readiness and
-creates/removes the alias by pathname, so that call site mints no receipt. Replacing it belongs to the
+creates/removes the alias by pathname, so that call site mints no receipt. Replacing it — together with
+establishing the project binary in the guest that the alias's row runs in — belongs to the
 [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md). See
-[ownership invariant](../architecture/ownership_invariant.md), [readiness](../architecture/readiness.md),
+[ownership invariant](../architecture/ownership_invariant.md),
+[ownership seam](../architecture/ownership_seam.md), [readiness](../architecture/readiness.md),
 and [durable state](../architecture/durable_state.md).
 
 The `deploy-VM` step kind is the reuse unit, not a Lima-specific command: the same kind is interpreted

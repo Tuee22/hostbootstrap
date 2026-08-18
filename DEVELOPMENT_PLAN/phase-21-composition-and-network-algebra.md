@@ -141,7 +141,11 @@ Adoption at the `service run` call site remains the service-runtime phase's work
 
 Sprint 21.2 still needs exact argument-shape coverage for its four blob Lift leaves. Sprint 21.3 is reopened
 for the role authority, transition, interruption, reporting, receipt-reprobe, and durable-resume gaps listed
-above. The focused suites and a fresh complete phase gate validate the phase after both lanes close.
+above. The phase additionally owns § LL's single crossing renderer: the lift fold is the only place a
+frame-crossing argument vector is produced, so the registry's authenticated descent derives from it instead
+of choosing between two crossing routes at runtime, and the sanitized lifecycle route derives from it
+instead of rendering its own vector for the same layer. The focused suites and a fresh complete phase gate
+validate the phase after those lanes close.
 
 ## Documentation Requirements
 

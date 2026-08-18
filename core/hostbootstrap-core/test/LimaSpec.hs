@@ -75,9 +75,15 @@ providerBoundaryCases :: [TestTree]
 providerBoundaryCases =
     [ testCase "Lima consumes and reexports exactly the lower target/renderer pair" $ do
         source <- providerSource "Lima.hs"
-        hostBootstrapImports source @?= ["HostBootstrap.Lift.Context"]
+        -- Two lower modules, and only two: the frame's own target and renderer,
+        -- and the shared frame table this row's destructive delete goes through
+        -- (§ LL). Both are below the realization, which is what this guard is for.
+        hostBootstrapImports source
+            @?= ["HostBootstrap.Lift.Context", "HostBootstrap.Substrate.Frame"]
         fmap withoutCommas (SourceGuard.moduleImportTokens "HostBootstrap.Lift.Context" source)
             @?= Just ["LimaVM", "(", "..", ")", "shellVMArgs"]
+        fmap withoutCommas (SourceGuard.moduleImportTokens "HostBootstrap.Substrate.Frame" source)
+            @?= Just ["FrameNoun", "(", "LimaInstance", ")", "guardedDeleteArgs"]
         exports <-
             maybe
                 (fail "HostBootstrap.Lima must have an explicit export list")

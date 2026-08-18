@@ -86,7 +86,7 @@ owns the later prepared per-project Colima Docker-provider wall.
 
 ## Windows Minimums
 
-Windows is the third metal substrate (`windows-cpu` and `windows-gpu`); its Linux workload runs inside a
+Windows is an outer host realization (`windows-cpu` and `windows-gpu`); its universal `linux-cpu` workload runs inside a
 WSL2 `Ubuntu-24.04` guest, the structural peer of the Lima (Apple Silicon) and Incus (native Linux) VMs.
 The Python bootstrapper asserts, fail-fast:
 

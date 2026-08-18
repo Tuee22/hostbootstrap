@@ -18,7 +18,6 @@ module HostBootstrap.Wsl2
 where
 
 import Data.Char (toLower)
-import Data.List (isPrefixOf)
 import HostBootstrap.Ensure.Wsl2
   ( bcdeditHypervisorLaunchArgs,
     normalizeWslText,
@@ -26,6 +25,7 @@ import HostBootstrap.Ensure.Wsl2
     wslReportsVirtualizationDisabled,
   )
 import HostBootstrap.Lift.Context (Wsl2VM (..), wslExecArgs)
+import HostBootstrap.Substrate.Frame (FrameNoun (Wsl2Distribution), guardedDeleteArgs)
 
 -- | Tokenise @wsl --list --quiet@ output into distro names for a membership
 -- test. Strips the UTF-16 NUL padding and splits on whitespace, but preserves
@@ -62,16 +62,13 @@ wslTerminateArgs :: String -> [String]
 wslTerminateArgs distro =
   ["--terminate", distro]
 
+-- | This frame's row in the one guarded destructive delete (§ LL). WSL2 spells
+-- the removal @--unregister@; the guard that decides whether it may happen is
+-- the same computation Lima's and Incus's rows go through.
 wslUnregisterArgs :: String -> String -> Either String [String]
-wslUnregisterArgs prefix distro
-  | prefix `isPrefixOf` distro = Right ["--unregister", distro]
-  | otherwise =
-      Left
-        ( "refusing to unregister WSL2 distro not carrying the guard prefix '"
-            ++ prefix
-            ++ "': "
-            ++ distro
-        )
+wslUnregisterArgs prefix distro =
+  guardedDeleteArgs Wsl2Distribution prefix distro $
+    \name -> ["--unregister", name]
 
 wslShutdownArgs :: [String]
 wslShutdownArgs =

@@ -1,11 +1,12 @@
 # Phase 16 — Cluster lifecycle, budgets, and cordoning
 
-**Status**: Done
-**Depends on**: Phase 12 (the generic plan-indexed budget boundary), Phase 15 (host providers and the
-self-reference lift)
+**Status**: Active
+**Current sprint**: Sprint 16.40 — The cluster ownership driver
+**Depends on**: Phase 12 (the generic plan-indexed budget boundary), Phase 14 (the four ownership clauses
+and the ownership seam), Phase 15 (host providers and the self-reference lift)
 **Substrates**: linux-cpu
-**Gate**: `(cd core && cabal test all --ghc-options=-Werror) && ./scripts/run-live-cluster-gate.sh` from the
-repository root on linux-cpu
+**Gate**: `cd core && cabal test all --ghc-options=-Werror` host-native on every supported outer host
+realization, composed with `hostbootstrap test run cluster-live` on linux-cpu
 
 > **Purpose**: Bring a cluster up inside a declared resource budget, cordon what the project may consume, and
 > keep the durable host root outside everything the lifecycle may delete.
@@ -19,6 +20,14 @@ reach the durable state the project exists to keep. This phase adopts those mech
 and direct-Colima consumers. The provider-neutral capacity/sizing/cordon foundation comes from Phase 6, the
 generic plan-indexed budget algebra comes from Phase 12, and the worked demo later supplies its concrete
 workload, overhead, partition, and slice projection.
+
+Two boundaries are worth naming because they sit close to this phase's own. Recursive and demo call-site
+adoption of these consumers belongs to the
+[recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md) and the
+[worked-demo phase](phase-24-worked-demo.md), not here. And the direct-Colima driver's *static* coverage
+closes on any POSIX gate host once its classification is pure, so no sprint here waits on Apple hardware;
+only the live confirmation does, and the
+[Apple-Silicon-substrate phase](phase-25-apple-silicon-substrate.md) lists it among what it confirms.
 
 The Phase 16 whole-graph build also revalidates several already-owned generic boundaries after adjacent
 exact-plan callbacks were generalized and rebuilt with GHC 9.12: Phase 12.2's Type-kinded `StepAction`,
@@ -1469,6 +1478,71 @@ without creating infrastructure. Live execution belongs only to the phase-level 
 
 None.
 
+### Sprint 16.39: Cluster suite host neutrality [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/test/ClusterReconcileSpec.hs`,
+`core/hostbootstrap-core/test/ClusterBackendSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/testing.md`,
+`documents/engineering/cluster_lifecycle.md`
+
+#### Objective
+
+Assert this phase's cluster preparation, settlement, and readiness boundary from every supported outer
+host realization.
+
+#### Deliverables
+
+- Every host `HostConfig` tool table in the phase's suites — the Python, Docker, kind, and kubectl
+  entries the exact cluster package projects — builds its paths through the fixture-path constructor the
+  [Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md) owns.
+- The runner dispatch that selects a fake backend response by executable compares that same constructed
+  value, so the absolute-backend-path projection guard keeps asserting exactly what it asserts today.
+- In-container and in-cluster paths stay POSIX. A kubeconfig path inside a node container, a mounted
+  durable root, the injected kind/runtime/kubectl triple, and a guest command name files on a different
+  machine, and only the host side moves.
+- The POSIX-only backend cases the suites already separate — the real process-group, signal, and
+  output-bound probes that drive `/bin/sh` — keep their existing platform conditions and are skipped
+  rather than failed on an outer host that cannot run them. `ClusterReconcileSpec` splits on the same
+  line: its package and projection cases are host-portable, while every case that admits a `ClusterSpec`
+  is Linux-frame and carries the condition.
+- The work is test-harness only: no production module, no named type, and no change to any cluster
+  contract the phase already states.
+
+#### The frame a cluster spec belongs to
+
+A `ClusterSpec`'s state directory is the path the locked ownership program receives *inside* the realized
+Linux substrate, which is why its absoluteness check is POSIX and why the production resolved backend is
+itself Linux-only. When the cluster step runs, the machine the binary calls "host" is that Linux frame,
+so the host `</>` that derives the directory from the canonical project root and the POSIX check that
+admits it agree.
+
+They only come apart on a native Windows outer host, where the fixture's canonical project root is a
+Windows path because it is a real directory on the machine running the suite. That combination is not a
+configuration the architecture has: a native Windows process establishes WSL2 and re-establishes the
+binary inside it before any cluster work. Those cases are therefore Linux-frame cases and are skipped on
+Windows rather than failed (§ JJ) — the contract is unchanged, and the gate that proves it is the
+`linux-cpu` one.
+
+#### Validation
+
+`cabal test all --ghc-options=-Werror` from `core/`, run host-native and recorded against the outer host
+that ran it (§ II), on a POSIX outer host and on Windows. The phase's existing static evidence below
+records the POSIX side. The live cluster gate is unaffected: `scripts/run-live-cluster-gate.sh` refuses a
+non-Linux host by design and keeps its own declared bound.
+
+Dated evidence: on 2026-08-17, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0
+passed `cabal test all --ghc-options=-Werror` from `core/` host-native at 1,877/1,877 in 211.76 seconds.
+The eleven Linux-frame reconcile, readiness, and cleanup cases are absent from that count and present in
+the POSIX one, which is the difference the split above describes — a declared difference, which is what
+the [host-portability acceptance phase](phase-28-host-portability-acceptance.md) confirms across families
+(§ JJ) rather than this sprint.
+
+#### Remaining Work
+
+None.
+
 ## Static Validation Evidence
 
 On 2026-08-10, the published
@@ -1479,36 +1553,209 @@ On 2026-08-10, the published
 macOS arm64 run passed the same 1,835 tests in 346.23 seconds. The Linux result closes the static portion of
 the phase gate; the exact composed static-plus-live result is recorded below.
 
+### Sprint 16.40: The cluster ownership driver [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
+`core/hostbootstrap-core/internal/cluster-backend/HostBootstrap/Cluster/Backend/Internal.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/cluster_lifecycle.md`,
+`documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+The cluster's clauses, held through the one seam.
+
+#### Deliverables
+
+- Reconcile, cordon, readiness, and cleanup hold their clauses through the seam's producers and the row
+  the frame declares.
+- The cluster-creating effect between the origin record and the identity binding travels as a described
+  `HostCommand`, so the outcome-unknown window keeps its durable meaning and the driver keeps no way to
+  run a string.
+- The read-only status observation is a pure classification over a bounded run: the driver builds the
+  argument vector, the runner runs it, and a total function turns the result into a decision.
+- Identity is the control-plane node container's own, as it is today; what changes is where the
+  comparison lives, not what it compares.
+- The tools the driver reaches come from the frame table, so a tool it drives and a row that holds its
+  clauses are declared in one place.
+
+#### Validation
+
+Every classification is covered by application over values, including each conflict and each refusal. The
+clause-holding effects are exercised against the real kernel in a temporary directory. No case reaches a
+substitution point, so none can pass against one (§ NN).
+
+#### Remaining Work
+
+All adoption, tests, guards, and documentation.
+
+### Sprint 16.41: The direct-Colima ownership driver [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Internal.hs`,
+`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Runner.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/ensure_reconcilers.md`,
+`documents/engineering/applied_cordon.md`
+
+#### Objective
+
+The six durable Colima stages as one Haskell state machine over the seam.
+
+#### Deliverables
+
+- Acquisition, cleanup, and live Docker hold their clauses through the seam, with the stage graph a pure
+  total transition function from state and observation to the next state or a typed refusal.
+- The bounded command the driver supervises is a transaction shipped to this machine, because its
+  parent-death watch — the group kill that fires when the owning process disappears without running any
+  handler — is not something the launcher's own bracket can promise.
+- Every artifact identity, namespace binding, and directory-chain digest the stages record is expressed in
+  the shared record vocabulary rather than a driver-local encoding.
+- The tool candidates and their canonical bindings stay a fixed table in an unexposed component (§ K); the
+  refactor changes what holds the clauses, not who may choose a candidate.
+
+#### Validation
+
+The stage graph, the argument vectors, and the classification of each tool result are pure and are covered
+by application over values, so the suite needs no stand-in executable on `PATH` to reach them (§ NN). The
+clause-holding effects run against the real kernel, which the static gate reaches on any POSIX gate host.
+Live confirmation against real Colima is the
+[Apple-Silicon-substrate phase](phase-25-apple-silicon-substrate.md)'s and is recorded as owed here. The
+crash windows that a fault-injection argument reaches today are named as owed rather than counted.
+
+#### Remaining Work
+
+All adoption, tests, guards, and documentation.
+
+### Sprint 16.42: The live cluster gate as a harness case [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/app/Main.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/CLI.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/cluster_lifecycle.md`,
+`documents/engineering/testing.md`
+
+#### Objective
+
+Make the live gate a verb an operator already knows.
+
+#### Deliverables
+
+- The bare binary carries a real test suite with one live cluster case, reached by `test run`. A gate is
+  something the fixed command tree already expresses (§ P), so it needs no second surface.
+- The case takes its exclusive run, its lease, its clause-holding cleanup, and its report from the harness
+  rather than arranging each itself.
+- The cluster identity the case brings up is the harness run's own, so a pre-existing cluster is a refusal
+  the harness already makes rather than a check the case repeats.
+- The durable root the case reads back is outside everything the case may delete, which is the property
+  the gate exists to prove.
+
+#### Validation
+
+`hostbootstrap test run cluster-live` on a disposable linux-cpu host: a fresh cluster reaches node
+readiness, answers a read-only observation, is deleted, leaves no labelled node container, and leaves the
+durable-root sentinel byte-identical. Record the date, host, architecture, toolchain versions, duration,
+and result with the phase acceptance below.
+
+#### Remaining Work
+
+All implementation, tests, and documentation.
+
 ## Phase-Level Baseline Acceptance
 
-After the implementation sprints pass their static checks, run the exact phase gate from the repository root
-on linux-cpu:
+After the implementation sprints pass their static checks, run the exact phase gate on a disposable
+linux-cpu host:
 
 ```text
-(cd core && cabal test all --ghc-options=-Werror) && ./scripts/run-live-cluster-gate.sh
+(cd core && cabal test all --ghc-options=-Werror) && hostbootstrap test run cluster-live
 ```
 
-The runner must create a fresh isolated Kind cluster, wait for all nodes Ready, perform a read-only status
+The run must create a fresh isolated Kind cluster, wait for all nodes Ready, perform a read-only status
 observation, delete the cluster, prove its labelled node containers absent, and re-read the exact durable-root
 sentinel outside the deletion boundary. Record the date, host/OS/architecture, GHC/Cabal/Kind/Kubernetes
 versions, duration, and result here.
 
-On 2026-08-10 the standalone runner passed in the published arm64 Linux CPU base environment against the host
-Docker engine after creating and deleting a fresh Kind cluster. That independent result validates the
-runner's live mechanics separately from the composed result.
+On 2026-08-10 the live half passed on its own in the published arm64 Linux CPU base environment against the
+host Docker engine after creating and deleting a fresh Kind cluster. That independent result validates the
+live mechanics separately from the composed result.
 
-**2026-08-10 — passed.** The exact composed gate ran in the published
+**2026-08-10 — passed.** The composed gate of that date ran in the published
 `docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64` image at
 `sha256:3634916e85b1fda411ae671a4bca2f72745e0bd106e2e9efebccc25415e0bc49`, on Linux
 6.8.0-100-generic aarch64 with GHC 9.12.4, Cabal 3.16.1.0, Kind v0.32.0, kubectl client v1.36.3, and
 Kubernetes node v1.36.1. It exited 0 in 455 seconds. The static half passed all 1,835 tests, and the live
-runner created `hostbootstrap-phase16-19575488ca6342ebaeebffa2`, waited for its nodes to become Ready,
+half created `hostbootstrap-phase16-19575488ca6342ebaeebffa2`, waited for its nodes to become Ready,
 performed the required read-only node observation, deleted the cluster, proved its labelled node containers
 absent, and re-read the durable-root sentinel with its exact original contents.
 
+### Sprint 16.43: The enumeration names what the binary drives [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
+`core/hostbootstrap-core/test/HostToolSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/build_and_run_model.md`
+
+#### Objective
+
+Narrow the `HostTool` enumeration to the tools the binary still delegates to, and pin it there.
+
+#### Deliverables
+
+- `Python3`, `Flock`, and `Lockf` leave the enumeration. § K admits a tool the project genuinely
+  **delegates** to; these three are how an interpreter and a locking front end performed ownership on the
+  binary's behalf, and Sprints 16.40 and 16.41 replace that with the binary's own typed operation over one
+  platform row. The names go with the last driver that needed them.
+- `requiredClusterTools` loses `Flock` and `Python3`, which is the last host-side site. The alias driver's
+  `Flock` is a local `ExclusionTool` and its Python and lock front ends are the guest's own, reached through
+  one absolute host-provider command — § K's carve-out, on a different axis, unaffected by this sprint.
+- `Lockf` leaves with them. It exists only as the discriminator that refuses a host offering `lockf` where
+  `flock` is required, and a discriminator for a front end the binary no longer resolves has nothing to
+  discriminate.
+- `HostToolSpec` gains the **exact** membership pin — `allHostTools` compared against the complete list,
+  not a subset check — so a tool the project does not delegate to cannot re-enter the set. That is the
+  absence guard for the shape this sprint removes (§ I), which is why it ships here rather than with the
+  boundary.
+
+#### Validation
+
+`HostToolSpec`'s exact membership assertion, proved non-vacuous by naming the complete set rather than a
+lower bound; `ClusterBackendSpec` and `ProviderBackendSpec` over the narrowed discovery.
+
+#### Remaining Work
+
+All narrowing, the pin, and documentation.
+
 ## Remaining Work
 
-None. Phases 17 and 24 own recursive and worked-demo call-site adoption outside this phase.
+Every sprint through 16.39 is complete. What remains is the phase's shape under § KK, § LL, and § NN, in
+four parts:
+
+- **The cluster ownership driver** holds its clauses through the seam the
+  [four-ownership-clauses-and-host-local-reservations phase](phase-14-ownership-clauses-and-reservations.md)
+  supplies, over the row the frame declares. Its read-only status probe becomes a pure classification over
+  a bounded run rather than a program with its own report vocabulary.
+- **The direct-Colima ownership driver** does the same for its six durable stages, and its bounded-command
+  supervision becomes a transaction shipped to this machine — the parent-death watch that kills the group
+  when the owning process disappears has no in-process equivalent, so it stays a separate process rather
+  than becoming an ordinary bounded run.
+- **The cluster backend consumes the frame table** rather than resolving its own tools, so the tools it
+  drives and the row that holds its clauses come from one place.
+- **The live gate is a case behind the fixed `test` verb.** The bare binary already carries the test-suite
+  seam, and the harness already owns the exclusive run, the lease, the clause-holding cleanup, and the
+  report card that a gate otherwise hand-rolls.
+- **The enumeration narrows.** Once the two drivers above stop resolving an interpreter and a locking front
+  end, `Python3`, `Flock`, and `Lockf` name nothing the binary drives, and Sprint 16.43 removes them and
+  pins the set against re-entry.
+
+Two consequences are worth stating rather than discovering. The crash windows that a patchable instruction
+point reaches today are **named as owed** in the sprints that replace it rather than counted as covered
+(§ NN). And the sprints that describe the mechanism their own boundaries hold today are restated in the same
+change that moves them onto the seam — § A rewrites a phase in place, and § C keeps the plan describing the
+current repository state rather than the intended one, so neither happens first.
 
 ## Documentation Requirements
 

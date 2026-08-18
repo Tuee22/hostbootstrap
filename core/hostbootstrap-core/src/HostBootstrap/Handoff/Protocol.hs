@@ -21,6 +21,7 @@ module HostBootstrap.Handoff.Protocol (
     HandoffChannel,
     handoffChannel,
     stdioHandoffChannel,
+    withPrivateProtocolStdio,
     channelReceive,
     channelSend,
     ChildProtocolState,
@@ -35,21 +36,27 @@ module HostBootstrap.Handoff.Protocol (
     protocolMaximumBytes,
 ) where
 
-import Control.Exception (IOException, try)
+import Control.Exception (IOException, bracket, bracket_, try)
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import qualified Data.ByteString as ByteString
 import Data.ByteString (ByteString)
 import Data.Word (Word16, Word64, Word8)
+import GHC.IO.Handle (hDuplicate, hDuplicateTo)
 import HostBootstrap.Handoff (renderLifecycleAcknowledgement)
 import System.IO (
     BufferMode (BlockBuffering),
     Handle,
+    IOMode (ReadMode),
+    hClose,
     hFlush,
     hSetBinaryMode,
     hSetBuffering,
+    openFile,
+    stderr,
     stdin,
     stdout,
  )
+import System.Info (os)
 
 -- | Stable magic at the start of every decoded body.
 protocolMagic :: ByteString
@@ -105,6 +112,18 @@ data ProtocolTag
     | LifecycleAckResponseTag
     | RootedLifecycleRequestTag
     | RootedLifecycleResponseTag
+    | -- | The one transaction a frame child is launched to run.
+      --
+      -- A frame crossing is not an admission: the parent already owns the
+      -- object the transaction is about, and what it needs on the far side is
+      -- one act performed where that object lives. So this pair carries no
+      -- offer, challenge, grant, or acceptance — it is one opaque transaction
+      -- out and one opaque outcome back, framed by the same magic, version,
+      -- tag, and request identity as every other message here, so a frame
+      -- child speaks this framing rather than a second one.
+      FrameTransactionTag
+    | -- | That transaction's outcome, as produced at the frame that ran it.
+      FrameOutcomeTag
     deriving (Eq, Ord, Show)
 
 {- | One structurally valid message.  Field bytes are opaque to this layer and
@@ -171,6 +190,8 @@ expectedFieldCount tag = case tag of
     LifecycleAckResponseTag -> 1
     RootedLifecycleRequestTag -> 1
     RootedLifecycleResponseTag -> 1
+    FrameTransactionTag -> 1
+    FrameOutcomeTag -> 1
 
 -- | Encode one message as a complete outer frame.
 encodeProtocolMessage :: ProtocolMessage -> ByteString
@@ -299,6 +320,100 @@ handoffChannel inbound outbound = do
 -}
 stdioHandoffChannel :: IO HandoffChannel
 stdioHandoffChannel = handoffChannel stdin stdout
+
+{- | Hold a private protocol channel over the process's own standard streams,
+with the global ones pointed away from it for the callback's whole life.
+
+A binary launched on the far side of a frame crossing is handed one duplex
+channel and it /is/ its standard input and output. That is a workable transport
+and an unworkable ambient environment: the descriptors the frames travel on are
+the same ones an ordinary @getLine@ reads from and an ordinary @putStrLn@
+writes to, and a single diagnostic line is not a cosmetic problem — it is a byte
+in the middle of a length-framed message.
+
+So the descriptors are taken before anything else can reach them. The original
+standard input and output are duplicated into private handles, the channel is
+built from those, and only then are the global ones redirected: standard input
+to the null device, so an ordinary read sees EOF rather than a protocol frame,
+and standard output to standard error, so an ordinary write becomes a
+diagnostic rather than a corruption. Code running under this bracket does not
+need to know any of that, which is the point — it cannot steal or corrupt the
+channel even by accident, because the handles it would have to use no longer
+name it.
+
+The order is the whole content of the implementation. Both duplications happen
+before either redirection, because a handle duplicated after the global one has
+been pointed elsewhere would name the wrong descriptor; the saved pair is taken
+separately from the protocol pair, because the protocol handles are closed at
+the end and the globals still have to be restored from something. The inner
+bracket owns only the redirection, so restoration runs before the outer bracket
+closes anything it would restore from, and both are brackets, so the process is
+put back on success, on a refusal, on an exception, and on asynchronous
+cancellation alike.
+
+Nothing here inspects, chooses, or accepts a descriptor: the entry takes no
+channel and no handle, so there is no argument through which a caller supplies
+one and no seam through which a test substitutes one.
+-}
+withPrivateProtocolStdio :: (HandoffChannel -> IO result) -> IO result
+withPrivateProtocolStdio use =
+    bracket openProtocolStdio closeProtocolStdio $
+        \(inbound, outbound, savedIn, savedOut, sink) ->
+            bracket_
+                (isolateGlobalStdio sink)
+                (restoreGlobalStdio savedIn savedOut)
+                (handoffChannel inbound outbound >>= use)
+
+{- | Take the protocol pair, the restore pair, and the null sink, in that order. -}
+openProtocolStdio :: IO (Handle, Handle, Handle, Handle, Handle)
+openProtocolStdio = do
+    hFlush stdout
+    inbound <- hDuplicate stdin
+    outbound <- hDuplicate stdout
+    savedIn <- hDuplicate stdin
+    savedOut <- hDuplicate stdout
+    sink <- openFile nullDevicePath ReadMode
+    pure (inbound, outbound, savedIn, savedOut, sink)
+
+{- | Close every duplicate this bracket opened, and nothing global. -}
+closeProtocolStdio :: (Handle, Handle, Handle, Handle, Handle) -> IO ()
+closeProtocolStdio (inbound, outbound, savedIn, savedOut, sink) =
+    mapM_ closeQuietly [inbound, outbound, savedIn, savedOut, sink]
+
+{- | Point the global handles away from the protocol for the callback's life. -}
+isolateGlobalStdio :: Handle -> IO ()
+isolateGlobalStdio sink = do
+    hFlush stdout
+    hDuplicateTo sink stdin
+    hDuplicateTo stderr stdout
+
+{- | Put the global handles back, attempting both regardless of either. -}
+restoreGlobalStdio :: Handle -> Handle -> IO ()
+restoreGlobalStdio savedIn savedOut = do
+    flushQuietly stdout
+    restoreQuietly savedIn stdin
+    restoreQuietly savedOut stdout
+
+restoreQuietly :: Handle -> Handle -> IO ()
+restoreQuietly saved global = do
+    restored <- try (hDuplicateTo saved global)
+    either (\(_ :: IOException) -> pure ()) pure restored
+
+flushQuietly :: Handle -> IO ()
+flushQuietly handle = do
+    flushed <- try (hFlush handle)
+    either (\(_ :: IOException) -> pure ()) pure flushed
+
+closeQuietly :: Handle -> IO ()
+closeQuietly handle = do
+    closed <- try (hClose handle)
+    either (\(_ :: IOException) -> pure ()) pure closed
+
+{- | The host's null device: an open descriptor that is already at EOF. -}
+nullDevicePath :: FilePath
+nullDevicePath
+    | os == "mingw32" = "\\\\.\\NUL"
+    | otherwise = "/dev/null"
 
 -- | Read one complete message from the channel's inbound stream.
 channelReceive :: HandoffChannel -> IO (Either ProtocolError ProtocolMessage)
@@ -557,6 +672,8 @@ tagByte tag = case tag of
     LifecycleAckResponseTag -> 17
     RootedLifecycleRequestTag -> 18
     RootedLifecycleResponseTag -> 19
+    FrameTransactionTag -> 20
+    FrameOutcomeTag -> 21
 
 byteTag :: Word8 -> Either ProtocolError ProtocolTag
 byteTag raw = case raw of
@@ -579,6 +696,8 @@ byteTag raw = case raw of
     17 -> Right LifecycleAckResponseTag
     18 -> Right RootedLifecycleRequestTag
     19 -> Right RootedLifecycleResponseTag
+    20 -> Right FrameTransactionTag
+    21 -> Right FrameOutcomeTag
     _ -> Left (ProtocolUnknownTag raw)
 
 word16BigEndian :: Word16 -> [Word8]

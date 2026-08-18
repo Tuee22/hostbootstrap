@@ -7,8 +7,8 @@ recursive lifecycle command), Phase 22 (service-runtime activation and `service 
 **Substrates**: linux-cpu
 **Gate**: `cabal build all` and `cabal test all --ghc-options=-Werror` from `demo/`, plus live
 `hostbootstrap run -- project up`, `hostbootstrap run -- project down`,
-`hostbootstrap run -- project destroy`, and `hostbootstrap run -- test run all` reporting `10/10 passed` on
-linux-cpu
+`hostbootstrap run -- project destroy`, and `hostbootstrap run -- test run all` reporting `10/10 passed`
+inside the universal `linux-cpu` realization on any supported outer host
 
 > **Purpose**: Be the real consumer that proves the library composes — a complete application with its own
 > plan, config vocabulary, test component, and service variants.
@@ -20,7 +20,9 @@ scope-polymorphic plan instantiated separately for production and for each harne
 a real cluster, an in-cluster registry backed by object storage, an accelerator daemon, and a five-case test
 matrix generated from decoded configuration.
 
-It is also where the container quality gate lives, because `fourmolu` and `hlint` run only inside the image's
+It is also where the universal-realization contract becomes live: the host-native binary must establish
+native Linux, Lima/Colima, or WSL2 as appropriate and re-enter this same project in `linux-cpu`; a native
+macOS or Windows execution of the commands is not equivalent. The container quality gate lives here because `fourmolu` and `hlint` run only inside the image's
 own `check-code` — see [rationale.md](rationale.md). Sprint 24.30 is the sole worked-demo live confirmation of
 the host-static recursive lifecycle command completed by Phase 17.
 
@@ -1344,7 +1346,50 @@ process gate; Phase 19 retains its separately owned Harness/interruption gate.
 
 The complete fresh linux-cpu Production sequence, Harness `10/10` run, end-state audit, and dated evidence.
 
+### Sprint 24.31: The guest bootstrap and the guest alias driver [Planned]
+
+**Status**: Planned
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Alias.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_invariant.md`,
+`documents/operations/demo_runbook.md`
+
+#### Objective
+
+Establish the project binary inside the pristine guest through the one guest bootstrap vocabulary, then
+let the guest alias hold its clauses the way every other object does.
+
+#### Deliverables
+
+- The pristine-guest bring-up consumes the closed guest bootstrap vocabulary the
+  [ensure-reconcilers phase](phase-8-ensure-reconcilers.md) owns: five ordered, separately probeable steps,
+  each an argument vector, ending with the binary installed where the lift expects it.
+- Because the step is probe-first, a re-run of a partially bootstrapped guest completes the steps that are
+  outstanding instead of repeating the ones that are not.
+- With the binary established there, the guest alias holds its four clauses through the ownership seam,
+  over the shipped row addressed at that frame — so the alias's identity is still read by the kernel that
+  owns the object, and it is read by this binary.
+- The alias's durable record uses the shared record vocabulary, so a record written in a guest is readable
+  by the host frame that owns the share.
+- This is the sprint in which a frame crossing carries an ownership transaction for the first time, so it
+  is where that row earns its live confirmation.
+
+#### Validation
+
+The bootstrap plan and the alias transaction are pure and covered by application over values. The live
+confirmation is this phase's own acceptance run: the guest is bootstrapped from pristine, the alias is
+created, survives a stop and restart, and is released, with the durable share intact either side.
+
+#### Remaining Work
+
+All implementation, adoption, tests, and documentation.
+
 ## Remaining Work
+
+Sprint 24.31 establishes the binary in the pristine guest and adopts the ownership seam for the guest
+alias — the one owned object whose driver cannot precede a bootstrapped guest, because § N forbids copying
+a binary into one.
 
 Sprint 24.3 closes the exact same-run durable assertion, and Sprint 24.4 closes plan/profile/root assembly and
 published artifact provenance. Sprints 24.5–24.7 author provider resources, seed neutral exact-plan execution,

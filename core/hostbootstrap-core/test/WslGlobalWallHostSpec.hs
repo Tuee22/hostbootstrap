@@ -8,6 +8,13 @@ machine, the four ownership clauses, and the crash-resume branches are proved
 on the filesystem rather than in a model.  The Windows backend supplies the
 same primitives through @Win32@; its remaining obligation is the native gate,
 not a second copy of this logic.
+
+The POSIX row is a platform row, and the module compiles on every gate host
+(§ JJ).  On a host that cannot hold the row's clauses, a case does not
+disappear: it stays, and what it asserts becomes the refusal the row declares.
+That keeps each family the same size everywhere, which is what
+"CoverageManifest" checks — a family that quietly shrank on one host would
+still report a green total, and the number would read the same.
 -}
 module WslGlobalWallHostSpec (tests) where
 
@@ -29,7 +36,7 @@ import System.Directory
   )
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestName, TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 managedBody :: [ByteString]
@@ -81,6 +88,42 @@ withWall consume =
 expectRight :: (Show err) => String -> Either err value -> IO value
 expectRight label = either (assertFailure . ((label ++ ": ") ++) . show) pure
 
+{- | One case that drives the POSIX row against the kernel.
+
+On a gate host that can hold the row's clauses the body runs and the case is
+evidence about the real syscalls (§ NN).  On one that cannot, the case is still
+here and still runs; what it asserts is the total refusal the row declares, so
+the family's size is a property of the suite rather than of the host.
+-}
+rowCase :: TestName -> (FilePath -> HostWallBackend PosixWallHandle -> IO ()) -> TestTree
+rowCase name body =
+  testCase name $
+    withWall $ \target backend ->
+      if posixGlobalWallSupported
+        then body target backend
+        else expectRowRefusal backend
+
+{- | The disposition a row that cannot hold its clauses owes every caller.
+
+Both production entry points are asked, because a row that refused only one of
+them would be a row that half exists.
+-}
+expectRowRefusal :: HostWallBackend PosixWallHandle -> IO ()
+expectRowRefusal backend = do
+  wall <- request "owner" managedBody
+  applied <- applyGlobalWall backend wall
+  case applied of
+    Left (HostWallUnsupported _) -> pure ()
+    other ->
+      assertFailure
+        ("expected the POSIX row to refuse this apply, got " ++ show other)
+  restored <- restoreGlobalWall backend wall
+  case restored of
+    Left (HostWallUnsupported _) -> pure ()
+    other ->
+      assertFailure
+        ("expected the POSIX row to refuse this restore, got " ++ show other)
+
 tests :: TestTree
 tests =
   testGroup
@@ -95,8 +138,7 @@ tests =
 
 absentOriginCases :: [TestTree]
 absentOriginCases =
-  [ testCase "publishes the managed body and restores absence" $
-      withWall $ \target backend -> do
+  [ rowCase "publishes the managed body and restores absence" $ \target backend -> do
         wall <- request "owner" managedBody
         applied <- applyGlobalWall backend wall >>= expectRight "apply"
         persistedWallPhase (appliedWslConfigRecord applied) @?= WallApplied
@@ -112,8 +154,7 @@ absentOriginCases =
         _ <- expectRight "restore" restored
         exists <- doesFileExist target
         exists @?= False,
-    testCase "leaves no recovery names or journal behind" $
-      withWall $ \target backend -> do
+    rowCase "leaves no recovery names or journal behind" $ \target backend -> do
         wall <- request "owner" managedBody
         _ <- applyGlobalWall backend wall >>= expectRight "apply"
         _ <- restoreGlobalWall backend wall >>= expectRight "restore"
@@ -126,8 +167,7 @@ absentOriginCases =
           other ->
             assertFailure
               ("expected a cleared journal, got " ++ show other),
-    testCase "a second apply is an idempotent no-op" $
-      withWall $ \target backend -> do
+    rowCase "a second apply is an idempotent no-op" $ \target backend -> do
         wall <- request "owner" managedBody
         first <- applyGlobalWall backend wall >>= expectRight "apply"
         afterFirst <- ByteString.readFile target
@@ -138,8 +178,7 @@ absentOriginCases =
           @?= persistedFenceValue (appliedWslConfigRecord first)
         _ <- restoreGlobalWall backend wall >>= expectRight "restore"
         pure (),
-    testCase "each acquisition consumes a strictly newer fence" $
-      withWall $ \_ backend -> do
+    rowCase "each acquisition consumes a strictly newer fence" $ \_ backend -> do
         wall <- request "owner" managedBody
         first <- applyGlobalWall backend wall >>= expectRight "apply"
         _ <- restoreGlobalWall backend wall >>= expectRight "restore"
@@ -151,8 +190,7 @@ absentOriginCases =
           )
         _ <- restoreGlobalWall backend wall >>= expectRight "final restore"
         pure (),
-    testCase "clause 1 serialises two concurrent entries" $
-      withWall $ \_ backend -> do
+    rowCase "clause 1 serialises two concurrent entries" $ \_ backend -> do
         started <- newEmptyMVar
         finished <- newEmptyMVar
         void . forkIO $ do
@@ -172,8 +210,7 @@ absentOriginCases =
 
 presentOriginCases :: [TestTree]
 presentOriginCases =
-  [ testCase "retains and republishes the exact original bytes" $
-      withWall $ \target backend -> do
+  [ rowCase "retains and republishes the exact original bytes" $ \target backend -> do
         let original = "# operator settings\n[wsl2]\nkernel=C:\\\\custom\n"
         ByteString.writeFile target original
         wall <- request "owner" managedBody
@@ -191,8 +228,7 @@ presentOriginCases =
         recovered @?= original
         residue <- targetSiblings target
         residue @?= [],
-    testCase "an empty original file is restored as an empty file" $
-      withWall $ \target backend -> do
+    rowCase "an empty original file is restored as an empty file" $ \target backend -> do
         ByteString.writeFile target ByteString.empty
         wall <- request "owner" managedBody
         _ <- applyGlobalWall backend wall >>= expectRight "apply"
@@ -201,8 +237,7 @@ presentOriginCases =
         exists @?= True
         recovered <- ByteString.readFile target
         recovered @?= ByteString.empty,
-    testCase "a symbolic-link target is refused rather than followed" $
-      withWall $ \target backend -> do
+    rowCase "a symbolic-link target is refused rather than followed" $ \target backend -> do
         ByteString.writeFile (target ++ ".real") "operator bytes\n"
         createFileLink (target ++ ".real") target
         wall <- request "owner" managedBody
@@ -218,8 +253,7 @@ presentOriginCases =
 
 refusalCases :: [TestTree]
 refusalCases =
-  [ testCase "a foreign owner cannot take over an active wall" $
-      withWall $ \_ backend -> do
+  [ rowCase "a foreign owner cannot take over an active wall" $ \_ backend -> do
         mine <- request "owner" managedBody
         theirs <- request "other-owner" managedBody
         _ <- applyGlobalWall backend mine >>= expectRight "apply"
@@ -231,8 +265,7 @@ refusalCases =
               ("expected a foreign-owner conflict, got " ++ show other)
         _ <- restoreGlobalWall backend mine >>= expectRight "restore"
         pure (),
-    testCase "an incompatible declaration refuses rather than overwrites" $
-      withWall $ \target backend -> do
+    rowCase "an incompatible declaration refuses rather than overwrites" $ \target backend -> do
         small <- request "owner" managedBody
         large <- request "owner" otherManagedBody
         _ <- applyGlobalWall backend small >>= expectRight "apply"
@@ -247,8 +280,7 @@ refusalCases =
         after @?= before
         _ <- restoreGlobalWall backend small >>= expectRight "restore"
         pure (),
-    testCase "restore without an active record is a structured refusal" $
-      withWall $ \_ backend -> do
+    rowCase "restore without an active record is a structured refusal" $ \_ backend -> do
         wall <- request "owner" managedBody
         result <- restoreGlobalWall backend wall
         case result of
@@ -256,8 +288,7 @@ refusalCases =
           other ->
             assertFailure
               ("expected HostWallNoActiveRecord, got " ++ show other),
-    testCase "clause 4 refuses to delete a replaced managed target" $
-      withWall $ \target backend -> do
+    rowCase "clause 4 refuses to delete a replaced managed target" $ \target backend -> do
         wall <- request "owner" managedBody
         _ <- applyGlobalWall backend wall >>= expectRight "apply"
         -- Same privilege, different object: the pathname is identical but the
@@ -276,8 +307,7 @@ refusalCases =
 
 resumeCases :: [TestTree]
 resumeCases =
-  [ testCase "an interrupted publication converges on the next apply" $
-      withWall $ \target backend -> do
+  [ rowCase "an interrupted publication converges on the next apply" $ \target backend -> do
         wall <- request "owner" managedBody
         applied <- applyGlobalWall backend wall >>= expectRight "apply"
         let record = appliedWslConfigRecord applied
@@ -292,8 +322,7 @@ resumeCases =
           ("processors=4" `ByteString.isInfixOf` published)
         _ <- restoreGlobalWall backend wall >>= expectRight "restore"
         pure (),
-    testCase "an interrupted restore converges on the next restore" $
-      withWall $ \target backend -> do
+    rowCase "an interrupted restore converges on the next restore" $ \target backend -> do
         wall <- request "owner" managedBody
         applied <- applyGlobalWall backend wall >>= expectRight "apply"
         let record = appliedWslConfigRecord applied
@@ -305,8 +334,7 @@ resumeCases =
         exists @?= False
         residue <- targetSiblings target
         residue @?= [],
-    testCase "a durable armed leftover is reclaimed, never published" $
-      withWall $ \target backend -> do
+    rowCase "a durable armed leftover is reclaimed, never published" $ \target backend -> do
         wall <- request "owner" managedBody
         applied <- applyGlobalWall backend wall >>= expectRight "apply"
         let record = appliedWslConfigRecord applied
@@ -336,8 +364,7 @@ resumeCases =
 
 codecCases :: [TestTree]
 codecCases =
-  [ testCase "the durable record round-trips" $
-      withWall $ \_ backend -> do
+  [ rowCase "the durable record round-trips" $ \_ backend -> do
         wall <- request "owner" managedBody
         applied <- applyGlobalWall backend wall >>= expectRight "apply"
         let record = appliedWslConfigRecord applied
@@ -351,8 +378,7 @@ codecCases =
         Left (HostWallJournalFailure _) -> pure ()
         other ->
           assertFailure ("expected a journal failure, got " ++ show other),
-    testCase "trailing bytes are refused" $
-      withWall $ \_ backend -> do
+    rowCase "trailing bytes are refused" $ \_ backend -> do
         wall <- request "owner" managedBody
         applied <- applyGlobalWall backend wall >>= expectRight "apply"
         let encoded =

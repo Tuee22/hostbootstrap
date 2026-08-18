@@ -1,3 +1,4 @@
+
 module CompileFailSpec (tests) where
 
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf, stripPrefix)
@@ -76,7 +77,12 @@ compileFailCases rejects rejectsWith =
     , rejectsWith
         "ImportHandoffProcessRoute.hs"
         ["Could not load module 'HostBootstrap.Handoff.Process.Route'. it is a hidden module"]
-    , rejectsWith
+    , -- The lifecycle process owner is a platform row, and a row is built on
+      -- every gate host and refuses where it cannot apply (§ JJ). It is
+      -- therefore unreachable from a public importer for the same reason
+      -- everywhere — the package builds it privately — and the fixture expects
+      -- one diagnostic rather than one per host.
+      rejectsWith
         "ImportHandoffProcess.hs"
         ["Could not load module 'HostBootstrap.Handoff.Process'. it is a hidden module"]
     , rejectsWith
@@ -1805,8 +1811,8 @@ compileFailCases rejects rejectsWith =
         , "with actual type: ClosingProjectPermit"
         ]
     , rejectsWith
-        "ConstructTransactionInterrupted.hs"
-        ["Illegal term-level use of the type constructor"]
+        "ForgeTransactionPermitFromDescriptor.hs"
+        ["Data constructor not in scope: TransactionPermit"]
     , rejectsWith
         "ForgeBuildSigningKey.hs"
         ["Illegal term-level use of the type constructor 'BuildSigningKey'"]

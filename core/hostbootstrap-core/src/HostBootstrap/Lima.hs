@@ -16,8 +16,8 @@ module HostBootstrap.Lima (
 )
 where
 
-import Data.List (isPrefixOf)
 import HostBootstrap.Lift.Context (LimaVM (..), shellVMArgs)
+import HostBootstrap.Substrate.Frame (FrameNoun (LimaInstance), guardedDeleteArgs)
 
 -- | Start a named Ubuntu 24.04 Lima VM sized to the project budget.
 startVMArgs :: LimaVM -> [String] -> [String]
@@ -45,16 +45,10 @@ copyToVMArgs vm src dst = ["copy", src, limaName vm ++ ":" ++ dst]
 statusVMArgs :: LimaVM -> [String]
 statusVMArgs vm = ["list", "--format", "json", limaName vm]
 
-{- | Guarded destructive delete. The caller must supply the project guard
-prefix; non-matching instance names refuse to produce argv.
+{- | This frame's row in the one guarded destructive delete (§ LL): the noun the
+refusal reads in, and the argv for a name the guard has already admitted.
 -}
 deleteVMArgs :: String -> LimaVM -> Either String [String]
-deleteVMArgs prefix vm
-    | prefix `isPrefixOf` limaName vm = Right ["delete", limaName vm, "--force"]
-    | otherwise =
-        Left
-            ( "refusing to delete Lima VM not carrying the guard prefix '"
-                ++ prefix
-                ++ "': "
-                ++ limaName vm
-            )
+deleteVMArgs prefix vm =
+    guardedDeleteArgs LimaInstance prefix (limaName vm) $
+        \name -> ["delete", name, "--force"]

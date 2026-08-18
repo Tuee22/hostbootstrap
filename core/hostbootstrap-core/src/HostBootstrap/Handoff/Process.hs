@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -35,6 +36,16 @@ reassuring text on standard error, and a closed channel are all things a child
 that never completed its edge can produce. The only evidence that an edge
 finished is the rooted completion the relay obtained and the root recorded, so
 that is the only thing this bracket reports as success.
+
+Every obligation above is a POSIX primitive: the child is launched into a new
+process group, the group is signalled rather than the process, and the
+escalation is a signal the child cannot ignore. A host without those primitives
+cannot hold the contract, so this is a platform row. It is compiled on every
+gate host and refuses totally where it cannot apply, rather than being dropped
+from the package there (§ JJ): a caller sees the same two entry points
+everywhere, an absent row is a refusal it can read rather than a module that is
+not there, and the case that covers it asserts that refusal instead of
+disappearing.
 -}
 module HostBootstrap.Handoff.Process
     ( withForwardLifecycleChildProcess
@@ -42,32 +53,32 @@ module HostBootstrap.Handoff.Process
     )
 where
 
-import Control.Concurrent (threadDelay)
-import qualified Control.Exception as Exception
 import Data.ByteString (ByteString)
 import Data.Text (Text)
-import qualified Data.Text as Text
 import Data.Word (Word64)
 import HostBootstrap.Handoff (HandoffBindingInput)
+import HostBootstrap.Handoff.Process.Route (LifecycleProcessRoute)
+import HostBootstrap.Handoff.Relay (BrokerLink)
+import HostBootstrap.HostConfig (HostConfig)
+import HostBootstrap.Teardown.Internal (ReverseDescent)
+#if !defined(mingw32_HOST_OS)
+import Control.Concurrent (threadDelay)
+import qualified Control.Exception as Exception
+import qualified Data.Text as Text
 import HostBootstrap.Handoff.Completion
     ( withAcknowledgedBoundReverseLifecycleCompletionKernel
     , withAcknowledgedForwardLifecycleCompletionKernel
     )
-import HostBootstrap.Handoff.Process.Route
-    ( LifecycleProcessRoute
-    , withLifecycleProcessRouteLaunchKernel
-    )
+import HostBootstrap.Handoff.Process.Route (withLifecycleProcessRouteLaunchKernel)
 import HostBootstrap.Handoff.Protocol (HandoffChannel, handoffChannel)
 import HostBootstrap.Handoff.Relay
-    ( BrokerLink
-    , RelayError
+    ( RelayError
     , offerHandoffEdge
     , offerReverseDescentKernel
     , relayErrorMessage
     )
-import HostBootstrap.HostConfig (HostConfig, resolveMaybe)
+import HostBootstrap.HostConfig (resolveMaybe)
 import HostBootstrap.HostTool (absExePath)
-import HostBootstrap.Teardown.Internal (ReverseDescent)
 import System.Exit (ExitCode)
 import System.IO (Handle, hClose)
 import System.Posix.Signals (Signal, sigKILL, sigTERM, signalProcessGroup)
@@ -82,6 +93,7 @@ import System.Process
     , withCreateProcess
     )
 import System.Timeout (timeout)
+#endif
 
 {- | Launch one forward child and complete its edge, or leave nothing running.
 
@@ -99,11 +111,16 @@ withForwardLifecycleChildProcess ::
     HandoffBindingInput ->
     ByteString ->
     IO (Either Text ())
+#if defined(mingw32_HOST_OS)
+withForwardLifecycleChildProcess _config _link _route _request _input _payload =
+    pure (Left unsupportedOnThisHost)
+#else
 withForwardLifecycleChildProcess config link route request input payload =
     withLifecycleChild config route $ \channel ->
         offerHandoffEdge link channel request input payload $ \offer report persist ->
             withAcknowledgedForwardLifecycleCompletionKernel offer report persist $
                 \_ -> pure (Right ())
+#endif
 
 {- | Launch one reverse child and complete its edge on the same terms.
 
@@ -118,6 +135,21 @@ withReverseLifecycleChildProcess ::
     Word64 ->
     ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId ->
     IO (Either Text ())
+#if defined(mingw32_HOST_OS)
+withReverseLifecycleChildProcess _config _link _route _request _descent =
+    pure (Left unsupportedOnThisHost)
+
+{- | The refusal this row returns on a host without POSIX process groups.
+
+It is a total answer rather than an absence: the caller receives the same
+'Either' it receives everywhere, and the reason names the primitive the
+contract needs rather than the module that is missing.
+-}
+unsupportedOnThisHost :: Text
+unsupportedOnThisHost =
+    processFailure
+        "owning a child's process group is a POSIX row, and this host has no group signal"
+#else
 withReverseLifecycleChildProcess config link route request descent =
     withLifecycleChild config route $ \channel ->
         offerReverseDescentKernel link channel request descent $ \bound report persist ->
@@ -248,6 +280,7 @@ terminationGraceMicros = 10 * 1000000
 {- | How often the grace is checked. -}
 pollMicros :: Int
 pollMicros = 50 * 1000
+#endif
 
 processFailure :: Text -> Text
 processFailure detail = "lifecycle child process: " <> detail

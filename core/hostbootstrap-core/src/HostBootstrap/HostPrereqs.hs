@@ -20,8 +20,7 @@ module HostBootstrap.HostPrereqs (
 )
 where
 
-import Control.Exception (SomeException)
-import Control.Exception.Safe (try)
+import HostBootstrap.Effect.Run (capturedTriple, renderRunFailure, runCaptured)
 import HostBootstrap.HostConfig (HostConfig (..), resolveMaybe)
 import HostBootstrap.HostTool (
     AbsExe,
@@ -29,15 +28,15 @@ import HostBootstrap.HostTool (
     absExePath,
  )
 import HostBootstrap.Substrate (
-    Substrate (..),
-    SubstrateName (..),
+    HostFrame (AppleFrame, LinuxFrame, WindowsFrame),
+    isAppleSilicon,
+    substrateFrame,
  )
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (..))
 #ifndef mingw32_HOST_OS
 import System.Posix.User (getEffectiveUserID)
 #endif
-import System.Process (readProcessWithExitCode)
 
 -- | A host prerequisite is missing or misconfigured.
 newtype PrereqError = PrereqError String
@@ -51,18 +50,17 @@ of @OK@ messages on success, or the first 'PrereqError' on failure.
 -}
 checkHostMinimums :: HostConfig -> IO (Either PrereqError [String])
 checkHostMinimums cfg =
-    runChecks $ case substrateName (hcSubstrate cfg) of
-        AppleSilicon ->
-            [ ("apple-silicon (arm64)", checkAppleSubstrate cfg)
-            , ("Xcode Command Line Tools", checkXcodeClt cfg)
-            , ("passwordless sudo", checkPasswordlessSudo cfg)
-            , ("Homebrew", checkHomebrew cfg)
-            ]
-        LinuxCpu -> linuxChecks
-        LinuxGpu -> linuxChecks
-        WindowsCpu -> windowsChecks
-        WindowsGpu -> windowsChecks
+    runChecks $ case substrateFrame (hcSubstrate cfg) of
+        AppleFrame -> appleChecks
+        LinuxFrame -> linuxChecks
+        WindowsFrame -> windowsChecks
   where
+    appleChecks =
+        [ ("apple-silicon (arm64)", checkAppleSubstrate cfg)
+        , ("Xcode Command Line Tools", checkXcodeClt cfg)
+        , ("passwordless sudo", checkPasswordlessSudo cfg)
+        , ("Homebrew", checkHomebrew cfg)
+        ]
     linuxChecks =
         [ ("Ubuntu 24.04", checkUbuntu2404)
         , ("passwordless sudo", checkPasswordlessSudo cfg)
@@ -88,9 +86,10 @@ runChecks = go []
 
 checkAppleSubstrate :: HostConfig -> IO (Either PrereqError ())
 checkAppleSubstrate cfg =
-    pure $ case substrateName (hcSubstrate cfg) of
-        AppleSilicon -> Right ()
-        _ -> Left (PrereqError "apple-silicon prereqs invoked on a non-Apple host")
+    pure $
+        if isAppleSilicon (hcSubstrate cfg)
+            then Right ()
+            else Left (PrereqError "apple-silicon prereqs invoked on a non-Apple host")
 
 checkPasswordlessSudo :: HostConfig -> IO (Either PrereqError ())
 checkPasswordlessSudo cfg = do
@@ -188,10 +187,10 @@ isUbuntu2404 contents =
 
 runTool :: AbsExe -> [String] -> IO (Either PrereqError (ExitCode, String, String))
 runTool exe args = do
-    result <- try (readProcessWithExitCode (absExePath exe) args "")
-    pure $ case (result :: Either SomeException (ExitCode, String, String)) of
-        Right ok -> Right ok
-        Left err -> Left (PrereqError ("could not exec " ++ absExePath exe ++ ": " ++ show err))
+    outcome <- runCaptured (absExePath exe) args ""
+    pure $ case outcome of
+        Right ok -> Right (capturedTriple ok)
+        Left failure -> Left (PrereqError (renderRunFailure failure))
 
 trim :: String -> String
 trim = f . f where f = reverse . dropWhile (`elem` (" \t\r\n" :: String))

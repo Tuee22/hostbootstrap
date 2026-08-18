@@ -139,7 +139,8 @@ import HostBootstrap.Step (ProjectStepId, ReversePolicy (PreserveOnReverse, Proj
 import System.Directory (doesDirectoryExist, doesFileExist, doesPathExist, getCurrentDirectory, listDirectory, removeFile)
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv, withArgs)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), die)
-import System.FilePath (makeRelative, takeExtension, (</>))
+import SourceGuard (repoRelativePath)
+import System.FilePath (takeExtension, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (readProcessWithExitCode)
 import Test.Tasty (TestTree, testGroup)
@@ -1496,7 +1497,7 @@ tests =
                         (label ++ " still contains compatibility shape " ++ T.unpack fragment)
                         (not (fragment `T.isInfixOf` source))
             assertBool "could not isolate projectCommandGroup" (not (T.null fromProject) && projectEnd `T.isInfixOf` fromProject)
-            sort (map (makeRelative sourceRoot) entryImporters)
+            sort (map (repoRelativePath sourceRoot) entryImporters)
                 @?= [ "Command.hs"
                     , "Handoff/Lifecycle.hs"
                     ]

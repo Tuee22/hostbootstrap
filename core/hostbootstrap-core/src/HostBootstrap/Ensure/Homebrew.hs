@@ -10,27 +10,36 @@
 module HostBootstrap.Ensure.Homebrew (reconciler, installSteps) where
 
 import HostBootstrap.Ensure
-  ( InstallStep,
+  ( FramePlan (ProvidedElsewhere),
+    InstallStep,
     Reconciler (..),
+    appleRow,
+    frameTable,
     installAndVerify,
+    reconcilerInstallSteps,
     toolPresent,
   )
 import HostBootstrap.HostTool (HostTool (Brew))
-import HostBootstrap.Substrate (Substrate, isAppleSilicon)
+import HostBootstrap.Substrate (Substrate)
 
 reconciler :: Reconciler
 reconciler =
   Reconciler
     { reconcilerName = "homebrew",
       reconcilerSummary = "Ensure Homebrew is installed (Apple silicon)",
-      appliesTo = isAppleSilicon,
-      requirement = "apple-silicon",
+      -- One row, and it installs nothing: Homebrew is the toolchain root, so
+      -- there is no resolved tool that could lay it down. The row still exists,
+      -- because the dependency is genuinely probed here — an absent @brew@ must
+      -- fail fast with the instruction rather than read as a wrong host.
+      reconcilerFrames =
+        frameTable
+          [ appleRow
+              ( ProvidedElsewhere
+                  "Homebrew is the host toolchain root; the Python bootstrapper installs it pre-binary. Install from https://brew.sh and retry."
+              )
+          ],
       reconcile = installAndVerify "homebrew" (\cfg -> pure (toolPresent cfg Brew)) installSteps
     }
 
--- | Homebrew has no resolved-tool install plan (it is the toolchain root). The
--- planner always returns 'Left' with the install instruction, so an absent
--- @brew@ fails fast rather than attempting an impossible auto-install.
 installSteps :: Substrate -> Either String [InstallStep]
-installSteps _ =
-  Left "Homebrew is the host toolchain root; the Python bootstrapper installs it pre-binary. Install from https://brew.sh and retry."
+installSteps = reconcilerInstallSteps reconciler

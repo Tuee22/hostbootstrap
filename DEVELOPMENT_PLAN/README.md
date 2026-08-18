@@ -15,11 +15,16 @@ The plan is a **build recipe**. Phases 0 through 28 construct `hostbootstrap` fr
 anything earlier, so following the numbers in order and validating each phase as you go is the supported way
 to develop the project.
 
-`linux-cpu` is the baseline substrate. Phases 0–24 and 28 close on it or on pure-static gates. Phases 25–27
-are **acceptance phases**: each adds any remaining non-baseline substrate-only realizations and confirms the build on
-it. Where a cross-substrate provider realization is already built below, the acceptance phase confirms that
-realization rather than redefining it. Nothing depends on them, so a machine without that hardware stops at
-phase 24 rather than being blocked.
+`linux-cpu` is the universal baseline substrate, not a requirement that the outer host be Linux and not the
+only context an application may target. `hostbootstrap` lifts an arbitrary application into its declared
+hardware context: native
+Linux realizes it directly, Apple Silicon through Lima/Colima, and Windows through WSL2. The host-native
+bootstrap selects and owns that realization, then runs project work and baseline gates inside the resulting
+Linux/container environment. A selected Metal, NVIDIA, or Windows CUDA context adds genuine typed
+capabilities and placement beyond that floor. Phases 0–24 and 28 close on the invariant or on pure-static
+gates. Phases 25–27 are **acceptance phases** for Apple/Metal, NVIDIA-accelerated, and Windows/WSL2/CUDA
+contexts: each confirms the universal floor through its provider and the behavior unique to that context.
+Nothing depends on those additional acceptance dimensions.
 
 [development_plan_standards.md](development_plan_standards.md) § A states the doctrine and § II the substrate
 rule. [rationale.md](rationale.md) explains why the architecture has the shape these phases build, including
@@ -37,7 +42,7 @@ its row here.
 | 2 | [Haskell core scaffolding](phase-2-haskell-core-scaffolding.md) | Done | — | — |
 | 3 | [Host tools and substrate detection](phase-3-host-tools-and-substrate-detection.md) | Done | linux-cpu | — |
 | 4 | [Protected store](phase-4-protected-store.md) | Done | linux-cpu | — |
-| 5 | [Installed identity, operator verification, and authority kernels](phase-5-operator-root-and-command-authority.md) | Done | — | — |
+| 5 | [Installed identity, operator verification, and authority kernels](phase-5-installed-identity-and-authority-kernels.md) | Done | — | — |
 | 6 | [Canonical quantities and reconcile results](phase-6-canonical-quantities-and-reconcile-results.md) | Done | — | — |
 | 7 | [Dhall configuration and the generic project model](phase-7-dhall-configuration-and-project-model.md) | Done | — | — |
 | 8 | [Ensure reconcilers](phase-8-ensure-reconcilers.md) | Done | linux-cpu | — |
@@ -46,25 +51,114 @@ its row here.
 | 11 | [Prepared operations](phase-11-prepared-operations.md) | Done | linux-cpu | — |
 | 12 | [Step algebra and the project plan](phase-12-step-algebra-and-project-plan.md) | Done | linux-cpu | — |
 | 13 | [Authenticated handoff and child admission](phase-13-authenticated-handoff-and-child-admission.md) | Done | linux-cpu | — |
-| 14 | [Ownership clauses and reservations](phase-14-ownership-clauses-and-reservations.md) | Done | linux-cpu | — |
-| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Done | linux-cpu | — |
-| 16 | [Cluster lifecycle, budgets, and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Done | linux-cpu | — |
+| 14 | [Ownership clauses and reservations](phase-14-ownership-clauses-and-reservations.md) | Active | linux-cpu | 14.5–14.10 the ownership seam, its two platform rows, and the host-local adoptions |
+| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Active | linux-cpu | 15.25 the shipped ownership row; 15.26 the provider and direct drivers |
+| 16 | [Cluster lifecycle, budgets, and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Active | linux-cpu | 16.40–16.43 the cluster and Colima drivers, the live gate as a harness case, and the enumeration narrowing |
 | 17 | [Recursive lifecycle command](phase-17-recursive-lifecycle-command.md) | Active | linux-cpu | 17.41–17.51 forward/reverse adoption, cleanup, unwind, gate |
 | 18 | [Recovery and migration](phase-18-recovery-and-migration.md) | Active | linux-cpu | 18.4–18.19 resource records, migration recovery, recovered closure, interruption fixtures |
-| 19 | [Test harness and run ownership](phase-19-test-harness-and-run-ownership.md) | Active | linux-cpu | 19.5 Harness scope-capsule producer, targeted `recovery-interruption`, and live `test run all` acceptance |
-| 20 | [`test` and `context` commands](phase-20-test-and-context-commands.md) | Active | linux-cpu | live linux-cpu verb sequence (phase gate) |
-| 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Active | linux-cpu | 21.2 blob-leaf arguments; reopened 21.3 role authority/transition/recovery audit; focused suites; fresh gate |
+| 19 | [Test harness and run ownership](phase-19-test-harness-and-run-ownership.md) | Active | linux-cpu | 19.5 Harness scope-capsule producer; 19.6 live harness acceptance |
+| 20 | [`test` and `context` commands](phase-20-test-and-context-commands.md) | Active | linux-cpu | 20.4 live verb-sequence acceptance |
+| 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Active | linux-cpu | 21.2 blob-leaf arguments; reopened 21.3 role authority/transition/recovery audit; one crossing renderer (§ LL); focused suites; fresh gate |
 | 22 | [Service runtime](phase-22-service-runtime.md) | Active | linux-cpu | 22.2/22.3 registry adoption, activation installation, and `service run` interpretation |
 | 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
-| 24 | [The worked demo](phase-24-worked-demo.md) | Active | linux-cpu | 24.3 readback; 24.4–24.7 exact plan/resources/slices; 24.8–24.18 provider recovery/adopters/transport; 24.19–24.23 cluster config/backend/recovery/adopter; 24.24–24.27 workload/reverse; 24.28 projector; 24.29 image; 24.30 live acceptance |
+| 24 | [The worked demo](phase-24-worked-demo.md) | Active | linux-cpu | 24.3 readback; 24.4–24.7 exact plan/resources/slices; 24.8–24.18 provider recovery/adopters/transport; 24.19–24.23 cluster config/backend/recovery/adopter; 24.24–24.27 workload/reverse; 24.28 projector; 24.29 image; 24.30 live acceptance; 24.31 guest bootstrap and guest alias |
 | 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Active | **apple-silicon** | 25.3 acceptance re-run |
 | 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Active | **nvidia** | 26.3 acceptance re-run |
 | 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | 27.3 acceptance re-run |
-| 28 | [Documentation reconciliation](phase-28-documentation-reconciliation.md) | Planned | — | all |
+| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Planned | — | 28.1–28.3 the Windows, macOS, and Linux gate-host runs |
+| 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Planned | — | all |
 
 ## The current frontier
 
-The lowest-numbered open phase is **17**. Phases 0–16 are Done. The current constructive boundary is the
+The lowest-numbered open phase is **14**. § KK's invocation half is closed — the
+[host-tools-and-substrate-detection phase](phase-3-host-tools-and-substrate-detection.md) carries one
+quoter, one process runner, one closed command vocabulary, and one interpreter for it — and the
+[ensure-reconcilers phase](phase-8-ensure-reconcilers.md) closed the guest bootstrap vocabulary and § LL's
+re-cut of reconcilers as frame rows, so `HostFrame` is the closed three-constructor frame axis every
+routing fact derives from. The
+[Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md) is closed with § JJ's fifth rule:
+every platform row is now compiled on every gate host and stubbed to a total refusal where it cannot
+apply, the package description decides no module by host, and `CoverageManifest` declares each
+host-conditional family's size so a case that vanished is a failed count rather than a smaller total.
+
+That the frontier is 14 rather than 3 is the result of settling **who owns which half of § K**. The
+`HostTool` boundary — that the set is closed, that entry is by construction, that resolution is absolute
+— is the host-tools phase's, and it is built. *Which* tools are in the set is a description of what the
+binary drives, so it is settled by the phases that drive them; the enumeration narrows when the last
+driver stops driving a name, and that driver is the
+[cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md)'s. Written
+the other way round, the fourth phase of thirty waited on the sixteenth, which is the claim § A forbids
+outright — and which nothing checked, because a `Depends on` field never sees a sentence.
+
+What is open is the **ownership seam**, and it reaches further down the narrative than the phase that
+consumes it. § EE's four clauses are one transaction, and the tree holds it once per owned object: the
+identity read, the no-replace publication, the identity-conditional act, and the durable record encoding
+each exist more than once, and the drivers that hold the clauses for a provider, a cluster, and a Colima
+profile are interpreter programs rather than the binary's own typed operations. Rewriting that rewrites
+the phase that introduced each surface (§ A), which is why the seam is phase 14's rather than a later
+phase carrying a correction. The two phases beneath it that the rewrite reached — the host-tools
+boundary and the authenticated handoff — are built, so what is left of the seam is the clause primitive
+itself and the frames that adopt it.
+
+The order is unchanged. Phase 14 supplies the seam and its two platform rows, phase 15 adds the row that
+runs a transaction at the frame owning the object, and phases 15, 16, and 24 adopt it at the provider,
+the cluster and Colima, and the guest alias. Phase 13 supplies the entry a frame crossing needs: one
+total pure classifier over `argv`, consulted once before the parser, and one bracketed near side that
+folds a lift context into the invocation that crosses the frames, carries one transaction over, reads
+one answer, and ends the child group.
+
+Nothing checked it because nothing could. The `Depends on` field is clean for all thirty phases and always
+was; the coupling lived in prose. The
+[governance-and-documentation-standards phase](phase-0-governance-and-documentation-standards.md) now
+carries the checks that read it: no `Remaining Work` section cites a later phase, an `Active` phase carries
+one non-empty `## Remaining Work`, a `Done` sprint's begins "None.", every ledger row names exactly one
+deleting phase, and every contract opens with the phase that owns it. Each is scoped so a legitimate scope
+statement stays legal, and each has a fixture proving both that it fires and that its scoping holds.
+
+§ NN's evidence contract is the second thread. Phase 2 owns the contract and the guards for the harness's
+own shapes; a guard against a shape in *production* belongs to the phase whose work removes it (§ I).
+Phase 10 has taken the first of those: the redo coordinator carries no crash point, because the durable
+state an interruption leaves is a value a fixture writes through the store, after which the recovery
+driver under test needs no cooperation from the code under test. Phases 14, 15, 16, and 24 owe the
+injected execution seams, the stand-in executables, and the two patchable crash-point markers their own
+rows delete.
+
+On 2026-08-17 the complete host static gate passed host-native on Windows 11 Home 10.0.26200 x86_64 with
+GHC 9.12.4 and Cabal 3.16.1.0: `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/`
+at 1,922/1,922 in 234.62 seconds, plus `poetry run python -m hostbootstrap.check_code` and
+`poetry run python -m hostbootstrap.test_all` at 231 passed. Confirming the same gate on a macOS and a
+Linux gate host is the
+[host-portability acceptance phase](phase-28-host-portability-acceptance.md)'s, because that claim needs
+three machines and § C forbids a baseline phase owing hardware it does not declare.
+
+## The effect vocabulary and the frame table
+
+§ KK's vocabulary is built. One closed command vocabulary describes the tool, its exact argument vector,
+its stdio disposition, and its frame; one interpreter runs it; one quoter and one process runner sit
+beneath; and one module owns the guest bootstrap — the ordered, probe-first steps that establish the binary
+in a frame that has never run it. What it does not yet reach is the ownership drivers, which are still
+interpreter programs carried as string literals: a program in a string parses its own protocol, restates
+invariants its caller already states, and has to be reviewed in two languages.
+
+§ LL makes a provider a **row** over one closed frame table rather than a module of parallel logic, because
+the guarded delete, the existence probe, the readiness wait, the budget-to-wall rendering, and the four
+ownership clauses are one computation each: written per provider they become copies that pass their own
+tests while disagreeing with each other. Its host-frame half is settled — `HostFrame` is the closed
+three-constructor axis and the reconcilers are rows over it — and its guarded destructive delete is one
+computation over that table. The **ownership primitive** is the row still owed, which is why phases 14, 15,
+16, and 21 are open on it.
+
+§ NN states what a gate's evidence is worth. A fake exists because a decision is trapped inside an effect,
+so the answer is not to write better fakes but to lift the decision into a total function that can be
+called: applied to values it needs no stand-in, and the primitives left underneath are exercised against
+the real kernel. § MM is settled by the frame a described command carries: `framePathGrammar` answers which
+grammar a path obeys from the process that will read it, so a validator's grammar follows the reader rather
+than the writer.
+
+[legacy_tracking_for_deletion.md](legacy_tracking_for_deletion.md) records what is still standing against
+those three, and each row names the phase whose completion removes it (§ I).
+
+The constructive boundary of the narrative remains the
 [recursive lifecycle command](phase-17-recursive-lifecycle-command.md). The completed
 [authenticated handoff and child admission](phase-13-authenticated-handoff-and-child-admission.md) boundary's
 challenge/grant foundation, exact config refinement, narrow child-plan authority, Build and Activation
@@ -300,6 +394,15 @@ Every one of those depends only on lower-numbered phases, so they can be taken i
 in its scope. A phase closes on **its own** gate; it never carries a closure obligation needing hardware it
 does not declare.
 
+Two gates carry that weight, and a phase says which one closes it (§ II). The **host static gate** —
+`cabal test all --ghc-options=-Werror` from `core/` plus the two Python commands — runs as an ordinary
+process of the outer host and proves the pure, typed, and lexical contracts. Because every binary is
+built host-native (§ N), it must pass host-native on macOS, Linux, and Windows alike (§ JJ); running it
+natively on Windows is an outer host realization, not a substrate declaration. A **`linux-cpu` substrate
+gate** is one whose gated process and POSIX/container effects execute inside the realized Linux
+substrate, and a native Windows or macOS process is not one of those merely because its assertions are
+otherwise static. Neither gate substitutes for the other.
+
 A dated run validates only the behaviour and substrate it exercised. It cannot stand in for a different
 provider, architecture, concurrency race, negative parser path, or newly introduced type boundary — which is
 why each acceptance phase lists what it confirms, and why a change to a behaviour a lane exercises makes that
@@ -308,8 +411,10 @@ lane's acceptance owed again.
 Exact test counts are dated evidence recorded against the gate that produced them, never a repository-wide
 "current count".
 
-Two limits worth stating rather than assuming: `fourmolu` and `hlint` run only inside the container
-`check-code`, so the host static gate is not the complete quality gate; and the long demo gate brings up real
+Three limits worth stating rather than assuming: `fourmolu` and `hlint` run only inside the container
+`check-code`, so the host static gate is not the complete quality gate; a host static gate run is evidence
+for the one outer host that ran it, so its dated evidence names that host and a pass on one outer host is
+not a claim about another; and the long demo gate brings up real
 provider VMs, Docker state, and clusters on the host it runs on. A harness run's cluster identity, removable
 state, host ports, and durable root are now its own rather than production's, so the gate no longer takes the
 operator's project identity — but it still mutates real host infrastructure, so a disposable host remains the
@@ -318,7 +423,7 @@ supported way to run it.
 ## Governance
 
 - [development_plan_standards.md](development_plan_standards.md) — the doctrine (§ A–§ J, § II) and the
-  normative technical contracts (§ K–§ HH).
+  normative technical contracts (§ K–§ JJ).
 - [00-overview.md](00-overview.md) — phase responsibilities and the dependency flow, without status.
 - [system-components.md](system-components.md) — the implementation surface inventory.
 - [rationale.md](rationale.md) — why the design is what it is, and what it is not.

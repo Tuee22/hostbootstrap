@@ -48,7 +48,9 @@ module HostBootstrap.Ensure.Colima
   )
 where
 
+#if !defined(mingw32_HOST_OS)
 import Control.Exception (IOException, try)
+#endif
 import qualified Crypto.Hash as Hash
 import qualified Data.Aeson as Aeson
 import Data.Bifunctor (first)

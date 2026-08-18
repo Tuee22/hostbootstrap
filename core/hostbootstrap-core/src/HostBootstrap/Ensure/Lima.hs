@@ -6,34 +6,28 @@
 module HostBootstrap.Ensure.Lima (reconciler, installSteps) where
 
 import HostBootstrap.Ensure
-  ( InstallStep (..),
+  ( FramePlan (InstallHere),
+    InstallStep (..),
     Reconciler (..),
+    appleRow,
+    frameTable,
     installAndVerify,
+    reconcilerInstallSteps,
     toolPresent,
   )
 import HostBootstrap.HostTool (HostTool (Brew, Lima))
-import HostBootstrap.Substrate
-  ( Substrate,
-    SubstrateName (AppleSilicon),
-    isAppleSilicon,
-    renderSubstrateName,
-    substrateName,
-  )
+import HostBootstrap.Substrate (Substrate)
 
 reconciler :: Reconciler
 reconciler =
   Reconciler
     { reconcilerName = "lima",
       reconcilerSummary = "Ensure the Lima VM provider is installed (Apple silicon)",
-      appliesTo = isAppleSilicon,
-      requirement = "apple-silicon",
+      -- One row: @brew install lima@.
+      reconcilerFrames =
+        frameTable [appleRow (InstallHere [InstallStep Brew ["install", "lima"]])],
       reconcile = installAndVerify "lima" (\cfg -> pure (toolPresent cfg Lima)) installSteps
     }
 
--- | The substrate-branched install plan: @brew install lima@.
 installSteps :: Substrate -> Either String [InstallStep]
-installSteps sub
-  | substrateName sub == AppleSilicon =
-      Right [InstallStep Brew ["install", "lima"]]
-  | otherwise =
-      Left ("lima is only applicable on apple-silicon, not " ++ renderSubstrateName (substrateName sub))
+installSteps = reconcilerInstallSteps reconciler

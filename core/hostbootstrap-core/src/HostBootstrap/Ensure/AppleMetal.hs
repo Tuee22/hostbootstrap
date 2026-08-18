@@ -20,21 +20,21 @@ where
 import Control.Exception (SomeException)
 import Control.Exception.Safe (try)
 import Data.List (isInfixOf)
+import HostBootstrap.Effect.Run (CapturedRun (capturedExit), runCaptured)
 import HostBootstrap.Ensure (
+    FramePlan (ProvidedElsewhere),
     InstallStep,
     Reconciler (..),
+    appleRow,
+    frameTable,
     installAndVerify,
+    reconcilerInstallSteps,
     runTool,
     toolPresent,
  )
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.HostTool (HostTool (Swiftc, SystemProfiler, Xcrun))
-import HostBootstrap.Substrate (
-    Substrate,
-    SubstrateName (AppleSilicon),
-    renderSubstrateName,
-    substrateName,
- )
+import HostBootstrap.Substrate (Substrate)
 import System.Directory (
     createDirectoryIfMissing,
     getTemporaryDirectory,
@@ -42,15 +42,22 @@ import System.Directory (
  )
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
-import System.Process (readProcessWithExitCode)
 
 reconciler :: Reconciler
 reconciler =
     Reconciler
         { reconcilerName = "apple-metal"
         , reconcilerSummary = "Ensure Swift + Metal host-build tooling on apple-silicon"
-        , appliesTo = \sub -> substrateName sub == AppleSilicon
-        , requirement = "apple-silicon"
+        , -- One row, and it installs nothing: Swift, xcrun, the macOS SDK, and
+          -- Metal all arrive together with the Xcode Command Line Tools, which
+          -- no resolved host tool can lay down.
+          reconcilerFrames =
+            frameTable
+                [ appleRow
+                    ( ProvidedElsewhere
+                        "Swift, xcrun, the macOS SDK, and Metal are supplied by Xcode Command Line Tools; run `xcode-select --install` and retry."
+                    )
+                ]
         , reconcile = installAndVerify "apple-metal" satisfied installSteps
         }
 
@@ -93,9 +100,9 @@ swiftMetalSmokeBuild cfg sdkPath =
         compile <- runTool cfg Swiftc (swiftMetalCompileArgs sdkPath source exe)
         case compile of
             Right (ExitSuccess, _, _) -> do
-                result <- try (readProcessWithExitCode exe [] "") :: IO (Either SomeException (ExitCode, String, String))
-                pure $ case result of
-                    Right (ExitSuccess, _, _) -> True
+                outcome <- runCaptured exe [] ""
+                pure $ case outcome of
+                    Right run -> capturedExit run == ExitSuccess
                     _ -> False
             _ -> pure False
 
@@ -110,11 +117,7 @@ withProbeDir name action = do
     pure (either (const False) id result)
 
 installSteps :: Substrate -> Either String [InstallStep]
-installSteps sub
-    | substrateName sub == AppleSilicon =
-        Left "Swift, xcrun, the macOS SDK, and Metal are supplied by Xcode Command Line Tools; run `xcode-select --install` and retry."
-    | otherwise =
-        Left ("apple-metal is only applicable on apple-silicon, not " ++ renderSubstrateName (substrateName sub))
+installSteps = reconcilerInstallSteps reconciler
 
 macosSdkArgs :: [String]
 macosSdkArgs = ["--sdk", "macosx", "--show-sdk-path"]

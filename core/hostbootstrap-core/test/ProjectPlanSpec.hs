@@ -12,7 +12,7 @@ import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.Char (isSpace, ord)
 import Data.IORef (modifyIORef', newIORef, readIORef)
-import Data.List (intercalate, isInfixOf, isPrefixOf, sort, stripPrefix)
+import Data.List (isInfixOf, isPrefixOf, sort, stripPrefix)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Text as Text
@@ -214,10 +214,7 @@ import HostBootstrap.Step
 import qualified SourceGuard
 import System.Directory (doesDirectoryExist, getCurrentDirectory, listDirectory)
 import System.FilePath
-    ( dropExtension
-    , makeRelative
-    , splitDirectories
-    , takeExtension
+    ( takeExtension
     , (</>)
     )
 import System.IO.Temp (withSystemTempDirectory)
@@ -1647,8 +1644,10 @@ sourceBoundaryTests =
                     internalSignificant = significantHaskellLineCount internalSource
                     -- The two shared owners also carry the later digest-proven
                     -- specification reindex join, whose 46 lines belong to its
-                    -- own sprint rather than to this projector attribution.
-                    frozenBaseline = 394 + 618 + 46
+                    -- own sprint rather than to this projector attribution, and
+                    -- the frame-child classification `runCLI` consults before
+                    -- the parser, whose 5 lines belong to its own sprint too.
+                    frozenBaseline = 394 + 618 + 46 + 5
                     sourceAttribution =
                         cliSignificant
                             + constructSignificant
@@ -1813,13 +1812,13 @@ sourceBoundaryTests =
                     , "withFinalizedForwardChildProjectionKernel"
                     ]
                 sha256Text cliBytes
-                    @?= "c05a2f63b80ec49fda24d69fa6d6da30130053a9617e4bd884032a19c0b649e9"
+                    @?= "ced91a317786e5c19f05bd14b52b70094fd7180a29774a79e3ee582d1e47d95a"
                 sha256Text constructBytes
                     @?= "fab624d2ddf1fd067b57323d23df1c7a9c4d2e0b6e78fbbd1a6638e704017eb4"
                 sha256Text internalBytes
                     @?= "fc8731711546662895f1766e7e79968c9fc30bd770a0f159915fd981a4ee185d"
                 (cliSignificant, constructSignificant, internalSignificant)
-                    @?= (446, 591, 220)
+                    @?= (451, 591, 220)
                 (sourceAttribution, sourceAttribution + cabalAttribution)
                     @?= (199, 200)
                 assertBool
@@ -7620,11 +7619,7 @@ listHaskellSources directory = do
             entries
 
 moduleNameFromPath :: FilePath -> FilePath -> String
-moduleNameFromPath sourceRoot =
-    intercalate "."
-        . splitDirectories
-        . dropExtension
-        . makeRelative sourceRoot
+moduleNameFromPath = SourceGuard.repoRelativeModuleName
 
 mainLibraryStanza :: String -> Maybe String
 mainLibraryStanza source =

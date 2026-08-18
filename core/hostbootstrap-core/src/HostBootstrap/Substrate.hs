@@ -1,7 +1,9 @@
--- | Substrate detection.
+-- | Outer-host realization detection.
 --
--- Supported substrates describe the host detected at runtime; projects do not
--- declare a substrate matrix in Python-owned config.
+-- These tags describe the host detected at runtime so provider code can realize
+-- the universal linux-cpu project substrate. They are provider-dispatch facts,
+-- not competing project-visible execution contracts; projects do not declare a
+-- host matrix in Python-owned config.
 -- The classification core ('classify', 'parseDockerArch') is pure; 'detect'
 -- wraps it with the platform reads and NVIDIA probe. Ported from the Python
 -- @hostbootstrap/substrate.py@.
@@ -11,6 +13,10 @@ module HostBootstrap.Substrate
     Substrate (..),
     renderSubstrateName,
     renderArch,
+    HostFrame (..),
+    allHostFrames,
+    substrateFrame,
+    renderHostFrame,
     isAppleSilicon,
     isLinux,
     isWindows,
@@ -22,16 +28,14 @@ module HostBootstrap.Substrate
   )
 where
 
-import Control.Exception (SomeException)
-import Control.Exception.Safe (try)
 import Data.Char (toLower)
 import Data.List (isInfixOf)
+import HostBootstrap.Effect.Run (CapturedRun (capturedExit, capturedStdout), runCaptured)
 import System.Directory (doesPathExist, findExecutable)
 import System.Exit (ExitCode (..))
 import qualified System.Info as Info
-import System.Process (readProcessWithExitCode)
 
--- | The supported host substrates.
+-- | The supported outer-host realization tags.
 data SubstrateName = AppleSilicon | LinuxCpu | LinuxGpu | WindowsCpu | WindowsGpu
   deriving (Eq, Show)
 
@@ -39,7 +43,7 @@ data SubstrateName = AppleSilicon | LinuxCpu | LinuxGpu | WindowsCpu | WindowsGp
 data Arch = Amd64 | Arm64
   deriving (Eq, Show)
 
--- | A detected host substrate paired with its Docker-style architecture. For
+-- | A detected outer host paired with its Docker-style architecture. For
 -- @apple-silicon@ the architecture is always 'Arm64'.
 data Substrate = Substrate
   { substrateName :: SubstrateName,
@@ -58,14 +62,51 @@ renderArch :: Arch -> String
 renderArch Amd64 = "amd64"
 renderArch Arm64 = "arm64"
 
+-- | The closed set of outer-host frames a behaviour is written once per
+-- (@development_plan_standards.md § LL@).
+--
+-- Three, not five. The accelerator is a capability /of/ a frame rather than a
+-- frame of its own: the package manager, the host provider, and the ownership
+-- primitive are the same on @linux-cpu@ and @linux-gpu@, and re-spelling that
+-- pair at every site that routes on the host is how a new substrate constructor
+-- silently misses a case that reads as exhaustive. A behaviour that genuinely
+-- differs by accelerator says so by /requiring/ one, not by naming two tags.
+data HostFrame
+  = LinuxFrame
+  | AppleFrame
+  | WindowsFrame
+  deriving (Eq, Ord, Show, Enum, Bounded)
+
+-- | Every frame, for a total table.
+allHostFrames :: [HostFrame]
+allHostFrames = [minBound .. maxBound]
+
+-- | The frame an outer host realizes.
+--
+-- This is the one place the five classification tags collapse to the three
+-- frames, which is what makes 'isLinux', 'isWindows' and 'isAppleSilicon' one
+-- derived fact rather than three independently maintained ones.
+substrateFrame :: Substrate -> HostFrame
+substrateFrame sub = case substrateName sub of
+  AppleSilicon -> AppleFrame
+  LinuxCpu -> LinuxFrame
+  LinuxGpu -> LinuxFrame
+  WindowsCpu -> WindowsFrame
+  WindowsGpu -> WindowsFrame
+
+renderHostFrame :: HostFrame -> String
+renderHostFrame LinuxFrame = "linux"
+renderHostFrame AppleFrame = "apple-silicon"
+renderHostFrame WindowsFrame = "windows"
+
 isAppleSilicon :: Substrate -> Bool
-isAppleSilicon = (== AppleSilicon) . substrateName
+isAppleSilicon = (== AppleFrame) . substrateFrame
 
 isLinux :: Substrate -> Bool
-isLinux s = substrateName s `elem` [LinuxCpu, LinuxGpu]
+isLinux = (== LinuxFrame) . substrateFrame
 
 isWindows :: Substrate -> Bool
-isWindows s = substrateName s `elem` [WindowsCpu, WindowsGpu]
+isWindows = (== WindowsFrame) . substrateFrame
 
 hasGpu :: Substrate -> Bool
 hasGpu s = substrateName s `elem` [LinuxGpu, WindowsGpu]
@@ -82,7 +123,7 @@ parseDockerArch raw = case map toLower raw of
 
 -- | The pure classification core: given the OS string ('System.Info.os'), the
 -- raw machine architecture, and whether an NVIDIA GPU is present, return the
--- substrate. Mirrors the branch structure of the Python @detect@.
+-- outer-host realization. Mirrors the branch structure of the Python @detect@.
 classify :: String -> String -> Bool -> Either String Substrate
 classify osName rawArch gpu = do
   arch <- parseDockerArch rawArch
@@ -101,8 +142,8 @@ classify osName rawArch gpu = do
       Right (Substrate (if gpu then WindowsGpu else WindowsCpu) arch)
     other -> Left ("unsupported host platform: " ++ other)
 
--- | Detect the host substrate by reading the platform and probing for an NVIDIA
--- GPU.
+-- | Detect the outer-host realization by reading the platform and probing for
+-- an NVIDIA GPU.
 detect :: IO (Either String Substrate)
 detect = do
   gpu <- hasNvidiaGpu
@@ -119,7 +160,7 @@ hasNvidiaGpu = do
       case mSmi of
         Nothing -> pure False
         Just smi -> do
-          result <- try (readProcessWithExitCode smi ["-L"] "")
-          pure $ case (result :: Either SomeException (ExitCode, String, String)) of
-            Right (ExitSuccess, out, _) -> "GPU" `isInfixOf` out
+          outcome <- runCaptured smi ["-L"] ""
+          pure $ case outcome of
+            Right run | capturedExit run == ExitSuccess -> "GPU" `isInfixOf` capturedStdout run
             _ -> False

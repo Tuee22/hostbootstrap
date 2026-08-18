@@ -76,7 +76,8 @@ import System.Directory (
  )
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitSuccess, exitWith)
-import System.FilePath (makeRelative, takeExtension, (</>))
+import SourceGuard (repoRelativePath)
+import System.FilePath (takeExtension, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (readProcessWithExitCode)
 import Test.Tasty (TestTree, testGroup)
@@ -551,12 +552,12 @@ authorityCases =
             filterM
                 (fmap (Text.isInfixOf "HostBootstrap.Authority.Kernel") . TextIO.readFile)
                 (filter (/= kernelPath) sources)
-        sort (map (makeRelative sourceRoot) importers) @?= expected
+        sort (map (repoRelativePath sourceRoot) importers) @?= expected
         childReservationCallers <-
             filterM
                 (fmap (Text.isInfixOf "childCommandReservationKernel") . TextIO.readFile)
                 (filter (/= kernelPath) sources)
-        sort (map (makeRelative sourceRoot) childReservationCallers)
+        sort (map (repoRelativePath sourceRoot) childReservationCallers)
             @?= ["HostBootstrap/ProjectPlan/Child/Internal.hs"]
         facade <- TextIO.readFile (sourceRoot </> "HostBootstrap" </> "Authority.hs")
         authorityFacadeExports facade

@@ -249,7 +249,7 @@ shellQuoteCases =
   , testCase "quoted argv round-trips through a POSIX shell without expansion" $ do
       let argv = ["two words", "it's", "$HOME", "*.txt", "line\nbreak", ""]
           script = "set -- " ++ shellQuoteArgs argv ++ "; printf '<%s>\\n' \"$@\""
-      runSelf "/bin/sh" ["-c", script]
+      runSelf emptyHostConfig "/bin/sh" ["-c", script]
         >>= ( @?= Right
                 ( ExitSuccess
                 , "<two words>\n<it's>\n<$HOME>\n<*.txt>\n<line\nbreak>\n<>\n"
@@ -283,7 +283,7 @@ effectCases =
       emptyInput @?= ordinary
       payload @?= Right (ExitSuccess, "line one\nline two\n", "")
   , testCase "local exec failure is returned structurally" $ do
-      result <- runSelf "/hostbootstrap/definitely/missing/executable" []
+      result <- runSelf emptyHostConfig "/hostbootstrap/definitely/missing/executable" []
       case result of
         Left message -> assertBool message ("could not exec /hostbootstrap/definitely/missing/executable" `isInfixOf` message)
         Right success -> assertBool ("expected exec failure, got " ++ show success) False
@@ -304,7 +304,10 @@ dependencyCases =
       let imports = hostBootstrapImports source
           allowed =
             [ "HostBootstrap.Config.Vocab",
-              "HostBootstrap.Ensure",
+              "HostBootstrap.Effect.Interpreter",
+              "HostBootstrap.Effect.Quote",
+              "HostBootstrap.Effect.Run",
+              "HostBootstrap.Effect.Vocabulary",
               "HostBootstrap.HostConfig",
               "HostBootstrap.HostTool",
               "HostBootstrap.Lift.Context"

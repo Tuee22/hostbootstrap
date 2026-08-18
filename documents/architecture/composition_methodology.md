@@ -273,7 +273,7 @@ post-open request. The route spawns nothing; it is the description a process own
 
 The reverse direction now stands on the same admitted edge. Durable reverse-descent preparation takes the
 canonical child configuration only from the catalog's own entry for exactly this parent and child frame and
-the recovery adapter only from the plan's own reverse projection, then joins them through Phase 13's frozen
+the recovery adapter only from the plan's own reverse projection, then joins them through the [authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)'s frozen
 neutral constructor. The complete package is what the prepared record frames, what the binding input's
 child-configuration digest names, and what the offer payload must equal, so an adapter-only reverse input can
 no longer be persisted or offered. The package and child-configuration digests are derived and compared

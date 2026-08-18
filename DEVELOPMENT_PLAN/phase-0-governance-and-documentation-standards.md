@@ -93,9 +93,10 @@ Make the standard mechanical rather than aspirational.
   markdown link resolves across `documents/`, `DEVELOPMENT_PLAN/`, and the governed root documents.
 - Fenced code blocks are stripped before link checking, so example templates are exempt.
 - Every phase document carries a `## Documentation Requirements` section.
-- The doctrine checks: a phase's `Depends on` names only strictly lower phases; no phase document uses
-  reversal vocabulary; sprint structure and the closed status vocabulary hold; a phase declares at most
-  one non-baseline substrate; each phase's status matches its README row; the phase set is contiguous.
+- The doctrine checks a field can express: a phase's `Depends on` names only strictly lower phases; no
+  phase document uses reversal vocabulary; sprint structure and the closed status vocabulary hold; a phase
+  declares at most one non-baseline substrate; each phase's status matches its README row; the phase set
+  is contiguous. The doctrine that lives in prose rather than in a field is Sprint 0.4's.
 - A negative fixture proves every check is non-vacuous.
 
 #### Validation
@@ -107,6 +108,66 @@ Dated evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4), the focused `DocValidat
 and the exact phase gate, `cabal test all --ghc-options=-Werror` from `core/`, passed 1426/1426 cases in
 67.48 seconds. The negative fixture exercised missing, malformed, duplicate, unmatched, and mismatched
 phase-status rows.
+
+#### Remaining Work
+
+None.
+
+### Sprint 0.4: The doctrine checks a green build can hide [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`,
+`core/hostbootstrap-core/test/DocValidatorSpec.hs`,
+`DEVELOPMENT_PLAN/development_plan_standards.md`
+**Substrates**: none
+**Docs to update**: `documents/documentation_standards.md`
+
+#### Objective
+
+Check the parts of § A, § C and § I that a `Depends on` field cannot express, so a plan that reads
+correct and orders wrong fails the build rather than passing it.
+
+#### Deliverables
+
+- One section parser is what every structural check reads. A markdown section runs to the next heading of
+  any level, and a level-two heading closes the enclosing sprint — so a phase's trailing
+  `## Remaining Work` belongs to the phase rather than to the last sprint above it, which is exactly the
+  attribution a sprint-only split gets wrong and the reason those checks were vacuous where it mattered.
+- `checkRemainingWorkOrdering`: no `Remaining Work` section cites a higher-numbered phase. This is § A's
+  rule where it is actually broken — "this closes when phase 15 lands" is the forbidden claim in prose,
+  and the `Depends on` field never sees it. The scope is the precision: a forward link in
+  `## Phase Objective` or `#### Validation` says who owns what and stays legal, because no reading of a
+  sentence separates the two claims and the section it sits in does.
+- `checkActivePhaseRemainingWork`: an `Active` phase carries a non-empty `## Remaining Work`, and the one
+  drifted spelling reports as its own correction rather than as a missing section.
+- `checkDoneSprintRemainingWork`: a `Done` sprint has the section and it begins "None." A sprint that
+  still owes something is not done, and an owed *live* confirmation is listed by the acceptance phase
+  declaring the hardware (§ II) rather than parked in a closed sprint.
+- `checkLegacyLedger` gains an arity clause reading the row's `Deleted by` cell alone, so a phase cited in
+  the `Why` column neither satisfies nor inflates it. Two owners is the same failure as none: neither
+  phase's completion empties the row (§ I).
+- `checkContractOwnership`: every contract beneath `## hostbootstrap-Specific Contracts` opens with an
+  `**Owning phase**:` line. Inferring an owner from any phase a section happens to cite is not the same
+  claim — § O mentions ten phases and is owned by one.
+- Each guard's negative fixture proves it fires, and the two scoped guards additionally assert an
+  **absence** — a forward link in a `#### Validation` section and a bare citation inside a contract must
+  produce no violation — so the scoping is proved rather than assumed.
+
+#### Validation
+
+`DocValidatorSpec` against the live repository and against the negative fixture, inside
+`cabal test all --ghc-options=-Werror` from `core/`.
+
+Each guard was proved non-vacuous against the live tree before its fix landed: the ordering guard reported
+thirteen forward citations across seven phase documents, the Active-phase guard five missing sections and
+two drifted headings, the Done-sprint guard one declared-work section and ten missing ones, the ledger
+guard three two-owner rows, and the contract guard fifteen unowned contracts. The tree carries none of
+them now.
+
+Dated evidence: on 2026-08-18, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0
+passed `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/` host-native at
+1,951/1,951 in 241.11 seconds, plus `poetry run python -m hostbootstrap.check_code` and
+`poetry run python -m hostbootstrap.test_all` at 231 passed.
 
 #### Remaining Work
 

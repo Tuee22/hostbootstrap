@@ -233,14 +233,44 @@ outside this scope-only value; the host-static full suite closes the sprint.
 Implement the call-site adoption after the authenticated-handoff phase exposes the generic capsule producer
 and scope-first receiver.
 
-## Phase Remaining Work
+### Sprint 19.6: Live harness acceptance [Planned]
 
-Implement Sprint 19.5, then close the live half of the phase gate. The completed sprints' own deliverables are
-closed by the host static gate, while the phase also owes two linux-cpu confirmations: rerun the recovery
-phase's deterministic interruption matrix with
-`cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern recovery-interruption'`
-from `core/`, then run `hostbootstrap run -- test run all` against live harness infrastructure. Dated evidence
-records both results together. This repository's current development host is aarch64-osx.
+**Status**: Planned
+**Implementation**: none — this sprint changes no source
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Record the two linux-cpu confirmations this phase's construction owes, as a sprint rather than as a
+footnote nothing counts.
+
+#### Deliverables
+
+- Zero production lines. Every deliverable of Sprints 19.1 through 19.5 closes on the host static gate;
+  what is left is running them where their effects are real.
+- The recovery phase's deterministic interruption matrix is rerun inside a realized Linux substrate with
+  `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror
+  --test-options='--pattern recovery-interruption'` from `core/`. That group is deterministic subprocess
+  and sentinel fixtures, so it needs a Linux substrate and no provider, cluster, or Docker state.
+- `hostbootstrap run -- test run all` runs against live harness infrastructure. That one does bring up real
+  provider and cluster state, so it runs on a disposable host.
+- Dated evidence records both results together, naming the substrate realization and the outer host.
+
+#### Validation
+
+The two runs. This sprint asserts nothing the suites do not already assert; it confirms that what they
+assert holds where the phase says it holds.
+
+#### Remaining Work
+
+Both runs.
+
+## Remaining Work
+
+Sprint 19.5 supplies the Harness root-scope capsule producer and closes on the host static gate. Sprint
+19.6 records the two linux-cpu confirmations the completed sprints owe, so the obligation is a sprint
+the suite counts rather than a note at the end of the phase.
 
 ## Documentation Requirements
 

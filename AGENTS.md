@@ -127,21 +127,31 @@ The fast suites run foreground on every platform and need no special handling:
 `poetry run python -m hostbootstrap.test_all` and `cabal test` finish well within the tool timeout —
 run them foreground and iterate normally, on Windows as elsewhere.
 
+They are the **host static gate**, and they are expected to *pass* natively on Windows, not merely to
+run: the project binary is built host-native on every substrate, so its sources and suites are
+host-portable. A failure that turns out to be a POSIX-only fixture, a native path separator, or a
+locale-decoded source read is a defect in the suite rather than an expected platform limit. The gate
+kinds and the rules the harness holds are canonical in
+[documents/engineering/testing.md](documents/engineering/testing.md), and each is owned by a phase in
+[DEVELOPMENT_PLAN/](DEVELOPMENT_PLAN/README.md).
+
 The **long demo gate** (`hostbootstrap run -- test run all` and `project up`, ~25–50 min) is different
 **on Windows only**. Launched as a naive `run_in_background` shell it is a descendant of `claude.exe`
 and gets force-killed mid-run by the harness's own reaper (`taskkill /PID <pid> /T /F`). To run it
 durably on Windows:
 
-- launch it out of `claude.exe`'s process tree with
-  [scripts/Start-DurableRun.ps1](scripts/Start-DurableRun.ps1), then poll the printed `<label>.exit`
+- launch it out of `claude.exe`'s process tree with the harness-owned
+  `%USERPROFILE%\.claude\hostbootstrap\Start-DurableRun.ps1`, then poll the printed `<label>.exit`
   sentinel with the `ScheduleWakeup` tool;
 - **never** launch the gate as a naive `run_in_background`, and never use a `run_in_background`
   sleep-loop "waiter" (the waiter is itself reaped and produces false "killed" alarms).
 
-A `PreToolUse` guard ([scripts/hooks/guard-durable-run.ps1](scripts/hooks/guard-durable-run.ps1))
-enforces this on Windows and no-ops on macOS/Linux. **On macOS/Linux, run the gate normally** — none of
-this applies. Full mechanism and root cause:
-[documents/engineering/durable_windows_runs.md](documents/engineering/durable_windows_runs.md).
+A `PreToolUse` guard (`%USERPROFILE%\.claude\hostbootstrap\guard-durable-run.ps1`) enforces this on
+Windows and no-ops on macOS/Linux. Both files live in the Claude harness's own configuration rather
+than in this repository, because the reaper they exist for is a property of that harness and not of
+this project (§ KK); the repository carries no script. **On macOS/Linux, run the gate normally** — none
+of this applies. Full mechanism, root cause, and how to install the two files on a fresh Windows
+machine: [documents/engineering/durable_windows_runs.md](documents/engineering/durable_windows_runs.md).
 
 ## Base image: rebuild → republish → pull
 

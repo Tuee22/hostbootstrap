@@ -15,7 +15,7 @@
 module SpecIndexSpec (tests) where
 
 import Data.Char (isSpace)
-import Data.List (intercalate, isPrefixOf, isInfixOf, sort, stripPrefix)
+import Data.List (isPrefixOf, isInfixOf, sort, stripPrefix)
 import HostBootstrap.DocValidator (findRepoRoot)
 import qualified SourceGuard
 import System.Directory (
@@ -24,9 +24,6 @@ import System.Directory (
     listDirectory,
  )
 import System.FilePath (
-    dropExtension,
-    makeRelative,
-    splitDirectories,
     takeExtension,
     (</>),
  )
@@ -430,11 +427,7 @@ listHaskellSources directory = do
             entries
 
 moduleNameFromPath :: FilePath -> FilePath -> String
-moduleNameFromPath sourceRoot =
-    intercalate "."
-        . splitDirectories
-        . dropExtension
-        . makeRelative sourceRoot
+moduleNameFromPath = SourceGuard.repoRelativeModuleName
 
 mainLibraryStanza :: String -> Maybe String
 mainLibraryStanza source =

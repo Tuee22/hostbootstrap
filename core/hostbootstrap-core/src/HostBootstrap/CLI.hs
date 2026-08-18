@@ -85,6 +85,7 @@ import HostBootstrap.Dhall.Gen (
     coreArtifacts,
     requireCodecWitness,
  )
+import HostBootstrap.Handoff.Transaction (classifyFrameChild, runFrameChildEntry)
 import HostBootstrap.Harness (TestSuite, caseIdText, emptySuite, testSuiteCaseCount, testSuiteCaseIds)
 import HostBootstrap.Lift.Context (LiftContext)
 import HostBootstrap.ProjectPlan.Construct
@@ -101,6 +102,7 @@ import HostBootstrap.Service (
  )
 import HostBootstrap.Step (Step, StepPlan, StepPlanError (..), mkStepPlan)
 import Options.Applicative
+import System.Environment (getArgs)
 import System.Exit (die)
 import System.IO (hSetEncoding, stderr, stdout, utf8)
 
@@ -529,8 +531,11 @@ runCLI ::
     (InitArgs -> IO (cfg (Production projectId))) ->
     (InitArgs -> tcfg) ->
     IO ()
-runCLI project finalizedSpec testCodec progName projectArtifacts testSuite checkCode assemblyInputs assemble initBuilder testInit =
-    join (customExecParser (prefs showHelpOnEmpty) opts)
+runCLI project finalizedSpec testCodec progName projectArtifacts testSuite checkCode assemblyInputs assemble initBuilder testInit = do
+    argv <- getArgs
+    case classifyFrameChild argv of
+        Just entry -> runFrameChildEntry entry
+        Nothing -> join (customExecParser (prefs showHelpOnEmpty) opts)
   where
     allCommands =
         coreCommands

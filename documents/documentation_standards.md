@@ -190,6 +190,25 @@ runs through the project's canonical code-check. It verifies:
   `architecture`, `engineering`, `operations`, `languages` (the declared
   `allowedTaxonomy` set)
 
+It additionally enforces the plan doctrine that
+[development_plan_standards.md](../DEVELOPMENT_PLAN/development_plan_standards.md) states, because a
+doctrine nothing checks is a preference:
+
+- § A and § E: the `phase-NN-*.md` set is contiguous from 0; a phase's `Depends on` names only strictly
+  lower-numbered phases; no phase title announces a reversal; and no `Remaining Work` section — phase-level
+  or sprint-level — cites a higher-numbered phase. That last one is where the ordering rule is actually
+  broken: "this closes when phase 15 lands", written in prose, is a claim the `Depends on` field never
+  sees. A forward link in `## Phase Objective` or `#### Validation` says who owns what and stays legal.
+- § C and § G: every phase carries its header fields and a `## Documentation Requirements` section; each
+  phase's status matches its `DEVELOPMENT_PLAN/README.md` row; every sprint declares a status from the
+  closed vocabulary and carries no `Blocked by`; an `Active` phase and an `Active` sprint each carry a
+  non-empty `Remaining Work`; and a `Done` sprint's begins "None".
+- § I: every legacy-ledger row names exactly one deleting phase, read from its `Deleted by` cell, and that
+  phase resolves.
+- § II: no phase declares more than one non-baseline substrate.
+- The contracts' own rule: every lettered section beneath `## hostbootstrap-Specific Contracts` opens with
+  an `**Owning phase**:` line linking one phase document.
+
 The validator checks that `**Referenced by**:` exists and that its links resolve. It deliberately does
 not enforce literal backlink reciprocity: this field is curated conceptual-consumer metadata, not a
 complete graph. Remove an entry when the named document no longer consumes the contract conceptually;
@@ -198,7 +217,14 @@ do not manufacture a reciprocal prose link solely to satisfy metadata.
 The individual checks (`checkGovernedMeta`, `checkRootDoc`, `checkBroadDoctrine`,
 `checkDocRequirements`, `checkLinks`, `checkReadmeRefs`, `checkNaming`, `checkTaxonomy`) are exported
 from `HostBootstrap.DocValidator` so the same mechanical floor can be reused across the project
-family.
+family. The plan-doctrine checks (`checkPhaseNumbering`, `checkPhaseHeader`, `checkPhaseStatusHarmony`,
+`checkPhaseOrdering`, `checkRemainingWorkOrdering`, `checkNoReversal`, `checkSprintStructure`,
+`checkActivePhaseRemainingWork`, `checkDoneSprintRemainingWork`, `checkSubstrateBudget`,
+`checkLegacyLedger`, `checkContractOwnership`) are exported alongside them.
+
+Each has a negative fixture proving it fires. The two scoped checks also assert an **absence** — a
+forward link in a `#### Validation` section, and a bare phase citation inside a contract, must produce no
+violation — because a check that flags everything is not a check that means anything.
 
 From `core/`, `cabal test all` exercises the validator through the Haskell test suites and fails when a
 governed document drifts from the rules above. That command is the test leg, not the complete Haskell

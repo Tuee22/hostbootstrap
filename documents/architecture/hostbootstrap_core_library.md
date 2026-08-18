@@ -31,10 +31,19 @@
   local effect, and returns an observation for root settlement. Raw Chain remains the lower current-frame
   substrate rather than a parallel durable command-entry route.
 - The surfaced core command tree is exactly five user-facing verbs: `project`, `test`, `service`,
-  `context`, and `check-code`. There are no hidden commands. `ensure` is a reconciler library a project
-  may call from a step action; core also exports an `ensureStep` constructor. The current demo invokes
-  `runEnsure` inside larger provider/build actions instead of representing each reconcile call as an
-  independent `ensure-*` row.
+  `context`, and `check-code`. `ensure` is a reconciler library a project may call from a step action;
+  core also exports an `ensureStep` constructor. The current demo invokes `runEnsure` inside larger
+  provider/build actions instead of representing each reconcile call as an independent `ensure-*` row.
+- **One internal marker is not a command.** A binary that crosses into a frame must be able to recognize
+  that *it is* the process on the far side, and no verb can express that — a verb is something an operator
+  types, and this is something only the lift fold produces. The marker is classified out of the argument
+  vector before the parser runs, and it is bounded by what it cannot carry: no coordinates, no path, no
+  authority, no caller-selected action, and no route to a `ProjectSpec` extension stream. It is absent
+  from `--help`, names nothing an operator could usefully type, and refuses unless its standard input and
+  output decode as the protocol channel. Exactly one exists; a second would be a per-project verb wearing
+  a different hat. The
+  [authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
+  owns it.
 - The [authenticated-handoff
   phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md) owns the closed
   `RootedLifecycleRequest`/`RootedLifecycleResponse` v1 vocabulary and canonical recovery package. The hidden
@@ -468,6 +477,37 @@ corresponding Harness-scoped current-frame forward plan once per config variant 
 two), asserts the live stack (the SPA `#message` polymorphic over the active `EXPECTED_MESSAGE`), using
 the exact Harness profile. Lifecycle resources do not yet all return ownership receipts, and the
 same-run durable destroy/up/readback cycle remains open; see [harness workflow](harness_workflow.md).
+
+### The frame-child entry
+
+The command surface is fixed and closed, and it is also not the only way a process of this binary can
+be started. A recursive lifecycle crosses into a VM or a container by launching *this binary* over
+there, and the process that arrives has no environment, no descriptor it can name, and no coordinate
+telling it which frame it woke up in — it has an argument vector and two streams.
+
+So `runCLI` reads that argument vector once, before the parser, and hands it to one total pure
+classifier. The classifier answers whether this process is the far side of a frame crossing, and what
+it returns carries nothing: no path, no authority, no caller-selected action, and no route to a
+project's extension streams. A frame child is a frame child regardless of which spec built the binary,
+so `runBareHostBootstrapCLI` and `runHostBootstrapCLI` reach the entry by the same route.
+
+The marker is the whole argument vector or it is nothing — a marker with anything before or after it,
+a different spelling, or a different case is an ordinary invocation. It is absent from `--help` because
+it is not in the command tree at all, and a process launched with it refuses unless its standard input
+and output are the protocol channel, which outside a crossing they are not. It is therefore not a
+hidden command: nothing an operator can usefully type reaches it.
+
+What travels across the crossing is one opaque transaction out and one opaque outcome back, framed by
+the same magic, version, tag, and request identity as every other message on the handoff channel. The
+near side folds the lift context to the invocation that crosses the frames, launches the child into its
+own process group with the protocol on private pipes and diagnostics inherited, sends one transaction,
+reads one answer, and then ends the group — on a returned outcome, a refusal, a protocol failure, an
+exception, or asynchronous cancellation alike. Ending the group rather than the process is what makes a
+shell or provider the child launched go away with it.
+
+The bytes are interpreted by whichever phase owns the object the transaction concerns, never by the
+transport. A frame that has no interpreter installed answers a refusal rather than falling silent, so
+the near side learns that the far side declined instead of inferring it from a closed pipe.
 
 ## Consumption
 

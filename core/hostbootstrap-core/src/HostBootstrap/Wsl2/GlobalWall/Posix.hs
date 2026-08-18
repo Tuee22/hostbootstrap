@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
@@ -22,14 +23,23 @@ Clause mapping:
   volume-word first so the driver's shared-volume check works unchanged;
 * clause 4 — every removal re-observes the path's identity under the same lock
   and refuses a replacement.
+
+Every one of those four mappings is a POSIX primitive, so this row is compiled
+on every gate host and stubbed to a total refusal where it cannot apply,
+exactly as its Windows counterpart is (§ JJ). A row that vanished from the
+package on the host it cannot hold would take its case with it; a row that
+refuses keeps the case and makes the refusal the thing the case asserts.
 -}
 module HostBootstrap.Wsl2.GlobalWall.Posix
-  ( PosixWallLocation (..),
+  ( posixGlobalWallSupported,
+    PosixWallLocation (..),
     PosixWallHandle,
     newPosixHostWallBackend,
   )
 where
 
+import HostBootstrap.Wsl2.GlobalWall.Host
+#if !defined(mingw32_HOST_OS)
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Exception (onException)
@@ -62,7 +72,6 @@ import HostBootstrap.Wsl2.GlobalWall
     WallConflict (TargetReplaced, UnexpectedTargetAbsent, UnexpectedTargetPresent),
     mkFileIdentity,
   )
-import HostBootstrap.Wsl2.GlobalWall.Host
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath ((</>))
 import System.IO (SeekMode (AbsoluteSeek))
@@ -93,6 +102,10 @@ import System.Posix.IO
   )
 import System.Posix.Types (Fd)
 import System.Posix.Unistd (fileSynchronise)
+
+-- | The row holds its four clauses here, against the real kernel.
+posixGlobalWallSupported :: Bool
+posixGlobalWallSupported = True
 
 -- | Where the POSIX lane keeps the managed target and its durable state. The
 -- target is supplied by the caller that constructed the backend, never by the
@@ -730,3 +743,70 @@ posixIsHardLinkUnsupported status =
 -- on Linux and Apple hosts.
 isErrno :: Word32 -> Errno -> Bool
 isErrno status (Errno value) = status == fromIntegral value
+
+#else
+
+-- | The row's four clauses map onto @fcntl@ record locks, @device:inode@
+-- identity, and link/rename namespace operations. A host with none of them
+-- cannot hold any of them, so the row reports that rather than pretending to.
+posixGlobalWallSupported :: Bool
+posixGlobalWallSupported = False
+
+-- | Where the POSIX lane keeps the managed target and its durable state. The
+-- location is still a value everywhere, because a caller naming one is not yet
+-- a caller acting on it.
+data PosixWallLocation = PosixWallLocation
+  { posixWallTargetPath :: FilePath,
+    posixWallStateDirectory :: FilePath
+  }
+  deriving (Eq, Show)
+
+-- | A row that opens nothing has no open object, so the handle has no
+-- representation on this host. Every operation that would produce one refuses
+-- first, which is what makes the empty type unreachable rather than merely
+-- unused.
+data PosixWallHandle
+
+{- | Build the row in its refusing form.
+
+Every field answers 'HostWallUnsupported', including the exclusive entry: a
+lock that is not taken must not run the action it was supposed to protect, so
+the seam refuses instead of passing the continuation through. The backend name
+is unchanged, so a diagnostic still says which row was selected.
+-}
+newPosixHostWallBackend ::
+  PosixWallLocation ->
+  IO (HostWallBackend PosixWallHandle)
+newPosixHostWallBackend _location =
+  pure
+    HostWallBackend
+      { wallBackendName = "posix",
+        wallTargetPath = refuse,
+        wallWithExclusiveEntry = \_action -> refuse,
+        wallOpenExclusive = \_path -> refuse,
+        wallProbeIdentity = \_path -> refuse,
+        wallCreateArmedStage = \_path _bytes -> refuse,
+        wallLinkArmedStage = \_object _from _to -> refuse,
+        wallRenameNoReplace = \_object _destination -> refuse,
+        wallDeleteObject = \_object -> refuse,
+        wallCloseObject = \_object -> refuse,
+        wallArmedStageIsVolatile = False,
+        wallIsSharingFailure = const False,
+        wallIsRaceFailure = const False,
+        wallIsHardLinkUnsupported = const False,
+        wallJournalLoad = refuse,
+        wallJournalAllocateFence = refuse,
+        wallJournalStore = \_bytes -> refuse,
+        wallJournalDeleteIfEqual = \_bytes -> refuse
+      }
+  where
+    refuse :: IO (Either HostWallError result)
+    refuse =
+      pure
+        ( Left
+            ( HostWallUnsupported
+                "the POSIX host wall requires fcntl record locks and device:inode identity"
+            )
+        )
+
+#endif

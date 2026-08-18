@@ -61,7 +61,6 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
-import GHC.IO.Handle (hDuplicate, hDuplicateTo)
 import HostBootstrap.Authority (
     InstalledProjectIdentity,
     ProjectVerb (ProjectDestroy, ProjectDown),
@@ -119,13 +118,13 @@ import HostBootstrap.Handoff.Protocol (
     channelSend,
     childProtocolReceive,
     childProtocolSend,
-    handoffChannel,
     initialChildProtocolState,
     protocolErrorMessage,
     protocolMessage,
     protocolMessageFields,
     protocolMessageRequestId,
     protocolMessageTag,
+    withPrivateProtocolStdio,
  )
 import HostBootstrap.Handoff.Receiver.Internal (
     ReceivedEdge,
@@ -133,17 +132,6 @@ import HostBootstrap.Handoff.Receiver.Internal (
     mkReceivedEdge,
     mkReceivedRecoveryDescent,
  )
-import System.IO (
-    Handle,
-    IOMode (ReadMode),
-    hClose,
-    hFlush,
-    openFile,
-    stderr,
-    stdin,
-    stdout,
- )
-import System.Info (os)
 
 -- ---------------------------------------------------------------------------
 -- The exchange
@@ -158,21 +146,13 @@ travel on are also the ones an ordinary @getLine@ reads from and an ordinary
 decoder, a plan projection, or a lifecycle effect is not a cosmetic problem —
 it is a byte in the middle of a length-framed protocol message.
 
-So the receiver takes the descriptors before anything else can. It duplicates
-the original standard input and output into private handles, builds its binary
-channel from those, and only then redirects the global ones for the whole
-callback: standard input to the null device, so an ordinary read sees EOF
-rather than a protocol frame, and standard output to standard error, so an
-ordinary write becomes a diagnostic rather than a corruption. Code running
-under this bracket does not need to know any of that, which is the point — it
-cannot steal or corrupt the channel even by accident, because the handles it
-would have to use no longer name it.
-
-The redirection is a bracket, so it is undone on success, on a refusal, on an
-exception, and on asynchronous cancellation alike, and every duplicate is
-closed afterwards. Nothing here inspects, chooses, or accepts a descriptor: the
-entry takes no channel and no handle, so there is no argument through which a
-caller supplies one and no seam through which a test substitutes one.
+So the receiver takes the descriptors before anything else can, through
+'withPrivateProtocolStdio' — the one owner of that isolation, shared with every
+other end of this channel, because a second copy of a descriptor bracket is a
+second chance to get the ordering wrong. Nothing here inspects, chooses, or
+accepts a descriptor: the entry takes no channel and no handle, so there is no
+argument through which a caller supplies one and no seam through which a test
+substitutes one.
 -}
 withIsolatedReceivedHandoffEdge ::
     InstalledProjectIdentity projectId ->
@@ -209,83 +189,11 @@ withIsolatedReceivedHandoffEdge
     project key
     useProductionConfig useProductionRecovery
     useHarnessConfig useHarnessRecovery =
-    withProtocolStdio $ \channel ->
+    withPrivateProtocolStdio $ \channel ->
         withReceivedHandoffEdge
             project channel key
             useProductionConfig useProductionRecovery
             useHarnessConfig useHarnessRecovery
-
-{- | Hold the private protocol channel open across one isolated callback.
-
-The order is the whole content of this function. Both duplications happen
-before either redirection, because a handle duplicated after the global one has
-been pointed elsewhere would name the wrong descriptor; the saved pair is taken
-separately from the protocol pair, because the protocol handles are closed at
-the end and the globals still have to be restored from something. The inner
-bracket owns only the redirection, so restoration runs before the outer bracket
-closes anything it would restore from.
--}
-withProtocolStdio ::
-    (HandoffChannel -> IO (Either ReceiverError ())) ->
-    IO (Either ReceiverError ())
-withProtocolStdio use =
-    Exception.bracket openProtocolStdio closeProtocolStdio $
-        \(inbound, outbound, savedIn, savedOut, sink) ->
-            Exception.bracket_
-                (isolateGlobalStdio sink)
-                (restoreGlobalStdio savedIn savedOut)
-                (handoffChannel inbound outbound >>= use)
-
-{- | Take the protocol pair, the restore pair, and the null sink, in that order. -}
-openProtocolStdio :: IO (Handle, Handle, Handle, Handle, Handle)
-openProtocolStdio = do
-    hFlush stdout
-    inbound <- hDuplicate stdin
-    outbound <- hDuplicate stdout
-    savedIn <- hDuplicate stdin
-    savedOut <- hDuplicate stdout
-    sink <- openFile nullDevicePath ReadMode
-    pure (inbound, outbound, savedIn, savedOut, sink)
-
-{- | Close every duplicate this bracket opened, and nothing global. -}
-closeProtocolStdio :: (Handle, Handle, Handle, Handle, Handle) -> IO ()
-closeProtocolStdio (inbound, outbound, savedIn, savedOut, sink) =
-    mapM_ closeQuietly [inbound, outbound, savedIn, savedOut, sink]
-
-{- | Point the global handles away from the protocol for the callback's life. -}
-isolateGlobalStdio :: Handle -> IO ()
-isolateGlobalStdio sink = do
-    hFlush stdout
-    hDuplicateTo sink stdin
-    hDuplicateTo stderr stdout
-
-{- | Put the global handles back, attempting both regardless of either. -}
-restoreGlobalStdio :: Handle -> Handle -> IO ()
-restoreGlobalStdio savedIn savedOut = do
-    flushQuietly stdout
-    restoreQuietly savedIn stdin
-    restoreQuietly savedOut stdout
-
-restoreQuietly :: Handle -> Handle -> IO ()
-restoreQuietly saved global = do
-    restored <- try (hDuplicateTo saved global)
-    either (\(_ :: Exception.IOException) -> pure ()) pure restored
-
-flushQuietly :: Handle -> IO ()
-flushQuietly handle = do
-    flushed <- try (hFlush handle)
-    either (\(_ :: Exception.IOException) -> pure ()) pure flushed
-
-closeQuietly :: Handle -> IO ()
-closeQuietly handle = do
-    closed <- try (hClose handle)
-    either (\(_ :: Exception.IOException) -> pure ()) pure closed
-
-{- | The host's null device: an open descriptor that is already at EOF. -}
-nullDevicePath :: FilePath
-nullDevicePath
-    | os == "mingw32" = "\\\\.\\NUL"
-    | otherwise = "/dev/null"
 
 {- | Run the child half of one handoff exchange, then act under it.
 

@@ -1,22 +1,59 @@
-{- | Deterministic crash injection for lifecycle transaction tests.
+{- | The durable state a lifecycle transaction leaves when it is interrupted.
 
-This deliberately separate testing surface can only install a thread-local
-exception point around an action the caller already possesses. It exports no
-transaction target, record key, coordinator permit, or authority constructor;
-installing a failpoint by itself performs no protected-store mutation.
+A crash between the redo coordinator's three steps is not an event a fixture
+has to reproduce; it is a /value/ the store is left holding — an @Applying@
+coordinator record naming a descriptor, plus however many of that descriptor's
+targets were already stamped with its sequence. This module exposes exactly the
+vocabulary needed to write that value and nothing else, so a fixture builds the
+state and then re-enters the ordinary entry point, and the recovery driver
+under test needs no cooperation from the code under test.
 
-The exception constructor is hidden. Production callers that do not
-deliberately import this @.Testing@ module see no crash-injection API on
-"HostBootstrap.Lifecycle.Session".
+That is deliberately the opposite of a crash point. A branch in the coordinator
+that exists for a fixture is a path production never takes, so a gate that
+drives it agrees with a shape nothing else produces — and it ships to operators.
+Here the coordinator is untouched, the encoding is the one it writes, and the
+only thing the fixture supplies is a record.
+
+It mints no authority. There is no 'HostBootstrap.Lifecycle.Transaction.TransactionPermit'
+constructor, no record-key minter beyond the coordinator's own, and no
+transaction runner; a caller holding a descriptor holds a description of work,
+never permission to perform it.
 -}
 module HostBootstrap.Lifecycle.Session.Testing (
-    TransactionFailpoint (..),
-    TransactionInterrupted,
-    withTransactionFailpoint,
+    -- * The interrupted coordinator record
+    CoordinatorState (..),
+    TransactionDescriptor (..),
+    TxnKind (..),
+    coordinatorKey,
+    encodeCoordinator,
+
+    -- * The targets it names
+    TransactionTarget,
+    projectTransactionTarget,
+    sessionTransactionTarget,
+    operationTransactionTarget,
+    stampTarget,
+
+    -- * Reading a materialized target back
+    TransactionRecord (..),
+    readTransactionRecord,
+    TransactionError,
+    transactionErrorMessage,
 ) where
 
 import HostBootstrap.Lifecycle.Transaction (
-    TransactionFailpoint (..),
-    TransactionInterrupted,
-    withTransactionFailpoint,
+    CoordinatorState (..),
+    TransactionDescriptor (..),
+    TransactionError,
+    TransactionRecord (..),
+    TransactionTarget,
+    TxnKind (..),
+    coordinatorKey,
+    encodeCoordinator,
+    operationTransactionTarget,
+    projectTransactionTarget,
+    readTransactionRecord,
+    sessionTransactionTarget,
+    stampTarget,
+    transactionErrorMessage,
  )

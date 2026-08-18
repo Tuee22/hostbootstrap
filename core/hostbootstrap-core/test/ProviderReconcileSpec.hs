@@ -12,6 +12,7 @@ import qualified Fixture
 import HostBootstrap.Config.Vocab (Production)
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (AbsExe, HostTool (..), mkAbsExe)
+import PlatformPath (hostFixturePath)
 import qualified HostBootstrap.Lifecycle.Execution as Execution
 import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 import qualified HostBootstrap.ProjectPlan as ProjectPlan
@@ -663,15 +664,31 @@ backendHostConfig =
   testHostConfig
     { hcToolPaths =
         Map.fromList
-          [ (Python3, mustAbs "/test/bin/python3"),
-            (Docker, mustAbs "/test/bin/docker"),
-            (Incus, mustAbs "/test/bin/incus"),
-            (Flock, mustAbs "/test/bin/flock")
+          [ (Python3, fixtureExe fixturePython),
+            (Docker, fixtureExe fixtureDocker),
+            (Incus, fixtureExe fixtureIncus),
+            (Flock, fixtureExe fixtureFlock)
           ]
     }
 
-mustAbs :: FilePath -> AbsExe
-mustAbs = either error id . mkAbsExe
+-- | The host tools this suite's fixtures name.
+--
+-- Each is rendered onto the host that runs the suite, so the same total
+-- 'AbsExe' constructor production uses admits it on every supported outer host
+-- realization (§ JJ), and the backend dispatch below selects its response by
+-- comparing those same values.
+--
+-- The provider state directory below is not one of these. It is a path inside
+-- the Linux substrate the Incus provider realizes, so it stays POSIX on every
+-- outer host and the backend's own absoluteness check is POSIX to match.
+fixturePython, fixtureDocker, fixtureIncus, fixtureFlock :: FilePath
+fixturePython = hostFixturePath "/test/bin/python3"
+fixtureDocker = hostFixturePath "/test/bin/docker"
+fixtureIncus = hostFixturePath "/test/bin/incus"
+fixtureFlock = hostFixturePath "/test/bin/flock"
+
+fixtureExe :: FilePath -> AbsExe
+fixtureExe = either error id . mkAbsExe
 
 withDirectBackend ::
   (forall backendId. StrongProviderBackend backendId -> IO (Either ReconcileError summary)) ->
@@ -698,8 +715,8 @@ fakeProviderExec report =
     { runProviderBackendExec = \request ->
         pure $ case providerBackendRequestView request of
           ProviderBackendProcess executable argv
-            | executable == "/test/bin/python3" -> successfulReport ""
-            | executable == "/test/bin/docker" -> successfulReport "{}"
+            | executable == fixturePython -> successfulReport ""
+            | executable == fixtureDocker -> successfulReport "{}"
             | otherwise ->
                 case providerMode argv of
                   Just mode -> report mode

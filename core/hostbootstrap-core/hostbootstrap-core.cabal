@@ -26,6 +26,21 @@ common warnings
   default-language: Haskell2010
   ghc-options: -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints
 
+library effect-internal
+  import: warnings
+  visibility: private
+  hs-source-dirs: internal/effect
+  exposed-modules:
+      HostBootstrap.Effect.Quote
+      HostBootstrap.Effect.Run
+  build-depends:
+      base >=4.18 && <5
+    , bytestring
+    , process
+  if !os(windows)
+    build-depends:
+        unix
+
 library harness-lifecycle-internal
   import: warnings
   visibility: private
@@ -62,6 +77,7 @@ library colima-backend-internal
       base >=4.18 && <5
     , bytestring
     , filepath
+    , hostbootstrap-core:effect-internal
     , process
   if !os(windows)
     build-depends:
@@ -76,6 +92,7 @@ library cluster-backend-internal
   build-depends:
       base >=4.18 && <5
     , filepath
+    , hostbootstrap-core:effect-internal
     , process
   if !os(windows)
     build-depends:
@@ -87,6 +104,9 @@ library
   exposed-modules:
       HostBootstrap.CLI
       HostBootstrap.Command
+      HostBootstrap.Effect
+      HostBootstrap.Effect.Interpreter
+      HostBootstrap.Effect.Vocabulary
       HostBootstrap.HostTool
       HostBootstrap.HostConfig
       HostBootstrap.Authority
@@ -99,6 +119,7 @@ library
       HostBootstrap.Build
       HostBootstrap.Detached
       HostBootstrap.Handoff
+      HostBootstrap.Handoff.Transaction
       HostBootstrap.Lifecycle.Closure
       HostBootstrap.Lifecycle.Context
       HostBootstrap.Lifecycle.Execution
@@ -122,7 +143,9 @@ library
       HostBootstrap.Ensure.Cuda
       HostBootstrap.Ensure.CudaWin
       HostBootstrap.Ensure.Homebrew
+      HostBootstrap.Substrate.Frame
       HostBootstrap.Ensure.Ghc
+      HostBootstrap.Ensure.GuestBootstrap
       HostBootstrap.Ensure.Incus
       HostBootstrap.Ensure.Lima
       HostBootstrap.Ensure.Wsl2
@@ -132,6 +155,7 @@ library
       HostBootstrap.Wsl2.GlobalWall
       HostBootstrap.Wsl2.GlobalWall.ConfigBytes
       HostBootstrap.Wsl2.GlobalWall.Host
+      HostBootstrap.Wsl2.GlobalWall.Posix
       HostBootstrap.Wsl2.GlobalWall.Windows
       HostBootstrap.Lifecycle.Mode
       HostBootstrap.Lift
@@ -162,6 +186,7 @@ library
       HostBootstrap.Harness.GeneratedConfig
       HostBootstrap.Harness.Identity
       HostBootstrap.Harness.Identity.Native
+      HostBootstrap.Ownership.Object
       HostBootstrap.Harness.Ownership
       HostBootstrap.Service
       HostBootstrap.Service.Program
@@ -182,6 +207,7 @@ library
       HostBootstrap.Handoff.Completion
       HostBootstrap.Handoff.Internal
       HostBootstrap.Handoff.Lifecycle
+      HostBootstrap.Handoff.Process
       HostBootstrap.Handoff.Process.Route
       HostBootstrap.Handoff.Protocol
       HostBootstrap.Handoff.Receiver
@@ -220,6 +246,7 @@ library
     , dhall
     , filepath
     , hostbootstrap-core:cluster-backend-internal
+    , hostbootstrap-core:effect-internal
     , hostbootstrap-core:harness-lifecycle-internal
     , hostbootstrap-core:colima-backend-internal
     , memory
@@ -227,11 +254,11 @@ library
     , process
     , safe-exceptions
     , text
+  -- Every module is built on every host, so a platform row is a refusal a
+  -- caller can read rather than a module that is not there, and the case that
+  -- covers it asserts that refusal instead of disappearing (§ JJ). Only the
+  -- platform library each row binds to is conditional.
   if !os(windows)
-    exposed-modules:
-        HostBootstrap.Wsl2.GlobalWall.Posix
-    other-modules:
-        HostBootstrap.Handoff.Process
     build-depends:
         unix
   if os(windows)
@@ -252,10 +279,13 @@ test-suite hostbootstrap-core-test
   hs-source-dirs: test
   main-is: Spec.hs
   other-modules:
+      CoverageManifest
       Fixture
+      PlatformPath
       PrepareFixture
       SourceGuard
       AuthoritySpec
+      PortabilitySpec
       HandoffSpec
       SessionSpec
       BuildAuthoritySpec
@@ -269,9 +299,11 @@ test-suite hostbootstrap-core-test
       SubstrateSpec
       HostToolSpec
       EnsureSpec
+      GuestBootstrapSpec
       SchemaSpec
       SpecIndexSpec
       DhallGenSpec
+      EffectSpec
       CordonSpec
       ProviderSpec
       ProviderAliasSpec
@@ -291,6 +323,8 @@ test-suite hostbootstrap-core-test
       Wsl2Spec
       WslGlobalWallSpec
       WslGlobalWallConfigBytesSpec
+      WslGlobalWallHostSpec
+      WslGlobalWallWindowsSpec
       LiftContextSpec
       LiftSpec
       StepSpec
@@ -302,12 +336,6 @@ test-suite hostbootstrap-core-test
       ServiceProgramSpec
       TeardownSpec
       DocValidatorSpec
-  if os(windows)
-    other-modules:
-        WslGlobalWallWindowsSpec
-  else
-    other-modules:
-        WslGlobalWallHostSpec
   build-depends:
       base >=4.18 && <5
     , bytestring
@@ -351,9 +379,10 @@ test-suite hostbootstrap-provider-live-linux-cpu
     , temporary
     , text
     , unix
+  -- The opt-in flag is the whole gate. A second host condition that silently
+  -- made the suite unbuildable would answer "asked for and not built" with the
+  -- same green nothing as "not asked for", which is the shape § JJ's fifth rule
+  -- forbids: an operator who asks for this suite on a host that cannot run it
+  -- is told so by the build rather than handed an empty pass.
   if !flag(provider-live)
-    buildable: False
-  if !os(linux)
-    buildable: False
-  if !arch(x86_64)
     buildable: False

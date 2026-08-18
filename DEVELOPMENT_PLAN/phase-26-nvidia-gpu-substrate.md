@@ -112,6 +112,12 @@ step-algebra, authenticated-handoff, recovery, and worked-demo dependencies are 
 exercise typed frame-indexed teardown descent across the real metal-to-container boundary, the complete
 current test matrix, and a current GPU/provider observation including the honoured one-GPU request.
 
+## Remaining Work
+
+Sprint 26.3, the acceptance run itself. Sprints 26.1 and 26.2 are closed with their own dated live GPU
+evidence; what is left is the pristine-host re-run of the complete matrix against the current tree,
+which is owed to a native Linux host with a real NVIDIA device and to nothing else.
+
 ## Documentation Requirements
 
 **Architecture docs to create/update:**

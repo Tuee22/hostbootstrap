@@ -27,9 +27,10 @@ and [ensure-reconcilers phase](../../DEVELOPMENT_PLAN/phase-8-ensure-reconcilers
 direction.
 
 The selected `SubstrateProvider` is abstract and carries the complete lower `LiftContext` without exposing
-construction or record update. Common discovery owns closed daemon, permission, VM, egress, and guest
-lock/stat/Python requests, accepts only raw outcomes from its executor, and privately classifies the
-complete result vocabulary. Tool paths, markers, identities, and backend reports must be exact
+construction or record update. Common discovery owns closed daemon, permission, VM, and egress requests,
+accepts only raw outcomes from its executor, and privately classifies the complete result vocabulary —
+that classification being a total function over a closed sum, so it is reached by application rather than
+through a substitution point. Tool paths, markers, identities, and backend reports must be exact
 single-line results. Its fresh generative capability is post-settlement and indexed to the exact opaque
 managed provider/backend/generation; provider mutation does not consume it. This is the same interface
 used by Incus and Lima rather than a WSL-specific dispatch fold.
@@ -37,7 +38,11 @@ used by Incus and Lima rather than a WSL-specific dispatch fold.
 It then enters the distro with `wsl -d <distro> -- ...`, stages source, builds/installs the Linux project
 binary, ensures the in-distro Docker daemon, builds the project image, and hands the chain into the
 container frame. `project down` restores the journalled global-wall origin and then runs global
-`wsl --shutdown`; `project destroy` additionally uses guarded `wsl --unregister`.
+`wsl --shutdown`; `project destroy` additionally uses guarded `wsl --unregister`. The guard is the one
+every frame's destructive removal goes through, not a WSL2 copy of it: this provider supplies only the noun
+its refusal reads in and the argument vector for a name the guard has already admitted. A distro outside
+the project's namespace refuses, and so do the two degenerate inputs that make the guard vacuous — an empty
+prefix, which is a prefix of every name, and an empty distro name.
 
 The unused `wslImportArgs`/cached-rootfs builder was deleted. `wslInstallArgs` is now the sole
 registration builder and has both a production consumer and tests.
@@ -97,27 +102,30 @@ The implementation is split so that the ownership logic is not Windows-only:
 |--------|------|
 | `HostBootstrap.Wsl2.GlobalWall` | the pure phase machine, receipts, and conflicts |
 | `HostBootstrap.Wsl2.GlobalWall.ConfigBytes` | the byte-exact UTF-8/UTF-16 managed-section merge |
-| `HostBootstrap.Wsl2.GlobalWall.Host` | the recovery driver, durable record codec, and `HostWallBackend` seam |
-| `HostBootstrap.Wsl2.GlobalWall.Windows` | the production Win32 backend |
-| `HostBootstrap.Wsl2.GlobalWall.Posix` | the POSIX backend the ungated suite runs the driver against |
+| `HostBootstrap.Wsl2.GlobalWall.Host` | the recovery driver and durable record codec |
 
-On Windows the clauses are realized by a small Haskell adapter over the platform ABI. It uses public
-`Win32` types and wrappers where they preserve the required semantics, and a narrow direct `kernel32`
-FFI for status-sensitive calls whose public `Win32-2.14.2.1` wrappers do not expose the exact
-`GetLastError` result. The boundary has no C shim, Cabal `c-sources`, or private `Win32` import.
+The wall is one owned object among several, so its clauses come from the shared rows rather than from a
+seam of its own: exclusive entry, the durable origin record, identity binding, and conditional release are
+the row the gate host declares (see [ownership seam](../architecture/ownership_seam.md)). What stays here
+is what is genuinely the wall's: its phase machine, its conflicts, and the pure transformer that derives
+the managed body so the file's content is produced rather than edited in place.
+
+On Windows the row uses public `Win32` types and wrappers where they preserve the required semantics, and
+a narrow direct `kernel32` boundary for status-sensitive calls whose public wrappers do not expose the
+exact `GetLastError` result. It adds no C shim, no Cabal `c-sources`, and no private `Win32` import.
 `LockFileEx` with `LOCKFILE_EXCLUSIVE_LOCK` on a per-user lock file supplies exclusive entry; a
 journalled origin record under `%UserProfile%\.hostbootstrap` names exact bytes or absence; and
 `getFileInformationByHandle`'s `bhfiVolumeSerialNumber`/`bhfiFileIndex` pair supplies identity binding.
 The 64-bit file index is unique and stable on NTFS; a non-NTFS profile volume returns `Unsupported`
-rather than assuming it. A byte-range lock is not affine to the acquiring OS thread, so the adapter
+rather than assuming it. A byte-range lock is not affine to the acquiring OS thread, so the row
 needs neither a named mutex nor the threaded RTS.
 
-Because the driver is backend-parametric, every phase, conflict, and crash-resume branch is executed
-against a real kernel on POSIX through the second backend — `fcntl` exclusive entry, a journal file,
-and `device:inode` identity. The shared pure model and codec suites remain platform-neutral. On
-Windows-gated validation exercised the production entrypoint directly against a temporary
-`USERPROFILE`; its native apply/restore/origin/replacement cases passed. The broader WSL2 provider
-lifecycle matrix remains separate from this focused adapter evidence.
+Because the driver takes its primitives from a row, every phase, conflict, and crash-resume branch is
+executed against a real kernel on POSIX through the other one — kernel exclusive entry, a journal file,
+and `device:inode` identity. The shared pure model and codec suites remain platform-neutral. Windows-gated
+validation exercised the production entrypoint directly against a temporary `USERPROFILE`; its native
+apply/restore/origin/replacement cases passed. The broader WSL2 provider lifecycle matrix remains separate
+from this focused adapter evidence.
 
 Shutdown affects the shared WSL utility VM and stops every distro, so it is a global side effect rather
 than a project-local wall.

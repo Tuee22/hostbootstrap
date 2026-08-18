@@ -639,7 +639,7 @@ that acceptance is not part of this phase's closure gate.
 
 All deliverables in this sprint.
 
-## Phase Remaining Work
+## Remaining Work
 
 Sprints 18.4–18.19. Phase 18 closes when they pass the host-static gate and its governed documentation aligns;
 the later test-harness phase owns live linux-cpu infrastructure confirmation.

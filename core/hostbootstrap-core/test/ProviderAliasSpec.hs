@@ -14,6 +14,7 @@ import qualified Fixture
 import HostBootstrap.Config.Vocab (Production)
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (AbsExe, HostTool (Flock, Incus, Python3), mkAbsExe)
+import PlatformPath (hostFixturePath)
 import HostBootstrap.Incus (IncusVM (..))
 import HostBootstrap.Lift (localContext)
 import HostBootstrap.Lima (LimaVM (..))
@@ -490,6 +491,7 @@ posixCases =
     ]
 #endif
 
+#ifndef mingw32_HOST_OS
 createAndRelease ::
     ProviderCapability scope planId providerId backendId capabilityId ->
     StrongAliasBackend scope planId providerId backendId capabilityId ->
@@ -511,7 +513,6 @@ createAndRelease _ backend _ call = do
                 )
                 (\_ _ _ _ -> pure (Left (Failure (FailureDetail "test alias release" "unexpected foreign alias" DoNotRetry))))
 
-#ifndef mingw32_HOST_OS
 createTamperAndRelease ::
     FilePath ->
     FilePath ->
@@ -1159,14 +1160,30 @@ backendHostConfig =
         { hcSubstrate = Substrate LinuxCpu Amd64
         , hcToolPaths =
             Map.fromList
-                [ (Incus, mustAbs "/test/bin/incus")
-                , (Python3, mustAbs "/test/bin/python3")
-                , (Flock, mustAbs "/test/bin/flock")
+                [ (Incus, fixtureExe fixtureIncus)
+                , (Python3, fixtureExe fixturePython)
+                , (Flock, fixtureExe fixtureFlock)
                 ]
         }
 
-mustAbs :: FilePath -> AbsExe
-mustAbs path = either error id (mkAbsExe path)
+{- | The host tools this suite's fixtures name.
+
+Each is rendered onto the host that runs the suite, so the same total 'AbsExe'
+constructor production uses admits it on every supported outer host realization
+(§ JJ).
+
+The guest paths above are a different thing entirely: an in-VM @which@ result
+and a guest argument vector name files on the machine the provider dispatches
+into, reached through one absolute host-provider command (§ K), and they stay
+POSIX on every host.
+-}
+fixtureIncus, fixturePython, fixtureFlock :: FilePath
+fixtureIncus = hostFixturePath "/test/bin/incus"
+fixturePython = hostFixturePath "/test/bin/python3"
+fixtureFlock = hostFixturePath "/test/bin/flock"
+
+fixtureExe :: FilePath -> AbsExe
+fixtureExe = either error id . mkAbsExe
 
 testProvider :: SubstrateProvider
 testProvider =

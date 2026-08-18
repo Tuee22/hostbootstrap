@@ -3,7 +3,8 @@
 **Status**: Done
 **Depends on**: Phase 4 (protected store)
 **Substrates**: none (static)
-**Gate**: `cabal test all --ghc-options=-Werror` from `core/`, including the compile-fail fixtures
+**Gate**: `cabal test all --ghc-options=-Werror` from `core/`, including the compile-fail fixtures,
+host-native on the gate host that runs it
 
 > **Purpose**: Turn independently verified executable, operating-system, store, and generation facts into
 > opaque authority inputs, while leaving lifecycle-specific command admission to the phases that possess
@@ -266,12 +267,25 @@ Give later complete authorization gates one atomic reservation primitive.
 
 `AuthoritySpec` covers thread and POSIX cross-process one-winner races plus every stable key member. Import
 guards restrict the kernel to its allow-listed package implementation and keep configuration/reconciliation
-dependencies above it.
+dependencies above it. The allow-list is a set of repo-relative module paths, compared separator-neutrally
+so it names the same modules on every supported outer host realization (§ JJ).
 
 Dated evidence for the phase gate: `cabal test all --ghc-options=-Werror` from `core/` passed 1088/1088
 on 2026-08-08 (aarch64-osx, GHC 9.12.4). The gate includes all 69 public compile-fail boundaries.
 
+The allow-list now builds its names with `SourceGuard.repoRelativePath`, the separator-neutral helper the
+[Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md) owns, so the eleven importers and
+the single child-reservation caller are named identically on every gate host. On 2026-08-17 the same gate
+passed host-native on Windows 11 Home 10.0.26200 x86_64 (GHC 9.12.4, Cabal 3.16.1.0) at 1,877/1,877,
+which is the first run to exercise this allow-list from a native-separator gate host. Confirming it on
+the remaining families belongs to the
+[host-portability acceptance phase](phase-28-host-portability-acceptance.md) (§ JJ).
+
 #### Remaining Work
+
+None.
+
+## Remaining Work
 
 None.
 

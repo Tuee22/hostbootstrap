@@ -93,9 +93,15 @@ providerBoundaryCases :: [TestTree]
 providerBoundaryCases =
   [ testCase "Incus consumes and reexports exactly the lower target/renderer pair" $ do
       source <- providerSource "Incus.hs"
-      hostBootstrapImports source @?= ["HostBootstrap.Lift.Context"]
+      -- Two lower modules, and only two: the frame's own target and renderer,
+      -- and the shared frame table this row's destructive delete goes through
+      -- (§ LL). Both are below the realization, which is what this guard is for.
+      hostBootstrapImports source
+        @?= ["HostBootstrap.Lift.Context", "HostBootstrap.Substrate.Frame"]
       fmap withoutCommas (SourceGuard.moduleImportTokens "HostBootstrap.Lift.Context" source)
         @?= Just ["IncusVM", "(", "..", ")", "execVMArgs"]
+      fmap withoutCommas (SourceGuard.moduleImportTokens "HostBootstrap.Substrate.Frame" source)
+        @?= Just ["FrameNoun", "(", "IncusInstance", ")", "guardedDeleteArgs"]
       exports <-
         maybe
           (fail "HostBootstrap.Incus must have an explicit export list")

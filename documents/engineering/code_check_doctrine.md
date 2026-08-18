@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [../README.md](../README.md), [base_image.md](base_image.md), [derived_project_standards.md](derived_project_standards.md), [warm_store.md](warm_store.md), [../languages/haskell.md](../languages/haskell.md)
+**Referenced by**: [../README.md](../README.md), [base_image.md](base_image.md), [derived_project_standards.md](derived_project_standards.md), [warm_store.md](warm_store.md), [../languages/haskell.md](../languages/haskell.md), [testing.md](testing.md)
 
 > **Purpose**: State the rule that every image build, base or derived, gates on the applicable canonical
 > source checks.
@@ -15,6 +15,11 @@
 
 Code quality is a **build-time guardrail**, distinct from behavioral tests. Under the finished doctrine,
 every image this repo produces fails its build if the applicable canonical code-check fails.
+
+This is one leg of a larger picture. `fourmolu` and `hlint` are installed in the base image and run only
+here, so the **host static gate** — the fast Haskell and Python suites, which run host-native on every
+supported outer host — is the behavioural leg and is not the complete quality gate. The two together are
+what "the gate passed" means. See [testing](testing.md#gate-kinds).
 
 ## The rule
 

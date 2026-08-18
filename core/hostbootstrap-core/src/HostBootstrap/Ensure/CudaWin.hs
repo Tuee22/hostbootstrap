@@ -20,20 +20,19 @@ import Control.Exception (SomeException)
 import Control.Exception.Safe (try)
 import Data.List (isInfixOf)
 import HostBootstrap.Ensure (
+    FramePlan (InstallHere),
     InstallStep (..),
     Reconciler (..),
+    frameTable,
     installAndVerify,
+    reconcilerInstallSteps,
     runTool,
     toolPresent,
+    windowsGpuRow,
  )
 import HostBootstrap.HostConfig (HostConfig, resolveMaybe)
 import HostBootstrap.HostTool (HostTool (Clang, MsvcCl, Nvcc, NvidiaSmi, Vswhere, Winget), absExePath)
-import HostBootstrap.Substrate (
-    Substrate,
-    SubstrateName (WindowsGpu),
-    renderSubstrateName,
-    substrateName,
- )
+import HostBootstrap.Substrate (Substrate)
 import System.Directory (
     createDirectoryIfMissing,
     getTemporaryDirectory,
@@ -47,8 +46,9 @@ reconciler =
     Reconciler
         { reconcilerName = "cudawin"
         , reconcilerSummary = "Ensure CUDA host-build tooling on windows-gpu"
-        , appliesTo = \sub -> substrateName sub == WindowsGpu
-        , requirement = "windows-gpu"
+        , -- One row, requiring an accelerator of the Windows frame rather than
+          -- naming the @windows-gpu@ tag.
+          reconcilerFrames = frameTable [windowsGpuRow (InstallHere windowsGpuSteps)]
         , reconcile = \cfg ->
             if not (toolPresent cfg NvidiaSmi)
                 then die "ensure cudawin: nvidia-smi not found; install the NVIDIA driver, then re-run."
@@ -109,10 +109,11 @@ withProbeDir name action = do
     pure (either (const False) id result)
 
 installSteps :: Substrate -> Either String [InstallStep]
-installSteps sub
-    | substrateName sub == WindowsGpu =
-        Right
-            [ InstallStep
+installSteps = reconcilerInstallSteps reconciler
+
+windowsGpuSteps :: [InstallStep]
+windowsGpuSteps =
+    [ InstallStep
                 Winget
                 [ "install"
                 , "--id"
@@ -147,9 +148,7 @@ installSteps sub
                 , "--accept-package-agreements"
                 , "--accept-source-agreements"
                 ]
-            ]
-    | otherwise =
-        Left ("cudawin is only applicable on windows-gpu, not " ++ renderSubstrateName (substrateName sub))
+    ]
 
 clangVersionArgs :: [String]
 clangVersionArgs = ["--version"]

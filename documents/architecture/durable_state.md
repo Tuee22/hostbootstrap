@@ -218,16 +218,20 @@ matching opaque ownership receipt; it never removes an alias merely because its 
 failure is `ProbeFailed`/`Failure` in the probe/reconcile error sum, not an alias state.
 Alias reconciliation may mint a receipt only when the backend holds all four
 [ownership invariant](ownership_invariant.md) clauses. Because all three provider guests run the same
-Linux image, one backend can satisfy them identically on WSL2, Lima, and Incus. Provider discovery executes
-closed requests, accepts only raw outcomes, and privately parses exact one-line tool/marker/identity
-reports. Its fresh capability retains the GNU/BSD `stat` dialect, Python 3, discovered lock observation,
-and hidden guest executor under the exact opaque managed provider resource/backend/generation. Alias
-admission accepts only retained `GuestFlock`; `GuestLockf` remains a descriptive `Unsupported` result
-because Linux `flock(2)` and `fcntl` lock namespaces are not interchangeable. The alias backend narrows
-that capability without accepting an independent executor and also requires the exact opaque managed
-share authority.
+Linux image, the same row satisfies them identically on WSL2, Lima, and Incus — which is why the frame
+axis has three constructors and the ownership row set has two platforms plus one transport, rather than one
+implementation per provider. Provider discovery executes closed requests, accepts only raw outcomes, and
+privately parses exact one-line tool/marker/identity reports; its fresh capability is indexed to the exact
+opaque managed provider resource/backend/generation. The alias backend narrows that capability without
+accepting an independent executor and also requires the exact opaque managed share authority.
 
-Under that retained `flock`, the backend publishes a fresh-nonce explicit-absence `prepared` record inside
+The alias's clauses are the row's, so which lock front end a particular guest happens to carry is not a
+question the protocol asks: a transaction addressed to that frame is carried to a process of this same
+binary there, and that process takes the kernel lock itself (see [ownership seam](ownership_seam.md)).
+Establishing the binary in the guest is the precondition, and the
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns it.
+
+Under that retained lock, the backend publishes a fresh-nonce explicit-absence `prepared` record inside
 the host-backed target, fsyncs and reads it back, atomically publishes a nonce staging symlink without
 replacement, and binds the symlink's exact device/inode before publishing `managed`. Conditional release
 first publishes a version-fenced `releasing` record, then re-observes the identity and retains the record

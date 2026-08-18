@@ -41,14 +41,21 @@ teardown authorization, and receipt-bound release remain downstream work. See
 [composition methodology](documents/architecture/composition_methodology.md) and the canonical
 [lifecycle state model](documents/architecture/lifecycle_state_model.md).
 
-The demo's main substrate paths are:
+The demo has one universal CPU floor, `linux-cpu`, realized through the outer host's provider. The
+hostbootstrap DSL then lifts the application into the plan-selected hardware context, which may add Metal,
+NVIDIA, or Windows-host CUDA capabilities and placement:
 
-| Host | Provider frame | Container/cluster path |
+| Outer host | `linux-cpu` realization | Container/cluster path |
 |---|---|---|
-| Apple Silicon | Lima VM | Docker project container → kind |
-| Native Linux CPU | Incus VM | Docker project container → kind |
-| Windows | WSL2 distro | Docker project container → kind |
-| Native Linux GPU | Direct host path | Docker project container → nvkind |
+| Apple Silicon | Lima/Colima Linux VM | Docker project container → kind |
+| Native Linux CPU | native Linux runtime (with Incus where the plan declares a VM frame) | Docker project container → kind |
+| Windows | WSL2 Linux VM | Docker project container → kind |
+| Native Linux GPU | native Linux runtime plus the NVIDIA acceptance dimension | Docker project container → nvkind |
+
+The outer host tag selects transport, ownership, and provider mechanics. The hardware context selected by
+the plan determines the real execution target and its typed capabilities; every such route retains
+`linux-cpu` as the portable baseline rather than replacing it. The host-native binary establishes the
+selected realization and re-enters the project binary at each declared frame.
 
 The sibling `<project>.dhall` contains project parameters plus descriptive frame context and witnesses;
 it never contains the chain. Decoded context remains descriptive by design and never becomes authority.
@@ -176,7 +183,11 @@ Every Haskell project binary exposes the fixed tree:
 | `context inspect\|path\|show\|schema\|render` | Read-only context/config introspection |
 | `check-code` | Run the inherited project quality gate |
 
-See [the library surface](documents/architecture/hostbootstrap_core_library.md) for exact parser and
+That tree is the whole surface a project or an operator reaches; projects add no verb. One internal
+marker exists beside it and is deliberately not a command: it is how a binary recognizes that it is the
+process on the far side of a frame crossing, which no verb can express, and it carries no coordinates,
+path, authority, or caller-selected action. See
+[the library surface](documents/architecture/hostbootstrap_core_library.md) for exact parser and
 dispatch behavior.
 
 ## Install
@@ -257,6 +268,13 @@ option from being removed silently.
 
 Do not invoke `pytest` directly; the supported Python runner establishes the suite sentinel.
 
+These fast suites are the **host static gate**. The project binary is built host-native on every
+substrate, so they run as ordinary processes of the outer host and are expected to pass host-native on
+macOS, Linux, and Windows alike — no WSL2 distro, container, or durable launcher involved. That is a
+different thing from a `linux-cpu` substrate gate, whose process and POSIX/container effects execute
+inside the realized Linux environment. The gate kinds, what each proves, and the portability rules the
+harness holds are in [documents/engineering/testing.md](documents/engineering/testing.md#gate-kinds).
+
 The live demo harness is separate:
 
 ```bash
@@ -294,7 +312,12 @@ The implemented code is usable, but the stronger target is deliberately open. Pl
   record written before the first mutation, binding to the object's kernel identity rather than its
   pathname, and release conditioned on re-observing that identity — plus exact ownership receipts and
   foreign-state refusal
-  (see [documents/architecture/ownership_invariant.md](documents/architecture/ownership_invariant.md));
+  (see [documents/architecture/ownership_invariant.md](documents/architecture/ownership_invariant.md)).
+  Those four clauses are one transaction, so the target holds them once over one closed seam with a
+  platform row beneath, rather than once per owned object; the clause order is a property of the types,
+  and the drivers that hold them are the binary's own typed operations rather than programs carried as
+  string literals
+  (see [documents/architecture/ownership_seam.md](documents/architecture/ownership_seam.md));
 - one validated forward/topology/reverse plan;
 - authenticated normal/recovery handoffs and controller/build config gates;
 - a project-wide Production/Harness mode lease, exact bound-Production recovery profiles, exhaustive
@@ -306,6 +329,12 @@ The implemented code is usable, but the stronger target is deliberately open. Pl
   host-resident accelerator daemon is currently launched with its standard streams closed and cannot
   report why it stops. The method every boundary above applies is stated once in
   [documents/architecture/unrepresentable_state.md](documents/architecture/unrepresentable_state.md).
+
+Separately from that target work, several phases are open on a narrower point: the host static gate must
+pass host-native on every supported outer host, and some suites still assert from one of them — a POSIX
+tool path in a host fixture, a native path separator in a module allow-list, a source digest taken
+through the process locale. Those are properties of how a guard is written rather than of what it
+asserts, so the provider, cluster, and authority contracts those phases state are unchanged.
 
 Phase status, blockers, and deletion work are authoritative only in
 [DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md) and
