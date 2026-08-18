@@ -32,6 +32,18 @@ generated sibling config, and the global host wall each carry the transaction; t
 Colima drivers carry it again as interpreter programs; and the identity read, the no-replace publication,
 the identity-conditional act, and the durable record encoding each exist more than once.
 
+The **vocabulary** below is built and is the one home for the identity, the intended payload, the origin
+record, its canonical codec, and the closed fault sum. The harness identity seam reads its identity
+through it, so a record one owner writes is already comparable with an identity another owner read.
+
+The **clause tokens** and the **seam** are built with it. The four tokens are abstract, both of their
+indices are nominal, and the entry index is the protected session's own rank-2 variable, so evidence
+cannot move between entries or between objects and cannot outlive the entry that authorized it. The seam
+is a record of primitives closed existentially over its handle type, with seven producers that each demand
+their predecessor token; a row declares which clauses it can hold and the refusal it owes for one it
+cannot is a total function of that declaration, applied before any kernel call. What is still owed is the
+two kernels that fill the seam and the owners that consume it.
+
 The seam, the clause tokens, and the two platform rows are the
 [four-ownership-clauses-and-host-local-reservations phase](../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md)'s;
 the shipped row and the provider drivers are the
@@ -42,6 +54,35 @@ and the guest alias driver is the
 [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md)'s, because replacing it needs the
 project binary established inside the guest first. Everything below describes the target contract; the
 phase index carries what is built.
+
+## The vocabulary
+
+A transaction needs nouns, and they are stated once, without effects, in `HostBootstrap.Ownership.Object`:
+
+- **`ObjectIdentity`** — the kernel's answer for an object, `device:inode` on POSIX and volume serial plus
+  file index on Windows. The constructor is private and admits only a non-empty answer within a fixed
+  ceiling, so an empty or fabricated value is never compared as though it were an identity.
+- **`Payload` and `PayloadDigest`** — the exact bytes a run intends to publish at an owned file, and the
+  digest a record carries in their place. Recording the intended payload before the file exists is what
+  makes the crash window between the origin record and the identity binding resolvable.
+- **`ObjectKind` and `Origin`** — what is owned, and what was there before. A directory has no payload and
+  a file has one, so the digest is a field of the file's own case rather than an optional value beside
+  both; and recorded absence is a distinct case from a recorded prior identity, because "an owner looked
+  and found nothing" and "no owner has looked" license different recoveries.
+- **`OriginRecord`** — the durable record clause 2 publishes. Its constructor is private, its one producer
+  records only what was observed, and the identity binding is attached by its own producer, so a record
+  cannot claim a binding it never made. A second, different binding is a conflict rather than an update.
+- **One canonical record codec** — one line, six space-separated tokens, one terminator, and nothing else,
+  so a record one owner writes is readable by every other and a version tag means one thing. Every
+  malformed shape is a refusal rather than a partially understood record, because a record an owner
+  half-reads is the one input that could make it delete something it does not own.
+- **`OwnershipFault`** — the closed fault sum, with a total eliminator and a structured conflict report
+  carrying both the expected and the observed side. Each case licenses a different act: a row that cannot
+  hold a clause mints no receipt, a failed probe is not an absence, a malformed record is never guessed
+  at, an occupied target is left alone, and a conflict is reported rather than resolved.
+
+None of it performs IO or names a runner, so every property of the vocabulary is provable by application
+rather than against a filesystem.
 
 ## The seam
 
@@ -64,6 +105,26 @@ Three things it deliberately does not carry:
 `OwnershipCapabilities` declares what a row can hold, and the refusal a row owes when it cannot is a total
 function of that value — so `Unsupported` is decided by application rather than by a stand-in, which is
 what [testing](../engineering/testing.md) means by evidence.
+
+## The clause tokens
+
+Each clause mints a token, and the producer of the next clause demands it:
+
+| Token | Minted by | Discloses |
+|---|---|---|
+| `Entered session object` | observing the target inside the protected entry | the target, and what was there before |
+| `Recorded session object` | publishing the unbound origin record durably | the target, and that record |
+| `Bound session object` | attaching the created object's own identity and re-publishing | the target, the bound record, the identity |
+| `Releasable session object` | re-observing the target and finding exactly that identity | the target, the record to forget, the identity |
+
+Both indices are nominal. `session` is the protected entry's own rank-2 variable, so a token cannot
+outlive the entry that authorized it and no second brand can disagree with it; `object` names which object
+the evidence is about. The target the owner named rides on the token too, so no producer takes a path
+argument and there is no call at which a matching token and a different path could be presented together.
+
+The constructors live in one Cabal-private module whose only importers are the facade that re-exports the
+abstract types and the seam that mints them. Compile-fail fixtures reject constructing each token,
+coercing either index, carrying one out of its entry, and importing the private module.
 
 ## The rows
 

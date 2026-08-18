@@ -1,7 +1,7 @@
 # Phase 14 — The four ownership clauses and host-local reservations
 
 **Status**: Active
-**Current sprint**: Sprint 14.5 — The owned-object vocabulary
+**Current sprint**: Sprint 14.8 — The POSIX ownership row
 **Depends on**: Phase 3 (host tools and the closed effect vocabulary), Phase 4 (protected store),
 Phase 11 (prepared operations and preconditions)
 **Substrates**: linux-cpu
@@ -168,11 +168,13 @@ lease, crash recovery on both sides of the write, and the restore-before-shutdow
 None. The POSIX row is the baseline here; the Windows row is Sprint 14.9's, and its live confirmation is
 listed by the acceptance phase that declares Windows hardware (§ II).
 
-### Sprint 14.5: The owned-object vocabulary [Planned]
+### Sprint 14.5: The owned-object vocabulary [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Object.hs`,
-`core/hostbootstrap-core/test/OwnershipObjectSpec.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Harness/Identity.hs`,
+`core/hostbootstrap-core/test/OwnershipObjectSpec.hs`,
+`core/hostbootstrap-core/test/compile-fail/`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_invariant.md`,
 `documents/architecture/ownership_seam.md`
@@ -195,6 +197,9 @@ One IO-free vocabulary for what an owned object is, so every owner speaks the sa
 - `OwnershipFault` is the closed fault sum with a total eliminator, carrying structured expected/observed
   identity for a conflict.
 - The module performs no IO and names no runner, so every value here is testable by application.
+- The harness identity seam reads its identity through this vocabulary and carries its faults across
+  through the closed eliminator, so there is one `ObjectIdentity` in the tree from here on and a record
+  one owner writes is already comparable with an identity another owner read.
 
 #### Validation
 
@@ -202,16 +207,27 @@ One IO-free vocabulary for what an owned object is, so every owner speaks the sa
 identity constructor's bounds, and the total eliminator. Compile-fail fixtures cover the private
 constructors and the record's un-updatable binding.
 
+Dated 2026-08-18 validation evidence (x86_64-windows 11 Home 10.0.26200, GHC 9.12.4, Cabal 3.16.1.0):
+`OwnershipObjectSpec` passed 15/15 — four identity cases, three payload cases, six record cases, and two
+fault cases, including sixteen malformed-record shapes and eight malformed identity spellings. The four
+compile-fail fixtures `ForgeObjectIdentity.hs`, `ForgeOwnershipPayloadDigest.hs`,
+`ForgeOwnershipOriginRecord.hs`, and `RebindOwnershipOriginRecord.hs` each fail with their exact declared
+diagnostic. Canonical `cabal test all --ghc-options=-Werror` from `core/` passed 1,976/1,976;
+`poetry run python -m hostbootstrap.check_code` passed; and
+`poetry run python -m hostbootstrap.test_all` passed 231.
+
 #### Remaining Work
 
-All implementation, tests, fixtures, and documentation.
+None. The vocabulary is nouns only; the tokens that order the clauses, the seam of primitives beneath
+them, the platform rows, and the owners that consume all four are the sprints that follow.
 
-### Sprint 14.6: The clause tokens [Planned]
+### Sprint 14.6: The clause tokens [Done]
 
-**Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Clause.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Ownership/Internal.hs`,
-`core/hostbootstrap-core/test/compile-fail/`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Internal.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Ownership/Clause.hs`,
+`core/hostbootstrap-core/test/compile-fail/`,
+`core/hostbootstrap-core/test/OwnershipObjectSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/unrepresentable_state.md`
 
@@ -223,8 +239,12 @@ Make the clause order a property of the types, so it is not a prose invariant re
 
 - Four abstract tokens — entered, recorded, bound, releasable — each indexed by the protected entry that
   authorized it and by the object it names, with nominal roles so neither index is coercible.
-- The constructors live in one Cabal-private module whose sole importer is the seam, pinned by a source
-  guard.
+- The constructors live in one Cabal-private module, and its only importers are this phase's own facade
+  and the seam, pinned by a source guard.
+- Each token discloses exactly what the next clause consumes: the observed origin, the durably published
+  record, the bound record and identity, and the record and re-observed identity. Nothing else rides
+  alongside, because an origin passed separately is an origin that might have been observed before the
+  entry.
 - Each token has a total eliminator and no producer outside the seam, so a caller holds one only by
   having reached the clause that mints it.
 - The entry index is the protected session's own rank-2 variable rather than a second brand, so a token
@@ -234,17 +254,27 @@ Make the clause order a property of the types, so it is not a prose invariant re
 
 Compile-fail fixtures reject constructing each token, coercing either index, letting a token escape its
 entry, and importing the private module. Each fixture expects one contiguous diagnostic phrase, so an
-unrelated error cannot report the boundary as held (§ HH).
+unrelated error cannot report the boundary as held (§ HH). Running cases pin the shape those fixtures
+depend on: the private registration, the exact importer set, the four nominal role declarations, the
+facade's exact export list, and each eliminator's declared disclosure.
+
+Dated 2026-08-18 validation evidence (x86_64-windows 11 Home 10.0.26200, GHC 9.12.4, Cabal 3.16.1.0):
+the eight fixtures `ForgeOwnershipEntered.hs`, `ForgeOwnershipRecorded.hs`, `ForgeOwnershipBound.hs`,
+`ForgeOwnershipReleasable.hs`, `CoerceOwnershipClauseSession.hs`, `CoerceOwnershipClauseObject.hs`,
+`EscapeOwnershipClauseEntry.hs`, and `ImportOwnershipInternal.hs` each fail with their exact declared
+diagnostic, and `OwnershipObjectSpec` passed 18/18.
 
 #### Remaining Work
 
-All implementation, fixtures, and documentation.
+None. The tokens carry the order; the primitives that mint them by actually holding a clause are the
+seam's, and the seam is the next sprint.
 
-### Sprint 14.7: The ownership primitive seam [Planned]
+### Sprint 14.7: The ownership primitive seam [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Primitive.hs`,
-`core/hostbootstrap-core/test/OwnershipSpec.hs`
+`core/hostbootstrap-core/test/OwnershipSpec.hs`,
+`core/hostbootstrap-core/test/compile-fail/`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_seam.md`
 
@@ -265,7 +295,13 @@ One seam of kernel primitives, and the producers that turn them into the four cl
 - `OwnershipCapabilities` declares what a row can hold, and the refusal a row owes when it cannot is a
   total function of that value — so `Unsupported` is decided by application rather than by a stand-in
   (§ NN).
-- The seven clause producers demand their predecessor token, which is where the ordering theorem lives.
+- The seven clause producers demand their predecessor token, which is where the ordering theorem lives:
+  entering observes under the protected entry and introduces the object index rank-2, recording publishes
+  the unbound record through the caller's own durable write, creating and publishing mutate only from that
+  record, binding attaches the identity and re-publishes, re-observation is what mints the releasable
+  token, and release removes the object before it forgets the record.
+- The target an owner named rides on the tokens, so no producer takes a path argument and there is no call
+  at which a matching token and a different path could be presented together.
 - Clause 1 is the protected store's exclusive entry and clause 2 its compare-and-swap; neither is a seam
   field, because a second durable record beside the store is a second source of truth. The seam's
   *exclusive open* is a different thing and is a field: it opens one named object exclusively and without
@@ -275,11 +311,30 @@ One seam of kernel primitives, and the producers that turn them into the four cl
 
 `OwnershipSpec` applies the capability classifier to every combination and asserts that a row which cannot
 hold a clause reaches no mutation and mints no token. Compile-fail fixtures cover mutation before the
-origin record, release without the identity binding, forging a handle, and crossing a handle between rows.
+origin record, release without the identity binding, carrying a handle out of the row that minted it, and
+crossing a handle between rows.
+
+The row those cases run against supplies primitives that **diverge**, so "reaches no mutation" is a
+property of a program that would not finish if it did rather than of a counter a stand-in incremented, and
+the mirror case observes that a declared capability really is reached. Stated honestly: only the entry
+producer is exercised that way, because reaching the later producers needs a token, a token needs a
+successful entry, and a successful entry needs a kernel read. That the other producers consult the same
+classifier before any primitive is a source guard here; their behaviour is proved against the real kernel
+by the row that supplies one.
+
+Dated 2026-08-18 validation evidence (x86_64-windows 11 Home 10.0.26200, GHC 9.12.4, Cabal 3.16.1.0):
+`OwnershipSpec` passed 10/10 — five classifier cases over all sixteen capability combinations, two
+kernel-reachability cases, and three seam-shape cases. The four fixtures
+`MutateBeforeOwnershipRecord.hs`, `ReleaseWithoutOwnershipBinding.hs`, `EscapeOwnershipRowHandle.hs`, and
+`CrossOwnershipRowHandle.hs` each fail with their exact declared diagnostic. Canonical
+`cabal test all --ghc-options=-Werror` from `core/` passed 2,001/2,001;
+`poetry run python -m hostbootstrap.check_code` passed; and
+`poetry run python -m hostbootstrap.test_all` passed 231.
 
 #### Remaining Work
 
-All implementation, tests, fixtures, and documentation.
+None. The seam is primitives and producers; the kernels that fill it are the two rows, and the owners
+that consume it are the last sprint of this phase.
 
 ### Sprint 14.8: The POSIX ownership row [Planned]
 
@@ -395,8 +450,9 @@ no-replace publication, the identity-conditional act, and the durable record enc
 once, and a third exclusive-entry realization sits beside the two platform ones — copies that agree on the
 inputs each was written for and have never been asked the same question together.
 
-Sprints 14.5 through 14.10 supply the single transaction, the seam beneath it, the two platform rows, and
-the three host-local owners' adoption of them.
+The nouns are stated once, the clause order is a property of the types, and one seam of primitives mints
+the tokens by actually holding each clause. Sprints 14.8 through 14.10 supply the two kernels that fill
+that seam and the three host-local owners' adoption of them.
 
 ## Documentation Requirements
 

@@ -35,6 +35,70 @@ compileFailCases rejects rejectsWith =
     , rejectsWith
         "ForgePlanDraft.hs"
         ["Illegal term-level use of the type constructor 'PlanDraft'"]
+    , -- The owned-object vocabulary the four ownership clauses are written in.
+      -- An identity is what a kernel answered, a payload digest is computed
+      -- from the bytes a run intends to install, and a record's identity
+      -- binding is attached by its own producer — so none of the three has a
+      -- term a caller can write, and the record has no field a caller can
+      -- update.
+      rejectsWith
+        "ForgeObjectIdentity.hs"
+        ["Illegal term-level use of the type constructor 'ObjectIdentity'"]
+    , rejectsWith
+        "ForgeOwnershipPayloadDigest.hs"
+        ["Illegal term-level use of the type constructor 'PayloadDigest'"]
+    , rejectsWith
+        "ForgeOwnershipOriginRecord.hs"
+        ["Illegal term-level use of the type constructor 'OriginRecord'"]
+    , rejectsWith
+        "RebindOwnershipOriginRecord.hs"
+        ["Not in scope: record field 'originRecordBinding'"]
+    , -- The four clause tokens. Each is minted by a clause actually being held,
+      -- so none has a term a caller can write; both indices are nominal, so
+      -- evidence cannot be moved between entries or between objects; and the
+      -- entry index is the protected session's own rank-2 variable, so a token
+      -- cannot be carried out of the entry that authorized it.
+      rejectsWith
+        "ForgeOwnershipEntered.hs"
+        ["Illegal term-level use of the type constructor 'Entered'"]
+    , rejectsWith
+        "ForgeOwnershipRecorded.hs"
+        ["Illegal term-level use of the type constructor 'Recorded'"]
+    , rejectsWith
+        "ForgeOwnershipBound.hs"
+        ["Illegal term-level use of the type constructor 'Bound'"]
+    , rejectsWith
+        "ForgeOwnershipReleasable.hs"
+        ["Illegal term-level use of the type constructor 'Releasable'"]
+    , rejectsWith
+        "CoerceOwnershipClauseSession.hs"
+        ["Couldn't match type 'SessionA' with 'SessionB'"]
+    , rejectsWith
+        "CoerceOwnershipClauseObject.hs"
+        ["Couldn't match type 'ObjA' with 'ObjB'"]
+    , rejectsWith
+        "EscapeOwnershipClauseEntry.hs"
+        ["Couldn't match type 'session' with 'escaped'"]
+    , rejectsWith
+        "ImportOwnershipInternal.hs"
+        ["Could not load module 'HostBootstrap.Ownership.Internal'. it is a hidden module"]
+    , -- The seam that mints those tokens. The clause order is the producers'
+      -- own types, so a mutation before the origin record and a release without
+      -- the re-observation are terms that do not exist; and the handle a row
+      -- mints is sealed inside it, so it can neither be carried out nor handed
+      -- to another row.
+      rejectsWith
+        "MutateBeforeOwnershipRecord.hs"
+        ["with actual type: Entered session object"]
+    , rejectsWith
+        "ReleaseWithoutOwnershipBinding.hs"
+        ["with actual type: Bound session object"]
+    , rejectsWith
+        "EscapeOwnershipRowHandle.hs"
+        ["Couldn't match type 'handle1' with 'handle'"]
+    , rejectsWith
+        "CrossOwnershipRowHandle.hs"
+        ["Couldn't match expected type 'handle1' with actual type 'handle'"]
     , rejectsWith
         "ForgeIndexedProjectPlan.hs"
         ["Illegal term-level use of the type constructor 'ProjectPlan'"]

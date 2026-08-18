@@ -187,6 +187,8 @@ library
       HostBootstrap.Harness.Identity
       HostBootstrap.Harness.Identity.Native
       HostBootstrap.Ownership.Object
+      HostBootstrap.Ownership.Clause
+      HostBootstrap.Ownership.Primitive
       HostBootstrap.Harness.Ownership
       HostBootstrap.Service
       HostBootstrap.Service.Program
@@ -204,6 +206,7 @@ library
       HostBootstrap.Config.Install.Native
       HostBootstrap.Config.Schema.Internal
       HostBootstrap.Harness.Ownership.Internal
+      HostBootstrap.Ownership.Internal
       HostBootstrap.Handoff.Completion
       HostBootstrap.Handoff.Internal
       HostBootstrap.Handoff.Lifecycle
@@ -287,6 +290,8 @@ test-suite hostbootstrap-core-test
       AuthoritySpec
       PortabilitySpec
       HandoffSpec
+      OwnershipObjectSpec
+      OwnershipSpec
       SessionSpec
       BuildAuthoritySpec
       ActivationSpec

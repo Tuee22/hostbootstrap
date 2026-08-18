@@ -28,6 +28,12 @@ document is its canonical explanation and per-substrate realization.
 
 ## Current Status
 
+The nouns the four clauses are written in are stated once, without effects, in
+`HostBootstrap.Ownership.Object`: the kernel's identity answer, the bytes a run intends to install and
+their digest, what is owned and what was there before, the durable origin record with its one canonical
+codec, and the closed fault sum with its total eliminator. See
+[ownership seam](ownership_seam.md#the-vocabulary) for what each carries and why.
+
 The invariant is defined and the algebra that consumes it exists. The prepared Incus provider/share and
 provider-guest alias implementations encode all four clauses, and the
 [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)

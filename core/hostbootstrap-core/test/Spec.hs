@@ -2,6 +2,8 @@ module Main (main) where
 
 import qualified AuthoritySpec
 import qualified HandoffSpec
+import qualified OwnershipObjectSpec
+import qualified OwnershipSpec
 import qualified SessionSpec
 import qualified BuildAuthoritySpec
 import qualified ActivationSpec
@@ -132,6 +134,8 @@ main = do
                     [ PortabilitySpec.tests
                     , AuthoritySpec.tests
                     , HandoffSpec.tests
+                    , OwnershipObjectSpec.tests
+                    , OwnershipSpec.tests
                     , SessionSpec.tests
                     , BuildAuthoritySpec.tests
                     , ActivationSpec.tests
