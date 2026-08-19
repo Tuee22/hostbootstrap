@@ -1,7 +1,7 @@
 # Phase 15 — Host providers and the self-reference lift
 
 **Status**: Active
-**Current sprint**: Sprint 15.25 — The shipped ownership row
+**Current sprint**: Sprint 15.26 — The provider and direct ownership drivers
 **Depends on**: Phase 8 (ensure reconcilers), Phase 12 (step algebra and plan-owned resource
 projections), Phase 13 (authenticated handoff and the frame-child entry), Phase 14 (the four ownership
 clauses and host-local reservations)
@@ -842,11 +842,14 @@ keep the evidence recorded below.
 
 None.
 
-### Sprint 15.25: The shipped ownership row [Planned]
+### Sprint 15.25: The shipped ownership row [Done]
 
-**Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Row.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Substrate/Frame.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Shipped.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Frame.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Handoff/Transaction.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
+`core/hostbootstrap-core/test/OwnershipShippedSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_seam.md`,
 `documents/architecture/build_and_run_model.md`
@@ -862,26 +865,56 @@ than where the caller is.
   and interpreted there. An empty context is a local self-fork on this machine; a one-layer context is a
   frame crossing.
 - It is a **transport**, not a third implementation of the clauses. Every frame this project reaches is
-  Linux, so what executes on the far side is the POSIX row.
+  Linux, so what executes on the far side is the POSIX row, reached through the same seam producers every
+  host-local owner reaches.
 - The transaction travels as one value and the receiving process lives exactly as long as the lock it
   holds, so clause 1 stays a kernel fact rather than a release that must be correct on every error path.
+  That lock is the protected store's own exclusive entry, taken by the receiving process at the authority
+  the transaction names and released by the kernel however that process ends; clause 2 is that store's
+  compare-and-swap.
+- The transaction's act is a **closed set of four** — observe, take a directory, take a file, give back —
+  because those are the four things the seam's producers compose over one object. There is no act that
+  runs a command, because a described command travels through the one interpreter (§ KK) and an act that
+  could run a string would make this a shell again.
 - The argument vector comes from the lift's one fold, so the row adds no rendering of "cross into this
-  frame" (§ LL). The sanitizing predicates the process route already owns are applied as a check over the
-  fold's output rather than as a second renderer.
+  frame" (§ LL). The crossing itself, its sanitizing, its private protocol channel, and its process-group
+  bracket are the [authenticated-handoff phase](phase-13-authenticated-handoff-and-child-admission.md)'s,
+  which already carries one opaque transaction out and one opaque outcome back and interprets neither;
+  this sprint installs the interpreter that entry has always taken as a parameter of the phase that owns
+  the object.
 - The frame table gains the ownership-primitive column, so a frame declares which row holds its clauses
-  beside the tool that reaches it and the grammar its paths obey.
+  beside the tool that reaches it and the grammar its paths obey. The column is a declaration rather than
+  a value a caller runs, which is exactly what keeps the shipped row a transport.
 
 #### Validation
 
 The addressing decision, the transaction encoding, and the outcome decoding are pure and are covered by
-application over values, including every refusal. The empty-context row is exercised against the real
-kernel through a real child process. A crossing into a provider frame is the
-[worked-demo phase](phase-24-worked-demo.md)'s to confirm live, and is recorded as owed here rather than
-simulated (§ NN).
+application over values, including every refusal: every act and every answer round-trips exactly, and an
+unknown format, a truncation, a trailing byte, an unknown act, an unknown answer, an unknown refusal, and
+a record key the store would not admit are each refused rather than guessed. Every case of the closed
+fault sum round-trips, so a refusal that crosses a frame is the refusal that was made.
+
+The empty-context row is exercised against the real kernel through a real child process — the production
+classifier, the production child body, and the argument vector the lift fold places at the leaf — and the
+object it creates and removes is on the caller's own filesystem, so "the transaction reached another
+process" is a property of a program that would not finish if it were false (§ NN).
+
+Dated 2026-08-18 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0): `OwnershipShippedSpec`
+passed 23/23 — three column cases, seven transaction-codec cases, four outcome-codec cases, seven
+transactions run against the production row and a real protected store, and two crossings across a real
+process boundary. Canonical `cabal test all --ghc-options=-Werror` from `core/` passed 2,174/2,174 in
+220.73 seconds; `poetry run python -m hostbootstrap.check_code` passed; and
+`poetry run python -m hostbootstrap.test_all` passed 231.
+
+**Coverage owed rather than claimed (§ NN).** A crossing into a provider frame is the
+[worked-demo phase](phase-24-worked-demo.md)'s to confirm live. This sprint's crossings are all
+empty-context, so what they prove is the transport and the far-side transaction, not that a provider
+guest answers one.
 
 #### Remaining Work
 
-All implementation, tests, guards, and documentation.
+None. The row exists and is reachable; the provider and direct drivers that hold their clauses through it
+are the sprint that follows.
 
 ### Sprint 15.26: The provider and direct ownership drivers [Planned]
 
@@ -976,9 +1009,10 @@ one closed frame table — the tool that reaches the frame and its argument shap
 destructive delete is now one computation over that table (Sprint 15.24); the existence probe, the readiness
 wait, and the budget-to-wall rendering are already values rather than code paths, each in one module.
 
-The **ownership primitive** is the entry still owed here. Sprint 15.25 adds the frame table's third row —
-the one that runs a transaction at the frame that owns the object — and Sprint 15.26 has the provider and
-direct drivers hold their clauses through it.
+The **ownership primitive** is now a column of that table, and the third row exists: Sprint 15.25 supplies
+the transaction that runs where the object is, over the crossing the authenticated-handoff boundary
+already carried. What is still owed is Sprint 15.26 — the provider and direct drivers holding their
+clauses through it, in place of the interpreter programs they ship today.
 
 Sprints 15.6 through 15.19 describe the mechanism their own boundaries hold today. § A rewrites a phase in
 place rather than appending a correction, so those sprints are restated in the same change that moves them

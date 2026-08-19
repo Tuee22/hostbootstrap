@@ -43,8 +43,8 @@ In order, a run now:
    (§ Z);
 4. takes ownership of its generated sibling @\<project\>.dhall@ through
    "HostBootstrap.Harness.GeneratedConfig" — the same four clauses over a file,
-   replacing the @\<config\>.hostbootstrap-test-owner@ lock directory that held
-   none of them;
+   through the same seam and against the same row, so the durable record one
+   owner writes is the record the other reads;
 5. on exit settles both owned objects and only then closes the lease and
    releases the mode. The directory and the config are removed only after
    re-observing their exact kernel identities; a @.test_data@ (or @.data@) the
@@ -105,8 +105,8 @@ import HostBootstrap.Harness.GeneratedConfig (
     recoverGeneratedConfig,
     releaseGeneratedConfig,
  )
-import HostBootstrap.Harness.Identity (ObjectIdentityBackend)
-import HostBootstrap.Harness.Identity.Native (nativeObjectIdentityBackend)
+import HostBootstrap.Ownership.Primitive (OwnershipRow)
+import HostBootstrap.Ownership.Row (ownershipRowForHost)
 import HostBootstrap.Harness.Ownership.Internal (
     OwnedHarnessCloseControl,
     consumeOwnedHarnessClose,
@@ -222,7 +222,7 @@ acquireOwnedRunConfig (OwnedHarnessRoot store project path root _) payload = do
         inConfigEntry store $ \session ->
             case generatedConfigKey project (runIdText (harnessRootRunId root)) of
                 Left failure -> pure (Left failure)
-                Right key -> acquireGeneratedConfig identityBackend session key path payload
+                Right key -> acquireGeneratedConfig ownershipRow session key path payload
     pure (either (Left . Text.unpack . generatedConfigErrorMessage) Right outcome)
 
 {- | Give the generated config back. It is unlinked only after its exact kernel
@@ -241,7 +241,7 @@ releaseOwnedRunConfig (OwnedHarnessRoot store project _ root _) owned = do
                 Right key ->
                     fmap
                         (fmap (const ()))
-                        (releaseGeneratedConfig identityBackend session key owned)
+                        (releaseGeneratedConfig ownershipRow session key owned)
     pure (either (Left . Text.unpack . generatedConfigErrorMessage) Right outcome)
 
 protectedProjectRunOwnership ::
@@ -702,9 +702,14 @@ runInEntry store action = do
         Left failure -> Left (ModeStoreFailure failure)
         Right inner -> inner
 
--- | The host identity backend the production bracket binds ownership to.
-identityBackend :: ObjectIdentityBackend
-identityBackend = nativeObjectIdentityBackend
+{- | The ownership row this host's kernel supplies.
+
+One selector, so the data root's clauses are held by the same primitives the
+generated config's are, and there is one place that decides which kernel holds a
+clause.
+-}
+ownershipRow :: OwnershipRow
+ownershipRow = ownershipRowForHost
 
 {- | Take the data root under all four § EE clauses.  The whole
 observe → record-origin → create → bind-identity sequence runs inside one
@@ -721,7 +726,7 @@ takeDataRoot store project run path =
     inEntry store $ \session ->
         case dataRootOriginKey project (runIdText run) of
             Left failure -> pure (Left failure)
-            Right key -> acquireDataRoot identityBackend session key path
+            Right key -> acquireDataRoot ownershipRow session key path
 
 {- | Give the data root back.  A directory this run created is removed only
 after its exact kernel identity is re-observed; one the run merely found is
@@ -740,7 +745,7 @@ giveUpDataRoot store project run owned =
         case dataRootOriginKey project (runIdText run) of
             Left failure -> pure (Left failure)
             Right key ->
-                fmap (fmap (const ())) (releaseDataRoot identityBackend session key owned)
+                fmap (fmap (const ())) (releaseDataRoot ownershipRow session key owned)
 
 {- | Resolve an abandoned run's data-root record: restore the recorded absence,
 or leave a recorded pre-existing directory alone.  Exposed to the sweep's fold
@@ -757,7 +762,7 @@ reclaimAbandonedDataRoot store project run path =
         case dataRootOriginKey project run of
             Left failure -> pure (Left failure)
             Right key ->
-                fmap (fmap (const ())) (recoverDataRoot identityBackend session key path)
+                fmap (fmap (const ())) (recoverDataRoot ownershipRow session key path)
 
 {- | Resolve an abandoned run's generated-config record: unlink exactly the file
 that run installed, or refuse an edited or replaced one and leave it intact.
@@ -777,7 +782,7 @@ reclaimAbandonedConfig store project run path =
             Right key ->
                 fmap
                     (fmap (const ()))
-                    (recoverGeneratedConfig identityBackend session key path)
+                    (recoverGeneratedConfig ownershipRow session key path)
 
 {- | Run a data-root decision inside the store's exclusive entry, flattening the
 store's own refusal into the data-root failure vocabulary.

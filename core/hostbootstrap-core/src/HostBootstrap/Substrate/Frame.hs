@@ -18,10 +18,16 @@ module HostBootstrap.Substrate.Frame (
     allFrameNouns,
     renderFrameNoun,
     guardedDeleteArgs,
+
+    -- * Which row holds a frame's ownership clauses
+    FrameOwnershipRow (..),
+    frameOwnershipRow,
+    frameOwnsLocally,
 )
 where
 
 import Data.List (isPrefixOf)
+import HostBootstrap.Effect.Vocabulary (EffectFrame (CrossedInto, OuterHost))
 
 {- | What a frame's own vocabulary calls the thing a destructive delete removes.
 
@@ -91,3 +97,42 @@ guardedDeleteArgs noun prefix name argv
                 ++ "': "
                 ++ name
             )
+
+-- ---------------------------------------------------------------------------
+-- The ownership-primitive column
+
+{- | Which of the ownership rows holds a frame's four clauses (§ EE, § LL).
+
+The table's other columns say which tool reaches a frame and which grammar its
+paths obey (§ MM); this one says whose kernel answers when an object at that
+frame is owned. It is a /declaration/ rather than a value a caller runs: a
+crossed frame's row is held by a process at that frame, which is what makes the
+shipped transaction a transport rather than a third implementation of the
+clauses.
+-}
+data FrameOwnershipRow
+    = -- | the row this binary was built for, run in this process
+      HostOwnershipRow
+    | -- | the POSIX row, run by a process at the frame that owns the object
+      PosixOwnershipRow
+    deriving (Eq, Ord, Show, Enum, Bounded)
+
+{- | The column, total over the closed frame axis.
+
+Every frame this project reaches through a host-provider command is Linux, so
+there is exactly one answer for every crossing and no per-provider entry to fall
+out of step. The outer host is the only frame whose row is a build fact about
+/this/ binary.
+-}
+frameOwnershipRow :: EffectFrame -> FrameOwnershipRow
+frameOwnershipRow OuterHost = HostOwnershipRow
+frameOwnershipRow CrossedInto{} = PosixOwnershipRow
+
+{- | Whether this process's own row is the one that holds the frame's clauses.
+
+Derived from the column rather than from a second test of the frame, so a
+caller deciding whether to run a transaction here or ship it asks the same
+value the table answers.
+-}
+frameOwnsLocally :: EffectFrame -> Bool
+frameOwnsLocally frame = frameOwnershipRow frame == HostOwnershipRow

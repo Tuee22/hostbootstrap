@@ -65,7 +65,7 @@ module HostBootstrap.Effect.Run
     )
 where
 
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
 import Control.Exception
     ( SomeAsyncException
@@ -80,7 +80,7 @@ import qualified Data.ByteString.Char8 as ByteStringChar
 import System.Exit (ExitCode)
 import System.IO (Handle, hClose)
 #if !defined(mingw32_HOST_OS)
-import System.Posix.Signals (Signal, sigKILL, sigTERM, signalProcessGroup)
+import System.Posix.Signals (Signal, nullSignal, sigKILL, sigTERM, signalProcessGroup)
 #endif
 import System.Process
     ( CreateProcess (create_group, cwd, env, std_err, std_in, std_out)
@@ -88,10 +88,10 @@ import System.Process
     , ProcessHandle
     , StdStream (CreatePipe)
     , getPid
+    , getProcessExitCode
     , proc
     , readProcessWithExitCode
     , terminateProcess
-    , waitForProcess
     , withCreateProcess
     )
 import System.Timeout (timeout)
@@ -215,19 +215,22 @@ groupedProcess bounds namespace executable arguments =
                         events <- newChan
                         _ <- forkIO (readPipe ceiling' outputHandle >>= writeChan events . PipeEvent StandardOutput)
                         _ <- forkIO (readPipe ceiling' errorHandle >>= writeChan events . PipeEvent StandardError)
-                        completed <-
-                            timeout (boundWallMicros bounds) $ do
-                                pipes <- awaitPipes events
-                                case pipes of
-                                    PipesLimitExceeded -> pure BoundedOutputLimit
-                                    PipesComplete out err -> do
-                                        code <- waitForProcess process
-                                        pure (BoundedCompleted (CapturedRun code out err))
+                        drained <- timeout (boundWallMicros bounds) (awaitPipes events)
                         let closeAll = mapM_ closeQuietly [inputHandle, outputHandle, errorHandle]
-                        case completed of
+                        case drained of
                             Nothing -> tearDown >> closeAll >> pure BoundedTimedOut
-                            Just BoundedOutputLimit -> tearDown >> closeAll >> pure BoundedOutputLimit
-                            Just result -> closeAll >> pure result
+                            Just PipesLimitExceeded -> tearDown >> closeAll >> pure BoundedOutputLimit
+                            Just (PipesComplete out err) -> do
+                                -- Both streams are at end, so the child is
+                                -- almost always already gone; the wall still
+                                -- bounds the wait, because a child that closes
+                                -- its streams and then refuses to leave is
+                                -- exactly what the bound is for.
+                                exited <- awaitProcessExit (boundWallMicros bounds) process
+                                case exited of
+                                    Nothing -> tearDown >> closeAll >> pure BoundedTimedOut
+                                    Just code ->
+                                        closeAll >> pure (BoundedCompleted (CapturedRun code out err))
                     _ -> pure (BoundedFailed "the bounded runner did not create all requested pipes")
         runProcess `onException` tearDown
   where
@@ -330,25 +333,99 @@ pipeChunkBytes = 32 * 1024
 terminateProcessGroup :: Int -> Maybe Pid -> ProcessHandle -> IO ()
 terminateProcessGroup graceMicros processGroup process = do
 #if defined(mingw32_HOST_OS)
-    let _ = (graceMicros, processGroup)
+    let _ = processGroup
     _ <- trySynchronous (terminateProcess process)
-    _ <- timeout reapMicros (waitForProcess process)
+    _ <- awaitGroupExit graceMicros processGroup process
+    _ <- awaitGroupExit reapMicros processGroup process
     pure ()
 #else
     signalGroup sigTERM processGroup
-    graceful <- timeout graceMicros (waitForProcess process)
-    case graceful of
-        Just _ -> pure ()
-        Nothing -> do
+    settled <- awaitGroupExit graceMicros processGroup process
+    if settled
+        then pure ()
+        else do
             signalGroup sigKILL processGroup
             _ <- trySynchronous (terminateProcess process)
-            _ <- timeout reapMicros (waitForProcess process)
+            _ <- awaitGroupExit reapMicros processGroup process
             pure ()
 #endif
 
 -- | How long a torn-down leader is waited for before the launcher gives up.
 reapMicros :: Int
 reapMicros = 2 * 1000 * 1000
+
+-- | How often the teardown looks again while it waits out a grace period.
+teardownPollMicros :: Int
+teardownPollMicros = 25 * 1000
+
+{- | Wait, within a budget, for the leader to exit and its group to empty.
+
+Polled rather than blocked, and that is the whole point. @waitForProcess@ enters
+a foreign call, and the gate builds this suite with the non-threaded runtime,
+where such a call cannot be interrupted: a @timeout@ around it therefore waits
+for a child that is refusing to leave rather than for the budget, and the
+escalation to @SIGKILL@ below it never runs at all. Polling
+'getProcessExitCode' reaps the leader without ever entering a call the launcher
+cannot come back from, so the grace period is a bound the launcher actually
+holds on every host.
+
+The /group/ is what is waited for, not the leader alone. A driver whose leader
+exits immediately and leaves a grandchild holding the pipes has not finished
+just because the leader has: the descendants are exactly what a grouped teardown
+exists to reach.
+-}
+awaitGroupExit :: Int -> Maybe Pid -> ProcessHandle -> IO Bool
+awaitGroupExit budgetMicros processGroup process = go budgetMicros
+  where
+    go remaining = do
+        exited <- trySynchronous (getProcessExitCode process)
+        present <- groupPresent processGroup
+        case exited of
+            Right (Just _) | not present -> pure True
+            _
+                | remaining <= 0 -> pure False
+                | otherwise -> do
+                    threadDelay teardownPollMicros
+                    go (remaining - teardownPollMicros)
+
+{- | Wait, within a budget, for the leader alone to exit, and report its status.
+
+The same polled shape as 'awaitGroupExit' and for the same reason: the exit
+status must be readable without entering a call the launcher cannot be brought
+back out of. The first look happens before any delay, so a child that has
+already exited costs nothing.
+-}
+awaitProcessExit :: Int -> ProcessHandle -> IO (Maybe ExitCode)
+awaitProcessExit budgetMicros process = go budgetMicros
+  where
+    go remaining = do
+        exited <- trySynchronous (getProcessExitCode process)
+        case exited of
+            Right (Just code) -> pure (Just code)
+            _
+                | remaining <= 0 -> pure Nothing
+                | otherwise -> do
+                    threadDelay teardownPollMicros
+                    go (remaining - teardownPollMicros)
+
+{- | Whether any member of the process group is still there.
+
+The probe is the null signal, which asks the kernel about the group without
+delivering anything. A group whose leader has been reaped keeps its identifier
+for exactly as long as it still has members, so this answers about the
+descendants a teardown is trying to reach rather than about the leader alone.
+-}
+groupPresent :: Maybe Pid -> IO Bool
+#if defined(mingw32_HOST_OS)
+-- There is no process group to probe: the job the launcher holds is the leader,
+-- and 'terminateProcess' is what ends it.
+groupPresent _ = pure False
+#else
+groupPresent Nothing = pure False
+groupPresent (Just processGroup) = do
+    probed <- trySynchronous (signalProcessGroup nullSignal processGroup)
+    pure (either (const False) (const True) probed)
+#endif
 
 #if !defined(mingw32_HOST_OS)
 signalGroup :: Signal -> Maybe Pid -> IO ()

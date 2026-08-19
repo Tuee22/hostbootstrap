@@ -103,7 +103,15 @@ CoverageManifest
 
 A family that lost a case on one host fails its declared count there rather than reporting a smaller
 total. A family whose subject is available everywhere is not declared, because a manifest listing every
-family would be a second copy of the suite.
+family would be a second copy of the suite. Three platform rows make families conditional today: the two
+host-wall rows and the ownership seam's POSIX row, whose own declaration-only cases are available on every
+gate host and are therefore not declared.
+
+The ownership row's release-on-death case takes the suite's own re-invocation route: the suite spawns
+itself with a probe argument, the probe takes the row's exclusive open and drops the raw descriptor rather
+than closing it, and the parent observes the contention, kills the probe, and re-opens. A raw descriptor
+carries no finalizer, so nothing in the probe can release that lock and the successful re-open is evidence
+about the kernel rather than about a cleanup path.
 
 ### What counts as evidence
 

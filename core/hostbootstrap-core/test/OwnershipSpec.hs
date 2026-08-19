@@ -34,8 +34,17 @@ import Data.Foldable (for_, traverse_)
 import Data.List (isInfixOf)
 import Data.Maybe (isJust)
 import HostBootstrap.DocValidator (findRepoRoot)
+import qualified Data.Text as Text
+import HostBootstrap.Ownership.Clause (boundEvidence)
 import HostBootstrap.Ownership.Object
-    ( OwnershipFault (OwnershipUnsupported)
+    ( ObjectIdentity
+    , ObjectKind (OwnedDirectory)
+    , Origin (OriginAbsent)
+    , OriginRecord
+    , OwnershipFault (OwnershipMalformed, OwnershipUnsupported)
+    , bindOriginRecord
+    , mkKernelObjectIdentity
+    , originRecord
     , ownershipFaultMessage
     )
 import HostBootstrap.Ownership.Primitive
@@ -53,6 +62,7 @@ tests =
         "OwnershipSpec"
         [ testGroup "the capability classifier" classifierTests
         , testGroup "a row that cannot hold a clause" refusalTests
+        , testGroup "re-entering an owned object" reentryTests
         , testGroup "the seam's shape" seamTests
         ]
 
@@ -151,6 +161,74 @@ refusalTests =
     ]
 
 -- ---------------------------------------------------------------------------
+-- Re-entry
+
+{- | The producer that makes clause 4 reachable from the durable record.
+
+Every case here runs against the row whose primitives diverge, which is the
+point: re-entry reads a record the caller already holds and reaches no kernel at
+all, so a case that finished proves it, and one that touched a primitive would
+not finish.
+-}
+reentryTests :: [TestTree]
+reentryTests =
+    [ testCase "a record with no identity binding mints no token" $
+        withEntry $ \session -> do
+            outcome <-
+                try
+                    ( reenterOwnedObject
+                        (unreachableRow fullCapabilities)
+                        session
+                        "/owned/target"
+                        (originRecord OwnedDirectory OriginAbsent)
+                        (\_ -> pure (Right ()))
+                    )
+            case (outcome :: Either SomeException (Either OwnershipFault ())) of
+                Right (Left (OwnershipMalformed reason)) ->
+                    assertBool
+                        ("the refusal says why: " <> show reason)
+                        ("authorizes no release" `isInfixOf` Text.unpack reason)
+                other -> assertFailure ("expected a malformed-record refusal, got " <> show other)
+    , testCase "a row that cannot hold the clause refuses before the record is read" $
+        -- The capability check comes first, so an unbound record — which would
+        -- otherwise be refused for its own reason — is still answered with the
+        -- row's declared refusal rather than with a diagnostic about the record.
+        withEntry $ \session -> do
+            outcome <-
+                try
+                    ( reenterOwnedObject
+                        (unreachableRow noCapabilities)
+                        session
+                        "/owned/target"
+                        (originRecord OwnedDirectory OriginAbsent)
+                        (\_ -> pure (Right ()))
+                    )
+            expectUnsupported outcome
+    , testCase "a bound record discloses exactly the target and identity it names" $
+        withEntry $ \session -> do
+            identity <- expectIdentity (mkKernelObjectIdentity 7 11)
+            bound <- expectBound (bindOriginRecord identity (originRecord OwnedDirectory OriginAbsent))
+            outcome <-
+                reenterOwnedObject
+                    (unreachableRow fullCapabilities)
+                    session
+                    "/owned/target"
+                    bound
+                    ( boundEvidence
+                        ( \target record disclosed ->
+                            pure (Right (target, record, disclosed))
+                        )
+                    )
+            outcome @?= Right ("/owned/target", bound, identity)
+    ]
+
+expectIdentity :: Either OwnershipFault ObjectIdentity -> IO ObjectIdentity
+expectIdentity = either (\fault -> assertFailure ("expected an identity: " <> show fault)) pure
+
+expectBound :: Either OwnershipFault OriginRecord -> IO OriginRecord
+expectBound = either (\fault -> assertFailure ("expected a bound record: " <> show fault)) pure
+
+-- ---------------------------------------------------------------------------
 -- The seam's shape
 
 seamTests :: [TestTree]
@@ -161,13 +239,13 @@ seamTests =
     , testCase "every producer consults the classifier before it reaches a primitive" $
         withCoreSourceRoot $ \sourceRoot -> do
             source <- readFile (sourceRoot </> "HostBootstrap" </> "Ownership" </> "Primitive.hs")
-            -- Four producers gate on a clause directly. The three that mutate —
+            -- Five producers gate on a clause directly. The three that mutate —
             -- creating a directory, publishing a file, and releasing — are
             -- reachable only from a token the gated producers minted, so gating
             -- them again would ask the same question twice.
             -- Its export, its signature, its definition, and one use in each
-            -- of the four gated producers.
-            SourceGuard.countHaskellIdentifier "clauseRefusal" source @?= 7
+            -- of the five gated producers.
+            SourceGuard.countHaskellIdentifier "clauseRefusal" source @?= 8
             traverse_
                 ( \gated ->
                     assertBool
@@ -238,7 +316,7 @@ unreachableRow capabilities =
             , rowOpenExclusive = unreachable "open one object exclusively"
             , rowCreateDirectory = unreachable "create a directory"
             , rowCreateFile = \_ -> unreachable "create a file"
-            , rowPublishNoReplace = \_ -> unreachable "publish without replacing"
+            , rowLinkNoReplace = \_ -> unreachable "link without replacing"
             , rowReadObject = unreachable "read an object"
             , rowRemoveObject = unreachable "remove an object"
             , rowCloseHandle = unreachable "close a handle"

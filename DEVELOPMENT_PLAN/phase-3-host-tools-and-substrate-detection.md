@@ -262,6 +262,19 @@ teardown decision is made once rather than at every spawn site.
   watchdog, or a group teardown of its own. They previously disagreed about all three — chunked
   `ByteString` reads against character-at-a-time truncation, a real timeout against a polled `MVar`, and
   a six-second grace against two — and no gate compared them because each passed its own tests.
+- Every bound the runner states is one it actually holds. A wall clock, a grace period, and a reap
+  budget are all waited out by polling the child's status rather than by wrapping a blocking wait in a
+  timeout: a process wait is a foreign call, and under the non-threaded runtime the gate builds this
+  package with, an asynchronous exception cannot bring the launcher back out of one. A bound written
+  that way expires without anything happening, so the escalation beneath it — group `SIGTERM`, the
+  grace, then group `SIGKILL` — never runs, and an uncooperative child hangs the launcher for as long as
+  it likes. Polling reaps the child without entering a call the launcher cannot return from, so the same
+  numbers mean the same thing on every gate host.
+- The teardown waits for the *group*, not the leader. A driver whose leader exits immediately and leaves
+  a grandchild holding the pipes has not finished just because the leader has, so the grace period ends
+  when the group is empty and the escalation to `SIGKILL` is driven by a null-signal probe of the group
+  rather than by the leader's exit alone. Descendants are exactly what a grouped teardown exists to
+  reach.
 - Failure to *start* stays distinct from failure to *succeed*: a child that ran and exited non-zero is
   `Right` with its exit code, and only a child that never existed is `Left`.
 - Every catch is synchronous-only, so a cancelled launcher no longer reads as a broken tool.
@@ -285,6 +298,12 @@ Dated evidence: on 2026-08-17, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4
 passed `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/` host-native at
 1,885/1,885 in 222.28 seconds, plus `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` at 231 passed.
+
+Dated evidence: on 2026-08-18, x86_64 Linux with GHC 9.12.4 and Cabal 3.16.1.0 passed the same gate
+host-native at 2,121/2,121 in 209.17 seconds, plus both Python commands with 231 passed. That gate host
+is where the bounded teardown is exercised end to end: `ClusterBackendSpec`'s three grouped-teardown
+cases drive a real child that ignores `SIGTERM`, a leader that exits leaving a grandchild on the pipes,
+and an asynchronous cancellation of the launcher, each against the platform's own signals.
 
 #### Remaining Work
 

@@ -74,6 +74,14 @@ record keys or versions.
 ## What is implemented
 
 - `HostPathShare`/`ShareReconcile` describe the provider-specific host-to-guest carry.
+- A harness run's two owned host-local objects — its `.test_data/<runId>` generation and its generated
+  sibling `<project>.dhall` — record their ownership as the **one canonical `OriginRecord`** in the
+  protected store, under one record key each. The encoding is a single fixed line carrying the record
+  version, the kind, the prior identity-or-absence, the intended payload digest for a file, and the bound
+  identity, so a record either owner writes is readable by the other and a version tag means one thing.
+  The record is published before the object exists and the identity binding is a second compare-and-swap
+  against the exact version the publication left, so the window between them is a durable state recovery
+  reads rather than a state it has to guess at.
 - WSL2 uses the host drive exposed by drvfs, Incus attaches a disk device, and Lima declares a mount.
 - `HostBootstrap.Substrate.Provider.Reconcile` settles provider shares into an opaque nominal
   `ManagedProviderShareHandle` that retains the exact managed provider origin. The prepared Incus backend

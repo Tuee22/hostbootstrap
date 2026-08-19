@@ -1812,15 +1812,15 @@ sourceBoundaryTests =
                     , "withFinalizedForwardChildProjectionKernel"
                     ]
                 sha256Text cliBytes
-                    @?= "ced91a317786e5c19f05bd14b52b70094fd7180a29774a79e3ee582d1e47d95a"
+                    @?= "5b0d8a155a16c65c7e8a619e98b1c64100e0486cd974a26812bf27dd1f0ac22f"
                 sha256Text constructBytes
                     @?= "fab624d2ddf1fd067b57323d23df1c7a9c4d2e0b6e78fbbd1a6638e704017eb4"
                 sha256Text internalBytes
                     @?= "fc8731711546662895f1766e7e79968c9fc30bd770a0f159915fd981a4ee185d"
                 (cliSignificant, constructSignificant, internalSignificant)
-                    @?= (451, 591, 220)
+                    @?= (452, 591, 220)
                 (sourceAttribution, sourceAttribution + cabalAttribution)
-                    @?= (199, 200)
+                    @?= (200, 201)
                 assertBool
                     "the accepted soft-target underrun crossed the hard 400-line split boundary"
                     (sourceAttribution + cabalAttribution < 400)

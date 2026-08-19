@@ -23,7 +23,9 @@ and would rot rather than guard.
 module CoverageManifest (tests) where
 
 import Data.List (intercalate, isPrefixOf)
-import HostBootstrap.Wsl2.GlobalWall.Posix (posixGlobalWallSupported)
+import HostBootstrap.Ownership.Posix (posixOwnershipSupported)
+import HostBootstrap.Ownership.Row (hostOwnershipSupported)
+import HostBootstrap.Ownership.Windows (windowsOwnershipSupported)
 import HostBootstrap.Wsl2.GlobalWall.Windows (windowsGlobalWallSupported)
 import Test.Tasty (TestName, TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase)
@@ -48,7 +50,11 @@ data ConditionalFamily = ConditionalFamily
     -- ^ Why the row cannot be held where it cannot.
     }
 
-{- | The families the two host-wall platform rows make conditional.
+{- | The families the three platform rows make conditional.
+
+The ownership seam's POSIX row supplies @lstat@ identity, @O_NOFOLLOW@ opens,
+@fcntl@ record locks, and @link(2)@; its declaration-only cases are available
+everywhere and are therefore not declared here.
 
 The POSIX row maps the four ownership clauses onto @fcntl@ record locks,
 @device:inode@ identity, and link/rename namespace operations; the Windows row
@@ -63,6 +69,14 @@ manifest =
     , posixFamily ["WslGlobalWallHostSpec", "ownership refusals"] 4 4
     , posixFamily ["WslGlobalWallHostSpec", "crash resume"] 3 3
     , posixFamily ["WslGlobalWallHostSpec", "the durable record codec"] 3 2
+    , ownershipRowFamily ["OwnershipPosixSpec", "identity"] 5 5
+    , ownershipRowFamily ["OwnershipPosixSpec", "creation and publication"] 5 5
+    , ownershipRowFamily ["OwnershipPosixSpec", "the exclusive open"] 4 4
+    , ownershipRowFamily ["OwnershipPosixSpec", "removal and durability"] 4 4
+    , ownershipWindowsRowFamily ["OwnershipWindowsSpec", "identity"] 3 3
+    , ownershipWindowsRowFamily ["OwnershipWindowsSpec", "creation and publication"] 4 4
+    , ownershipWindowsRowFamily ["OwnershipWindowsSpec", "the exclusive open"] 2 2
+    , ownershipWindowsRowFamily ["OwnershipWindowsSpec", "removal"] 2 2
     , ConditionalFamily
         { familyPath = ["WslGlobalWallWindowsSpec"]
         , familyCases = 4
@@ -73,12 +87,34 @@ manifest =
         }
     ]
   where
+    ownershipRowFamily path cases rowCases =
+        ConditionalFamily
+            { familyPath = path
+            , familyCases = cases
+            , familyRowCases = rowCases
+            , familyRowHolds = posixOwnershipSupported
+            , familyReason =
+                "the POSIX ownership row needs lstat identity, O_NOFOLLOW opens,"
+                    ++ " fcntl record locks, and link(2)"
+            }
+
+    ownershipWindowsRowFamily path cases rowCases =
+        ConditionalFamily
+            { familyPath = path
+            , familyCases = cases
+            , familyRowCases = rowCases
+            , familyRowHolds = windowsOwnershipSupported
+            , familyReason =
+                "the Windows ownership row needs GetFileInformationByHandle identity,"
+                    ++ " LockFileEx byte-range locks, and CreateHardLinkW"
+            }
+
     posixFamily path cases rowCases =
         ConditionalFamily
             { familyPath = path
             , familyCases = cases
             , familyRowCases = rowCases
-            , familyRowHolds = posixGlobalWallSupported
+            , familyRowHolds = hostOwnershipSupported
             , familyReason =
                 "the POSIX row needs fcntl record locks and device:inode identity"
             }

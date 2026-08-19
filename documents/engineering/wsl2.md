@@ -77,7 +77,7 @@ The lifecycle never names the file. `spLaunch` emits `ApplyGlobalWslWall <manage
 `spStop`/`spDestroy` emit `ReleaseGlobalWslWall <managed body>`; all three take the same
 `ResourceEnvelope`, so teardown releases exactly the wall bring-up applied, and a *different*
 declaration is a structured conflict rather than an overwrite. The target is derived from
-`%UserProfile%` by the backend itself.
+`%UserProfile%` where the wall lives, never from caller input.
 
 Target planning derives a pure exact `ProviderWallSpec ... wallSpecId`, `EffectiveBudget`, and proved
 `BudgetPartition` before touching this shared state. The same-spec reservation is minted only from the exact
@@ -103,29 +103,52 @@ The implementation is split so that the ownership logic is not Windows-only:
 | `HostBootstrap.Wsl2.GlobalWall` | the pure phase machine, receipts, and conflicts |
 | `HostBootstrap.Wsl2.GlobalWall.ConfigBytes` | the byte-exact UTF-8/UTF-16 managed-section merge |
 | `HostBootstrap.Wsl2.GlobalWall.Host` | the recovery driver and durable record codec |
+| `HostBootstrap.Wsl2.GlobalWall.Windows` | where the one wall is, and nothing else |
 
 The wall is one owned object among several, so its clauses come from the shared rows rather than from a
-seam of its own: exclusive entry, the durable origin record, identity binding, and conditional release are
-the row the gate host declares (see [ownership seam](../architecture/ownership_seam.md)). What stays here
-is what is genuinely the wall's: its phase machine, its conflicts, and the pure transformer that derives
-the managed body so the file's content is produced rather than edited in place.
+seam of its own: the identity read, the exclusive open, the whole-object read, the create-exclusive, the
+no-replace link, and the removal are the row the gate host declares (see
+[ownership seam](../architecture/ownership_seam.md)). What stays here is what is genuinely the wall's:
+its phase machine, its conflicts, and the pure transformer that derives the managed body so the file's
+content is produced rather than edited in place.
+
+Clauses 1 and 2 are the wall's own `ProtectedStore`, opened beside the target under
+`%UserProfile%\.hostbootstrap\global-wall`. That is the same exclusive entry and the same
+compare-and-swap the run's data root and generated config hold, so there is one exclusive open beneath
+every host-local owner — and the wall carries no lock file, no journal file, and no fence file of its
+own. Its strictly monotonic, never-reused fence is that store's own record version: versions increase on
+every write to one record and the fence record is never deleted.
+
+Staging is two names rather than a move. The armed object is created exclusively, its identity is
+recorded, and only then is the durable stage name *linked* to it — which is why the seam's no-replace
+publication is a link that leaves its source rather than a move. That order is what makes the
+create-outcome-unknown phase resolvable: an armed leftover at a name embedding this receipt's
+never-reused fence is this owner's own interrupted attempt on every host, so it is removed by exact
+identity inside the same exclusive entry and the create retried, and its unknown bytes are never
+published.
 
 On Windows the row uses public `Win32` types and wrappers where they preserve the required semantics, and
 a narrow direct `kernel32` boundary for status-sensitive calls whose public wrappers do not expose the
 exact `GetLastError` result. It adds no C shim, no Cabal `c-sources`, and no private `Win32` import.
-`LockFileEx` with `LOCKFILE_EXCLUSIVE_LOCK` on a per-user lock file supplies exclusive entry; a
-journalled origin record under `%UserProfile%\.hostbootstrap` names exact bytes or absence; and
-`getFileInformationByHandle`'s `bhfiVolumeSerialNumber`/`bhfiFileIndex` pair supplies identity binding.
-The 64-bit file index is unique and stable on NTFS; a non-NTFS profile volume returns `Unsupported`
-rather than assuming it. A byte-range lock is not affine to the acquiring OS thread, so the row
-needs neither a named mutex nor the threaded RTS.
+`getFileInformationByHandle`'s `bhfiVolumeSerialNumber`/`bhfiFileIndex` pair supplies the identity, and
+`LockFileEx` with `LOCKFILE_EXCLUSIVE_LOCK` the exclusive open. The 64-bit file index is unique and
+stable on NTFS; a non-NTFS profile volume returns `Unsupported` rather than assuming it. A byte-range
+lock is not affine to the acquiring OS thread, so the row needs neither a named mutex nor the threaded
+RTS.
 
 Because the driver takes its primitives from a row, every phase, conflict, and crash-resume branch is
-executed against a real kernel on POSIX through the other one — kernel exclusive entry, a journal file,
-and `device:inode` identity. The shared pure model and codec suites remain platform-neutral. Windows-gated
-validation exercised the production entrypoint directly against a temporary `USERPROFILE`; its native
-apply/restore/origin/replacement cases passed. The broader WSL2 provider lifecycle matrix remains separate
-from this focused adapter evidence.
+executed against a real kernel on whichever kernel the gate host runs — `device:inode` identity, an
+`fcntl` exclusive open and `link(2)` on POSIX, the handle-based pair and `CreateHardLinkW` on Windows.
+The shared pure model and codec suites remain platform-neutral. A run of the driver suite is therefore
+evidence for the one row that ran it; confirming it against the other row is a second gate host's, and
+that is the [host-portability acceptance phase](../../DEVELOPMENT_PLAN/phase-28-host-portability-acceptance.md)'s.
+Windows-gated validation exercised the production entrypoint directly against a temporary `USERPROFILE`;
+its native apply/restore/origin/replacement cases passed. The broader WSL2 provider lifecycle matrix
+remains separate from this focused adapter evidence.
+
+A crash-resume branch is entered by writing the durable state an interruption leaves — a value — through
+that same protected store and re-entering the ordinary entry point. The driver carries no crash point and
+no injected seam for a test to reach.
 
 Shutdown affects the shared WSL utility VM and stops every distro, so it is a global side effect rather
 than a project-local wall.

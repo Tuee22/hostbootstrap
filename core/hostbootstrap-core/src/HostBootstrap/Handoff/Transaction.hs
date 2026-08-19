@@ -28,18 +28,21 @@ because it is not in the command tree at all, and a process launched with it
 refuses unless its standard input and output are the protocol channel — which,
 outside a frame crossing, they are not.
 
-What the child does with a transaction is not this phase's to decide. Phase 13
-validates the crossing's structure and answers; the phases that own an object
-install the interpreter that produces its outcome, and until one does, a
-structurally valid transaction is answered with an uninterpreted refusal rather
-than with silence, so a parent learns that the far side declined instead of
-inferring it from a closed pipe.
+What the child does with a transaction is not this phase's to decide. This phase
+validates the crossing's structure and carries an answer; the phase that owns an
+object installs the interpreter that produces its outcome, and the interpreter
+is a parameter of the child entry rather than a branch here. A frame that cannot
+read the bytes it was handed answers a refusal rather than closing the pipe, so
+a parent learns that the far side declined instead of inferring it from a stream
+that ended.
 -}
 module HostBootstrap.Handoff.Transaction
     ( -- * The far side
       FrameChildEntry
     , classifyFrameChild
     , frameChildArguments
+    , FrameInterpreter
+    , frameInterpreter
     , runFrameChildEntry
 
       -- * The near side
@@ -145,10 +148,26 @@ does not decode as the channel is the operator case — someone typed the marker
 — and it is refused with a diagnostic and a failing status rather than
 answered.
 -}
-runFrameChildEntry :: FrameChildEntry -> IO ()
-runFrameChildEntry FrameChildEntry = do
-    served <- withPrivateProtocolStdio serveOneFrameTransaction
+runFrameChildEntry :: FrameInterpreter -> FrameChildEntry -> IO ()
+runFrameChildEntry interpret FrameChildEntry = do
+    served <- withPrivateProtocolStdio (serveOneFrameTransaction interpret)
     either (die . Text.unpack . frameChildFailure) pure served
+
+{- | How a frame answers one transaction it was handed.
+
+Opaque in both directions, so the framing never learns what the bytes mean and
+the phase that owns the object never learns how they travelled. The interpreter
+is supplied by the caller because it is not this phase's: what a transaction
+/means/ belongs to the phase that owns the object, and this one owns only the
+framing.
+-}
+newtype FrameInterpreter = FrameInterpreter (ByteString -> IO (Either Text ByteString))
+
+{- | Install an interpreter for the objects a phase owns. -}
+frameInterpreter :: (ByteString -> IO (Either Text ByteString)) -> FrameInterpreter
+frameInterpreter = FrameInterpreter
+
+
 
 {- | Read one framed transaction and send one framed answer.
 
@@ -157,8 +176,8 @@ key, no store, and no authority, so there is nothing here for a signature to
 protect. What it does hold is the framing, and a stream that is not this
 protocol is refused before a request identity exists.
 -}
-serveOneFrameTransaction :: HandoffChannel -> IO (Either Text ())
-serveOneFrameTransaction channel = do
+serveOneFrameTransaction :: FrameInterpreter -> HandoffChannel -> IO (Either Text ())
+serveOneFrameTransaction (FrameInterpreter interpret) channel = do
     received <- channelReceive channel
     case received of
         Left failure -> pure (Left (protocolFailure failure))
@@ -170,30 +189,54 @@ serveOneFrameTransaction channel = do
                             <> Text.pack (show (protocolMessageTag message))
                         )
                     )
-            | otherwise ->
-                sendUninterpreted channel (protocolMessageRequestId message)
+            | otherwise -> case protocolMessageFields message of
+                [transaction] -> do
+                    answered <- interpret transaction
+                    case answered of
+                        Left detail ->
+                            sendRefusal
+                                channel
+                                (protocolMessageRequestId message)
+                                (TextEncoding.encodeUtf8 detail)
+                        Right outcome ->
+                            sendOutcome channel (protocolMessageRequestId message) outcome
+                fields ->
+                    pure
+                        ( Left
+                            ( "a frame transaction carries one field, saw "
+                                <> Text.pack (show (length fields))
+                            )
+                        )
 
-{- | Tell the parent that this frame has no interpreter for its transaction.
+{- | Carry back what the interpreter produced, in the frame it belongs in.
 
 An answer rather than a closed pipe, for the same reason every other refusal in
 this phase is sent: a parent that reads a refusal knows its child declined,
-while a parent that reads EOF knows only that something ended. The phase that
-owns an object installs the interpreter that answers with an outcome; until
-one does, this is the honest answer and it is a complete one.
+while a parent that reads EOF knows only that something ended.
 -}
-sendUninterpreted :: HandoffChannel -> Word64 -> IO (Either Text ())
-sendUninterpreted channel request =
-    case protocolMessage RefusedTag request [uninterpretedCode, uninterpretedDetail] of
-        Left failure -> pure (Left (protocolFailure failure))
-        Right refusal -> do
-            sent <- channelSend channel refusal
-            pure (either (Left . protocolFailure) Right sent)
+sendOutcome :: HandoffChannel -> Word64 -> ByteString -> IO (Either Text ())
+sendOutcome channel request outcome =
+    sendFramed channel (protocolMessage FrameOutcomeTag request [outcome])
 
+sendRefusal :: HandoffChannel -> Word64 -> ByteString -> IO (Either Text ())
+sendRefusal channel request detail =
+    sendFramed channel (protocolMessage RefusedTag request [uninterpretedCode, detail])
+
+sendFramed :: HandoffChannel -> Either ProtocolError ProtocolMessage -> IO (Either Text ())
+sendFramed channel built = case built of
+    Left failure -> pure (Left (protocolFailure failure))
+    Right message -> do
+        sent <- channelSend channel message
+        pure (either (Left . protocolFailure) Right sent)
+
+{- | The one code a frame's refusal carries.
+
+The detail is the frame's own; the code says only that the far side declined,
+because this phase does not interpret what it declined about.
+-}
 uninterpretedCode :: ByteString
 uninterpretedCode = "unavailable"
 
-uninterpretedDetail :: ByteString
-uninterpretedDetail = "no transaction interpreter is installed at this frame"
 
 -- ---------------------------------------------------------------------------
 -- The near side

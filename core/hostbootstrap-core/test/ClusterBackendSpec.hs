@@ -190,17 +190,20 @@ posixBackendCases =
                 , "test \"$PWD\" = / && test \"$HOME\" = /nonexistent && test \"$PATH\" = /bin && test \"$DOCKER_HOST\" = unix:///var/run/docker.sock && printf 'entered\\n'"
                 ]
         result @?= ClusterCommandResult True "entered\n" ""
-    , testCase "the outer runner drains but retains only bounded child output" $ do
+    , testCase "the outer runner refuses a child past its output ceiling rather than truncating" $ do
+        -- Two MiB against the driver's one MiB ceiling. The runner drains the
+        -- pipe so the child never blocks on a full one, and then refuses:
+        -- a truncated transcript reads as a complete one, so the caller is told
+        -- the ceiling was passed instead of being handed a prefix.
         result <-
             runClosedClusterCommandForTest
                 10
                 ["/bin/sh", "-c", "/usr/bin/yes x | /usr/bin/head -c 2097152"]
+        clusterCommandOk result @?= False
+        clusterCommandStdout result @?= ""
         assertBool
-            ( "the bounded-output command failed: "
-                ++ show (length (clusterCommandStdout result), clusterCommandStderr result)
-            )
-            (clusterCommandOk result)
-        assertBool "stdout retention is capped at one MiB" (length (clusterCommandStdout result) <= 1024 * 1024)
+            ("the refusal names the ceiling: " ++ clusterCommandStderr result)
+            ("output ceiling" `isInfixOf` clusterCommandStderr result)
     , testCase "discovery mints no capability without the driver" $
         withFakeHost $ \host -> do
             discovered <-

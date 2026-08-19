@@ -161,7 +161,11 @@ are genuinely distinct. `runCaptured` feeds a stdin string and reads both output
 is what a driver needs when its child may hang, talk forever, or leave descendants: the child leads its own
 process group, receives a complete environment and working directory rather than inheriting the launcher's,
 and is bounded by a wall clock, a per-stream output ceiling, and a termination grace. A caller that needs
-different numbers supplies a different `RunBounds` row, not a different runner. The two other lawful shapes
+different numbers supplies a different `RunBounds` row, not a different runner. Each of those bounds is
+waited out by polling the child's status rather than by wrapping a blocking wait in a timeout, because a
+process wait is a foreign call an asynchronous exception cannot bring the launcher back out of under the
+non-threaded runtime; and the termination grace ends when the child's whole process *group* is empty, so
+a leader that exits leaving a grandchild on the pipes still reaches the escalation to a group `SIGKILL`. The two other lawful shapes
 are separately sealed: `HostBootstrap.Detached` owns a child that outlives its launcher, and the handoff
 process route owns a child holding an inherited descriptor pair.
 

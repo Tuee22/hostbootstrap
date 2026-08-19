@@ -33,6 +33,7 @@ module HostBootstrap.Ownership.Object
     ( -- * The kernel's answer
       ObjectIdentity
     , mkObjectIdentity
+    , mkKernelObjectIdentity
     , objectIdentityBytes
     , objectIdentityText
     , parseObjectIdentityHex
@@ -76,9 +77,11 @@ import qualified Crypto.Hash as Hash
 import qualified Data.ByteArray as ByteArray
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
+import qualified Data.ByteString.Builder as Builder
+import qualified Data.ByteString.Lazy as LazyByteString
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Word (Word8)
+import Data.Word (Word64, Word8)
 
 -- ---------------------------------------------------------------------------
 -- The kernel's answer
@@ -120,6 +123,25 @@ something else is refused rather than journalled.
 -}
 identityByteCeiling :: Int
 identityByteCeiling = 64
+
+{- | The one encoding every platform row writes.
+
+The volume word first, then the object word, both little-endian. The rows read
+different kernel facts — @(st_dev, st_ino)@ on a POSIX host, the volume serial
+number and file index on a Windows one — but they encode them the same way and
+through this one producer, so an identity a driver compares means the same thing
+whichever kernel answered. Written once per row it would be two encodings that
+agree until one of them is changed, and nothing would ask them the same question
+together.
+-}
+mkKernelObjectIdentity :: Word64 -> Word64 -> Either OwnershipFault ObjectIdentity
+mkKernelObjectIdentity volume object =
+    mkObjectIdentity
+        ( LazyByteString.toStrict
+            ( Builder.toLazyByteString
+                (Builder.word64LE volume <> Builder.word64LE object)
+            )
+        )
 
 objectIdentityBytes :: ObjectIdentity -> ByteString
 objectIdentityBytes (ObjectIdentity raw) = raw

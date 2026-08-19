@@ -20,6 +20,9 @@ deliberately does not carry:
   * **No pathname policy.** The target an owner names rides on the clause tokens
     (see "HostBootstrap.Ownership.Clause"); the seam never derives one, so it
     never decides which object an owner meant.
+  * **No durable state.** The origin record a re-entry is built from is the
+    caller's own, read back through the store that published it, so the seam
+    never becomes a second place an ownership fact lives.
   * **No clause 1 or clause 2 field.** Exclusive entry is the protected store's
     own OS-released entry and the durable record is that store's
     compare-and-swap. A second durable record beside the store would be a second
@@ -48,8 +51,9 @@ module HostBootstrap.Ownership.Primitive
     , OwnershipClause (..)
     , clauseRefusal
 
-      -- * The seven clause producers
+      -- * The clause producers
     , enterOwnedObject
+    , reenterOwnedObject
     , recordOwnedOrigin
     , createOwnedDirectory
     , publishOwnedFile
@@ -79,10 +83,16 @@ import HostBootstrap.Ownership.Object
     , ObjectKind (OwnedDirectory, OwnedFile)
     , Origin (OriginAbsent, OriginPresent)
     , OriginRecord
-    , OwnershipFault (OwnershipConflict, OwnershipOccupied, OwnershipUnsupported)
+    , OwnershipFault
+        ( OwnershipConflict
+        , OwnershipMalformed
+        , OwnershipOccupied
+        , OwnershipUnsupported
+        )
     , Payload
     , bindOriginRecord
     , originRecord
+    , originRecordBinding
     , originRecordKind
     , payloadBytes
     , payloadDigest
@@ -111,8 +121,12 @@ data OwnershipPrimitive handle = OwnershipPrimitive
     -- ^ Create exactly one directory, refusing if it is already there.
     , rowCreateFile :: OwnedTargetPath -> ByteString -> IO (Either OwnershipFault ())
     -- ^ Write a whole file and sync it, at a name nothing else holds.
-    , rowPublishNoReplace :: OwnedTargetPath -> OwnedTargetPath -> IO (Either OwnershipFault ())
-    -- ^ Publish @source@ at @target@ atomically, refusing rather than replacing.
+    , rowLinkNoReplace :: OwnedTargetPath -> OwnedTargetPath -> IO (Either OwnershipFault ())
+    -- ^ Give @source@ a second name at @target@ atomically, refusing rather
+    -- than replacing. The source name is left in place, because the kernel
+    -- primitive is a link: an owner that wanted a move withdraws the staging
+    -- name itself, and one that wanted a second durable name — the host wall's
+    -- armed stage — keeps both.
     , rowReadObject :: handle -> IO (Either OwnershipFault ByteString)
     -- ^ Read the whole object behind an open handle.
     , rowRemoveObject :: OwnedTargetPath -> IO (Either OwnershipFault ())
@@ -259,6 +273,47 @@ originOf :: Maybe ObjectIdentity -> Origin
 originOf Nothing = OriginAbsent
 originOf (Just identity) = OriginPresent identity
 
+{- | Clause 4 from a later entry: re-enter an object this project already owns.
+
+The four clauses are one transaction, but they are not one process. An owner
+binds an identity now and releases it later — after its own bracket, after a
+restart, or from a successor's recovery path — so clause 4 has to be reachable
+from the durable record and not only from the token the binding minted. Without
+this producer a release would be written outside the clause order, which is the
+one thing the tokens exist to prevent.
+
+What re-entry does not do is manufacture evidence. The record must already carry
+a binding: an unbound record describes a transaction that never got past clause
+2, so it authorizes no removal and mints no token. And the record itself is the
+caller's, read through the store that published it, so the seam still holds no
+durable state of its own.
+
+The object index is introduced here, fresh, exactly as clause 1 introduces it,
+so re-entered evidence is about this object and cannot be presented for another.
+-}
+reenterOwnedObject ::
+    OwnershipRow ->
+    ProtectedSession session ->
+    OwnedTargetPath ->
+    OriginRecord ->
+    (forall object. Bound session object -> IO (Either OwnershipFault result)) ->
+    IO (Either OwnershipFault result)
+reenterOwnedObject row _session target record use =
+    withOwnershipRow row $ \primitives ->
+        case clauseRefusal (rowCapabilities primitives) ClauseRelease of
+            Just refusal -> pure (Left refusal)
+            Nothing -> case originRecordBinding record of
+                Nothing ->
+                    pure
+                        ( Left
+                            ( OwnershipMalformed
+                                ( "this record names no identity binding, so it authorizes"
+                                    <> " no release"
+                                )
+                            )
+                        )
+                Just identity -> use (Bound target record identity)
+
 {- | Clause 2: publish the origin record before the object exists.
 
 The publication itself is a continuation, because the durable record is the
@@ -310,10 +365,13 @@ createOwnedDirectory row recorded =
 
 {- | Publish the owned file the record describes, and read its identity.
 
-The payload is written and then published under a name nothing else holds, so a
-target that already exists is refused rather than replaced: a generated object
-cannot coexist with one already there, and clause 3 must bind an object this run
-created.
+The payload is written, linked under a name nothing else holds, and the staging
+name is then withdrawn, so a target that already exists is refused rather than
+replaced: a generated object cannot coexist with one already there, and clause 3
+must bind an object this run created. The link and the withdrawal are separate
+because the kernel primitive is a link; an owner that needs the staging name to
+survive the publication — the host wall's armed stage — composes the same two
+steps differently.
 -}
 publishOwnedFile ::
     OwnershipRow ->
@@ -340,14 +398,18 @@ publishOwnedFile row recorded payload staging =
                         case written of
                             Left fault -> pure (Left fault)
                             Right () -> do
-                                published <- rowPublishNoReplace primitives staging target
+                                published <- rowLinkNoReplace primitives staging target
                                 case published of
                                     Left fault -> pure (Left fault)
                                     Right () -> do
-                                        synced <- rowSyncParent primitives target
-                                        case synced of
+                                        withdrawn <- rowRemoveObject primitives staging
+                                        case withdrawn of
                                             Left fault -> pure (Left fault)
-                                            Right () -> identityOfCreated primitives target
+                                            Right () -> do
+                                                synced <- rowSyncParent primitives target
+                                                case synced of
+                                                    Left fault -> pure (Left fault)
+                                                    Right () -> identityOfCreated primitives target
 
 {- | Clause 3: bind the created object's own identity to the record.
 

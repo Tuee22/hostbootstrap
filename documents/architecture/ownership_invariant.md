@@ -95,21 +95,30 @@ native validation lives.
   owns the proof-complete operator/descent gates. The
   [test-harness-and-run-ownership phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md)
   owns direct Harness interpretation.
-- `HostBootstrap.Harness.DataRoot` holds all four clauses for the harness durable data root, and is
-  **live**: `HostBootstrap.Harness.Ownership` — the bracket every `test run` executes inside — acquires
-  and releases `.test_data` through it. The origin record naming the exact prior identity-or-absence is
-  published before the directory is created, the created directory's own `device:inode` is bound to the
-  receipt, and teardown removes it only after re-observing that identity. This was the first production
-  route on the invariant.
+- `HostBootstrap.Harness.DataRoot` holds all four clauses for the harness durable data root **through the
+  one seam**, and is **live**: `HostBootstrap.Harness.Ownership` — the bracket every `test run` executes
+  inside — acquires and releases `.test_data` through it, against the row `ownershipRowForHost` selects.
+  The origin record naming the exact prior identity-or-absence is the canonical `OriginRecord`, published
+  before the directory is created; the created directory's own identity is bound to it; and teardown
+  re-enters the object from that record and removes it only after re-observing the identity. What stays
+  the data root's own is its policy rather than its mechanism: the parent is scaffolding that is created
+  if missing and never owned, a directory the run merely found is preserved, and a confirmed generation's
+  content is cleared *after* clause 4's re-observation and before the seam removes the directory itself.
+  This was the first production route on the invariant.
 - `HostBootstrap.Harness.GeneratedConfig` holds all four clauses for the run's generated sibling
-  `<project>.dhall`, and is **live** on the same bracket. It is the same protocol over a file: the
-  origin record naming the recorded absence *and the intended payload digest* is published before the
-  file is created, the file is published create-if-absent, its own identity is bound to the receipt, and
-  release unlinks only on an exact re-observed identity **and** payload. Both share
-  `HostBootstrap.Harness.Identity`, so the directory and file realizations cannot drift. Recording the
-  payload digest before the write is what makes the crash window between the record and the identity
-  binding resolvable without ever adopting bytes the record does not name. No pathname sidecar participates
-  in that authority.
+  `<project>.dhall` **through the same seam**, and is **live** on the same bracket. It is the same
+  protocol over a file: the canonical `OriginRecord`, whose file case names the recorded absence *and the
+  intended payload digest*, is published before the file is created; the payload is staged and then
+  published through the row's atomic no-replace primitive, so a target that already exists is refused
+  rather than replaced; the created file's own identity is bound to the record; and release re-enters the
+  object from that record. Because both owners consume one seam and one row, the directory and file
+  realizations cannot drift, and the record one writes is the record the other reads. What stays the
+  generated config's own is its policy rather than its mechanism: a found object is refused before any
+  record is written and is never adopted, and release compares the bytes against the recorded digest
+  *after* clause 4 has confirmed the identity — so an edited file is left intact even though it is the
+  same object. Recording the payload digest before the write is what makes the crash window between the
+  record and the identity binding resolvable without ever adopting bytes the record does not name. No
+  pathname sidecar participates in that authority.
 - `HostBootstrap.Substrate.Provider.Backend` and `Provider.Reconcile` supply the prepared Incus
   provision/readiness/share/stop/delete route. The opaque nominal `ManagedProviderHandle` and
   `ManagedProviderShareHandle` retain the exact backend origin rather than exposing their generic

@@ -6,10 +6,12 @@ module WslGlobalWallSpec (tests) where
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import Data.Word (Word64)
+import HostBootstrap.Ownership.Object (ObjectIdentity, mkObjectIdentity)
 import HostBootstrap.Wsl2.GlobalWall
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
   ( Assertion,
+    assertBool,
     assertFailure,
     testCase,
     (@?=),
@@ -34,11 +36,18 @@ tests =
         withWallSpec "" desiredBytes (const ())
           @?= Left (InvalidWallIdentity "wall specification identity must not be empty")
         withWallFence 0 (const ()) @?= Left (InvalidWallFence 0)
-        mkFileIdentity "" @?= Left (InvalidWallIdentity "file identity must not be empty"),
+        -- The object identity is the ownership vocabulary's own, so its
+        -- refusal is stated once, where every owner reads it.
+        assertBool
+          "an empty kernel identity is refused"
+          ( case mkObjectIdentity "" of
+              Left _ -> True
+              Right _ -> False
+          ),
       testCase "present origin survives apply and restore byte-for-byte" $
         runReservation 11 "owner-a" "spec-a" "reservation-a" "receipt-a" $ \reservation -> do
-          originalIdentity <- expectRight (mkFileIdentity "volume-7:file-42")
-          managedIdentity <- expectRight (mkFileIdentity "volume-7:file-43")
+          originalIdentity <- expectRight (mkObjectIdentity "volume-7:file-42")
+          managedIdentity <- expectRight (mkObjectIdentity "volume-7:file-43")
           applying <-
             expectRight
               ( prepareApplying
@@ -106,7 +115,7 @@ tests =
               @?= Right (),
       testCase "absent origin is durable and teardown requires exact absence" $
         runReservation 12 "owner-a" "spec-a" "reservation-b" "receipt-b" $ \reservation -> do
-          createdIdentity <- expectRight (mkFileIdentity "volume-7:file-99")
+          createdIdentity <- expectRight (mkObjectIdentity "volume-7:file-99")
           applying <-
             expectRight
               ( prepareApplying
@@ -156,9 +165,9 @@ tests =
               @?= Just OriginalAbsent,
       testCase "apply recovery is total for original, desired, replaced, absent, and ambiguous observations" $
         runReservation 21 "owner-a" "spec-a" "reservation-c" "receipt-c" $ \reservation -> do
-          originalIdentity <- expectRight (mkFileIdentity "volume-7:file-100")
-          managedIdentity <- expectRight (mkFileIdentity "volume-7:file-101")
-          foreignIdentity <- expectRight (mkFileIdentity "volume-7:file-102")
+          originalIdentity <- expectRight (mkObjectIdentity "volume-7:file-100")
+          managedIdentity <- expectRight (mkObjectIdentity "volume-7:file-101")
+          foreignIdentity <- expectRight (mkObjectIdentity "volume-7:file-102")
           let origin = OriginalPresent originalIdentity originalBytes
           applying <-
             expectRight
@@ -196,8 +205,8 @@ tests =
             @?= ApplyBlocked (UnexpectedTargetAbsent originalIdentity),
       testCase "absent-origin recovery retains the journaled staged-object identity" $
         runReservation 23 "owner-a" "spec-a" "reservation-stage" "receipt-stage" $ \reservation -> do
-          stagedIdentity <- expectRight (mkFileIdentity "volume-7:file-110")
-          replacementIdentity <- expectRight (mkFileIdentity "volume-7:file-111")
+          stagedIdentity <- expectRight (mkObjectIdentity "volume-7:file-110")
+          replacementIdentity <- expectRight (mkObjectIdentity "volume-7:file-111")
           applying <-
             expectRight
               ( prepareApplying
@@ -243,8 +252,8 @@ tests =
             @?= ApplyObservedDesired,
       testCase "armed-stage binding closes every durable-link crash gap" $
         runReservation 25 "owner-a" "spec-a" "reservation-create" "receipt-create" $ \reservation -> do
-          unboundIdentity <- expectRight (mkFileIdentity "volume-7:file-113")
-          reboundIdentity <- expectRight (mkFileIdentity "volume-7:file-114")
+          unboundIdentity <- expectRight (mkObjectIdentity "volume-7:file-113")
+          reboundIdentity <- expectRight (mkObjectIdentity "volume-7:file-114")
           claimed <- expectRight (claimOrResumeWall reservation Nothing)
           withOrigin <-
             expectRight
@@ -314,7 +323,7 @@ tests =
             ),
       testCase "present origin refuses a torn-write-prone in-place target identity" $
         runReservation 24 "owner-a" "spec-a" "reservation-atomic" "receipt-atomic" $ \reservation -> do
-          originalIdentity <- expectRight (mkFileIdentity "volume-7:file-112")
+          originalIdentity <- expectRight (mkObjectIdentity "volume-7:file-112")
           claimed <- expectRight (claimOrResumeWall reservation Nothing)
           withOrigin <-
             expectRight
@@ -340,9 +349,9 @@ tests =
             ),
       testCase "restore recovery retries only the exact applied object and refuses foreign or ambiguous state" $
         runReservation 22 "owner-a" "spec-a" "reservation-d" "receipt-d" $ \reservation -> do
-          originalIdentity <- expectRight (mkFileIdentity "volume-7:file-103")
-          managedIdentity <- expectRight (mkFileIdentity "volume-7:file-104")
-          foreignIdentity <- expectRight (mkFileIdentity "volume-7:file-105")
+          originalIdentity <- expectRight (mkObjectIdentity "volume-7:file-103")
+          managedIdentity <- expectRight (mkObjectIdentity "volume-7:file-104")
+          foreignIdentity <- expectRight (mkObjectIdentity "volume-7:file-105")
           let origin = OriginalPresent originalIdentity originalBytes
           applied <-
             expectRight
@@ -398,8 +407,8 @@ tests =
               @?= RestoreBlocked (UnexpectedTargetAbsent originalIdentity),
       testCase "present-origin apply classifies every atomic publication fault point" $
         runReservation 26 "owner-a" "spec-a" "reservation-fault" "receipt-fault" $ \reservation -> do
-          originalIdentity <- expectRight (mkFileIdentity "volume-7:file-114")
-          managedIdentity <- expectRight (mkFileIdentity "volume-7:file-115")
+          originalIdentity <- expectRight (mkObjectIdentity "volume-7:file-114")
+          managedIdentity <- expectRight (mkObjectIdentity "volume-7:file-115")
           let origin = OriginalPresent originalIdentity originalBytes
           applying <-
             expectRight
@@ -419,7 +428,7 @@ tests =
             @?= ApplyObservedDesired,
       testCase "retry hydrates the exact durable origin instead of inferring it from a path" $
         runReservation 31 "owner-a" "spec-a" "reservation-e" "receipt-e" $ \reservation -> do
-          fileIdentity <- expectRight (mkFileIdentity "volume-7:file-104")
+          fileIdentity <- expectRight (mkObjectIdentity "volume-7:file-104")
           claimed <- expectRight (claimOrResumeWall reservation Nothing)
           withOrigin <-
             expectRight
@@ -448,8 +457,8 @@ tests =
               (claimOrResumeWall secondReservation (Just (wallReceiptRecord first))),
       testCase "a replaced absent-origin target is never deleted or restored" $
         runReservation 51 "owner-a" "spec-a" "reservation-h" "receipt-h" $ \reservation -> do
-          createdIdentity <- expectRight (mkFileIdentity "volume-7:file-105")
-          foreignIdentity <- expectRight (mkFileIdentity "volume-7:file-106")
+          createdIdentity <- expectRight (mkObjectIdentity "volume-7:file-105")
+          foreignIdentity <- expectRight (mkObjectIdentity "volume-7:file-106")
           applied <-
             expectRight
               ( prepareApplied
@@ -476,8 +485,8 @@ tests =
               ),
       testCase "an old authority refuses a newer active fence before restoration" $
         runReservation 61 "owner-a" "spec-a" "reservation-i" "receipt-i" $ \oldReservation -> do
-          originalIdentity <- expectRight (mkFileIdentity "volume-7:file-107")
-          managedIdentity <- expectRight (mkFileIdentity "volume-7:file-108")
+          originalIdentity <- expectRight (mkObjectIdentity "volume-7:file-107")
+          managedIdentity <- expectRight (mkObjectIdentity "volume-7:file-108")
           let origin = OriginalPresent originalIdentity originalBytes
           oldApplied <-
             expectRight
@@ -517,7 +526,7 @@ prepareApplying ::
   WallReservation ownerId wallSpecId reservationId receiptId fenceId ->
   WslConfigOrigin ->
   WallObservation ->
-  FileIdentity ->
+  ObjectIdentity ->
   Either
     WallModelError
     (WallReceipt ownerId wallSpecId reservationId receiptId fenceId)
@@ -553,7 +562,7 @@ prepareApplied ::
   WallReservation ownerId wallSpecId reservationId receiptId fenceId ->
   WslConfigOrigin ->
   WallObservation ->
-  FileIdentity ->
+  ObjectIdentity ->
   WallObservation ->
   Either
     WallModelError
@@ -576,7 +585,7 @@ prepareApplied reservation origin originalObservation targetIdentity appliedTarg
 
 preparedObservation ::
   WslConfigOrigin ->
-  FileIdentity ->
+  ObjectIdentity ->
   ApplyObservation
 preparedObservation origin targetIdentity =
   ApplyObservation
@@ -586,7 +595,7 @@ preparedObservation origin targetIdentity =
 
 applyOriginQuarantinedObservation ::
   WslConfigOrigin ->
-  FileIdentity ->
+  ObjectIdentity ->
   ApplyObservation
 applyOriginQuarantinedObservation origin targetIdentity =
   ApplyObservation
@@ -596,7 +605,7 @@ applyOriginQuarantinedObservation origin targetIdentity =
 
 appliedObservation ::
   WslConfigOrigin ->
-  FileIdentity ->
+  ObjectIdentity ->
   ApplyObservation
 appliedObservation origin targetIdentity =
   ApplyObservation
@@ -606,7 +615,7 @@ appliedObservation origin targetIdentity =
 
 restoreAppliedObservation ::
   WslConfigOrigin ->
-  FileIdentity ->
+  ObjectIdentity ->
   RestoreObservation
 restoreAppliedObservation origin targetIdentity =
   RestoreObservation
@@ -616,7 +625,7 @@ restoreAppliedObservation origin targetIdentity =
 
 restoreCleanupObservation ::
   WslConfigOrigin ->
-  FileIdentity ->
+  ObjectIdentity ->
   RestoreObservation
 restoreCleanupObservation origin targetIdentity =
   RestoreObservation
@@ -626,7 +635,7 @@ restoreCleanupObservation origin targetIdentity =
 
 restoreOriginPublicationObservation ::
   WslConfigOrigin ->
-  FileIdentity ->
+  ObjectIdentity ->
   RestoreObservation
 restoreOriginPublicationObservation origin targetIdentity =
   RestoreObservation

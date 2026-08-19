@@ -155,7 +155,6 @@ library
       HostBootstrap.Wsl2.GlobalWall
       HostBootstrap.Wsl2.GlobalWall.ConfigBytes
       HostBootstrap.Wsl2.GlobalWall.Host
-      HostBootstrap.Wsl2.GlobalWall.Posix
       HostBootstrap.Wsl2.GlobalWall.Windows
       HostBootstrap.Lifecycle.Mode
       HostBootstrap.Lift
@@ -184,11 +183,13 @@ library
       HostBootstrap.Harness
       HostBootstrap.Harness.DataRoot
       HostBootstrap.Harness.GeneratedConfig
-      HostBootstrap.Harness.Identity
-      HostBootstrap.Harness.Identity.Native
       HostBootstrap.Ownership.Object
       HostBootstrap.Ownership.Clause
       HostBootstrap.Ownership.Primitive
+      HostBootstrap.Ownership.Posix
+      HostBootstrap.Ownership.Windows
+      HostBootstrap.Ownership.Row
+      HostBootstrap.Ownership.Shipped
       HostBootstrap.Harness.Ownership
       HostBootstrap.Service
       HostBootstrap.Service.Program
@@ -292,6 +293,9 @@ test-suite hostbootstrap-core-test
       HandoffSpec
       OwnershipObjectSpec
       OwnershipSpec
+      OwnershipPosixSpec
+      OwnershipWindowsSpec
+      OwnershipShippedSpec
       SessionSpec
       BuildAuthoritySpec
       ActivationSpec

@@ -109,6 +109,13 @@ bytes", so the host static gate proves the same contracts on every supported out
 
 - The suite driver fixes the locale encoding before the runner starts, so a spec that reads a source
   file or captured command output decodes the same text regardless of the host's active code page.
+- It fixes the process's file-creation mask in the same place and for the same reason. A fixture that
+  writes a file inherits the launching shell's umask, so on a host whose umask is `0002` every fixture
+  file is group-writable and a subject that refuses a group-writable input fails there while passing on a
+  host whose umask is `0022`. Normalizing the mask to `0022` before any fixture runs makes what a fixture
+  writes the same on every gate host, so the assertion stays a property of the code under test rather
+  than of the shell that launched the gate (§ JJ). The definition is total on Windows, which has no mask
+  to normalize.
 - A frozen source digest is therefore a digest of the file's own bytes, and a governed golden containing
   non-ASCII text compares equal on every host.
 - `SourceGuard` exposes one separator-neutral repo-relative path helper, so an import allow-list,

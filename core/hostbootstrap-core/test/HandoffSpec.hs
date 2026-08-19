@@ -202,11 +202,13 @@ frameCrossingTests =
                 (mkSelfRef executable executable)
                 localContext
                 "one transaction"
-        crossed
-            @?= Left
-                ( "frame child: the frame refused the transaction: unavailable: "
-                    <> "no transaction interpreter is installed at this frame"
-                )
+        -- What the far frame /said/ belongs to the phase that owns the object;
+        -- what this phase carries is that it said something at all, over a real
+        -- process boundary, in answer to the one request it was sent.
+        case crossed of
+            Right answer -> assertBool "the frame answered" (not (ByteString.null answer))
+            Left failure ->
+                assertFailure ("expected an answer, got " <> show failure)
     , testCase "the argument vector is read once, by the classifier, before the parser" $
         withHandoffSourceRoot $ \_packageRoot sourceRoot -> do
             cliSource <- readFile (sourceRoot </> "HostBootstrap" </> "CLI.hs")
@@ -216,7 +218,7 @@ frameCrossingTests =
             assertContains
                 "runCLI classifies argv once and otherwise runs the parser"
                 ( "argv <- getArgs case classifyFrameChild argv of "
-                    <> "Just entry -> runFrameChildEntry entry "
+                    <> "Just entry -> runFrameChildEntry (frameInterpreter interpretShippedOwnership) entry "
                     <> "Nothing -> join (customExecParser (prefs showHelpOnEmpty) opts)"
                 )
                 (normalizeWhitespace cliSource)
@@ -241,7 +243,7 @@ frameCrossingTests =
                 , "unsafeCoerce"
                 ]
             (significantHaskellLineCount transactionSource, significantHaskellLineCount cliSource)
-                @?= (275, 451)
+                @?= (299, 452)
     ]
 
 {- | A configuration that resolves no host tool at all.

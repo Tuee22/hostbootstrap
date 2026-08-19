@@ -34,9 +34,6 @@ module HostBootstrap.Wsl2.GlobalWall
     withWallReservation,
 
     -- * Exact target observations
-    FileIdentity,
-    mkFileIdentity,
-    fileIdentityBytes,
     WslConfigOrigin (..),
     WallObservation (..),
     ApplyObservation (..),
@@ -77,6 +74,7 @@ where
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import Data.Word (Word64)
+import HostBootstrap.Ownership.Object (ObjectIdentity)
 
 -- | Stable owner identity, such as a verified plan/resource identity. Its
 -- constructor is hidden; the bytes are identity only and never write authority.
@@ -160,29 +158,11 @@ withWallReservation owner spec reservationIdentity receiptIdentity fence consume
             (WallReservation owner spec reservationIdentity receiptIdentity fence)
         )
 
--- | Platform-stable identity of the exact file object observed through an
--- authoritative handle. It is not a pathname or a content hash.
-newtype FileIdentity = FileIdentity ByteString
-  deriving (Eq, Ord)
-
-instance Show FileIdentity where
-  show (FileIdentity identity) =
-    "FileIdentity<" ++ show (ByteString.length identity) ++ " bytes>"
-
-mkFileIdentity :: ByteString -> Either WallModelError FileIdentity
-mkFileIdentity identity
-  | ByteString.null identity =
-      Left (InvalidWallIdentity "file identity must not be empty")
-  | otherwise = Right (FileIdentity identity)
-
-fileIdentityBytes :: FileIdentity -> ByteString
-fileIdentityBytes (FileIdentity identity) = identity
-
 -- | Durable origin captured and flushed before the first content mutation.
 -- Exact bytes are retained even when they are empty.
 data WslConfigOrigin
   = OriginalAbsent
-  | OriginalPresent FileIdentity ByteString
+  | OriginalPresent ObjectIdentity ByteString
   deriving (Eq)
 
 instance Show WslConfigOrigin where
@@ -197,7 +177,7 @@ instance Show WslConfigOrigin where
 -- | Total target observation supplied by the future platform backend.
 data WallObservation
   = ObservedAbsent
-  | ObservedPresent FileIdentity ByteString
+  | ObservedPresent ObjectIdentity ByteString
   deriving (Eq)
 
 instance Show WallObservation where
@@ -260,7 +240,7 @@ data PersistedWallRecord = PersistedWallRecord
     persistedWallPhase :: WallJournalPhase,
     persistedWallOrigin :: Maybe WslConfigOrigin,
     persistedStageCandidate :: Maybe ByteString,
-    persistedTargetIdentity :: Maybe FileIdentity
+    persistedTargetIdentity :: Maybe ObjectIdentity
   }
   deriving (Eq)
 
@@ -301,13 +281,13 @@ data WallConflict
   | ForeignWallReceipt ByteString ByteString
   | StaleWallFence Word64 Word64
   | StaleWallReceipt WallJournalPhase WallJournalPhase
-  | TargetReplaced FileIdentity FileIdentity
-  | TargetAmbiguous FileIdentity
-  | InPlaceMutationUnsupported FileIdentity
-  | UnboundStagePresent FileIdentity
-  | ConflictingWallPathShare FileIdentity
-  | UnexpectedTargetAbsent FileIdentity
-  | UnexpectedTargetPresent FileIdentity
+  | TargetReplaced ObjectIdentity ObjectIdentity
+  | TargetAmbiguous ObjectIdentity
+  | InPlaceMutationUnsupported ObjectIdentity
+  | UnboundStagePresent ObjectIdentity
+  | ConflictingWallPathShare ObjectIdentity
+  | UnexpectedTargetAbsent ObjectIdentity
+  | UnexpectedTargetPresent ObjectIdentity
   | OriginStateChanged
   deriving (Eq, Show)
 
@@ -514,7 +494,7 @@ bindWallStage ::
   PersistedWallRecord ->
   WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
   WallObservation ->
-  FileIdentity ->
+  ObjectIdentity ->
   Either
     WallModelError
     (WallReceipt ownerId wallSpecId reservationId receiptId fenceId)
@@ -569,7 +549,7 @@ beginWallApply ::
   PersistedWallRecord ->
   WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
   ApplyObservation ->
-  FileIdentity ->
+  ObjectIdentity ->
   Either
     WallModelError
     (WallReceipt ownerId wallSpecId reservationId receiptId fenceId)
@@ -1076,7 +1056,7 @@ stablePayload ::
   ( ByteString,
     Maybe WslConfigOrigin,
     Maybe ByteString,
-    Maybe FileIdentity
+    Maybe ObjectIdentity
   )
 stablePayload record =
   ( persistedDesiredBytes record,
@@ -1087,7 +1067,7 @@ stablePayload record =
 
 validateApplyTarget ::
   PersistedWallRecord ->
-  FileIdentity ->
+  ObjectIdentity ->
   Either WallModelError ()
 validateApplyTarget record targetIdentity =
   case persistedWallOrigin record of
@@ -1106,7 +1086,7 @@ validateApplyTarget record targetIdentity =
 validatePreparedApply ::
   PersistedWallRecord ->
   ApplyObservation ->
-  FileIdentity ->
+  ObjectIdentity ->
   Either WallModelError ()
 validatePreparedApply record observation targetIdentity = do
   validateApplyTarget record targetIdentity
@@ -1136,7 +1116,7 @@ validatePreparedApply record observation targetIdentity = do
 
 requireJournaledTarget ::
   PersistedWallRecord ->
-  FileIdentity ->
+  ObjectIdentity ->
   Either WallModelError ()
 requireJournaledTarget record proposedIdentity =
   case persistedTargetIdentity record of
@@ -1242,7 +1222,7 @@ observesOrigin _ _ = False
 
 observesDesired ::
   PersistedWallRecord ->
-  FileIdentity ->
+  ObjectIdentity ->
   WallObservation ->
   Bool
 observesDesired record expectedIdentity observation =
@@ -1255,7 +1235,7 @@ observesDesired record expectedIdentity observation =
 observesPreparedLayout ::
   PersistedWallRecord ->
   WslConfigOrigin ->
-  FileIdentity ->
+  ObjectIdentity ->
   ApplyObservation ->
   Bool
 observesPreparedLayout record origin targetIdentity observation =
@@ -1277,7 +1257,7 @@ observesPreparedLayout record origin targetIdentity observation =
 observesAppliedLayout ::
   PersistedWallRecord ->
   WslConfigOrigin ->
-  FileIdentity ->
+  ObjectIdentity ->
   ApplyObservation ->
   Bool
 observesAppliedLayout record origin targetIdentity observation =
@@ -1290,7 +1270,7 @@ observesAppliedLayout record origin targetIdentity observation =
 observesAppliedRestoreLayout ::
   PersistedWallRecord ->
   WslConfigOrigin ->
-  FileIdentity ->
+  ObjectIdentity ->
   RestoreObservation ->
   Bool
 observesAppliedRestoreLayout record origin targetIdentity observation =
@@ -1303,7 +1283,7 @@ observesAppliedRestoreLayout record origin targetIdentity observation =
 observesManagedCleanupLayout ::
   PersistedWallRecord ->
   WslConfigOrigin ->
-  FileIdentity ->
+  ObjectIdentity ->
   RestoreObservation ->
   Bool
 observesManagedCleanupLayout record origin targetIdentity observation =
@@ -1320,7 +1300,7 @@ observesManagedCleanupLayout record origin targetIdentity observation =
 observesOriginPublicationLayout ::
   PersistedWallRecord ->
   WslConfigOrigin ->
-  FileIdentity ->
+  ObjectIdentity ->
   RestoreObservation ->
   Bool
 observesOriginPublicationLayout record origin targetIdentity observation =
@@ -1378,7 +1358,7 @@ originConflict (Just OriginalAbsent) OriginalAbsent =
 unexpectedApplyLayout ::
   PersistedWallRecord ->
   WslConfigOrigin ->
-  FileIdentity ->
+  ObjectIdentity ->
   ApplyObservation ->
   WallConflict
 unexpectedApplyLayout record origin targetIdentity observation
@@ -1404,7 +1384,7 @@ unexpectedApplyLayout record origin targetIdentity observation
 unexpectedRestoreLayout ::
   PersistedWallRecord ->
   WslConfigOrigin ->
-  FileIdentity ->
+  ObjectIdentity ->
   RestoreObservation ->
   WallConflict
 unexpectedRestoreLayout record origin targetIdentity observation
@@ -1438,7 +1418,7 @@ unexpectedRestoreLayout record origin targetIdentity observation
 
 unexpectedTargetLayout ::
   WslConfigOrigin ->
-  FileIdentity ->
+  ObjectIdentity ->
   WallObservation ->
   WallConflict
 unexpectedTargetLayout origin targetIdentity observation =
@@ -1455,7 +1435,7 @@ unexpectedTargetLayout origin targetIdentity observation =
           TargetAmbiguous observedIdentity
       | otherwise -> TargetReplaced targetIdentity observedIdentity
 
-isOriginalIdentity :: WslConfigOrigin -> FileIdentity -> Bool
+isOriginalIdentity :: WslConfigOrigin -> ObjectIdentity -> Bool
 isOriginalIdentity OriginalAbsent _ = False
 isOriginalIdentity (OriginalPresent originalIdentity _) observedIdentity =
   originalIdentity == observedIdentity
@@ -1480,7 +1460,7 @@ unexpectedAbsentObservation (ObservedPresent observedIdentity _) =
   UnexpectedTargetPresent observedIdentity
 
 unexpectedFromExpected ::
-  FileIdentity ->
+  ObjectIdentity ->
   WallObservation ->
   WallConflict
 unexpectedFromExpected expectedIdentity observation =

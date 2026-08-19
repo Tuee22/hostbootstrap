@@ -51,8 +51,8 @@ its row here.
 | 11 | [Prepared operations](phase-11-prepared-operations.md) | Done | linux-cpu | — |
 | 12 | [Step algebra and the project plan](phase-12-step-algebra-and-project-plan.md) | Done | linux-cpu | — |
 | 13 | [Authenticated handoff and child admission](phase-13-authenticated-handoff-and-child-admission.md) | Done | linux-cpu | — |
-| 14 | [Ownership clauses and reservations](phase-14-ownership-clauses-and-reservations.md) | Active | linux-cpu | 14.8–14.10 the two platform rows and the host-local adoptions |
-| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Active | linux-cpu | 15.25 the shipped ownership row; 15.26 the provider and direct drivers |
+| 14 | [Ownership clauses and reservations](phase-14-ownership-clauses-and-reservations.md) | Done | linux-cpu | — |
+| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Active | linux-cpu | 15.26 the provider and direct drivers |
 | 16 | [Cluster lifecycle, budgets, and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Active | linux-cpu | 16.40–16.43 the cluster and Colima drivers, the live gate as a harness case, and the enumeration narrowing |
 | 17 | [Recursive lifecycle command](phase-17-recursive-lifecycle-command.md) | Active | linux-cpu | 17.41–17.51 forward/reverse adoption, cleanup, unwind, gate |
 | 18 | [Recovery and migration](phase-18-recovery-and-migration.md) | Active | linux-cpu | 18.4–18.19 resource records, migration recovery, recovered closure, interruption fixtures |
@@ -70,7 +70,7 @@ its row here.
 
 ## The current frontier
 
-The lowest-numbered open phase is **14**. § KK's invocation half is closed — the
+The lowest-numbered open phase is **15**. § KK's invocation half is closed — the
 [host-tools-and-substrate-detection phase](phase-3-host-tools-and-substrate-detection.md) carries one
 quoter, one process runner, one closed command vocabulary, and one interpreter for it — and the
 [ensure-reconcilers phase](phase-8-ensure-reconcilers.md) closed the guest bootstrap vocabulary and § LL's
@@ -81,7 +81,7 @@ every platform row is now compiled on every gate host and stubbed to a total ref
 apply, the package description decides no module by host, and `CoverageManifest` declares each
 host-conditional family's size so a case that vanished is a failed count rather than a smaller total.
 
-That the frontier is 14 rather than 3 is the result of settling **who owns which half of § K**. The
+That the frontier is 15 rather than 3 is the result of settling **who owns which half of § K**. The
 `HostTool` boundary — that the set is closed, that entry is by construction, that resolution is absolute
 — is the host-tools phase's, and it is built. *Which* tools are in the set is a description of what the
 binary drives, so it is settled by the phases that drive them; the enumeration narrows when the last
@@ -90,22 +90,31 @@ driver stops driving a name, and that driver is the
 the other way round, the fourth phase of thirty waited on the sixteenth, which is the claim § A forbids
 outright — and which nothing checked, because a `Depends on` field never sees a sentence.
 
-What is open is the **ownership seam**, and it reaches further down the narrative than the phase that
-consumes it. § EE's four clauses are one transaction, and the tree holds it once per owned object: the
-identity read, the no-replace publication, the identity-conditional act, and the durable record encoding
-each exist more than once, and the drivers that hold the clauses for a provider, a cluster, and a Colima
-profile are interpreter programs rather than the binary's own typed operations. Rewriting that rewrites
-the phase that introduced each surface (§ A), which is why the seam is phase 14's rather than a later
-phase carrying a correction. The two phases beneath it that the rewrite reached — the host-tools
-boundary and the authenticated handoff — are built, so what is left of the seam is the clause primitive
-itself and the frames that adopt it.
+The **ownership seam** is now built and consumed. § EE's four clauses are one transaction, and the
+[four-ownership-clauses phase](phase-14-ownership-clauses-and-reservations.md) writes it once: one closed
+seam of kernel primitives, two platform rows filling it, one selector between them, four abstract clause
+tokens whose order is a property of the types, and a producer that makes clause 4 reachable from the
+durable record so a release in a later entry is still inside the clause order. All three **host-local**
+owners consume it — the run's data root, its generated sibling config, and the per-user host wall — so
+the identity read, the no-replace link, the exclusive open, the identity-conditional act, and the durable
+record encoding each exist once beneath every one of them, and the injected object-identity seam and the
+wall's own platform backends are gone. The host wall's clause 1 and clause 2 are now the same protected
+entry and compare-and-swap the other two hold, so it carries no lock, journal, or fence file of its own.
 
-The order is unchanged. Phase 14 supplies the seam and its two platform rows, phase 15 adds the row that
-runs a transaction at the frame owning the object, and phases 15, 16, and 24 adopt it at the provider,
-the cluster and Colima, and the guest alias. Phase 13 supplies the entry a frame crossing needs: one
-total pure classifier over `argv`, consulted once before the parser, and one bracketed near side that
-folds a lift context into the invocation that crosses the frames, carries one transaction over, reads
-one answer, and ends the child group.
+The **shipped row** is built with it. A transaction addressed to a lift context is carried to a process of
+this same binary at that context and interpreted there, over the crossing the authenticated-handoff
+boundary already owned: one opaque transaction out, one opaque outcome back, a private protocol channel,
+and a process group ended on every exit path. The receiving process holds the protected store's exclusive
+entry for exactly its own lifetime, so clause 1 stays a kernel fact, and the frame table now carries the
+ownership column that says which row holds a frame's clauses.
+
+What remains of the seam is its **adoption by the drivers**: the provider, cluster, Colima, and
+guest-alias transactions are still interpreter programs rather than the binary's own typed operations.
+Phase 15 adopts the row at the provider, phase 16 at the cluster and Colima, and phase 24 at the guest
+alias — where the binary must first exist in the guest. Phase 13 supplies the entry a frame crossing needs: one total pure classifier
+over `argv`, consulted once before the parser, and one bracketed near side that folds a lift context into
+the invocation that crosses the frames, carries one transaction over, reads one answer, and ends the
+child group.
 
 Nothing checked it because nothing could. The `Depends on` field is clean for all thirty phases and always
 was; the coupling lived in prose. The
@@ -119,14 +128,21 @@ statement stays legal, and each has a fixture proving both that it fires and tha
 own shapes; a guard against a shape in *production* belongs to the phase whose work removes it (§ I).
 Phase 10 has taken the first of those: the redo coordinator carries no crash point, because the durable
 state an interruption leaves is a value a fixture writes through the store, after which the recovery
-driver under test needs no cooperation from the code under test. Phases 14, 15, 16, and 24 owe the
-injected execution seams, the stand-in executables, and the two patchable crash-point markers their own
-rows delete.
+driver under test needs no cooperation from the code under test. Phase 14 has taken the second: the host wall's crash-resume branches are entered by
+writing the durable state an interruption leaves — a value — through the wall's own protected store, so
+the driver carries no crash point and no injected seam, and the injected object-identity seam is deleted.
+Phases 15, 16, and 24 owe the remaining injected execution seams, the stand-in executables, and the two
+patchable crash-point markers their own rows delete.
 
 On 2026-08-17 the complete host static gate passed host-native on Windows 11 Home 10.0.26200 x86_64 with
 GHC 9.12.4 and Cabal 3.16.1.0: `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/`
 at 1,922/1,922 in 234.62 seconds, plus `poetry run python -m hostbootstrap.check_code` and
-`poetry run python -m hostbootstrap.test_all` at 231 passed. Confirming the same gate on a macOS and a
+`poetry run python -m hostbootstrap.test_all` at 231 passed. On 2026-08-18 the same gate passed
+host-native on an x86_64 Linux gate host with the same toolchain at 2,174/2,174 in 220.73 seconds, plus
+both Python commands with 231 passed — the first family on which the grouped-teardown and POSIX
+ownership-row cases execute rather than record a refusal, the run that closed phase 14 with all three
+host-local owners on the one seam, and the run that first carried an ownership transaction across a real
+process boundary. Confirming the same gate on a macOS and a
 Linux gate host is the
 [host-portability acceptance phase](phase-28-host-portability-acceptance.md)'s, because that claim needs
 three machines and § C forbids a baseline phase owing hardware it does not declare.
@@ -145,8 +161,9 @@ the guarded delete, the existence probe, the readiness wait, the budget-to-wall 
 ownership clauses are one computation each: written per provider they become copies that pass their own
 tests while disagreeing with each other. Its host-frame half is settled — `HostFrame` is the closed
 three-constructor axis and the reconcilers are rows over it — and its guarded destructive delete is one
-computation over that table. The **ownership primitive** is the row still owed, which is why phases 14, 15,
-16, and 21 are open on it.
+computation over that table. The **ownership primitive** is built and every host-local owner is on it; the
+rows still owed are the one that ships a transaction to another frame and the drivers that consume it,
+which is why phases 15, 16, and 21 are open on it.
 
 § NN states what a gate's evidence is worth. A fake exists because a decision is trapped inside an effect,
 so the answer is not to write better fakes but to lift the decision into a total function that can be

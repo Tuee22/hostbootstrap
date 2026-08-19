@@ -100,6 +100,9 @@ compileFailCases rejects rejectsWith =
         "CrossOwnershipRowHandle.hs"
         ["Couldn't match expected type 'handle1' with actual type 'handle'"]
     , rejectsWith
+        "EscapeReenteredOwnershipEntry.hs"
+        ["Couldn't match type 'session' with 'escaped'"]
+    , rejectsWith
         "ForgeIndexedProjectPlan.hs"
         ["Illegal term-level use of the type constructor 'ProjectPlan'"]
     , rejectsWith

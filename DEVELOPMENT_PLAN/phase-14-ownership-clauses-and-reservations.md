@@ -1,7 +1,7 @@
 # Phase 14 — The four ownership clauses and host-local reservations
 
-**Status**: Active
-**Current sprint**: Sprint 14.8 — The POSIX ownership row
+**Status**: Done
+**Current sprint**: None — every sprint is closed
 **Depends on**: Phase 3 (host tools and the closed effect vocabulary), Phase 4 (protected store),
 Phase 11 (prepared operations and preconditions)
 **Substrates**: linux-cpu
@@ -33,8 +33,9 @@ owns the frame table's rows and the one fold that reaches a frame.
 ### Sprint 14.1: The shared object-identity layer [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness/Identity.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Harness/Identity/Native.hs`
+**Implementation**: superseded within this phase — clause 3's identity read is
+`core/hostbootstrap-core/src/HostBootstrap/Ownership/Object.hs`'s vocabulary and the two rows'
+primitive, and Sprints 14.11 and 14.12 removed the shared layer this sprint built
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_invariant.md`
 
@@ -48,7 +49,7 @@ One realization of clause 3, shared by every host-local backend.
   answer rather than a caller's string.
 - `Identity.Native` reads it from the kernel. Clause 3's identity read is a **row primitive**, so the
   platform rows are where it finally lives (Sprint 14.7); this sprint gives the directory and file
-  protocols one realization to share in the meantime, and Sprint 14.10 moves them onto the rows.
+  protocols one realization to share in the meantime, and Sprints 14.11 and 14.12 move them onto the rows.
 - `IdentityFault` is closed, and each protocol maps it into its own vocabulary.
 - Because directory and file ownership share this layer, their realizations of clause 3 cannot drift, and a
   substrate that cannot supply a stable identity refuses both at one place.
@@ -59,7 +60,8 @@ One realization of clause 3, shared by every host-local backend.
 
 #### Remaining Work
 
-None. Clause 3's final home is the platform row, which Sprint 14.7 declares and Sprint 14.10 adopts.
+None. Clause 3's final home is the platform row, which Sprint 14.7 declares and Sprints 14.11 and
+14.12 adopt.
 
 ### Sprint 14.2: Data-root ownership [Done]
 
@@ -133,7 +135,6 @@ None.
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall/Host.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall/ConfigBytes.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall/Posix.hs`,
 `core/hostbootstrap-core/test/WslGlobalWallSpec.hs`,
 `core/hostbootstrap-core/test/WslGlobalWallHostSpec.hs`,
 `core/hostbootstrap-core/test/WslGlobalWallConfigBytesSpec.hs`
@@ -148,7 +149,7 @@ Own an exclusive host-global configuration file under the same four clauses, por
 
 - One portable driver over a platform backend. There is one driver and one implementation of each clause;
   what a POSIX and a Windows kernel differ by is the primitive each supplies, which is a **row** of the
-  frame table (§ LL). Sprint 14.7 declares that row and Sprint 14.10 has this driver reach it, so the two
+  frame table (§ LL). Sprint 14.7 declares that row and Sprint 14.13 has this driver reach it, so the two
   backends are the two rows rather than a seam of their own.
 - The managed body is produced by a pure byte transformer, so the file's content is derived rather than edited
   in place, and a crash leaves either the prior body or the new one.
@@ -336,11 +337,12 @@ kernel-reachability cases, and three seam-shape cases. The four fixtures
 None. The seam is primitives and producers; the kernels that fill it are the two rows, and the owners
 that consume it are the last sprint of this phase.
 
-### Sprint 14.8: The POSIX ownership row [Planned]
+### Sprint 14.8: The POSIX ownership row [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Posix.hs`,
-`core/hostbootstrap-core/test/OwnershipPosixSpec.hs`
+`core/hostbootstrap-core/test/OwnershipPosixSpec.hs`,
+`core/hostbootstrap-core/test/CoverageManifest.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_seam.md`,
 `documents/engineering/testing.md`
@@ -357,7 +359,16 @@ The primitives a POSIX kernel supplies, once.
   protected store's own entry (Sprint 14.7).
 - A symbolic link or a non-regular object at a target is refused rather than followed, because clause 3
   binds what the kernel knows and a link is a different object.
-- Errno classification is symbolic, so the same name means the same thing on Linux and Apple hosts.
+- The exclusive open carries an `fcntl` write lock over the whole file, so the exclusion is one the
+  kernel releases when the holding process dies rather than a pathname a survivor must clean up.
+- The identity is encoded volume word first and little-endian, which is the encoding every other
+  ownership backend already writes, so two identities compared mean the same thing whichever row read
+  them.
+- Errno classification is symbolic, so the same name means the same thing on Linux and Apple hosts. A
+  filesystem that cannot hard-link at all is `Unsupported` rather than a probe failure, because that is a
+  clause this host cannot hold.
+- The row's capability declaration and the derived `posixOwnershipSupported` are read off the row itself,
+  so a case's conditional expectation follows the subject rather than repeating a build symbol (§ JJ).
 - The module compiles on every host family and answers a total refusal where it cannot apply, so no
   package-description stanza excludes it from a build (§ JJ).
 
@@ -365,18 +376,31 @@ The primitives a POSIX kernel supplies, once.
 
 The row is exercised against the **real kernel** in a temporary directory it created — not a stand-in —
 so every case proves the syscall it names (§ NN). Clause 1's release-on-death is proved by a real process
-actually dying, through the suite's own re-invocation route. On a host family where the row cannot apply,
-the same cases assert its declared refusal rather than disappearing.
+actually dying, through the suite's own re-invocation route: the probe takes the row's exclusive open and
+drops the raw descriptor rather than closing it, so nothing in that process can release the lock and the
+parent's successful re-open is evidence about the kernel. On a host family where the row cannot apply,
+the same cases assert its declared refusal rather than disappearing, and `CoverageManifest` declares each
+of the four kernel families' size so a case that vanished is a failed count rather than a smaller total.
+
+Dated 2026-08-18 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0):
+`OwnershipPosixSpec` passed 24/24 — two declaration cases and twenty-two exercising the row against this
+gate host's kernel, across identity, creation and publication, the exclusive open, and removal and
+durability. `CoverageManifest` reported all four declared families at their exact sizes. Canonical
+`cabal test all --ghc-options=-Werror` from `core/` passed 2,121/2,121 in 209.17 seconds;
+`poetry run python -m hostbootstrap.check_code` passed; and
+`poetry run python -m hostbootstrap.test_all` passed 231.
 
 #### Remaining Work
 
-All implementation, tests, and documentation.
+None. The row is POSIX primitives; the Windows kernel that fills the same seam and the selector between
+the two rows are the next sprint's, and the owners that consume both are the last sprint of this phase.
 
-### Sprint 14.9: The Windows ownership row [Planned]
+### Sprint 14.9: The Windows ownership row [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Windows.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Ownership/Row.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Ownership/Object.hs`,
 `core/hostbootstrap-core/test/OwnershipWindowsSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_seam.md`
@@ -391,68 +415,275 @@ The same primitives a Windows kernel supplies, and the one selector between the 
   reparse-point refusal, atomic no-replace publication, and write-through replacement. As on the POSIX
   row, this opens objects and does not supply clause 1.
 - Where a public binding flattens the status a recovery decision needs, a narrow direct kernel boundary
-  captures it — with no C shim and no package-description `c-sources`.
+  captures it — with no C shim and no package-description `c-sources`. Two entry points qualify: the open
+  that must separate "the name is not there" from "the name is held", and the hard link that must
+  separate a taken name from a filesystem that cannot link at all.
 - The reparse-point flag and the identity encoding exist once and are shared with the POSIX row's
-  encoding, so a driver's volume-first comparison means the same thing on both.
+  encoding, so a driver's volume-first comparison means the same thing on both. The encoding is one
+  producer in the owned-object vocabulary that both rows reach; neither row builds an identity of its
+  own.
+- There is no directory descriptor to flush on this kernel, so the parent's own durability is carried by
+  a write-through creation and the link that publishes it. The row declares the capability because the
+  guarantee is met; what differs is the mechanism, which is what a row is for.
 - `ownershipRowForHost` selects the row for the running host. Two rows exist; a third would be a second
-  implementation of a clause.
+  implementation of a clause. The selection is a build fact rather than a runtime probe, because which
+  primitives exist at all is what the compiler has already decided.
 
 #### Validation
 
 The row is exercised against the real kernel on a Windows gate host, and asserts its declared refusal on
-the others. The identity encoding is compared against the POSIX row's over the same values, so the two
-cannot drift into meaning different things.
+the others; `CoverageManifest` declares each of its four kernel families' size, so a case that vanished
+on either family is a failed count rather than a smaller total. The one identity encoding is applied to
+values and compared against its exact volume-first little-endian bytes on every gate host, and a source
+guard holds that neither row reaches the raw identity constructor — with one producer the two cannot
+drift into meaning different things, which is stronger than comparing two copies.
+
+Two things this sprint does not reach are named rather than counted (§ NN). A live refusal of a reparse
+point standing at a target needs a Windows kernel and a link the suite may create there; what holds on
+every gate host is the source guard that every observation opens with the no-follow flag and that the
+non-regular predicate includes the reparse attribute. And the row's Windows-family compilation is
+evidence the [host-portability acceptance phase](phase-28-host-portability-acceptance.md) produces, since
+that is the phase declaring the hardware (§ C).
+
+Dated 2026-08-18 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0): `OwnershipWindowsSpec`
+passed 23/23 — eleven cases asserting the row's declared refusal on this gate host, two declaration
+cases, two encoding cases, two selector cases, and two source-shape cases. Canonical
+`cabal test all --ghc-options=-Werror` from `core/` passed 2,144/2,144;
+`poetry run python -m hostbootstrap.check_code` passed; and
+`poetry run python -m hostbootstrap.test_all` passed 231.
 
 #### Remaining Work
 
-All implementation, tests, and documentation.
+None. Both kernels fill the seam and one selector chooses between them; the three host-local owners'
+adoption of that seam is the last sprint of this phase.
 
-### Sprint 14.10: The host-local owners consume the seam [Planned]
+### Sprint 14.10: Re-entering an object this project already owns [Done]
 
-**Status**: Planned
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Primitive.hs`,
+`core/hostbootstrap-core/test/OwnershipSpec.hs`,
+`core/hostbootstrap-core/test/compile-fail/`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_seam.md`
+
+#### Objective
+
+Make clause 4 reachable from the durable record, so a release that happens in a later entry is still
+inside the clause order.
+
+#### Deliverables
+
+- The four clauses are one transaction but they are not one process: an owner binds an identity now and
+  releases it later — after its own bracket, after a restart, or from a successor's recovery path. One
+  producer turns an exclusive entry, a target, and the bound record the caller read through its own
+  durable store into the clause-3 token, so the release path is written in the same order as the
+  acquisition path rather than beside it.
+- The producer manufactures no evidence. A record with no identity binding describes a transaction that
+  never got past clause 2 and licenses no release, so it is refused and mints no token; the record itself
+  comes from the caller's own store, so the seam still holds no durable state of its own.
+- The object index is introduced fresh, exactly as clause 1 introduces it, so re-entered evidence is
+  about this object and cannot be presented for another.
+- The refusal a row owes for a clause it cannot hold is applied first, as at every other producer.
+
+#### Validation
+
+`OwnershipSpec` applies the producer to values: an unbound record mints no token, a row that cannot hold
+the clause reaches no kernel, and a bound record discloses exactly the target and identity the record
+names. A compile-fail fixture holds that a re-entered token cannot outlive the entry that authorized it,
+which is the property that makes re-entry an entry rather than a way around one.
+
+Every one of those cases runs against the row whose primitives diverge, so "reaches no kernel" is a
+property of a program that would not finish if it did rather than of a counter a stand-in incremented
+(§ NN) — and re-entry reaching no kernel is exactly right, because what it reads is a record the caller
+already holds.
+
+Dated 2026-08-18 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0): `OwnershipSpec` passed
+13/13, including the three re-entry cases and the seam-shape guard that now counts five classifier-gated
+producers. The fixture `EscapeReenteredOwnershipEntry.hs` fails with its exact declared diagnostic.
+Canonical `cabal test all --ghc-options=-Werror` from `core/` passed 2,148/2,148;
+`poetry run python -m hostbootstrap.check_code` passed; and
+`poetry run python -m hostbootstrap.test_all` passed 231.
+
+#### Remaining Work
+
+None. The seam now reaches clause 4 from a durable record; the three owners that consume it are the
+sprints that follow.
+
+### Sprint 14.11: The data root consumes the seam [Done]
+
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness/DataRoot.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Harness/GeneratedConfig.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall/Host.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
+`core/hostbootstrap-core/test/DataRootSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+The run's durable data root holds its clauses through the one seam.
+
+#### Deliverables
+
+- Acquisition, release, and recovery reach the clauses through the seam's producers and the host's row,
+  so the identity read, the durable record encoding, and the identity-conditional act each exist once
+  rather than once more here.
+- The durable record is the canonical `OriginRecord` and its one codec, so a record this owner writes is
+  readable by every other owner.
+- The data root keeps the policy that is genuinely its own: the parent is scaffolding, created if missing
+  and never owned; a directory the run merely found is preserved and never adopted; and a replaced one is
+  a reported conflict left intact.
+- A confirmed generation's **content** is cleared by this owner rather than by the seam, and only after
+  clause 4's re-observation has said the directory is the one this run created. The seam removes exactly
+  the object it was asked to remove, which is what keeps it from ever deleting more than that; what is
+  inside a generation is the run's own, so clearing it is policy and sits here.
+- Release re-enters the object from the record the store already holds, so the release path is written in
+  the same clause order as the acquisition path.
+- No kernel identity is read through a seam of this module's own, so a host that cannot supply one
+  refuses here at the same place it refuses everywhere else. The production bracket reaches the row
+  through the one selector.
+
+#### Validation
+
+Every case `DataRootSpec` carries today is retained, including both crash windows around the origin
+record, the adversary-replacement conflict, the release refusal on identity mismatch, exclusion while the
+entry is held, and admission after the holder is killed.
+
+Dated 2026-08-18 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0): `DataRootSpec` passed
+18/18 — five clause-2 cases, three clause-3 cases, five clause-4 cases, and five recovery cases, all
+driving the production row against a real kernel. Canonical
+`cabal test all --ghc-options=-Werror` from `core/` passed 2,148/2,148 in 208.76 seconds;
+`poetry run python -m hostbootstrap.check_code` passed; and
+`poetry run python -m hostbootstrap.test_all` passed 231.
+
+#### Remaining Work
+
+None. The generated config and the host wall are the two owners still holding their own copies.
+
+### Sprint 14.12: The generated config consumes the seam [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness/GeneratedConfig.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
+`core/hostbootstrap-core/test/GeneratedConfigSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_invariant.md`,
 `documents/architecture/durable_state.md`
 
 #### Objective
 
-The three host-local owners hold the clauses through the one seam.
+The run's generated sibling config holds the same clauses through the same seam.
 
 #### Deliverables
 
-- The data root, the generated config, and the host wall each reach the clauses through the seam's
-  producers and the host's row.
-- Each keeps the policy that is genuinely its own: the data root's self-created-parent rule, the generated
-  config's found-object refusal before any record is written and its payload-conditional release, and the
-  wall's phase graph and byte transformer.
-- The wall's platform backends become the two rows, so its identity-conditional act exists once rather
-  than once per platform.
-- No owner reads a kernel identity through a seam of its own, so a host that cannot supply one refuses all
-  three at one place.
+- Acquisition, release, and recovery reach the clauses through the seam's producers and the host's row,
+  and the file is published through the row's atomic no-replace primitive rather than through one of this
+  module's own. The payload is staged beside the target under a name the record key derives, so two runs
+  never stage through one name and a failed publication withdraws its own staging object without
+  displacing the fault that caused it.
+- The record is the canonical `OriginRecord`, whose file case already carries the intended payload's
+  digest — which is what makes the crash window between the record and the binding resolvable.
+- The generated config keeps the policy that is genuinely its own: a found object is refused before any
+  record is written and is never adopted, and release unlinks only on an exact re-observed identity
+  **and** payload. The payload comparison follows clause 4's re-observation and reads the bytes back
+  through the row's own exclusive open, so the file it compares is opened without following a link and by
+  the primitives that created it, and the refusal names both digests.
+- No kernel identity is read through a seam of this module's own. The injected object-identity seam and
+  its native backend are gone, and the production bracket now reaches one row for both owned objects.
 
 #### Validation
 
-Every case each owner's suite carries today is retained, including the crash windows on both sides of the
-origin record and the conflict reports. Coverage that the removal of a patchable crash point does not
-reach is **named as owed** in this sprint rather than counted as covered (§ NN).
+Every case `GeneratedConfigSpec` carries today is retained, including the payload-conditional release,
+the found-object refusal, the conflict report, and the kill between the origin record and publication.
+
+Dated 2026-08-18 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0): `GeneratedConfigSpec`
+passed 23/23 — six clause-2 cases, three clause-3 cases, the found-object refusal, seven clause-4 cases,
+and six recovery cases, all driving the production row against a real kernel. Canonical
+`cabal test all --ghc-options=-Werror` from `core/` passed 2,151/2,151 in 220.36 seconds;
+`poetry run python -m hostbootstrap.check_code` passed; and
+`poetry run python -m hostbootstrap.test_all` passed 231.
 
 #### Remaining Work
 
-All adoption, tests, and documentation.
+None. The host wall is the one owner still holding its own copy.
+
+### Sprint 14.13: The host wall's backends become the two rows [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall/Host.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall/Windows.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Ownership/Primitive.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Ownership/Row.hs`,
+`core/hostbootstrap-core/test/WslGlobalWallHostSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/wsl2.md`,
+`documents/architecture/ownership_seam.md`
+
+#### Objective
+
+The host wall's two platform backends become the two ownership rows, so its identity-conditional act
+exists once rather than once per platform.
+
+#### Deliverables
+
+- The portable driver reaches the clauses through the seam's producers and the host's row, and keeps the
+  policy that is genuinely its own: its phase graph, its pure byte transformer, and the lease that is
+  returned inseparably with the live authority.
+- The wall's own platform backend seam is gone, so there is one identity read, one no-replace
+  publication, and one exclusive open beneath every host-local owner. Clause 1 is now the wall's own
+  protected-store entry and clause 2 its compare-and-swap — the same two the run's data root and
+  generated config hold — so the wall carries no lock file, no journal file, and no fence file of its
+  own, and the strictly monotonic fence is the store's own never-reused record version.
+- The seam's no-replace publication is the kernel primitive it actually is. `rowLinkNoReplace` gives an
+  object a second name and leaves the first; the seam's own file publication withdraws the staging name
+  after it, and the wall — whose armed object must be journalled before a durable name for it exists —
+  composes the same two steps in its own order.
+- The object identity is stated once. The wall's model, its durable record codec, and the two rows all
+  speak `Ownership.Object`'s `ObjectIdentity`, so the identity a record carries is the identity a row
+  read.
+- The armed-stage reading is one reading rather than a per-platform fork. Both rows create a durable
+  armed object, so an armed leftover in the create-outcome-unknown phase is this owner's own interrupted
+  attempt on every host — its name embeds the receipt's never-reused fence — and it is removed by exact
+  identity inside the same exclusive entry and the create retried.
+- Teardown still restores the wall before any global shutdown, and there is still no second copy of the
+  body.
+
+#### Validation
+
+Every case `WslGlobalWallSpec`, `WslGlobalWallHostSpec`, `WslGlobalWallConfigBytesSpec`, and
+`WslGlobalWallWindowsSpec` carry today is retained, including the transformer, the lease, crash recovery
+on both sides of the write, and the restore-before-shutdown order.
+
+The driver's fixture no longer writes through a platform backend: the durable state an interruption
+leaves is a value, so the fixture publishes that value through the wall's own protected store and
+re-enters the ordinary entry point. Nothing in the driver cooperates, and no crash point or injected
+seam is introduced (§ NN).
+
+Dated 2026-08-18 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0): the four wall suites
+passed 55/55, with `WslGlobalWallHostSpec`'s 20 cases now driving `ownershipRowForHost` and a real
+protected store rather than a POSIX-only lane. Canonical `cabal test all --ghc-options=-Werror` from
+`core/` passed 2,151/2,151 in 214.35 seconds; `poetry run python -m hostbootstrap.check_code` passed;
+and `poetry run python -m hostbootstrap.test_all` passed 231.
+
+**Coverage owed rather than claimed (§ NN).** `WslGlobalWallHostSpec` now runs against whichever row the
+gate host supplies, so its twenty cases are evidence about the Windows row only on a Windows gate host.
+This Linux run is evidence for the POSIX row alone; the same suite's confirmation against the Windows
+row is the [host-portability acceptance phase](phase-28-host-portability-acceptance.md)'s, because that
+claim needs a second machine and § C forbids a baseline phase owing hardware it does not declare.
+
+#### Remaining Work
+
+None. Every host-local owner holds its clauses through the one seam and against the one row.
 
 ## Remaining Work
 
-The clauses are stated and held, but held once per owned object rather than once. The identity read, the
-no-replace publication, the identity-conditional act, and the durable record encoding each exist more than
-once, and a third exclusive-entry realization sits beside the two platform ones — copies that agree on the
-inputs each was written for and have never been asked the same question together.
-
-The nouns are stated once, the clause order is a property of the types, and one seam of primitives mints
-the tokens by actually holding each clause. Sprints 14.8 through 14.10 supply the two kernels that fill
-that seam and the three host-local owners' adoption of them.
+None. The nouns are stated once, the clause order is a property of the types, one seam of primitives
+mints the tokens by actually holding each clause, both kernels fill that seam, one selector chooses
+between them, and one producer makes clause 4 reachable from the durable record. All three host-local
+owners — the run's data root, its generated sibling config, and the per-user host wall — reach the
+clauses through that seam and against that row, so the identity read, the no-replace publication, the
+exclusive entry, the identity-conditional act, and the durable record encoding each exist once beneath
+every one of them.
 
 ## Documentation Requirements
 

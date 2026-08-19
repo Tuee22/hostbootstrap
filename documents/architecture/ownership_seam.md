@@ -18,36 +18,63 @@ record the origin, mutate, bind the identity, release conditionally. It is writt
 seam of kernel primitives. What differs between platforms is the *primitive*, which is a row of the frame
 table — never a clause written twice.
 
-Three rows exist. Two are platforms: POSIX and Windows. The third is a **transport** that runs the
-transaction at the frame owning the object, and it is not a third implementation, because every frame this
-project reaches is Linux and what executes there is the POSIX row.
+Three rows exist, and the frame table's ownership column says which one holds a frame's clauses. Two are
+platforms: POSIX and Windows, and the outer host's column entry is whichever this binary was built for.
+The third is a **transport** that runs the transaction at the frame owning the object; every crossing's
+column entry is the POSIX row, because every frame this project reaches is Linux, so the transport is not
+a third implementation of the clauses. The column is a declaration rather than a value a caller runs,
+which is exactly what keeps it one.
 
 The clause order is a property of the types. A mutation consumes the recorded origin and a release
 consumes the bound identity, so performing either out of order has no term rather than failing a review.
 
 ## Current Status
 
-The clauses are held today, but held once per owned object rather than once. The harness data root, the
-generated sibling config, and the global host wall each carry the transaction; the provider, cluster, and
-Colima drivers carry it again as interpreter programs; and the identity read, the no-replace publication,
-the identity-conditional act, and the durable record encoding each exist more than once.
+Every **host-local** owner now holds its clauses through the one seam. The harness data root, the
+generated sibling config, and the global host wall reach the identity read, the no-replace link, the
+exclusive open, the identity-conditional act, and the durable record encoding in one place, against one
+row, so the three cannot drift and a record one of them writes is a record the others read. What still
+carries the transaction a second time is the provider, cluster, Colima, and guest-alias drivers, which are
+interpreter programs and belong to the phases that drive them.
 
 The **vocabulary** below is built and is the one home for the identity, the intended payload, the origin
-record, its canonical codec, and the closed fault sum. The harness identity seam reads its identity
-through it, so a record one owner writes is already comparable with an identity another owner read.
+record, its canonical codec, and the closed fault sum. Every owner and both rows speak it, so an identity
+means the same thing wherever it appears.
 
 The **clause tokens** and the **seam** are built with it. The four tokens are abstract, both of their
 indices are nominal, and the entry index is the protected session's own rank-2 variable, so evidence
 cannot move between entries or between objects and cannot outlive the entry that authorized it. The seam
 is a record of primitives closed existentially over its handle type, with seven producers that each demand
 their predecessor token; a row declares which clauses it can hold and the refusal it owes for one it
-cannot is a total function of that declaration, applied before any kernel call. What is still owed is the
-two kernels that fill the seam and the owners that consume it.
+cannot is a total function of that declaration, applied before any kernel call.
+
+The **shipped row** is built with them. A transaction addressed to a lift context is carried to a process
+of this same binary at that context and interpreted there; an empty context addresses this machine, and a
+layered one crosses a frame. Its two encodings and the frame table's ownership column are total functions
+covered by application, and the empty-context crossing is driven through a real child process, so the
+claim that a transaction reached another process is a property of a program that would not finish if it
+were false. What it does not yet have is a driver that consumes it.
+
+**Both platform rows** fill that seam, and one selector chooses between them. The POSIX row supplies an `lstat`
+identity read without following a link, an `O_NOFOLLOW` open carrying an `fcntl` write lock over the whole
+file, `mkdir(2)`, `O_CREAT|O_EXCL` plus `fsync`, `link(2)`, and an `fsync` on the parent directory — each
+reached through the `unix` binding rather than a front-end process, each classifying its own errno
+symbolically. The Windows row supplies the same primitives through `CreateFileW` with the no-follow flag,
+a `LockFileEx` byte-range exclusion, `GetFileInformationByHandle` identity, `CREATE_NEW` with
+`FILE_FLAG_WRITE_THROUGH`, and `CreateHardLinkW`; it has no directory descriptor to flush, so the
+parent's durability rides on the write-through creation and the link rather than on a separate sync. Both
+encode identity through one producer in the owned-object vocabulary, so an identity means the same thing
+whichever kernel answered, and `ownershipRowForHost` selects the row as a build fact rather than a
+runtime probe. Each row is exercised against the real kernel in a temporary directory the case created,
+and the kernel releasing its exclusion is proved by a real process dying; a run is evidence for the one
+row that ran it. What is still owed is the owners at another frame — the providers, the clusters, the
+Colima profile, and the guest alias.
 
 The seam, the clause tokens, and the two platform rows are the
 [four-ownership-clauses-and-host-local-reservations phase](../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md)'s;
 the shipped row and the provider drivers are the
-[host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)'s;
+[host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)'s,
+whose row is built and whose drivers are not;
 the cluster and Colima drivers are the
 [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)'s;
 and the guest alias driver is the
@@ -117,6 +144,15 @@ Each clause mints a token, and the producer of the next clause demands it:
 | `Bound session object` | attaching the created object's own identity and re-publishing | the target, the bound record, the identity |
 | `Releasable session object` | re-observing the target and finding exactly that identity | the target, the record to forget, the identity |
 
+The four clauses are one transaction but not one process, so `Bound` has a second producer: **re-entry**.
+An owner binds an identity now and releases it later — after its own bracket, after a restart, or from a
+successor's recovery path — and clause 4 has to be reachable from the durable record rather than only
+from the token the binding minted. Re-entry takes an exclusive entry, a target, and the bound record the
+caller read back through its own store, and mints the same token; a record with no identity binding
+describes a transaction that never got past clause 2, so it authorizes no removal and mints nothing. The
+object index is introduced fresh, exactly as clause 1 introduces it, and the token still cannot outlive
+the entry.
+
 Both indices are nominal. `session` is the protected entry's own rank-2 variable, so a token cannot
 outlive the entry that authorized it and no second brand can disagree with it; `object` names which object
 the evidence is about. The target the owner named rides on the token too, so no producer takes a path
@@ -152,14 +188,30 @@ module nothing asserts, and the suite total reads the same either way — see
 An object is owned by the kernel that can lock it, so a transaction addressed to a frame runs *in* that
 frame. The row carries the transaction to a process of this same binary there and reads back one outcome.
 
-Two properties make it a transport rather than a workflow:
+Three properties make it a transport rather than a workflow:
 
 - **One invocation per transaction.** The receiving process lives exactly as long as the lock it holds, so
   clause 1 stays a kernel fact rather than an application-level release that must be correct on every
-  error path. A process that dies mid-transaction releases the lock because it died.
+  error path. A process that dies mid-transaction releases the lock because it died. That lock is the
+  protected store's own exclusive entry, opened by the receiving process at the authority the transaction
+  names; clause 2 is that store's compare-and-swap, so a shipped transaction holds the same two clauses,
+  the same way, as every host-local owner.
 - **One crossing renderer.** The argument vector comes from the lift's own fold and from nowhere else, so
-  the row adds no second answer to "cross into this frame". The sanitizing predicates the process route
-  owns are applied as a check over that fold's output.
+  the row adds no second answer to "cross into this frame". The crossing, its sanitizing, its private
+  protocol channel, and its process-group bracket are the authenticated-handoff boundary's, which carries
+  one opaque transaction out and one opaque outcome back and interprets neither; the ownership
+  interpreter is installed into that entry rather than beside it.
+- **A closed set of acts.** Observe, take a directory, take a file, give back — the four things the seam's
+  producers compose over one object. There is no act that runs a command: an external effect travels as a
+  described command through the one interpreter (§ KK), and an act that could run a string would make the
+  row a shell again.
+
+Both directions are exact values. The transaction is length-framed rather than delimited, because a target
+path and a payload are arbitrary bytes and a delimiter would let one of them describe the next field; the
+outcome carries the closed fault sum itself, so a refusal that crosses a frame is the refusal that was
+made rather than a rendering of one. A transaction a frame cannot read is answered with an encoded refusal
+rather than a closed pipe, so a caller learns that the far side declined instead of inferring it from a
+stream that ended.
 
 An empty frame stack addresses this machine, which is how a local transaction that must outlive its
 launcher's own bracket is expressed — a supervised child whose group is killed when the owning process
@@ -171,6 +223,13 @@ skips.
 Publishing a file under a name that must not already exist uses the platform's atomic **no-replace link**:
 `link(2)` on POSIX and `CreateHardLinkW` on Windows. A hard link publishes the written bytes under the
 final name in one kernel operation and fails when the name is taken.
+
+The row's primitive is the link and nothing more: it gives an object a second name and leaves the first.
+Withdrawing the staging name is the composing owner's own step, because owners genuinely differ there. The
+seam's file publication writes, links, and then withdraws — the staging name was only ever a way to get
+bytes onto the volume. The host wall does not withdraw: its armed object's identity has to be journalled
+before any durable name for it exists, so it links a second name and keeps both until the durable one is
+bound. Folding the withdrawal into the primitive would make that second shape unrepresentable.
 
 A *symbolic* link is not a substitute: it publishes a reference rather than the bytes, and a destination
 that reads as a link is refused by the same inspector that enforces clause 3's "reparse points and symlinks
@@ -188,7 +247,11 @@ The transaction is shared; the policy is the owner's own.
   window between the record and the identity binding resolvable. A found object is refused before any
   mutation rather than adopted: a generated config cannot share a path with a config already present.
 - **The global host wall** keeps its phase graph and its pure byte transformer, so the file's content is
-  derived rather than edited in place and a crash leaves either the prior body or the new one.
+  derived rather than edited in place and a crash leaves either the prior body or the new one. Its
+  clause 1 and clause 2 are its own protected store, opened beside the target, so its exclusive entry is
+  the same one every other host-local owner takes and its strictly monotonic fence is that store's own
+  never-reused record version rather than a counter file. It is also the owner that keeps both names of a
+  publication, for the reason above.
 - **The provider-guest alias** keys its record by a digest of an injective owner binding — provider origin,
   share key and generation, alias key and generation, alias, and target — and stores the complete binding
   as well, so the digest is only a bounded filename. Its prepared state records explicit absence plus a
