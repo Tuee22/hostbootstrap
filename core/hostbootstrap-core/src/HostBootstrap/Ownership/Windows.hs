@@ -538,9 +538,6 @@ foreign import capi unsafe "windows.h CreateFileW"
 foreign import capi unsafe "windows.h CreateHardLinkW"
     rawCreateHardLinkW :: LPCTSTR -> LPCTSTR -> Ptr () -> IO Bool
 
-foreign import capi unsafe "windows.h DeleteFileW"
-    rawDeleteFileW :: LPCTSTR -> IO Bool
-
 errorFileNotFound, errorPathNotFound, errorAccessDenied :: Word32
 errorFileNotFound = 2
 errorPathNotFound = 3

@@ -28,11 +28,14 @@ is absent. The prepared route:
 - stop on `project down`, or force-delete the guarded project VM on `project destroy`.
 
 Host-side `incus` is resolved through `HostTool` and retained as a typed absolute executable by the
-provider backend. The backend holds no ownership clause through a front-end process: exclusive entry,
-the durable origin record, identity binding, and conditional release come from the row the frame declares
-(see [ownership seam](../architecture/ownership_seam.md)), so there is one exclusion namespace by
-construction rather than one admitted front end and one refused alternative. Commands inside the guest
-intentionally use the guest's own tool lookup.
+provider backend. The backend today holds its four clauses through a retained `flock` front end and an
+interpreter program, which is why it also resolves an interpreter and a locking executable and admits only
+the one `flock` namespace. The vocabulary that replaces it is built and described in the three sections
+below — described commands, one total classification of what the provider answers, and one resumption
+decision — and the clause-holding itself moves onto the seam's reported face (see
+[ownership seam](../architecture/ownership_seam.md)) in the adoption sprints the
+[host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
+still carries. Commands inside the guest intentionally use the guest's own tool lookup.
 
 Before that provider value is used, `HostBootstrap.Ensure.Incus` converges the native provider and runs
 a total final observation. Its pure `IncusProviderStatus` distinguishes:
@@ -70,6 +73,76 @@ after ready, share, stop, guest execution, and conditional delete. The
 [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
 carries the closure evidence: its static gate and its native Linux/x86_64 KVM/Incus gate both pass. See
 [lifecycle state model](../architecture/lifecycle_state_model.md).
+
+## Asking the provider
+
+`HostBootstrap.Substrate.Provider.Command` is the one place a provider effect becomes a value. Each
+function returns a described host command — the tool the frame table names, the exact argument vector, the
+stdio disposition, and the frame whose process reads it — and none of them can run anything, which is what
+makes an argument vector comparable by application rather than only observable by launching it.
+
+Two properties of the set are worth stating because they are easy to lose:
+
+- **one listing answers two questions.** Presence and lifecycle state come back from the same
+  `incus list <name> --format csv -c ns`, because a presence answered by one command and a state answered
+  by another are two answers that can disagree about the moment they describe;
+- **the owner tag rides on the creating command.** `incus launch` carries
+  `user.hostbootstrap.owner=<nonce>` itself rather than a configuration write that follows it, so there is
+  no interval in which the instance exists without naming the durable record that owns it.
+
+Every command in the module is interpreted by a process of the outer host. A vector that crosses *into*
+the instance is not rendered here: the lift's own fold is the project's single crossing renderer, and a
+second one beside it is the duplication that rule exists to prevent. The destructive delete goes through
+the frame table's guarded delete described below, so this module supplies only the argument vector for a
+name the guard has already admitted.
+
+## Reading what the provider says
+
+A driver that holds ownership clauses over an Incus instance needs two facts about it: whether the daemon
+names it at all, and what stable identity the daemon gives it. Both arrive as bytes on a described
+command's standard output, and `HostBootstrap.Substrate.Provider.Report` is the one place those bytes
+become values. It executes nothing; each classifier is a total function of the interpreter's own outcome,
+so the report a driver returns and the decision a caller makes are the same value rather than a rendering
+and a parser.
+
+What it admits is deliberately narrow, because a provider is another program's output:
+
+- an instance listing is a set of `name,state` rows, and only the row naming the exact instance is about
+  it — the daemon matches a listing argument by prefix, so a sibling name is an absence rather than a hit;
+- the two lifecycle states a clause-holding transaction can act from are `RUNNING` and `STOPPED`; every
+  other state the daemon might name is refused rather than mapped onto whichever of the two is closer;
+- a configuration read answers at most one bounded line, and no line at all is an unset key rather than a
+  failure — which is how an owner tag that was never written is told apart from one that is empty;
+- an identity is admitted through the ownership seam's own producer, so a value this vocabulary could not
+  read is never compared against a bound one;
+- a report that is over-long, that carries a control character, or that lists the exact instance twice is
+  a refusal, because each is the daemon contradicting itself.
+
+The join is one function: a listing and an identity read together become the observation the seam's
+reported face is held over (see [ownership seam](../architecture/ownership_seam.md)). An instance listed
+without an identity, and an identity reported for an instance that is not listed, are each refused there.
+
+## Where a transaction stands
+
+`HostBootstrap.Substrate.Provider.Resume` decides what an ownership transaction does next, and it is a
+total function of three values: the durable record the protected store holds, the observation the report
+produced, and the claim the instance carries.
+
+That shape is deliberate. The interval between the durable record and the identity binding is the one a
+live run cannot be steered into — entering it needs a process to die at an exact instruction — so writing
+the decision as a function is what makes every branch of it reachable at all.
+
+Four standings are legitimate, and they are the four prefixes of the one clause order: nothing done; the
+origin recorded and the creating command not taken; the instance created under this record's claim and not
+yet bound; and the instance owned. Everything else is a conflict reported with both sides — an instance no
+record claims, an instance carrying a different claim or none at all, a bound record whose instance has
+been replaced, a bound record whose instance is gone, a record another owner wrote, and a record naming an
+instance that was there before it.
+
+The claim comparison is the whole of the crash-window resolution. The instance name is the same by
+construction — it is the name the plan declares — so the claim is the only thing that tells an instance
+this record created from one an earlier record left behind. One vocabulary answers every verb, because
+provision, readiness, and release ask the same question and only act differently on the answer.
 
 ## Destructive deletion
 

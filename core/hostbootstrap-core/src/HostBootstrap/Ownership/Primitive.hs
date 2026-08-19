@@ -30,6 +30,22 @@ deliberately does not carry:
     field: it opens one already-existing named object, without following a link,
     inside an entry the store already holds.
 
+Not every owned object is one a kernel answers for. A provider instance's stable
+identity is answered by the provider itself, over a described command through the
+one interpreter, so its observation arrives here as a /value/ rather than as a
+probe this module could make. The clause producers therefore come in two faces
+over the same four tokens: the kernel face, which reads a row's
+'rowObserveIdentity', and the __reported__ face, which is handed the 'Origin' a
+total classification produced. Each shared computation — the record an origin
+describes, the binding attached to it, the conflict a re-observation reports — is
+written once and used by both, so the two faces differ in who answers the
+observation and never in what a clause means.
+
+The reported face takes no row, and that is its honest signature rather than an
+omission: it reaches no kernel primitive, so a row's declaration has nothing to
+say about it. What it does still take is the protected entry, because clause 1 is
+that entry and clause 2 is that store's compare-and-swap on either face.
+
 The handle a row mints is closed existentially, so a handle from one row cannot
 enter another, and a caller cannot name the type at all.
 
@@ -51,7 +67,7 @@ module HostBootstrap.Ownership.Primitive
     , OwnershipClause (..)
     , clauseRefusal
 
-      -- * The clause producers
+      -- * The clause producers, over an object a kernel answers for
     , enterOwnedObject
     , reenterOwnedObject
     , recordOwnedOrigin
@@ -60,6 +76,13 @@ module HostBootstrap.Ownership.Primitive
     , bindOwnedIdentity
     , reobserveOwnedIdentity
     , releaseOwnedObject
+
+      -- * The clause producers, over an object an authority reports on
+    , enterReportedObject
+    , recordReportedOrigin
+    , bindReportedIdentity
+    , reobserveReportedIdentity
+    , releaseReportedObject
     )
 where
 
@@ -80,7 +103,7 @@ import HostBootstrap.Ownership.Internal
 import HostBootstrap.Ownership.Object
     ( ConflictReport (..)
     , ObjectIdentity
-    , ObjectKind (OwnedDirectory, OwnedFile)
+    , ObjectKind (OwnedDirectory, OwnedFile, ReportedObject)
     , Origin (OriginAbsent, OriginPresent)
     , OriginRecord
     , OwnershipFault
@@ -243,7 +266,7 @@ clauseName ClauseBind = "3 (identity binding)"
 clauseName ClauseRelease = "4 (conditional release)"
 
 -- ---------------------------------------------------------------------------
--- The seven clause producers
+-- The seven clause producers, over an object a kernel answers for
 
 {- | Clause 1: observe the target inside the entry that protects it.
 
@@ -332,11 +355,7 @@ recordOwnedOrigin row entered kind publish =
     withOwnershipRow row $ \primitives ->
         case clauseRefusal (rowCapabilities primitives) ClauseRecord of
             Just refusal -> pure (Left refusal)
-            Nothing ->
-                enteredEvidenceOf entered $ \target origin -> do
-                    let record = originRecord kind origin
-                    published <- publish record
-                    pure (fmap (const (Recorded target record)) published)
+            Nothing -> recordReportedOrigin entered kind publish
 
 {- | Create the owned directory the record describes, and read its identity.
 
@@ -353,6 +372,7 @@ createOwnedDirectory row recorded =
             case originRecordKind record of
                 OwnedFile _ ->
                     pure (Left (OwnershipUnsupported "this record describes a file, not a directory"))
+                ReportedObject _ -> pure (Left (reportedRecordRefusal "a directory"))
                 OwnedDirectory -> do
                     created <- rowCreateDirectory primitives target
                     case created of
@@ -385,6 +405,7 @@ publishOwnedFile row recorded payload staging =
             case originRecordKind record of
                 OwnedDirectory ->
                     pure (Left (OwnershipUnsupported "this record describes a directory, not a file"))
+                ReportedObject _ -> pure (Left (reportedRecordRefusal "a file"))
                 OwnedFile digest
                     | digest /= payloadDigest payload ->
                         pure
@@ -428,13 +449,7 @@ bindOwnedIdentity row recorded identity publish =
     withOwnershipRow row $ \primitives ->
         case clauseRefusal (rowCapabilities primitives) ClauseBind of
             Just refusal -> pure (Left refusal)
-            Nothing ->
-                recordedEvidenceOf recorded $ \target record ->
-                    case bindOriginRecord identity record of
-                        Left fault -> pure (Left fault)
-                        Right bound -> do
-                            published <- publish bound
-                            pure (fmap (const (Bound target bound identity)) published)
+            Nothing -> bindReportedIdentity recorded identity publish
 
 {- | Clause 4's precondition: re-observe the target and require the bound
 identity.
@@ -452,24 +467,11 @@ reobserveOwnedIdentity row bound =
         case clauseRefusal (rowCapabilities primitives) ClauseRelease of
             Just refusal -> pure (Left refusal)
             Nothing ->
-                boundEvidenceOf bound $ \target record identity -> do
+                boundEvidenceOf bound $ \target _record _identity -> do
                     observed <- rowObserveIdentity primitives target
-                    case observed of
-                        Left fault -> pure (Left fault)
-                        Right current
-                            | current == Just identity ->
-                                pure (Right (Releasable target record identity))
-                            | otherwise ->
-                                pure
-                                    ( Left
-                                        ( OwnershipConflict
-                                            ConflictReport
-                                                { conflictSubject = Text.pack target
-                                                , conflictExpected = OriginPresent identity
-                                                , conflictObserved = originOf current
-                                                }
-                                        )
-                                    )
+                    pure $ case observed of
+                        Left fault -> Left fault
+                        Right current -> reobserveReportedIdentity bound (originOf current)
 
 {- | Clause 4: remove the object, then forget the record.
 
@@ -493,6 +495,146 @@ releaseOwnedObject row releasable forget =
                     case synced of
                         Left fault -> pure (Left fault)
                         Right () -> forget record
+
+-- ---------------------------------------------------------------------------
+-- The five clause producers, over an object an authority reports on
+
+{- | Clause 1, where the observation is an answer rather than a probe.
+
+The kernel face reads the target through a row; here the target is a name in
+another authority's namespace — a provider instance, a cluster — and only that
+authority can say what is at it. The classification of its described command's
+outcome arrives as an 'Origin', which is the same value 'enterOwnedObject'
+derives from a row's identity read, so everything downstream is identical.
+
+What is unchanged is the whole of clause 1: the 'ProtectedSession' argument is
+the exclusive entry the kernel releases when this process ends. The object index
+is introduced here, fresh, and the continuation is rank-2 in it, so every later
+clause is about this object and no other.
+-}
+enterReportedObject ::
+    ProtectedSession session ->
+    OwnedTargetPath ->
+    -- | what the owning authority reported is at the target
+    Origin ->
+    (forall object. Entered session object -> IO (Either OwnershipFault result)) ->
+    IO (Either OwnershipFault result)
+enterReportedObject _session target observed use = use (Entered target observed)
+
+{- | Clause 2, written once and used by both faces.
+
+Neither face publishes the record itself: the durable record is the protected
+store's compare-and-swap on either, so the publication is a continuation and this
+producer owns only that the record says what was observed, that it is unbound,
+and that it is durable before the token exists.
+
+The kernel face reaches this through its own clause gate, because a row that
+cannot make a parent durable cannot hold clause 2 at all. The reported face
+reaches it directly, because there is no row for that gate to ask.
+-}
+recordReportedOrigin ::
+    Entered session object ->
+    ObjectKind ->
+    (OriginRecord -> IO (Either OwnershipFault ())) ->
+    IO (Either OwnershipFault (Recorded session object))
+recordReportedOrigin entered kind publish =
+    enteredEvidenceOf entered $ \target origin -> do
+        let record = originRecord kind origin
+        published <- publish record
+        pure (fmap (const (Recorded target record)) published)
+
+{- | Clause 3, written once and used by both faces.
+
+The identity is a parameter on either face, because clause 3 binds what was
+observed of an object this transaction created and the creation is not the seam's
+— a directory the row made, or an instance a described command launched. What
+this producer owns is that the binding attaches to the record clause 2 published
+and is itself durable before the token exists.
+-}
+bindReportedIdentity ::
+    Recorded session object ->
+    ObjectIdentity ->
+    (OriginRecord -> IO (Either OwnershipFault ())) ->
+    IO (Either OwnershipFault (Bound session object))
+bindReportedIdentity recorded identity publish =
+    recordedEvidenceOf recorded $ \target record ->
+        case bindOriginRecord identity record of
+            Left fault -> pure (Left fault)
+            Right bound -> do
+                published <- publish bound
+                pure (fmap (const (Bound target bound identity)) published)
+
+{- | Clause 4's precondition, written once and used by both faces.
+
+Pure, because both faces have already made their observation by the time the
+question is asked: the kernel face read it through a row and the reported face
+was handed it. An object that is gone and an object that has been replaced are
+both conflicts rather than successes, and both report the identity release
+expected beside the one observed, so an operator learns which of the two
+happened.
+-}
+reobserveReportedIdentity ::
+    Bound session object ->
+    -- | what the owning authority reported is at the target now
+    Origin ->
+    Either OwnershipFault (Releasable session object)
+reobserveReportedIdentity bound observed =
+    boundEvidenceOf bound $ \target record identity ->
+        case observed of
+            OriginPresent current
+                | current == identity -> Right (Releasable target record identity)
+            _ -> Left (releaseConflict target (OriginPresent identity) observed)
+
+{- | Clause 4, where the removal was a described command.
+
+The kernel face removes the object through a row primitive and then forgets the
+record. The reported face cannot: removing a provider instance is an effect
+outside this process, so it happens between the re-observation and this call, and
+what is presented here is the authority's answer /after/ it. The order clause 4
+requires is therefore still the order the program has — an object removed first,
+a record forgotten second — and the answer is what decides whether the second
+step is reached at all.
+
+A target that is still there is a conflict rather than a success, because a
+record forgotten over a surviving object is exactly the orphan clause 4 exists to
+prevent.
+-}
+releaseReportedObject ::
+    Releasable session object ->
+    -- | what the owning authority reported after the removal
+    Origin ->
+    (OriginRecord -> IO (Either OwnershipFault ())) ->
+    IO (Either OwnershipFault ())
+releaseReportedObject releasable observed forget =
+    releasableEvidenceOf releasable $ \target record _identity ->
+        case observed of
+            OriginAbsent -> forget record
+            OriginPresent _ -> pure (Left (releaseConflict target OriginAbsent observed))
+
+{- | The refusal a kernel producer owes a record about an object it does not
+answer for.
+
+The reported face's object is created by a described command, so no kernel
+primitive here can make one — and a producer that quietly treated it as a
+directory or a file would bind an identity to something it never created.
+-}
+reportedRecordRefusal :: Text -> OwnershipFault
+reportedRecordRefusal wanted =
+    OwnershipUnsupported
+        ( "this record describes an object another authority owns, not "
+            <> wanted
+            <> "; no kernel primitive creates one"
+        )
+
+-- | The one conflict a release reports, so both faces say the same thing.
+releaseConflict :: OwnedTargetPath -> Origin -> Origin -> OwnershipFault
+releaseConflict target expected observed =
+    OwnershipConflict
+        ConflictReport
+            { conflictSubject = Text.pack target
+            , conflictExpected = expected
+            , conflictObserved = observed
+            }
 
 -- ---------------------------------------------------------------------------
 -- Shared steps

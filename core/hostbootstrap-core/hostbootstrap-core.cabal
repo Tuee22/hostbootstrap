@@ -136,6 +136,9 @@ library
       HostBootstrap.Substrate.Provider.Alias
       HostBootstrap.Substrate.Provider.Backend
       HostBootstrap.Substrate.Provider.Reconcile
+      HostBootstrap.Substrate.Provider.Command
+      HostBootstrap.Substrate.Provider.Report
+      HostBootstrap.Substrate.Provider.Resume
       HostBootstrap.Ensure
       HostBootstrap.Ensure.AppleMetal
       HostBootstrap.Ensure.Docker
@@ -318,6 +321,9 @@ test-suite hostbootstrap-core-test
       ProviderAliasSpec
       ProviderBackendSpec
       ProviderReconcileSpec
+      ProviderCommandSpec
+      ProviderReportSpec
+      ProviderResumeSpec
       ClusterReconcileSpec
       ClusterBackendSpec
       DataRootSpec
@@ -358,6 +364,7 @@ test-suite hostbootstrap-core-test
     , hostbootstrap-core:cluster-backend-internal
     , hostbootstrap-core:harness-lifecycle-internal
     , hostbootstrap-core:colima-backend-internal
+    , hostbootstrap-core:effect-internal
     , optparse-applicative
     , process
     , tasty

@@ -212,10 +212,22 @@ canonical home for that structure: the seam of kernel primitives, the two platfo
 a transaction at the frame owning the object, the atomic no-replace publication, and what each individual
 owner adds on top.
 
-Two consequences belong here rather than there, because they are properties of the contract rather than of
-its realization. A backend that cannot supply a clause returns `Unsupported` and mints no receipt — never a
-weaker receipt. And the clause *order* is not a convention a reviewer checks: a mutation consumes the
+Not every owned object is one a kernel this process can call answers for. A provider instance's stable
+identity is answered by the provider, so the clause producers have a second **reported** face: the
+observation arrives as a value a total classification produced, the object is created and removed by
+described commands through the one interpreter, and the record carries the claim this run stamps on the
+object so the interval between clause 2 and clause 3 stays resolvable. The clauses themselves are
+unchanged — clause 1 is the same exclusive entry, clause 2 the same compare-and-swap, and every shared
+computation is written once and reached by both faces. [Ownership seam](ownership_seam.md#the-two-faces)
+carries the detail.
+
+Three consequences belong here rather than there, because they are properties of the contract rather than
+of its realization. A backend that cannot supply a clause returns `Unsupported` and mints no receipt —
+never a weaker receipt. The clause *order* is not a convention a reviewer checks: a mutation consumes the
 recorded origin and a release consumes the bound identity, so performing either out of order has no term.
+And on the reported face the same order still holds even though the removal happens outside this process:
+the record is forgotten only over a reported absence, so an object that survived its removal leaves a
+record that still claims it rather than an orphan nobody claims.
 
 ## What the invariant excludes
 

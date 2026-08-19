@@ -43,6 +43,9 @@ import qualified ProviderSpec
 import qualified ProviderAliasSpec
 import qualified ProviderBackendSpec
 import qualified ProviderReconcileSpec
+import qualified ProviderCommandSpec
+import qualified ProviderReportSpec
+import qualified ProviderResumeSpec
 import qualified ReadinessSpec
 import qualified ReconcileSpec
 import qualified RegistryPlanSpec
@@ -200,6 +203,9 @@ main = do
                     , ProviderAliasSpec.tests
                     , ProviderBackendSpec.tests
                     , ProviderReconcileSpec.tests
+                    , ProviderCommandSpec.tests
+                    , ProviderReportSpec.tests
+                    , ProviderResumeSpec.tests
                     , ClusterReconcileSpec.tests
                     , ClusterBackendSpec.tests
                     , DataRootSpec.tests

@@ -47,6 +47,12 @@ module HostBootstrap.Ownership.Object
     , payloadDigestText
     , parsePayloadDigestHex
 
+      -- * The claim a run stamps on an object another authority owns
+    , OwnerClaim
+    , mkOwnerClaim
+    , ownerClaimText
+    , parseOwnerClaimHex
+
       -- * What is owned, and what was there before
     , ObjectKind (..)
     , objectKindIsDirectory
@@ -221,6 +227,64 @@ parsePayloadDigestHex raw
     | otherwise = Right (PayloadDigest raw)
 
 -- ---------------------------------------------------------------------------
+-- The claim a run stamps on an object another authority owns
+
+{- | The tag this run stamps on an object whose identity another authority
+answers for.
+
+A directory or a file is created by the very act that gives it its kernel
+identity, so the durable record needs nothing more to tell "the object this run
+made" from "an object that was already there". An object another authority owns
+is different: it is created by a described command whose answer can be lost, and
+the identity that comes back afterwards is one the authority minted rather than
+one this run chose. Without a tag, a run that crashed between publishing its
+record and reading the identity could not tell its own half-made instance from
+one a previous record left behind.
+
+The claim closes that window. It is minted before the creating command, carried
+/by/ that command so the object names it from the moment it exists, and written
+into the durable record so a later entry can compare the two. A record whose
+claim the object does not carry is a record about a different object, and that
+is a refusal rather than an adoption.
+
+It is a digest rather than the bytes it was minted from, for the reason a
+payload digest is: the record is durable and small, and the only question ever
+asked of it is whether two values are equal.
+-}
+newtype OwnerClaim = OwnerClaim Text
+    deriving (Eq, Ord)
+
+instance Show OwnerClaim where
+    show (OwnerClaim raw) = "OwnerClaim " <> show raw
+
+{- | Mint a claim from the bytes a run derived it from.
+
+Total, because any bytes hash. What makes a claim /fresh/ is what the caller
+puts in: the freshness is a property of the derivation, not of this function,
+and the derivation belongs to the owner that knows what distinguishes one of its
+attempts from the next.
+-}
+mkOwnerClaim :: ByteString -> OwnerClaim
+mkOwnerClaim raw =
+    OwnerClaim (hexText (ByteString.pack (ByteArray.unpack (Hash.hashWith Hash.SHA256 raw))))
+
+ownerClaimText :: OwnerClaim -> Text
+ownerClaimText (OwnerClaim raw) = raw
+
+{- | Read back a journalled claim.
+
+Exactly 64 lowercase hex characters, on the same terms as a payload digest: a
+record carrying anything else is malformed rather than carrying an unusual
+claim.
+-}
+parseOwnerClaimHex :: Text -> Either OwnershipFault OwnerClaim
+parseOwnerClaimHex raw
+    | Text.length raw /= 64 = Left (OwnershipMalformed ("owner claim is not 64 hex characters: " <> raw))
+    | not (Text.all lowerHexDigit raw) =
+        Left (OwnershipMalformed ("owner claim is not lowercase hex: " <> raw))
+    | otherwise = Right (OwnerClaim raw)
+
+-- ---------------------------------------------------------------------------
 -- What is owned, and what was there before
 
 {- | What a record is about.
@@ -230,15 +294,23 @@ value beside both cases, so a file record without one and a directory record
 with one are shapes with no term (§ HH). A directory has no payload because its
 content is not this run's to install: what a run owns about a directory is that
 it created it.
+
+The third case is an object this process's kernel does not answer for — a
+provider instance, a cluster — whose identity comes from the authority that owns
+it. It carries the claim this run stamps on that object instead of a payload
+digest, for the same structural reason: the value that makes its crash window
+resolvable is a field of the case that has one.
 -}
 data ObjectKind
     = OwnedDirectory
     | OwnedFile PayloadDigest
+    | ReportedObject OwnerClaim
     deriving (Eq, Show)
 
 objectKindIsDirectory :: ObjectKind -> Bool
 objectKindIsDirectory OwnedDirectory = True
 objectKindIsDirectory (OwnedFile _) = False
+objectKindIsDirectory (ReportedObject _) = False
 
 {- | What the owner observed at the target before it acted.
 
@@ -313,8 +385,12 @@ and a record that is merely /probably/ this owner's is a record nobody can act
 on.
 
 @
-ownership 1 (directory|file) (absent|\<identity hex\>) (-|\<payload digest\>) (-|\<bound identity hex\>)
+ownership 1 (directory|file|reported) (absent|\<identity hex\>) (-|\<payload digest\>|\<owner claim\>) (-|\<bound identity hex\>)
 @
+
+The fifth column carries whichever value the kind's own case has, because both
+are the one thing that makes that kind's crash window resolvable and no record
+ever has two of them.
 -}
 renderOriginRecord :: OriginRecord -> ByteString
 renderOriginRecord (OriginRecord kind origin binding) =
@@ -340,10 +416,12 @@ ownershipRecordMagic = "ownership"
 kindToken :: ObjectKind -> Text
 kindToken OwnedDirectory = "directory"
 kindToken (OwnedFile _) = "file"
+kindToken (ReportedObject _) = "reported"
 
 payloadToken :: ObjectKind -> Text
 payloadToken OwnedDirectory = absentToken
 payloadToken (OwnedFile digest) = payloadDigestText digest
+payloadToken (ReportedObject claim) = ownerClaimText claim
 
 originToken :: Origin -> Text
 originToken OriginAbsent = "absent"
@@ -396,6 +474,10 @@ parseKind kindRaw payloadRaw = case kindRaw of
         | payloadRaw == absentToken ->
             Left (OwnershipMalformed "a file record carries a payload digest")
         | otherwise -> OwnedFile <$> parsePayloadDigestHex payloadRaw
+    "reported"
+        | payloadRaw == absentToken ->
+            Left (OwnershipMalformed "a reported-object record carries an owner claim")
+        | otherwise -> ReportedObject <$> parseOwnerClaimHex payloadRaw
     other -> Left (OwnershipMalformed ("ownership record names kind " <> other))
 
 parseOrigin :: Text -> Either OwnershipFault Origin

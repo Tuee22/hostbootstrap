@@ -35,16 +35,22 @@ import Data.List (isInfixOf)
 import Data.Maybe (isJust)
 import HostBootstrap.DocValidator (findRepoRoot)
 import qualified Data.Text as Text
-import HostBootstrap.Ownership.Clause (boundEvidence)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
+import HostBootstrap.Ownership.Clause (Bound, boundEvidence)
 import HostBootstrap.Ownership.Object
-    ( ObjectIdentity
-    , ObjectKind (OwnedDirectory)
-    , Origin (OriginAbsent)
+    ( ConflictReport (conflictExpected, conflictObserved, conflictSubject)
+    , ObjectIdentity
+    , ObjectKind (OwnedDirectory, ReportedObject)
+    , Origin (OriginAbsent, OriginPresent)
     , OriginRecord
-    , OwnershipFault (OwnershipMalformed, OwnershipUnsupported)
+    , OwnershipFault (OwnershipConflict, OwnershipMalformed, OwnershipUnsupported)
     , bindOriginRecord
     , mkKernelObjectIdentity
+    , mkOwnerClaim
+    , mkPayload
     , originRecord
+    , originRecordBinding
+    , originRecordOrigin
     , ownershipFaultMessage
     )
 import HostBootstrap.Ownership.Primitive
@@ -63,6 +69,7 @@ tests =
         [ testGroup "the capability classifier" classifierTests
         , testGroup "a row that cannot hold a clause" refusalTests
         , testGroup "re-entering an owned object" reentryTests
+        , testGroup "the reported observation" reportedTests
         , testGroup "the seam's shape" seamTests
         ]
 
@@ -221,6 +228,218 @@ reentryTests =
                     )
             outcome @?= Right ("/owned/target", bound, identity)
     ]
+
+-- ---------------------------------------------------------------------------
+-- The reported observation
+
+{- | The face of the seam whose observation is an answer rather than a probe.
+
+Every case here runs the clause order to completion with no row in scope at all,
+which is the point: the reported producers take none, so "this face reaches no
+kernel primitive" is a property of their types rather than of a stand-in that
+has to be trusted not to have been called. The one row that does appear belongs
+to re-entry, which is how a 'Bound' token is minted from a durable record, and it
+is the diverging row — so a case that reached it would not finish.
+-}
+reportedTests :: [TestTree]
+reportedTests =
+    [ testCase "the origin a record describes is the observation the caller was handed" $
+        withEntry $ \session -> do
+            identity <- expectIdentity (mkKernelObjectIdentity 3 5)
+            for_ [OriginAbsent, OriginPresent identity] $ \observed -> do
+                published <- newIORef Nothing
+                outcome <-
+                    enterReportedObject session "/reported/target" observed $ \entered ->
+                        fmap
+                            (fmap (const ()))
+                            ( recordReportedOrigin
+                                entered
+                                OwnedDirectory
+                                (\record -> Right () <$ writeIORef published (Just record))
+                            )
+                outcome @?= Right ()
+                recorded <- readIORef published
+                fmap originRecordOrigin recorded @?= Just observed
+                fmap originRecordBinding recorded @?= Just Nothing
+    , testCase "clause 2 mints no token when the caller's durable write refuses" $
+        withEntry $ \session -> do
+            outcome <-
+                enterReportedObject session "/reported/target" OriginAbsent $ \entered ->
+                    fmap
+                        (fmap (const ()))
+                        ( recordReportedOrigin
+                            entered
+                            OwnedDirectory
+                            (\_ -> pure (Left (OwnershipMalformed "the store refused")))
+                        )
+            case outcome of
+                Left (OwnershipMalformed reason) -> reason @?= "the store refused"
+                other -> assertFailure ("expected the store's own refusal, got " <> show other)
+    , testCase "clause 3 binds the identity the owning authority reported" $
+        withEntry $ \session -> do
+            identity <- expectIdentity (mkKernelObjectIdentity 11 13)
+            published <- newIORef Nothing
+            outcome <-
+                enterReportedObject session "/reported/target" OriginAbsent $ \entered -> do
+                    recorded <-
+                        recordReportedOrigin entered OwnedDirectory (\_ -> pure (Right ()))
+                    case recorded of
+                        Left fault -> pure (Left fault)
+                        Right token ->
+                            fmap
+                                (fmap (const ()))
+                                ( bindReportedIdentity
+                                    token
+                                    identity
+                                    (\record -> Right () <$ writeIORef published (Just record))
+                                )
+            outcome @?= Right ()
+            bound <- readIORef published
+            fmap originRecordBinding bound @?= Just (Just identity)
+    , testCase "clause 4 admits exactly the bound identity" $
+        withEntry $ \session -> do
+            identity <- expectIdentity (mkKernelObjectIdentity 17 19)
+            other <- expectIdentity (mkKernelObjectIdentity 17 23)
+            withBound session identity $ \bound -> do
+                assertBool
+                    "the exact identity is releasable"
+                    (isRight (reobserveReportedIdentity bound (OriginPresent identity)))
+                for_
+                    [OriginAbsent, OriginPresent other]
+                    ( \observed -> case reobserveReportedIdentity bound observed of
+                        Left (OwnershipConflict report) -> do
+                            conflictExpected report @?= OriginPresent identity
+                            conflictObserved report @?= observed
+                            conflictSubject report @?= "/reported/target"
+                        Left fault ->
+                            assertFailure ("expected a release conflict, got " <> show fault)
+                        Right _ ->
+                            assertFailure "a replaced or absent object was admitted for release"
+                    )
+    , testCase "a record is forgotten only over a reported absence" $
+        withEntry $ \session -> do
+            identity <- expectIdentity (mkKernelObjectIdentity 29 31)
+            withBound session identity $ \bound ->
+                case reobserveReportedIdentity bound (OriginPresent identity) of
+                    Left fault -> assertFailure ("expected a releasable token: " <> show fault)
+                    Right releasable -> do
+                        forgotten <- newIORef (0 :: Int)
+                        gone <-
+                            releaseReportedObject
+                                releasable
+                                OriginAbsent
+                                (\_ -> Right () <$ modifyIORef' forgotten (+ 1))
+                        gone @?= Right ()
+                        readIORef forgotten >>= (@?= 1)
+                        -- A forget reached here would end the case rather than
+                        -- record a wrong answer.
+                        surviving <-
+                            releaseReportedObject
+                                releasable
+                                (OriginPresent identity)
+                                (\_ -> error "clause 4 forgot a record over a surviving object")
+                        case surviving of
+                            Left (OwnershipConflict report) -> do
+                                conflictExpected report @?= OriginAbsent
+                                conflictObserved report @?= OriginPresent identity
+                            other ->
+                                assertFailure
+                                    ("expected a surviving-object conflict, got " <> show other)
+                        readIORef forgotten >>= (@?= 1)
+    , testCase "a kernel producer refuses a record about an object it does not answer for" $
+        withEntry $ \session -> do
+            -- Reached without a kernel: both producers read the record's kind
+            -- before they touch a primitive, so the diverging row proves the
+            -- refusal comes first rather than after a mutation.
+            outcome <-
+                enterReportedObject session "/reported/instance" OriginAbsent $ \entered -> do
+                    recorded <-
+                        recordReportedOrigin
+                            entered
+                            (ReportedObject (mkOwnerClaim "one attempt"))
+                            (\_ -> pure (Right ()))
+                    case recorded of
+                        Left fault -> pure (Left fault)
+                        Right token -> do
+                            directory <- createOwnedDirectory (unreachableRow fullCapabilities) token
+                            file <-
+                                publishOwnedFile
+                                    (unreachableRow fullCapabilities)
+                                    token
+                                    (mkPayload "bytes")
+                                    "/reported/instance.staging"
+                            pure (Right (fmap (const ()) directory, fmap (const ()) file))
+            case outcome of
+                Right (Left (OwnershipUnsupported directory), Left (OwnershipUnsupported file)) -> do
+                    assertBool
+                        ("the directory refusal says why: " <> Text.unpack directory)
+                        ("another authority owns" `isInfixOf` Text.unpack directory)
+                    assertBool
+                        ("the file refusal says why: " <> Text.unpack file)
+                        ("another authority owns" `isInfixOf` Text.unpack file)
+                other -> assertFailure ("expected two unsupported refusals, got " <> show other)
+    , testCase "the reported face names no row and reaches no primitive" $
+        withCoreSourceRoot $ \sourceRoot -> do
+            source <- readFile (sourceRoot </> "HostBootstrap" </> "Ownership" </> "Primitive.hs")
+            let face = reportedFace source
+            assertBool "the reported face is in the module" (not (null face))
+            traverse_
+                (\identifier -> SourceGuard.countHaskellIdentifier identifier face @?= 0)
+                [ "OwnershipRow"
+                , "withOwnershipRow"
+                , "rowCapabilities"
+                , "clauseRefusal"
+                , "rowObserveIdentity"
+                , "rowRemoveObject"
+                , "rowSyncParent"
+                ]
+    , testCase "both faces settle each shared clause through one computation" $
+        withCoreSourceRoot $ \sourceRoot -> do
+            source <- readFile (sourceRoot </> "HostBootstrap" </> "Ownership" </> "Primitive.hs")
+            traverse_
+                ( \shared ->
+                    assertBool
+                        (shared <> " is the one computation both faces use")
+                        (shared `isInfixOf` normalize source)
+                )
+                [ "Nothing -> recordReportedOrigin entered kind publish"
+                , "Nothing -> bindReportedIdentity recorded identity publish"
+                , "Right current -> reobserveReportedIdentity bound (originOf current)"
+                ]
+    ]
+
+{- | Mint a 'Bound' token from a durable record, which is the only way to reach
+clause 4 without a kernel. The row is the diverging one, so a case that reached a
+primitive would not finish.
+-}
+withBound ::
+    ProtectedSession session ->
+    ObjectIdentity ->
+    (forall object. Bound session object -> IO ()) ->
+    IO ()
+withBound session identity use = do
+    record <- expectBound (bindOriginRecord identity (originRecord OwnedDirectory OriginAbsent))
+    outcome <-
+        reenterOwnedObject
+            (unreachableRow fullCapabilities)
+            session
+            "/reported/target"
+            record
+            (\bound -> Right () <$ use bound)
+    either (\fault -> assertFailure ("could not re-enter: " <> show fault)) pure outcome
+
+-- | The module region the reported producers occupy, and nothing else.
+reportedFace :: String -> String
+reportedFace source =
+    unlines
+        ( takeWhile (not . ("-- Shared steps" `isInfixOf`))
+            (drop 1 (dropWhile (not . (opening `isInfixOf`)) (lines source)))
+        )
+  where
+    opening = "-- The five clause producers, over an object an authority reports on"
+
+isRight :: Either fault value -> Bool
+isRight = either (const False) (const True)
 
 expectIdentity :: Either OwnershipFault ObjectIdentity -> IO ObjectIdentity
 expectIdentity = either (\fault -> assertFailure ("expected an identity: " <> show fault)) pure

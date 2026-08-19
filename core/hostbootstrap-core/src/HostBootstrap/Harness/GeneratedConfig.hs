@@ -67,7 +67,7 @@ import HostBootstrap.Ownership.Clause (enteredEvidence)
 import HostBootstrap.Ownership.Object (
     ConflictReport (conflictExpected, conflictObserved, conflictSubject),
     ObjectIdentity,
-    ObjectKind (OwnedDirectory, OwnedFile),
+    ObjectKind (OwnedDirectory, OwnedFile, ReportedObject),
     Origin (OriginAbsent, OriginPresent),
     OriginRecord,
     OwnershipFault (OwnershipMalformed, OwnershipProbeFailed),
@@ -530,8 +530,9 @@ as well as what it found. The read goes through the row's exclusive open, so the
 file this owner compares is opened without following a link and by the same
 primitives that created it.
 
-A record this owner wrote always describes a file, so a directory record under
-this owner's key is a record something else wrote and is refused rather than
+A record this owner wrote always describes a file, so a record under this
+owner's key describing anything else — a directory, or an object another
+authority owns — is a record something else wrote and is refused rather than
 compared.
 -}
 payloadStillMatches ::
@@ -540,13 +541,8 @@ payloadStillMatches ::
     OriginRecord ->
     IO (Either OwnershipFault (Maybe (PayloadDigest, PayloadDigest)))
 payloadStillMatches row target record = case originRecordKind record of
-    OwnedDirectory ->
-        pure
-            ( Left
-                ( OwnershipMalformed
-                    "the generated-config ownership record describes a directory"
-                )
-            )
+    OwnedDirectory -> pure (Left (notThisOwnersRecord "a directory"))
+    ReportedObject _ -> pure (Left (notThisOwnersRecord "an object another authority owns"))
     OwnedFile expected -> do
         contents <- readThroughRow row target
         pure $ case contents of
@@ -558,6 +554,11 @@ payloadStillMatches row target record = case originRecordKind record of
                         then Nothing
                         else Just (expected, observed)
                     )
+
+-- | The one refusal for a record under this owner's key that is not this owner's.
+notThisOwnersRecord :: Text.Text -> OwnershipFault
+notThisOwnersRecord described =
+    OwnershipMalformed ("the generated-config ownership record describes " <> described)
 
 payloadConflict :: FilePath -> PayloadDigest -> PayloadDigest -> GeneratedConfigError
 payloadConflict path expected observed =

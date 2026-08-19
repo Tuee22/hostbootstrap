@@ -21,6 +21,7 @@ import Data.ByteString (ByteString)
 import Data.Foldable (traverse_)
 import Data.List (sort)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Ownership.Object
 import qualified SourceGuard
@@ -159,6 +160,13 @@ recordTests =
                     (OwnedFile (payloadDigest (mkPayload "installed bytes")))
                     (OriginPresent (forceIdentity "\xaa"))
                 )
+            , originRecord (ReportedObject (mkOwnerClaim "one attempt")) OriginAbsent
+            , forceBound
+                (forceIdentity "\x10\x20")
+                ( originRecord
+                    (ReportedObject (mkOwnerClaim "another attempt"))
+                    (OriginPresent (forceIdentity "\xaa"))
+                )
             ]
     , testCase "the rendered record is one terminated line of six tokens" $ do
         let rendered = renderOriginRecord (originRecord OwnedDirectory OriginAbsent)
@@ -172,6 +180,33 @@ recordTests =
                     <> "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad 0a\n"
                 )
         ownershipRecordVersion @?= "1"
+    , testCase "a reported-object record renders its owner claim in the payload column" $ do
+        let claim = mkOwnerClaim "one attempt"
+        renderOriginRecord (originRecord (ReportedObject claim) OriginAbsent)
+            @?= ByteString.concat
+                [ "ownership 1 reported absent "
+                , TextEncoding.encodeUtf8 (ownerClaimText claim)
+                , " -\n"
+                ]
+        -- The column carries whichever value the kind's own case has, and no
+        -- record has two of them.
+        Text.length (ownerClaimText claim) @?= 64
+    , testCase "an owner claim is the SHA-256 of exactly the bytes it was minted from" $ do
+        ownerClaimText (mkOwnerClaim "abc")
+            @?= "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        assertBool
+            "two derivations that differ mint different claims"
+            (mkOwnerClaim "one attempt" /= mkOwnerClaim "another attempt")
+    , testCase "a journalled owner claim that is not 64 lowercase hex characters is malformed" $ do
+        claim <- expectRight (parseOwnerClaimHex (ownerClaimText (mkOwnerClaim "abc")))
+        claim @?= mkOwnerClaim "abc"
+        traverse_
+            (expectMalformed . parseOwnerClaimHex)
+            [ ""
+            , "deadbeef"
+            , Text.toUpper (ownerClaimText (mkOwnerClaim "abc"))
+            , ownerClaimText (mkOwnerClaim "abc") <> "0"
+            ]
     , testCase "a record this vocabulary did not write is refused rather than guessed at" $
         traverse_
             (expectMalformed . parseOriginRecord)
@@ -189,6 +224,8 @@ recordTests =
             , "ownership 1 directory absent deadbeef -\n"
             , "ownership 1 file absent - -\n"
             , "ownership 1 file absent nothex -\n"
+            , "ownership 1 reported absent - -\n"
+            , "ownership 1 reported absent nothex -\n"
             , "ownership 1 directory NOTHEX - -\n"
             , "ownership 1 directory absent - NOTHEX\n"
             , "ownership 1 directory absent - absent\n"

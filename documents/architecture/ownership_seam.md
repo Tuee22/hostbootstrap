@@ -92,10 +92,18 @@ A transaction needs nouns, and they are stated once, without effects, in `HostBo
 - **`Payload` and `PayloadDigest`** — the exact bytes a run intends to publish at an owned file, and the
   digest a record carries in their place. Recording the intended payload before the file exists is what
   makes the crash window between the origin record and the identity binding resolvable.
+- **`OwnerClaim`** — the tag a run stamps on an object whose identity another authority answers for. A
+  directory or a file is created by the very act that gives it its kernel identity; a provider instance is
+  created by a described command whose answer can be lost, so without a tag a run that crashed in that
+  window could not tell its own half-made instance from one a previous record left behind. The claim is
+  minted before the creating command, carried *by* that command so the object names it from the moment it
+  exists, and written into the durable record.
 - **`ObjectKind` and `Origin`** — what is owned, and what was there before. A directory has no payload and
   a file has one, so the digest is a field of the file's own case rather than an optional value beside
-  both; and recorded absence is a distinct case from a recorded prior identity, because "an owner looked
-  and found nothing" and "no owner has looked" license different recoveries.
+  both; the third case is an object this process's kernel does not answer for, and it carries an owner
+  claim for the same structural reason. Recorded absence is a distinct case from a recorded prior
+  identity, because "an owner looked and found nothing" and "no owner has looked" license different
+  recoveries.
 - **`OriginRecord`** — the durable record clause 2 publishes. Its constructor is private, its one producer
   records only what was observed, and the identity binding is attached by its own producer, so a record
   cannot claim a binding it never made. A second, different binding is a conflict rather than an update.
@@ -161,6 +169,37 @@ argument and there is no call at which a matching token and a different path cou
 The constructors live in one Cabal-private module whose only importers are the facade that re-exports the
 abstract types and the seam that mints them. Compile-fail fixtures reject constructing each token,
 coercing either index, carrying one out of its entry, and importing the private module.
+
+## The two faces
+
+Not every owned object is one a kernel this process can call answers for. A provider instance's stable
+identity is answered by the provider; a cluster's by the cluster. So the clause producers come in two
+faces over the **same four tokens**:
+
+| | kernel face | reported face |
+|---|---|---|
+| where the observation comes from | a row's `rowObserveIdentity` | a total classification of a described command's outcome |
+| what creates the object | a row primitive — a directory, a published file | a described `HostCommand` through the one interpreter |
+| what removes it | a row primitive | a described `HostCommand` through the one interpreter |
+| clause 1 | the protected store's exclusive entry | the same entry |
+| clause 2 | the store's compare-and-swap | the same compare-and-swap |
+| what the row declares | which clauses this kernel can hold | nothing — the reported face takes no row |
+
+Each computation the two share — the record an origin describes, the binding attached to it, the conflict a
+re-observation reports — is written once and reached by both, so the faces differ in *who answers the
+observation* and never in what a clause means. The reported face's signatures name no `OwnershipRow` and
+reach no primitive, which is a property of their types rather than of a stand-in nobody called.
+
+Two consequences are worth stating. Clause 4's precondition is **pure** on both faces, because by the time
+it is asked both have already made their observation; every conflict it can report is therefore reachable
+by application. And the reported face's release forgets the record only over a reported *absence*: the
+removal happened outside this process, so the answer that comes back after it is what decides whether the
+record is forgotten at all. A target still present is a conflict, because a record forgotten over a
+surviving object is exactly the orphan clause 4 exists to prevent.
+
+The kernel producers refuse a record describing an object another authority owns, and the reported face's
+own creating command is not the seam's to run — which is the same rule as ever, seen from the other side:
+the moment a seam can run a string, it is a shell again.
 
 ## The rows
 

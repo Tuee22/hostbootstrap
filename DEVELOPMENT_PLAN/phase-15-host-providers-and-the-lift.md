@@ -1,7 +1,7 @@
 # Phase 15 — Host providers and the self-reference lift
 
 **Status**: Active
-**Current sprint**: Sprint 15.26 — The provider and direct ownership drivers
+**Current sprint**: Sprint 15.31 — The backend takes the one interpreter
 **Depends on**: Phase 8 (ensure reconcilers), Phase 12 (step algebra and plan-owned resource
 projections), Phase 13 (authenticated handoff and the frame-child entry), Phase 14 (the four ownership
 clauses and host-local reservations)
@@ -916,43 +916,453 @@ guest answers one.
 None. The row exists and is reachable; the provider and direct drivers that hold their clauses through it
 are the sprint that follows.
 
-### Sprint 15.26: The provider and direct ownership drivers [Planned]
+### Sprint 15.26: The reported observation [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Primitive.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Ownership/Windows.hs`,
+`core/hostbootstrap-core/test/OwnershipSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_seam.md`,
+`documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+The seam's second face: the four clauses over an object whose stable identity another authority answers
+for.
+
+#### Objective boundary
+
+The seam is the
+[four-ownership-clauses-and-host-local-reservations phase](phase-14-ownership-clauses-and-reservations.md)'s,
+and this sprint extends it rather than restating it. Every owner that phase built keeps the face it
+already holds; what is added is the face a provider needs, because the identity of a provider instance is
+not a fact any kernel this process can call knows.
+
+#### Deliverables
+
+- The four clause tokens gain a second set of producers, taking the observation as a value instead of
+  reading it from a row. The tokens, their order, and their nominal indices are unchanged, so a reported
+  transaction is the same transaction run against a different answerer.
+- `enterReportedObject` introduces the fresh object index from an `Origin` a total classification produced.
+  Clause 1 is still the protected store's exclusive entry and clause 2 still that store's
+  compare-and-swap, so neither clause moves.
+- `reobserveReportedIdentity` is **pure**: by the time clause 4's precondition is asked both faces have
+  already made their observation, so the comparison is a function of two values and every conflict is
+  reachable by application (§ NN).
+- `releaseReportedObject` forgets the record only over a reported absence. A target still present is a
+  conflict, so the order clause 4 requires — object first, record second — is the order the program has
+  even when the removal was a described command outside this process.
+- Each computation both faces share is written once: the record an origin describes, the binding attached
+  to it, and the conflict a release reports. The kernel producers reach them through their own clause
+  gate, which is what keeps a row's declaration deciding what that row may hold.
+- The reported face names no `OwnershipRow` and reaches no primitive, and that is a property of its
+  signatures rather than of a stand-in nobody called.
+- The Windows row's direct namespace entry points are exactly the two its primitives call, so the row
+  declares no capability it does not reach.
+
+#### Validation
+
+The reported face is exercised by application over values inside a real protected entry: the origin a
+record describes is the observation the caller was handed, a durable write that refuses mints no token,
+the binding is the identity the authority reported, clause 4 admits exactly the bound identity and reports
+an absence and a replacement as distinct conflicts, and a record is forgotten over a reported absence and
+never over a surviving object — the second proved by a forget continuation that would end the case if it
+ran. Two source guards hold the shape: the reported region names no row primitive, and each shared clause
+has exactly one computation both faces reach.
+
+Dated 2026-08-19 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): `OwnershipSpec` passed
+20/20, of which seven are this sprint's. Canonical `cabal test all --ghc-options=-Werror` from `core/`
+passed 2,085/2,085 in 232.24 seconds; `poetry run python -m hostbootstrap.check_code` passed; and
+`poetry run python -m hostbootstrap.test_all` passed 231.
+
+#### Remaining Work
+
+None. The face exists and is total; the provider operations that hold their clauses through it are the
+sprints that follow.
+
+### Sprint 15.27: The provider report [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Report.hs`,
+`core/hostbootstrap-core/test/ProviderReportSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/incus.md`
+
+#### Objective
+
+One total classification from a provider's own output to the observation a clause is held over.
+
+#### Deliverables
+
+- A closed vocabulary names what a provider reports about an instance: the one listing row that names it,
+  the two lifecycle states a clause-holding transaction can act from, and one configuration value that
+  distinguishes an unset key from an empty one.
+- A closed sum names why a report is not a value: a command that produced no child, a provider that ran
+  and refused, a success that wrote to standard error, and a report outside the shape this vocabulary
+  admits. Each renders once.
+- Classification is a total function of the interpreter's own outcome, so the report a driver returns and
+  the decision a caller makes are the same value rather than a rendering and a parser.
+- The instance listing is reduced to the row naming the exact instance, because the provider matches a
+  listing argument by prefix and a sibling name is an absence rather than a hit. The exact name listed
+  twice is a refusal rather than a choice between two disagreeing answers.
+- A lifecycle state outside the admitted two is refused rather than mapped onto whichever is closer.
+- The identity a report carries is admitted through the seam's own producer, so a value outside the
+  identity grammar or past the seam's ceiling is a refusal rather than something a release could compare
+  against.
+- One function joins a listing and an identity read into the `Origin` the seam's reported face is held
+  over, and refuses the two ways a provider can contradict itself.
+- Nothing in the module executes anything.
+
+#### Validation
+
+Every constructor and every refusal is reached by application over values: an unrun command, a non-zero
+exit with and without a diagnostic, a noisy success, a sibling-only listing, a duplicate exact row, a row
+of the wrong arity, a row naming no instance, an unadmitted lifecycle state, an over-long line, a control
+character, a carriage-return terminator, an unset key, a multi-line configuration answer, an over-long
+value, an identity outside the grammar, an identity past the seam's ceiling, and all four joins of a
+listing with an identity.
+
+Dated 2026-08-19 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): `ProviderReportSpec`
+passed 30/30. Canonical `cabal test all --ghc-options=-Werror` from `core/` passed 2,115/2,115 in 234.17
+seconds; `poetry run python -m hostbootstrap.check_code` passed; and
+`poetry run python -m hostbootstrap.test_all` passed 231.
+
+#### Remaining Work
+
+None. The classification exists and is total; the commands whose outcomes it classifies are the sprint
+that follows.
+
+### Sprint 15.28: The described provider commands [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Command.hs`,
+`core/hostbootstrap-core/test/ProviderCommandSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/incus.md`
+
+#### Objective
+
+Every outer-host provider effect as a described `HostCommand`, produced by a function that cannot run it.
+
+#### Objective boundary
+
+Every command this sprint renders is interpreted by a process of the **outer host** — the provider's own
+client, run where the binary is running. A vector that *crosses into* the instance is not rendered here:
+§ LL admits one crossing renderer and it is the lift's own fold, which the
+[composition-and-network-algebra phase](phase-21-composition-and-network-algebra.md) owns. The guard the
+destructive delete goes through is the frame table's, which Sprint 15.24 built.
+
+#### Deliverables
+
+- Listing, configuration read, device listing, device read, launch, start, stop, and share attachment are
+  each a `HostCommand` value naming the frame table's tool for the frame, its exact argument vector, its
+  stdio disposition, and the frame whose process reads it (§ KK, § MM).
+- One listing answers presence and lifecycle state together, because a presence answered by one command
+  and a state answered by another are two answers that can disagree about the moment they describe.
+- The owner tag rides on the creating command rather than on a configuration write that follows it, so
+  there is no interval in which the instance exists without naming the record that owns it.
+- The destructive delete is rendered through the frame table's one guarded delete, so a name outside the
+  project's guard prefix — and each of the two degenerate inputs that make the guard vacuous — has no
+  argument vector at all rather than one that is not run.
+- The declared sizing is rendered once, so the three quantities reach the provider under one spelling.
+- The two configuration keys a clause is held through — the owner tag and the provider's own stable
+  identity — are named once each.
+- No argument vector is built by a function that also executes it.
+
+#### Validation
+
+Every argument vector is compared by application over values, which is possible precisely because no
+renderer can launch one. The guarded delete's three refusals are exercised through the table rather than
+restated, and four shape assertions are total over every command the module renders: each names the frame
+table's tool, each lands on the outer host, each carries the described stdio disposition, and none is
+empty.
+
+Dated 2026-08-19 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): `ProviderCommandSpec`
+passed 18/18. Canonical `cabal test all --ghc-options=-Werror` from `core/` passed 2,133/2,133 in 230.46
+seconds; `poetry run python -m hostbootstrap.check_code` passed; and
+`poetry run python -m hostbootstrap.test_all` passed 231.
+
+#### Remaining Work
+
+None. Every provider effect is a value; the drivers that compose them with the seam are the sprints that
+follow.
+
+### Sprint 15.29: The claimed object [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Object.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Ownership/Primitive.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Harness/GeneratedConfig.hs`,
+`core/hostbootstrap-core/test/OwnershipObjectSpec.hs`,
+`core/hostbootstrap-core/test/OwnershipSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_seam.md`
+
+#### Objective
+
+The durable record's third kind: an object another authority owns, and the claim that closes its
+outcome-unknown window.
+
+#### Objective boundary
+
+The record vocabulary is the
+[four-ownership-clauses-and-host-local-reservations phase](phase-14-ownership-clauses-and-reservations.md)'s
+and this sprint extends it, exactly as Sprint 15.26 extended the producers above it. Every record that
+phase's owners write keeps its meaning and its bytes.
+
+#### Deliverables
+
+- `OwnerClaim` is the tag a run stamps on an object whose identity another authority answers for: minted
+  before the creating command, carried by that command so the object names it from the moment it exists,
+  and written into the durable record.
+- The claim is a digest of the bytes a run derived it from, on the same terms a payload digest is, and
+  minting is total — what makes a claim *fresh* is the derivation, which belongs to the owner that knows
+  what distinguishes one of its attempts from the next.
+- `ObjectKind` gains its third case, carrying that claim where a file carries its payload digest, so the
+  value that makes a kind's crash window resolvable is a field of the case that has one (§ HH).
+- The one canonical record codec carries the third kind in the same six tokens and the same column, and a
+  reported-object record with no claim, or with a claim that is not 64 lowercase hex characters, is
+  malformed rather than half-read.
+- The kernel producers refuse a record describing an object they do not answer for, before any primitive,
+  because no kernel primitive creates one and a producer that treated it as a directory or a file would
+  bind an identity to something it never created.
+- Every owner that reads a record under its own key refuses a kind that is not the one it writes.
+
+#### Validation
+
+The third record shape round-trips through the one codec bound and unbound, its rendering places the claim
+in the payload column, and the two ways it can be malformed are refusals. The claim is the SHA-256 of
+exactly the bytes it was minted from, two derivations that differ mint different claims, and its journal
+codec refuses an empty, short, long, and upper-case value. Both kernel producers refuse a reported-object
+record against a row whose every primitive diverges, so "the refusal comes before the mutation" is a
+property of a case that finished.
+
+Dated 2026-08-19 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): `OwnershipObjectSpec`
+passed 21/21 and `OwnershipSpec` 21/21. Canonical `cabal test all --ghc-options=-Werror` from `core/`
+passed 2,137/2,137 in 231.58 seconds; `poetry run python -m hostbootstrap.check_code` passed; and
+`poetry run python -m hostbootstrap.test_all` passed 231.
+
+#### Remaining Work
+
+None. A record can describe a claimed object; the decisions a driver makes from one are the sprint that
+follows.
+
+### Sprint 15.30: The provider resumption decisions [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Resume.hs`,
+`core/hostbootstrap-core/test/ProviderResumeSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/incus.md`
+
+#### Objective
+
+Where a provider transaction stands, as a total function of what it found.
+
+#### Deliverables
+
+- A closed sum names the four places a transaction can legitimately stand, and they are the four prefixes
+  of the one clause order: nothing done, the origin recorded, the instance created under this record's
+  claim, and the instance owned.
+- A closed sum names every state that is not one of those: an instance no record claims, an instance
+  carrying a different claim or none at all, a bound record whose instance has been replaced, a bound
+  record whose instance is gone, a record another owner wrote, and a record naming an instance that was
+  there before it. Each renders once, naming both sides.
+- The decision is a total function of the durable record, the observation the report produced, and the
+  claim the instance carries — so the outcome-unknown window between clause 2 and clause 3 is decided by
+  application rather than by whichever branch a live run happened to take, and no patchable crash point is
+  needed to reach it.
+- The claim comparison is the whole of that resolution: the instance name is the same by construction, so
+  the claim is the only thing that tells an instance this record created from one an earlier record left
+  behind. An unset claim is a conflict rather than a lenient case.
+- One vocabulary answers every verb, so provision, readiness, and release act differently on the same
+  answer rather than each asking a differently shaped question.
+
+#### Validation
+
+Every standing and every conflict is reached by application over values, including each combination of an
+absent, unbound, and bound record with an absent, matching, and mismatched observation, and each of the
+matching, differing, and unset claims. A record another owner wrote is refused for both of its kinds, the
+four standings are compared as one list so a missing prefix is a failed equality, and each standing's two
+disclosures are total over the four.
+
+Dated 2026-08-19 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): `ProviderResumeSpec`
+passed 16/16. Canonical `cabal test all --ghc-options=-Werror` from `core/` passed 2,153/2,153 in 233.28
+seconds; `poetry run python -m hostbootstrap.check_code` passed; and
+`poetry run python -m hostbootstrap.test_all` passed 231.
+
+#### Remaining Work
+
+None. The decision is total; the drivers that act on it are the sprints that follow.
+
+### Sprint 15.31: The backend takes the one interpreter [Planned]
 
 **Status**: Planned
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Reconcile.hs`
+`core/hostbootstrap-core/test/ProviderBackendSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/build_and_run_model.md`
+
+#### Objective
+
+The provider backend runs described commands through the one interpreter, and holds no execution seam of
+its own.
+
+#### Objective boundary
+
+This sprint changes *how* the backend reaches a process, not *what* it asks for. The described commands
+are Sprint 15.28's and the classifications Sprint 15.27's; what goes away is the injected runner between
+them. § NN is the reason it goes: a seam whose only purpose is to let a suite answer for a provider is a
+substitution point that has to be trusted to have been reached, and the decisions it was standing in for
+are now total functions that need no stand-in.
+
+#### Deliverables
+
+- The strong backend carries the typed host configuration rather than a runner, and every provider process
+  it starts goes through `interpretHostCommand` (§ KK).
+- The backend's own report parsers become applications of the total classifier, so the parsing this module
+  once owned has one home.
+- The suite's cases move from feeding a stand-in runner to applying the classifier to the streams a
+  provider produces, so each keeps its subject and loses its stand-in.
+- No public or package-private type names an executor, and the source guard that says so is part of the
+  sprint.
+
+#### Validation
+
+Every case the injected runner reached is reachable by application, and the source guard proves no
+execution seam remains. The declared native Linux/x86_64 KVM/Incus route continues to confirm the live
+path.
+
+#### Remaining Work
+
+The adoption, the suite's move, the guard, and the documentation.
+
+### Sprint 15.32: The provision and readiness drivers [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Ownership.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+Provision and readiness holding their clauses through the reported face.
+
+#### Deliverables
+
+- Provision enters the protected store the provider's state directory names, records the origin under a
+  fresh claim, launches through the one interpreter, classifies the report, and binds the reported
+  identity — in that order, because the tokens admit no other.
+- Clause 2's publication continuation is idempotent, so a resumed transaction mints its token honestly: a
+  first attempt is the store's compare-and-swap from absent, a resumed one is a byte-equality check
+  against the record already there, and either way the token asserts the same fact — this record is
+  durable.
+- Readiness re-observes the bound identity through the report before any dependent mutation.
+- The driver runs no interpreter program and parses no report vocabulary of its own, and the prepared
+  provision and ready calls consume it in place of the program they ship today.
+
+#### Validation
+
+Every decision is already covered by application through the resumption vocabulary, and the clause-holding
+effects are exercised against a real protected store. The crash-window coverage that no longer has a
+patchable instruction point is **named as owed** here.
+
+#### Remaining Work
+
+The module, its specs, its call-site adoption, and its documentation.
+
+### Sprint 15.33: The share, stop, and delete drivers [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Ownership.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+The remaining provider operations on the same face.
+
+#### Deliverables
+
+- A share is an owned object of its own: its device name is derived from the share binding, its origin is
+  recorded before the device is attached, and its identity is bound from the device the provider reports.
+- Stop and delete re-enter from the durable record, re-observe through the report, act through the one
+  interpreter, and forget the record only over a reported absence.
+- Delete leaves a same-named replacement untouched, because clause 4 compares the identity rather than the
+  name.
+
+#### Validation
+
+Every conflict is reachable by application over values, and the clause-holding effects run against a real
+protected store.
+
+#### Remaining Work
+
+The module, its specs, its call-site adoption, and its documentation.
+
+### Sprint 15.34: Direct canonical-root admission [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/build_and_run_model.md`
+
+#### Objective
+
+The Direct host's admission as a pure decision over a real observation.
+
+#### Deliverables
+
+- The check that a root is absolute, unfollowed, a directory, and accessible is a total function over an
+  observation this binary made, rather than a program delegated to an interpreter.
+- Direct still claims no ownership of the host: it publishes no origin, holds no clause, and refuses stop
+  and delete.
+
+#### Validation
+
+Every branch of the admission is covered by application over values, and the observation itself is taken
+against the real kernel.
+
+#### Remaining Work
+
+The decision, its specs, and its documentation.
+
+### Sprint 15.35: The provider's interpreter program is gone [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/incus.md`,
 `documents/architecture/ownership_invariant.md`
 
 #### Objective
 
-The provider's own ownership transaction, held through the seam.
+The provider boundary carries no program written in another language.
+
+#### Objective boundary
+
+What this sprint removes is the provider's own interpreter program and the locking front end it ran under.
+Which names the closed `HostTool` set still carries is a description of what the binary drives, and the
+last driver to stop driving an interpreter is the
+[cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md)'s, so the
+enumeration narrows there rather than here.
 
 #### Deliverables
 
-- Provider provision, readiness, share, stop, and delete hold their clauses through the seam's producers
-  and the row the frame declares.
-- The provider effect that must happen between the origin record and the identity binding — launching,
-  starting, or deleting the instance — travels as a described `HostCommand` through the one interpreter,
-  so the outcome-unknown window keeps its existing durable meaning.
-- The direct host's canonical-root admission is a pure decision over a real observation, so the check that
-  a root is absolute, unfollowed, a directory, and accessible is applied rather than delegated.
-- Classification of a provider observation is a total function over a closed sum, so the report a driver
-  returns and the decision a caller makes are the same value rather than a rendering and a parser.
-- Every clause the provider holds is the seam's; this phase's modules supply the provider's own vocabulary
-  and nothing beneath it.
+- The provider backend resolves no interpreter and no locking front end, because every clause it holds is
+  the seam's and every effect it performs is a described command.
+- A source guard holds the absence, naming the [rationale](rationale.md) entry that says why a program in
+  a string is refused.
 
 #### Validation
 
-Every classification is covered by application over values, including each refusal and each conflict, so
-no substitution point is needed to reach them (§ NN). The clause-holding effects are exercised against the
-real kernel. The declared native Linux/x86_64 KVM/Incus route continues to confirm the live path, and the
-crash-window coverage that no longer has a patchable instruction point is **named as owed** here.
+The guard fires on a reintroduced program and stays quiet on the legitimate uses elsewhere in the tree.
+The declared native Linux/x86_64 KVM/Incus route confirms the whole boundary once more.
 
 #### Remaining Work
 
-All adoption, tests, guards, and documentation.
+The removal, the guard, and the documentation.
 
 ## Static Validation Evidence
 
@@ -966,6 +1376,14 @@ On 2026-08-10, Ubuntu 24.04.4 LTS x86_64 with GHC 9.12.4 and Cabal 3.16.1.0 pass
 `cabal test all --ghc-options=-Werror` from `core/`: all 1,710 tests passed in 56.56 seconds, including the
 socket-pathname bound refusal this phase's backend admission adds. The same host passed
 `cabal build -fprovider-live hostbootstrap-provider-live-linux-cpu --ghc-options=-Werror`.
+
+On 2026-08-19, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0 passed
+`cabal test all --ghc-options=-Werror` from `core/`: all 2,153 tests passed in 233.28 seconds, including
+this phase's reported-observation, provider-report, described-command, claimed-object, and
+resumption-decision families. The same host passed `poetry run python -m hostbootstrap.check_code` and
+`poetry run python -m hostbootstrap.test_all` at 231. § II makes this a gate-host record rather than a
+substrate declaration: it is the host static gate run natively on a Windows outer host, and it neither
+substitutes for the declared native Linux/x86_64 component build nor for the live KVM/Incus run.
 
 ## Phase-Level Baseline Acceptance
 
@@ -1009,10 +1427,18 @@ one closed frame table — the tool that reaches the frame and its argument shap
 destructive delete is now one computation over that table (Sprint 15.24); the existence probe, the readiness
 wait, and the budget-to-wall rendering are already values rather than code paths, each in one module.
 
-The **ownership primitive** is now a column of that table, and the third row exists: Sprint 15.25 supplies
-the transaction that runs where the object is, over the crossing the authenticated-handoff boundary
-already carried. What is still owed is Sprint 15.26 — the provider and direct drivers holding their
-clauses through it, in place of the interpreter programs they ship today.
+The **ownership primitive** is now a column of that table, the third row exists, and the seam has the two
+faces a provider needs: Sprint 15.25 supplies the transaction that runs where the object is, and Sprint
+15.26 the clause producers over an object whose identity another authority answers for. What is still owed
+is the adoption itself. Sprint 15.27 supplies the total classifier that turns a provider's own output
+into the observation a clause is held over and Sprint 15.28 the described commands whose outcomes it
+classifies. Sprint 15.29 gives the durable record its third kind, so a record can describe an object
+another authority owns and carry the claim that closes its outcome-unknown window, and Sprint 15.30 the
+resumption vocabulary that decides where a transaction stands. What is left is the adoption at the
+boundary itself: Sprint 15.31 moves the backend onto the one interpreter and retires its injected
+executor, Sprints 15.32 and 15.33 put every provider operation on the seam, Sprint 15.34 makes Direct's
+admission a decision this binary applies, and Sprint 15.35 removes the interpreter program the boundary
+ships today.
 
 Sprints 15.6 through 15.19 describe the mechanism their own boundaries hold today. § A rewrites a phase in
 place rather than appending a correction, so those sprints are restated in the same change that moves them
@@ -1027,6 +1453,7 @@ the intended future state rather than the current one, which § C forbids.
 - `documents/architecture/hostbootstrap_core_library.md` — realization layer above the generic Lift.
 - `documents/architecture/lifecycle_state_model.md` — backend-indexed managed authority and prepared transitions.
 - `documents/architecture/ownership_invariant.md` — Incus, share, and alias clause holders.
+- `documents/architecture/ownership_seam.md` — the seam's reported face and the claimed object.
 - `documents/architecture/readiness.md` — raw discovery, bounded polling, and retained readiness facts.
 - `documents/architecture/durable_state.md` — provider/share/alias origin and recovery states.
 
