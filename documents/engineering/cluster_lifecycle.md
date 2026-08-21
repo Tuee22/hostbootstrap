@@ -85,61 +85,68 @@ immutable control-plane container ID is retained separately in an opaque `Manage
 Conditional cleanup, cordon, and readiness consume that handle rather than a caller-paired generic
 handle/receipt.
 
-`HostBootstrap.Cluster.Backend` supplies the IO that feeds it while holding the four
-[ownership invariant](../architecture/ownership_invariant.md) clauses. The private production backend keeps the executor and
-raw-result constructors in a Cabal-private component. Public production discovery detects the Linux
-substrate, builds the typed `HostConfig`, resolves `Kind`, `Docker`, and `Kubectl` as closed `HostTool`
-values, and passes only their canonical absolute paths to the private validator. That
-validator admits root-owned, non-group/world-writable path chains and executable files, and derives child
-`PATH` solely from those validated executable directories. Children run with a fixed root cwd, sanitized
-engine/provider/config environment, private kubeconfig descriptor, and process-group
-timeouts whose pipe readers and reap are bounded even when the leader exits before a grandchild.
+`HostBootstrap.Cluster.Backend` supplies the IO that feeds it, and it is now a **join** rather than a
+driver. The four
+[ownership invariant](../architecture/ownership_invariant.md) clauses are held by
+`HostBootstrap.Cluster.Ownership` over the one seam, every effect is a described command interpreted by the
+one interpreter, and every decision above it is a total function of the bytes a tool wrote. What is left
+here is turning a prepared plan-owned package into the object that driver is about — the cluster's name,
+its declared node containers control plane first, the configuration snapshot where the plan declares one,
+the file this run opens for the credential, and this run's durable ownership binding — and turning the
+driver's answer into the observation the reconciler classifies.
 
-A caller cannot mint a backend from chosen output, and the reason is structural rather than a matter of
-who may reach a seam: the classification that turns a tool's result into a decision is a total function
-over a closed sum, so it is reached by application and there is nothing to substitute for it. See
-[testing](testing.md) for what that makes admissible as evidence.
+There is no interpreter, no locking front end, and no injected executor. The private component the executor
+lived in is gone, and a source guard holds the absence: it fires on a reintroduced `Python3`, `Flock`,
+`Lockf`, `ClusterExec`, or `-c`, and it also asserts that the boundary still reaches the described commands
+and the clause-holding driver, so a backend that had stopped driving anything at all would fail rather than
+pass quietly. [rationale.md](../../DEVELOPMENT_PLAN/rationale.md) says why a program carried in a string is
+refused.
 
-The durable ownership protocol implements the ownership namespace. One exact no-follow directory walk creates and
-parent-fsyncs the plan-derived state leaf, and the row the frame declares supplies exclusive entry — held
-on a retained descriptor across observe/create/settle and released by the kernel if the holder dies (see
-[ownership seam](../architecture/ownership_seam.md)). The lock, state
-leaf, origin record, and complete node-name-to-container-ID map are kernel-identity-bound across calls.
-Every canonical `prepared`, `executing`, or `managed` origin record also contains and validates its own
-record inode, exact cluster name, owner, config binding, and nonce. Before Kind runs, `executing` durably
-binds the exact config snapshot inode and SHA-256 plus
-the private kubeconfig snapshot inode. Kind receives retained descriptor paths, never a mutable config
-pathname or ambient kubeconfig. Fresh recovery accepts or conditionally removes only those exact objects;
-a copied record, replacement snapshot, config drift, incomplete transition, or foreign stage fails closed.
-The managed transition is published and directory-fsynced only after the created node IDs are re-observed.
+A backend is a value the declaration decides. `discoverStrongClusterBackend` takes the typed
+`HostConfig` (§ K), admits it only when all three tools the cluster drives are resolved in it, and probes
+nothing: what a discovery once proved — that a writable state directory, a locking front end, and an
+interpreter exist — is the protected store's own to establish when the first transaction enters it. A tool
+the configuration does not carry is `Unsupported`, so a backend that cannot reach its driver mints no
+capability rather than failing at the first effect. The constructor is not exported, so a caller cannot
+mint one from chosen tool paths.
 
-The read-only status path is not part of that namespace and no longer part of that program. It issues the
-driver's own listing as an argument vector the backend owns, runs it through the driver's row of the one
-bounded-run table, and decides from the bytes with `classifyClusterStatus` — a total function callers and
-suites reach by application. Its refusals stay exactly as narrow: a non-zero exit, anything on standard
-error, a body that does not end in exactly one newline, a carriage return, a byte outside ASCII, a name
-outside the portable alphabet, and a repeated name are each the driver contradicting itself, and each is a
-refusal rather than an absence — because an absence authorizes creation and a refusal must not.
+The four calls are one transaction shape with four continuations, so the store is opened once per
+transaction and the exclusive entry covers the whole of it:
 
-Reconciliation and cordoning use that namespace for total reconciliation and the raw cordon,
-readiness, and cleanup operations. Cordon re-observes the full retained node map and calls `docker update`
-with immutable container IDs, never reusable node names. Readiness revalidates owner, record, lock, state
-leaf, exact node set, API readiness, every node's Ready condition, and the same container IDs. Cleanup
-independently inspects every retained node ID even when Kind omits the cluster, and removes the origin only
-after exact node absence. Cordon/readiness/cleanup open only the already retained state and lock identities;
-they cannot recreate a missing namespace and then claim idempotent success. A missing required tool or strong
-primitive is `Unsupported` and mints no
-capability; an observation or durable-record failure is never interpreted as absence.
+- **reconcile** answers `Created`, `Healthy`, `Unhealthy`, or `Foreign`. A cluster this record already owned
+  is asked one further question the creation path does not need — whether every node container the record
+  bound is still running — because that is the container runtime's answer rather than the API server's, and
+  an owned cluster whose containers are stopped is a conflict an operator resolves rather than something to
+  recreate. Something standing at the name under no durable record of this project's is `Foreign` and is
+  never adopted.
+- **cordon** applies the one budget renderer's wall to each bound container identity and reports a container
+  that took a node's name as a replacement.
+- **readiness** is read-only and versioned: the counter advances only when this call freshly observed the
+  managed identity with the API server and every declared node reporting ready, so a stale observation
+  cannot be presented as a fresh one. A container that took a node's name is reported as *that* identity
+  rather than as a probe failure, which is what lets settlement tell a replacement apart from a retry.
+- **cleanup** re-observes every owned node, removes the cluster through the one interpreter, and forgets a
+  record only over a reported absence, leaving a same-named replacement standing.
 
-The exact package layer exposes authority over that raw boundary. Preparation accepts only a
-backend-minted Running-provider dependency and reruns that backend's real probe before offering the cluster
-call. Production config bytes are bound by SHA-256 with the exact retained budget in the prepared call;
-Harness has no config and emits no `--config`. After creation, the same lock and origin identity guard the
-budget-backed node-container cordon. Only successful cordon plus a fresh real API/all-node Ready reprobe of
-the exact owner/container identity can mint `ClusterReadiness`; a replacement identity is a `Conflict`, and
-the successful phase-observation counter fails rather than wrapping at exhaustion. Constructors for raw
-backend results, managed/cordon/readiness/cleanup authority, and the running dependency remain hidden and
-nominally indexed. The earlier durable-root foundation supplies the prerequisite this path consumes.
+What a configuration drift changes is upstream of the backend: the ownership identity is derived from the
+plan's own stable snapshot digest, of which the rendered cluster configuration is part, so a plan whose
+configuration changed presents a different identity, mints a different claim, and finds a record it does not
+recognize.
+
+The read-only status path is outside every clause because it mutates nothing: one described command through
+the one interpreter and one projection of the cluster report vocabulary's own total classification. Its
+refusals stay exactly as narrow — a command that produced no child, a non-zero exit, anything on standard
+error, a body that does not end in exactly one newline, a carriage return, a byte outside ASCII, an empty
+row, a name outside the portable alphabet, and a repeated name are each the driver contradicting itself, and
+each is a refusal rather than an absence, because an absence authorizes creation and a refusal must not.
+
+The exact package layer is unchanged above it. Preparation accepts only a backend-minted Running-provider
+dependency and reruns that backend's real probe before offering the cluster call. Production config bytes
+are bound by SHA-256 with the exact retained budget in the prepared call; Harness has no config and emits no
+`--config`. Only successful cordon plus a fresh real API/all-node Ready reprobe of the exact owner/container
+identity can mint `ClusterReadiness`; a replacement identity is a `Conflict`, and the successful
+phase-observation counter fails rather than wrapping at exhaustion. Constructors for raw backend results,
+managed/cordon/readiness/cleanup authority, and the running dependency remain hidden and nominally indexed.
 
 Alongside it, `HostBootstrap.Cluster.Backend` makes a wildcard exposure unrepresentable: a
 `LoopbackExposure` accepts ports only, always renders `127.0.0.1`, and settles a live binding that is
@@ -150,6 +157,50 @@ the desired cluster without checking a receipt, and still deletes and recreates 
 cluster; `clusterDown`/`clusterDelete` still issue `kind delete cluster --name <name>` without proving
 this plan created or adopted the resource. Replacing those call sites belongs to the recursive-plan
 tranche, not to the backend.
+
+### The cluster as a row of the frame table
+
+Beside that backend the cluster now also exists as a **row** rather than as a module of parallel logic,
+and the four modules it is written in are the whole of it. `HostBootstrap.Cluster.Command` says what to
+ask — the tool the frame table names, the exact argument vector, the stdio disposition, and the frame
+whose process reads it — and declares the three tools a cluster drives in one place, so a driver and the
+row that holds its clauses are declared together. `HostBootstrap.Cluster.Report` says what an answer
+means, as total classifications over the interpreter's own outcome. `HostBootstrap.Cluster.Resume` says
+where an interrupted transaction stands, as a total function of the durable record and the two
+authorities' answers. `HostBootstrap.Cluster.Ownership` composes them and holds the four clauses through
+the one seam. Nothing in that path is a program written in another language and parsed back.
+
+The object is the cluster **and every node**, because clause 3 binds exactly one identity per record: the
+cluster's own record binds the control-plane container and each other node carries its own record beside
+it. Every record is published over an explicit absence before the single `kind create cluster`, since one
+creation brings every node container into existence at once, and each is bound afterwards from what the
+container runtime reports. The node observation asks the node's *name* of the listing and again of the
+inspection, so a container replaced between the two answers differently rather than merely re-resolving.
+
+Four transactions run over that object:
+
+- **Reconcile** answers with three end states an operator can tell apart — a first creation, a resumed
+  entry whose cluster already existed under this record, and an entry that found every clause held. The
+  already-owned path still re-observes every worker, because the cluster's own identity says nothing about
+  the other nodes.
+- **Readiness** re-enters from the durable records, asks the API server through the kubeconfig the driver
+  hands back — over standard input, so no credential is in an argument vector — and answers `ClusterReady`,
+  `ClusterApiUnready`, `ClusterNodesUnready`, or `ClusterNodesUndeclared`. None of the four is a fault: a
+  control plane that has not come up is exactly what a readiness poll expects to see. The records are
+  re-entered on both sides, so a node replaced while the probe ran is a conflict rather than a readiness.
+- **Cordon** applies the one budget renderer's wall to the container identity each durable record bound,
+  never to the node's name, and re-observes every node on both sides of the application.
+- **Release** re-observes every owned node, removes the cluster through the one interpreter, and forgets a
+  record only over a reported absence. A container that took a node's name during the removal is left
+  standing and no record is forgotten over it, because clause 4 compares the identity rather than the name.
+  A record published over a create that never happened is forgotten without any command being issued, since
+  clause 2 is the only clause that was ever held.
+
+Its durability is the protected store's compare-and-swap; this boundary holds no durable byte of its own.
+The suite drives it with a cluster driver, container runtime, and API server that are **one real process** —
+the suite's own executable, entered by an environment variable held for exactly the span of a fixture — so
+the clause-holding effects run against a real store and a real client rather than against a substitution
+point, and the family runs and is counted on every gate host.
 
 ## Current teardown
 

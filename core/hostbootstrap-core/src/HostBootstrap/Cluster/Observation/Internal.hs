@@ -10,7 +10,6 @@ module HostBootstrap.Cluster.Observation.Internal
     ( ClusterReconcileObservation (..)
     , ClusterBackendBinding (..)
     , clusterBackendBindingIdentity
-    , clusterBackendBindingArguments
     , ClusterReconcileCallResult (..)
     , ClusterCordonObservation (..)
     , ClusterCordonCallResult (..)
@@ -27,7 +26,6 @@ module HostBootstrap.Cluster.Observation.Internal
 where
 
 import Data.Text (Text)
-import qualified Data.Text as Text
 import Data.Kind (Type)
 import Data.Word (Word64)
 import HostBootstrap.ProjectPlan (ClusterResource)
@@ -47,38 +45,22 @@ data ClusterReconcileObservation
     | ClusterProbeFailed Text
     deriving (Eq, Show)
 
-{- | Kernel-object and nonce binding minted only from a successful strong
-backend report.  The resource generation belongs to the generic journal; this
-separate binding identifies the exact state directory, exclusion lock, durable
-managed origin record, and backend container that later operations must
-re-observe.
+{- | The container identity a successful strong backend report bound.
+
+One field, because one is what clause 3 binds: the immutable identity of the
+node container the cluster's own durable record names. The state directory, the
+exclusive entry, and the durable record are the protected store's, so nothing
+about where they live is retained here — a later operation re-enters through the
+store rather than through a kernel object this value remembered.
+
+The generic journal generation is unaffected and stays exactly where
+reconciliation prepared it.
 -}
-data ClusterBackendBinding = ClusterBackendBinding
-    Text
-    Word64
-    Word64
-    Word64
-    Word64
-    Word64
-    Word64
-    Text
+newtype ClusterBackendBinding = ClusterBackendBinding Text
     deriving (Eq, Show)
 
 clusterBackendBindingIdentity :: ClusterBackendBinding -> Text
-clusterBackendBindingIdentity (ClusterBackendBinding identity _ _ _ _ _ _ _) = identity
-
-clusterBackendBindingArguments :: ClusterBackendBinding -> [String]
-clusterBackendBindingArguments
-    (ClusterBackendBinding identity stateDevice stateInode lockDevice lockInode recordDevice recordInode nonce) =
-        [ Text.unpack identity
-        , show stateDevice
-        , show stateInode
-        , show lockDevice
-        , show lockInode
-        , show recordDevice
-        , show recordInode
-        , Text.unpack nonce
-        ]
+clusterBackendBindingIdentity (ClusterBackendBinding identity) = identity
 
 -- | Proof that the strong backend executed one exact prepared reconcile call.
 newtype ClusterReconcileCallResult scope specDigest planId configId (cfg :: Type -> Type) clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion =

@@ -52,8 +52,8 @@ its row here.
 | 12 | [Step algebra and the project plan](phase-12-step-algebra-and-project-plan.md) | Done | linux-cpu | — |
 | 13 | [Authenticated handoff and child admission](phase-13-authenticated-handoff-and-child-admission.md) | Done | linux-cpu | — |
 | 14 | [Ownership clauses and reservations](phase-14-ownership-clauses-and-reservations.md) | Done | linux-cpu | — |
-| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Active | linux-cpu | the declared native Linux/x86_64 KVM/Incus baseline acceptance run; every implementation sprint is statically closed |
-| 16 | [Cluster lifecycle, budgets, and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Active | linux-cpu | 16.41–16.44 the cluster and Colima drivers, the live gate as a harness case, and the enumeration narrowing |
+| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Active | linux-cpu | the declared native Linux/x86_64 KVM/Incus baseline acceptance run; every implementation sprint through 15.36 is statically closed |
+| 16 | [Cluster lifecycle, budgets, and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Active | linux-cpu | 16.47–16.49 the Colima ownership driver, the live gate as a harness case, and the enumeration narrowing |
 | 17 | [Recursive lifecycle command](phase-17-recursive-lifecycle-command.md) | Active | linux-cpu | 17.41–17.51 forward/reverse adoption, cleanup, unwind, gate |
 | 18 | [Recovery and migration](phase-18-recovery-and-migration.md) | Active | linux-cpu | 18.4–18.19 resource records, migration recovery, recovered closure, interruption fixtures |
 | 19 | [Test harness and run ownership](phase-19-test-harness-and-run-ownership.md) | Active | linux-cpu | 19.5 Harness scope-capsule producer; 19.6 live harness acceptance |
@@ -157,21 +157,24 @@ three machines and § C forbids a baseline phase owing hardware it does not decl
 § KK's vocabulary is built. One closed command vocabulary describes the tool, its exact argument vector,
 its stdio disposition, and its frame; one interpreter runs it; one quoter and one process runner sit
 beneath; and one module owns the guest bootstrap — the ordered, probe-first steps that establish the binary
-in a frame that has never run it. It now reaches the provider's ownership driver: every provider effect
-is a described command and every decision above it a total function. What it does not yet reach is the
-cluster, Colima, and guest-alias drivers, which are still interpreter programs carried as string
-literals: a program in a string parses its own protocol, restates invariants its caller already states,
-and has to be reviewed in two languages.
+in a frame that has never run it. It now reaches the provider's ownership driver and the cluster's: every
+provider and cluster effect is a described command, every decision above it a total function, and the
+cluster boundary carries no program written in another language at all — the embedded one, the protocol its
+reports were parsed back out of, and the private component its injected executor lived in are deleted. What
+it does not yet reach is the Colima and guest-alias drivers, each still an interpreter program carried as a
+string literal, and a program in a string parses its own protocol, restates invariants its caller already
+states, and has to be reviewed in two languages.
 
 § LL makes a provider a **row** over one closed frame table rather than a module of parallel logic, because
 the guarded delete, the existence probe, the readiness wait, the budget-to-wall rendering, and the four
 ownership clauses are one computation each: written per provider they become copies that pass their own
 tests while disagreeing with each other. Its host-frame half is settled — `HostFrame` is the closed
 three-constructor axis and the reconcilers are rows over it — and its guarded destructive delete is one
-computation over that table. The **ownership primitive** is built, every host-local owner is on it, and the provider driver now holds
-its four clauses through it; the rows still owed are the one that ships a transaction to another frame
-and the cluster, Colima, and guest-alias drivers that consume it, which is why phases 16, 21, and 24 are
-open on it.
+computation over that table. The **ownership primitive** is built, every host-local owner is on it, and the
+provider and cluster drivers now hold their four clauses through it — the cluster as an object whose every
+node carries its own record, so a cordon addresses a node by the identity this run bound rather than by the
+name a replacement inherits. The rows still owed are the one that ships a transaction to another frame and
+the Colima and guest-alias drivers that consume it, which is why phases 16, 21, and 24 are open on it.
 
 § NN states what a gate's evidence is worth. A fake exists because a decision is trapped inside an effect,
 so the answer is not to write better fakes but to lift the decision into a total function that can be

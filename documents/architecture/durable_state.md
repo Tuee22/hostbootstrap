@@ -84,9 +84,14 @@ record keys or versions.
   reads rather than a state it has to guess at.
 - WSL2 uses the host drive exposed by drvfs, Incus attaches a disk device, and Lima declares a mount.
 - `HostBootstrap.Substrate.Provider.Reconcile` settles provider shares into an opaque nominal
-  `ManagedProviderShareHandle` that retains the exact managed provider origin. The prepared Incus backend
-  durably binds manifest, sidecar, device, source, and target state under its provider lock; Direct settles
-  only the canonical already-local identity share.
+  `ManagedProviderShareHandle` that retains the exact managed provider origin. A share is an owned object
+  of its own: the prepared Incus backend publishes its origin record through the protected store before
+  the device is attached and binds the device's identity — a digest of exactly the kind, source, and
+  target the declaration names — from what the provider reports afterwards, under the instance standing
+  re-taken on both sides of that readback. Direct settles only the canonical already-local identity share.
+- Durability at that boundary is inherited rather than restated: every durable byte a provider transaction
+  publishes is the protected store's compare-and-swap, so the partial-write and partial-unlink windows are
+  the store's own contract and the provider driver names no mutating filesystem primitive.
 - `HostBootstrap.Substrate.Provider.Alias` consumes that managed share together with the exact opaque
   managed Running provider. Its `prepared`, `managed`, and version-fenced `releasing` records recover
   origin publication, alias publication, and conditional release crash windows without adopting an

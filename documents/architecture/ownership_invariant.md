@@ -127,7 +127,13 @@ native validation lives.
   application rather than by whichever branch a live run happened to take. It publishes an
   explicit-absence origin under a fresh claim before launch, carries that claim on the creating command
   itself, binds the instance's own identity from what the provider reports afterwards, and re-observes
-  that identity before and after every later mutation and every guest command. `Provider.Backend` and
+  that identity before and after every later mutation and every guest command. A share is an owned object
+  of its own inside that instance, so its attachment re-observes both: the device on both sides of the
+  attachment, and the instance's standing on both sides of the device readback — an instance replaced
+  while a device was being attached is a conflict rather than a share. The boundary's **durability** is
+  not its own: every durable byte it publishes is the protected store's compare-and-swap, so the
+  partial-write and partial-unlink windows are the store's contract below, and the driver names no
+  mutating filesystem primitive at all. `Provider.Backend` and
   `Provider.Reconcile` turn its outcomes into the prepared provision/readiness/share/stop/delete route;
   the opaque nominal `ManagedProviderHandle` and `ManagedProviderShareHandle` retain the exact backend
   origin rather than exposing their generic handle/receipt components. Direct uses the same prepared
@@ -142,15 +148,34 @@ native validation lives.
   provider and declares the derived `<provider>/<share>/guest-alias` operation. The demo still creates the
   alias through its compatibility pathname route; migrating that call site belongs to
   [the worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
-- `HostBootstrap.Cluster.Backend` holds all four clauses for the kind cluster. Its canonical
-  `prepared`/`executing`/`managed` records self-bind their own inode under the retained state/lock identities;
-  every state binds the exact cluster name/owner/nonce; `executing` binds the exact config digest/inode and
-  private kubeconfig inode before Kind; and `managed`
-  binds the complete declared node-name-to-container-ID map. Cordon mutates immutable IDs, while readiness
-  and cleanup re-observe every retained node. Production tool discovery starts from typed
-  `HostConfig`/`HostTool`; raw executor injection and result constructors are Cabal-private. The exact
-  packages and interpreter belong to sprints 16.1–16.11 of the
-  [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
+- `HostBootstrap.Cluster.Backend` is the **join** between the plan's prepared cluster package and the driver
+  above, not a second holder of the clauses. It derives the owned object from the package — name, declared
+  node containers control plane first, configuration snapshot, the file this run opens for the credential,
+  and this run's durable ownership binding — opens the protected store under the plan's own state directory,
+  takes the exclusive entry once per transaction, and maps the driver's answer onto the reconcile, cordon,
+  readiness, and cleanup observations. It resolves no interpreter and no locking front end, carries no
+  injected executor, and a source guard holds that absence; a backend is a value the declaration decides,
+  admitted from the typed `HostConfig` when all three tools the cluster drives are resolved in it and probed
+  no further. A cluster this record already owns is additionally asked whether its node containers are
+  running, because that is the container runtime's answer rather than the API server's.
+- `HostBootstrap.Cluster.Ownership` is the kind cluster written as a **row** of the one seam rather than as
+  a program in another language. What to ask is a described command (`Cluster.Command`), what an answer
+  means is a total classification (`Cluster.Report`), where an interrupted transaction stands is a total
+  function of the durable record and the two authorities' answers (`Cluster.Resume`), and what a clause is
+  belongs to `Ownership.Primitive`. **Every node is an owned object**: clause 3 binds exactly one identity
+  per record, so the cluster's own record binds the control-plane container and each other node carries its
+  own record beside it — which is what lets a later cordon address a node by the identity this run bound
+  rather than by the name a replacement inherits. Every record is published over an explicit absence
+  *before* the single creating command, because one `kind create cluster` brings every node container into
+  existence at once, and each is bound afterwards from what the runtime reports. The node observation asks
+  the node's **name** twice — of the listing and of the inspection — so a container replaced between the two
+  answers differently. Readiness re-enters from the records on both sides of a read-only probe it takes
+  through the kubeconfig the driver hands back, so a node replaced while the probe ran is a conflict rather
+  than a readiness; cordon applies the one budget renderer's wall to each bound container identity and
+  re-observes every node on both sides; and release re-observes every node, removes the cluster through the
+  one interpreter, and forgets a record only over a reported absence, leaving a same-named replacement
+  standing because clause 4 compares the identity rather than the name. Its durability is the protected
+  store's compare-and-swap, exactly as the provider boundary's is.
 - The implemented direct-Colima backend applies the four clauses to one 128-bit plan/lifecycle namespace, not to
   a caller-selected profile. Its reusable global lock contains only its own self-bound profile/lock identity
   and remains synchronization-only across owners. A fresh self-bound nonce record publishes absence before

@@ -122,7 +122,9 @@ import HostBootstrap.ProjectRoot (
 import HostBootstrap.Protected (openProtectedStore)
 import HostBootstrap.Step (Step, StepPlan, mkStepPlan)
 import Numeric.Natural (Natural)
+#if !defined(mingw32_HOST_OS)
 import System.Directory (getPermissions, setOwnerExecutable, setPermissions)
+#endif
 import System.Environment (getExecutablePath)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)

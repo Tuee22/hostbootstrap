@@ -71,6 +71,7 @@ lifecycleCases =
     , testCase "an exact restarted VM is retryable rather than a replacement" exactRestartBeforeDeleteCase
     , testCase "Ready rechecks identity across the guest observation" readyObservationReplacementCase
     , testCase "Stop rechecks identity after the stop it issued" stopObservationReplacementCase
+    , testCase "a share rechecks its instance after the device readback" shareObservationReplacementCase
     , testCase "a same-named replacement is left standing rather than forgotten" deleteReplacementLeftStandingCase
     ]
 
@@ -439,6 +440,26 @@ stopObservationReplacementCase = withFakeHost $ \host ->
             case result of
                 Left (Conflict _) -> pure ()
                 other -> assertFailure ("expected Stop replacement conflict, got " <> showEither (() <$ other))
+            heldIdentity host vmName >>= (@?= Just FakeProvider.replacementIdentity)
+
+{- | Clause 3 binds a device that hangs inside an instance, so the instance is
+re-observed after the device readback.
+
+The provider accepts the attachment and something else takes the instance's name
+before the record binds.  The device readback answers for the device and for
+nothing about whose instance now carries it, so the standing re-taken after it is
+what refuses: the transaction reports a conflict rather than binding a record of
+this run's to a device inside somebody else's object.
+-}
+shareObservationReplacementCase :: IO ()
+shareObservationReplacementCase = withFakeHost $ \host ->
+    withBackend host $ \backend ->
+        withRunningProviderAndShare host backend $ \_ _ _ _ _ prepared -> do
+            FakeProvider.armReplacementAfter (hostRoot host) "device-add"
+            attached <- shareCall backend prepared
+            case settleProviderShare Nothing prepared attached of
+                Left (Conflict _) -> pure ()
+                other -> assertFailure ("expected a share replacement conflict, got " <> showEither (() <$ other))
             heldIdentity host vmName >>= (@?= Just FakeProvider.replacementIdentity)
 
 {- | Clause 4 compares the identity, so a same-named replacement is not release.

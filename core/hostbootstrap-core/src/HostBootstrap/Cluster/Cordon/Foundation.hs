@@ -34,6 +34,7 @@ module HostBootstrap.Cluster.Cordon.Foundation (
     managedWslIdleTimeoutHours,
     managedWslIdleTimeoutMillis,
     kindNodeCordonArgsForBudget,
+    kindNodeCordonLimitsForBudget,
     incusSizingArgsForBudget,
     resolveHostCapacity,
     parseDfAvailableKBytes,
@@ -360,17 +361,27 @@ cordoned per-substrate elsewhere (Colima @--disk@, incus @root,size@, a quota'd
 hostPath on bare Linux).
 -}
 kindNodeCordonArgsForBudget :: String -> ResourceBudget -> Either String [String]
-kindNodeCordonArgsForBudget containerName b = do
-    pure
-        [ "update"
-        , "--cpus"
-        , show (budgetCpu b)
-        , "--memory"
-        , show (budgetMemoryBytes b)
-        , "--memory-swap"
-        , show (2 * budgetMemoryBytes b)
-        , containerName
-        ]
+kindNodeCordonArgsForBudget containerName b =
+    pure (["update"] <> kindNodeCordonLimitsForBudget b <> [containerName])
+
+{- | The same wall as the limit flags alone, with no container named.
+
+A driver that addresses a node container by the identity its durable record
+bound has nowhere to put a name, and a second rendering of the same three flags
+would be a copy that agrees with this one until one of them is changed. The
+argv-shaped renderer above is therefore this list with the verb in front and the
+container behind it, so there is exactly one statement of what a cluster budget
+caps.
+-}
+kindNodeCordonLimitsForBudget :: ResourceBudget -> [String]
+kindNodeCordonLimitsForBudget b =
+    [ "--cpus"
+    , show (budgetCpu b)
+    , "--memory"
+    , show (budgetMemoryBytes b)
+    , "--memory-swap"
+    , show (2 * budgetMemoryBytes b)
+    ]
 
 {- | The incus VM sizing args from the one canonical parser: @limits.cpu@,
 @limits.memory@, and @root,size@. Unlike @docker update@, incus cordons

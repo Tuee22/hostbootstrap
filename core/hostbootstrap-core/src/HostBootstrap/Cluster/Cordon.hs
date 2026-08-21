@@ -39,6 +39,7 @@ module HostBootstrap.Cluster.Cordon (
     managedWslIdleTimeoutMillis,
     kindNodeCordonArgs,
     kindNodeCordonArgsFor,
+    kindNodeCordonLimits,
     incusSizingArgs,
     resolveHostCapacity,
     parseDfAvailableKBytes,
@@ -152,6 +153,15 @@ kindNodeCordonArgsFor :: String -> ResourceEnvelope -> Either String [String]
 kindNodeCordonArgsFor containerName resources =
     budgetFromResources resources
         >>= Foundation.kindNodeCordonArgsForBudget containerName
+
+{- | The wall one canonical budget declares, as the limit flags alone.
+
+What an ownership driver applies is a wall on the container identity its durable
+record bound, so it has no name to render and takes the flags on their own. This
+is the same rendering the argv-shaped one above composes, not a second copy.
+-}
+kindNodeCordonLimits :: ResourceBudget -> [String]
+kindNodeCordonLimits = Foundation.kindNodeCordonLimitsForBudget
 
 -- | Parse a descriptive envelope and render an Incus wall.
 incusSizingArgs :: ResourceEnvelope -> Either String [String]

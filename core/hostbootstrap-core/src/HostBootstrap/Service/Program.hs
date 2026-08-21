@@ -35,10 +35,9 @@ worker stack.  So the split is by what core can actually hold.
   admitted canonical project root through
   'HostBootstrap.ProjectRoot.canonicalHostSubPath', so a handler cannot name a
   path outside its own durable root — there is no way to spell @..@ past it.
-* The three families core cannot hold reach a 'ServiceBackend', the same
-  injected effect handle 'HostBootstrap.Cluster.Backend.ClusterExec' and
-  'HostBootstrap.Substrate.Provider.Alias.GuestExec' already are: a plain effect
-  boundary, not authority.  Core still owns the program, the row, the
+* The three families core cannot hold reach a 'ServiceBackend', the same plain
+  effect boundary 'HostBootstrap.Substrate.Provider.Alias.GuestExec' already is:
+  a boundary, not authority.  Core still owns the program, the row, the
   authorization, and the interpreter loop.
 
 __Handles are not names.__  A listener, peer, or worker argument is an
@@ -316,8 +315,7 @@ work = Work
 {- | How the three families core cannot hold reach the world.
 
 This is a plain effect handle, not authority — the same boundary
-'HostBootstrap.Cluster.Backend.ClusterExec' and
-'HostBootstrap.Substrate.Provider.Alias.GuestExec' are.  Core decides *whether* an
+'HostBootstrap.Substrate.Provider.Alias.GuestExec' is.  Core decides *whether* an
 effect may run; the backend is *how* it runs.  Its @payload@ index is the
 program's, so a backend cannot execute another project's program.
 

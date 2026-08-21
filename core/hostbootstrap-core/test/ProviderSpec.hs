@@ -77,6 +77,7 @@ tests =
         , testGroup "pure interpreters" interpreterCases
         , testGroup "guest alias state machine" aliasCases
         , testGroup "provider-live client boundary" providerLiveBoundaryCases
+        , testGroup "the inherited durability statement" inheritedDurabilityCases
         ]
 
 {- | § LL: every frame's destructive delete is one computation, so these cases
@@ -379,6 +380,59 @@ aliasCases =
     assertLeftHas needle result = case result of
         Left message -> assertBool ("expected " ++ show needle ++ " in " ++ message) (needle `isInfixOf` message)
         Right value -> assertBool ("expected Left, got " ++ show value) False
+
+{- | The provider boundary's durability is the protected store's, mechanically.
+
+The partial-write, partial-fsync, and partial-unlink windows a durable record can
+be interrupted in belong to the store that publishes it, and the store's own
+contract is the
+[ownership-clauses-and-reservations phase](../../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md)'s.
+This boundary inherits it by holding no durable byte of its own: it names no
+mutating filesystem primitive, so there is no instruction point here at which a
+second durability window could exist to patch (§ NN).
+
+The read-only observations the Direct admission takes are not writes and are not
+guarded; what the guard names is exactly the set that changes what is on disk.
+-}
+inheritedDurabilityCases :: [TestTree]
+inheritedDurabilityCases =
+    [ testCase "the provider driver publishes every durable byte through the protected store" $ do
+        cwd <- getCurrentDirectory
+        root <- findRepoRoot cwd >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
+        let driverRoot = root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap" </> "Substrate" </> "Provider"
+            driverFiles = ["Ownership.hs", "Backend.hs"]
+            mutatingPrimitives =
+                [ "writeFile"
+                , "appendFile"
+                , "renameFile"
+                , "renamePath"
+                , "removeFile"
+                , "removeDirectory"
+                , "removeDirectoryRecursive"
+                , "removePathForcibly"
+                , "createDirectory"
+                , "createDirectoryIfMissing"
+                , "copyFile"
+                , "setPermissions"
+                , "openFile"
+                , "openBinaryFile"
+                , "withFile"
+                , "withBinaryFile"
+                , "hFlush"
+                , "hClose"
+                ]
+        forM_ driverFiles $ \name -> do
+            source <- readFile (driverRoot </> name)
+            forM_ mutatingPrimitives $ \primitive ->
+                assertBool
+                    (name ++ " performs its own durable write through " ++ primitive)
+                    (SourceGuard.countHaskellIdentifier primitive source == 0)
+        ownership <- readFile (driverRoot </> "Ownership.hs")
+        forM_ ["compareAndSwapProtectedRecord", "compareAndDeleteProtectedRecord"] $ \publication ->
+            assertBool
+                ("the driver no longer publishes through " ++ publication)
+                (SourceGuard.countHaskellIdentifier publication ownership > 0)
+    ]
 
 providerLiveBoundaryCases :: [TestTree]
 providerLiveBoundaryCases =

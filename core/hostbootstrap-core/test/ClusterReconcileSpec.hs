@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
@@ -9,16 +8,12 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.List (isSuffixOf)
 import qualified Data.Text as Text
 import Data.Foldable (find)
-import Data.IORef (atomicModifyIORef', newIORef)
 import qualified Data.Map.Strict as Map
+import Data.Word (Word64)
+import qualified FakeCluster
 import qualified Fixture
 import HostBootstrap.Cluster.Budget
 import HostBootstrap.Cluster.Backend
-import HostBootstrap.Cluster.Backend.Internal
-    ( ClusterCommandResult (..)
-    , ClusterExec (..)
-    , discoverInjectedStrongClusterBackend
-    )
 import HostBootstrap.Cluster.Cordon
     ( budgetCpu
     , budgetMemoryBytes
@@ -29,11 +24,20 @@ import HostBootstrap.Cluster.Reconcile
 import HostBootstrap.Config.Vocab (Harness, Production)
 import HostBootstrap.Context (ResourceEnvelope (..))
 import HostBootstrap.HostConfig (HostConfig (..))
-import HostBootstrap.HostTool (AbsExe, HostTool (Docker, Python3), mkAbsExe)
+import HostBootstrap.HostTool (AbsExe, HostTool (Docker, Kind, Kubectl, Python3), mkAbsExe)
 import qualified HostBootstrap.Lifecycle.Execution as Execution
 import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 import HostBootstrap.Lift (localContext)
 import qualified HostBootstrap.ProjectPlan as ProjectPlan
+import HostBootstrap.Protected (
+    Expectation (ExpectVersion),
+    ProtectedRecord (protectedRecordVersion),
+    compareAndDeleteProtectedRecord,
+    listProtectedRecords,
+    openProtectedStore,
+    readProtectedRecord,
+    withProtectedEntry,
+ )
 import HostBootstrap.Reconcile
 import HostBootstrap.Substrate (Arch (Arm64), Substrate (..), SubstrateName (LinuxCpu))
 import HostBootstrap.Substrate.Provider.Backend
@@ -41,6 +45,7 @@ import HostBootstrap.Substrate.Provider.Reconcile
 import HostBootstrap.Step
 import PrepareFixture (gateFor)
 import System.Directory (canonicalizePath, createDirectory, createDirectoryIfMissing)
+import System.Environment (getExecutablePath)
 import System.IO.Temp (withSystemTempDirectory)
 import System.FilePath (takeDirectory, (</>))
 import Test.Tasty (TestTree, testGroup)
@@ -170,10 +175,6 @@ packageCases =
                     configPath @?= Nothing
                     ports @?= False
                 other -> assertFailure ("expected exact Harness package, got " ++ show other)
-        , testCase "an unverifiable same-named cluster fails closed" $
-            withClusterFixture (\prepared -> asError prepared "FAILED kubectl-timeout\n") >>= \case
-                Left (Failure _) -> pure ()
-                other -> assertFailure ("expected a typed failure, got " ++ show other)
         , testCase "the exact provider probe is run internally before preparation is offered" $
             withClusterFixtureUsing
                 ReprobeStopsAnswering
@@ -189,19 +190,15 @@ packageCases =
 
 {- | Settlement, readiness, and cleanup: what the backend does with that package.
 
-Each of these admits a 'ClusterSpec', whose state directory is the path the
-locked ownership program receives inside the realized Linux substrate. Its
-absoluteness check is POSIX for that reason, and the production resolved backend
-is itself Linux-only, so the frame these assert about is Linux wherever the
-outer host is. The fixture's project root is the outer host's own canonical
-root, so a native Windows process cannot present one: it is not a frame that can
-hold a cluster. Skipped there rather than failed (§ JJ), because the contract is
-unchanged and the gate that proves it is the `linux-cpu` one.
+Each of these runs the real clause-holding driver: a real protected store under
+the state directory the plan projects, and a real cluster client process the one
+interpreter launches. Nothing is host-specific about either — the store is
+ordinary files and the client is this suite's own executable — so the family runs
+and is counted on every gate host (§ JJ), and every case reaches its standing by
+arranging what the tools report rather than by substituting for a decision
+(§ NN).
 -}
 inFrameReconcileCases :: [TestTree]
-#if defined(mingw32_HOST_OS)
-inFrameReconcileCases = []
-#else
 inFrameReconcileCases =
         [ testCase "an absent cluster is created and managed" $
             withClusterFixture settleCreated >>= \case
@@ -232,14 +229,14 @@ inFrameReconcileCases =
                 Right identity -> identity @?= "core:deploy-kind"
                 other -> assertFailure ("expected a foreign no-origin observation, got " ++ show other)
         , testCase "an unhealthy same-named cluster is a Conflict, never deleted" $
-            withClusterFixture (\prepared -> asError prepared "UNHEALTHY unhealthy-node\n") >>= \case
+            withClusterFixture settleUnhealthy >>= \case
                 Left (Conflict detail) ->
                     assertBool "the conflict refuses auto-delete" ("never auto-deleted" `Text.isInfixOf` conflictRemedy detail)
                 other -> assertFailure ("expected a conflict, got " ++ show other)
-        , testCase "ownership reports require one LF-terminated line and empty stderr" $
-            withClusterFixture strictOwnershipReportCases >>= \case
-                Right (True, True, True) -> pure ()
-                other -> assertFailure ("expected strict ownership report refusals, got " ++ show other)
+        , testCase "a driver that contradicts its own listing fails closed" $
+            withClusterFixture settleContradictoryListing >>= \case
+                Left (Failure _) -> pure ()
+                other -> assertFailure ("expected a typed failure, got " ++ show other)
         , testCase "readiness evidence is unavailable until the managed generation is ready" $
             withClusterFixture readinessCases >>= \case
                 Right (notReadyRefused, readyOffered) -> do
@@ -270,7 +267,6 @@ inFrameReconcileCases =
                         other -> assertFailure ("expected a cleanup conflict, got " ++ show other)
                 other -> assertFailure ("expected cleanup outcomes, got " ++ show other)
         ]
-#endif
 
 packageSummary ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
@@ -291,12 +287,11 @@ packageSummary prepared =
               )
             )
 
-#if !defined(mingw32_HOST_OS)
 settleCreated ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
     IO (Either ReconcileError (ChangeView, Text.Text))
 settleCreated prepared =
-    withStrongClusterReports [ownedClusterReport "CREATED" "node-a"] $ \backend -> do
+    withClusterClient prepared $ \backend _root -> do
         result <- runClusterReconcileCall backend prepared
         pure $ do
             settled <- settleClusterReconcile Nothing prepared result
@@ -310,7 +305,8 @@ settleForeign ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
     IO (Either ReconcileError Text.Text)
 settleForeign prepared =
-    withStrongClusterReports ["FOREIGN foreign-node\n"] $ \backend -> do
+    withClusterClient prepared $ \backend root -> do
+        standUpUnclaimedCluster prepared root
         result <- runClusterReconcileCall backend prepared
         pure $ do
             settled <- settleClusterReconcile Nothing prepared result
@@ -324,7 +320,8 @@ settleHealthyRecovery ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
     IO (Either ReconcileError ChangeView)
 settleHealthyRecovery prepared =
-    withStrongClusterReports [ownedClusterReport "HEALTHY" "node-a"] $ \backend -> do
+    withClusterClient prepared $ \backend _root -> do
+        _ <- runClusterReconcileCall backend prepared
         result <- runClusterReconcileCall backend prepared
         pure $ do
             settled <- settleClusterReconcile Nothing prepared result
@@ -333,12 +330,31 @@ settleHealthyRecovery prepared =
                 (\_ _ change -> Right change)
                 (\_ _ _ _ -> Left (fixtureFailure "origin-verified healthy cluster became foreign"))
 
+settleUnhealthy ::
+    PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
+    IO (Either ReconcileError ())
+settleUnhealthy prepared =
+    withClusterClient prepared $ \backend root -> do
+        _ <- runClusterReconcileCall backend prepared
+        setNodesRunning root False
+        result <- runClusterReconcileCall backend prepared
+        pure (settleClusterReconcile Nothing prepared result >> Right ())
+
+settleContradictoryListing ::
+    PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
+    IO (Either ReconcileError ())
+settleContradictoryListing prepared =
+    withClusterClient prepared $ \backend root -> do
+        FakeCluster.writeClusters root [preparedClusterName prepared, preparedClusterName prepared]
+        result <- runClusterReconcileCall backend prepared
+        pure (settleClusterReconcile Nothing prepared result >> Right ())
+
 settleHealthyPriorCommit ::
     ProjectPlan.ProjectPlan scope specDigest planId configId cfg ->
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
     IO (Either ReconcileError ChangeView)
 settleHealthyPriorCommit plan prepared =
-    withStrongClusterReports [ownedClusterReport "CREATED" "node-a", ownedClusterReport "HEALTHY" "node-a"] $ \backend -> do
+    withClusterClient prepared $ \backend _root -> do
         createdResult <- runClusterReconcileCall backend prepared
         case settleClusterReconcile Nothing prepared createdResult of
             Left err -> pure (Left err)
@@ -362,7 +378,7 @@ settleForeignWithPriorCommit ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
     IO (Either ReconcileError Text.Text)
 settleForeignWithPriorCommit plan prepared =
-    withStrongClusterReports [ownedClusterReport "CREATED" "node-a", "FOREIGN foreign-node\n"] $ \backend -> do
+    withClusterClient prepared $ \backend _root -> do
         createdResult <- runClusterReconcileCall backend prepared
         case settleClusterReconcile Nothing prepared createdResult of
             Left err -> pure (Left err)
@@ -370,6 +386,7 @@ settleForeignWithPriorCommit plan prepared =
                 withClusterReconcileSettlement
                     created
                     ( \_managed receipt _change -> do
+                        forgetEveryDurableRecord (preparedClusterStateDirectory prepared)
                         foreignResult <- runClusterReconcileCall backend prepared
                         pure $ do
                             proof <- matchingClusterPriorCommit plan prepared receipt
@@ -406,160 +423,88 @@ matchingClusterPriorCommit plan prepared receipt = do
                 , persistedPhase = Committed
                 }
     withPriorCommitProof verified id
-#endif
-
-asError ::
-    PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
-    String ->
-    IO (Either ReconcileError ())
-asError prepared report =
-    withStrongClusterReports [report] $ \backend -> do
-        result <- runClusterReconcileCall backend prepared
-        pure (settleClusterReconcile Nothing prepared result >> Right ())
-
-#if !defined(mingw32_HOST_OS)
-strictOwnershipReportCases ::
-    PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
-    IO (Either ReconcileError (Bool, Bool, Bool))
-strictOwnershipReportCases prepared = do
-    let valid = ownedClusterReport "CREATED" "node-a"
-        refused result =
-            withStrongClusterCommandResults [result] $ \backend -> do
-                observed <- runClusterReconcileCall backend prepared
-                pure $ case clusterReconcileResultView observed of
-                    ClusterResultProbeFailed _ -> True
-                    _ -> False
-    missingLf <- refused (ClusterCommandResult True (init valid) "")
-    carriageReturn <- refused (ClusterCommandResult True (init valid ++ "\r\n") "")
-    stderrPresent <- refused (ClusterCommandResult True valid "unexpected warning\n")
-    pure (Right (missingLf, carriageReturn, stderrPresent))
 
 readinessCases ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
     IO (Either ReconcileError (Bool, Bool))
 readinessCases prepared =
-    withStrongClusterReports [ownedClusterReport "CREATED" "node-a", "APPLIED\n", "NOTREADY node-a\n", "READY node-a\n"] $ \backend -> do
-        createdResult <- runClusterReconcileCall backend prepared
-        case settleClusterReconcile Nothing prepared createdResult of
-            Left err -> pure (Left err)
-            Right created ->
-                withClusterReconcileSettlement
-                    created
-                    ( \managed _receipt _ ->
-                        case withPreparedClusterCordon prepared managed id of
-                            Left err -> pure (Left err)
-                            Right cordon -> do
-                                cordonResult <- runClusterCordonCall backend cordon
-                                case settleClusterCordon cordon cordonResult of
-                                    Left err -> pure (Left err)
-                                    Right applied -> do
-                                        notReady <- runClusterReadinessCall backend applied
-                                        ready <- runClusterReadinessCall backend applied
-                                        let notReadyRefused = case settleClusterReadiness applied notReady of
-                                                Left _ -> True
-                                                Right _ -> False
-                                            readyOffered = case settleClusterReadiness applied ready of
-                                                Left _ -> False
-                                                Right evidence -> clusterReadinessProbe evidence `seq` True
-                                        pure (Right (notReadyRefused, readyOffered))
-                    )
-                    (\_ _ _ _ -> pure (Left (fixtureFailure "created cluster became foreign")))
+    withClusterClient prepared $ \backend root ->
+        withAppliedFixtureCordon backend prepared $ \applied -> do
+            setNodesRunning root False
+            notReady <- runClusterReadinessCall backend applied
+            setNodesRunning root True
+            ready <- runClusterReadinessCall backend applied
+            let notReadyRefused = case settleClusterReadiness applied notReady of
+                    Left _ -> True
+                    Right _ -> False
+                readyOffered = case settleClusterReadiness applied ready of
+                    Left _ -> False
+                    Right evidence -> clusterReadinessProbe evidence `seq` True
+            pure (Right (notReadyRefused, readyOffered))
 
 readinessIdentityCases ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
     IO (Either ReconcileError (Bool, Bool, Bool))
 readinessIdentityCases prepared =
-    withStrongClusterReports [ownedClusterReport "CREATED" "node-a", "APPLIED\n", "NOTREADY node-a\n", "NOTREADY node-b\n", "REPLACED node-b\n"] $ \backend -> do
-        createdResult <- runClusterReconcileCall backend prepared
-        case settleClusterReconcile Nothing prepared createdResult of
-            Left err -> pure (Left err)
-            Right created ->
-                withClusterReconcileSettlement
-                    created
-                    ( \managed _receipt _ ->
-                        case withPreparedClusterCordon prepared managed id of
-                            Left err -> pure (Left err)
-                            Right cordon -> do
-                                cordonResult <- runClusterCordonCall backend cordon
-                                case settleClusterCordon cordon cordonResult of
-                                    Left err -> pure (Left err)
-                                    Right applied -> do
-                                        sameIdentity <- runClusterReadinessCall backend applied
-                                        replacement <- runClusterReadinessCall backend applied
-                                        replacementCordon <- runClusterCordonCall backend cordon
-                                        let sameIdentityFailure = case settleClusterReadiness applied sameIdentity of
-                                                Left (Failure _) -> True
-                                                _ -> False
-                                            replacementConflict = case settleClusterReadiness applied replacement of
-                                                Left (Conflict _) -> True
-                                                _ -> False
-                                            cordonConflict = case settleClusterCordon cordon replacementCordon of
-                                                Left (Conflict _) -> True
-                                                _ -> False
-                                        pure (Right (sameIdentityFailure, replacementConflict, cordonConflict))
-                    )
-                    (\_ _ _ _ -> pure (Left (fixtureFailure "created cluster became foreign")))
+    withClusterClient prepared $ \backend root ->
+        withCordonAndApplied backend prepared $ \cordon applied -> do
+            setNodesRunning root False
+            sameIdentity <- runClusterReadinessCall backend applied
+            setNodesRunning root True
+            replaceEveryNode root
+            replacement <- runClusterReadinessCall backend applied
+            replacementCordon <- runClusterCordonCall backend cordon
+            let sameIdentityFailure = case settleClusterReadiness applied sameIdentity of
+                    Left (Failure _) -> True
+                    _ -> False
+                replacementConflict = case settleClusterReadiness applied replacement of
+                    Left (Conflict _) -> True
+                    _ -> False
+                cordonConflict = case settleClusterCordon cordon replacementCordon of
+                    Left (Conflict _) -> True
+                    _ -> False
+            pure (Right (sameIdentityFailure, replacementConflict, cordonConflict))
 
 freshReadinessReprobeCases ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
     IO (Either ReconcileError (Bool, Bool, Bool, Bool))
 freshReadinessReprobeCases prepared =
-    withStrongClusterReports
-        [ ownedClusterReport "CREATED" "node-a"
-        , "APPLIED\n"
-        , "READY node-a\n"
-        , "READY node-a\n"
-        , "NOTREADY node-a\n"
-        , "NOTREADY node-b\n"
-        , "FAILED node-query\n"
-        ]
-        $ \backend -> do
-            createdResult <- runClusterReconcileCall backend prepared
-            case settleClusterReconcile Nothing prepared createdResult of
+    withClusterClient prepared $ \backend root ->
+        withAppliedFixtureCordon backend prepared $ \applied -> do
+            initial <- runClusterReadinessCall backend applied
+            case settleClusterReadiness applied initial of
                 Left err -> pure (Left err)
-                Right created ->
-                    withClusterReconcileSettlement
-                        created
-                        ( \managed _receipt _ ->
-                            case withPreparedClusterCordon prepared managed id of
-                                Left err -> pure (Left err)
-                                Right cordon -> do
-                                    cordonResult <- runClusterCordonCall backend cordon
-                                    case settleClusterCordon cordon cordonResult of
-                                        Left err -> pure (Left err)
-                                        Right applied -> do
-                                            initial <- runClusterReadinessCall backend applied
-                                            case settleClusterReadiness applied initial of
-                                                Left err -> pure (Left err)
-                                                Right evidence -> do
-                                                    fresh <- reprobeClusterReadiness evidence
-                                                    unready <- reprobeClusterReadiness evidence
-                                                    replacement <- reprobeClusterReadiness evidence
-                                                    failed <- reprobeClusterReadiness evidence
-                                                    let initialVersion = case clusterReadinessResultView initial of
-                                                            ClusterReadinessResultReady version _ -> version
-                                                            _ -> 0
-                                                        versionAdvanced = case fresh of
-                                                            Right version -> version > initialVersion
-                                                            Left _ -> False
-                                                        unreadyFailed = case unready of
-                                                            Left (Failure _) -> True
-                                                            _ -> False
-                                                        replacementConflicted = case replacement of
-                                                            Left (Conflict _) -> True
-                                                            _ -> False
-                                                        probeFailed = case failed of
-                                                            Left (Failure _) -> True
-                                                            _ -> False
-                                                    pure (Right (versionAdvanced, unreadyFailed, replacementConflicted, probeFailed))
-                        )
-                        (\_ _ _ _ -> pure (Left (fixtureFailure "created cluster became foreign")))
+                Right evidence -> do
+                    fresh <- reprobeClusterReadiness evidence
+                    setNodesRunning root False
+                    unready <- reprobeClusterReadiness evidence
+                    setNodesRunning root True
+                    replaceEveryNode root
+                    replacement <- reprobeClusterReadiness evidence
+                    FakeCluster.writeClusters root []
+                    failed <- reprobeClusterReadiness evidence
+                    let initialVersion = case clusterReadinessResultView initial of
+                            ClusterReadinessResultReady version _ -> version
+                            _ -> 0
+                        versionAdvanced = case fresh of
+                            Right version -> version > initialVersion
+                            Left _ -> False
+                        unreadyFailed = case unready of
+                            Left (Failure _) -> True
+                            _ -> False
+                        replacementConflicted = case replacement of
+                            Left (Conflict _) -> True
+                            _ -> False
+                        probeFailed = case failed of
+                            Left (Failure _) -> True
+                            _ -> False
+                    pure (Right (versionAdvanced, unreadyFailed, replacementConflicted, probeFailed))
 
 createdIdentityWins ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
     IO (Either ReconcileError (Word64, Word64, Word64))
 createdIdentityWins prepared =
-    withStrongClusterReports [ownedClusterReport "CREATED" "backend-identity-99"] $ \backend -> do
+    withClusterClient prepared $ \backend _root -> do
         result <- runClusterReconcileCall backend prepared
         pure $ do
             created <- settleClusterReconcile Nothing prepared result
@@ -579,82 +524,187 @@ cleanupCases ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
     IO (Either ReconcileError (Either ReconcileError (), Either ReconcileError ()))
 cleanupCases prepared =
-    withStrongClusterReports [ownedClusterReport "CREATED" "node-a", "REMOVED\n", "REPLACED replacement-node\n"] $ \backend -> do
-        createdResult <- runClusterReconcileCall backend prepared
-        case settleClusterReconcile Nothing prepared createdResult of
+    withClusterClient prepared $ \backend root -> do
+        removed <- cleanupOnce backend prepared (pure ())
+        case removed of
             Left err -> pure (Left err)
-            Right created ->
-                withClusterReconcileSettlement
-                    created
-                    ( \managed _receipt _ ->
-                        case withPreparedClusterCleanup prepared managed id of
-                            Left err -> pure (Left err)
-                            Right cleanup -> do
-                                removed <- runClusterCleanupCall backend cleanup
-                                replaced <- runClusterCleanupCall backend cleanup
-                                pure
-                                    ( Right
-                                        ( settleClusterCleanup cleanup removed
-                                        , settleClusterCleanup cleanup replaced
-                                        )
-                                    )
-                    )
-                    (\_ _ _ _ -> pure (Left (fixtureFailure "created cluster became foreign")))
+            Right removedOutcome -> do
+                replaced <- cleanupOnce backend prepared (FakeCluster.armReplacementAfter root "delete")
+                pure (fmap (\replacedOutcome -> (removedOutcome, replacedOutcome)) replaced)
 
-ownedClusterReport :: String -> String -> String
-ownedClusterReport status identity =
-    unwords
-        [ status
-        , identity
-        , "1"
-        , "2"
-        , "3"
-        , "4"
-        , "5"
-        , "6"
-        , replicate 64 'a'
+{- | Create the cluster, arrange one external event, and release it once.
+
+Written as one step because a release is only reachable from a settlement, and
+each of the two cases wants the same three moves with a different thing
+happening between the second and the third.
+-}
+cleanupOnce ::
+    StrongClusterBackend ->
+    PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
+    IO () ->
+    IO (Either ReconcileError (Either ReconcileError ()))
+cleanupOnce backend prepared arrange = do
+    createdResult <- runClusterReconcileCall backend prepared
+    case settleClusterReconcile Nothing prepared createdResult of
+        Left err -> pure (Left err)
+        Right created ->
+            withClusterReconcileSettlement
+                created
+                ( \managed _receipt _ ->
+                    case withPreparedClusterCleanup prepared managed id of
+                        Left err -> pure (Left err)
+                        Right cleanup -> do
+                            arrange
+                            observed <- runClusterCleanupCall backend cleanup
+                            pure (Right (settleClusterCleanup cleanup observed))
+                )
+                (\_ _ _ _ -> pure (Left (fixtureFailure "created cluster became foreign")))
+
+{- | Create the cluster, apply its wall, and hand back the applied cordon. -}
+withAppliedFixtureCordon ::
+    StrongClusterBackend ->
+    PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
+    ( AppliedClusterCordon scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId Provisioned ->
+      IO (Either ReconcileError result)
+    ) ->
+    IO (Either ReconcileError result)
+withAppliedFixtureCordon backend prepared consume =
+    withCordonAndApplied backend prepared (\_cordon applied -> consume applied)
+
+{- | The same, keeping the prepared cordon a second application can be run from. -}
+withCordonAndApplied ::
+    StrongClusterBackend ->
+    PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
+    ( PreparedClusterCordon scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId Provisioned ->
+      AppliedClusterCordon scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId Provisioned ->
+      IO (Either ReconcileError result)
+    ) ->
+    IO (Either ReconcileError result)
+withCordonAndApplied backend prepared consume = do
+    createdResult <- runClusterReconcileCall backend prepared
+    case settleClusterReconcile Nothing prepared createdResult of
+        Left err -> pure (Left err)
+        Right created ->
+            withClusterReconcileSettlement
+                created
+                ( \managed _receipt _ ->
+                    case withPreparedClusterCordon prepared managed id of
+                        Left err -> pure (Left err)
+                        Right cordon -> do
+                            cordonResult <- runClusterCordonCall backend cordon
+                            case settleClusterCordon cordon cordonResult of
+                                Left err -> pure (Left err)
+                                Right applied -> consume cordon applied
+                )
+                (\_ _ _ _ -> pure (Left (fixtureFailure "created cluster became foreign")))
+
+{- | A backend whose three cluster tools are this suite's own executable.
+
+§ KK's one interpreter launches whatever the typed configuration resolves with
+the exact argument vector a described command carries, so a fixture that wants
+the driver to have answered a particular way supplies a __program__ rather than a
+function beside it (§ NN). The program is "FakeCluster", entered by an
+environment variable held for exactly the span of this fixture.
+
+The node set the fixture's driver establishes is the plan's own, so the cluster
+this backend brings up is the one the prepared package declares rather than a
+topology the fixture guessed at.
+-}
+withClusterClient ::
+    PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
+    (StrongClusterBackend -> FilePath -> IO (Either ReconcileError result)) ->
+    IO (Either ReconcileError result)
+withClusterClient prepared consume =
+    withSystemTempDirectory "hostbootstrap-cluster-client" $ \temporary -> do
+        root <- canonicalizePath temporary
+        _ <- FakeCluster.newClusterFixture root (preparedClusterNodeNames prepared)
+        self <- getExecutablePath
+        discovered <- discoverStrongClusterBackend (clusterClientHostConfig self)
+        case discovered of
+            Left err -> pure (Left err)
+            Right backend ->
+                FakeCluster.withFakeClusterClient root (consume backend root)
+
+clusterClientHostConfig :: FilePath -> HostConfig
+clusterClientHostConfig self =
+    HostConfig
+        { hcSubstrate = Substrate LinuxCpu Arm64
+        , hcToolPaths =
+            Map.fromList
+                [ (Kind, fixtureExe self)
+                , (Docker, fixtureExe self)
+                , (Kubectl, fixtureExe self)
+                ]
+        }
+
+{- | Stand a cluster up at this plan's own name under no record of this project's.
+
+Written through the fixture's durable state rather than through the driver,
+because the whole point of the case that uses it is a cluster nothing this
+project wrote ever claimed.
+-}
+standUpUnclaimedCluster ::
+    PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
+    FilePath ->
+    IO ()
+standUpUnclaimedCluster prepared root = do
+    FakeCluster.writeClusters root [preparedClusterName prepared]
+    FakeCluster.writeNodes
+        root
+        [ (node, FakeCluster.ClusterNode (foreignIdentityFor index) True [])
+        | (index, node) <- zip [0 :: Int ..] (preparedClusterNodeNames prepared)
         ]
-        ++ "\n"
-#endif
 
-withStrongClusterReports :: [String] -> (StrongClusterBackend -> IO result) -> IO result
-withStrongClusterReports reports =
-    withStrongClusterCommandResults (map (\report -> ClusterCommandResult True report "") reports)
+foreignIdentityFor :: Int -> String
+foreignIdentityFor index = replicate 63 'a' <> show (index `mod` 10)
 
-withStrongClusterCommandResults :: [ClusterCommandResult] -> (StrongClusterBackend -> IO result) -> IO result
-withStrongClusterCommandResults reports consume = do
-    pending <- newIORef reports
-    let executor =
-            ClusterExec $ \arguments ->
-                case arguments of
-                    "sh" : "-c" : _ ->
-                        pure
-                            ( ClusterCommandResult
-                                True
-                                "HB_CLUSTER_TOOLS_V1\n/usr/bin/flock\n/usr/bin/python3\n"
-                                ""
-                            )
-                    _ -> do
-                        next <-
-                            atomicModifyIORef' pending $ \remaining ->
-                                case remaining of
-                                    [] -> ([], Nothing)
-                                    report : rest -> (rest, Just report)
-                        pure $ case next of
-                            Just report -> report
-                            Nothing -> ClusterCommandResult False "" "unexpected extra strong-cluster call"
-    discovered <-
-        discoverInjectedStrongClusterBackend
-            executor
-            -- The injected cluster tools are in-frame paths, not host paths:
-            -- the driver, runtime, and kubectl this backend names are files
-            -- inside the realized Linux substrate, reached from there. They stay
-            -- POSIX on every outer host, and the backend's own absoluteness
-            -- check is POSIX for the same reason.
-            "/test/bin/kind"
-            "/test/bin/docker"
-            "/test/bin/kubectl"
-    either (fail . show) consume discovered
+-- | Stop or start every node container the fixture's runtime holds.
+setNodesRunning :: FilePath -> Bool -> IO ()
+setNodesRunning root running = do
+    held <- FakeCluster.readNodes root
+    FakeCluster.writeNodes
+        root
+        [(name, node{FakeCluster.nodeRunning = running}) | (name, node) <- held]
+
+-- | Put a different container at every node's name, outside any transaction.
+replaceEveryNode :: FilePath -> IO ()
+replaceEveryNode root = do
+    held <- FakeCluster.readNodes root
+    FakeCluster.writeNodes
+        root
+        [ (name, node{FakeCluster.nodeIdentity = FakeCluster.replacementIdentity})
+        | (name, node) <- held
+        ]
+
+{- | Remove every durable record under this run's own state directory.
+
+Through the protected store's own public operations rather than by deleting
+files, because what the case needs is the standing an operator leaves by
+discarding this project's origin while the cluster it made stays up — and that
+standing is "a record is not there", which is exactly what a compare-and-delete
+establishes.
+-}
+forgetEveryDurableRecord :: FilePath -> IO ()
+forgetEveryDurableRecord stateDirectory = do
+    opened <- openProtectedStore stateDirectory
+    store <- either (fail . show) pure opened
+    outcome <- withProtectedEntry store $ \session -> do
+        listed <- listProtectedRecords session
+        case listed of
+            Left failure -> pure (Left failure)
+            Right keys -> do
+                forgotten <- traverse (forgetOne session) keys
+                pure (sequence_ forgotten)
+    either (fail . show) pure outcome
+  where
+    forgetOne session key = do
+        current <- readProtectedRecord session key
+        case current of
+            Left failure -> pure (Left failure)
+            Right Nothing -> pure (Right ())
+            Right (Just record) ->
+                fmap (fmap (const ()))
+                    (compareAndDeleteProtectedRecord session key (ExpectVersion (protectedRecordVersion record)))
 
 withPlannedClusterFixture ::
     ( forall projectId planId clusterId clusterFrame.
@@ -678,13 +728,11 @@ withClusterFixtureM ::
 withClusterFixtureM =
     withClusterFixtureUsingM ReprobeAnswers
 
-#if !defined(mingw32_HOST_OS)
 withClusterPlanFixtureM ::
     ClusterPlanPreparedConsumer summary ->
     IO (Either ReconcileError summary)
 withClusterPlanFixtureM =
     withClusterFixtureUsingPlanM ReprobeAnswers
-#endif
 
 withHarnessClusterFixtureM ::
     HarnessClusterPreparedConsumer summary ->

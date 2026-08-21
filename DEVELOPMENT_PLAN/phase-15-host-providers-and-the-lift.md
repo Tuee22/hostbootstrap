@@ -1322,6 +1322,10 @@ The remaining provider operations on the same face.
 
 - A share is an owned object of its own: its device name is derived from the share binding, its origin is
   recorded before the device is attached, and its identity is bound from the device the provider reports.
+- The share's instance is observed on **both** sides of the device readback, exactly as a guest crossing
+  observes it on both sides of the command it runs. A device readback answers for the device and for
+  nothing about whose instance now carries it, so the standing re-taken before the binding is what refuses
+  an instance replaced inside the attachment.
 - Stop and delete re-enter from the durable record, re-observe through the report, act through the one
   interpreter, and forget the record only over a reported absence.
 - Delete leaves a same-named replacement untouched, because clause 4 compares the identity rather than the
@@ -1343,15 +1347,21 @@ Reaching them against a real client found two defects the values alone could not
   observation after it reported "the exact managed provider remains present". Clause 4 compares the
   identity, so that object is somebody else's: the observation now compares the bound identity and
   reports a replacement, which leaves the object standing and forgets no record.
+- A share whose *instance* was taken between the attachment and the binding bound anyway, because the
+  readback that followed the attachment asked about the device. The device is still there and still
+  answers for the three properties the declaration names; the instance around it is somebody else's.
+  The standing is now re-taken after the readback, and `shareObservationReplacementCase` reaches that
+  window the only way it can be reached — the provider client itself puts a different instance at the
+  name after the `device-add` it accepted, because the transaction holds the store's exclusive entry
+  throughout and nothing outside it can act inside that window (§ NN).
 
 Dated 2026-08-20 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): canonical
-`cabal test all --ghc-options=-Werror` from `core/` passed 2,227/2,227 in 310.17 seconds.
+`cabal test all --ghc-options=-Werror` from `core/` passed 2,229/2,229 in 305.82 seconds, including
+`shareObservationReplacementCase`.
 
 #### Remaining Work
 
-None. One neighbouring contract this sprint deliberately does not claim — a share re-observing the
-*instance's* own standing after its device readback — is carried in the phase's own Remaining Work
-below, because it is a property of the boundary rather than of these three drivers.
+None.
 
 ### Sprint 15.34: Direct canonical-root admission [Done]
 
@@ -1459,6 +1469,55 @@ Dated 2026-08-20 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0
 
 None.
 
+### Sprint 15.36: The inherited durability statement [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Ownership.hs`,
+`core/hostbootstrap-core/test/ProviderSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_invariant.md`,
+`documents/architecture/durable_state.md`
+
+#### Objective
+
+Say once, and hold mechanically, whose contract the provider boundary's durability is.
+
+#### Objective boundary
+
+The protected store's own durability contract — that a write publishes a fully written, flushed temporary
+by atomic rename, and that an interrupted publication leaves either the old record or the new one — is the
+[four-ownership-clauses-and-host-local-reservations phase](phase-14-ownership-clauses-and-reservations.md)'s,
+and `AuthoritySpec` covers it. This sprint states the inheritance at the provider boundary and adds no
+second statement of the contract itself.
+
+#### Deliverables
+
+- The provider ownership driver's module documentation states that every durable byte it publishes is the
+  store's compare-and-swap, so the partial-write, partial-fsync, and partial-unlink windows are the
+  store's contract rather than a second one stated here.
+- A source guard holds the inheritance: neither the driver nor the backend names a mutating filesystem
+  primitive, so no instruction point exists at which a second durability window could be reintroduced
+  (§ NN), and the driver's durable publications really are the store's compare-and-swap and
+  compare-and-delete.
+
+#### Validation
+
+The guard is an assertion over the sources themselves, so it fires on a reintroduced write rather than on
+a fixture's cooperation. It names the mutating set exactly — the writers, the renamers, the unlinkers, the
+directory creators, and the handle openers and flushers — and leaves the read-only observations the Direct
+admission takes unguarded, because a `getPermissions` changes nothing on disk.
+
+The positive half matters as much as the negative one: a guard that only forbade writes would stay quiet
+over a driver that had stopped publishing anything at all, so it also asserts that the driver reaches the
+store's compare-and-swap and compare-and-delete.
+
+Dated 2026-08-20 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): canonical
+`cabal test all --ghc-options=-Werror` from `core/` passed 2,229/2,229 in 305.82 seconds.
+
+#### Remaining Work
+
+None.
+
 ## Static Validation Evidence
 
 On 2026-08-08, macOS 26.5 arm64 with GHC 9.12.4 and Cabal 3.16.1.0 passed
@@ -1491,6 +1550,14 @@ provider lifecycle family that this phase's final sprints made host-portable. Th
 gate-host record rather than a substrate declaration: it is the host static gate run natively on a
 Windows outer host, and it neither substitutes for the declared native Linux/x86_64 component build nor
 for the live KVM/Incus run.
+
+On 2026-08-20, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0 passed
+`cabal test all --ghc-options=-Werror` from `core/`: all 2,229 tests passed in 305.82 seconds, including
+the share's instance recheck and the inherited durability guard this phase's last two sprints add. The
+same host passed `poetry run python -m hostbootstrap.check_code` and
+`poetry run python -m hostbootstrap.test_all` at 231. § II makes this a gate-host record rather than a
+substrate declaration: it is the host static gate run natively on a Windows outer host, and it neither
+substitutes for the declared native Linux/x86_64 component build nor for the live KVM/Incus run.
 
 ## Phase-Level Baseline Acceptance
 
@@ -1544,27 +1611,18 @@ another authority owns and carry the claim that closes its outcome-unknown windo
 resumption vocabulary that decides where a transaction stands.
 
 The adoption itself is now done. Sprint 15.31 moved the backend onto the one interpreter and retired its
-injected executor, Sprints 15.32 and 15.33 put every provider operation on the seam, Sprint 15.34 made
-Direct's admission a decision this binary applies, and Sprint 15.35 removed the interpreter program the
-boundary shipped.
+injected executor, Sprints 15.32 and 15.33 put every provider operation on the seam — including the
+instance standing a share re-takes after its device readback — Sprint 15.34 made Direct's admission a
+decision this binary applies, Sprint 15.35 removed the interpreter program the boundary shipped, and
+Sprint 15.36 says once whose contract the boundary's durability is and holds the statement with a guard.
 
-Three things the phase still owes, none of which is a sprint's own subject:
+One thing is still owed, and it is not a sprint's own subject:
 
 - **the declared live run.** § II makes the static gate a gate-host record, not a substrate
   declaration. The live client now type-checks against the boundary on every gate host, which is what
   caught its drift, but type-checking is not running: the native Linux/x86_64 KVM/Incus baseline
   acceptance below has not been performed against the boundary as it now stands, and it is the only thing
   keeping this phase `Active`.
-- **the share's instance recheck.** Attaching a share re-observes the *device* it binds on both sides of
-  the attachment, and re-observes the instance's standing before it, but not after the device readback.
-  An instance replaced inside that window is caught by the next transaction rather than by that one. No
-  record binds an object that was not observed; what is missing is the earlier refusal.
-- **the inherited durability statement.** The provider driver's durability is now the protected store's,
-  so the partial-write, partial-fsync, and partial-unlink windows the retired interpreter program was
-  patchable at have no instruction point here. The store's own contract is
-  [phase 14](phase-14-ownership-clauses-and-reservations.md)'s and `AuthoritySpec` covers it; what is
-  owed is one statement, in that phase's terms, that this boundary inherits it — rather than a
-  reintroduced patch point (§ NN).
 
 Sprints 15.6 through 15.19 describe the mechanism their own boundaries hold today. § A rewrites a phase in
 place rather than appending a correction, so those sprints are restated in the same change that moves them

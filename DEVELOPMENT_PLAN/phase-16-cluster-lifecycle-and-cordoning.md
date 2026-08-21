@@ -1,7 +1,7 @@
 # Phase 16 — Cluster lifecycle, budgets, and cordoning
 
 **Status**: Active
-**Current sprint**: Sprint 16.41 — The cluster ownership driver
+**Current sprint**: Sprint 16.45 — The readiness, cordon, and cleanup drivers
 **Depends on**: Phase 12 (the generic plan-indexed budget boundary), Phase 14 (the four ownership clauses
 and the ownership seam), Phase 15 (host providers and the self-reference lift)
 **Substrates**: linux-cpu
@@ -1543,16 +1543,6 @@ the [host-portability acceptance phase](phase-28-host-portability-acceptance.md)
 
 None.
 
-## Static Validation Evidence
-
-On 2026-08-10, the published
-`docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64` image at
-`sha256:3634916e85b1fda411ae671a4bca2f72745e0bd106e2e9efebccc25415e0bc49`, running Linux
-6.8.0-100-generic on aarch64 with GHC 9.12.4 and Cabal 3.16.1.0, passed a clean
-`cabal test all --ghc-options=-Werror` from `core/`: all 1,835 tests passed in 154.12 seconds. A supporting
-macOS arm64 run passed the same 1,835 tests in 346.23 seconds. The Linux result closes the static portion of
-the phase gate; the exact composed static-plus-live result is recorded below.
-
 ### Sprint 16.40: The read-only cluster status is a decision [Done]
 
 **Status**: Done
@@ -1602,44 +1592,394 @@ host-portability the next sprint's driver is what removes.
 
 None.
 
-### Sprint 16.41: The cluster ownership driver [Planned]
+### Sprint 16.41: The described cluster commands [Done]
 
-**Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
-`core/hostbootstrap-core/internal/cluster-backend/HostBootstrap/Cluster/Backend/Internal.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Command.hs`,
+`core/hostbootstrap-core/test/ClusterCommandSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/cluster_lifecycle.md`
+
+#### Objective
+
+Every cluster effect as a value in the one closed effect vocabulary.
+
+#### Objective boundary
+
+This sprint renders the argument vectors and nothing else. What an answer *means* is Sprint 16.42's, where
+a transaction *stands* is Sprint 16.43's, and which clauses are held around them is Sprint 16.44's. The
+split is § G's budget: a module that both rendered a vector and decided what came back would be one sprint
+carrying two contracts, and the rendering is exactly the half a suite can compare by application.
+
+#### Deliverables
+
+- `HostBootstrap.Cluster.Command` renders every cluster effect as a `HostCommand`: the driver's listing,
+  kubeconfig read, creation, and removal; the container runtime's node listing, identity readback, run-state
+  readback, and cordon application; and the API server's readiness and node queries.
+- Three tools answer, and which one a question belongs to is a property of the question. The driver owns
+  the cluster as a named object, the container runtime owns the node containers clause 3's identity comes
+  from, and the API server owns a readiness view that is not an ownership fact at all.
+- A node container is matched on its exact whole name, anchored on both ends and untruncated, because a
+  substring match makes "which container is this node" depend on what else exists and a shortened
+  identifier is a prefix rather than an identity.
+- A cordon addresses the container identity the durable record bound rather than the node's name, which is
+  the distinction a replacement erases.
+- The kubeconfig an API question needs travels on standard input and is named as `/dev/stdin`, so a live
+  control-plane credential never appears in a process listing.
+
+#### Validation
+
+Every case is an equality between a rendered command and the vector it is supposed to be, which is only
+possible because a renderer cannot run anything (§ NN). Three properties are asserted over the whole set
+rather than case by case, because each is true of every command until one day it is not: every command
+names one of exactly three tools, every command is interpreted by a process of the outer host, and the only
+two commands carrying standard input are the two that must not put a credential in `argv`.
+
+Dated 2026-08-20 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): canonical
+`cabal test all --ghc-options=-Werror` from `core/` passed 2,336/2,336 in 300.51 seconds, including the
+eighteen cases of `ClusterCommandSpec`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.42: The cluster report classifiers [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Report.hs`,
+`core/hostbootstrap-core/test/ClusterReportSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/cluster_lifecycle.md`
+
+#### Objective
+
+What each answer means, as a total function of the bytes that came back.
+
+#### Objective boundary
+
+This sprint classifies answers and holds no clause. Where a transaction *stands* given those answers is
+Sprint 16.43's, and which clauses are held around them is Sprint 16.44's. The status path Sprint 16.40
+already made a decision keeps its own classifier until Sprint 16.44 moves it onto this one, because § C
+keeps the plan describing the boundary the repository actually has rather than the one it is about to.
+
+#### Deliverables
+
+- `HostBootstrap.Cluster.Report` carries one classifier per question Sprint 16.41 asks: the cluster
+  listing, the container standing at a node's exact name, that container's own identifier read back, its
+  run state, the kubeconfig body, the API server's readiness answer, and the node list it returns.
+- The framing refusals are one computation rather than one per caller: a non-zero exit, anything on
+  standard error, a body that does not end in exactly one newline, a carriage return, a byte outside
+  ASCII, an empty row, and a line past the admitted bound are each the answering tool contradicting
+  itself. Empty output is an empty listing rather than a malformed one, because a tool that names nothing
+  writes nothing.
+- Telling "the tool says this is not here" apart from "the tool did not answer" is the classifier's whole
+  job, because the first authorizes a mutation and the second must not.
+- Two answers deliberately do not refuse, and they are the two that are facts about the cluster rather than
+  about the tool. An API server that will not answer its readiness endpoint is `ApiNotReady`, because a
+  control plane that has not come up is what a readiness poll is polling for; and a well-formed node list
+  naming a different node set is `NodesUnexpected`, because it is a true statement about a cluster this run
+  is not looking at yet. A malformed node document is still a refusal.
+
+#### Validation
+
+Every classification and every refusal is reached by application over values, so none needs a process
+arranged to produce the shape it is about (§ NN). The forty-eight cases of `ClusterReportSpec` run and are
+counted on every gate host, because a function applied to a value needs no POSIX (§ JJ).
+
+Dated 2026-08-20 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): canonical
+`cabal test all --ghc-options=-Werror` from `core/` passed 2,336/2,336 in 300.51 seconds, including the
+forty-eight cases of `ClusterReportSpec`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.43: The cluster resumption decisions [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Resume.hs`,
+`core/hostbootstrap-core/test/ClusterResumeSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+Where a cluster transaction stands, as a total function of three values.
+
+#### Deliverables
+
+- A closed standing vocabulary over the four prefixes of the one clause order: no record and nothing
+  there, a record whose creating command has not taken effect, an object standing under this record with
+  clause 3 unheld, and this record's own object with all three clauses held.
+- **A cluster carries no claim, and the record's own existence is what stands in for one.** A provider
+  stamps this run's owner tag onto the instance as it creates it; the cluster driver has nowhere to put
+  such a tag, because what it creates is a name and a set of node containers and neither carries a byte
+  this project chose. What answers instead is that a record is published only from `ClusterNothingDone` —
+  the driver naming no cluster and the runtime naming no container — inside the store's exclusive entry, so
+  a published record is proof that this transaction found the name free and took it.
+- The two authorities must **agree** for that to be a standing. A driver that names the cluster while the
+  runtime names no container, and a container that outlives the cluster the driver names, are each one
+  authority contradicting the other, and each is `ClusterOutcomeUnknown` or its bound-record equivalent
+  rather than a state a clause could be held over.
+- Identity closes the window in the other direction. Clause 3 binds the node container's own identifier, so
+  a cluster deleted and recreated out of band under the same name presents a different identifier and is a
+  replacement rather than the same object.
+- `nodeStanding` is the same decision with the driver's answer removed, for a node that is an owned object
+  *inside* the cluster rather than the cluster itself.
+
+#### Validation
+
+Every standing and every conflict is reached by application over values, including the outcome-unknown
+window between the durable record and the identity binding — the one interval a live run cannot be steered
+into (§ NN). The record values are built through the ownership vocabulary's own constructors, so no case
+asserts about a record shape the store could never hold.
+
+Dated 2026-08-20 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): canonical
+`cabal test all --ghc-options=-Werror` from `core/` passed 2,336/2,336 in 300.51 seconds, including the
+twenty-six cases of `ClusterResumeSpec`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.44: The owned cluster and its reconcile driver [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Ownership.hs`,
+`core/hostbootstrap-core/test/ClusterOwnershipSpec.hs`,
+`core/hostbootstrap-core/test/FakeCluster.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+The cluster as an owned object, and the one transaction that creates it.
+
+#### Objective boundary
+
+This sprint lands the object, its observation, and the create transaction. Readiness, cordon, and cleanup
+are Sprint 16.45's — three transactions over the same object, and § G's budget makes them their own
+session rather than a second contract inside this one.
+
+#### Deliverables
+
+- `OwnedCluster` is the cluster a transaction owns: its declared name, the control-plane node whose
+  container carries clause 3's identity, every other declared node, the configuration snapshot where the
+  plan declares one, the file this run has opened for the credential, and this run's own owner binding.
+- **Every node is an owned object.** Clause 3 binds exactly one identity per record, so the cluster's own
+  record binds the control-plane container and each other node carries its own record beside it — exactly
+  as a share is an object inside a provider instance. That is what lets a later cordon address a node by
+  the identity this run bound rather than by the name a replacement inherits.
+- **Every record is published before the creating command.** One `kind create cluster` brings every node
+  container into existence at once, so there is no per-node moment at which a record could be written
+  first; all of them are published over an explicit absence before the create runs and bound afterwards
+  from what the runtime reports. Each publication is its own short-lived entry rather than a nest of them,
+  because clause 2's publication is idempotent and re-entering to bind re-asserts the same fact.
+- The observation asks the node's name **twice** — once of the listing and once of the inspection — rather
+  than asking the listing and then re-asking the identifier it produced. Addressing the second question by
+  the identifier would confirm only that the identifier still resolves; asking the name is what makes a
+  container replaced between the two answer differently.
+- The cluster-creating effect between the published records and the bound identities travels as a
+  described `HostCommand`, so the outcome-unknown window keeps its durable meaning and the driver keeps no
+  way to run a string.
+- Reconcile answers with three end states an operator can tell apart: a first creation, a resumed entry
+  whose cluster already existed under this record, and an entry that found all clauses held. The
+  already-owned path still re-observes every worker, because the cluster's own identity says nothing about
+  the other nodes.
+- `FakeCluster` is the driver, container runtime, and API server as one real process — this suite's own
+  executable, entered by an environment variable held for exactly the span of a fixture. One program
+  serves all three tools because the argument vector says which one it is being asked as, and a vector it
+  does not recognize is a refusal rather than a silent success.
+
+#### Validation
+
+Every decision is covered by application over values, and the clause-holding effects run against a real
+protected store in a temporary directory and a real cluster client process, so no case reaches a
+substitution point and none can pass against one (§ NN).
+
+Three cases are the ones a fake could not have produced honestly. A client that really performs its create
+and really dies before reporting it is recovered on the next entry **without creating again**, and the
+mutation log proves the count. A cluster standing at the name under no record of this project's is refused
+and leaves the mutation log empty. And a worker whose container is replaced under an otherwise owned
+cluster is refused, which is the case the per-node records exist for.
+
+The family runs and is counted on every gate host, because the client is this suite's own executable and
+its durable state is ordinary files (§ JJ).
+
+Dated 2026-08-20 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): canonical
+`cabal test all --ghc-options=-Werror` from `core/` passed 2,336/2,336 in 300.51 seconds, including the
+fifteen cases of `ClusterOwnershipSpec`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.45: The readiness, cordon, and cleanup drivers [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Ownership.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Command.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Report.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon/Foundation.hs`,
+`core/hostbootstrap-core/test/ClusterOwnershipSpec.hs`,
+`core/hostbootstrap-core/test/ClusterCommandSpec.hs`,
+`core/hostbootstrap-core/test/FakeCluster.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/cluster_lifecycle.md`,
 `documents/architecture/ownership_invariant.md`
 
 #### Objective
 
-The cluster's clauses, held through the one seam.
+The remaining cluster operations on the same face.
+
+#### Objective boundary
+
+Three transactions over the object Sprint 16.44 landed, and nothing else. The interpreter program the
+cluster backend still ships is Sprint 16.46's, and this sprint neither removes nor reaches it.
 
 #### Deliverables
 
-- Reconcile, cordon, readiness, and cleanup hold their clauses through the seam's producers and the row
-  the frame declares.
-- The cluster-creating effect between the origin record and the identity binding travels as a described
-  `HostCommand`, so the outcome-unknown window keeps its durable meaning and the driver keeps no way to
-  run a string.
-- The read-only status observation is a pure classification over a bounded run: the driver builds the
-  argument vector, the runner runs it, and a total function turns the result into a decision.
-- Identity is the control-plane node container's own, as it is today; what changes is where the
-  comparison lives, not what it compares.
+- **One re-entry step, used by all three.** Each transaction begins by asking the driver whether the
+  cluster is still named and then asking the runtime about every declared node under that node's own
+  record, answering with the keys as well as the identities. A transaction that goes on to forget records
+  forgets exactly the ones it re-observed, rather than deriving them a second time and having two answers
+  to which key a node's record is under.
+- Readiness re-enters from the durable record, asks the API server through the kubeconfig the driver hands
+  back, and answers with the total node-readiness classification. A node replaced while the probe ran is a
+  conflict rather than a readiness. None of its four answers is a fault: a control plane that has not come
+  up, a node that has not joined, and a node set the plan does not declare are three different true
+  statements about a live cluster, and a poll that treated any of them as a refusal could not wait.
+- Cordon applies each declared limit to the container identity the durable record bound rather than to the
+  node's name, and re-observes every node on both sides of the application. The wall itself is the one
+  budget renderer's value: the argv-shaped renderer is now that list with the verb in front and the
+  container behind it, so what a cluster budget caps is stated once and this driver only decides where it
+  lands.
+- Cleanup re-observes every owned node under the record, removes the cluster through the one interpreter,
+  and forgets the records only over a reported absence. A same-named replacement is left standing, because
+  clause 4 compares the identity rather than the name. Two standings short of ownership are releases rather
+  than refusals — nothing at all is nothing to do, and a record published over a cluster that was never
+  created is forgotten with no command issued — while a cluster created and never bound authorizes no
+  removal at all, because no identity has been bound for clause 4 to compare.
 - The tools the driver reaches come from the frame table, so a tool it drives and a row that holds its
-  clauses are declared in one place.
+  clauses are declared in one place. The declaration is exact in both directions: a tool named by a
+  described command and missing from it, and a tool named in it that no command reaches, are each a
+  failure rather than a silence.
 
 #### Validation
 
-Every classification is covered by application over values, including each conflict and each refusal. The
-clause-holding effects are exercised against the real kernel in a temporary directory. No case reaches a
-substitution point, so none can pass against one (§ NN).
+Every conflict is reachable by application over values, and the clause-holding effects run against a real
+protected store and a real cluster client process.
+
+Three of the fifteen new cases are the ones a fake could not have produced honestly, and each is reached by
+the client itself doing the thing rather than by a patch point (§ NN). A node replaced *while the readiness
+probe ran* is reached by the API server putting a different container at the name after the node list it
+answered — the window the transaction holds the store's exclusive entry across, which nothing outside it can
+act inside. A node replaced *while the wall was applied* is reached the same way, after the first `update`
+the runtime accepted. And a container that took a node's name *during the removal* is reached by the driver
+performing the delete and the runtime then standing something else at the control plane's name; the case
+asserts both that the replacement is left exactly as it was found and that no record was forgotten over it.
+
+Two standings the earlier sprints could not reach are now reachable, and both by a client that really
+refuses rather than by durable state written behind the driver's back: a create the driver refused without
+performing leaves clause 2 durable and nothing else, which release forgets with no command issued; and a
+create the client performed and then died reporting leaves a cluster created and never bound, which release
+refuses.
+
+Dated 2026-08-21 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): canonical
+`cabal test all --ghc-options=-Werror` from `core/` passed 2,351/2,351 in 309.21 seconds, including the six
+readiness, three cordon, and five release cases of `ClusterOwnershipSpec` and the exact tool declaration in
+`ClusterCommandSpec`.
 
 #### Remaining Work
 
-All adoption, tests, guards, and documentation.
+None.
 
-### Sprint 16.42: The direct-Colima ownership driver [Planned]
+### Sprint 16.46: The cluster's interpreter program is gone [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Ownership.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Observation/Internal.hs`,
+`core/hostbootstrap-core/hostbootstrap-core.cabal`,
+`core/hostbootstrap-core/test/ClusterBackendSpec.hs`,
+`core/hostbootstrap-core/test/ClusterReconcileSpec.hs`,
+`core/hostbootstrap-core/test/FakeCluster.hs`,
+`core/hostbootstrap-core/test/CoverageManifest.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/cluster_lifecycle.md`,
+`documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+The cluster boundary carries no program written in another language.
+
+#### Objective boundary
+
+The cluster's own. The Colima programs are Sprint 16.47's and the guest alias program is the
+[worked-demo phase](phase-24-worked-demo.md)'s, and neither is touched here.
+
+#### Deliverables
+
+- The cluster backend resolves no interpreter and no locking front end, because every clause it holds is
+  the seam's and every effect it performs is a described command. The 646-line embedded program, the
+  protocol its reports were parsed back out of, and the eight-field kernel-object binding those reports
+  carried are all gone; a binding is now the one thing clause 3 binds, which is the container identity.
+- **The backend is a join rather than a driver.** What is left is deriving the owned object from the
+  prepared plan-owned package, opening the protected store under the plan's own state directory, taking the
+  exclusive entry once per transaction, and mapping the driver's answer onto the observation the reconciler
+  classifies. The four calls are one transaction shape with four continuations, so no operation can come to
+  hold a different notion of what its exclusive entry is.
+- **A backend is a value the declaration decides**, exactly as the provider's is. Discovery takes the typed
+  `HostConfig`, admits it when the three tools the cluster drives are resolved in it, and probes nothing:
+  what a discovery once proved — a writable state directory, a locking front end, an interpreter — is the
+  protected store's own to establish when the first transaction enters it.
+- The private component's injected executor goes with it, and so does the component: a suite that wants the
+  driver to have been answered a particular way supplies a program the one interpreter can launch, not a
+  function it can call.
+- **`ClusterUnhealthy` keeps a producer.** An owned cluster is asked one further question the creation path
+  does not need — whether every node container the record bound is still running — because that is the
+  container runtime's answer rather than the API server's, and an owned cluster whose containers are stopped
+  is a conflict an operator resolves rather than something to recreate. `ownedClusterRunning` is that
+  question, and it is what keeps the run-state command and its classifier from being a vocabulary nobody
+  reaches.
+- A source guard holds the absence, naming the [rationale](rationale.md) entry that says why a program in
+  a string is refused.
+
+#### Validation
+
+The guard fires on a reintroduced program and stays quiet on the legitimate uses elsewhere in the tree. It
+names the retired spellings exactly — the two host-tool constructors the program resolved, the one it
+deliberately refused, the interpreter's own program flag, and the injected executor — and it asserts the
+positive half too: a guard that only forbade the old names would stay quiet over a backend that had stopped
+driving anything at all, so it also requires the described commands and the clause-holding driver to still
+be reached, and that the retired private component is no longer in the tree.
+
+The cluster family runs and is counted on every gate host now that the program only a POSIX host could
+interpret is gone (§ JJ). Two consequences are worth stating. `ClusterBackendSpec`'s conditional row family
+is deleted from `CoverageManifest` rather than shrunk, because its subject — a `flock(2)` namespace, an
+inherited no-follow descriptor, and `/proc/self/fd` paths — no longer exists; and `ClusterReconcileSpec`'s
+settlement, readiness, and cleanup cases are no longer compiled away on a Windows outer host, so the twelve
+that a native Windows gate could not previously run now run there.
+
+Every one of those cases reaches its standing by arranging what the tools report rather than by handing a
+canned protocol line to an injected function (§ NN). A cluster nothing claims is a cluster the fixture's
+runtime really holds; a driver contradicting its own listing really lists the same name twice; an owned
+cluster that went unhealthy really has stopped containers; a replacement really takes a node's name between
+two commands; and the standing an operator leaves by discarding this project's origin while its cluster
+stays up is reached through the protected store's own compare-and-delete.
+
+Dated 2026-08-21 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): canonical
+`cabal test all --ghc-options=-Werror` from `core/` passed 2,328/2,328 in 318.16 seconds, and
+`poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` passed at
+231. The total is lower than the previous run's and that is the point: forty-six cases whose subject was the
+retired program are gone, and twelve that a Windows gate host previously compiled away now run.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.47: The direct-Colima ownership driver [Planned]
 
 **Status**: Planned
 **Implementation**: `core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Internal.hs`,
@@ -1677,7 +2017,7 @@ crash windows that a fault-injection argument reaches today are named as owed ra
 
 All adoption, tests, guards, and documentation.
 
-### Sprint 16.43: The live cluster gate as a harness case [Planned]
+### Sprint 16.48: The live cluster gate as a harness case [Planned]
 
 **Status**: Planned
 **Implementation**: `core/hostbootstrap-core/app/Main.hs`,
@@ -1712,6 +2052,71 @@ and result with the phase acceptance below.
 
 All implementation, tests, and documentation.
 
+### Sprint 16.49: The enumeration names what the binary drives [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
+`core/hostbootstrap-core/test/HostToolSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/build_and_run_model.md`
+
+#### Objective
+
+Narrow the `HostTool` enumeration to the tools the binary still delegates to, and pin it there.
+
+#### Deliverables
+
+- `Python3`, `Flock`, and `Lockf` leave the enumeration. § K admits a tool the project genuinely
+  **delegates** to; these three are how an interpreter and a locking front end performed ownership on the
+  binary's behalf, and Sprints 16.44 and 16.47 replace that with the binary's own typed operation over one
+  platform row. The names go with the last driver that needed them.
+- `requiredClusterTools` loses `Flock` and `Python3`, which is the last host-side site. The alias driver's
+  `Flock` is a local `ExclusionTool` and its Python and lock front ends are the guest's own, reached through
+  one absolute host-provider command — § K's carve-out, on a different axis, unaffected by this sprint.
+- `Lockf` leaves with them. It exists only as the discriminator that refuses a host offering `lockf` where
+  `flock` is required, and a discriminator for a front end the binary no longer resolves has nothing to
+  discriminate.
+- `HostToolSpec` gains the **exact** membership pin — `allHostTools` compared against the complete list,
+  not a subset check — so a tool the project does not delegate to cannot re-enter the set. That is the
+  absence guard for the shape this sprint removes (§ I), which is why it ships here rather than with the
+  boundary.
+
+#### Validation
+
+`HostToolSpec`'s exact membership assertion, proved non-vacuous by naming the complete set rather than a
+lower bound; `ClusterBackendSpec` and `ProviderBackendSpec` over the narrowed discovery.
+
+#### Remaining Work
+
+All narrowing, the pin, and documentation.
+
+## Static Validation Evidence
+
+On 2026-08-10, the published
+`docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64` image at
+`sha256:3634916e85b1fda411ae671a4bca2f72745e0bd106e2e9efebccc25415e0bc49`, running Linux
+6.8.0-100-generic on aarch64 with GHC 9.12.4 and Cabal 3.16.1.0, passed a clean
+`cabal test all --ghc-options=-Werror` from `core/`: all 1,835 tests passed in 154.12 seconds. A supporting
+macOS arm64 run passed the same 1,835 tests in 346.23 seconds. The Linux result closes the static portion of
+the phase gate; the exact composed static-plus-live result is recorded below.
+
+On 2026-08-20, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0 passed
+`cabal test all --ghc-options=-Werror` from `core/`: all 2,336 tests passed in 300.51 seconds, including
+the described cluster commands, the cluster report classifiers, the cluster resumption decisions, and the
+owned cluster's reconcile driver against a real protected store and a real cluster client process. The
+same host passed `poetry run python -m hostbootstrap.check_code` and
+`poetry run python -m hostbootstrap.test_all` at 231. § II makes this a gate-host record rather than a
+substrate declaration, and it does not substitute for the composed live gate below.
+
+On 2026-08-21, the same Windows host and toolchain passed `cabal test all --ghc-options=-Werror` from
+`core/`: all 2,351 tests passed in 309.21 seconds, including the readiness, cordon, and release
+transactions Sprint 16.45 adds — each against a real protected store and a real cluster client process,
+with the three replacement windows reached by that client rather than by a patch point. The same host
+passed `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
+at 231. § II makes this a gate-host record rather than a substrate declaration, and it does not substitute
+for the composed live gate below.
+
 ## Phase-Level Baseline Acceptance
 
 After the implementation sprints pass their static checks, run the exact phase gate on a disposable
@@ -1739,66 +2144,24 @@ half created `hostbootstrap-phase16-19575488ca6342ebaeebffa2`, waited for its no
 performed the required read-only node observation, deleted the cluster, proved its labelled node containers
 absent, and re-read the durable-root sentinel with its exact original contents.
 
-### Sprint 16.44: The enumeration names what the binary drives [Planned]
-
-**Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
-`core/hostbootstrap-core/test/HostToolSpec.hs`
-**Substrates**: linux-cpu
-**Docs to update**: `documents/architecture/build_and_run_model.md`
-
-#### Objective
-
-Narrow the `HostTool` enumeration to the tools the binary still delegates to, and pin it there.
-
-#### Deliverables
-
-- `Python3`, `Flock`, and `Lockf` leave the enumeration. § K admits a tool the project genuinely
-  **delegates** to; these three are how an interpreter and a locking front end performed ownership on the
-  binary's behalf, and Sprints 16.41 and 16.42 replace that with the binary's own typed operation over one
-  platform row. The names go with the last driver that needed them.
-- `requiredClusterTools` loses `Flock` and `Python3`, which is the last host-side site. The alias driver's
-  `Flock` is a local `ExclusionTool` and its Python and lock front ends are the guest's own, reached through
-  one absolute host-provider command — § K's carve-out, on a different axis, unaffected by this sprint.
-- `Lockf` leaves with them. It exists only as the discriminator that refuses a host offering `lockf` where
-  `flock` is required, and a discriminator for a front end the binary no longer resolves has nothing to
-  discriminate.
-- `HostToolSpec` gains the **exact** membership pin — `allHostTools` compared against the complete list,
-  not a subset check — so a tool the project does not delegate to cannot re-enter the set. That is the
-  absence guard for the shape this sprint removes (§ I), which is why it ships here rather than with the
-  boundary.
-
-#### Validation
-
-`HostToolSpec`'s exact membership assertion, proved non-vacuous by naming the complete set rather than a
-lower bound; `ClusterBackendSpec` and `ProviderBackendSpec` over the narrowed discovery.
-
-#### Remaining Work
-
-All narrowing, the pin, and documentation.
-
 ## Remaining Work
 
-Every sprint through 16.40 is complete. What remains is the phase's shape under § KK, § LL, and § NN, in
-four parts:
-
-- **The cluster ownership driver** holds its clauses through the seam the
-  [four-ownership-clauses-and-host-local-reservations phase](phase-14-ownership-clauses-and-reservations.md)
-  supplies, over the row the frame declares. Its read-only status probe is already there: Sprint 16.40
-  made it one bounded run of the driver's own listing and one total function over what came back, so what
-  is left is the clause-holding transaction itself.
+Every sprint through 16.46 is complete. The **cluster ownership driver** is built and adopted: Sprint 16.40
+made the read-only status probe one bounded run and one total function, Sprint 16.41 made every cluster
+effect a described command, Sprint 16.42 made what each answer means a total function of the bytes, Sprint
+16.43 made where a transaction stands a total function of three values, Sprint 16.44 composed them into the
+clause-holding create, Sprint 16.45 put readiness, cordon, and release on the same face, and Sprint 16.46
+deleted the program they replace along with the private component its injected executor lived in. What
+remains is the phase's shape under § KK, § LL, and § NN, in three parts:
 - **The direct-Colima ownership driver** does the same for its six durable stages, and its bounded-command
   supervision becomes a transaction shipped to this machine — the parent-death watch that kills the group
   when the owning process disappears has no in-process equivalent, so it stays a separate process rather
   than becoming an ordinary bounded run.
-- **The cluster backend consumes the frame table** rather than resolving its own tools, so the tools it
-  drives and the row that holds its clauses come from one place.
 - **The live gate is a case behind the fixed `test` verb.** The bare binary already carries the test-suite
   seam, and the harness already owns the exclusive run, the lease, the clause-holding cleanup, and the
   report card that a gate otherwise hand-rolls.
 - **The enumeration narrows.** Once the two drivers above stop resolving an interpreter and a locking front
-  end, `Python3`, `Flock`, and `Lockf` name nothing the binary drives, and Sprint 16.44 removes them and
+  end, `Python3`, `Flock`, and `Lockf` name nothing the binary drives, and Sprint 16.49 removes them and
   pins the set against re-entry.
 
 Two consequences are worth stating rather than discovering. The crash windows that a patchable instruction

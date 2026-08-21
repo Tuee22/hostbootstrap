@@ -29,6 +29,16 @@ the claim of an unbound record. Neither is a mystery: both are standings, and th
 same transaction re-enters both, because clause 2's publication is idempotent —
 a first attempt is the store's compare-and-swap from absent and a resumed one is
 a byte-equality check against the record already there.
+
+Whether a record survives the crash at all is __not__ a question this module
+answers. Every durable byte it publishes is the protected store's
+compare-and-swap, so the partial-write, partial-fsync, and partial-unlink windows
+belong to the store's own contract — the
+[ownership-clauses-and-reservations phase](../../../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md)'s,
+and covered there. This boundary inherits that contract by holding no durable
+byte of its own: it names no mutating filesystem primitive, which is why there is
+no instruction point here at which a second durability window could exist to
+patch (§ NN). A source guard holds the absence.
 -}
 module HostBootstrap.Substrate.Provider.Ownership (
     -- * The instance a transaction owns
@@ -739,6 +749,13 @@ The instance must be this run's, observed through the same standing every other
 transaction uses, because a device attached to somebody else's instance is a
 mutation of somebody else's object. Beyond that the shape is clause order again:
 record, attach, re-observe, bind.
+
+The instance standing is taken on __both__ sides of the device readback, exactly
+as a guest crossing takes it on both sides of the command it runs. A device
+readback answers for the device and for nothing about the instance the device
+hangs in, so an instance replaced between the entry standing and the binding
+would otherwise leave a record of this run's bound to a device inside somebody
+else's object.
 -}
 attachOwnedShare ::
     HostConfig ->
@@ -754,7 +771,7 @@ attachOwnedShare cfg session shareKey share = do
             entered <- ownedStanding cfg session key owned
             case entered of
                 Left fault -> pure (Left fault)
-                Right _ -> do
+                Right (instanceIdentity, _) -> do
                     observed <- observeShareDevice cfg share
                     stored <- readRecordUnder session shareKey
                     case (observed, stored) of
@@ -764,11 +781,17 @@ attachOwnedShare cfg session shareKey share = do
                             case shareStanding record deviceOrigin of
                                 Left fault -> pure (Left fault)
                                 Right standing -> case standing of
-                                    ShareNothingDone -> attachThenBind cfg session shareKey share
-                                    ShareOriginRecorded -> attachThenBind cfg session shareKey share
+                                    ShareNothingDone -> attachThenBind cfg session key instanceIdentity shareKey share
+                                    ShareOriginRecorded -> attachThenBind cfg session key instanceIdentity shareKey share
                                     ShareDeviceAttached identity ->
                                         withRecordedShare session shareKey share $ \recorded ->
-                                            bindShare session shareKey recorded identity ShareRepaired
+                                            bindShareUnderInstance
+                                                cfg
+                                                session
+                                                key
+                                                instanceIdentity
+                                                share
+                                                (bindShare session shareKey recorded identity ShareRepaired)
                                     ShareDeviceOwned _ -> pure (Right ShareAlreadyAttached)
   where
     owned = ownedShareInstance share
@@ -777,9 +800,11 @@ attachThenBind ::
     HostConfig ->
     ProtectedSession session ->
     RecordKey ->
+    ObjectIdentity ->
+    RecordKey ->
     OwnedProviderShare ->
     IO (Either ProviderOwnershipFault ProviderShareOutcome)
-attachThenBind cfg session shareKey share =
+attachThenBind cfg session instanceKey instanceIdentity shareKey share =
     withRecordedShare session shareKey share $ \recorded -> do
         attached <-
             interpret
@@ -798,7 +823,48 @@ attachThenBind cfg session shareKey share =
                     Left fault -> pure (Left fault)
                     Right OriginAbsent -> pure (Left (attachLostItsDevice share))
                     Right (OriginPresent identity) ->
-                        bindShare session shareKey recorded identity ShareAttached
+                        bindShareUnderInstance
+                            cfg
+                            session
+                            instanceKey
+                            instanceIdentity
+                            share
+                            (bindShare session shareKey recorded identity ShareAttached)
+
+{- | Bind the share only while the instance it hangs in is still the entered one.
+
+Clause 3 binds an identity to a record, and the record names a device __inside__
+an instance. Re-observing the device says the device stands; it says nothing
+about whose instance now carries it. The standing is therefore re-taken after
+the device readback and before the binding, and a different identity there is a
+conflict rather than an attachment.
+-}
+bindShareUnderInstance ::
+    HostConfig ->
+    ProtectedSession session ->
+    RecordKey ->
+    ObjectIdentity ->
+    OwnedProviderShare ->
+    IO (Either ProviderOwnershipFault ProviderShareOutcome) ->
+    IO (Either ProviderOwnershipFault ProviderShareOutcome)
+bindShareUnderInstance cfg session instanceKey instanceIdentity share continue = do
+    settled <- ownedStanding cfg session instanceKey (ownedShareInstance share)
+    case settled of
+        Left fault -> pure (Left fault)
+        Right (observed, _)
+            | observed == instanceIdentity -> continue
+            | otherwise -> pure (Left (replacedUnderShareAttachment instanceIdentity observed))
+
+replacedUnderShareAttachment :: ObjectIdentity -> ObjectIdentity -> ProviderOwnershipFault
+replacedUnderShareAttachment expected observed =
+    ProviderOwnershipClause
+        ( OwnershipConflict
+            ConflictReport
+                { conflictSubject = "the provider instance a share device was attached to"
+                , conflictExpected = OriginPresent expected
+                , conflictObserved = OriginPresent observed
+                }
+        )
 
 attachLostItsDevice :: OwnedProviderShare -> ProviderOwnershipFault
 attachLostItsDevice share =

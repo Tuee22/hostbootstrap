@@ -83,21 +83,6 @@ library colima-backend-internal
     build-depends:
         unix
 
-library cluster-backend-internal
-  import: warnings
-  visibility: private
-  hs-source-dirs: internal/cluster-backend
-  exposed-modules:
-      HostBootstrap.Cluster.Backend.Internal
-  build-depends:
-      base >=4.18 && <5
-    , filepath
-    , hostbootstrap-core:effect-internal
-    , process
-  if !os(windows)
-    build-depends:
-        unix
-
 library
   import: warnings
   hs-source-dirs: src
@@ -183,6 +168,10 @@ library
       HostBootstrap.Cluster.Cordon
       HostBootstrap.Cluster.Budget
       HostBootstrap.Cluster.Reconcile
+      HostBootstrap.Cluster.Command
+      HostBootstrap.Cluster.Report
+      HostBootstrap.Cluster.Resume
+      HostBootstrap.Cluster.Ownership
       HostBootstrap.Cluster.Backend
       HostBootstrap.Harness
       HostBootstrap.Harness.DataRoot
@@ -253,7 +242,6 @@ library
     , directory
     , dhall
     , filepath
-    , hostbootstrap-core:cluster-backend-internal
     , hostbootstrap-core:effect-internal
     , hostbootstrap-core:harness-lifecycle-internal
     , hostbootstrap-core:colima-backend-internal
@@ -327,6 +315,11 @@ test-suite hostbootstrap-core-test
       ProviderReportSpec
       ProviderResumeSpec
       ClusterReconcileSpec
+      ClusterCommandSpec
+      ClusterReportSpec
+      ClusterResumeSpec
+      ClusterOwnershipSpec
+      FakeCluster
       ClusterBackendSpec
       DataRootSpec
       GeneratedConfigSpec
@@ -363,7 +356,6 @@ test-suite hostbootstrap-core-test
     , directory
     , filepath
     , hostbootstrap-core
-    , hostbootstrap-core:cluster-backend-internal
     , hostbootstrap-core:harness-lifecycle-internal
     , hostbootstrap-core:colima-backend-internal
     , hostbootstrap-core:effect-internal

@@ -37,6 +37,11 @@ import qualified PortabilitySpec
 import qualified ProjectRootSpec
 import qualified ProjectPlanSpec
 import qualified ClusterBackendSpec
+import qualified ClusterCommandSpec
+import qualified ClusterReportSpec
+import qualified ClusterResumeSpec
+import qualified ClusterOwnershipSpec
+import qualified FakeCluster
 import qualified DataRootSpec
 import qualified GeneratedConfigSpec
 import qualified ClusterReconcileSpec
@@ -119,11 +124,20 @@ main = do
     -- program that no shell wrapper could forward unchanged. The variable is
     -- held only for the span of a fixture, so an ordinary run never sees it.
     fakeProvider <- lookupEnv FakeProvider.fakeProviderVariable
+    -- The cluster driver, container runtime, and API server this suite's cluster
+    -- fixtures drive are the same executable, for the same reason: the one
+    -- interpreter launches whatever the host configuration resolves with the
+    -- exact argument vector the described command carries.
+    fakeCluster <- lookupEnv FakeCluster.fakeClusterVariable
     case args of
         _
             | Just providerRoot <- fakeProvider
             , not (null args) ->
                 FakeProvider.runFakeProviderClient fakeProviderGuest providerRoot args
+        _
+            | Just clusterRoot <- fakeCluster
+            , not (null args) ->
+                FakeCluster.runFakeClusterClient clusterRoot args
         ["--hostbootstrap-schema-fixture", fixture] ->
             CLISpec.runSchemaFixture fixture
         -- A separate process attempting the protected store's exclusive entry,
@@ -221,6 +235,10 @@ main = do
                     , ProviderReportSpec.tests
                     , ProviderResumeSpec.tests
                     , ClusterReconcileSpec.tests
+                    , ClusterCommandSpec.tests
+                    , ClusterReportSpec.tests
+                    , ClusterResumeSpec.tests
+                    , ClusterOwnershipSpec.tests
                     , ClusterBackendSpec.tests
                     , DataRootSpec.tests
                     , GeneratedConfigSpec.tests

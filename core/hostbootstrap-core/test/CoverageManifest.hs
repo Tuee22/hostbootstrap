@@ -28,7 +28,6 @@ import HostBootstrap.Ownership.Posix (posixOwnershipSupported)
 import HostBootstrap.Ownership.Row (hostOwnershipSupported)
 import HostBootstrap.Ownership.Windows (windowsOwnershipSupported)
 import HostBootstrap.Wsl2.GlobalWall.Windows (windowsGlobalWallSupported)
-import ClusterBackendSpec (clusterOwnershipRowHolds)
 import ProviderAliasSpec (localGuestAliasSupported)
 import Test.Tasty (TestName, TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase)
@@ -65,14 +64,14 @@ maps them onto @LockFileEx@, @BY_HANDLE_FILE_INFORMATION@, and the Win32
 namespace calls. Each is real where its primitives are and a total refusal
 where they are not, and every case below stays in the suite either way.
 
-Two ownership /drivers/ are conditional for the same reason and on their own
-terms. The cluster backend's transaction runs under a util-linux @flock(2)@ on
-an inherited descriptor and hands its driver @\/proc\/self\/fd@ paths; the guest
-alias driver opens with @O_NOFOLLOW@, holds a @flock(2)@ across an @exec@, and
-publishes by a no-replace hard link. Where an outer host offers neither, both
-refuse to mint any authority at all, and every case in those families records
-that refusal rather than vanishing. Each is deleted by the phase that replaces
-its driver, and its row goes with it.
+One ownership /driver/ is conditional for the same reason and on its own terms.
+The guest alias driver opens with @O_NOFOLLOW@, holds a @flock(2)@ across an
+@exec@, and publishes by a no-replace hard link. Where an outer host offers none
+of those it refuses to mint any authority at all, and every case in that family
+records the refusal rather than vanishing. The row is deleted by the phase that
+replaces the driver. The cluster's own row is no longer here: its transaction is
+the protected store's exclusive entry and its effects are described commands, so
+the family holds on every gate host and is counted like any other.
 -}
 manifest :: [ConditionalFamily]
 manifest =
@@ -89,15 +88,6 @@ manifest =
     , ownershipWindowsRowFamily ["OwnershipWindowsSpec", "creation and publication"] 4 4
     , ownershipWindowsRowFamily ["OwnershipWindowsSpec", "the exclusive open"] 2 2
     , ownershipWindowsRowFamily ["OwnershipWindowsSpec", "removal"] 2 2
-    , ConditionalFamily
-        { familyPath = ["ClusterBackendSpec", "the cluster ownership row"]
-        , familyCases = 46
-        , familyRowCases = 46
-        , familyRowHolds = clusterOwnershipRowHolds
-        , familyReason =
-            "the cluster ownership transaction needs a util-linux flock(2) namespace,"
-                ++ " O_NOFOLLOW opens, and descriptor paths"
-        }
     , ConditionalFamily
         { familyPath = ["ProviderAliasSpec", "the local guest alias driver"]
         , familyCases = 13

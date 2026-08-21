@@ -9749,7 +9749,6 @@ frozenHandoffPackageRows =
     , "dhall"
     , "directory"
     , "filepath"
-    , "hostbootstrap-core:cluster-backend-internal"
     , "hostbootstrap-core:colima-backend-internal"
     , "hostbootstrap-core:effect-internal"
     , "hostbootstrap-core:harness-lifecycle-internal"
