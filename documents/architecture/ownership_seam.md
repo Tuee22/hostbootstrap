@@ -33,9 +33,11 @@ consumes the bound identity, so performing either out of order has no term rathe
 Every **host-local** owner now holds its clauses through the one seam. The harness data root, the
 generated sibling config, and the global host wall reach the identity read, the no-replace link, the
 exclusive open, the identity-conditional act, and the durable record encoding in one place, against one
-row, so the three cannot drift and a record one of them writes is a record the others read. What still
-carries the transaction a second time is the provider, cluster, Colima, and guest-alias drivers, which are
-interpreter programs and belong to the phases that drive them.
+row, so the three cannot drift and a record one of them writes is a record the others read. The **reported** face now has its first
+consumer: `HostBootstrap.Substrate.Provider.Ownership` holds all four clauses over an Incus instance and
+over each share attached to it, with every effect a described command and every answer a total
+classification. What still carries the transaction a second time is the cluster, Colima, and guest-alias
+drivers, which are interpreter programs and belong to the phases that drive them.
 
 The **vocabulary** below is built and is the one home for the identity, the intended payload, the origin
 record, its canonical codec, and the closed fault sum. Every owner and both rows speak it, so an identity

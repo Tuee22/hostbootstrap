@@ -445,7 +445,8 @@ interpreters do not yet enforce the complete model end to end:
   Running provider. Bound guest execution and alias admission therefore cannot accept an independently
   supplied route.
 - The Incus backend publishes and recovers durable `prepared`/`managed` provider and share origins under
-  one retained `flock`, then revalidates VM UUID, owner nonce, and share identity around every effect.
+  one protected-store exclusive entry, then revalidates the instance's reported identity, this run's
+  owner claim, and share identity around every effect.
   The alias backend admits only a retained `GuestFlock`; a discovered `GuestLockf` is descriptive
   `Unsupported` because the lock namespaces are not interchangeable. Alias acquisition/release recover
   exact `prepared`/`managed`/`releasing` records and condition release on the managed symlink identity and

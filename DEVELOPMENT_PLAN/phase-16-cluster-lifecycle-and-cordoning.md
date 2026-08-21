@@ -1,7 +1,7 @@
 # Phase 16 — Cluster lifecycle, budgets, and cordoning
 
 **Status**: Active
-**Current sprint**: Sprint 16.40 — The cluster ownership driver
+**Current sprint**: Sprint 16.41 — The cluster ownership driver
 **Depends on**: Phase 12 (the generic plan-indexed budget boundary), Phase 14 (the four ownership clauses
 and the ownership seam), Phase 15 (host providers and the self-reference lift)
 **Substrates**: linux-cpu
@@ -1553,7 +1553,56 @@ On 2026-08-10, the published
 macOS arm64 run passed the same 1,835 tests in 346.23 seconds. The Linux result closes the static portion of
 the phase gate; the exact composed static-plus-live result is recorded below.
 
-### Sprint 16.40: The cluster ownership driver [Planned]
+### Sprint 16.40: The read-only cluster status is a decision [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
+`core/hostbootstrap-core/test/ClusterBackendSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/cluster_lifecycle.md`
+
+#### Objective
+
+The cluster's read-only status observation as one bounded run and one total function.
+
+#### Objective boundary
+
+This sprint takes the smallest of the phase's four interpreter programs, and takes it on its own because
+§ G's budget makes a sprint one contract. It changes nothing about *what* the status path asks — the
+driver's own listing, exactly as before — and nothing about the clause-holding driver beside it, which is
+the next sprint's whole subject.
+
+#### Deliverables
+
+- The read-only status path issues the driver's own listing as an argument vector this module owns and
+  runs it through the driver's row of the one bounded-run table, so no program is shipped to an
+  interpreter for it (§ KK).
+- What the listing means is `classifyClusterStatus`, a total function of the runner's own outcome:
+  exported, so what a suite covers is the decision rather than an arrangement that produces its input.
+- The refusals stay exactly as narrow as they were. A non-zero exit, anything on standard error, a body
+  that does not end in exactly one newline, a carriage return, a byte outside ASCII, a name outside the
+  portable alphabet, and a repeated name are each the driver contradicting itself — and each is a refusal
+  rather than an absence, because absence authorizes creation and a refusal must not.
+
+#### Validation
+
+Every refusal and both admissions are reached by application over values, so none of them needs a process
+arranged to produce the shape it is about and none can pass against a stand-in for one (§ NN). The two
+cases whose subject is the effect — that the path creates nothing and that a failing driver is not read as
+absence — keep driving a real program. Because the decision is now a function rather than a program's
+output, its family runs on every gate host instead of only the POSIX ones (§ JJ).
+
+Dated 2026-08-20 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): canonical
+`cabal test all --ghc-options=-Werror` from `core/` passed 2,227/2,227 in 310.17 seconds; the same host
+passed `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
+at 231. § II makes this a gate-host record: this host does not run the phase's POSIX cluster family, whose
+host-portability the next sprint's driver is what removes.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.41: The cluster ownership driver [Planned]
 
 **Status**: Planned
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
@@ -1590,7 +1639,7 @@ substitution point, so none can pass against one (§ NN).
 
 All adoption, tests, guards, and documentation.
 
-### Sprint 16.41: The direct-Colima ownership driver [Planned]
+### Sprint 16.42: The direct-Colima ownership driver [Planned]
 
 **Status**: Planned
 **Implementation**: `core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Internal.hs`,
@@ -1628,7 +1677,7 @@ crash windows that a fault-injection argument reaches today are named as owed ra
 
 All adoption, tests, guards, and documentation.
 
-### Sprint 16.42: The live cluster gate as a harness case [Planned]
+### Sprint 16.43: The live cluster gate as a harness case [Planned]
 
 **Status**: Planned
 **Implementation**: `core/hostbootstrap-core/app/Main.hs`,
@@ -1690,7 +1739,7 @@ half created `hostbootstrap-phase16-19575488ca6342ebaeebffa2`, waited for its no
 performed the required read-only node observation, deleted the cluster, proved its labelled node containers
 absent, and re-read the durable-root sentinel with its exact original contents.
 
-### Sprint 16.43: The enumeration names what the binary drives [Planned]
+### Sprint 16.44: The enumeration names what the binary drives [Planned]
 
 **Status**: Planned
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`,
@@ -1707,7 +1756,7 @@ Narrow the `HostTool` enumeration to the tools the binary still delegates to, an
 
 - `Python3`, `Flock`, and `Lockf` leave the enumeration. § K admits a tool the project genuinely
   **delegates** to; these three are how an interpreter and a locking front end performed ownership on the
-  binary's behalf, and Sprints 16.40 and 16.41 replace that with the binary's own typed operation over one
+  binary's behalf, and Sprints 16.41 and 16.42 replace that with the binary's own typed operation over one
   platform row. The names go with the last driver that needed them.
 - `requiredClusterTools` loses `Flock` and `Python3`, which is the last host-side site. The alias driver's
   `Flock` is a local `ExclusionTool` and its Python and lock front ends are the guest's own, reached through
@@ -1731,13 +1780,14 @@ All narrowing, the pin, and documentation.
 
 ## Remaining Work
 
-Every sprint through 16.39 is complete. What remains is the phase's shape under § KK, § LL, and § NN, in
+Every sprint through 16.40 is complete. What remains is the phase's shape under § KK, § LL, and § NN, in
 four parts:
 
 - **The cluster ownership driver** holds its clauses through the seam the
   [four-ownership-clauses-and-host-local-reservations phase](phase-14-ownership-clauses-and-reservations.md)
-  supplies, over the row the frame declares. Its read-only status probe becomes a pure classification over
-  a bounded run rather than a program with its own report vocabulary.
+  supplies, over the row the frame declares. Its read-only status probe is already there: Sprint 16.40
+  made it one bounded run of the driver's own listing and one total function over what came back, so what
+  is left is the clause-holding transaction itself.
 - **The direct-Colima ownership driver** does the same for its six durable stages, and its bounded-command
   supervision becomes a transaction shipped to this machine — the parent-death watch that kills the group
   when the owning process disappears has no in-process equivalent, so it stays a separate process rather
@@ -1748,7 +1798,7 @@ four parts:
   seam, and the harness already owns the exclusive run, the lease, the clause-holding cleanup, and the
   report card that a gate otherwise hand-rolls.
 - **The enumeration narrows.** Once the two drivers above stop resolving an interpreter and a locking front
-  end, `Python3`, `Flock`, and `Lockf` name nothing the binary drives, and Sprint 16.43 removes them and
+  end, `Python3`, `Flock`, and `Lockf` name nothing the binary drives, and Sprint 16.44 removes them and
   pins the set against re-entry.
 
 Two consequences are worth stating rather than discovering. The crash windows that a patchable instruction

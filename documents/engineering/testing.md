@@ -103,9 +103,15 @@ CoverageManifest
 
 A family that lost a case on one host fails its declared count there rather than reporting a smaller
 total. A family whose subject is available everywhere is not declared, because a manifest listing every
-family would be a second copy of the suite. Three platform rows make families conditional today: the two
-host-wall rows and the ownership seam's POSIX row, whose own declaration-only cases are available on every
-gate host and are therefore not declared.
+family would be a second copy of the suite. Five subjects make families conditional today. Three are
+platform rows — the two host-wall rows and the ownership seam's POSIX row, whose own declaration-only
+cases are available on every gate host and are therefore not declared. The other two are ownership
+*drivers* this project has not yet moved onto the seam: the cluster backend's transaction, which runs
+under a util-linux `flock(2)` on an inherited descriptor and hands its driver `/proc/self/fd` paths, and
+the guest alias driver, which opens with `O_NOFOLLOW`, holds a `flock(2)` across an `exec`, and publishes
+by a no-replace hard link. Where an outer host offers none of that, both refuse to mint any authority at
+all, and every case in those families records that refusal rather than vanishing. Each row is deleted by
+the phase that replaces its driver.
 
 The ownership row's release-on-death case takes the suite's own re-invocation route: the suite spawns
 itself with a probe argument, the probe takes the row's exclusive open and drops the raw descriptor rather

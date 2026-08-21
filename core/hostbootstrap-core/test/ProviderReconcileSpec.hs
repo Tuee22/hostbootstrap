@@ -12,7 +12,7 @@ import qualified Fixture
 import HostBootstrap.Config.Vocab (Production)
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (AbsExe, HostTool (..), mkAbsExe)
-import PlatformPath (hostFixturePath)
+import HostBootstrap.Ownership.Object (ObjectIdentity, mkObjectIdentity)
 import qualified HostBootstrap.Lifecycle.Execution as Execution
 import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 import qualified HostBootstrap.ProjectPlan as ProjectPlan
@@ -20,9 +20,23 @@ import HostBootstrap.Reconcile
 import HostBootstrap.Step
 import HostBootstrap.Substrate (Arch (Arm64), Substrate (..), SubstrateName (LinuxCpu))
 import HostBootstrap.Substrate.Provider.Backend
+import HostBootstrap.Substrate.Provider.Ownership (
+  ProviderDeleteOutcome (DeleteAlreadyRemoved, DeleteRemoved),
+  ProviderOwnershipFault (ProviderOwnershipStanding),
+  ProviderProvisionOutcome (ProvisionAlreadyOwned, ProvisionCreated, ProvisionRecovered),
+  ProviderReadyOutcome (ReadyAlready, ReadyStarted),
+  ProviderShareOutcome (ShareAlreadyAttached, ShareAttached, ShareRepaired),
+  ProviderStopOutcome (StopAlreadyStopped, StopStopped),
+ )
 import HostBootstrap.Substrate.Provider.Reconcile
+import HostBootstrap.Substrate.Provider.Resume (
+  ProviderStandingConflict (InstanceReplaced, InstanceUnderNoRecord),
+ )
 import PrepareFixture (gateFor)
-import System.Exit (ExitCode (ExitSuccess))
+import PlatformPath (hostFixturePath)
+import System.Directory (canonicalizePath, createDirectory)
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -85,55 +99,60 @@ tests =
           Left (Conflict detail) -> conflictResource detail @?= "core:deploy-vm"
           other -> assertFailure ("expected a replacement conflict, got " ++ show other)
     , testCase "a Direct stop refusal mints no successor phase" $
-        ( withDirectBackend $ \backend ->
+        ( withDirectBackend $ \backend _root ->
             withManagedProviderFixture backend unsupportedStop
         )
           >>= (@?= Right True)
     , testCase "the host-side share seals its managed provider and exact path declaration" $
-        withDirectBackend (\backend -> withShareFixture backend (Right 31) (settledShare NoPrior backend)) >>= \case
-          Right (Changed Created, "core:copy-source", 29, 11, hostPath, guestPath, providerGeneration) -> do
-            hostPath @?= "/srv/hostbootstrap/data"
-            guestPath @?= "/srv/hostbootstrap/data"
-            providerGeneration @?= 17
-          other -> assertFailure ("expected a prepared Direct share admission, got " ++ show other)
+        withDirectBackend
+          ( \backend root ->
+              (fmap . fmap) ((,) root) (withShareFixture backend root (Right 31) (settledShare NoPrior backend))
+          )
+          >>= \case
+            Right (root, (Changed Created, "core:copy-source", 29, 11, hostPath, guestPath, providerGeneration)) -> do
+              hostPath @?= root
+              guestPath @?= shareGuestPath
+              providerGeneration @?= 17
+            other -> assertFailure ("expected a prepared Direct share admission, got " ++ show other)
     , testCase "a Direct share with matching prior proof settles Unchanged" $
-        withDirectBackend (\backend -> withShareFixture backend (Right 31) (settledShare MatchingPrior backend))
+        withDirectBackend (\backend root -> withShareFixture backend root (Right 31) (settledShare MatchingPrior backend))
           >>= \case
             Right (Unchanged, "core:copy-source", 29, 11, _, _, 17) -> pure ()
             other -> assertFailure ("expected an unchanged Direct share, got " ++ show other)
     , testCase "an attached provider share settles Created" $
         ( withIncusBackend createdBackendReport $ \backend ->
-            withShareFixture backend (Right 31) (settledShare NoPrior backend)
+            withShareFixture backend shareHostPath (Right 31) (settledShare NoPrior backend)
         )
           >>= \case
             Right (Changed Created, "core:copy-source", 29, 11, _, _, 17) -> pure ()
             other -> assertFailure ("expected a created provider share, got " ++ show other)
     , testCase "an explicitly repaired provider share settles Repaired" $
         ( withIncusBackend repairedShareBackendReport $ \backend ->
-            withShareFixture backend (Right 31) (settledShare NoPrior backend)
+            withShareFixture backend shareHostPath (Right 31) (settledShare NoPrior backend)
         )
           >>= \case
             Right (Changed Repaired, "core:copy-source", 29, 11, _, _, 17) -> pure ()
             other -> assertFailure ("expected a repaired provider share, got " ++ show other)
     , testCase "a backend-proved ready share without prior proof settles Repaired" $
         ( withIncusBackend readyShareBackendReport $ \backend ->
-            withShareFixture backend (Right 31) (settledShare NoPrior backend)
+            withShareFixture backend shareHostPath (Right 31) (settledShare NoPrior backend)
         )
           >>= \case
             Right (Changed Repaired, "core:copy-source", 29, 11, _, _, 17) -> pure ()
             other -> assertFailure ("expected recovered share authority, got " ++ show other)
     , testCase "a backend-proved ready share with matching proof settles Unchanged" $
         ( withIncusBackend readyShareBackendReport $ \backend ->
-            withShareFixture backend (Right 31) (settledShare MatchingPrior backend)
+            withShareFixture backend shareHostPath (Right 31) (settledShare MatchingPrior backend)
         )
           >>= \case
             Right (Unchanged, "core:copy-source", 29, 11, _, _, 17) -> pure ()
             other -> assertFailure ("expected unchanged share authority, got " ++ show other)
     , testCase "a failed fresh provider probe refuses share preparation" $
         withDirectBackend
-          ( \backend ->
+          ( \backend root ->
               withShareFixture
                 backend
+                root
                 (Left (Failure (FailureDetail "probe provider" "provider stopped answering" ReprobeBeforeRetry)))
                 (\_ _ _ -> pure (Right ()))
           )
@@ -152,7 +171,7 @@ type ProvisionSummary = (ChangeView, Text.Text, Word64, Word64, Text.Text)
 
 settledProvision ::
   PriorMode ->
-  StrongProviderBackend backendId ->
+  ProviderUnderTest backendId ->
   LifecyclePlan scope planId ->
   Execution.StepExecution scope planId ->
   PlannedResource scope planId providerId ProviderResource providerFrame ->
@@ -160,7 +179,7 @@ settledProvision ::
   PreparedProviderProvision scope planId backendId providerId operationKey callDigest attempt journalVersion ->
   IO (Either ReconcileError ProvisionSummary)
 settledProvision priorMode backend plan _ _ observed prepared = do
-  callResult <- runProviderProvisionCall backend prepared
+  callResult <- provisionCall backend prepared
   pure $ do
     settled <- settleProvisionWithPrior priorMode plan observed prepared callResult
     pure $
@@ -195,7 +214,7 @@ settleProvisionWithPrior priorMode plan observed prepared callResult =
           (\proof -> settleProviderProvision (Just proof) prepared callResult)
 
 foreignProvision ::
-  StrongProviderBackend backendId ->
+  ProviderUnderTest backendId ->
   LifecyclePlan scope planId ->
   Execution.StepExecution scope planId ->
   PlannedResource scope planId providerId ProviderResource providerFrame ->
@@ -203,7 +222,7 @@ foreignProvision ::
   PreparedProviderProvision scope planId backendId providerId operationKey callDigest attempt journalVersion ->
   IO (Either ReconcileError Text.Text)
 foreignProvision backend _ _ _ _ prepared = do
-  callResult <- runProviderProvisionCall backend prepared
+  callResult <- provisionCall backend prepared
   pure $ do
     settled <- settleProviderProvision Nothing prepared callResult
     pure $
@@ -214,7 +233,7 @@ foreignProvision backend _ _ _ _ prepared = do
 
 directAdmission ::
   PriorMode ->
-  StrongProviderBackend backendId ->
+  ProviderUnderTest backendId ->
   LifecyclePlan scope planId ->
   Execution.StepExecution scope planId ->
   PlannedResource scope planId providerId ProviderResource providerFrame ->
@@ -222,7 +241,7 @@ directAdmission ::
   PreparedProviderProvision scope planId backendId providerId operationKey callDigest attempt journalVersion ->
   IO (Either ReconcileError (ChangeView, Text.Text, Text.Text))
 directAdmission priorMode backend plan _ _ observed prepared = do
-  callResult <- runProviderProvisionCall backend prepared
+  callResult <- provisionCall backend prepared
   pure $ do
     settled <- settleProvisionWithPrior priorMode plan observed prepared callResult
     pure $
@@ -237,7 +256,7 @@ directAdmission priorMode backend plan _ _ observed prepared = do
         (\_ _ _ _ -> error "a Direct admission must own its local reservation")
 
 lifecycleSequence ::
-  StrongProviderBackend backendId ->
+  ProviderUnderTest backendId ->
   LifecyclePlan scope planId ->
   Execution.StepExecution scope planId ->
   PlannedResource scope planId providerId ProviderResource providerFrame ->
@@ -252,7 +271,7 @@ lifecycleSequence backend _ execution planned provisioned =
         stoppedResult <-
           joinIO $
             withPreparedProviderStop execution planned running stopGate $ \prepared -> do
-              callResult <- runProviderStopCall backend prepared
+              callResult <- stopCall backend prepared
               pure (settleProviderStop prepared callResult)
         case stoppedResult of
             Left failure -> pure (Left failure)
@@ -268,7 +287,7 @@ lifecycleSequence backend _ execution planned provisioned =
                       (providerStartableAfterStop stopped)
                       readyGate
                       ( \prepared -> do
-                          callResult <- runProviderReadyCall backend prepared
+                          callResult <- readyCall backend prepared
                           pure (settleProviderReady prepared callResult)
                       )
                 case runningResult of
@@ -284,7 +303,7 @@ lifecycleSequence backend _ execution planned provisioned =
                               runningAgain
                               secondStopGate
                               ( \prepared -> do
-                                  callResult <- runProviderStopCall backend prepared
+                                  callResult <- stopCall backend prepared
                                   pure (settleProviderStop prepared callResult)
                               )
                         case secondStopResult of
@@ -299,7 +318,7 @@ lifecycleSequence backend _ execution planned provisioned =
                                     stoppedAgain
                                     deleteGate
                                     ( \prepared -> do
-                                        callResult <- runProviderDeleteCall backend prepared
+                                        callResult <- deleteCall backend prepared
                                         pure $ do
                                           destroyed <- settleProviderDelete prepared callResult
                                           pure $
@@ -310,7 +329,7 @@ lifecycleSequence backend _ execution planned provisioned =
                                     )
 
 replacedStop ::
-  StrongProviderBackend backendId ->
+  ProviderUnderTest backendId ->
   LifecyclePlan scope planId ->
   Execution.StepExecution scope planId ->
   PlannedResource scope planId providerId ProviderResource providerFrame ->
@@ -329,12 +348,12 @@ replacedStop backend _ execution planned provisioned =
             running
             gate
             ( \prepared -> do
-                callResult <- runProviderStopCall backend prepared
+                callResult <- stopCall backend prepared
                 pure (() <$ settleProviderStop prepared callResult)
             )
 
 unsupportedStop ::
-  StrongProviderBackend backendId ->
+  ProviderUnderTest backendId ->
   LifecyclePlan scope planId ->
   Execution.StepExecution scope planId ->
   PlannedResource scope planId providerId ProviderResource providerFrame ->
@@ -354,7 +373,7 @@ unsupportedStop backend _ execution planned provisioned =
               running
               stopGate
               ( \prepared -> do
-                  callResult <- runProviderStopCall backend prepared
+                  callResult <- stopCall backend prepared
                   pure (settleProviderStop prepared callResult)
               )
         pure $
@@ -363,7 +382,7 @@ unsupportedStop backend _ execution planned provisioned =
             _ -> False
 
 bootProvider ::
-  StrongProviderBackend backendId ->
+  ProviderUnderTest backendId ->
   Execution.StepExecution scope planId ->
   PlannedResource scope planId providerId ProviderResource providerFrame ->
   ManagedProviderHandle scope planId backendId providerId Provisioned ->
@@ -378,7 +397,7 @@ bootProvider backend execution planned provisioned = do
       (providerStartableAfterProvision provisioned)
       gate
       ( \prepared -> do
-          callResult <- runProviderReadyCall backend prepared
+          callResult <- readyCall backend prepared
           pure (settleProviderReady prepared callResult)
       )
 
@@ -386,13 +405,13 @@ type ShareSummary = (ChangeView, Text.Text, Word64, Word64, FilePath, FilePath, 
 
 settledShare ::
   PriorMode ->
-  StrongProviderBackend backendId ->
+  ProviderUnderTest backendId ->
   LifecyclePlan scope planId ->
   ResourceHandle scope planId shareId DurableShareResource Unclassified Observed ->
   PreparedProviderShare scope planId backendId providerId shareId operationKey callDigest attempt journalVersion ->
   IO (Either ReconcileError ShareSummary)
 settledShare priorMode backend plan observed prepared = do
-  callResult <- runProviderShareCall backend prepared
+  callResult <- shareCall backend prepared
   pure $ do
     settled <- settleShareWithPrior priorMode plan observed prepared callResult
     pure $
@@ -462,7 +481,7 @@ withMatchingPriorCommit plan handle operationKey consume = do
 
 type ProviderFixtureConsumer summary =
   forall backendId projectId planId providerId providerFrame operationKey callDigest attempt journalVersion.
-  StrongProviderBackend backendId ->
+  ProviderUnderTest backendId ->
   LifecyclePlan (Production projectId) planId ->
   Execution.StepExecution (Production projectId) planId ->
   PlannedResource (Production projectId) planId providerId ProviderResource providerFrame ->
@@ -480,11 +499,11 @@ type ProviderFixtureConsumer summary =
 
 withIncusProviderFixture ::
   Word64 ->
-  (String -> RawProviderOutcome) ->
+  ProviderAnswers ->
   ProviderFixtureConsumer summary ->
   IO (Either ReconcileError summary)
-withIncusProviderFixture generation report consume =
-  withIncusBackend report $ \backend ->
+withIncusProviderFixture generation answers consume =
+  withIncusBackend answers $ \backend ->
     withProviderFixture backend generation consume
 
 withDirectProviderFixture ::
@@ -492,14 +511,14 @@ withDirectProviderFixture ::
   ProviderFixtureConsumer summary ->
   IO (Either ReconcileError summary)
 withDirectProviderFixture generation consume =
-  withDirectBackend $ \backend ->
+  withDirectBackend $ \backend _root ->
     withProviderFixture backend generation consume
 
 withProviderFixture ::
-  StrongProviderBackend backendId ->
+  ProviderUnderTest backendId ->
   Word64 ->
   ( forall projectId planId providerId providerFrame operationKey callDigest attempt journalVersion.
-    StrongProviderBackend backendId ->
+    ProviderUnderTest backendId ->
     LifecyclePlan (Production projectId) planId ->
     Execution.StepExecution (Production projectId) planId ->
     PlannedResource (Production projectId) planId providerId ProviderResource providerFrame ->
@@ -531,14 +550,14 @@ withProviderFixture backend generation consume =
             withNodeResourceOfKind execution ProviderResourceKind operationKey $ \planned ->
               joinReconcile $
                 withNodeObservedResource execution planned generation 7 $ \observed ->
-                  withPreparedProviderProvision execution (providerBackendBinding backend) planned observed gate $
+                  withPreparedProviderProvision execution (providerBackendBinding (underTestBackend backend)) planned observed gate $
                     consume backend plan execution planned observed
       nodes -> fail ("expected one provider node, got " ++ show (length nodes))
 
 withManagedProviderFixture ::
-  StrongProviderBackend backendId ->
+  ProviderUnderTest backendId ->
   ( forall projectId planId providerId providerFrame.
-    StrongProviderBackend backendId ->
+    ProviderUnderTest backendId ->
     LifecyclePlan (Production projectId) planId ->
     Execution.StepExecution (Production projectId) planId ->
     PlannedResource (Production projectId) planId providerId ProviderResource providerFrame ->
@@ -548,7 +567,7 @@ withManagedProviderFixture ::
   IO (Either ReconcileError summary)
 withManagedProviderFixture backend consume =
   withProviderFixture backend 17 $ \exactBackend plan execution planned _ prepared -> do
-    callResult <- runProviderProvisionCall exactBackend prepared
+    callResult <- provisionCall exactBackend prepared
     case settleProviderProvision Nothing prepared callResult of
       Left failure -> pure (Left failure)
       Right settled ->
@@ -558,7 +577,8 @@ withManagedProviderFixture backend consume =
           (\_ _ _ _ -> pure (Left (Failure (FailureDetail "provider fixture" "unexpected foreign provider" DoNotRetry))))
 
 withShareFixture ::
-  StrongProviderBackend backendId ->
+  ProviderUnderTest backendId ->
+  FilePath ->
   Either ReconcileError Word64 ->
   ( forall projectId planId providerId shareId operationKey callDigest attempt journalVersion.
     LifecyclePlan (Production projectId) planId ->
@@ -576,7 +596,7 @@ withShareFixture ::
     IO (Either ReconcileError summary)
   ) ->
   IO (Either ReconcileError summary)
-withShareFixture backend providerProbe consume =
+withShareFixture backend hostPath providerProbe consume =
   Fixture.withFixtureProjectPlan providerSharePlan $ \projectPlan ->
     case NonEmpty.toList (ProjectPlan.forward projectPlan) of
       [providerNode, shareNode] -> do
@@ -589,14 +609,14 @@ withShareFixture backend providerProbe consume =
             shareKey = Execution.stepExecutionOperationKey shareExecution
         providerPrepareGate <- providerGate providerExecution
         sharePrepareGate <- providerGate shareExecution
-        spec <- either (fail . show) pure (mkProviderShareSpec "/srv/hostbootstrap/data" "/srv/hostbootstrap/data")
+        spec <- either (fail . show) pure (mkProviderShareSpec hostPath shareGuestPath)
         joinIO $
           joinReconcile $
             withNodeResourceOfKind providerExecution ProviderResourceKind providerKey $ \plannedProvider ->
               joinReconcile $
                 withNodeObservedResource providerExecution plannedProvider 17 7 $ \observedProvider ->
-                  withPreparedProviderProvision providerExecution (providerBackendBinding backend) plannedProvider observedProvider providerPrepareGate $ \preparedProvider -> do
-                    provisionResult <- runProviderProvisionCall backend preparedProvider
+                  withPreparedProviderProvision providerExecution (providerBackendBinding (underTestBackend backend)) plannedProvider observedProvider providerPrepareGate $ \preparedProvider -> do
+                    provisionResult <- provisionCall backend preparedProvider
                     case settleProviderProvision Nothing preparedProvider provisionResult of
                       Left failure -> pure (Left failure)
                       Right providerResult ->
@@ -659,131 +679,197 @@ testHostConfig =
     , hcToolPaths = Map.empty
     }
 
-backendHostConfig :: HostConfig
-backendHostConfig =
-  testHostConfig
-    { hcToolPaths =
-        Map.fromList
-          [ (Python3, fixtureExe fixturePython),
-            (Docker, fixtureExe fixtureDocker),
-            (Incus, fixtureExe fixtureIncus),
-            (Flock, fixtureExe fixtureFlock)
-          ]
-    }
-
--- | The host tools this suite's fixtures name.
---
--- Each is rendered onto the host that runs the suite, so the same total
--- 'AbsExe' constructor production uses admits it on every supported outer host
--- realization (§ JJ), and the backend dispatch below selects its response by
--- comparing those same values.
---
--- The provider state directory below is not one of these. It is a path inside
--- the Linux substrate the Incus provider realizes, so it stays POSIX on every
--- outer host and the backend's own absoluteness check is POSIX to match.
-fixturePython, fixtureDocker, fixtureIncus, fixtureFlock :: FilePath
-fixturePython = hostFixturePath "/test/bin/python3"
-fixtureDocker = hostFixturePath "/test/bin/docker"
-fixtureIncus = hostFixturePath "/test/bin/incus"
-fixtureFlock = hostFixturePath "/test/bin/flock"
-
 fixtureExe :: FilePath -> AbsExe
 fixtureExe = either error id . mkAbsExe
 
+-- | The discovered backend, beside the reports its provider produces.
+--
+-- The backend itself holds no execution seam: it carries the typed host
+-- configuration and reaches every process through the one interpreter.  What a
+-- suite about /settlement/ still needs is a provider's answer, and an answer is
+-- a value, so the reports arrive as one total function of the verb and are read
+-- through the exported classifiers (§ NN).  A backend whose reports are
+-- 'Nothing' answers through the production call itself, which is what the Direct
+-- realization's structural refusals are about.
+data ProviderUnderTest backendId = ProviderUnderTest
+  { underTestBackend :: StrongProviderBackend backendId
+  , underTestAnswers :: Maybe ProviderAnswers
+  }
+
+{- | What one provider answers, for a suite whose subject is settlement.
+
+Every verb is a clause-holding /transaction/ and answers in the transaction
+vocabulary, so each case below is reached by applying the exported classifier to
+an answer rather than by arranging for a stand-in to have been reached (§ NN).
+-}
+data ProviderAnswers = ProviderAnswers
+  { answeredProvision :: Either ProviderOwnershipFault ProviderProvisionOutcome
+  , answeredReady :: Either ProviderOwnershipFault ProviderReadyOutcome
+  , answeredStop :: Either ProviderOwnershipFault ProviderStopOutcome
+  , answeredShare :: Either ProviderOwnershipFault ProviderShareOutcome
+  , answeredDelete :: Either ProviderOwnershipFault ProviderDeleteOutcome
+  }
+
+provisionCall ::
+  ProviderUnderTest backendId ->
+  PreparedProviderProvision scope planId backendId providerId operationKey callDigest attempt journalVersion ->
+  IO (ProviderProvisionCallResult scope planId backendId providerId operationKey callDigest attempt journalVersion)
+provisionCall underTest prepared = case underTestAnswers underTest of
+  Nothing -> runProviderProvisionCall (underTestBackend underTest) prepared
+  Just answers -> pure (classifyProviderProvisionCall prepared (answeredProvision answers))
+
+readyCall ::
+  ProviderUnderTest backendId ->
+  PreparedProviderReady scope planId backendId providerId fromPhase operationKey callDigest attempt journalVersion ->
+  IO (ProviderReadyCallResult scope planId backendId providerId fromPhase operationKey callDigest attempt journalVersion)
+readyCall underTest prepared = case underTestAnswers underTest of
+  Nothing -> runProviderReadyCall (underTestBackend underTest) prepared
+  Just answers -> pure (classifyProviderReadyCall prepared (answeredReady answers))
+
+stopCall ::
+  ProviderUnderTest backendId ->
+  PreparedProviderStop scope planId backendId providerId operationKey callDigest attempt journalVersion ->
+  IO (ProviderStopCallResult scope planId backendId providerId operationKey callDigest attempt journalVersion)
+stopCall underTest prepared = case underTestAnswers underTest of
+  Nothing -> runProviderStopCall (underTestBackend underTest) prepared
+  Just answers -> pure (classifyProviderStopCall prepared (answeredStop answers))
+
+shareCall ::
+  ProviderUnderTest backendId ->
+  PreparedProviderShare scope planId backendId providerId shareId operationKey callDigest attempt journalVersion ->
+  IO (ProviderShareCallResult scope planId backendId providerId shareId operationKey callDigest attempt journalVersion)
+shareCall underTest prepared = case underTestAnswers underTest of
+  Nothing -> runProviderShareCall (underTestBackend underTest) prepared
+  Just answers -> pure (classifyProviderShareCall prepared (answeredShare answers))
+
+deleteCall ::
+  ProviderUnderTest backendId ->
+  PreparedProviderDelete scope planId backendId providerId operationKey callDigest attempt journalVersion ->
+  IO (ProviderDeleteCallResult scope planId backendId providerId operationKey callDigest attempt journalVersion)
+deleteCall underTest prepared = case underTestAnswers underTest of
+  Nothing -> runProviderDeleteCall (underTestBackend underTest) prepared
+  Just answers -> pure (classifyProviderDeleteCall prepared (answeredDelete answers))
+
 withDirectBackend ::
-  (forall backendId. StrongProviderBackend backendId -> IO (Either ReconcileError summary)) ->
+  (forall backendId. ProviderUnderTest backendId -> FilePath -> IO (Either ReconcileError summary)) ->
   IO (Either ReconcileError summary)
 withDirectBackend consume =
-  case mkDirectHostBackendSpec backendHostConfig "/srv/hostbootstrap/data" "alpine:3.22" of
-    Left failure -> pure (Left failure)
-    Right spec ->
-      joinReconcile <$> discoverStrongProviderBackend (fakeProviderExec createdBackendReport) spec consume
+  withRealHostTools $ \config root ->
+    case mkDirectHostBackendSpec config root "alpine:3.22" of
+      Left failure -> pure (Left failure)
+      Right spec ->
+        joinReconcile
+          <$> discoverStrongProviderBackend config spec (\backend -> consume (ProviderUnderTest backend Nothing) root)
 
 withIncusBackend ::
-  (String -> RawProviderOutcome) ->
-  (forall backendId. StrongProviderBackend backendId -> IO (Either ReconcileError summary)) ->
+  ProviderAnswers ->
+  (forall backendId. ProviderUnderTest backendId -> IO (Either ReconcileError summary)) ->
   IO (Either ReconcileError summary)
-withIncusBackend report consume =
-  case mkIncusBackendSpec "provider" "images:ubuntu/24.04" backendHostConfig "/test/provider-state" 4 "8GiB" "40GiB" of
-    Left failure -> pure (Left failure)
-    Right spec ->
-      joinReconcile <$> discoverStrongProviderBackend (fakeProviderExec report) spec consume
+withIncusBackend answers consume =
+  withRealHostTools $ \config _root ->
+    case mkIncusBackendSpec "provider" "images:ubuntu/24.04" "provider" config (hostFixturePath "/test/provider-state") 4 "8GiB" "40GiB" of
+      Left failure -> pure (Left failure)
+      Right spec ->
+        joinReconcile
+          <$> discoverStrongProviderBackend config spec (\backend -> consume (ProviderUnderTest backend (Just answers)))
 
-fakeProviderExec :: (String -> RawProviderOutcome) -> ProviderBackendExec
-fakeProviderExec report =
-  ProviderBackendExec
-    { runProviderBackendExec = \request ->
-        pure $ case providerBackendRequestView request of
-          ProviderBackendProcess executable argv
-            | executable == fixturePython -> successfulReport ""
-            | executable == fixtureDocker -> successfulReport "{}"
-            | otherwise ->
-                case providerMode argv of
-                  Just mode -> report mode
-                  Nothing
-                    | reverseTake argv == Just "flock" -> successfulReport "PROVED flock"
-                    | otherwise -> RawProviderFailure "unexpected provider backend request"
-    , waitProviderBackendExec = \_ -> pure ()
+-- | Real host tools, and a real directory the Direct realization may admit.
+--
+-- The Direct probes are this binary's own observation and one described
+-- command, so what a suite supplies is a root the kernel really answers for and
+-- a program the interpreter really launches (§ NN); what the /provider/ answers
+-- is a separate question and arrives as a value.
+withRealHostTools :: (HostConfig -> FilePath -> IO result) -> IO result
+withRealHostTools use =
+  withSystemTempDirectory "hostbootstrap-provider-tools" $ \temporary -> do
+    root <- canonicalizePath temporary
+    let admissible = root </> "data"
+    createDirectory admissible
+    python <- Fixture.newFakeTool root "python3" ""
+    docker <- Fixture.newFakeTool root "docker" ""
+    incus <- Fixture.newFakeTool root "incus" ""
+    use
+      testHostConfig
+        { hcToolPaths =
+            Map.fromList
+              [ (Python3, fixtureExe python),
+                (Docker, fixtureExe docker),
+                (Incus, fixtureExe incus)
+              ]
+        }
+      admissible
+
+{- | The one host directory this suite's share exposes.
+
+Rendered onto the host that runs the suite, because the provider client that
+would mount it runs there; the guest side of the same declaration stays POSIX,
+because the process that reads it is inside the realized Linux substrate (§ MM).
+-}
+shareHostPath :: FilePath
+shareHostPath = hostFixturePath "/srv/hostbootstrap/data"
+
+shareGuestPath :: FilePath
+shareGuestPath = "/srv/hostbootstrap/data"
+
+-- | The identity a provider answers with for this suite's instance.
+managedIdentity :: ObjectIdentity
+managedIdentity = either (error . show) id (mkObjectIdentity "provider-17")
+
+-- | The identity of an instance this project's records do not claim.
+unclaimedIdentity :: ObjectIdentity
+unclaimedIdentity = either (error . show) id (mkObjectIdentity "foreign-provider")
+
+createdBackendReport :: ProviderAnswers
+createdBackendReport =
+  ProviderAnswers
+    { answeredProvision = Right (ProvisionCreated managedIdentity)
+    , answeredReady = Right (ReadyStarted managedIdentity)
+    , answeredStop = Right (StopStopped managedIdentity)
+    , answeredShare = Right ShareAttached
+    , answeredDelete = Right DeleteRemoved
     }
 
-providerMode :: [String] -> Maybe String
-providerMode argv =
-  firstPresent ["provision", "ready", "stop", "share", "delete", "guest"]
-  where
-    firstPresent [] = Nothing
-    firstPresent (mode : rest)
-      | mode `elem` argv = Just mode
-      | otherwise = firstPresent rest
+ownedProvisionBackendReport :: ProviderAnswers
+ownedProvisionBackendReport =
+  createdBackendReport{answeredProvision = Right (ProvisionAlreadyOwned managedIdentity)}
 
-reverseTake :: [value] -> Maybe value
-reverseTake values = case reverse values of
-  value : _ -> Just value
-  [] -> Nothing
+repairedProvisionBackendReport :: ProviderAnswers
+repairedProvisionBackendReport =
+  createdBackendReport{answeredProvision = Right (ProvisionRecovered managedIdentity)}
 
-createdBackendReport :: String -> RawProviderOutcome
-createdBackendReport mode = case mode of
-  "provision" -> successfulReport "CREATED provider-17"
-  "ready" -> successfulReport "READY"
-  "stop" -> successfulReport "STOPPED"
-  "share" -> successfulReport "SHARE_ATTACHED"
-  "delete" -> successfulReport "DELETED"
-  _ -> RawProviderFailure ("unexpected provider mode: " ++ mode)
+foreignProvisionBackendReport :: ProviderAnswers
+foreignProvisionBackendReport =
+  createdBackendReport
+    { answeredProvision =
+        Left (ProviderOwnershipStanding (InstanceUnderNoRecord unclaimedIdentity))
+    }
 
-ownedProvisionBackendReport :: String -> RawProviderOutcome
-ownedProvisionBackendReport "provision" = successfulReport "OWNED provider-17"
-ownedProvisionBackendReport mode = createdBackendReport mode
+repairedShareBackendReport :: ProviderAnswers
+repairedShareBackendReport = createdBackendReport{answeredShare = Right ShareRepaired}
 
-repairedProvisionBackendReport :: String -> RawProviderOutcome
-repairedProvisionBackendReport "provision" = successfulReport "RECOVERED provider-17"
-repairedProvisionBackendReport mode = createdBackendReport mode
+readyShareBackendReport :: ProviderAnswers
+readyShareBackendReport = createdBackendReport{answeredShare = Right ShareAlreadyAttached}
 
-foreignProvisionBackendReport :: String -> RawProviderOutcome
-foreignProvisionBackendReport "provision" = successfulReport "FOREIGN foreign-provider"
-foreignProvisionBackendReport mode = createdBackendReport mode
+alreadyPhaseBackendReport :: ProviderAnswers
+alreadyPhaseBackendReport =
+  ProviderAnswers
+    { answeredProvision = Right (ProvisionCreated managedIdentity)
+    , answeredReady = Right (ReadyAlready managedIdentity)
+    , answeredStop = Right (StopAlreadyStopped managedIdentity)
+    , answeredShare = Right ShareAlreadyAttached
+    , answeredDelete = Right DeleteAlreadyRemoved
+    }
 
-repairedShareBackendReport :: String -> RawProviderOutcome
-repairedShareBackendReport "share" = successfulReport "SHARE_REPAIRED"
-repairedShareBackendReport mode = createdBackendReport mode
+replacementStopBackendReport :: ProviderAnswers
+replacementStopBackendReport =
+  createdBackendReport
+    { answeredStop =
+        Left (ProviderOwnershipStanding (InstanceReplaced managedIdentity replacementIdentity))
+    }
 
-readyShareBackendReport :: String -> RawProviderOutcome
-readyShareBackendReport "share" = successfulReport "SHARE_ALREADY"
-readyShareBackendReport mode = createdBackendReport mode
-
-alreadyPhaseBackendReport :: String -> RawProviderOutcome
-alreadyPhaseBackendReport mode = case mode of
-  "provision" -> successfulReport "CREATED provider-17"
-  "ready" -> successfulReport "READY_ALREADY"
-  "stop" -> successfulReport "STOPPED_ALREADY"
-  "share" -> successfulReport "SHARE_ALREADY"
-  "delete" -> successfulReport "DELETED_ALREADY"
-  _ -> RawProviderFailure ("unexpected provider mode: " ++ mode)
-
-replacementStopBackendReport :: String -> RawProviderOutcome
-replacementStopBackendReport "stop" = successfulReport "REPLACED replacement-vm"
-replacementStopBackendReport mode = createdBackendReport mode
-
-successfulReport :: String -> RawProviderOutcome
-successfulReport report = RawProviderExit ExitSuccess (report ++ "\n") ""
+-- | The identity of an instance that replaced this run's under the same name.
+replacementIdentity :: ObjectIdentity
+replacementIdentity = either (error . show) id (mkObjectIdentity "replacement-vm")
 
 joinReconcile :: Either ReconcileError (Either ReconcileError value) -> Either ReconcileError value
 joinReconcile = either Left id

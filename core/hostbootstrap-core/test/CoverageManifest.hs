@@ -15,10 +15,11 @@ conditional and what the cases assert here, and it does so in the case name, so
 the run itself is the report: reading the gate's output tells you which
 families exercised a real kernel and which recorded a refusal.
 
-A row belongs here only when a /platform row/ makes it conditional. A case
-whose subject is available everywhere is not conditional and is not declared,
-because a manifest that listed every family would be a second copy of the suite
-and would rot rather than guard.
+A row belongs here only when a family's /subject/ is something a gate host may
+not have: a platform row of the ownership seam, or a contract whose primitives
+one outer host does not offer. A case whose subject is available everywhere is
+not conditional and is not declared, because a manifest that listed every family
+would be a second copy of the suite and would rot rather than guard.
 -}
 module CoverageManifest (tests) where
 
@@ -27,6 +28,8 @@ import HostBootstrap.Ownership.Posix (posixOwnershipSupported)
 import HostBootstrap.Ownership.Row (hostOwnershipSupported)
 import HostBootstrap.Ownership.Windows (windowsOwnershipSupported)
 import HostBootstrap.Wsl2.GlobalWall.Windows (windowsGlobalWallSupported)
+import ClusterBackendSpec (clusterOwnershipRowHolds)
+import ProviderAliasSpec (localGuestAliasSupported)
 import Test.Tasty (TestName, TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase)
 import Test.Tasty.Runners (TreeFold (foldGroup, foldSingle), foldTestTree, trivialFold)
@@ -50,7 +53,7 @@ data ConditionalFamily = ConditionalFamily
     -- ^ Why the row cannot be held where it cannot.
     }
 
-{- | The families the three platform rows make conditional.
+{- | The families whose subject a gate host may not have.
 
 The ownership seam's POSIX row supplies @lstat@ identity, @O_NOFOLLOW@ opens,
 @fcntl@ record locks, and @link(2)@; its declaration-only cases are available
@@ -61,6 +64,15 @@ The POSIX row maps the four ownership clauses onto @fcntl@ record locks,
 maps them onto @LockFileEx@, @BY_HANDLE_FILE_INFORMATION@, and the Win32
 namespace calls. Each is real where its primitives are and a total refusal
 where they are not, and every case below stays in the suite either way.
+
+Two ownership /drivers/ are conditional for the same reason and on their own
+terms. The cluster backend's transaction runs under a util-linux @flock(2)@ on
+an inherited descriptor and hands its driver @\/proc\/self\/fd@ paths; the guest
+alias driver opens with @O_NOFOLLOW@, holds a @flock(2)@ across an @exec@, and
+publishes by a no-replace hard link. Where an outer host offers neither, both
+refuse to mint any authority at all, and every case in those families records
+that refusal rather than vanishing. Each is deleted by the phase that replaces
+its driver, and its row goes with it.
 -}
 manifest :: [ConditionalFamily]
 manifest =
@@ -77,6 +89,24 @@ manifest =
     , ownershipWindowsRowFamily ["OwnershipWindowsSpec", "creation and publication"] 4 4
     , ownershipWindowsRowFamily ["OwnershipWindowsSpec", "the exclusive open"] 2 2
     , ownershipWindowsRowFamily ["OwnershipWindowsSpec", "removal"] 2 2
+    , ConditionalFamily
+        { familyPath = ["ClusterBackendSpec", "the cluster ownership row"]
+        , familyCases = 46
+        , familyRowCases = 46
+        , familyRowHolds = clusterOwnershipRowHolds
+        , familyReason =
+            "the cluster ownership transaction needs a util-linux flock(2) namespace,"
+                ++ " O_NOFOLLOW opens, and descriptor paths"
+        }
+    , ConditionalFamily
+        { familyPath = ["ProviderAliasSpec", "the local guest alias driver"]
+        , familyCases = 13
+        , familyRowCases = 13
+        , familyRowHolds = localGuestAliasSupported
+        , familyReason =
+            "the guest alias driver needs O_NOFOLLOW opens, a flock(2) held across an exec,"
+                ++ " and no-replace hard links"
+        }
     , ConditionalFamily
         { familyPath = ["WslGlobalWallWindowsSpec"]
         , familyCases = 4

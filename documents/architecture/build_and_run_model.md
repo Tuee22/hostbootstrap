@@ -221,8 +221,13 @@ opaque managed Running provider; it is not mutation authority and Direct exposes
 Provider mutation enters through exact prepared calls. Opaque nominal `ManagedProviderHandle` and
 `ManagedProviderShareHandle` values retain the provider origin and backend realization without exposing a
 generic handle/receipt escape. The Incus backend holds the four ownership clauses around provision,
-readiness, share, stop, bound guest execution, and conditional delete. Direct instead settles a plan-local
-reservation and identity share without publishing an origin or claiming the physical host; stop, delete,
+readiness, share, stop, bound guest execution, and conditional delete, and it holds them the way every
+other owner does: inside the protected store's exclusive entry, over described commands run by the one
+interpreter, with each answer classified by a total function. It resolves the provider client and nothing
+else — no interpreter, no locking front end — and it starts no process of its own, which a source guard
+holds. Direct instead settles a plan-local reservation and identity share without publishing an origin or
+claiming the physical host; its root admission is this binary's own observation of the kernel followed by
+a total decision over it — absolute, unfollowed, a directory, canonical, accessible — and stop, delete,
 guest routing, and guest alias are structured refusals rather than empty effects or a fabricated VM. The
 static gate is closed; native validation remains open until the Linux/x86_64 KVM/Incus gate of the
 [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)

@@ -119,14 +119,21 @@ native validation lives.
   same object. Recording the payload digest before the write is what makes the crash window between the
   record and the identity binding resolvable without ever adopting bytes the record does not name. No
   pathname sidecar participates in that authority.
-- `HostBootstrap.Substrate.Provider.Backend` and `Provider.Reconcile` supply the prepared Incus
-  provision/readiness/share/stop/delete route. The opaque nominal `ManagedProviderHandle` and
-  `ManagedProviderShareHandle` retain the exact backend origin rather than exposing their generic
-  handle/receipt components. Incus publishes an explicit-absence fresh-nonce origin before launch, binds
-  the VM UUID and owner nonce, records share intent/device identity durably, and revalidates those facts
-  before every later mutation or guest execution. Direct uses the same prepared algebra only for a
-  plan-local reservation and identity share; it publishes no physical-host origin and cannot produce
-  successful stop/delete authority.
+- `HostBootstrap.Substrate.Provider.Ownership` holds all four clauses over an Incus instance and over
+  each share attached to it, through the seam's **reported** face. Every effect it performs is a
+  described command run by the one interpreter, every answer it reads is a value a total classification
+  produced, and where a transaction stands is a total function of the durable record, that observation,
+  and the claim the instance carries — so the interval between clause 2 and clause 3 is decided by
+  application rather than by whichever branch a live run happened to take. It publishes an
+  explicit-absence origin under a fresh claim before launch, carries that claim on the creating command
+  itself, binds the instance's own identity from what the provider reports afterwards, and re-observes
+  that identity before and after every later mutation and every guest command. `Provider.Backend` and
+  `Provider.Reconcile` turn its outcomes into the prepared provision/readiness/share/stop/delete route;
+  the opaque nominal `ManagedProviderHandle` and `ManagedProviderShareHandle` retain the exact backend
+  origin rather than exposing their generic handle/receipt components. Direct uses the same prepared
+  algebra only for a plan-local reservation and identity share: its root admission is this binary's own
+  observation of the kernel followed by a total decision over it, and it publishes no physical-host
+  origin and cannot produce successful stop/delete authority.
 - `HostBootstrap.Substrate.Provider.Alias` supplies the typed prepared call/release for the
   provider-guest durable alias. Its `StrongAliasBackend` is derived only from the capability for the exact
   managed Running provider and accepts the exact opaque managed share authority. `ManagedGuestAliasHandle`
@@ -227,7 +234,16 @@ never a weaker receipt. The clause *order* is not a convention a reviewer checks
 recorded origin and a release consumes the bound identity, so performing either out of order has no term.
 And on the reported face the same order still holds even though the removal happens outside this process:
 the record is forgotten only over a reported absence, so an object that survived its removal leaves a
-record that still claims it rather than an orphan nobody claims.
+record that still claims it rather than an orphan nobody claims. That comparison is of the *identity*,
+not the name: an object standing where this run's object was, after the removal it issued, is somebody
+else's, and is reported as a replacement and left exactly as it was found.
+
+A second property of the reported face is easy to get wrong and is worth stating. Every release and every
+dependent transaction re-establishes clauses 1 through 3 over a record a previous entry already bound, so
+the record it finds carries clause 3's identity as well as clause 2's origin. Clause 2's republication
+therefore compares what the record *says* — its kind and its prior origin — and treats the binding as the
+one field a later step of the same transaction adds. Comparing the encoded bytes instead refuses the
+transaction's own record as a foreign one, which makes every re-entry impossible.
 
 ## What the invariant excludes
 

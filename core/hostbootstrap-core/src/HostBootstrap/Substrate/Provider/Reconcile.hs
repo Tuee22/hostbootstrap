@@ -164,6 +164,7 @@ import HostBootstrap.Substrate.Provider.Observation.Internal
     providerBackendSemanticFingerprint,
     providerOriginOwner,
   )
+import System.FilePath (isAbsolute)
 
 {- | Descriptive binding retained by every opaque provider call.
 
@@ -463,8 +464,10 @@ mkProviderShareSpec :: FilePath -> FilePath -> Either ReconcileError ProviderSha
 mkProviderShareSpec hostPath guestPath
   | null hostPath || null guestPath =
       invalid "provider share paths must not be empty"
-  | not (providerShareAbsolutePath hostPath) || not (providerShareAbsolutePath guestPath) =
-      invalid "provider share paths must be absolute"
+  | not (isAbsolute hostPath) =
+      invalid "the provider share host path must be absolute on this host"
+  | not (providerShareAbsolutePath guestPath) =
+      invalid "the provider share guest path must be an absolute POSIX path"
   | '\0' `elem` hostPath || '\0' `elem` guestPath =
       invalid "provider share paths must not contain NUL"
   | otherwise = Right (ProviderShareSpec hostPath guestPath)
@@ -472,6 +475,13 @@ mkProviderShareSpec hostPath guestPath
     invalid reason =
       Left (Failure (FailureDetail "validate provider share" reason DoNotRetry))
 
+{- | Whether a path a /guest/ process will interpret is absolute.
+
+POSIX on every outer host, because the frame that reads it is the Linux
+substrate the provider realizes (§ MM).  The host side of the same declaration
+is the outer host's own grammar, because the provider client that mounts it runs
+there.
+-}
 providerShareAbsolutePath :: FilePath -> Bool
 providerShareAbsolutePath ('/' : _) = True
 providerShareAbsolutePath _ = False

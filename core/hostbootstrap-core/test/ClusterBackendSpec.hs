@@ -16,7 +16,7 @@ accepts POSIX guest paths. A native Windows test process has neither those path
 semantics nor @flock@, so it runs the portable validation and exposure cases
 without substituting a weaker locking protocol.
 -}
-module ClusterBackendSpec (tests) where
+module ClusterBackendSpec (tests, clusterOwnershipRowHolds) where
 
 import ClusterReconcileSpec (
     withClusterFixtureM,
@@ -65,32 +65,37 @@ import System.Timeout (timeout)
 #ifndef mingw32_HOST_OS
 import System.Posix.Files (setFileMode)
 #endif
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestName, TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 tests :: TestTree
 tests =
     testGroup
         "ClusterBackendSpec"
-        [ testGroup "the clause-holding cluster backend" backendCases
+        [ testGroup "the clause-holding cluster backend" portableBackendCases
+        , testGroup "the cluster ownership row" rowBackendCases
         , testGroup "loopback-bound exposure" exposureCases
         ]
 
 -- The clause-holding backend --------------------------------------------------
 
-backendCases :: [TestTree]
-backendCases = includePosixCases posixBackendCases ++ portableBackendCases
-
-includePosixCases :: [TestTree] -> [TestTree]
-#ifdef mingw32_HOST_OS
-includePosixCases _ = []
-#else
-includePosixCases = id
-#endif
-
 portableBackendCases :: [TestTree]
 portableBackendCases =
-    [ testCase "production discovery resolves its closed HostConfig without caller paths" $ do
+    [ testCase "the read-only status classification is total over what a driver can say" $ do
+        answered "" @?= ClusterStatusAbsent
+        answered "demo\n" @?= ClusterStatusPresent
+        answered "other\ndemo\n" @?= ClusterStatusPresent
+        answered "other\n" @?= ClusterStatusAbsent
+        refusesListing "a body with no trailing newline" (answered "demo")
+        refusesListing "a carriage return" (answered "demo\r\n")
+        refusesListing "a byte outside ASCII" (answered "dem\224\n")
+        refusesListing "an empty name" (answered "\n")
+        refusesListing "a name outside the portable alphabet" (answered "bad name\n")
+        refusesListing "an over-long name" (answered (replicate 129 'x' <> "\n"))
+        refusesListing "the same name twice" (answered "demo\ndemo\n")
+        refusesListing "a non-zero exit" (classifyClusterStatus "demo" (ClusterCommandResult False "demo\n" ""))
+        refusesListing "anything at all on standard error" (classifyClusterStatus "demo" (ClusterCommandResult True "demo\n" "warning\n"))
+    , testCase "production discovery resolves its closed HostConfig without caller paths" $ do
         discovered <- discoverStrongClusterBackend
         case discovered of
             Right _ -> pure ()
@@ -140,9 +145,21 @@ portableBackendCases =
             refuses "a stat flavor instead of a lock tool" "gnu\n"
     ]
 
-posixBackendCases :: [TestTree]
-posixBackendCases =
-    [ testCase "the outer runner kills a leader-exited grandchild that retains its pipes" $ do
+{- | The cluster's ownership transaction, driven for real against real tools.
+
+Every case here runs the production transaction under the row it holds its
+clauses through: a util-linux @flock(2)@ namespace on an inherited no-follow
+descriptor, @/proc/self/fd@ paths handed to the driver, and @device:inode@
+identities for the state directory, the lock, and the origin record.
+
+The family is the same size on every gate host. Where that row cannot be held,
+each case records the refusal the backend makes instead of disappearing, so a
+case that vanished is a failed count rather than a smaller total (§ JJ);
+'CoverageManifest' declares that size and reports which of the two this host did.
+-}
+rowBackendCases :: [TestTree]
+rowBackendCases =
+    [ clusterRowCase "the outer runner kills a leader-exited grandchild that retains its pipes" $ do
         result <-
             timeout
                 (12 * 1000 * 1000)
@@ -150,7 +167,7 @@ posixBackendCases =
         case result of
             Just commandResult -> clusterCommandOk commandResult @?= False
             Nothing -> assertFailure "the closed outer runner exceeded its bounded reader/group cleanup"
-    , testCase "the outer runner escalates from TERM to group KILL within its bound" $ do
+    , clusterRowCase "the outer runner escalates from TERM to group KILL within its bound" $ do
         result <-
             timeout
                 (12 * 1000 * 1000)
@@ -158,7 +175,7 @@ posixBackendCases =
         case result of
             Just commandResult -> clusterCommandOk commandResult @?= False
             Nothing -> assertFailure "the closed outer runner failed to kill an uncooperative process group"
-    , testCase "the outer runner preserves asynchronous cancellation while cleaning its group" $ do
+    , clusterRowCase "the outer runner preserves asynchronous cancellation while cleaning its group" $ do
         resultBox <- newEmptyMVar
         worker <-
             forkIO $ do
@@ -181,7 +198,7 @@ posixBackendCases =
                             )
                     )
             Nothing -> assertFailure "asynchronous cancellation hung during process-group cleanup"
-    , testCase "the outer runner enters the closed root working directory and environment" $ do
+    , clusterRowCase "the outer runner enters the closed root working directory and environment" $ do
         result <-
             runClosedClusterCommandForTest
                 2
@@ -190,7 +207,7 @@ posixBackendCases =
                 , "test \"$PWD\" = / && test \"$HOME\" = /nonexistent && test \"$PATH\" = /bin && test \"$DOCKER_HOST\" = unix:///var/run/docker.sock && printf 'entered\\n'"
                 ]
         result @?= ClusterCommandResult True "entered\n" ""
-    , testCase "the outer runner refuses a child past its output ceiling rather than truncating" $ do
+    , clusterRowCase "the outer runner refuses a child past its output ceiling rather than truncating" $ do
         -- Two MiB against the driver's one MiB ceiling. The runner drains the
         -- pipe so the child never blocks on a full one, and then refuses:
         -- a truncated transcript reads as a complete one, so the caller is told
@@ -204,7 +221,7 @@ posixBackendCases =
         assertBool
             ("the refusal names the ceiling: " ++ clusterCommandStderr result)
             ("output ceiling" `isInfixOf` clusterCommandStderr result)
-    , testCase "discovery mints no capability without the driver" $
+    , clusterRowCase "discovery mints no capability without the driver" $
         withFakeHost $ \host -> do
             discovered <-
                 discoverInjectedStrongClusterBackend
@@ -216,7 +233,7 @@ posixBackendCases =
                 Left _ -> pure ()
                 Right _ ->
                     assertFailure "a host without the driver must mint no capability"
-    , testCase "a pristine project root gets a safe state parent, origin, and identity binding" $
+    , clusterRowCase "a pristine project root gets a safe state parent, origin, and identity binding" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             result <- withClusterFixtureM $ \prepared -> do
@@ -250,7 +267,7 @@ posixBackendCases =
             assertBool "the exact prepared config is supplied" ("create cluster --name" `isInfixOf` calls && "--config" `isInfixOf` calls)
             clusters <- readFile (clustersPath host)
             lines clusters @?= [exactName]
-    , testCase "a Harness cluster omits the config flag instead of inventing a path" $
+    , clusterRowCase "a Harness cluster omits the config flag instead of inventing a path" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withHarnessClusterFixtureM $ \prepared -> do
@@ -264,7 +281,7 @@ posixBackendCases =
                     assertBool "create was invoked" ("create cluster --name" `isInfixOf` calls)
                     assertBool "--config is absent" (not ("--config" `isInfixOf` calls))
                 other -> assertFailure ("expected a Harness create without config, got " ++ show other)
-    , testCase "a healthy cluster reports the control-plane identity, not the name" $
+    , clusterRowCase "a healthy cluster reports the control-plane identity, not the name" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             second <- withClusterFixtureM $ \prepared -> do
@@ -274,7 +291,7 @@ posixBackendCases =
                 Right (ClusterResultHealthy identity) -> identity @?= Text.pack controlPlaneId
                 other ->
                     assertFailure ("expected a healthy observation, got " ++ show other)
-    , testCase "the inherited flock descriptor excludes a concurrent create bracket" $
+    , clusterRowCase "the inherited flock descriptor excludes a concurrent create bracket" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             writeFile (statePath host </> "slow-create") ""
@@ -309,7 +326,7 @@ posixBackendCases =
                 other ->
                     assertFailure
                         ("expected one serialized create and one healthy observation, got " ++ show other)
-    , testCase "a stopped control plane is unhealthy, never a silent recreate" $
+    , clusterRowCase "a stopped control plane is unhealthy, never a silent recreate" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             observation <- withClusterFixtureM $ \prepared -> do
@@ -322,7 +339,7 @@ posixBackendCases =
                     assertFailure ("expected an unhealthy observation, got " ++ show other)
             clusters <- readFile (clustersPath host)
             assertBool "the same-named cluster remains present" (not (null (lines clusters)))
-    , testCase "a driver that cannot create reports a probe failure, not absence" $
+    , clusterRowCase "a driver that cannot create reports a probe failure, not absence" $
         withFakeHost $ \host -> do
             writeFakeDriver host False
             backend <- requireBackend host
@@ -331,7 +348,7 @@ posixBackendCases =
                 Right (ClusterResultProbeFailed _) -> pure ()
                 other ->
                     assertFailure ("expected a probe failure, got " ++ show other)
-    , testCase "a durable executing origin retries a failed create with the same nonce" $
+    , clusterRowCase "a durable executing origin retries a failed create with the same nonce" $
         withFakeHost $ \host -> do
             writeFakeDriver host False
             backend <- requireBackend host
@@ -350,7 +367,7 @@ posixBackendCases =
                     assertBool "the retry settles managed" ("\"state\":\"managed\"" `isInfixOf` managedRecord)
                     originField "nonce" preparedRecord @?= originField "nonce" managedRecord
                 other -> assertFailure ("expected crash-window recovery, got " ++ show other)
-    , testCase "an origin-owned post-create crash repairs the exact identity without prior proof" $
+    , clusterRowCase "an origin-owned post-create crash repairs the exact identity without prior proof" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             writeFile (statePath host </> "kill-owner-after-create") ""
@@ -368,7 +385,7 @@ posixBackendCases =
                     assertBool "the retry completed the managed transition" ("\"state\":\"managed\"" `isInfixOf` managedRecord)
                     originField "nonce" preparedRecord @?= originField "nonce" managedRecord
                 other -> assertFailure ("expected origin-owned crash repair, got " ++ show other)
-    , testCase "config drift after preparation fails before origin publication or create" $
+    , clusterRowCase "config drift after preparation fails before origin publication or create" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -384,7 +401,7 @@ posixBackendCases =
             case outcome of
                 Right (ClusterResultProbeFailed _, False, False) -> pure ()
                 other -> assertFailure ("expected fail-closed config drift, got " ++ show other)
-    , testCase "a failed cluster-list probe is never absence" $
+    , clusterRowCase "a failed cluster-list probe is never absence" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             writeFile (statePath host </> "fail-list") ""
@@ -392,7 +409,7 @@ posixBackendCases =
             case outcome of
                 Right (ClusterResultProbeFailed _) -> pure ()
                 other -> assertFailure ("expected strict list failure, got " ++ show other)
-    , testCase "a symlinked .cluster parent is refused without touching its target" $
+    , clusterRowCase "a symlinked .cluster parent is refused without touching its target" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -409,7 +426,7 @@ posixBackendCases =
             case outcome of
                 Right (ClusterResultProbeFailed _, "foreign\n", ["sentinel"]) -> pure ()
                 other -> assertFailure ("expected symlink-parent refusal, got " ++ show other)
-    , testCase "a symlinked state leaf is refused without touching its target" $
+    , clusterRowCase "a symlinked state leaf is refused without touching its target" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -427,7 +444,7 @@ posixBackendCases =
             case outcome of
                 Right (ClusterResultProbeFailed _, "foreign\n", ["sentinel"]) -> pure ()
                 other -> assertFailure ("expected symlink-leaf refusal, got " ++ show other)
-    , testCase "symlinked origin and lock paths are no-follow refusals" $
+    , clusterRowCase "symlinked origin and lock paths are no-follow refusals" $
         forM_ ["origin", "lock"] $ \kind ->
             withFakeHost $ \host -> do
                 backend <- requireBackend host
@@ -445,7 +462,7 @@ posixBackendCases =
                 case outcome of
                     Right (ClusterResultProbeFailed _, "foreign\n") -> pure ()
                     other -> assertFailure (kind ++ ": expected no-follow refusal, got " ++ show other)
-    , testCase "a hard-linked lock is refused before cluster observation or mutation" $
+    , clusterRowCase "a hard-linked lock is refused before cluster observation or mutation" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -461,7 +478,7 @@ posixBackendCases =
             case outcome of
                 Right (ClusterResultProbeFailed _, False) -> pure ()
                 other -> assertFailure ("expected hard-linked-lock refusal, got " ++ show other)
-    , testCase "a noncanonical foreign stage is refused and never unlinked" $
+    , clusterRowCase "a noncanonical foreign stage is refused and never unlinked" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -476,7 +493,7 @@ posixBackendCases =
             case outcome of
                 Right (ClusterResultProbeFailed _, True, False) -> pure ()
                 other -> assertFailure ("expected foreign-stage refusal without unlink, got " ++ show other)
-    , testCase "a digest-shaped canonical stage for another owner is refused and retained" $
+    , clusterRowCase "a digest-shaped canonical stage for another owner is refused and retained" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -501,7 +518,7 @@ posixBackendCases =
             case outcome of
                 Right (ClusterResultProbeFailed _, True, False) -> pure ()
                 other -> assertFailure ("expected foreign canonical-stage refusal, got " ++ show other)
-    , testCase "an origin pathname replacement during create cannot be published as managed" $
+    , clusterRowCase "an origin pathname replacement during create cannot be published as managed" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -513,7 +530,7 @@ posixBackendCases =
             case outcome of
                 Right (ClusterResultProbeFailed _, True) -> pure ()
                 other -> assertFailure ("expected retained-record create refusal, got " ++ show other)
-    , testCase "clause 4: cleanup removes only our identity" $
+    , clusterRowCase "clause 4: cleanup removes only our identity" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             cleanup <- withClusterFixtureM $ \prepared -> do
@@ -534,7 +551,7 @@ posixBackendCases =
                 other -> assertFailure ("expected exact cleanup and reacquisition, got " ++ show other)
             clusters <- readFile (clustersPath host)
             assertBool "the raw backend reacquisition recreated the cluster" (not (null (lines clusters)))
-    , testCase "clause 4: a replaced cluster is reported and left intact" $
+    , clusterRowCase "clause 4: a replaced cluster is reported and left intact" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             cleanup <- withClusterFixtureM $ \prepared -> do
@@ -550,7 +567,7 @@ posixBackendCases =
                     assertFailure ("expected a replacement report, got " ++ show other)
             clusters <- readFile (clustersPath host)
             assertBool "the replacement is left intact" (not (null (lines clusters)))
-    , testCase "cleanup cannot unlink an origin pathname replaced during deletion" $
+    , clusterRowCase "cleanup cannot unlink an origin pathname replaced during deletion" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -563,7 +580,7 @@ posixBackendCases =
             case outcome of
                 Right (Left (Failure _), True) -> pure ()
                 other -> assertFailure ("expected retained-record cleanup refusal, got " ++ show other)
-    , testCase "a byte-identical replacement origin cannot authorize cordon" $
+    , clusterRowCase "a byte-identical replacement origin cannot authorize cordon" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -584,7 +601,7 @@ posixBackendCases =
             case outcome of
                 Right (ClusterCordonResultFailed _, False) -> pure ()
                 other -> assertFailure ("expected copied-origin refusal before cordon, got " ++ show other)
-    , testCase "a fresh reconcile refuses a byte-identical copied self-bound origin" $
+    , clusterRowCase "a fresh reconcile refuses a byte-identical copied self-bound origin" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -604,7 +621,7 @@ posixBackendCases =
                 Right (ClusterResultProbeFailed reason, True, True) ->
                     assertBool "the copied inode is rejected by the record's self-binding" ("record-self-identity" `Text.isInfixOf` reason)
                 other -> assertFailure ("expected fresh-process copied-origin refusal, got " ++ show other)
-    , testCase "the canonical origin is bound to the exact cluster name" $
+    , clusterRowCase "the canonical origin is bound to the exact cluster name" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -621,7 +638,7 @@ posixBackendCases =
                 Right (ClusterResultProbeFailed reason, True) ->
                     assertBool "the mismatched record name is rejected" ("record-name" `Text.isInfixOf` reason)
                 other -> assertFailure ("expected exact record-name refusal, got " ++ show other)
-    , testCase "a byte-identical replacement kube snapshot blocks settlement and recovery" $
+    , clusterRowCase "a byte-identical replacement kube snapshot blocks settlement and recovery" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -647,7 +664,7 @@ posixBackendCases =
                     assertBool "the exact executing record survives" ("\"state\":\"executing\"" `isInfixOf` executing)
                     assertBool "fresh recovery rejects the replacement inode" ("kube-stage-binding" `Text.isInfixOf` reason || "kube-snapshot-identity" `Text.isInfixOf` reason)
                 other -> assertFailure ("expected snapshot replacement refusal without a second mutation, got " ++ show other)
-    , testCase "config snapshot digest drift blocks settlement and fresh recovery" $
+    , clusterRowCase "config snapshot digest drift blocks settlement and fresh recovery" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -667,7 +684,7 @@ posixBackendCases =
                     assertBool "fresh recovery revalidates the durable snapshot" ("config-stage-digest" `Text.isInfixOf` secondReason)
                     assertBool "drift cannot promote executing ownership" ("\"state\":\"executing\"" `Text.isInfixOf` executing)
                 other -> assertFailure ("expected exact config-snapshot drift refusal, got " ++ show other)
-    , testCase "a replacement lock path cannot establish a second cleanup namespace" $
+    , clusterRowCase "a replacement lock path cannot establish a second cleanup namespace" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -684,7 +701,7 @@ posixBackendCases =
             case outcome of
                 Right (Left (Failure _), True) -> pure ()
                 other -> assertFailure ("expected cross-call lock identity refusal, got " ++ show other)
-    , testCase "cleanup never recreates a missing retained state leaf" $
+    , clusterRowCase "cleanup never recreates a missing retained state leaf" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -700,7 +717,7 @@ posixBackendCases =
             case outcome of
                 Right (Left (Failure _), False, True, True) -> pure ()
                 other -> assertFailure ("expected missing-state refusal without recreation, got " ++ show other)
-    , testCase "cleanup never recreates a missing retained lock" $
+    , clusterRowCase "cleanup never recreates a missing retained lock" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -717,7 +734,7 @@ posixBackendCases =
             case outcome of
                 Right (Left (Failure _), False, True, True) -> pure ()
                 other -> assertFailure ("expected missing-lock refusal without recreation, got " ++ show other)
-    , testCase "a copied replacement state leaf cannot reuse managed ownership bytes" $
+    , clusterRowCase "a copied replacement state leaf cannot reuse managed ownership bytes" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -740,7 +757,7 @@ posixBackendCases =
             case outcome of
                 Right (ClusterCordonResultFailed _, False) -> pure ()
                 other -> assertFailure ("expected replacement state-leaf refusal, got " ++ show other)
-    , testCase "cordon rechecks identity under the ownership lock before any node mutation" $
+    , clusterRowCase "cordon rechecks identity under the ownership lock before any node mutation" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -758,7 +775,7 @@ posixBackendCases =
                 Right (ClusterCordonResultReplaced identity, False) ->
                     identity @?= "sha256:2222222222222222222222222222222222222222222222222222222222222222"
                 other -> assertFailure ("expected pre-mutation replacement refusal, got " ++ show other)
-    , testCase "cordon targets the immutable node container ID rather than its reusable name" $
+    , clusterRowCase "cordon targets the immutable node container ID rather than its reusable name" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -771,7 +788,7 @@ posixBackendCases =
                     assertBool "the immutable container ID is the update target" (controlPlaneId `isInfixOf` calls)
                     assertBool "the reusable node name is not the update target" (not ((name ++ "-control-plane") `isSuffixOf` last (lines calls)))
                 other -> assertFailure ("expected an ID-targeted cordon, got " ++ show other)
-    , testCase "readiness checks API and nodes and distinguishes same identity from replacement" $
+    , clusterRowCase "readiness checks API and nodes and distinguishes same identity from replacement" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -804,7 +821,7 @@ posixBackendCases =
                             notReadyIdentity @?= Text.pack controlPlaneId
                             replacementIdentity @?= "sha256:3333333333333333333333333333333333333333333333333333333333333333"
                 other -> assertFailure ("expected real readiness classifications, got " ++ show other)
-    , testCase "readiness refuses a wrong origin owner and exact-node-set drift" $
+    , clusterRowCase "readiness refuses a wrong origin owner and exact-node-set drift" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -831,7 +848,7 @@ posixBackendCases =
                             missingIdentity @?= Text.pack controlPlaneId
                             unexpectedIdentity @?= Text.pack controlPlaneId
                 other -> assertFailure ("expected owner/node-set readiness refusals, got " ++ show other)
-    , testCase "readiness observation-version exhaustion fails without wrapping" $
+    , clusterRowCase "readiness observation-version exhaustion fails without wrapping" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -843,7 +860,7 @@ posixBackendCases =
                 Right (ClusterReadinessResultProbeFailed reason) ->
                     assertBool "overflow is classified structurally" ("exhausted" `Text.isInfixOf` reason)
                 other -> assertFailure ("expected readiness counter exhaustion, got " ++ show other)
-    , testCase "ambient engine/provider overrides cannot drift reconcile, readiness, or cleanup" $
+    , clusterRowCase "ambient engine/provider overrides cannot drift reconcile, readiness, or cleanup" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -860,7 +877,7 @@ posixBackendCases =
                 Right (ClusterReadinessResultReady _ identity, Right ClusterCleanupResultRemoved) ->
                     identity @?= Text.pack controlPlaneId
                 other -> assertFailure ("expected a closed namespace across ownership calls, got " ++ show other)
-    , testCase "the lock file is a regular state sibling and cleanup probe failure preserves ownership" $
+    , clusterRowCase "the lock file is a regular state sibling and cleanup probe failure preserves ownership" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -876,7 +893,7 @@ posixBackendCases =
                 Right (entries, Left (Failure _), True) ->
                     assertBool ("expected a cluster lock file, saw " ++ show entries) (any (".cluster.lock" `isSuffixOf`) entries)
                 other -> assertFailure ("expected cleanup probe failure to retain ownership, got " ++ show other)
-    , testCase "Kind-list absence cannot hide retained owned node containers during cleanup" $
+    , clusterRowCase "Kind-list absence cannot hide retained owned node containers during cleanup" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -889,7 +906,7 @@ posixBackendCases =
             case outcome of
                 Right (Left (Failure _), True) -> pure ()
                 other -> assertFailure ("expected retained-node cleanup refusal, got " ++ show other)
-    , testCase "a failed runtime node query cannot be classified as absence" $
+    , clusterRowCase "a failed runtime node query cannot be classified as absence" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             outcome <- withClusterFixtureM $ \prepared -> do
@@ -902,7 +919,7 @@ posixBackendCases =
             case outcome of
                 Right (Left (Failure _), True) -> pure ()
                 other -> assertFailure ("expected runtime-observation cleanup refusal, got " ++ show other)
-    , testCase "status is read-only and reports absence without creating" $
+    , clusterRowCase "status is read-only and reports absence without creating" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             status <- withClusterFixtureM $ \prepared -> do
@@ -913,7 +930,7 @@ posixBackendCases =
                 stateAfter <- doesDirectoryExist (preparedClusterStateDirectory prepared)
                 pure (Right (observed, before == after, stateBefore, stateAfter))
             status @?= Right (ClusterStatusAbsent, True, False, False)
-    , testCase "status reports a driver failure rather than absence" $
+    , clusterRowCase "status reports a driver failure rather than absence" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
             writeFile (statePath host </> "fail-list") ""
@@ -921,23 +938,73 @@ posixBackendCases =
             case status of
                 Right (ClusterStatusProbeFailed _) -> pure ()
                 other -> assertFailure ("expected a status probe failure, got " ++ show other)
-    , testCase "status rejects stderr and malformed list framing for every name" $
-        forM_
-            [ "status-stderr"
-            , "status-missing-newline"
-            , "status-cr"
-            , "status-duplicate"
-            , "status-malformed-name"
-            ]
-            $ \marker ->
-                withFakeHost $ \host -> do
-                    backend <- requireBackend host
-                    writeFile (statePath host </> marker) ""
-                    status <- withClusterFixtureM $ \prepared -> Right <$> runClusterStatusCall backend prepared
-                    case status of
-                        Right (ClusterStatusProbeFailed _) -> pure ()
-                        other -> assertFailure (marker ++ ": expected strict status refusal, got " ++ show other)
     ]
+
+{- | The status classification, applied to one listing this driver might write.
+
+The decision is a total function of the driver's own outcome, so every branch of
+it is reached by handing it a value: no case needs a process arranged to produce
+the shape it is about, and none can pass against a stand-in for one (§ NN).
+-}
+answered :: String -> ClusterStatusObservation
+answered listing = classifyClusterStatus "demo" (ClusterCommandResult True listing "")
+
+refusesListing :: String -> ClusterStatusObservation -> IO ()
+refusesListing label observed = case observed of
+    ClusterStatusProbeFailed _ -> pure ()
+    other -> assertFailure ("the status classification admitted " <> label <> ": " <> show other)
+
+{- | Whether this gate host can hold the cluster's ownership row.
+
+Not a property of the fixture: the transaction the backend ships runs under a
+util-linux @flock(2)@ on an inherited descriptor, opens every durable object
+with @O_NOFOLLOW@, hands the driver @/proc/self/fd@ paths, and binds
+@device:inode@ identities. A Windows outer host offers none of those, and the
+backend's own discovery says so rather than pretending.
+-}
+clusterOwnershipRowHolds :: Bool
+#ifdef mingw32_HOST_OS
+clusterOwnershipRowHolds = False
+#else
+clusterOwnershipRowHolds = True
+#endif
+
+{- | One case of the family above, with its /expectation/ conditional.
+
+§ JJ's fifth rule is that a case whose subject is unavailable on this gate host
+asserts the refusal its subject declares rather than being compiled away. The
+body below therefore runs where the row's primitives exist and the declared
+refusal is recorded where they do not, and the case is counted either way.
+-}
+clusterRowCase :: TestName -> IO () -> TestTree
+clusterRowCase name body =
+    testCase name $
+        if clusterOwnershipRowHolds
+            then body
+            else expectClusterRowRefusal
+
+{- | The disposition a host without the row's primitives owes every caller.
+
+Asked through the production discovery, over the same fixture tools the family's
+other cases drive, so what is recorded is the backend refusing rather than a
+suite declining to ask. A backend that cannot hold its clauses mints no
+capability at all, which is why every operation below it is unreachable rather
+than weaker.
+-}
+expectClusterRowRefusal :: IO ()
+expectClusterRowRefusal =
+    withFakeHost $ \host -> do
+        discovered <-
+            discoverInjectedStrongClusterBackend
+                (localExec host)
+                (driverPath host)
+                (runtimePath host)
+                (kubectlPath host)
+        case discovered of
+            Left _ -> pure ()
+            Right _ ->
+                assertFailure
+                    "expected this gate host to mint no cluster ownership backend"
 
 -- Loopback exposure ------------------------------------------------------------
 
@@ -1053,21 +1120,24 @@ writeFakeDriver host createSucceeds = do
         unlines
             [ "#!/bin/sh"
             , "state=" ++ show state
-            , "test \"$DOCKER_HOST\" = unix:///var/run/docker.sock || exit 91"
-            , "test \"$DOCKER_CONTEXT\" = default || exit 92"
-            , "test \"$KIND_EXPERIMENTAL_PROVIDER\" = docker || exit 93"
-            , "test \"$PWD\" = / || exit 94"
-            , "command -v hostile-cluster-helper >/dev/null 2>&1 && exit 95"
+            -- The closed namespace is the *shipped ownership program's* to
+            -- re-establish for the children it starts, so the verbs it reaches
+            -- assert it.  A read-only listing has no program between the backend
+            -- and this driver: the backend issues the argument vector and the
+            -- runner supplies the namespace, so asserting the program's
+            -- namespace there would assert something nothing promised.
+            , "if test \"$1 $2\" != 'get clusters'; then"
+            , "  test \"$DOCKER_HOST\" = unix:///var/run/docker.sock || exit 91"
+            , "  test \"$DOCKER_CONTEXT\" = default || exit 92"
+            , "  test \"$KIND_EXPERIMENTAL_PROVIDER\" = docker || exit 93"
+            , "  test \"$PWD\" = / || exit 94"
+            , "  command -v hostile-cluster-helper >/dev/null 2>&1 && exit 95"
+            , "fi"
             , "printf '%s\\n' \"$*\" >> \"$state/driver.calls\""
             , "case \"$1 $2\" in"
             , "  'get clusters')"
             , "     test ! -f \"$state/fail-list\" || exit 71"
-            , "     if test -f \"$state/status-stderr\"; then printf 'warning\\n' >&2; exit 0; fi"
-            , "     if test -f \"$state/status-missing-newline\"; then printf foreign; exit 0; fi"
-            , "     if test -f \"$state/status-cr\"; then printf 'foreign\\r\\n'; exit 0; fi"
-            , "     if test -f \"$state/status-duplicate\"; then printf 'foreign\\nforeign\\n'; exit 0; fi"
-            , "     if test -f \"$state/status-malformed-name\"; then printf 'bad name\\n'; exit 0; fi"
-            , "     /bin/cat \"$state/clusters\"; exit 0;;"
+                    , "     /bin/cat \"$state/clusters\"; exit 0;;"
             , "  'get kubeconfig') test ! -f \"$state/fail-kubeconfig\" || exit 72; printf '%s\\n' \"$4\"; exit 0;;"
             , "  'create cluster')"
             , "     name=\"$4\""
@@ -1212,11 +1282,19 @@ localExec host = ClusterExec $ \argv ->
                     ]
                 overridden = "PATH" : map fst adversarialNamespace
                 childEnvironment = ("PATH", testPath) : adversarialNamespace ++ filter ((`notElem` overridden) . fst) inherited
-            (code, out, err) <-
-                readCreateProcessWithExitCode
-                    (proc command rest){env = Just childEnvironment}
-                    ""
-            pure (ClusterCommandResult (code == ExitSuccess) out err)
+            outcome <-
+                tryAny
+                    ( readCreateProcessWithExitCode
+                        (proc command rest){env = Just childEnvironment}
+                        ""
+                    )
+            pure $ case outcome of
+                -- Failure to *start* is not failure to succeed, and the
+                -- production runner reports it as a failed result rather than
+                -- an exception.  The injected one does too, so a gate host that
+                -- has none of these tools reaches a refusal instead of a crash.
+                Left failure -> ClusterCommandResult False "" (show failure)
+                Right (code, out, err) -> ClusterCommandResult (code == ExitSuccess) out err
 
 requireBackend :: FakeHost -> IO StrongClusterBackend
 requireBackend host = do

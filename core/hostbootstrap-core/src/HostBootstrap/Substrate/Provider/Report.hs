@@ -38,6 +38,7 @@ module HostBootstrap.Substrate.Provider.Report (
     providerReportFaultMessage,
 
     -- * The total classifiers
+    classifyProviderReport,
     classifyProviderListing,
     classifyProviderConfigValue,
     classifyProviderIdentity,
@@ -174,8 +175,7 @@ classifyProviderListing ::
     Either String CapturedRun ->
     Either ProviderReportFault (Maybe ProviderListing)
 classifyProviderListing instanceName captured = do
-    reported <- capturedReport captured
-    candidates <- reportLines reported
+    candidates <- classifyProviderReport providerReportLineBound captured
     rows <- traverse listingRow candidates
     case filter ((== instanceName) . listedInstance) rows of
         [] -> Right Nothing
@@ -213,8 +213,7 @@ classifyProviderConfigValue ::
     Either String CapturedRun ->
     Either ProviderReportFault ProviderConfigValue
 classifyProviderConfigValue captured = do
-    reported <- capturedReport captured
-    reportedLines <- reportLines reported
+    reportedLines <- classifyProviderReport providerReportLineBound captured
     case reportedLines of
         [] -> Right ProviderConfigUnset
         [value]
@@ -280,10 +279,35 @@ providerObservedOrigin listing identity = case (listing, identity) of
 -- ---------------------------------------------------------------------------
 -- Shared steps
 
-{- | The captured standard output of a command that ran and succeeded quietly.
+{- | What a provider actually reported, or why nothing it wrote is an answer.
 
-Every classifier starts here, so "what counts as an answer at all" is decided
-once rather than per question.
+Every classifier in this module starts here, and so does every driver that reads
+a report this module has no vocabulary for. That is the point: "the command
+produced no child", "the provider exited non-zero", "the provider succeeded and
+complained on the wrong stream", and "the provider wrote something outside the
+admitted shape" are one decision, taken once, rather than four decisions taken
+per question and drifting apart.
+
+The line bound is the caller's because it is a property of the question rather
+than of the transport: an instance name beside a state and an identity are
+narrow, and a report carrying an encoded guest stream is not. Everything else —
+what counts as a child, what counts as quiet, which characters a report may
+carry, and that a trailing newline is not a row — is decided here for all of
+them.
+
+Total over the interpreter's own outcome, so every refusal is reachable by
+application over values and needs no substitution point (§ NN).
+-}
+classifyProviderReport ::
+    -- | the widest single line this question admits
+    Int ->
+    Either String CapturedRun ->
+    Either ProviderReportFault [String]
+classifyProviderReport lineBound captured = do
+    reported <- capturedReport captured
+    reportLines lineBound reported
+
+{- | The captured standard output of a command that ran and succeeded quietly.
 -}
 capturedReport :: Either String CapturedRun -> Either ProviderReportFault String
 capturedReport (Left refusal) = Left (ProviderCommandUnrun (Text.pack refusal))
@@ -299,9 +323,9 @@ capturedReport (Right run) = case capturedExit run of
 A blank line is dropped rather than refused, because a trailing newline is how
 every one of these commands ends its output and is not a row.
 -}
-reportLines :: String -> Either ProviderReportFault [String]
-reportLines reported
-    | any (> providerReportLineBound) (map length candidates) =
+reportLines :: Int -> String -> Either ProviderReportFault [String]
+reportLines lineBound reported
+    | any (> lineBound) (map length candidates) =
         unreadable "the provider report carries a line past the admitted bound"
     | any (any control) candidates =
         unreadable "the provider report carries a control character"

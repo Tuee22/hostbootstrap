@@ -113,7 +113,15 @@ pathname or ambient kubeconfig. Fresh recovery accepts or conditionally removes 
 a copied record, replacement snapshot, config drift, incomplete transition, or foreign stage fails closed.
 The managed transition is published and directory-fsynced only after the created node IDs are re-observed.
 
-Reconciliation and cordoning use that namespace for total reconciliation/status and the raw cordon,
+The read-only status path is not part of that namespace and no longer part of that program. It issues the
+driver's own listing as an argument vector the backend owns, runs it through the driver's row of the one
+bounded-run table, and decides from the bytes with `classifyClusterStatus` — a total function callers and
+suites reach by application. Its refusals stay exactly as narrow: a non-zero exit, anything on standard
+error, a body that does not end in exactly one newline, a carriage return, a byte outside ASCII, a name
+outside the portable alphabet, and a repeated name are each the driver contradicting itself, and each is a
+refusal rather than an absence — because an absence authorizes creation and a refusal must not.
+
+Reconciliation and cordoning use that namespace for total reconciliation and the raw cordon,
 readiness, and cleanup operations. Cordon re-observes the full retained node map and calls `docker update`
 with immutable container IDs, never reusable node names. Readiness revalidates owner, record, lock, state
 leaf, exact node set, API readiness, every node's Ready condition, and the same container IDs. Cleanup

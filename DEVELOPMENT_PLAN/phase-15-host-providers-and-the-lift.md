@@ -1,7 +1,8 @@
 # Phase 15 — Host providers and the self-reference lift
 
 **Status**: Active
-**Current sprint**: Sprint 15.31 — The backend takes the one interpreter
+**Current sprint**: None — every implementation sprint is statically closed; the phase remains Active
+until the declared native Linux/x86_64 KVM/Incus baseline acceptance run below is performed
 **Depends on**: Phase 8 (ensure reconcilers), Phase 12 (step algebra and plan-owned resource
 projections), Phase 13 (authenticated handoff and the frame-child entry), Phase 14 (the four ownership
 clauses and host-local reservations)
@@ -1196,9 +1197,9 @@ seconds; `poetry run python -m hostbootstrap.check_code` passed; and
 
 None. The decision is total; the drivers that act on it are the sprints that follow.
 
-### Sprint 15.31: The backend takes the one interpreter [Planned]
+### Sprint 15.31: The backend takes the one interpreter [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`,
 `core/hostbootstrap-core/test/ProviderBackendSpec.hs`
 **Substrates**: linux-cpu
@@ -1234,14 +1235,25 @@ Every case the injected runner reached is reachable by application, and the sour
 execution seam remains. The declared native Linux/x86_64 KVM/Incus route continues to confirm the live
 path.
 
+`ProviderBackendSpec`'s `backendHasNoExecutionSeamCase` is the guard: it asserts that
+`Provider/Backend.hs` imports the one interpreter, that it does not import `System.Process`, and that no
+production source under `core/hostbootstrap-core/src/` names any of the seven retired executor
+identifiers. The lifecycle family beside it drives the production prepared calls end to end against a
+real provider client process, so what a case observes is what a provider answered rather than what a
+stand-in was handed.
+
+Dated 2026-08-20 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): canonical
+`cabal test all --ghc-options=-Werror` from `core/` passed 2,227/2,227 in 310.17 seconds.
+
 #### Remaining Work
 
-The adoption, the suite's move, the guard, and the documentation.
+None.
 
-### Sprint 15.32: The provision and readiness drivers [Planned]
+### Sprint 15.32: The provision and readiness drivers [Done]
 
-**Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Ownership.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Ownership.hs`,
+`core/hostbootstrap-core/test/FakeProvider.hs`, `core/hostbootstrap-core/test/ProviderBackendSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_invariant.md`
 
@@ -1265,17 +1277,40 @@ Provision and readiness holding their clauses through the reported face.
 #### Validation
 
 Every decision is already covered by application through the resumption vocabulary, and the clause-holding
-effects are exercised against a real protected store. The crash-window coverage that no longer has a
-patchable instruction point is **named as owed** here.
+effects are exercised against a real protected store.
+
+The effects run against a real provider client and a real store: `FakeProvider` makes the suite's own
+executable the program the one interpreter launches, which is what lets a fixture control the provider
+without a seam and without a wrapper the exact argument vector could not survive. The outcome-unknown
+window between clause 2 and clause 3 is reached by a client that really performs its launch and then
+really dies, and the retry binds the identity without launching a second time. Readiness re-observes
+the bound identity across the guest probe, so an instance replaced while the probe ran is a conflict
+rather than a readiness.
+
+Dated 2026-08-20 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): canonical
+`cabal test all --ghc-options=-Werror` from `core/` passed 2,227/2,227 in 310.17 seconds. `ProviderBackendSpec` passed 22/22, including the
+ten-case lifecycle family this sprint's driver carries.
 
 #### Remaining Work
 
-The module, its specs, its call-site adoption, and its documentation.
+None for this sprint's own subject. Two coverage items are **owed** and are not this sprint's to close:
 
-### Sprint 15.33: The share, stop, and delete drivers [Planned]
+- The partial-write, partial-fsync, and partial-unlink crash windows the retired interpreter program
+  was patchable at have no instruction point in this driver, because durability is now the protected
+  store's. The store's own durability contract is
+  [phase 14](phase-14-ownership-clauses-and-reservations.md)'s and is covered by `AuthoritySpec`; what
+  is owed is a statement in that phase's terms that the provider driver inherits it, rather than a
+  reintroduced patch point here.
+- Two rechecks a suite once asserted are not held by this driver and are not claimed: a share does not
+  re-observe the *instance* after its device readback, and a delete does not distinguish the same
+  identity from a replacement anywhere except after the destructive command. The second is closed by
+  Sprint 15.33; the first is named as owed there.
 
-**Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Ownership.hs`
+### Sprint 15.33: The share, stop, and delete drivers [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Ownership.hs`,
+`core/hostbootstrap-core/test/ProviderBackendSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_invariant.md`
 
@@ -1297,14 +1332,32 @@ The remaining provider operations on the same face.
 Every conflict is reachable by application over values, and the clause-holding effects run against a real
 protected store.
 
+Reaching them against a real client found two defects the values alone could not:
+
+- The re-entry every release and every dependent transaction makes republishes clause 2's record, and
+  the publication compared *bytes*. A record a previous entry had already bound carries clause 3's
+  identity as well, so the comparison refused the transaction's own record as a foreign one and no
+  owned instance could be deleted. The publication now compares the kind and the origin — what the
+  record says — and treats the binding as the one field a later step of the same transaction adds.
+- A delete whose name was taken by a different object between the destructive command and the
+  observation after it reported "the exact managed provider remains present". Clause 4 compares the
+  identity, so that object is somebody else's: the observation now compares the bound identity and
+  reports a replacement, which leaves the object standing and forgets no record.
+
+Dated 2026-08-20 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): canonical
+`cabal test all --ghc-options=-Werror` from `core/` passed 2,227/2,227 in 310.17 seconds.
+
 #### Remaining Work
 
-The module, its specs, its call-site adoption, and its documentation.
+None. One neighbouring contract this sprint deliberately does not claim — a share re-observing the
+*instance's* own standing after its device readback — is carried in the phase's own Remaining Work
+below, because it is a property of the boundary rather than of these three drivers.
 
-### Sprint 15.34: Direct canonical-root admission [Planned]
+### Sprint 15.34: Direct canonical-root admission [Done]
 
-**Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`,
+`core/hostbootstrap-core/test/ProviderBackendSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/build_and_run_model.md`
 
@@ -1324,13 +1377,25 @@ The Direct host's admission as a pure decision over a real observation.
 Every branch of the admission is covered by application over values, and the observation itself is taken
 against the real kernel.
 
+`directRootAdmissionCase` hands `admitDirectRoot` the admissible observation and then each of its five
+facts negated one at a time, so every refusal is reached by application. `observeDirectRoot` is taken
+against the real kernel by the Direct readiness cases: one admits a directory the case created, one
+refuses a path under it that does not exist, and one refuses a path that really names the admissible
+directory and really is not what this host canonicalizes it to. The symbolic-link refusal is reached by
+application rather than by creating a link, because creating one is a privilege some outer hosts
+withhold and a case that vanished on those hosts would be a smaller total rather than a failed one
+(§ JJ).
+
+Dated 2026-08-20 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): canonical
+`cabal test all --ghc-options=-Werror` from `core/` passed 2,227/2,227 in 310.17 seconds.
+
 #### Remaining Work
 
-The decision, its specs, and its documentation.
+None.
 
-### Sprint 15.35: The provider's interpreter program is gone [Planned]
+### Sprint 15.35: The provider's interpreter program is gone [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/incus.md`,
@@ -1360,9 +1425,39 @@ enumeration narrows there rather than here.
 The guard fires on a reintroduced program and stays quiet on the legitimate uses elsewhere in the tree.
 The declared native Linux/x86_64 KVM/Incus route confirms the whole boundary once more.
 
+What went is the whole of it: the 27KB provider ownership program, the Direct permission program, the
+`flock` front end and its discovery, the exclusion-tool vocabulary, and the wire report grammar the
+program answered in — together with the `Python3` and `Flock` entries the provider backend resolved
+them through. `mkIncusBackendSpec` now resolves `Incus` alone, and the closed `HostTool` set narrows in
+[phase 16](phase-16-cluster-lifecycle-and-cordoning.md), where the last driver stops driving an
+interpreter.
+
+The opt-in live client follows the boundary it exercises. It audits the Direct realization by taking the
+same observation the admission takes and applying the same decision, rather than resolving a program and
+comparing its text, and it reads back the protected store's own record rather than the retired sidecar
+layout. It also stops spelling its durable intent in POSIX system calls and publishes it through the
+ownership row instead, which is the binary's own typed operation over one platform row (§ EE, § LL) — so
+the component no longer depends on a POSIX-only package and **every gate host compiles it**. That matters
+beyond tidiness: while it could not compile here, nothing on this host type-checked the client against the
+boundary it drives, and it had in fact drifted — its backend construction was missing the guard prefix
+§ LL requires. It is also what Sprint 2.4 asked for and did not quite get: the suite's own flag is now the
+only thing deciding whether the live component is built, where a package dependency was previously
+answering "asked for and not built" with a resolver error instead.
+
+The removal has a second, host-portability consequence that § JJ makes a requirement rather than a
+bonus. The retired program's suite reached it by nesting a 27KB program inside a 19KB one, which on a
+Windows outer host exceeds `CreateProcess`'s 32,767-character command line and fails as
+`ERROR_FILENAME_EXCED_RANGE` — reported as "does not exist". Twenty of that suite's cases were
+therefore compiled out on Windows behind an `includePosix` guard. Both are gone: the guard is deleted,
+the cases are rebuilt against the real provider client, and the whole family runs and is counted on
+every gate host.
+
+Dated 2026-08-20 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): canonical
+`cabal test all --ghc-options=-Werror` from `core/` passed 2,227/2,227 in 310.17 seconds.
+
 #### Remaining Work
 
-The removal, the guard, and the documentation.
+None.
 
 ## Static Validation Evidence
 
@@ -1384,6 +1479,18 @@ resumption-decision families. The same host passed `poetry run python -m hostboo
 `poetry run python -m hostbootstrap.test_all` at 231. § II makes this a gate-host record rather than a
 substrate declaration: it is the host static gate run natively on a Windows outer host, and it neither
 substitutes for the declared native Linux/x86_64 component build nor for the live KVM/Incus run.
+
+On 2026-08-20, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0 passed
+`cabal build -fprovider-live hostbootstrap-provider-live-linux-cpu --ghc-options=-Werror` from `core/` —
+the first gate host other than Linux on which that component builds at all — and
+`cabal test all --ghc-options=-Werror` from `core/`: all 2,227 tests passed in 310.17 seconds,
+including this phase's clause-holding provider driver, its Direct canonical-root admission, and the
+provider lifecycle family that this phase's final sprints made host-portable. The same host passed
+`poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` at
+231. § II makes this a
+gate-host record rather than a substrate declaration: it is the host static gate run natively on a
+Windows outer host, and it neither substitutes for the declared native Linux/x86_64 component build nor
+for the live KVM/Incus run.
 
 ## Phase-Level Baseline Acceptance
 
@@ -1434,11 +1541,30 @@ is the adoption itself. Sprint 15.27 supplies the total classifier that turns a 
 into the observation a clause is held over and Sprint 15.28 the described commands whose outcomes it
 classifies. Sprint 15.29 gives the durable record its third kind, so a record can describe an object
 another authority owns and carry the claim that closes its outcome-unknown window, and Sprint 15.30 the
-resumption vocabulary that decides where a transaction stands. What is left is the adoption at the
-boundary itself: Sprint 15.31 moves the backend onto the one interpreter and retires its injected
-executor, Sprints 15.32 and 15.33 put every provider operation on the seam, Sprint 15.34 makes Direct's
-admission a decision this binary applies, and Sprint 15.35 removes the interpreter program the boundary
-ships today.
+resumption vocabulary that decides where a transaction stands.
+
+The adoption itself is now done. Sprint 15.31 moved the backend onto the one interpreter and retired its
+injected executor, Sprints 15.32 and 15.33 put every provider operation on the seam, Sprint 15.34 made
+Direct's admission a decision this binary applies, and Sprint 15.35 removed the interpreter program the
+boundary shipped.
+
+Three things the phase still owes, none of which is a sprint's own subject:
+
+- **the declared live run.** § II makes the static gate a gate-host record, not a substrate
+  declaration. The live client now type-checks against the boundary on every gate host, which is what
+  caught its drift, but type-checking is not running: the native Linux/x86_64 KVM/Incus baseline
+  acceptance below has not been performed against the boundary as it now stands, and it is the only thing
+  keeping this phase `Active`.
+- **the share's instance recheck.** Attaching a share re-observes the *device* it binds on both sides of
+  the attachment, and re-observes the instance's standing before it, but not after the device readback.
+  An instance replaced inside that window is caught by the next transaction rather than by that one. No
+  record binds an object that was not observed; what is missing is the earlier refusal.
+- **the inherited durability statement.** The provider driver's durability is now the protected store's,
+  so the partial-write, partial-fsync, and partial-unlink windows the retired interpreter program was
+  patchable at have no instruction point here. The store's own contract is
+  [phase 14](phase-14-ownership-clauses-and-reservations.md)'s and `AuthoritySpec` covers it; what is
+  owed is one statement, in that phase's terms, that this boundary inherits it — rather than a
+  reintroduced patch point (§ NN).
 
 Sprints 15.6 through 15.19 describe the mechanism their own boundaries hold today. § A rewrites a phase in
 place rather than appending a correction, so those sprints are restated in the same change that moves them

@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
@@ -52,6 +53,10 @@ module Fixture (
     withFixtureProjectPlanContext,
     withFixtureHarnessProjectPlan,
     withFixtureHarnessAuthority,
+    newFakeTool,
+    newExhaustingFakeTool,
+    newRecordingFakeTool,
+    newRefusingFakeTool,
 )
 where
 
@@ -117,6 +122,7 @@ import HostBootstrap.ProjectRoot (
 import HostBootstrap.Protected (openProtectedStore)
 import HostBootstrap.Step (Step, StepPlan, mkStepPlan)
 import Numeric.Natural (Natural)
+import System.Directory (getPermissions, setOwnerExecutable, setPermissions)
 import System.Environment (getExecutablePath)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -674,3 +680,190 @@ withFixtureProjectRoot action =
     withSystemTempDirectory "hostbootstrap-fixture-root" $ \dir -> do
         outcome <- withCanonicalProjectRoot (dir </> "fixture.dhall") "." action
         either (fail . show) pure outcome
+
+-- ---------------------------------------------------------------------------
+-- Real tools a described command can be interpreted against
+
+{- | Write one real executable that reports exactly the given text and exits zero.
+
+A described command reaches a process by launching the tool the host
+configuration resolves (§ KK), so a suite that wants a provider to have said a
+particular thing gives the interpreter a real program to launch rather than a
+stand-in for launching it (§ NN). The program is a shell script on a POSIX host
+and a batch file on a Windows one, because those are the two things those hosts'
+own process creation runs, and the returned path is absolute on both.
+
+An empty report is a tool that says nothing at all, which is what a probe
+answering only through its exit status looks like.
+-}
+newFakeTool ::
+    -- | the directory the tool is written into
+    FilePath ->
+    -- | its base name, without a host-specific extension
+    String ->
+    -- | exactly what it writes to standard output, one line, or nothing
+    String ->
+    IO FilePath
+newFakeTool directory name reported = do
+    let path = directory </> fakeToolFileName name
+    writeFile path (fakeToolProgram reported)
+    makeFakeToolExecutable path
+    pure path
+
+fakeToolFileName :: String -> String
+fakeToolProgram :: String -> String
+makeFakeToolExecutable :: FilePath -> IO ()
+#if defined(mingw32_HOST_OS)
+fakeToolFileName name = name <> ".bat"
+fakeToolProgram "" = "@echo off\n"
+fakeToolProgram reported = "@echo off\necho " <> reported <> "\n"
+makeFakeToolExecutable _ = pure ()
+#else
+fakeToolFileName = id
+fakeToolProgram "" = "#!/bin/sh\nexit 0\n"
+fakeToolProgram reported = "#!/bin/sh\nprintf '%s\\n' " <> show reported <> "\n"
+makeFakeToolExecutable path =
+    getPermissions path >>= setPermissions path . setOwnerExecutable True
+#endif
+
+{- | Write one real executable that answers once and refuses every call after.
+
+Some contracts are about what happens when a probe that answered a moment ago
+stops answering. A tool that decides that from its own durable state needs no
+substitution point in the code under test: the first call is the readiness
+observation and the second is the reprobe, and both are real processes (§ NN).
+-}
+newExhaustingFakeTool ::
+    -- | the directory the tool is written into
+    FilePath ->
+    -- | its base name, without a host-specific extension
+    String ->
+    -- | exactly what its one successful call writes to standard output
+    String ->
+    -- | the diagnostic every later call writes to standard error
+    String ->
+    IO FilePath
+newExhaustingFakeTool directory name reported diagnostic = do
+    let path = directory </> fakeToolFileName name
+    writeFile path (exhaustingToolProgram reported diagnostic)
+    makeFakeToolExecutable path
+    pure path
+
+exhaustingToolProgram :: String -> String -> String
+#if defined(mingw32_HOST_OS)
+exhaustingToolProgram reported diagnostic =
+    unlines
+        [ "@echo off"
+        , "if exist \"%~f0.calls\" ("
+        , "  echo " <> diagnostic <> " 1>&2"
+        , "  exit /b 1"
+        , ")"
+        , "type nul > \"%~f0.calls\""
+        , "echo " <> reported
+        ]
+#else
+exhaustingToolProgram reported diagnostic =
+    unlines
+        [ "#!/bin/sh"
+        , "calls=\"$0.calls\""
+        , "if [ -f \"$calls\" ]; then"
+        , "  printf '%s\\n' " <> show diagnostic <> " >&2"
+        , "  exit 1"
+        , "fi"
+        , ": > \"$calls\""
+        , "printf '%s\\n' " <> show reported
+        ]
+#endif
+
+{- | Write one real executable that records that it ran, then answers as told.
+
+Ordering is a contract: a readiness observation that reaches the provisioning
+egress before it has admitted the root has taken a step it was not entitled to.
+The tool writing its own name into a shared log makes that order an observation
+of real processes rather than of a counter beside them (§ NN).
+-}
+newRecordingFakeTool ::
+    -- | the directory the tool is written into
+    FilePath ->
+    -- | its base name, without a host-specific extension
+    String ->
+    -- | exactly what it writes to standard output, one line, or nothing
+    String ->
+    -- | the status it exits with
+    Int ->
+    -- | the log it appends its own name to
+    FilePath ->
+    IO FilePath
+newRecordingFakeTool directory name reported status logPath = do
+    let path = directory </> fakeToolFileName name
+    writeFile path (recordingToolProgram name reported status logPath)
+    makeFakeToolExecutable path
+    pure path
+
+recordingToolProgram :: String -> String -> Int -> FilePath -> String
+#if defined(mingw32_HOST_OS)
+recordingToolProgram name reported status logPath =
+    unlines
+        ( [ "@echo off"
+          , "echo " <> name <> ">>\"" <> logPath <> "\""
+          ]
+            <> ["echo " <> reported | not (null reported)]
+            <> ["exit /b " <> show status]
+        )
+#else
+recordingToolProgram name reported status logPath =
+    unlines
+        ( [ "#!/bin/sh"
+          , "printf '%s\\n' " <> show name <> " >> " <> show logPath
+          ]
+            <> ["printf '%s\\n' " <> show reported | not (null reported)]
+            <> ["exit " <> show status]
+        )
+#endif
+
+{- | Write one real executable that answers every verb but the named one.
+
+A client whose provisioning egress is unavailable and one whose daemon has
+stopped answering are different contracts, and both are properties of the
+program the interpreter launches rather than of a seam beside it (§ NN). The
+verb is matched against the first argument, which is where every command in this
+project's provider vocabulary carries it.
+-}
+newRefusingFakeTool ::
+    -- | the directory the tool is written into
+    FilePath ->
+    -- | its base name, without a host-specific extension
+    String ->
+    -- | the first argument it refuses
+    String ->
+    -- | the diagnostic it writes to standard error when it refuses
+    String ->
+    IO FilePath
+newRefusingFakeTool directory name refused diagnostic = do
+    let path = directory </> fakeToolFileName name
+    writeFile path (refusingToolProgram refused diagnostic)
+    makeFakeToolExecutable path
+    pure path
+
+refusingToolProgram :: String -> String -> String
+#if defined(mingw32_HOST_OS)
+refusingToolProgram refused diagnostic =
+    unlines
+        [ "@echo off"
+        , "if \"%1\"==\"" <> refused <> "\" ("
+        , "  echo " <> diagnostic <> " 1>&2"
+        , "  exit /b 1"
+        , ")"
+        , "exit /b 0"
+        ]
+#else
+refusingToolProgram refused diagnostic =
+    unlines
+        [ "#!/bin/sh"
+        , "if [ \"$1\" = " <> show refused <> " ]; then"
+        , "  printf '%s\\n' " <> show diagnostic <> " >&2"
+        , "  exit 1"
+        , "fi"
+        , "exit 0"
+        ]
+#endif

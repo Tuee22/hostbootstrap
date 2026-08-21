@@ -21,6 +21,7 @@ import qualified ContextSpec
 import qualified CordonSpec
 import qualified DetachedSpec
 import qualified DhallGenSpec
+import qualified FakeProvider
 import qualified EffectSpec
 import qualified DocValidatorSpec
 import qualified EnsureSpec
@@ -57,10 +58,12 @@ import qualified SchemaSpec
 import qualified SpecIndexSpec
 import qualified StepSpec
 import qualified SubstrateSpec
+import Data.List (isPrefixOf)
 import GHC.IO.Encoding (setLocaleEncoding, utf8)
 import HostBootstrap.Handoff.Transaction (classifyFrameChild, frameInterpreter, runFrameChildEntry)
 import HostBootstrap.Ownership.Shipped (interpretShippedOwnership)
-import System.Environment (getArgs)
+import HostBootstrap.Substrate.Provider (RawProviderOutcome (RawProviderFailure))
+import System.Environment (getArgs, lookupEnv)
 #if !defined(mingw32_HOST_OS)
 import System.Posix.Files (setFileCreationMask)
 #endif
@@ -109,7 +112,18 @@ main = do
     -- re-entrant probe branches below inherit it too.
     fixFileCreationMask
     args <- getArgs
+    -- The provider client this suite's provider fixtures drive is this same
+    -- executable, because the one interpreter launches whatever the host
+    -- configuration resolves with the exact argument vector the described
+    -- command carries, and the alias driver's guest vector carries a whole
+    -- program that no shell wrapper could forward unchanged. The variable is
+    -- held only for the span of a fixture, so an ordinary run never sees it.
+    fakeProvider <- lookupEnv FakeProvider.fakeProviderVariable
     case args of
+        _
+            | Just providerRoot <- fakeProvider
+            , not (null args) ->
+                FakeProvider.runFakeProviderClient fakeProviderGuest providerRoot args
         ["--hostbootstrap-schema-fixture", fixture] ->
             CLISpec.runSchemaFixture fixture
         -- A separate process attempting the protected store's exclusive entry,
@@ -238,3 +252,15 @@ main = do
             defaultMain $
                 localOption (NumThreads 1) $
                     testGroup "hostbootstrap-core" (CoverageManifest.tests suite : suite)
+
+{- | Which guest answers inside a fixture's instance, by declared role.
+
+The provider client is one program — this executable — so the roles its fixtures
+play meet in exactly one place, and a role no suite claims is a refusal rather
+than a silent success.
+-}
+fakeProviderGuest :: FakeProvider.GuestHandler
+fakeProviderGuest root name role argv
+    | "alias:" `isPrefixOf` role = ProviderAliasSpec.aliasGuest root name role argv
+    | role == "backend" = ProviderBackendSpec.backendGuest root name role argv
+    | otherwise = pure (RawProviderFailure ("unknown provider fixture role " <> role))

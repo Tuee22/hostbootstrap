@@ -39,6 +39,7 @@ module HostBootstrap.Cluster.Backend (
     runClusterCordonCall,
     ClusterStatusObservation (..),
     runClusterStatusCall,
+    classifyClusterStatus,
     runClusterReadinessCall,
 
     -- * Loopback-bound exposure
@@ -55,7 +56,8 @@ module HostBootstrap.Cluster.Backend (
 )
 where
 
-import Data.Char (isDigit)
+import Data.Char (isAlphaNum, isAscii, isDigit)
+import Data.List (nub)
 import Control.Exception.Safe (tryAny)
 import Data.IORef (IORef, atomicModifyIORef')
 import Data.Text (Text)
@@ -335,52 +337,74 @@ data ClusterStatusObservation
     | ClusterStatusProbeFailed Text
     deriving (Eq, Show)
 
+{- | Ask the cluster driver which clusters it names, and decide from the answer.
+
+Read-only, and one bounded run of the driver's own listing rather than a program
+shipped to an interpreter: the argument vector is this module's, the runner is
+the driver's row of the one bounded-run table, and what the bytes mean is
+'classifyClusterStatus' — a total function a suite reaches by application rather
+than by arranging for a process to produce each shape (§ KK, § NN).
+-}
 runClusterStatusCall ::
     StrongClusterBackend ->
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
     IO ClusterStatusObservation
-runClusterStatusCall (StrongClusterBackend exec driver _runtime _kubectl _flock python closedPath _readinessVersion) prepared = do
-    result <-
-        runClusterCommand
-            exec
-            [ python
-            , "-c"
-            , clusterStatusProgram
-            , driver
-            , preparedClusterName prepared
-            , closedPath
-            ]
-    pure $ case protocolWords result of
-        Just ["PRESENT"] | clusterCommandOk result -> ClusterStatusPresent
-        Just ["ABSENT"] | clusterCommandOk result -> ClusterStatusAbsent
-        Just ("FAILED" : rest) -> ClusterStatusProbeFailed (Text.pack (unwords rest))
-        _ ->
-            ClusterStatusProbeFailed
-                ( if clusterCommandOk result
-                    then "unparseable read-only status report: " <> firstLineText (clusterCommandStdout result)
-                    else "the bounded read-only status command failed: " <> firstLineText (clusterCommandStderr result)
-                )
+runClusterStatusCall (StrongClusterBackend exec driver _runtime _kubectl _flock _python _closedPath _readinessVersion) prepared = do
+    result <- runClusterCommand exec [driver, "get", "clusters"]
+    pure (classifyClusterStatus (preparedClusterName prepared) result)
 
-clusterStatusProgram :: String
-clusterStatusProgram =
-    unlines
-        [ "import os,subprocess,sys"
-        , "driver,name,tool_path=sys.argv[1:]"
-        , "def safe_name(value): return bool(value) and len(value) <= 128 and all(ch.isascii() and (ch.isalnum() or ch in '._-') for ch in value)"
-        , "child_environment={'PATH':tool_path,'HOME':'/nonexistent','XDG_CONFIG_HOME':'/nonexistent','TMPDIR':'/tmp','LANG':'C','LC_ALL':'C','DOCKER_HOST':'unix:///var/run/docker.sock','DOCKER_CONTEXT':'default','KIND_EXPERIMENTAL_PROVIDER':'docker'}"
-        , "try: raw=subprocess.run([driver,'get','clusters'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30,env=child_environment,cwd='/')"
-        , "except subprocess.TimeoutExpired: print('FAILED cluster-list-timeout'); raise SystemExit(0)"
-        , "except OSError: print('FAILED cluster-list-exec'); raise SystemExit(0)"
-        , "if raw.returncode != 0 or raw.stderr: print('FAILED cluster-list'); raise SystemExit(0)"
-        , "if raw.stdout == b'': names=[]"
-        , "elif not raw.stdout.endswith(b'\\n') or b'\\r' in raw.stdout: print('FAILED cluster-list-framing'); raise SystemExit(0)"
-        , "else:"
-        , "    try: names=raw.stdout[:-1].decode('ascii').split('\\n')"
-        , "    except UnicodeDecodeError: print('FAILED cluster-list-framing'); raise SystemExit(0)"
-        , "if any(not safe_name(value) for value in names): print('FAILED cluster-list-name'); raise SystemExit(0)"
-        , "if len(names) != len(set(names)): print('FAILED duplicate-cluster'); raise SystemExit(0)"
-        , "print('PRESENT' if name in names else 'ABSENT')"
-        ]
+{- | What the driver's listing says about one cluster, as a total function of it.
+
+Narrow on purpose, because a listing is another program's output. A non-zero
+exit, anything at all on standard error, a body that does not end in exactly one
+newline, a carriage return, a byte outside ASCII, a name outside the portable
+alphabet, and the same name listed twice are each the driver contradicting
+itself, and each is a refusal rather than an absence. Telling "the driver says
+this cluster is not here" apart from "the driver did not answer" is the whole
+point: the first authorizes creation and the second must not.
+-}
+classifyClusterStatus :: String -> ClusterCommandResult -> ClusterStatusObservation
+classifyClusterStatus name result
+    | not (clusterCommandOk result) = refused "cluster-list"
+    | not (null (clusterCommandStderr result)) = refused "cluster-list"
+    | otherwise = case listedClusterNames (clusterCommandStdout result) of
+        Left reason -> refused reason
+        Right names
+            | not (all safeClusterName names) -> refused "cluster-list-name"
+            | length names /= length (nub names) -> refused "duplicate-cluster"
+            | name `elem` names -> ClusterStatusPresent
+            | otherwise -> ClusterStatusAbsent
+  where
+    refused reason = ClusterStatusProbeFailed (Text.pack reason)
+
+{- | The names one well-framed listing carries.
+
+Empty output is an empty listing rather than a malformed one, because a driver
+that names nothing writes nothing.
+-}
+listedClusterNames :: String -> Either String [String]
+listedClusterNames "" = Right []
+listedClusterNames output
+    | last output /= '\n' = Left "cluster-list-framing"
+    | '\r' `elem` output = Left "cluster-list-framing"
+    | not (all isAscii output) = Left "cluster-list-framing"
+    | otherwise = Right (splitOnNewline (init output))
+
+splitOnNewline :: String -> [String]
+splitOnNewline value = case break (== '\n') value of
+    (before, []) -> [before]
+    (before, _ : rest) -> before : splitOnNewline rest
+
+-- | The portable alphabet a cluster name this driver reports must stay inside.
+safeClusterName :: String -> Bool
+safeClusterName value =
+    not (null value)
+        && length value <= 128
+        && all admissible value
+  where
+    admissible character =
+        isAscii character
+            && (isAlphaNum character || character `elem` ("._-" :: String))
 
 -- | The readiness probe is read-only and retains plan identity only when its
 -- raw observation is settled in 'HostBootstrap.Cluster.Reconcile'.

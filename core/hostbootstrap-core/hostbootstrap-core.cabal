@@ -137,6 +137,7 @@ library
       HostBootstrap.Substrate.Provider.Backend
       HostBootstrap.Substrate.Provider.Reconcile
       HostBootstrap.Substrate.Provider.Command
+      HostBootstrap.Substrate.Provider.Ownership
       HostBootstrap.Substrate.Provider.Report
       HostBootstrap.Substrate.Provider.Resume
       HostBootstrap.Ensure
@@ -288,6 +289,7 @@ test-suite hostbootstrap-core-test
   other-modules:
       CoverageManifest
       Fixture
+      FakeProvider
       PlatformPath
       PrepareFixture
       SourceGuard
@@ -394,7 +396,6 @@ test-suite hostbootstrap-provider-live-linux-cpu
     , process
     , temporary
     , text
-    , unix
   -- The opt-in flag is the whole gate. A second host condition that silently
   -- made the suite unbuildable would answer "asked for and not built" with the
   -- same green nothing as "not asked for", which is the shape § JJ's fifth rule

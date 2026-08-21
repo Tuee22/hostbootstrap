@@ -52,8 +52,8 @@ its row here.
 | 12 | [Step algebra and the project plan](phase-12-step-algebra-and-project-plan.md) | Done | linux-cpu | — |
 | 13 | [Authenticated handoff and child admission](phase-13-authenticated-handoff-and-child-admission.md) | Done | linux-cpu | — |
 | 14 | [Ownership clauses and reservations](phase-14-ownership-clauses-and-reservations.md) | Done | linux-cpu | — |
-| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Active | linux-cpu | 15.31–15.35 the interpreter adoption, the ownership drivers, Direct admission, and the interpreter program's removal |
-| 16 | [Cluster lifecycle, budgets, and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Active | linux-cpu | 16.40–16.43 the cluster and Colima drivers, the live gate as a harness case, and the enumeration narrowing |
+| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Active | linux-cpu | the declared native Linux/x86_64 KVM/Incus baseline acceptance run; every implementation sprint is statically closed |
+| 16 | [Cluster lifecycle, budgets, and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Active | linux-cpu | 16.41–16.44 the cluster and Colima drivers, the live gate as a harness case, and the enumeration narrowing |
 | 17 | [Recursive lifecycle command](phase-17-recursive-lifecycle-command.md) | Active | linux-cpu | 17.41–17.51 forward/reverse adoption, cleanup, unwind, gate |
 | 18 | [Recovery and migration](phase-18-recovery-and-migration.md) | Active | linux-cpu | 18.4–18.19 resource records, migration recovery, recovered closure, interruption fixtures |
 | 19 | [Test harness and run ownership](phase-19-test-harness-and-run-ownership.md) | Active | linux-cpu | 19.5 Harness scope-capsule producer; 19.6 live harness acceptance |
@@ -108,10 +108,12 @@ and a process group ended on every exit path. The receiving process holds the pr
 entry for exactly its own lifetime, so clause 1 stays a kernel fact, and the frame table now carries the
 ownership column that says which row holds a frame's clauses.
 
-What remains of the seam is its **adoption by the drivers**: the provider, cluster, Colima, and
-guest-alias transactions are still interpreter programs rather than the binary's own typed operations.
-Phase 15 adopts the row at the provider, phase 16 at the cluster and Colima, and phase 24 at the guest
-alias — where the binary must first exist in the guest. Phase 13 supplies the entry a frame crossing needs: one total pure classifier
+The seam's **adoption by the drivers** is under way. The provider is done: its provisioning, readiness,
+share, stop, delete, and guest-execution transactions are now Haskell operations over the protected
+store, described commands, and total classifiers, and the 27KB interpreter program, the Direct
+permission program, and the locking front end they ran under are deleted. The cluster, Colima, and
+guest-alias transactions are still interpreter programs; phase 16 adopts the row at the cluster and
+Colima, and phase 24 at the guest alias — where the binary must first exist in the guest. Phase 13 supplies the entry a frame crossing needs: one total pure classifier
 over `argv`, consulted once before the parser, and one bracketed near side that folds a lift context into
 the invocation that crosses the frames, carries one transaction over, reads one answer, and ends the
 child group.
@@ -131,8 +133,11 @@ state an interruption leaves is a value a fixture writes through the store, afte
 driver under test needs no cooperation from the code under test. Phase 14 has taken the second: the host wall's crash-resume branches are entered by
 writing the durable state an interruption leaves — a value — through the wall's own protected store, so
 the driver carries no crash point and no injected seam, and the injected object-identity seam is deleted.
-Phases 15, 16, and 24 owe the remaining injected execution seams, the stand-in executables, and the two
-patchable crash-point markers their own rows delete.
+Phase 15 has taken the third: the provider backend holds no execution seam, a source guard says so, and
+the outcome-unknown window between clause 2 and clause 3 is reached by a provider client that really
+performs its launch and really dies rather than by a patch point. Phases 16 and 24 owe the remaining
+injected execution seam, the stand-in executables, and the two patchable crash-point markers their own
+rows delete.
 
 On 2026-08-17 the complete host static gate passed host-native on Windows 11 Home 10.0.26200 x86_64 with
 GHC 9.12.4 and Cabal 3.16.1.0: `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/`
@@ -152,18 +157,21 @@ three machines and § C forbids a baseline phase owing hardware it does not decl
 § KK's vocabulary is built. One closed command vocabulary describes the tool, its exact argument vector,
 its stdio disposition, and its frame; one interpreter runs it; one quoter and one process runner sit
 beneath; and one module owns the guest bootstrap — the ordered, probe-first steps that establish the binary
-in a frame that has never run it. What it does not yet reach is the ownership drivers, which are still
-interpreter programs carried as string literals: a program in a string parses its own protocol, restates
-invariants its caller already states, and has to be reviewed in two languages.
+in a frame that has never run it. It now reaches the provider's ownership driver: every provider effect
+is a described command and every decision above it a total function. What it does not yet reach is the
+cluster, Colima, and guest-alias drivers, which are still interpreter programs carried as string
+literals: a program in a string parses its own protocol, restates invariants its caller already states,
+and has to be reviewed in two languages.
 
 § LL makes a provider a **row** over one closed frame table rather than a module of parallel logic, because
 the guarded delete, the existence probe, the readiness wait, the budget-to-wall rendering, and the four
 ownership clauses are one computation each: written per provider they become copies that pass their own
 tests while disagreeing with each other. Its host-frame half is settled — `HostFrame` is the closed
 three-constructor axis and the reconcilers are rows over it — and its guarded destructive delete is one
-computation over that table. The **ownership primitive** is built and every host-local owner is on it; the
-rows still owed are the one that ships a transaction to another frame and the drivers that consume it,
-which is why phases 15, 16, and 21 are open on it.
+computation over that table. The **ownership primitive** is built, every host-local owner is on it, and the provider driver now holds
+its four clauses through it; the rows still owed are the one that ships a transaction to another frame
+and the cluster, Colima, and guest-alias drivers that consume it, which is why phases 16, 21, and 24 are
+open on it.
 
 § NN states what a gate's evidence is worth. A fake exists because a decision is trapped inside an effect,
 so the answer is not to write better fakes but to lift the decision into a total function that can be

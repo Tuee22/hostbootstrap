@@ -28,14 +28,13 @@ is absent. The prepared route:
 - stop on `project down`, or force-delete the guarded project VM on `project destroy`.
 
 Host-side `incus` is resolved through `HostTool` and retained as a typed absolute executable by the
-provider backend. The backend today holds its four clauses through a retained `flock` front end and an
-interpreter program, which is why it also resolves an interpreter and a locking executable and admits only
-the one `flock` namespace. The vocabulary that replaces it is built and described in the three sections
-below — described commands, one total classification of what the provider answers, and one resumption
-decision — and the clause-holding itself moves onto the seam's reported face (see
-[ownership seam](../architecture/ownership_seam.md)) in the adoption sprints the
-[host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
-still carries. Commands inside the guest intentionally use the guest's own tool lookup.
+provider backend. It is the **only** executable that backend resolves: the four clauses are held through
+the ownership seam's reported face (see [ownership seam](../architecture/ownership_seam.md)), every
+effect is one of the described commands below, and every decision above them is a total function. The
+interpreter program the backend once shipped, the Direct permission program beside it, and the `flock`
+front end they ran under are deleted, so no interpreter and no locking executable is resolved and no
+lock namespace is admitted — exclusion is the protected store's exclusive entry. Commands inside the
+guest intentionally use the guest's own tool lookup.
 
 Before that provider value is used, `HostBootstrap.Ensure.Incus` converges the native provider and runs
 a total final observation. Its pure `IncusProviderStatus` distinguishes:
@@ -67,9 +66,21 @@ The Incus ensure capability is deliberately narrow: it proves the final installa
 made by the ensure reconciler, not permanent readiness, ownership of a VM, or authorization for an unrelated
 mutation. A real provider mutation instead consumes the exact prepared call. Opaque nominal
 `ManagedProviderHandle` and `ManagedProviderShareHandle` values retain the backend origin without exposing
-generic handle/receipt authority. Under one retained `flock`, the backend publishes and recovers the
-explicit-absence provider/share origins, binds VM UUID plus owner nonce, and revalidates identity before and
-after ready, share, stop, guest execution, and conditional delete. The
+generic handle/receipt authority. Inside one protected-store exclusive entry, the backend publishes and
+recovers the explicit-absence provider/share origins, binds the VM's own UUID under this run's owner
+claim, and revalidates identity before and after ready, share, stop, guest execution, and conditional
+delete. Two consequences of that shape are worth stating, because both were reached by driving the real
+transaction rather than by reading it:
+
+- **the re-entry compares what a record says, not its bytes.** Every release and every dependent
+  transaction re-establishes clauses 1 through 3 over a record a previous entry already bound, and that
+  record carries clause 3's identity as well. The republication therefore compares the kind and the prior
+  origin and treats the binding as the one field a later step of the same transaction adds;
+- **a same-named replacement is not a release.** Clause 4 compares the identity, so an object standing
+  where this run's instance was after the destructive command is somebody else's: it is reported as a
+  replacement, left exactly as it was found, and no record is forgotten over it.
+
+The
 [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
 carries the closure evidence: its static gate and its native Linux/x86_64 KVM/Incus gate both pass. See
 [lifecycle state model](../architecture/lifecycle_state_model.md).
@@ -164,8 +175,9 @@ Deleting the VM removes nested compute incidentally. See
 The host durable root is carried into Incus through a disk device and exposed to Docker through
 `/var/tmp/hostbootstrap-demo-data`; it is not merely guest-root-disk state. The destroy/up/readback
 guarantee remains unvalidated. The demo guest alias is still created and removed by pathname, so it holds
-no receipt at that legacy demo call site. The common clause-holding backend itself is implemented above
-Incus/Lima/WSL2: under the retained guest lock it publishes an explicit-absence origin record inside the
+no receipt at that legacy demo call site. The guest alias driver — a separate driver, running inside the
+provider guest rather than on the outer host — is implemented above Incus/Lima/WSL2: under the retained
+guest lock it publishes an explicit-absence origin record inside the
 host-backed durable target with a fresh 256-bit nonce, flushes and reads it back, publishes the alias by a
 no-replace hard link from a nonce staging symlink, binds the symlink's exact device/inode, and releases only
 after re-observing that identity. Crash retries recover the prepared or managed record rather than adopting

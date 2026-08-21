@@ -12,19 +12,17 @@ module ProviderLiveRunner (
     runProviderLiveGate,
 ) where
 
-import Control.Concurrent (threadDelay)
 import Control.Exception (
-    IOException,
     SomeException,
-    bracket,
     displayException,
     try,
  )
 import Control.Monad (unless, when)
 import Data.Char (isAlphaNum, isSpace, toLower)
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.List (dropWhileEnd, isPrefixOf, isSuffixOf, stripPrefix)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
+import HostBootstrap.Effect.Interpreter (resolveLaunch)
 import HostBootstrap.Ensure (runTool)
 import HostBootstrap.Ensure.Incus (
     IncusProviderStatus (IncusProviderReady),
@@ -32,12 +30,17 @@ import HostBootstrap.Ensure.Incus (
  )
 import HostBootstrap.HostConfig (HostConfig, buildHostConfig, resolveMaybe)
 import HostBootstrap.HostTool (
-    HostTool (Docker, Incus, Python3),
+    HostTool (Docker, Incus),
     absExePath,
  )
 import HostBootstrap.Incus (IncusVM (IncusVM))
+import HostBootstrap.Ownership.Object (ownershipFaultMessage)
+import HostBootstrap.Ownership.Primitive (
+    OwnershipPrimitive (rowCreateFile, rowSyncParent),
+    withOwnershipRow,
+ )
+import HostBootstrap.Ownership.Row (ownershipRowForHost)
 import HostBootstrap.Lima (LimaVM (LimaVM))
-import HostBootstrap.Readiness (microsValue)
 import HostBootstrap.Reconcile (
     FailureDetail (FailureDetail),
     ReconcileError (Failure),
@@ -55,21 +58,23 @@ import HostBootstrap.Substrate.Provider (
  )
 import HostBootstrap.Substrate.Provider.Alias (mkGuestAliasSpec)
 import HostBootstrap.Substrate.Provider.Backend (
-    ProviderBackendExec (..),
-    ProviderBackendRequestView (ProviderBackendProcess),
-    RawProviderOutcome (RawProviderExit, RawProviderFailure),
+    DirectRootObservation (..),
+    admitDirectRoot,
+    directEgressCommand,
     discoverStrongProviderBackend,
     mkDirectHostBackendSpec,
     mkIncusBackendSpec,
-    providerBackendRequestView,
+    observeDirectRoot,
  )
 import HostBootstrap.Substrate.Provider.Reconcile (mkProviderShareSpec)
 import HostBootstrap.Wsl2 (Wsl2VM (Wsl2VM))
 import ProviderLiveAliasFixture (runLiveDirectRoute, runLiveIncusRoute)
 import System.Directory (
+    Permissions (readable, writable),
     createDirectoryIfMissing,
     doesDirectoryExist,
     doesPathExist,
+    getPermissions,
     listDirectory,
     removePathForcibly,
  )
@@ -79,17 +84,6 @@ import System.FilePath (takeFileName, (</>))
 import System.IO (hPutStrLn, stderr)
 import System.IO.Temp (createTempDirectory)
 import qualified System.Info as Info
-import System.Posix.Files (fileAccess)
-import System.Posix.IO (
-    OpenFileFlags (cloexec, creat, exclusive),
-    OpenMode (ReadOnly, ReadWrite),
-    closeFd,
-    defaultFileFlags,
-    fdWrite,
-    openFd,
- )
-import System.Posix.Unistd (fileSynchronise)
-import System.Process (readProcessWithExitCode)
 
 confirmationVariable :: String
 confirmationVariable = "HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM"
@@ -163,11 +157,10 @@ runConfirmedGate root token vmName = do
     incusSpec <-
         expectReconcile
             "validate Incus backend"
-            (mkIncusBackendSpec vmName incusImage config stateRoot 2 "2GiB" "12GiB")
-    incusRequests <- newIORef []
+            (mkIncusBackendSpec vmName incusImage managedPrefix config stateRoot 2 "2GiB" "12GiB")
     admittedIncus <-
         discoverStrongProviderBackend
-            (realProviderExec incusRequests)
+            config
             incusSpec
             ( \backend ->
                 runLiveIncusRoute
@@ -185,21 +178,20 @@ runConfirmedGate root token vmName = do
     when absentAfterDelete $
         failGate "the prepared delete returned without proving VM absence"
     assertAliasOriginState shareRoot 0
-    assertProviderMetadataAbsent stateRoot vmName
+    assertProviderRecordForgotten stateRoot vmName
 
     putStrLn "provider-live: exercise Direct prepared admission and sealed refusal boundary"
     directSpec <-
         expectReconcile
             "validate Direct backend"
             (mkDirectHostBackendSpec config shareRoot directEgressImage)
-    directRequests <- newIORef []
     admittedDirect <-
         discoverStrongProviderBackend
-            (realProviderExec directRequests)
+            config
             directSpec
             (\backend -> runLiveDirectRoute directPlanRoot config backend directProvider shareSpec)
     expectReconcile "run prepared Direct route" (admittedDirect >>= id)
-    assertDirectReadOnlyRequests config shareRoot directRequests
+    assertDirectAdmissionIsReadOnly config shareRoot
     stillAbsent <- observeIncusPresence config vmName
     when stillAbsent $
         failGate "the mutation-free Direct route recreated the Incus VM"
@@ -215,22 +207,12 @@ requireIncusPreflight config = do
     unless (status == IncusProviderReady) $
         failGate ("Incus read-only provider preflight is not ready: " ++ show status)
     kvmPresent <- doesPathExist "/dev/kvm"
-    kvmReadWrite <- if kvmPresent then fileAccess "/dev/kvm" True True False else pure False
+    kvmReadWrite <-
+        if kvmPresent
+            then (\held -> readable held && writable held) <$> getPermissions "/dev/kvm"
+            else pure False
     unless (kvmPresent && kvmReadWrite) $
         failGate "/dev/kvm is absent or is not readable and writable by the invoking user"
-
-realProviderExec :: IORef [ProviderBackendRequestView] -> ProviderBackendExec
-realProviderExec requests =
-    ProviderBackendExec
-        { runProviderBackendExec = \request -> do
-            let view@(ProviderBackendProcess executable argv) = providerBackendRequestView request
-            modifyIORef' requests (<> [view])
-            outcome <- try @IOException (readProcessWithExitCode executable argv "")
-            pure $ case outcome of
-                Left failure -> RawProviderFailure (displayException failure)
-                Right (code, out, err) -> RawProviderExit code out err
-        , waitProviderBackendExec = threadDelay . microsValue
-        }
 
 verifyOwnedState :: HostConfig -> String -> FilePath -> IO ()
 verifyOwnedState config vmName shareRoot = do
@@ -270,36 +252,37 @@ requireCommand config tool args = do
                     ++ firstDiagnostic out err
                 )
 
-assertDirectReadOnlyRequests :: HostConfig -> FilePath -> IORef [ProviderBackendRequestView] -> IO ()
-assertDirectReadOnlyRequests config root requestsRef = do
-    python <- maybe (failGate "Direct audit has no resolved Python3") (pure . absExePath) (resolveMaybe config Python3)
+{- | The Direct realization admits a frame and mutates nothing, and its whole
+effect surface says so by construction.
+
+The admission is this binary's own observation of the kernel followed by a total
+decision over it, so the audit takes that observation against the live root and
+applies the same decision — there is no program to compare and no seam to record
+through.  The one command Direct still issues is a value this binary can resolve
+without launching anything, so the audit applies the one resolver to it and
+compares the exact executable and argument vector production would launch
+(§ NN).
+-}
+assertDirectAdmissionIsReadOnly :: HostConfig -> FilePath -> IO ()
+assertDirectAdmissionIsReadOnly config root = do
     docker <- maybe (failGate "Direct audit has no resolved Docker") (pure . absExePath) (resolveMaybe config Docker)
-    requests <- readIORef requestsRef
-    let pythonRequests =
-            [ argv
-            | ProviderBackendProcess executable argv <- requests
-            , executable == python
-            ]
-        dockerRequests =
-            [ argv
-            | ProviderBackendProcess executable argv <- requests
-            , executable == docker
-            ]
-        validPython argv = case argv of
-            ["-c", program, observedRoot] ->
-                observedRoot == root
-                    && "os.lstat(root)" `isInfix` program
-                    && "os.path.realpath(root)==root" `isInfix` program
-            _ -> False
-        validDocker argv = argv == ["manifest", "inspect", directEgressImage]
+    observation <- observeDirectRoot root
     unless
-        ( length requests == 4
-            && length pythonRequests == 2
-            && all validPython pythonRequests
-            && length dockerRequests == 2
-            && all validDocker dockerRequests
+        ( directRootAbsolute observation
+            && not (directRootSymbolicLink observation)
+            && directRootDirectory observation
+            && directRootCanonical observation
+            && directRootAccessible observation
         )
-        $ failGate ("Direct backend executed an unexpected or mutating request: " ++ show requests)
+        $ failGate ("the live Direct root is not the admissible canonical directory: " ++ show observation)
+    case admitDirectRoot root observation of
+        Left refusal -> failGate ("the live Direct root was refused: " ++ Text.unpack refusal)
+        Right () -> pure ()
+    egress <- case resolveLaunch config (directEgressCommand directEgressImage) of
+        Left refusal -> failGate ("Direct audit could not resolve the egress probe: " ++ refusal)
+        Right launch -> pure launch
+    unless (egress == (docker, ["manifest", "inspect", directEgressImage])) $
+        failGate ("the Direct egress probe is not the read-only manifest inspect: " ++ show egress)
 
 assertAliasOriginState :: FilePath -> Int -> IO ()
 assertAliasOriginState shareRoot expected = do
@@ -314,11 +297,12 @@ assertAliasOriginState shareRoot expected = do
     when (expected == 0 && present) $
         failGate ("alias origin directory remained after conditional release: " ++ show entries)
 
-assertProviderMetadataAbsent :: FilePath -> String -> IO ()
-assertProviderMetadataAbsent stateRoot vmName = do
-    entries <- listDirectory stateRoot
-    let originPrefix = vmName ++ ".provider.origin.json"
-        residue = filter (originPrefix `isPrefixOf`) entries
+assertProviderRecordForgotten :: FilePath -> String -> IO ()
+assertProviderRecordForgotten stateRoot vmName = do
+    let records = stateRoot </> "records"
+    present <- doesDirectoryExist records
+    entries <- if present then listDirectory records else pure []
+    let residue = filter ((vmName ++ ".rec") `isPrefixOf`) entries
     unless (null residue) $
         failGate ("provider origin or staging metadata remained: " ++ show residue)
 
@@ -340,31 +324,28 @@ asReconcileFailure operation action = do
 expectReconcile :: String -> Either ReconcileError value -> IO value
 expectReconcile operation = either (failGate . ((operation ++ ": ") ++) . show) pure
 
+{- | Publish this run's durable intent through the host's own ownership row.
+
+The intent is the breadcrumb a crashed gate leaves behind, so it has to be
+created at a name nothing else holds and made durable together with the
+directory that names it.  Both are primitives the binary already owns (§ EE,
+§ LL), and reaching them through the row rather than spelling them again here is
+what keeps this gate from carrying a second, host-specific copy of an operation
+the project holds once — and what lets every gate host compile it.
+-}
 writeDurableIntent :: FilePath -> String -> IO ()
-writeDurableIntent root payload = do
-    let path = root </> ".hostbootstrap-provider-live-intent-v2"
-    bracket
-        ( openFd
-            path
-            ReadWrite
-            defaultFileFlags
-                { creat = Just 0o600
-                , exclusive = True
-                , cloexec = True
-                }
-        )
-        closeFd
-        (\descriptor -> writeWhole descriptor payload >> fileSynchronise descriptor)
-    bracket
-        (openFd root ReadOnly defaultFileFlags{cloexec = True})
-        closeFd
-        fileSynchronise
+writeDurableIntent root payload =
+    withOwnershipRow ownershipRowForHost $ \row -> do
+        rowCreateFile row path (TextEncoding.encodeUtf8 (Text.pack payload))
+            >>= expectRow "publish the provider-live durable intent"
+        rowSyncParent row path
+            >>= expectRow "make the provider-live intent directory durable"
   where
-    writeWhole _ "" = pure ()
-    writeWhole descriptor remaining = do
-        written <- fdWrite descriptor remaining
-        unless (written > 0) (failGate "short durable intent write")
-        writeWhole descriptor (drop (fromIntegral written) remaining)
+    path = root </> ".hostbootstrap-provider-live-intent-v2"
+    expectRow operation =
+        either
+            (\fault -> failGate (operation ++ ": " ++ Text.unpack (ownershipFaultMessage fault)))
+            pure
 
 cleanupRemedy :: FilePath -> String -> String -> String
 cleanupRemedy root vmName reason =

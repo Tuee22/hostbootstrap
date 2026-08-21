@@ -193,7 +193,10 @@ disappearing, and give the gate the two § NN absence guards whose shapes are th
   `HostBootstrap.Handoff.Process` gains a refusal naming the POSIX group signal it needs. The package
   description therefore carries no `os()`- or `arch()`-conditional module or `buildable` field, and the
   opt-in live-provider suite is gated by its flag alone — a second host condition would answer "asked for
-  and not built" with the same green nothing as "not asked for".
+  and not built" with the same green nothing as "not asked for". The package *description* carried no such
+  condition after this sprint; a POSIX-only dependency was still answering it with a resolver error until
+  the [host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md) moved that
+  component's durable write onto the ownership row.
 - Because the process owner is no longer excluded anywhere, its compile-fail fixture expects one
   diagnostic rather than one per host, and the suite driver carries no platform `#if` at all.
 - `PortabilitySpec` gains the two absence guards for the harness's own shapes, each naming its
@@ -217,6 +220,70 @@ passed `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/`
 which this gate host previously did not compile at all. On this gate host the manifest reports the POSIX
 row's 17 row-driven cases asserting its declared refusal and the Win32 row's 3 exercising the kernel; on a
 POSIX gate host the same cases run with the two reports exchanged.
+
+#### Remaining Work
+
+None. Sprint 2.5 completes the rule for the two families this one did not reach, because they are
+conditional on an ownership *driver* rather than on a platform row.
+
+### Sprint 2.5: The fifth rule reaches the two conditional drivers [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/test/CoverageManifest.hs`,
+`core/hostbootstrap-core/test/ClusterBackendSpec.hs`,
+`core/hostbootstrap-core/test/ProviderAliasSpec.hs`
+**Substrates**: none
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Two families whose subject is a POSIX-only ownership driver, counted on every gate host.
+
+#### Objective boundary
+
+Sprint 2.4 gave the harness the rule and applied it to the platform rows. The two families here are
+conditional for the same reason and were missed because their subject is not a *row*: it is a driver this
+project has not yet moved onto the seam. This sprint changes nothing about either driver — replacing them
+belongs to the phases that own them — only whether their cases exist on a host that cannot run them. Each
+row is therefore temporary by construction: a family stops being conditional when its subject stops being
+POSIX-only, and the row goes with the driver. The
+[cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md) owns the
+cluster driver and the [worked-demo phase](phase-24-worked-demo.md) the guest alias driver.
+
+#### Deliverables
+
+- `ClusterBackendSpec`'s cluster-ownership family and `ProviderAliasSpec`'s local guest alias family lose
+  their `#ifdef` exclusions. Each case now exists on every gate host and takes its expectation from one
+  combinator: the body runs where the driver's primitives exist, and the driver's own declared refusal is
+  recorded where they do not.
+- Both refusals are asked through the production route rather than asserted beside it. The cluster's is
+  that discovery over this host's tools mints no backend at all; the alias driver's is that the crossing
+  into the guest really happens, the driver really asks for its lock front end, and this host's guest
+  offers none.
+- `CoverageManifest` declares both families, so the gate output names them, names their size, and says
+  which of the two things this host did. A case that vanished is a failed count rather than a smaller
+  total.
+- The manifest's own admission criterion widens from "a platform row" to "a subject a gate host may not
+  have", which is what both of these are, and each row names the phase-owned driver whose replacement
+  deletes it.
+- The injected cluster executor reports a child that never existed as a failed result rather than an
+  exception, which is what the production runner already does — otherwise a host with none of the tools
+  reaches a crash instead of a refusal.
+
+#### Validation
+
+The manifest is proved by the gate itself: both families' declared sizes are part of the run, so a suite
+that stopped running one of them fails on the count. The two refusal bodies are non-vacuous because each
+asserts the production route was taken — the alias one asserts the guest was really asked for `flock` and
+then for `lockf` before refusing.
+
+Dated 2026-08-20 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): canonical
+`cabal test all --ghc-options=-Werror` from `core/` passed 2,227/2,227 in 310.17 seconds; the
+same host passed `poetry run python -m hostbootstrap.check_code` and
+`poetry run python -m hostbootstrap.test_all` at 231. Fifty-nine of those cases are the two families',
+which this gate host previously did not run at all: the manifest reports the cluster ownership row's 46
+and the guest alias driver's 13 asserting their declared refusals here, and the same cases run for real on
+a POSIX gate host with those two reports exchanged.
 
 #### Remaining Work
 

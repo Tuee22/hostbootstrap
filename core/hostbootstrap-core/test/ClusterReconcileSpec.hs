@@ -9,9 +9,8 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.List (isSuffixOf)
 import qualified Data.Text as Text
 import Data.Foldable (find)
-import Data.IORef (newIORef, atomicModifyIORef')
+import Data.IORef (atomicModifyIORef', newIORef)
 import qualified Data.Map.Strict as Map
-import Data.Word (Word64)
 import qualified Fixture
 import HostBootstrap.Cluster.Budget
 import HostBootstrap.Cluster.Backend
@@ -31,7 +30,6 @@ import HostBootstrap.Config.Vocab (Harness, Production)
 import HostBootstrap.Context (ResourceEnvelope (..))
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (AbsExe, HostTool (Docker, Python3), mkAbsExe)
-import PlatformPath (hostFixturePath)
 import qualified HostBootstrap.Lifecycle.Execution as Execution
 import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 import HostBootstrap.Lift (localContext)
@@ -42,8 +40,8 @@ import HostBootstrap.Substrate.Provider.Backend
 import HostBootstrap.Substrate.Provider.Reconcile
 import HostBootstrap.Step
 import PrepareFixture (gateFor)
-import System.Directory (createDirectoryIfMissing)
-import System.Exit (ExitCode (ExitSuccess))
+import System.Directory (canonicalizePath, createDirectory, createDirectoryIfMissing)
+import System.IO.Temp (withSystemTempDirectory)
 import System.FilePath (takeDirectory, (</>))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -178,14 +176,14 @@ packageCases =
                 other -> assertFailure ("expected a typed failure, got " ++ show other)
         , testCase "the exact provider probe is run internally before preparation is offered" $
             withClusterFixtureUsing
-                (pure (Left (Failure (FailureDetail "probe provider" "vm stopped answering" ReprobeBeforeRetry))))
+                ReprobeStopsAnswering
                 (pure . const (Right ()))
                 >>= \case
                     Left (Failure detail) -> do
                         failedOperation detail @?= "reprobe Direct provider provisioning egress"
                         assertBool
-                            "the retained backend probe surfaces its injected failure"
-                            ("probe provider" `Text.isInfixOf` failureCause detail)
+                            "the retained backend probe surfaces the provider's own diagnostic"
+                            ("vm stopped answering" `Text.isInfixOf` failureCause detail)
                     other -> assertFailure ("expected the provider probe failure, got " ++ show other)
         ]
 
@@ -678,14 +676,14 @@ withClusterFixtureM ::
     ClusterPreparedConsumer summary ->
     IO (Either ReconcileError summary)
 withClusterFixtureM =
-    withClusterFixtureUsingM (pure (Right 23))
+    withClusterFixtureUsingM ReprobeAnswers
 
 #if !defined(mingw32_HOST_OS)
 withClusterPlanFixtureM ::
     ClusterPlanPreparedConsumer summary ->
     IO (Either ReconcileError summary)
 withClusterPlanFixtureM =
-    withClusterFixtureUsingPlanM (pure (Right 23))
+    withClusterFixtureUsingPlanM ReprobeAnswers
 #endif
 
 withHarnessClusterFixtureM ::
@@ -711,7 +709,7 @@ withHarnessClusterFixtureM consume =
                             clusterKey
                             ( \cluster ->
                                 prepareExactFixture
-                                    (pure (Right 23))
+                                    ReprobeAnswers
                                     providerGate
                                     clusterGate
                                     plan
@@ -729,23 +727,23 @@ withClusterFixture ::
 withClusterFixture = withClusterFixtureM
 
 withClusterFixtureUsing ::
-    IO (Either ReconcileError Word64) ->
+    ProviderReprobe ->
     ClusterPreparedConsumer summary ->
     IO (Either ReconcileError summary)
 withClusterFixtureUsing = withClusterFixtureUsingM
 
 withClusterFixtureUsingM ::
-    IO (Either ReconcileError Word64) ->
+    ProviderReprobe ->
     ClusterPreparedConsumer summary ->
     IO (Either ReconcileError summary)
-withClusterFixtureUsingM providerProbeResult consume =
-    withClusterFixtureUsingPlanM providerProbeResult (\_plan prepared -> consume prepared)
+withClusterFixtureUsingM providerReprobe consume =
+    withClusterFixtureUsingPlanM providerReprobe (\_plan prepared -> consume prepared)
 
 withClusterFixtureUsingPlanM ::
-    IO (Either ReconcileError Word64) ->
+    ProviderReprobe ->
     ClusterPlanPreparedConsumer summary ->
     IO (Either ReconcileError summary)
-withClusterFixtureUsingPlanM providerProbeResult consume =
+withClusterFixtureUsingPlanM providerReprobe consume =
     Fixture.withFixtureProjectPlan testPlan $ \plan -> do
         let planDigest = ProjectPlan.stablePlanSnapshotDigest (ProjectPlan.renderSnapshot plan)
         providerGate <- gateFor planDigest "core:deploy-vm"
@@ -765,7 +763,7 @@ withClusterFixtureUsingPlanM providerProbeResult consume =
                             clusterKey
                             ( \cluster ->
                                 prepareExactFixture
-                                    providerProbeResult
+                                    providerReprobe
                                     providerGate
                                     clusterGate
                                     plan
@@ -778,7 +776,7 @@ withClusterFixtureUsingPlanM providerProbeResult consume =
         action
 
 prepareExactFixture ::
-    IO (Either ReconcileError Word64) ->
+    ProviderReprobe ->
     PreparedGate ->
     PreparedGate ->
     ProjectPlan.ProjectPlan scope specDigest planId configId Fixture.ProjectConfig ->
@@ -808,8 +806,8 @@ prepareExactFixture ::
       IO (Either ReconcileError summary)
     ) ->
     IO (Either ReconcileError summary)
-prepareExactFixture providerProbeResult providerGate clusterGate plan provider cluster consume =
-    withRunningProviderDependencyFixture providerProbeResult providerGate plan provider $ \runningProvider -> do
+prepareExactFixture providerReprobe providerGate clusterGate plan provider cluster consume =
+    withRunningProviderDependencyFixture providerReprobe providerGate plan provider $ \runningProvider -> do
         let root = ProjectPlan.stablePlanSnapshotRoot (ProjectPlan.renderSnapshot plan)
             configPath = root </> "kind.yaml"
         createDirectoryIfMissing True (takeDirectory configPath)
@@ -846,38 +844,33 @@ prepareExactFixture providerProbeResult providerGate clusterGate plan provider c
                 prepared <- action
                 either (pure . Left) id prepared
 
+{- | Whether the provider's egress probe still answers when it is reprobed.
+
+The Direct realization observes its root and its provisioning egress through
+described commands, so "the probe stopped answering" is a property of the tool
+the interpreter launches rather than of an injected runner: an exhausting tool
+answers the readiness observation and refuses the reprobe, and both calls are
+real processes (§ NN).
+-}
+data ProviderReprobe
+    = ReprobeAnswers
+    | ReprobeStopsAnswering
+    deriving (Eq, Show)
+
 withRunningProviderDependencyFixture ::
-    IO (Either ReconcileError Word64) ->
+    ProviderReprobe ->
     PreparedGate ->
     ProjectPlan.ProjectPlan scope specDigest planId configId cfg ->
     PlannedResource scope planId providerId ProviderResource providerFrame ->
     (RunningProviderDependency scope planId providerId -> IO (Either ReconcileError result)) ->
     IO (Either ReconcileError result)
-withRunningProviderDependencyFixture reprobeResult gate plan planned consume = do
-    manifestCount <- newIORef (0 :: Int)
-    let providerExec =
-            ProviderBackendExec
-                { runProviderBackendExec = \request ->
-                    case providerBackendRequestView request of
-                        ProviderBackendProcess executable _argv
-                            | executable == fixturePython -> pure providerSuccess
-                            | executable == fixtureDocker -> do
-                                invocation <- atomicModifyIORef' manifestCount (\count -> let next = count + 1 in (next, next))
-                                if invocation == 1
-                                    then pure (providerSuccessWith "{}")
-                                    else do
-                                        reprobed <- reprobeResult
-                                        pure $ case reprobed of
-                                            Right _ -> providerSuccessWith "{}"
-                                            Left err -> RawProviderFailure (show err)
-                            | otherwise -> pure (RawProviderFailure "unexpected Direct-provider executable")
-                , waitProviderBackendExec = \_ -> pure ()
-                }
-    case mkDirectHostBackendSpec providerHostConfig "/srv/hostbootstrap/data" "alpine:3.22" of
+withRunningProviderDependencyFixture reprobe gate plan planned consume =
+  withProviderHostConfig reprobe $ \providerHostConfig directRoot ->
+    case mkDirectHostBackendSpec providerHostConfig directRoot "alpine:3.22" of
         Left err -> pure (Left err)
         Right backendSpec -> do
             discovered <-
-                discoverStrongProviderBackend providerExec backendSpec $ \backend -> do
+                discoverStrongProviderBackend providerHostConfig backendSpec $ \backend -> do
                     carrier <- Execution.newResourceCarrier
                     runtime <- Execution.newStepRuntime carrier
                     providerNode <-
@@ -931,36 +924,38 @@ withRunningProviderDependencyFixture reprobeResult gate plan planned consume = d
                                 Right action -> action
             pure (either Left id discovered)
 
-providerHostConfig :: HostConfig
-providerHostConfig =
-    HostConfig
-        { hcSubstrate = Substrate LinuxCpu Arm64
-        , hcToolPaths =
-            Map.fromList
-                [ (Python3, fixtureExe fixturePython)
-                , (Docker, fixtureExe fixtureDocker)
-                ]
-        }
+{- | A host configuration whose Direct-provider tools are real programs.
 
-{- | The host tools this suite's fixtures name.
-
-Each is rendered onto the host that runs the suite, so the same total 'AbsExe'
-constructor production uses admits it wherever the static gate runs (§ JJ). The
-runner dispatch below selects its response by comparing these same values, so a
-host-neutral fixture cannot weaken the absolute-backend-path projection guard.
+Both Direct probes are described commands, so the interpreter launches whatever
+this configuration resolves and the fixture's control over them is the programs
+themselves rather than a seam beside them (§ NN). The paths are absolute because
+the fixture writes them, so the same total 'AbsExe' constructor production uses
+admits them wherever the static gate runs (§ JJ).
 -}
-fixturePython, fixtureDocker :: FilePath
-fixturePython = hostFixturePath "/test/bin/python3"
-fixtureDocker = hostFixturePath "/test/bin/docker"
+withProviderHostConfig :: ProviderReprobe -> (HostConfig -> FilePath -> IO result) -> IO result
+withProviderHostConfig reprobe use =
+    withSystemTempDirectory "hostbootstrap-cluster-provider-tools" $ \temporary -> do
+        root <- canonicalizePath temporary
+        let admissible = root </> "data"
+        createDirectory admissible
+        python <- Fixture.newFakeTool root "python3" ""
+        docker <- case reprobe of
+            ReprobeAnswers -> Fixture.newFakeTool root "docker" "{}"
+            ReprobeStopsAnswering ->
+                Fixture.newExhaustingFakeTool root "docker" "{}" "vm stopped answering"
+        use
+            HostConfig
+                { hcSubstrate = Substrate LinuxCpu Arm64
+                , hcToolPaths =
+                    Map.fromList
+                        [ (Python3, fixtureExe python)
+                        , (Docker, fixtureExe docker)
+                        ]
+                }
+            admissible
 
 fixtureExe :: FilePath -> AbsExe
 fixtureExe = either error id . mkAbsExe
-
-providerSuccess :: RawProviderOutcome
-providerSuccess = providerSuccessWith ""
-
-providerSuccessWith :: String -> RawProviderOutcome
-providerSuccessWith output = RawProviderExit ExitSuccess output ""
 
 testPlan :: StepPlan
 testPlan =
@@ -1019,7 +1014,7 @@ harnessPackageSummary =
                             clusterKey
                             ( \cluster ->
                                 prepareExactFixture
-                                    (pure (Right 23))
+                                    ReprobeAnswers
                                     providerGate
                                     clusterGate
                                     plan
