@@ -202,6 +202,9 @@ import Unsafe.Coerce (unsafeCoerce)
 plan :: Text
 plan = "plan-digest-1"
 
+planKeyDigest :: Text
+planKeyDigest = sha256HexTest (TextEncoding.encodeUtf8 plan)
+
 -- ---------------------------------------------------------------------------
 -- The out-of-process delayed-permit competitor
 
@@ -2071,7 +2074,17 @@ countingCallback callbacks _ = modifyIORef' callbacks (+ 1)
 
 journalTests :: [TestTree]
 journalTests =
-    [ testCase "opening the journal twice observes one version, it does not reset it" $
+    [ testCase "rooted durable coordinates remain bounded and distinct at maximum input size" $ do
+        let long suffix = Text.replicate 4096 suffix
+        frameKey <- expect (rootedFrameSessionKeyKernel (long "p") (long "c") (long "f"))
+        unknownKey <- expect (rootedNodeUnknownKeyKernel (long "p") (long "c") (long "f") (long "o"))
+        settlementKey <- expect (rootedSettlementKeyKernel (long "p") (long "c") (long "f") (long "n") 18446744073709551615)
+        changedSettlement <- expect (rootedSettlementKeyKernel (long "p") (long "c") (long "f") (long "n") 18446744073709551614)
+        mapM_
+            (\key -> assertBool "a rooted record key exceeded the protected-store bound" (Text.length (recordKeyText key) <= 200))
+            [frameKey, unknownKey, settlementKey]
+        assertBool "different settlement ordinals shared one durable key" (recordKeyText settlementKey /= recordKeyText changedSettlement)
+    , testCase "opening the journal twice observes one version, it does not reset it" $
         withStore $ \store -> do
             first <- inEntry store (\s -> openProjectJournal s plan)
             second <- inEntry store (\s -> openProjectJournal s plan)
@@ -2882,7 +2895,7 @@ writeOrphanOperation ::
     Text ->
     IO (Either SessionError ())
 writeOrphanOperation session sid opKey =
-    case mkRecordKey ("op." <> plan <> "." <> sid <> "." <> opKey) of
+    case mkRecordKey ("op." <> planKeyDigest <> "." <> sid <> "." <> opKey) of
         Left failure -> pure (Left (SessionStoreFailure failure))
         Right key -> do
             written <-
@@ -3081,7 +3094,7 @@ exactMembershipCase =
                     ( either
                         (Left . SessionStoreFailure)
                         Right
-                        (mkRecordKey ("op." <> plan <> ".session-a.stray"))
+                        (mkRecordKey ("op." <> planKeyDigest <> ".session-a.stray"))
                     )
             case key of
                 Left failure -> pure (Left failure)

@@ -29,7 +29,12 @@ module HostBootstrap.Reconcile
     lifecyclePlanSteps,
     stepExecutionFor,
     carryManagedResource,
+    carryManagedResourceSettlement,
+    carryManagedResourcePhaseSettlement,
+    carryReleasedResourceSettlement,
     withCarriedManagedResource,
+    withCarriedManagedResourceOfKind,
+    withCarriedManagedResourceReceipt,
     Unclassified,
     Managed,
     Unmanaged,
@@ -61,13 +66,24 @@ module HostBootstrap.Reconcile
     withNodeResourceOfKind,
     withNodeGuestAliasProjection,
     withNodeObservedResource,
+    withNodeChartWorkloadResource,
     plannedNodeOperation,
     plannedNodePhaseOperation,
     withObservedPlannedResource,
     withObservedProjectResource,
+    withPreparedChartWorkloadOperation,
     OwnershipReceipt,
     ownershipReceiptOperationKey,
     validateOwnershipReceipt,
+    rebindOwnershipReceipt,
+    withReboundManagedResourceEvidence,
+    withPlannedReboundManagedResourceEvidence,
+    VerifiedResourceRecordBundle,
+    resourceRecordKey,
+    renderResourceRecordBundle,
+    verifyResourceRecordBundle,
+    verifyProjectChartResourceRecordBundle,
+    withVerifiedResourceRecordBundle,
     ReconcileError (..),
     ConflictDetail (..),
     SafetyDetail (..),
@@ -146,6 +162,7 @@ import Data.Word (Word64)
 import HostBootstrap.Config.Class (ProjectCodec, projectCodecSpecDigest)
 import HostBootstrap.Lifecycle.Plan (
   CanonicalPlanSnapshot,
+  ChartWorkloadResource,
   canonicalPlanSnapshot,
   canonicalPlanSnapshotBytes,
   canonicalPlanSnapshotConfigDigest,
@@ -157,7 +174,11 @@ import HostBootstrap.Lifecycle.Plan (
   plannedResourceFamilyKeysKernel,
   plannedResourcePlanDigestKernel,
   projectPlanCanonicalSnapshotKernel,
+  projectPlanExecutionTermsKernel,
   projectPlanStepPlanKernel,
+  chartWorkloadResourceKeyKernel,
+  withChartWorkloadResourceDetailsKernel,
+  withExecutionChartWorkloadResourceKernel,
   withCompatibilityNodeGuestAliasProjectionKernel,
   withCompatibilityNodeResourceOfKindKernel,
  )
@@ -165,16 +186,21 @@ import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Lifecycle.Execution.Internal (
   ExecutionNode (..),
   StepExecution,
+  PlanExecutionPackage,
   StepRuntime,
   carriedResourceGeneration,
   carriedResourceKey,
   carriedResourceObservationVersion,
+  carriedResourceOwnershipOperation,
   executionNodeDependencyKeys,
-  mintCarriedResource,
+    mintCarriedResource,
+    mintSettledCarriedResource,
   mintStepExecution,
+  mintPlanExecutionPackage,
   pushCarriedResource,
   readCarriedResources,
   stepExecutionNode,
+  stepExecutionFrame,
   stepExecutionOperationKey,
   stepExecutionPlanDigest,
   stepExecutionRuntime,
@@ -183,10 +209,19 @@ import HostBootstrap.Lifecycle.Execution.Internal (
 import HostBootstrap.Lifecycle.Prepared (
   PreparedGate,
   preparedGateAttempt,
+  preparedGateFence,
   preparedGateJournalVersion,
   preparedGateOperation,
   preparedGatePlan,
  )
+import HostBootstrap.Lifecycle.ResourceRecord
+  ( VerifiedResourceRecordBundle,
+    renderResourceRecordBundleKernel,
+    resourceRecordKeyKernel,
+    verifyResourceRecordBundleKernel,
+    verifyExactResourceRecordBundleKernel,
+    withVerifiedResourceRecordBundleKernel,
+  )
 import HostBootstrap.ProjectPlan (
   ClusterResource,
   DockerResource,
@@ -311,45 +346,36 @@ stepExecutionFor ::
 stepExecutionFor plan cfg runtime plannedStep =
   mintProjectedStepExecution
     cfg
-    (ProjectPlan.stablePlanSnapshotDigest snapshot)
-    (ProjectPlan.stablePlanSnapshotConfigDigest snapshot)
-    (Text.pack (show (ProjectPlan.plannedStepIdentity plannedStep)))
-    (executionNodeForPlannedStep plannedStep)
+    package
     runtime
   where
-    snapshot = ProjectPlan.renderSnapshot plan
+    ((specDigest, planDigest, configDigest, identity), (profile, generation, project, root), (operation, frame, dependencies, projected, chartWorkload)) =
+      projectPlanExecutionTermsKernel plan plannedStep
+    package =
+      mintPlanExecutionPackage
+        specDigest
+        planDigest
+        configDigest
+        identity
+        profile
+        generation
+        project
+        root
+        ExecutionNode
+          { executionNodeOperationKey = operation,
+            executionNodeFrame = frame,
+            executionNodeDependencies = dependencies,
+            executionNodeProjectedKeys = projected,
+            executionNodeChartWorkload = chartWorkload
+          }
 
 -- | The one low-level descriptor constructor path.
 mintProjectedStepExecution ::
   HostConfig ->
-  Text ->
-  Text ->
-  Text ->
-  ExecutionNode ->
+  PlanExecutionPackage scope planId ->
   StepRuntime scope planId ->
   StepExecution scope planId
 mintProjectedStepExecution = mintStepExecution
-
--- | Neutral node view derived only through the public project-plan facade.
-executionNodeForPlannedStep ::
-  PlannedStep scope planId configId config ->
-  ExecutionNode
-executionNodeForPlannedStep plannedStep =
-  ExecutionNode
-    { executionNodeOperationKey =
-        Text.pack
-          (operationKeyText (ProjectPlan.plannedStepOperationKey plannedStep)),
-      executionNodeFrame = ProjectPlan.plannedStepFrameId plannedStep,
-      executionNodeDependencies =
-        [ (Text.pack (operationKeyText operationKey), frame)
-        | (operationKey, frame) <-
-            ProjectPlan.plannedStepDependencyOperations plannedStep
-        ],
-      executionNodeProjectedKeys =
-        map
-          (Text.pack . operationKeyText)
-          (ProjectPlan.plannedStepProjectedOperationKeys plannedStep)
-    }
 
 {- | Carry one managed resource this node acquired to the nodes that depend on
 it (§ EE).
@@ -374,6 +400,138 @@ carryManagedResource execution (ResourceHandle key generation version) =
   pushCarriedResource
     (stepRuntimeCarrier (stepExecutionRuntime execution))
     (mintCarriedResource key generation version)
+
+{- | Carry managed state together with the sole canonical durable settlement
+member.  The receipt is checked against the exact handle, and the resource key
+must be nameable by this plan node.  Chain publishes these retained bytes
+before it acknowledges the corresponding journal outcome.
+-}
+carryManagedResourceSettlement ::
+  StepExecution scope planId ->
+  ResourceHandle scope planId id resource Managed phase ->
+  OwnershipReceipt scope planId id resource ->
+  Text ->
+  Text ->
+  IO (Either ReconcileError ())
+carryManagedResourceSettlement execution handle receipt phase adapter =
+  carryResourceSettlementAt execution handle receipt Nothing (resourceHandleObservationVersion handle) phase adapter True
+
+-- | Carry an already-proved managed phase advance.  The exact predecessor
+-- bytes travel beside the successor, allowing Chain to compare-and-swap only
+-- the expected version while preserving receipt identity.
+carryManagedResourcePhaseSettlement ::
+  StepExecution scope planId ->
+  ResourceHandle scope planId id resource Managed phase ->
+  OwnershipReceipt scope planId id resource ->
+  Text ->
+  Text ->
+  Text ->
+  IO (Either ReconcileError ())
+carryManagedResourcePhaseSettlement execution handle receipt sourcePhase targetPhase adapter
+  | resourceHandleObservationVersion handle <= 1 =
+      pure (Left (Failure (FailureDetail "carry phase settlement" "predecessor version is unavailable" DoNotRetry)))
+  | otherwise = do
+      let predecessorVersion = resourceHandleObservationVersion handle - 1
+      case settlementBytes execution handle receipt predecessorVersion sourcePhase adapter True of
+        Left failure -> pure (Left failure)
+        Right expected ->
+          carryResourceSettlementAt
+            execution
+            handle
+            receipt
+            (Just expected)
+            (resourceHandleObservationVersion handle)
+            targetPhase
+            adapter
+            True
+
+-- | Carry the stable member's released disposition.  Release advances the
+-- record version and never deletes the member, so recovery retains exact
+-- negative evidence for the resource.
+carryReleasedResourceSettlement ::
+  StepExecution scope planId ->
+  ResourceHandle scope planId id resource Managed phase ->
+  OwnershipReceipt scope planId id resource ->
+  Text ->
+  Text ->
+  Text ->
+  IO (Either ReconcileError ())
+carryReleasedResourceSettlement execution handle receipt sourcePhase targetPhase adapter
+  | resourceHandleObservationVersion handle == maxBound =
+      pure (Left (Failure (FailureDetail "carry released resource" "record version overflow" DoNotRetry)))
+  | otherwise = case settlementBytes execution handle receipt (resourceHandleObservationVersion handle) sourcePhase adapter True of
+      Left failure -> pure (Left failure)
+      Right expected ->
+        carryResourceSettlementAt
+          execution
+          handle
+          receipt
+          (Just expected)
+          (resourceHandleObservationVersion handle + 1)
+          targetPhase
+          adapter
+          False
+
+carryResourceSettlementAt ::
+  StepExecution scope planId ->
+  ResourceHandle scope planId id resource Managed phase ->
+  OwnershipReceipt scope planId id resource ->
+  Maybe ByteString ->
+  Word64 ->
+  Text ->
+  Text ->
+  Bool ->
+  IO (Either ReconcileError ())
+carryResourceSettlementAt execution handle receipt expected version phase adapter owned =
+  case validateOwnershipReceipt handle receipt of
+    Left failure -> pure (Left failure)
+    Right () -> case lookup key (nodeResources execution) of
+      Nothing ->
+        pure
+          ( Left
+              ( Conflict
+                  ( ConflictDetail
+                      key
+                      "this node's own operation or a member of its plan dependency prefix"
+                      "a resource outside this node's exact plan view"
+                      "carry settlement only for a resource admitted to this node"
+                  )
+              )
+          )
+      Just frame -> case settlementBytes execution handle receipt version phase adapter owned of
+          Left failure -> pure (Left failure)
+          Right bytes -> case receipt of
+            OwnershipReceipt _ generation operation -> do
+                pushCarriedResource
+                  (stepRuntimeCarrier (stepExecutionRuntime execution))
+                  (mintSettledCarriedResource key generation version frame operation expected bytes)
+                pure (Right ())
+  where
+    key = resourceHandleKey handle
+
+settlementBytes ::
+  StepExecution scope planId ->
+  ResourceHandle scope planId id resource Managed phase ->
+  OwnershipReceipt scope planId id resource ->
+  Word64 ->
+  Text ->
+  Text ->
+  Bool ->
+  Either ReconcileError ByteString
+settlementBytes execution handle (OwnershipReceipt _ generation operation) version phase adapter owned =
+  either (Left . resourceRecordFailure) Right $
+    renderResourceRecordBundleKernel
+      (stepExecutionPlanDigest execution)
+      frame
+      (resourceHandleKey handle)
+      generation
+      operation
+      version
+      phase
+      adapter
+      owned
+  where
+    frame = maybe "" id (lookup (resourceHandleKey handle) (nodeResources execution))
 
 {- | Read one carried managed resource back under fresh generative indices, so
 this node can seal it into an 'OperationPreconditionSet'.
@@ -408,6 +566,7 @@ withCarriedManagedResource execution dependencyKey consume
                     "declare the dependency in the plan before adopting its handle"
                 )
             )
+
         )
   | otherwise = do
       carried <- readCarriedResources (stepRuntimeCarrier (stepExecutionRuntime execution))
@@ -432,6 +591,87 @@ withCarriedManagedResource execution dependencyKey consume
                     (carriedResourceObservationVersion entry)
                 )
             )
+
+withCarriedManagedResourceOfKind ::
+  StepExecution scope planId ->
+  PlannedResource scope planId dependencyId dependency frame ->
+  (forall phase. ResourceHandle scope planId dependencyId dependency Managed phase -> result) ->
+  IO (Either ReconcileError result)
+withCarriedManagedResourceOfKind execution planned consume
+  | plannedResourcePlanDigest planned /= stepExecutionPlanDigest execution =
+      pure (Left (Failure (FailureDetail "adopt carried dependency" "planned dependency belongs to another stable plan" DoNotRetry)))
+  | otherwise = do
+      carried <- readCarriedResources (stepRuntimeCarrier (stepExecutionRuntime execution))
+      pure $ case filter ((== plannedResourceKey planned) . carriedResourceKey) carried of
+        [entry] ->
+          Right
+            (consume (ResourceHandle (carriedResourceKey entry) (carriedResourceGeneration entry) (carriedResourceObservationVersion entry)))
+        [] -> Left (Failure (FailureDetail "adopt carried dependency" "the exact managed dependency is absent" ReprobeBeforeRetry))
+        _ -> Left (Conflict (ConflictDetail (plannedResourceKey planned) "one carried managed dependency" "duplicate carried entries" "retain one settlement per planned resource"))
+
+{- | Recover the exact invocation-local managed handle and ownership receipt
+that an acknowledged settlement carried for a fixed successor.
+
+The ownership operation was already validated when the canonical settlement
+bytes were produced. It remains a separate private tuple field so this opener
+does not decode authority from stable bytes. The rank-2 continuation prevents
+the freshly rebound resource identity from escaping.
+-}
+withCarriedManagedResourceReceipt ::
+  StepExecution scope planId ->
+  Text ->
+  ( forall dependencyId dependency phase.
+    ResourceHandle scope planId dependencyId dependency Managed phase ->
+    OwnershipReceipt scope planId dependencyId dependency ->
+    result
+  ) ->
+  IO (Either ReconcileError result)
+withCarriedManagedResourceReceipt execution dependencyKey consume
+  | dependencyKey `notElem` map fst (nodeResources execution) =
+      pure
+        ( Left
+            ( Conflict
+                ( ConflictDetail
+                    dependencyKey
+                    "this node's own operation or a member of its plan dependency prefix"
+                    "an operation this node neither owns nor depends on"
+                    "declare the dependency in the plan before adopting its ownership evidence"
+                )
+            )
+        )
+  | otherwise = do
+      carried <- readCarriedResources (stepRuntimeCarrier (stepExecutionRuntime execution))
+      pure $ case filter ((== dependencyKey) . carriedResourceKey) carried of
+        [] -> missing "no settled managed resource has been carried for the plan dependency"
+        [entry] -> case carriedResourceOwnershipOperation entry of
+          Nothing -> missing "the carried managed resource has no ownership settlement"
+          Just operation
+            | Text.null operation -> missing "the carried ownership operation is empty"
+            | otherwise ->
+                Right
+                  ( consume
+                      ( ResourceHandle
+                          (carriedResourceKey entry)
+                          (carriedResourceGeneration entry)
+                          (carriedResourceObservationVersion entry)
+                      )
+                      ( OwnershipReceipt
+                          (carriedResourceKey entry)
+                          (carriedResourceGeneration entry)
+                          operation
+                      )
+                  )
+        _ -> missing "the carried ownership registry contains duplicate resource keys"
+  where
+    missing reason =
+      Left
+        ( Failure
+            ( FailureDetail
+                "adopt carried ownership evidence"
+                (reason <> ": " <> dependencyKey)
+                ReprobeBeforeRetry
+            )
+        )
 
 -- | Every frame identifier the validated plan declares, in chain order. The
 -- command gate compares a requested frame against this list, so an authority
@@ -579,6 +819,19 @@ withNodeGuestAliasProjection execution provider share consume =
 
 mapPlanProjection :: Either PlanError result -> Either ReconcileError result
 mapPlanProjection = either (Left . planProjectionError) Right
+
+withNodeChartWorkloadResource ::
+  StepExecution scope planId ->
+  (forall resourceId frame. ChartWorkloadResource scope planId resourceId frame -> result) ->
+  Either ReconcileError result
+withNodeChartWorkloadResource execution consume =
+  mapPlanProjection
+    (withExecutionChartWorkloadResourceKernel
+      (stepExecutionPlanDigest execution)
+      (stepExecutionOperationKey execution)
+      (stepExecutionFrame execution)
+      (executionNodeChartWorkload (stepExecutionNode execution))
+      consume)
 
 planProjectionError :: PlanError -> ReconcileError
 planProjectionError projectionFailure =
@@ -803,6 +1056,44 @@ withObservedProjectResource ::
   Either ReconcileError result
 withObservedProjectResource _ = withObservedPlannedResourceValues
 
+{- | Prepare one admitted chart resource against its exact ready cluster
+dependency and durable gate. The chart handle and descriptor are derived here;
+no caller can construct either representation.
+-}
+withPreparedChartWorkloadOperation ::
+  ChartWorkloadResource scope planId chartId chartFrame ->
+  ResourceHandle scope planId clusterId ClusterResource Managed clusterPhase ->
+  DependencyProbe scope planId clusterId ClusterResource ->
+  Text ->
+  PreparedGate ->
+  ( forall operationKey callDigest attempt journalVersion.
+    [Text] ->
+    ResourceHandle scope planId chartId (ChartWorkloadResource scope planId chartId chartFrame) Unclassified Observed ->
+    PreparedOperation scope planId chartId (ChartWorkloadResource scope planId chartId chartFrame) operationKey callDigest attempt journalVersion ->
+    PreparedPreconditions scope planId chartId (ChartWorkloadResource scope planId chartId chartFrame) operationKey callDigest attempt journalVersion ->
+    result
+  ) ->
+  IO (Either ReconcileError result)
+withPreparedChartWorkloadOperation chart cluster probe callDigest gate consume
+  | Text.null callDigest = pure (Left (Failure (FailureDetail "prepare chart workload" "call digest must be non-empty" DoNotRetry)))
+  | preparedGateFence gate == 0 = pure (Left (Failure (FailureDetail "prepare chart workload" "gate fence must be positive" DoNotRetry)))
+  | preparedGateJournalVersion gate == 0 = pure (Left (Failure (FailureDetail "prepare chart workload" "gate journal version must be positive" DoNotRetry)))
+  | otherwise =
+      withChartWorkloadResourceDetailsKernel chart $ \_ _ _ _ _ _ _ _ _ planDigest clusterKey ->
+        if resourceHandleKey cluster /= clusterKey
+          then pure (Left (Conflict (ConflictDetail operationKey clusterKey (resourceHandleKey cluster) "use the chart declaration's exact ready cluster")))
+          else do
+            let descriptor = OperationDescriptor planDigest operationKey callDigest [clusterKey]
+                snapshot = withDependencySnapshotEntry cluster probe emptyDependencySnapshot
+                observed = ResourceHandle operationKey (preparedGateFence gate) (preparedGateJournalVersion gate)
+            sealed <- withOperationPreconditions descriptor snapshot
+            pure $ do
+              preconditions <- sealed
+              withPreparedOperation descriptor preconditions gate $ \prepared exact ->
+                consume (operationPreconditionKeys preconditions) observed prepared exact
+  where
+    operationKey = chartWorkloadResourceKeyKernel chart
+
 withObservedPlannedResourceValues ::
   PlannedResource scope planId id resource frame ->
   Word64 ->
@@ -865,6 +1156,135 @@ validateOwnershipReceipt handle (OwnershipReceipt receiptKey receiptGeneration o
                 "load the ownership receipt for the exact managed generation"
             )
         )
+
+{- | Reindex an ownership receipt to a freshly rebound handle only after its
+runtime key and generation agree. This is the value-level bridge from erased
+invocation carriage back to a resource-specialized lexical witness.
+-}
+rebindOwnershipReceipt ::
+  ResourceHandle scope planId id resource Managed phase ->
+  OwnershipReceipt scope planId oldId oldResource ->
+  Either ReconcileError (OwnershipReceipt scope planId id resource)
+rebindOwnershipReceipt handle (OwnershipReceipt key generation operation) = do
+  validateOwnershipReceipt handle (OwnershipReceipt key generation operation)
+  pure (OwnershipReceipt key generation operation)
+
+withReboundManagedResourceEvidence ::
+  ResourceHandle scope planId id oldResource Managed oldPhase ->
+  OwnershipReceipt scope planId id oldResource ->
+  ( ResourceHandle scope planId id resource Managed phase ->
+    OwnershipReceipt scope planId id resource ->
+    result
+  ) ->
+  Either ReconcileError result
+withReboundManagedResourceEvidence oldHandle oldReceipt consume = do
+  let handle =
+        ResourceHandle
+          (resourceHandleKey oldHandle)
+          (resourceHandleGeneration oldHandle)
+          (resourceHandleObservationVersion oldHandle)
+  receipt <- rebindOwnershipReceipt handle oldReceipt
+  pure (consume handle receipt)
+
+withPlannedReboundManagedResourceEvidence ::
+  PlannedResource scope planId id resource frame ->
+  ResourceHandle scope planId oldId oldResource Managed oldPhase ->
+  OwnershipReceipt scope planId oldId oldResource ->
+  ( ResourceHandle scope planId id resource Managed phase ->
+    OwnershipReceipt scope planId id resource ->
+    result
+  ) ->
+  Either ReconcileError result
+withPlannedReboundManagedResourceEvidence planned oldHandle oldReceipt consume = do
+  let handle =
+        ResourceHandle
+          (plannedResourceKey planned)
+          (resourceHandleGeneration oldHandle)
+          (resourceHandleObservationVersion oldHandle)
+  receipt <- rebindOwnershipReceipt handle oldReceipt
+  pure (consume handle receipt)
+
+-- | Derive the bounded canonical store key for one exact resource coordinate.
+resourceRecordKey :: Text -> Text -> Text -> Either ReconcileError Text
+resourceRecordKey plan frame resource =
+  either (Left . resourceRecordFailure) Right (resourceRecordKeyKernel plan frame resource)
+
+-- | Render the canonical durable member for one exact planned resource.
+renderResourceRecordBundle ::
+  LifecyclePlan scope planId ->
+  PlannedResource scope planId id resource frame ->
+  Word64 ->
+  Text ->
+  Word64 ->
+  Text ->
+  Text ->
+  Bool ->
+  Either ReconcileError ByteString
+renderResourceRecordBundle plan planned generation operation version phase adapter owned =
+  either (Left . resourceRecordFailure) Right $
+    renderResourceRecordBundleKernel
+      (lifecyclePlanDigest plan)
+      (plannedResourceFrame planned)
+      (plannedResourceKey planned)
+      generation
+      operation
+      version
+      phase
+      adapter
+      owned
+
+-- | Verify canonical bytes against every exact plan/resource coordinate.
+verifyResourceRecordBundle ::
+  LifecyclePlan scope planId ->
+  PlannedResource scope planId id resource frame ->
+  Word64 ->
+  Text ->
+  Word64 ->
+  Text ->
+  Text ->
+  ByteString ->
+  Either ReconcileError (VerifiedResourceRecordBundle scope planId id resource)
+verifyResourceRecordBundle plan planned generation operation version phase adapter raw =
+  either (Left . resourceRecordFailure) Right $
+    verifyResourceRecordBundleKernel
+      (lifecyclePlanDigest plan)
+      (plannedResourceFrame planned)
+      (plannedResourceKey planned)
+      generation
+      operation
+      version
+      phase
+      adapter
+      raw
+
+verifyProjectChartResourceRecordBundle ::
+  ProjectPlan scope specDigest planId configId cfg ->
+  ProjectPlan.ChartWorkloadResource scope planId id frame ->
+  ByteString ->
+  Either ReconcileError (VerifiedResourceRecordBundle scope planId id (ProjectPlan.ChartWorkloadResource scope planId id frame))
+verifyProjectChartResourceRecordBundle plan chart raw =
+  either (Left . resourceRecordFailure) Right $
+    verifyExactResourceRecordBundleKernel
+      (lifecyclePlanDigest (lifecyclePlanFromProjectPlan plan))
+      (ProjectPlan.chartWorkloadResourceFrame chart)
+      (ProjectPlan.chartWorkloadResourceKey chart)
+      raw
+
+-- | Eliminate the sole verified view into its mutually exclusive disposition.
+-- Owned members mint the existing indexed receipt; released members disclose
+-- only their already-verified tombstone coordinates and canonical bytes.
+withVerifiedResourceRecordBundle ::
+  VerifiedResourceRecordBundle scope planId id resource ->
+  (OwnershipReceipt scope planId id resource -> result) ->
+  (Text -> Word64 -> Text -> Word64 -> Text -> Text -> ByteString -> result) ->
+  result
+withVerifiedResourceRecordBundle bundle onOwned =
+  withVerifiedResourceRecordBundleKernel bundle $ \resource generation operation ->
+    onOwned (OwnershipReceipt resource generation operation)
+
+resourceRecordFailure :: Text -> ReconcileError
+resourceRecordFailure detail =
+  Failure (FailureDetail "verify resource record bundle" detail DoNotRetry)
 
 data ConflictDetail = ConflictDetail
   { conflictResource :: Text,

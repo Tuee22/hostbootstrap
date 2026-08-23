@@ -27,6 +27,7 @@ module HostBootstrap.Lifecycle.RootedPlan
     , withRootedPlanCatalogKernel
     , withRootedPlanCatalogRootKernel
     , withRootedPlanCatalogEntriesKernel
+    , withRootedPlanCatalogEntriesContinuationKernel
     , withRootedPlanCatalogEntryKernel
     , withRootedPlanCatalogEdgeKernel
     , rootedPlanCatalogRecordIdentityKernel
@@ -282,6 +283,36 @@ withRootedPlanCatalogEntriesKernel catalog use = collect catalog []
         collect
             ancestors
             (use plan binding current parent child raw route payload configDigest payloadDigest keys : collected)
+
+{- | Visit admitted entries root-first without allowing an existential plan to
+escape through an intermediate list.
+
+Each entry receives the accumulated caller state and the sole continuation to
+the next entry. This is the effectful counterpart of the pure list fold and is
+used when opening rank-2 frame sessions around one final root action.
+-}
+withRootedPlanCatalogEntriesContinuationKernel ::
+    RootedPlanCatalog scope rootPlanId brokerGeneration catalogId ->
+    state ->
+    ( forall specDigest childPlanDigest childPlanId childConfigId childFrame cfg.
+      (ProjectCfg cfg) =>
+      ProjectPlan scope specDigest childPlanId childConfigId cfg ->
+      PlanDigestBinding scope specDigest childPlanDigest childPlanId ->
+      CurrentFrame scope childPlanId childFrame ->
+      Text -> Text -> LiftContext -> LiftContext -> ByteString -> Text -> Text -> [OperationKey] ->
+      state ->
+      (state -> IO (Either Text ())) ->
+      IO (Either Text ())
+    ) ->
+    (state -> IO (Either Text ())) ->
+    IO (Either Text ())
+withRootedPlanCatalogEntriesContinuationKernel catalog initial visit done =
+    walk catalog initial done
+  where
+    walk (RootedPlanCatalogRoot _ _ _ _ _) state continue = continue state
+    walk (RootedPlanCatalogDescent ancestors plan binding current parent child raw route payload configDigest payloadDigest keys) state continue =
+        walk ancestors state $ \next ->
+            visit plan binding current parent child raw route payload configDigest payloadDigest keys next continue
 
 {- | Select the single entry whose admitted child frame is the requested one.
 

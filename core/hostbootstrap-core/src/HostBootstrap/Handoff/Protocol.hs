@@ -124,6 +124,12 @@ data ProtocolTag
       FrameTransactionTag
     | -- | That transaction's outcome, as produced at the frame that ran it.
       FrameOutcomeTag
+    | -- | Canonical provider dependency commitment admitted for one crossing.
+      ProviderDependencyPackageTag
+    | -- | Nonce-bound request to the hidden provider reprobe route.
+      ProviderDependencyProbeRequestTag
+    | -- | Canonical observed generation or explicit refusal response.
+      ProviderDependencyProbeResponseTag
     deriving (Eq, Ord, Show)
 
 {- | One structurally valid message.  Field bytes are opaque to this layer and
@@ -192,6 +198,9 @@ expectedFieldCount tag = case tag of
     RootedLifecycleResponseTag -> 1
     FrameTransactionTag -> 1
     FrameOutcomeTag -> 1
+    ProviderDependencyPackageTag -> 1
+    ProviderDependencyProbeRequestTag -> 1
+    ProviderDependencyProbeResponseTag -> 1
 
 -- | Encode one message as a complete outer frame.
 encodeProtocolMessage :: ProtocolMessage -> ByteString
@@ -674,6 +683,9 @@ tagByte tag = case tag of
     RootedLifecycleResponseTag -> 19
     FrameTransactionTag -> 20
     FrameOutcomeTag -> 21
+    ProviderDependencyPackageTag -> 22
+    ProviderDependencyProbeRequestTag -> 23
+    ProviderDependencyProbeResponseTag -> 24
 
 byteTag :: Word8 -> Either ProtocolError ProtocolTag
 byteTag raw = case raw of
@@ -698,6 +710,9 @@ byteTag raw = case raw of
     19 -> Right RootedLifecycleResponseTag
     20 -> Right FrameTransactionTag
     21 -> Right FrameOutcomeTag
+    22 -> Right ProviderDependencyPackageTag
+    23 -> Right ProviderDependencyProbeRequestTag
+    24 -> Right ProviderDependencyProbeResponseTag
     _ -> Left (ProtocolUnknownTag raw)
 
 word16BigEndian :: Word16 -> [Word8]

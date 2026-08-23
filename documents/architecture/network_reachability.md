@@ -24,12 +24,11 @@ type index, `Reachability` is a closed GADT with no host-local→cluster-only co
 constructors, and the `storage.redirect` stanza is derived from the delivery rather than chosen beside
 it. Compile-fail fixtures pin the forbidden constructions.
 
-**The demo has not migrated.** `demo/src/HostBootstrapDemo/Commands.hs` still assembles the NodePort,
-the internal `minio.default.svc` endpoint, and an S3 stanza from raw strings, and that `config.yml`
-carries no `storage.redirect` stanza at all — so the running registry keeps Distribution's redirecting
-default. A repeated blob `HEAD` can therefore still receive `307` to the cluster-only MinIO name, which a
-host Docker client cannot resolve. This is not an S3 credential, image-size, resource-limit, or nvkind
-defect; it is a scope crossing.
+**The demo rendering is migrated.** Its finalized registry plan selects proxy delivery, so generated registry
+configuration disables redirects to cluster-only MinIO. Its exact cluster renderer separately derives the
+complete published-port set from the digest-matched cluster plan slice and emits only `127.0.0.1` Kind/nvkind
+mappings. Neither registry delivery nor listener scope is an independently supplied boolean or address string.
+Runtime observation and lifecycle adoption remain owned by the later worked-demo sprints.
 
 The [composition-and-network-algebra phase](../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md)
 owns the generic reachability/delivery algebra and finalized registry plan. The
@@ -64,6 +63,13 @@ data Endpoint (reach :: Reachability) service where
 Constructors validate syntax and topology ownership. Code must not infer scope by searching for
 `.svc`, `localhost`, or an IP substring. A client spelling of `localhost` is also not proof that the
 listener is loopback-only.
+
+For the worked demo, the pure cluster renderer makes that listener claim concrete before filesystem or
+backend work. Kind publishes registry `30500`, web `30080`, accelerator `30081`, and MinIO `30900`; nvkind
+publishes registry `30500`, web `30080`, and MinIO `30900`. Every mapping has
+`listenAddress: "127.0.0.1"`. Duplicate, out-of-range, missing, or additional mappings refuse, and canonical
+bytes are digest-bound to the same exact plan slice. VM-backed rendering retains the selected writable durable
+mount; Direct nvkind rendering adds only its GPU worker topology and invents no VM/share layer.
 
 ## Client and Exposure Identity
 
@@ -174,6 +180,13 @@ The prepared push adapter requires that exact readiness value through the plan-o
 A bare `GET /v2/` proves only that the registry HTTP process is serving; it does not prove the blob
 route. A `307` is acceptable only for a plan carrying `RedirectToBackend` and the matching reachability
 proof.
+
+The probe sequence is rendered by four additive Lift leaves with fixed argv: upload-session `POST`,
+octet-stream `PATCH`, digest-completing `PUT`, and non-following blob `HEAD`. Tests pin every argument,
+including timeouts, headers, payload position, and status/redirect output. Registry authentication remains
+higher policy: `HostBootstrap.Registry` consumes the generic Lift and its quoting rule. Authenticated
+descent and the sanitized lifecycle route likewise delegate crossing argv to `foldLeaf`; no registry or
+route module owns a competing provider renderer.
 
 ## Invalid States
 

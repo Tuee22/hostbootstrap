@@ -1,8 +1,7 @@
 # Phase 15 — Host providers and the self-reference lift
 
-**Status**: Active
-**Current sprint**: None — every implementation sprint is statically closed; the phase remains Active
-until the declared native Linux/x86_64 KVM/Incus baseline acceptance run below is performed
+**Status**: Done
+**Current sprint**: None — phase complete
 **Depends on**: Phase 8 (ensure reconcilers), Phase 12 (step algebra and plan-owned resource
 projections), Phase 13 (authenticated handoff and the frame-child entry), Phase 14 (the four ownership
 clauses and host-local reservations)
@@ -1592,37 +1591,18 @@ exactly four requests — two canonical-root `lstat`/`realpath` probes and two `
 probes — and created no provider state. After teardown the run's VM, alias, staging paths, origin records,
 and its whole `/var/tmp` root were absent.
 
+**2026-08-21 — passed against the completed provider boundary.** Host: Ubuntu 24.04.4 LTS, Linux
+7.0.0-28-generic, x86_64, `/dev/kvm` readable and writable by the invoking user, Incus 6.0.0 with a
+`dir` storage pool. Toolchain: GHC 9.12.4, Cabal 3.16.1.0. The exact command above passed after the
+provider observation was aligned with Incus's authoritative absent-instance behavior and the launch
+command selected Incus's global quiet mode; the live run reported the declared PASS line and removed
+its exact VM, alias, staging paths, origin records, and `/var/tmp` root. The host-static gate then passed
+at 2,333/2,333 Haskell tests in 219.39 seconds, the Python code check passed, and the Python suite passed
+at 231/231.
+
 ## Remaining Work
 
-Every implementation sprint through 15.24 is complete and the baseline acceptance above is confirmed. What
-the phase still owes is the rest of its shape rather than its behaviour. § LL makes a provider a **row** over
-one closed frame table — the tool that reaches the frame and its argument shape, the frame's path grammar
-(§ MM), its sizing renderer, its ownership primitive, and its transfer and share primitives. The guarded
-destructive delete is now one computation over that table (Sprint 15.24); the existence probe, the readiness
-wait, and the budget-to-wall rendering are already values rather than code paths, each in one module.
-
-The **ownership primitive** is now a column of that table, the third row exists, and the seam has the two
-faces a provider needs: Sprint 15.25 supplies the transaction that runs where the object is, and Sprint
-15.26 the clause producers over an object whose identity another authority answers for. What is still owed
-is the adoption itself. Sprint 15.27 supplies the total classifier that turns a provider's own output
-into the observation a clause is held over and Sprint 15.28 the described commands whose outcomes it
-classifies. Sprint 15.29 gives the durable record its third kind, so a record can describe an object
-another authority owns and carry the claim that closes its outcome-unknown window, and Sprint 15.30 the
-resumption vocabulary that decides where a transaction stands.
-
-The adoption itself is now done. Sprint 15.31 moved the backend onto the one interpreter and retired its
-injected executor, Sprints 15.32 and 15.33 put every provider operation on the seam — including the
-instance standing a share re-takes after its device readback — Sprint 15.34 made Direct's admission a
-decision this binary applies, Sprint 15.35 removed the interpreter program the boundary shipped, and
-Sprint 15.36 says once whose contract the boundary's durability is and holds the statement with a guard.
-
-One thing is still owed, and it is not a sprint's own subject:
-
-- **the declared live run.** § II makes the static gate a gate-host record, not a substrate
-  declaration. The live client now type-checks against the boundary on every gate host, which is what
-  caught its drift, but type-checking is not running: the native Linux/x86_64 KVM/Incus baseline
-  acceptance below has not been performed against the boundary as it now stands, and it is the only thing
-  keeping this phase `Active`.
+None.
 
 Sprints 15.6 through 15.19 describe the mechanism their own boundaries hold today. § A rewrites a phase in
 place rather than appending a correction, so those sprints are restated in the same change that moves them

@@ -11,6 +11,7 @@ activation by hand, because none of those has a public constructor.
 -}
 module RoleLifecycleSpec (tests, withRole, mutatingEffects, storeDraft) where
 
+import Control.Exception (AsyncException (ThreadKilled), throwIO)
 import qualified Data.ByteString as ByteString
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Text (Text)
@@ -120,7 +121,7 @@ verificationTests =
 
 admissionTests :: [TestTree]
 admissionTests =
-    [ testCase "the first attempt reserves and the second reports recovery owed" $
+    [ testCase "a lost reservation acknowledgement rehydrates the exact reservation" $
         withActivationFor servingEffects listenerDraft $ \store activation ->
             withVerifiedDraft activation listenerDraft $ \verified -> do
                 first <- entry store (\session -> withRoleLifecycleAdmission session activation verified)
@@ -129,11 +130,11 @@ admissionTests =
                     other -> assertFailure ("expected a reservation, got " ++ describeAdmission other)
                 second <- entry store (\session -> withRoleLifecycleAdmission session activation verified)
                 case second of
-                    RoleAdmissionRecoveryRequired _ persisted ->
+                    RoleAdmissionReserved secondAdmission ->
                         assertBool
-                            "the predecessor record is reported verbatim"
-                            ("reserved " `Text.isPrefixOf` persisted)
-                    other -> assertFailure ("expected recovery owed, got " ++ describeAdmission other)
+                            "the same bounded admission key is rehydrated"
+                            (not (Text.null (reservedRoleAdmissionKey secondAdmission)))
+                    other -> assertFailure ("expected a rehydrated reservation, got " ++ describeAdmission other)
     , testCase "instance identities that the former sanitizer collided reserve distinct rows" $ do
         let manifest =
                 baseManifest
@@ -322,10 +323,7 @@ admissionTests =
                                     entry other $ \session ->
                                         withRoleLifecycleAdmission session activation verified
                                 case outcome of
-                                    RoleAdmissionRecoveryRequired _ persisted ->
-                                        assertBool
-                                            "store B retained its unconsumed reservation"
-                                            ("reserved " `Text.isPrefixOf` persisted)
+                                    RoleAdmissionReserved _ -> pure ()
                                     otherOutcome ->
                                         assertFailure
                                             ( "store B's row changed unexpectedly: "
@@ -359,6 +357,24 @@ admissionTests =
                             other ->
                                 assertFailure
                                     ("expected the second use to be refused, got " ++ describePlan other)
+                    other -> assertFailure ("expected a reservation, got " ++ describeAdmission other)
+    , testCase "a lost open acknowledgement resumes the consumed plan without a new admission" $
+        withActivationFor servingEffects listenerDraft $ \store activation ->
+            withVerifiedDraft activation listenerDraft $ \verified -> do
+                reserved <- entry store (\session -> withRoleLifecycleAdmission session activation verified)
+                case reserved of
+                    RoleAdmissionReserved admission -> do
+                        opened <- entry store $ \session ->
+                            withRuntimeRolePlan session activation verified admission $ \_ _ _ _ -> pure ()
+                        opened @?= Right ()
+                        retried <- entry store (\session -> withRoleLifecycleAdmission session activation verified)
+                        case retried of
+                            RoleAdmissionOpenUnknown _ -> pure ()
+                            other -> assertFailure ("expected an open-unknown outcome, got " ++ describeAdmission other)
+                        resumed <- entry store $ \session ->
+                            resumeRuntimeRolePlanOpen session activation verified $ \plan binding _ _ ->
+                                pure (rolePlanInstance plan, rolePlanDigestBindingRolePlanDigest binding)
+                        resumed @?= Right ("pod:pod-uid-1/0", rolePlanDraftDigest listenerDraft)
                     other -> assertFailure ("expected a reservation, got " ++ describeAdmission other)
     , testCase "a malformed reservation row remains a store failure, not already consumed" $
         withActivationFor servingEffects listenerDraft $ \store activation ->
@@ -579,7 +595,7 @@ engineTests =
                         }
             exitTurnedAtPhase report @?= Acquire
             exitOwnedResources report @?= ["listener"]
-            exitUnknownResources report @?= ["worker"]
+            exitUnknownResources report @?= []
             assertBool "an unknown outcome is not a clean exit" (not (roleExitReportOk report))
             steps <- readIORef trace
             steps
@@ -589,6 +605,28 @@ engineTests =
                     , "release:listener"
                     , "release:worker"
                     ]
+    , testCase "an asynchronous exception during acquisition is typed and still reaches Drain" $
+        withRole servingEffects twoResourceDraft $ \store plan placement cursor -> do
+            trace <- newIORef []
+            report <-
+                runRoleLifecycle store plan placement cursor $
+                    (tracingEngine trace)
+                        { engineAcquire = \required -> do
+                            record trace ("acquire:" <> roleResourceName required)
+                            if roleResourceName required == "worker" then throwIO ThreadKilled else pure Acquired
+                        }
+            exitTurnedAtPhase report @?= Acquire
+            exitUnknownResources report @?= []
+            steps <- readIORef trace
+            assertBool "Drain released every possibly acquired resource" (["release:listener", "release:worker"] `isSuffixOfList` steps)
+    , testCase "a delayed callback exception is forced inside the guarded transition" $
+        withRole servingEffects listenerDraft $ \store plan placement cursor -> do
+            trace <- newIORef []
+            report <- runRoleLifecycle store plan placement cursor $
+                (tracingEngine trace){engineAcquire = \_ -> pure (error "delayed acquisition failure")}
+            exitTurnedAtPhase report @?= Acquire
+            exitUnknownResources report @?= []
+            readIORef trace >>= (@?= ["prereq", "release:listener"])
     , testCase "a readiness failure cannot reach Serve and drains everything acquired" $
         withRole servingEffects twoResourceDraft $ \store plan placement cursor -> do
             trace <- newIORef []
@@ -631,6 +669,7 @@ engineTests =
                 runRoleLifecycle store plan placement cursor $
                     (tracingEngine trace){engineServe = \_ -> pure (ServeShutdown "SIGTERM")}
             exitReason report @?= Just "shutdown: SIGTERM"
+            assertBool "an orderly shutdown is a clean exit" (roleExitReportOk report)
             steps <- readIORef trace
             length [step | step <- steps, step == "release:listener"] @?= 1
     , testCase "drain attempts every release and aggregates the failures" $
@@ -649,7 +688,7 @@ engineTests =
             assertBool
                 "the second release ran despite the first failing"
                 ("release:worker" `elem` steps)
-    , testCase "a live exclusive holder refuses the peer before it acquires anything" $
+    , testCase "the one-use cursor refuses a second run before it acquires anything" $
         withRole mutatingEffects storeDraft $ \store plan placement cursor -> do
             placementLeaseRequirement placement @?= RequiresGenerationLease
             outer <- newIORef []
@@ -673,8 +712,50 @@ engineTests =
                     exitOwnedResources report @?= []
                     assertBool
                         "the refusal states its cause"
-                        (maybe False (Text.isInfixOf "exclusive generation lease") (exitReason report))
+                        (maybe False (Text.isInfixOf "cursor was already consumed") (exitReason report))
             readIORef inner >>= (@?= [])
+    , testCase "a distinct live exclusive instance is refused before acquisition" $ do
+        let manifest = baseManifest
+                { manifestPermittedEffects = mutatingEffects
+                , manifestRolePlanDigest = rolePlanDraftDigest storeDraft
+                }
+            peerMeasurement = baseMeasurement{measuredInstance = KubernetesInstance "pod-uid-2" 0}
+        withBroker manifest $ \broker store key -> do
+            grant <- either (assertFailure . activationErrorMessage) pure =<< signActivationManifest broker manifest
+            outerVerified <- verifyRuntimeRoleActivation key store manifest manifest grant baseMeasurement $ \outerActivation ->
+                withVerifiedDraft outerActivation storeDraft $ \outerDraft -> do
+                    peerVerified <- verifyRuntimeRoleActivation key store manifest manifest grant peerMeasurement $ \peerActivation ->
+                        withVerifiedDraft peerActivation storeDraft $ \peerDraft ->
+                            entry store $ \session -> do
+                                outerReserved <- withRoleLifecycleAdmission session outerActivation outerDraft
+                                peerReserved <- withRoleLifecycleAdmission session peerActivation peerDraft
+                                case (outerReserved, peerReserved) of
+                                    (RoleAdmissionReserved outerAdmission, RoleAdmissionReserved peerAdmission) ->
+                                        do
+                                          outerOpened <- withRuntimeRolePlan session outerActivation outerDraft outerAdmission $ \outerPlan _ outerPlacement outerCursor -> do
+                                            peerOpened <- withRuntimeRolePlan session peerActivation peerDraft peerAdmission $ \peerPlan _ peerPlacement peerCursor -> do
+                                                peer <- newIORef Nothing
+                                                outerTrace <- newIORef []
+                                                outerReport <- runRoleLifecycle store outerPlan outerPlacement outerCursor $
+                                                    (tracingEngine outerTrace)
+                                                        { engineServe = \_ -> do
+                                                            peerTrace <- newIORef []
+                                                            report <- runRoleLifecycle store peerPlan peerPlacement peerCursor (tracingEngine peerTrace)
+                                                            writeIORef peer (Just (report, peerTrace))
+                                                            pure ServeCompleted
+                                                        }
+                                                observed <- readIORef peer
+                                                case observed of
+                                                    Nothing -> assertFailure ("the distinct peer never ran: " <> renderRoleExitReport outerReport)
+                                                    Just (report, peerTrace) -> do
+                                                        exitTurnedAtPhase report @?= Prereq
+                                                        assertBool "the live lease refusal is explicit" (maybe False (Text.isInfixOf "exclusive generation lease") (exitReason report))
+                                                        readIORef peerTrace >>= (@?= [])
+                                            either (assertFailure . roleLifecycleErrorMessage) pure peerOpened
+                                          either (assertFailure . roleLifecycleErrorMessage) pure outerOpened
+                                    other -> assertFailure ("could not reserve both instances: " <> show (describeAdmission (fst other), describeAdmission (snd other)))
+                    either (assertFailure . activationErrorMessage) pure peerVerified
+            either (assertFailure . activationErrorMessage) pure outerVerified
     ]
 
 -- ---------------------------------------------------------------------------
@@ -738,9 +819,9 @@ withActivationFor ::
     ( forall scope planDigest specDigest binaryDigest frame revision instanceId.
       ProtectedStore ->
       VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId ->
-      IO ()
+      IO result
     ) ->
-    IO ()
+    IO result
 withActivationFor effects draft use =
     let manifest =
             baseManifest
@@ -879,9 +960,9 @@ withBroker ::
       ActivationBroker scope brokerGeneration verb ->
       ProtectedStore ->
       ActivationVerificationKey ->
-      IO ()
+      IO result
     ) ->
-    IO ()
+    IO result
 withBroker manifest use = case activationSigningPolicy [manifest] of
     Left failure -> assertFailure (activationErrorMessage failure)
     Right policy ->
@@ -932,6 +1013,7 @@ describe = either show (const "an accepted draft")
 describeAdmission :: RoleAdmissionOutcome scope planDigest frame revision instanceId -> String
 describeAdmission outcome = case outcome of
     RoleAdmissionReserved admission -> "reserved " ++ show (reservedRoleAdmissionKey admission)
+    RoleAdmissionOpenUnknown key -> "open unknown " ++ show key
     RoleAdmissionRecoveryRequired key persisted -> "recovery owed " ++ show (key, persisted)
     RoleAdmissionRefused detail -> "refused " ++ show detail
     RoleAdmissionUnknown detail -> "unknown " ++ show detail

@@ -1,12 +1,19 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
-module HarnessSpec (tests, runHarnessAcquireProbe, runHarnessAbandonProbe) where
+module HarnessSpec (
+    tests,
+    runHarnessAcquireProbe,
+    runHarnessAbandonProbe,
+    runRecoveryInterruptionProbe,
+    runRecoveryInterruptionSuccessor,
+) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
 import Control.Exception (AsyncException (ThreadKilled), SomeException, finally, throwIO, throwTo, try)
 import Control.Monad (when)
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.ByteString (ByteString)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf, isPrefixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Text as T
@@ -17,16 +24,14 @@ import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Harness
 import HostBootstrap.Harness.Lifecycle.Internal (testingHarnessLifecycle)
-import HostBootstrap.Step (
-    StepObservation (StepConflict, StepRefused, StepUnsupported),
-    observationDetail,
- )
 import HostBootstrap.Harness.Ownership (
     OwnedHarnessRoot,
-    harnessAuthorityStoreDirectory,
+    RecoveredResourceExecutor (RecoveredResourceExecutor),
     acquireOwnedRunConfig,
+    harnessAuthorityStoreDirectory,
     ownedHarnessConfigPath,
     protectedProjectRunOwnership,
+    protectedProjectRunOwnershipWithRecovery,
     protectedRunOwnership,
     withOwnedHarnessRoot,
  )
@@ -41,12 +46,19 @@ import HostBootstrap.Lifecycle.Mode (
     harnessRootRunId,
     harnessRootUnboundLease,
     leaseConflictMessage,
+    persistCanonicalPlanSnapshot,
     persistPlanSnapshot,
     recordOpenRevisionMigration,
     recoverAbandonedHarnessRuns,
     runIdText,
     verifyPlanSnapshot,
     withHarnessRoot,
+ )
+import HostBootstrap.Lifecycle.Session (
+    ProjectJournalState (ClosingProject),
+    beginClosingProject,
+    openProjectJournal,
+    readProjectJournalState,
  )
 import HostBootstrap.ProjectRoot (canonicalProjectRootPath, withCanonicalProjectRoot)
 import HostBootstrap.Protected (
@@ -59,6 +71,12 @@ import HostBootstrap.Protected (
     protectedStoreRoot,
     withProtectedEntry,
  )
+import HostBootstrap.Reconcile (CanonicalPlanSnapshot)
+import HostBootstrap.Step (
+    StepObservation (StepConflict, StepRefused, StepUnsupported),
+    observationDetail,
+ )
+import ResourceRecordSpec (withCanonicalReleasedResourceFixture, withCanonicalResourceFixture)
 import System.Directory (
     createDirectory,
     doesDirectoryExist,
@@ -688,6 +706,110 @@ runHarnessAbandonProbe stateRoot readyPath = do
     outcome <- either (die . show) pure prepared
     die ("the abandon probe was expected to be killed, not to finish: " ++ show outcome)
 
+{- | Leave one real protected-store recovery boundary behind, publish readiness,
+and wait to be hard-killed. The successor entry below opens the same store; no
+production crash hook or in-process exception participates in this fixture.
+-}
+runRecoveryInterruptionProbe :: FilePath -> FilePath -> String -> IO ()
+runRecoveryInterruptionProbe stateRoot readyPath boundary =
+    recoveryInterruptionSetup stateRoot boundary $ do
+        writeFile readyPath boundary
+        threadDelay 600000000
+
+-- | Reopen and drive the exact state published by 'runRecoveryInterruptionProbe'.
+runRecoveryInterruptionSuccessor :: FilePath -> FilePath -> String -> IO ()
+runRecoveryInterruptionSuccessor stateRoot resultPath boundary =
+    recoveryInterruptionOwnership stateRoot $ \ownership -> case boundary of
+        "owned-resource-settled" -> do
+            first <- runWithOwnedRun ownership (\_ -> pure ())
+            second <- runWithOwnedRun ownership (\_ -> pure ())
+            case (first, second) of
+                (Right ((), Nothing), Right ((), Nothing)) -> writeFile resultPath "converged\n"
+                other -> die ("owned-resource recovery did not converge: " ++ show other)
+        "migration-frozen" -> do
+            outcome <- runWithOwnedRun ownership (\_ -> pure ())
+            case outcome of
+                Right ((), Nothing) -> writeFile resultPath "converged\n"
+                other -> die ("frozen migration did not close: " ++ show other)
+        "migration-committed" -> do
+            outcome <- runWithOwnedRun ownership (\_ -> pure ())
+            case outcome of
+                Left reason
+                    | "plan snapshot is persisted" `isInfixOf` reason ->
+                        writeFile resultPath "refused-exactly\n"
+                other -> die ("committed migration lost its exact refusal: " ++ show other)
+        "closing-persisted" -> do
+            store <- either (die . show) pure =<< openProtectedStore (stateRoot </> "closing-store")
+            observed <- withProtectedEntry store $ \session -> do
+                state <- readProjectJournalState session "interruption-plan"
+                reopened <- openProjectJournal session "interruption-plan"
+                pure (Right (state, reopened))
+            case observed of
+                Right (Right (ClosingProject 7), Left _) -> writeFile resultPath "converged\n"
+                other -> die ("persisted Closing did not fence a successor permit: " ++ show other)
+        _ -> die ("unknown recovery interruption boundary: " ++ boundary)
+
+recoveryInterruptionSetup :: FilePath -> String -> IO () -> IO ()
+recoveryInterruptionSetup stateRoot boundary ready =
+    Fixture.withFixtureInstalledProject $ \project -> do
+        prepared <- withCanonicalProjectRoot stateRoot stateRoot $ \canonicalRoot -> do
+            store <-
+                either (die . show) pure
+                    =<< openProtectedStore
+                        ( canonicalProjectRootPath canonicalRoot
+                            </> harnessAuthorityStoreDirectory
+                            </> T.unpack (Authority.installedProjectName project)
+                        )
+            case boundary of
+                "owned-resource-settled" ->
+                    withCanonicalResourceFixture $ \snapshot records -> do
+                        abandonBoundRunWithResources store project snapshot records
+                        ready
+                "migration-frozen" -> do
+                    abandonBoundRunWithMigration store project (IncompleteMigration "migration-1") False
+                    ready
+                "migration-committed" -> do
+                    abandonBoundRunWithMigration
+                        store
+                        project
+                        (CompletedMigration "production.plan-0.plan-1")
+                        False
+                    ready
+                "closing-persisted" -> do
+                    closingStore <- either (die . show) pure =<< openProtectedStore (stateRoot </> "closing-store")
+                    persisted <- withProtectedEntry closingStore $ \session -> do
+                        opened <- openProjectJournal session "interruption-plan"
+                        case opened of
+                            Left failure -> pure (Right (Left failure))
+                            Right permit -> do
+                                closing <- beginClosingProject session "interruption-plan" 7 permit
+                                pure (Right (() <$ closing))
+                    either (die . show) (either (die . show) pure) persisted
+                    ready
+                _ -> die ("unknown recovery interruption boundary: " ++ boundary)
+        either (die . show) pure prepared
+
+recoveryInterruptionOwnership ::
+    FilePath ->
+    (forall projectId. HarnessRunOwnership (OwnedHarnessRoot projectId) -> IO ()) ->
+    IO ()
+recoveryInterruptionOwnership stateRoot use =
+    Fixture.withFixtureInstalledProject $ \project -> do
+        prepared <- withCanonicalProjectRoot stateRoot stateRoot $ \canonicalRoot -> do
+            let eventsPath = stateRoot </> "recovery.events"
+                executor = RecoveredResourceExecutor $ \frame _ _ _ _ -> do
+                    appendFile eventsPath (T.unpack frame ++ "\n")
+                    pure (Right ())
+            use
+                ( protectedProjectRunOwnershipWithRecovery
+                    executor
+                    project
+                    canonicalRoot
+                    stateRoot
+                    (stateRoot </> ".test_data")
+                )
+        either (die . show) pure prepared
+
 {- | Run one case against a fresh temporary state root with the /typed/
 production ownership bracket — the one the command path uses, so the sibling
 config path is derived from installed project identity rather than supplied.
@@ -766,6 +888,97 @@ withAbandonedMigrationRecording kind recordEffect body =
                             )
         either (assertFailure . show) pure prepared
 
+withAbandonedResourceOwnership ::
+    Bool ->
+    ( forall projectId.
+      IORef [T.Text] ->
+      HarnessRunOwnership (OwnedHarnessRoot projectId) ->
+      HarnessRunOwnership (OwnedHarnessRoot projectId) ->
+      IO ()
+    ) ->
+    IO ()
+withAbandonedResourceOwnership released body =
+    withSystemTempDirectory "hostbootstrap-abandoned-resource" $ \root -> do
+        prepared <-
+            Fixture.withFixtureInstalledProject $ \project ->
+                withCanonicalProjectRoot root root $ \canonicalRoot -> do
+                    store <-
+                        either (assertFailure . show) pure
+                            =<< openProtectedStore
+                                ( canonicalProjectRootPath canonicalRoot
+                                    </> harnessAuthorityStoreDirectory
+                                    </> T.unpack (Authority.installedProjectName project)
+                                )
+                    let prepare snapshot records = do
+                            abandonBoundRunWithResources store project snapshot records
+                            let deletedConfig = root </> T.unpack (Authority.installedProjectName project) ++ ".dhall"
+                            writeFile deletedConfig "this config was edited after the kill"
+                            removeFile deletedConfig
+                            observed <- newIORef []
+                            let successfulExecutor = RecoveredResourceExecutor $ \frame _ _ _ _ -> do
+                                    modifyIORef' observed (<> [frame])
+                                    pure (Right ())
+                                refusingExecutor = RecoveredResourceExecutor $ \frame _ _ _ _ -> do
+                                    modifyIORef' observed (<> [frame])
+                                    pure (Left "seeded recovered backend refusal")
+                                ownership executor =
+                                    protectedProjectRunOwnershipWithRecovery
+                                        executor
+                                        project
+                                        canonicalRoot
+                                        root
+                                        (root </> ".test_data")
+                            body observed (ownership refusingExecutor) (ownership successfulExecutor)
+                    if released
+                        then withCanonicalReleasedResourceFixture prepare
+                        else withCanonicalResourceFixture prepare
+        either (assertFailure . show) pure prepared
+
+abandonBoundRunWithResources ::
+    ProtectedStore ->
+    Authority.InstalledProjectIdentity projectId ->
+    CanonicalPlanSnapshot ->
+    [(T.Text, ByteString)] ->
+    IO ()
+abandonBoundRunWithResources store project snapshot records = do
+    swept <- recoverAbandonedHarnessRuns store project resolvesNothing resolvesNothing
+    proof <- either (assertFailure . show) pure swept
+    outcome <-
+        withHarnessRoot
+            store
+            project
+            Authority.ProjectUp
+            (harnessPreconditions project "/nonexistent-hostbootstrap-dir" (pure False))
+            proof
+            ( \harnessRoot -> do
+                let run = harnessRootRunId harnessRoot
+                    unbound = harnessRootUnboundLease harnessRoot
+                persisted <- persistCanonicalPlanSnapshot unbound 1 snapshot
+                case persisted of
+                    Left failure -> pure (Left failure)
+                    Right () -> do
+                        bound <-
+                            verifyPlanSnapshot unbound $ \verified -> do
+                                result <- bindRunLease unbound verified (\_ -> pure ())
+                                either
+                                    (assertFailure . T.unpack . leaseConflictMessage)
+                                    (const (pure (Right ())))
+                                    result
+                        case bound of
+                            Left failure -> pure (Left failure)
+                            Right () -> inModeEntry store $ \session -> do
+                                written <- mapM (writeCanonicalResource session) records
+                                case sequence_ written of
+                                    Left failure -> pure (Left failure)
+                                    Right () -> recordRunEffect session project run
+            )
+    either (assertFailure . show) pure outcome
+  where
+    writeCanonicalResource session (rawKey, bytes) = do
+        key <- either (assertFailure . show) pure (mkRecordKey rawKey)
+        result <- compareAndSwapProtectedRecord session key ExpectAbsent bytes
+        pure (either (Left . ModeStoreFailure) (const (Right ())) result)
+
 {- | Take a harness run all the way to a bound lease and then walk away from it,
 recording the migration side of the barrier it was on.
 -}
@@ -812,7 +1025,8 @@ abandonBoundRunWithMigration store project kind recordEffect = do
     either (assertFailure . show) pure outcome
 
 {- | Write one effect-shaped record for a run, which is what
-@verifyNoProjectResourcesAcquired@ refuses on. -}
+@verifyNoProjectResourcesAcquired@ refuses on.
+-}
 recordRunEffect ::
     ProtectedSession session ->
     Authority.InstalledProjectIdentity projectId ->
@@ -842,7 +1056,6 @@ inModeEntry ::
 inModeEntry store action = do
     outcome <- withProtectedEntry store (fmap Right . action)
     pure (either (Left . ModeStoreFailure) id outcome)
-
 
 {- | Wait for a probe process to announce readiness. The probe writes the file
 only after it holds both the run and its generated config, so the parent never
@@ -951,21 +1164,17 @@ ownershipCases =
       'stableMigrationKeyFor' builds @\<run\>.\<old\>.\<new\>@ — and the
       configless recovery reads the superseded revision straight out of it
       rather than from any config. -}
-      testCase "the sweep resumes an abandoned run whose migration already activated" $
+      testCase "the sweep refuses a completed migration whose candidate snapshot is missing" $
         withAbandonedMigration (CompletedMigration "production.plan-0.plan-1") $ \ownership -> do
             admitted <- runWithOwnedRun ownership (\_ -> pure ())
             case admitted of
-                Right ((), Nothing) -> pure ()
-                Right ((), Just failure) ->
-                    assertFailure ("the successor run's cleanup failed: " ++ show failure)
-                Left reason ->
-                    assertFailure
-                        ("a resumed activation must not block the next run: " ++ reason)
+                Left reason -> assertBool "missing candidate refusal was not preserved" ("plan snapshot is persisted" `isInfixOf` reason)
+                Right result -> assertFailure ("a completed migration without its candidate was admitted: " ++ show result)
     , {- The classification is not the safety gate: a staging that acquired
       something wrote an effect record, and the proof refuses whichever side of
       the barrier it is on. -}
-      testCase "an incomplete migration that recorded an effect is still refused" $
-        withAbandonedMigrationRecording
+      testCase "an incomplete migration that recorded an effect is still refused"
+        $ withAbandonedMigrationRecording
             (IncompleteMigration "migration-1")
             True
             $ \ownership -> do
@@ -977,6 +1186,32 @@ ownershipCases =
                             ("effect" `isInfixOf` reason)
                     Right _ ->
                         assertFailure "a staging that acquired something must block the next run"
+    , testCase "an abandoned acquired resource is released and the settled run closes" $
+        withAbandonedResourceOwnership False $ \observed _refusing ownership -> do
+            admitted <- runWithOwnedRun ownership (\_ -> pure ())
+            case admitted of
+                Left reason -> assertFailure ("the recovered successor was refused: " ++ reason)
+                Right ((), Nothing) -> pure ()
+                Right ((), Just failure) -> assertFailure ("the recovered successor cleanup failed: " ++ show failure)
+            readIORef observed >>= (@?= ["host"])
+    , testCase "a failed recovered release retains ownership for an exact retry" $
+        withAbandonedResourceOwnership False $ \observed refusing succeeding -> do
+            first <- runWithOwnedRun refusing (\_ -> pure ())
+            case first of
+                Left reason -> assertBool ("the backend refusal was not retained: " ++ reason) ("seeded recovered backend refusal" `isInfixOf` reason)
+                Right result -> assertFailure ("a failed recovered release admitted a successor: " ++ show result)
+            second <- runWithOwnedRun succeeding (\_ -> pure ())
+            case second of
+                Right ((), Nothing) -> pure ()
+                other -> assertFailure ("the exact recovered retry did not converge: " ++ show other)
+            readIORef observed >>= (@?= ["host", "host"])
+    , testCase "an abandoned released tombstone closes without a backend call" $
+        withAbandonedResourceOwnership True $ \observed _refusing ownership -> do
+            admitted <- runWithOwnedRun ownership (\_ -> pure ())
+            case admitted of
+                Right ((), Nothing) -> pure ()
+                other -> assertFailure ("the released recovered run did not close: " ++ show other)
+            readIORef observed >>= (@?= [])
     , testCase "an owned run releases its generation and keeps the .test_data parent" $
         withSystemTempDirectory "hostbootstrap-test-data" $ \root -> do
             let parent = root </> ".test_data"

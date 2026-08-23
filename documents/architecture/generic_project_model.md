@@ -440,6 +440,57 @@ for the secrets seam.
 > -- service projection invents no fallbacks
 > ```
 
+## Plan-authored provider targets
+
+A step may author a provider resource only through the closed
+`ProviderResourceDeclaration` vocabulary: the declaring operation's current frame or its unique immediate
+child. The declaration accepts neither a frame string nor a resource key, is retained in stable plan format 5,
+and is rejected if duplicated or if a child target has no unique validated descent. Resource identity comes
+from the authoring operation. Consumers enumerate those admitted resources and join a cluster only to the one
+provider at its topology-derived immediate parent; ancestor, sibling, absent, and duplicate candidates do not
+reach backend work.
+
+## Plan-authored chart workloads
+
+One `core:deploy-chart` step may declare one chart workload. Its stable plan record binds the chart artifact
+digest, release, namespace, canonical values digest, image identity, workload declaration key and digest,
+service role, and exact non-empty effect set. Admission also requires exactly one preceding
+`core:deploy-kind` dependency in the same frame, so the existing canonical dependency record binds the exact
+cluster resource without accepting a second caller-authored cluster key.
+
+The public `ChartWorkloadResource` constructor is hidden. A generative fold projects it only from the exact
+admitted chart operation and exposes descriptive operation/frame identity plus the release, namespace, and
+workload key needed for reverse identity. Those projections carry no executable, gate, backend, or live-listing
+authority; preparation remains a later lifecycle transition.
+
+The generative budget algebra now derives length-framed SHA-256 identities from the exact ordered workload
+fields and the exact ordered partition overhead/slices. The workload-set key is itself hash-framed, so names
+containing separator-shaped text cannot collide. A pure binding fold compares those derived identities, the
+cluster operation/frame, and the retained stable plan digest with the hidden chart declaration. It releases the
+declaration fields only after every comparison succeeds and accepts no caller-authored expected digest.
+
+The exact forward projection also supplies only neutral canonical terms for the hidden
+`PlanExecutionPackage`. A typed action that needs its project configuration must re-render through the
+finalized codec and match the package's retained configuration digest; independently supplied configuration is
+not package authority.
+
+The demo now performs that pure join before any backend call. It partitions every admitted `PlannedStep` by
+closed `CoreStepId` or smart-constructed `ProjectStepId` into provider, cluster, chart/workload, service, and
+assertion subsequences; unknown identities refuse rather than falling through a textual operation-key rule.
+Every returned member remains the original nominal plan/config-indexed `PlannedStep` and is paired with the
+one retained config digest. The same projection requires a unique provider-to-cluster immediate edge, one
+cluster operation, one chart, one assertion, non-empty provider/service slices, exact dependency prefixes, and
+cluster-frame-local workloads. Its config companion re-renders canonical bytes and matches the retained digest
+before exposing only the refined resources, replica count, service ports, and profile-owned durable root.
+
+Cluster consumption then proceeds through two indexed joins. `withPlanOwnedCluster` joins the admitted cluster
+resource to its unique immediate provider, topology, and budget slice without runtime dependency or rendered
+configuration. The demo's canonical renderer feeds those exact bytes into the sole smart binder for opaque
+`PlanOwnedClusterConfig`, which attaches the closed driver, bytes/digest, deterministic paths, loopback set,
+driver-derived node mapping, and workload slice to that same base identity. Reconcile preparation consumes the
+completed package directly; it has no parallel driver, profile, root, path, or config argument. The runtime
+provider dependency is consulted only after this pure package is complete.
+
 ## Cross-references
 
 - [hostbootstrap_core_library.md](hostbootstrap_core_library.md) — the module surface and the fixed

@@ -32,10 +32,22 @@ where
 import Control.Exception (SomeException, displayException, mask, throwIO)
 import Control.Exception.Safe (finally, try)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.Functor.Identity (Identity (Identity), runIdentity)
 import Control.Monad (unless, when)
+import qualified Crypto.Hash as Hash
+import qualified Data.ByteString as ByteString
 import Data.List (find, intercalate, isInfixOf, stripPrefix)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TextEncoding
+import qualified Dhall
 import qualified HostBootstrap.Authority as Authority
+import HostBootstrap.Build (
+    authorizeCheckCode,
+    buildErrorMessage,
+    installedBuildVerificationKey,
+    readBuildChannel,
+    verifyBuildInvocation,
+ )
 import HostBootstrap.Chain (
     nextFrameAfter,
     renderChain,
@@ -45,7 +57,9 @@ import HostBootstrap.Command.LifecycleEntry
     , lifecycleEntryFrameName
     , lifecycleEntryVerbName
     , runRootProjectUpLifecycleEntry
+    , runRootProjectReverseLifecycleEntry
     , withRootProjectUpLifecycleEntry
+    , withRootProjectReverseLifecycleEntry
     )
 import HostBootstrap.Cluster.Lifecycle (
     ClusterPlan,
@@ -54,6 +68,7 @@ import HostBootstrap.Cluster.Lifecycle (
     clusterDown,
     resolvePlan,
  )
+import HostBootstrap.Cluster.Backend (runVerifiedChartWorkloadCleanupCall)
 import HostBootstrap.Config.Class (
     AssemblyRequest (..),
     ConfigAssembly,
@@ -66,7 +81,6 @@ import HostBootstrap.Config.Class (
     projectCodecSchemaText,
     projectCodecSpecDigest,
  )
-import HostBootstrap.Config.Fields (inspectLocalContext)
 import HostBootstrap.Config.Schema (
     ValidatedConfig,
     configRoleNames,
@@ -74,11 +88,10 @@ import HostBootstrap.Config.Schema (
     projectConfigFileName,
     renderScopedProjectConfigBytes,
     siblingProjectConfigPath,
+    validatedConfigDigest,
     validatedConfigValue,
-    verifiedConfigDigest,
-    withAssembledHarnessConfig,
-    withSiblingProjectConfigContext,
     withSiblingValidatedProjectConfigContext,
+    withAssembledHarnessConfig,
     withSiblingValidatedProjectConfigRoot,
     TestConfigReplacement (RefuseExistingTestConfig, ReplaceExistingTestConfig),
     TestConfigWriteOutcome (TestConfigExists, TestConfigReplaced, TestConfigWritten),
@@ -89,6 +102,14 @@ import HostBootstrap.Config.Schema (
  )
 import qualified HostBootstrap.Config.Vocab as V
 import qualified HostBootstrap.Context as Context
+import HostBootstrap.Handoff
+    ( HandoffScope
+    , ProjectSigningKey
+    , handoffErrorMessage
+    , harnessHandoffScope
+    , installedProjectSigningKey
+    , productionHandoffScope
+    )
 import qualified HostBootstrap.Lifecycle.Context as LifecycleContext
 import HostBootstrap.Dhall.Gen (
     CodecWitness,
@@ -204,7 +225,9 @@ import HostBootstrap.ProjectPlan (
     renderSnapshot,
     stablePlanSnapshotDigest,
     topology,
+    withChartWorkloadResource,
  )
+import qualified HostBootstrap.ProjectPlan as ProjectPlan
 import HostBootstrap.ProjectPlan.Frame (
     CurrentFrame,
     ProjectFrame,
@@ -221,19 +244,32 @@ import HostBootstrap.ProjectPlan.Snapshot (
     withPersistedPlanSnapshot,
  )
 import HostBootstrap.Protected (
+    ProtectedRecord (protectedRecordBytes),
     ProtectedStore,
+    mkRecordKey,
     openProtectedStore,
     protectedErrorMessage,
+    readProtectedRecord,
     withProtectedEntry,
  )
+import HostBootstrap.Reconcile (resourceRecordKey, verifyProjectChartResourceRecordBundle)
 import HostBootstrap.Lifecycle.Session (sessionErrorMessage, verifyAllSessionsClosed)
-import HostBootstrap.RoleLifecycle (RoleEffect, roleEffectName)
+import HostBootstrap.RoleLifecycle
+    ( renderRoleExitReport
+    , roleExitReportOk
+    )
+import HostBootstrap.Activation
+    ( MeasuredInstance (HostServiceInstance, KubernetesInstance)
+    , activationVerificationKeyFromBytes
+    )
 import HostBootstrap.Service (
     FinalizedServiceRegistry,
     finalizedServiceVariantNames,
-    serviceIdText,
+    runInstalledServiceProgram,
+    serviceActivationRevision,
+    serviceActivationErrorMessage,
+    serviceRuntimeErrorMessage,
     serviceRoleSchemaFamilies,
-    withSelectedServiceRequest,
  )
 import HostBootstrap.Step (
     CoreStepId (DeployKindId),
@@ -245,9 +281,10 @@ import qualified HostBootstrap.Teardown as Teardown
 import Numeric.Natural (Natural)
 import Options.Applicative
 import System.Directory (doesFileExist, getCurrentDirectory, withCurrentDirectory)
-import System.Environment (getExecutablePath)
+import System.Environment (getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (ExitSuccess), die)
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath (isAbsolute, takeDirectory, (</>))
+import Text.Read (readMaybe)
 
 {- | The context-free @ensure@ reconciler library — the host-configuration
 primitives, including the cross-substrate host-provider @incus@ reconciler.
@@ -306,18 +343,6 @@ coreCommands project finalizedSpec testCodec progName projectArtifacts suite che
         , serviceCommandGroup cfgCodec progName services initBuilder
         , checkCodeCommand @cfg @(V.Production projectId) cfgCodec progName checkCode
         ]
-
-gate ::
-    forall cfg configScope specDigest.
-    (ProjectCfg cfg) =>
-    ProjectCodec configScope specDigest cfg ->
-    String ->
-    Context.CommandClass ->
-    [Context.Capability] ->
-    IO () ->
-    IO ()
-gate codec progName commandClass caps body =
-    withSiblingProjectConfigContext codec (T.pack progName) commandClass caps (\(_ :: cfg configScope) _ -> body)
 
 {- | The @test@ verb: a two-subcommand surface (@init@ and @run@). @test run@
 selects over the project's case matrix and prints the report card — @test run
@@ -471,7 +496,14 @@ testCommand project productionSpec testCodec progName suite assemblyInputs assem
                                                             assemblyInputs
                                                             authority
                                                             harnessCodec
-                                                            (assemble (HarnessAssembly authority tc draft))
+                                                            ( assemble
+                                                                ( HarnessAssembly
+                                                                    authority
+                                                                    (canonicalProjectRootPath ownershipRoot)
+                                                                    tc
+                                                                    draft
+                                                                )
+                                                            )
                                                             ( \_wire validated -> do
                                                                 scoped <-
                                                                     withCanonicalProjectRoot cfgPath stateRoot $ \runRoot -> do
@@ -534,6 +566,9 @@ testCommand project productionSpec testCodec progName suite assemblyInputs assem
                                                                                                                                             runExactProjectUp
                                                                                                                                                 cfg
                                                                                                                                                 self
+                                                                                                                                                (harnessHandoffScope ownedProject authority)
+                                                                                                                                                loadForwardSigningKey
+                                                                                                                                                (runFailedDeclared cfg)
                                                                                                                                                 harnessSpec
                                                                                                                                                 rootAuthority
                                                                                                                                                 lease
@@ -726,9 +761,53 @@ checkCodeCommand codec progName checkCode =
     command
         "check-code"
         ( info
-            (pure (gate @cfg @configScope codec progName Context.CheckCodeCommand [] checkCode))
+            (pure authenticatedGate)
             (progDesc "Run the project's fail-fast code-check gate (project-defined body)")
         )
+  where
+    authenticatedGate =
+        withSiblingValidatedProjectConfigContext codec (T.pack progName) Context.CheckCodeCommand [] $ \_wire validated ctx ->
+            if Context.contextKind ctx == Context.ImageBuildContainer
+                then runAuthenticated validated ctx
+                else checkCode
+
+    runAuthenticated ::
+        forall configId.
+        ValidatedConfig configScope specDigest configId (cfg configScope) ->
+        Context.BinaryContext ->
+        IO ()
+    runAuthenticated validated ctx = do
+        executable <- getExecutablePath
+        verification <- installedBuildVerificationKey "/run/secrets/hostbootstrap-build-verification"
+        channel <- readBuildChannel "/run/secrets/hostbootstrap-build-channel"
+        coordinatorRead <- try (ByteString.readFile "/run/secrets/hostbootstrap-build-coordinator")
+        key <- either (die . buildErrorMessage) pure verification
+        delivered <- either (die . buildErrorMessage) pure channel
+        coordinatorBytes <-
+            either
+                (die . ("build authority: coordinator identity is unavailable: " <>) . displayException)
+                pure
+                (coordinatorRead :: Either SomeException ByteString.ByteString)
+        coordinator <-
+            either
+                (die . const "build authority: coordinator identity is not UTF-8")
+                (pure . T.strip)
+                (TextEncoding.decodeUtf8' coordinatorBytes)
+        verified <-
+            verifyBuildInvocation
+                key
+                (T.pack progName)
+                (projectCodecSpecDigest codec)
+                (validatedConfigDigest validated)
+                coordinator
+                (T.unpack (Context.sourceRoot ctx))
+                executable
+                delivered
+                (\frame authority -> do
+                    admitted <- authorizeCheckCode frame authority
+                    either (die . buildErrorMessage) (const checkCode) admitted
+                )
+        either (die . buildErrorMessage) pure verified
 
 {- | The @context@ command group (§ Z): read-only composition introspection plus
 the absorbed read-only config-inspection surfaces (@show@ / @schema@ / @render@ /
@@ -1093,7 +1172,7 @@ projectCommandGroup project finalizedSpec progName initBuilder =
     the run is failing already, so a failure here is announced and swallowed
     rather than replacing the chain's own cause.
     -}
-    failChain ::
+    _failChain ::
         forall rootId spec planId configId frame.
         ProjectPlan (V.Production projectId) spec planId configId cfg ->
         CurrentFrame (V.Production projectId) planId frame ->
@@ -1102,14 +1181,14 @@ projectCommandGroup project finalizedSpec progName initBuilder =
         Context.BinaryContext ->
         String ->
         IO ()
-    failChain plan current root cfg ctx reason = do
+    _failChain plan current root cfg ctx reason = do
         when (null (Context.parentChain ctx)) $ do
             putStrLn "project up: chain failed — running best-effort teardown (project destroy) so the VM/cluster/.wslconfig are not leaked"
-            ignoreChainExc (reverseProjection plan current root ctx cfg Authority.ProjectDestroy)
+            _ignoreChainExc (_reverseProjection plan current root ctx cfg Authority.ProjectDestroy)
         die reason
     -- Swallow a teardown step's exception (best-effort): the whole teardown must not
     -- hinge on one step succeeding.
-    ignoreChainExc act = do
+    _ignoreChainExc act = do
         r <- try act
         case (r :: Either SomeException ()) of
             Right () -> pure ()
@@ -1400,7 +1479,7 @@ projectCommandGroup project finalizedSpec progName initBuilder =
             configId
             entryFrame ->
         IO ()
-    runBoundProjectUp root cfg self exactSpec rootAuthority lease verified bound binding plan current admittedContext lifecycleContext = do
+    runBoundProjectUp root cfg self exactSpec rootAuthority lease verified bound binding plan _current admittedContext lifecycleContext = do
         -- The shared @exactSpecDigest@ index already fixes which finalized
         -- specification may be threaded here.  This is that agreement's runtime
         -- witness, and it is the digest the root catalog manifest is keyed by,
@@ -1411,10 +1490,35 @@ projectCommandGroup project finalizedSpec progName initBuilder =
                 == planSnapshotSpecDigest verified
             )
             (die "project up: the finalized specification is not the bound plan snapshot's")
+        let runFailedLocal ::
+                forall localPlanId localFrame.
+                Teardown.LocalWork (V.Production projectId) localPlanId localFrame Authority.VerbUp ->
+                IO Step.TeardownOutcome
+            runFailedLocal local =
+                case (Teardown.localWorkRun local, Teardown.localWorkPolicy local) of
+                    (Just declared, _) -> guardedFailed (declared cfg (Teardown.localWorkAction local))
+                    (Nothing, Step.CoreManagedReverse) ->
+                        case Teardown.localWorkAction local of
+                            Step.DeleteCluster ->
+                                guardedFailed $ do
+                                    withCurrentDirectory
+                                        (canonicalProjectRootPath root)
+                                        (clusterDelete cfg (planForRoot root admittedContext))
+                                    pure Step.TeardownReleased
+                            _ -> pure (Step.TeardownForeignRetained "released with the cluster that contains it")
+                    (Nothing, _) -> pure (Step.TeardownForeignRetained "the node acquired nothing this frame must release")
+            guardedFailed effect = do
+                attempted <- try effect
+                pure $ case attempted of
+                    Right outcome -> outcome
+                    Left exc -> Step.TeardownFailed (displayException (exc :: SomeException))
         ran <-
             runExactProjectUp
                 cfg
                 self
+                (productionHandoffScope project)
+                loadForwardSigningKey
+                runFailedLocal
                 exactSpec
                 rootAuthority
                 lease
@@ -1425,16 +1529,7 @@ projectCommandGroup project finalizedSpec progName initBuilder =
                 lifecycleContext
         case ran of
             Right () -> pure ()
-            Left err
-                | safetyRefusalMarker `isInfixOf` err -> die err
-                | otherwise ->
-                    failChain
-                        plan
-                        current
-                        root
-                        cfg
-                        admittedContext
-                        err
+            Left err -> die err
 
     runProductionTeardown ::
         forall rootId configId verb.
@@ -1450,16 +1545,93 @@ projectCommandGroup project finalizedSpec progName initBuilder =
         IO ()
     runProductionTeardown root validated ctx cfg verb = do
         store <- openAuthorityStore root
-        recovered <-
-            withRecoveredProductionPlan store root validated ctx $ \_ _ _ _ _ _ _ plan current _ _ ->
-                reverseProjection plan current root ctx cfg verb
-        case recovered of
-            Right () -> pure ()
-            Left failure
-                | startsFreshProductionInvocation failure ->
-                    withFreshProductionPlan store root validated ctx verb $ \_ plan current _ _ ->
-                        reverseProjection plan current root ctx cfg verb
-            Left failure -> die ("project snapshot: " ++ show failure)
+        self <- currentSelfRef ("/usr/local/bin/" ++ progName)
+        ran <-
+            withRootProjectReverseLifecycleEntry
+                store
+                project
+                root
+                finalizedSpec
+                validated
+                ctx
+                verb
+                (\entry terminalize ->
+                    runRootProjectReverseLifecycleEntry
+                        cfg
+                        self
+                        (productionHandoffScope project)
+                        loadForwardSigningKey
+                        entry
+                        (runSealedLocal store)
+                        terminalize
+                )
+        either die pure ran
+      where
+        runSealedLocal ::
+            forall planId frame localSpec localConfigId localCfg.
+            ProtectedStore ->
+            ProjectPlan (V.Production projectId) localSpec planId localConfigId localCfg ->
+            Teardown.LocalWork (V.Production projectId) planId frame verb ->
+            IO Step.TeardownOutcome
+        runSealedLocal store plan local =
+            case (Teardown.localWorkRun local, Teardown.localWorkPolicy local) of
+                (Just declared, _) ->
+                    guardedReverse (declared cfg (Teardown.localWorkAction local))
+                (Nothing, Step.CoreManagedReverse) ->
+                    case Teardown.localWorkAction local of
+                        Step.DeleteCluster ->
+                            case verb of
+                                Authority.ProjectUp ->
+                                    pure (Step.TeardownFailed "project up cannot execute reverse cluster work")
+                                Authority.ProjectDown -> runCluster (clusterDown cfg)
+                                Authority.ProjectDestroy -> runCluster (clusterDelete cfg)
+                        _ -> runCoreManagedChart store plan local
+                (Nothing, _) ->
+                    pure (Step.TeardownForeignRetained "the node acquired nothing this frame must release")
+
+        runCluster effect =
+            guardedReverse $ do
+                withCurrentDirectory
+                    (canonicalProjectRootPath root)
+                    (effect (planForRoot root ctx))
+                pure Step.TeardownReleased
+
+        runCoreManagedChart ::
+            forall planId frame localSpec localConfigId localCfg.
+            ProtectedStore ->
+            ProjectPlan (V.Production projectId) localSpec planId localConfigId localCfg ->
+            Teardown.LocalWork (V.Production projectId) planId frame verb ->
+            IO Step.TeardownOutcome
+        runCoreManagedChart protected plan local =
+            case withChartWorkloadResource plan (Teardown.localWorkOperationKey local) $ \chart -> do
+                let planDigest = stablePlanSnapshotDigest (renderSnapshot plan)
+                    frame = ProjectPlan.chartWorkloadResourceFrame chart
+                    resource = ProjectPlan.chartWorkloadResourceKey chart
+                case resourceRecordKey planDigest frame resource of
+                    Left failure -> pure (Step.TeardownFailed (show failure))
+                    Right recordName ->
+                        case mkRecordKey recordName of
+                            Left failure -> pure (Step.TeardownFailed (T.unpack (protectedErrorMessage failure)))
+                            Right recordKey -> do
+                                opened <- withProtectedEntry protected $ \session -> readProtectedRecord session recordKey
+                                case opened of
+                                    Left failure -> pure (Step.TeardownFailed (T.unpack (protectedErrorMessage failure)))
+                                    Right Nothing -> pure (Step.TeardownForeignRetained "the exact chart ownership record is absent")
+                                    Right (Just record) ->
+                                        case verifyProjectChartResourceRecordBundle plan chart (protectedRecordBytes record) of
+                                            Left failure -> pure (Step.TeardownFailed (show failure))
+                                            Right bundle -> do
+                                                cleaned <- runVerifiedChartWorkloadCleanupCall cfg chart bundle
+                                                pure (either (Step.TeardownFailed . show) (const Step.TeardownReleased) cleaned)
+             of
+                Left _ -> pure (Step.TeardownForeignRetained "the core-managed node has no chart cleanup projection")
+                Right cleanup -> cleanup
+
+        guardedReverse effect = do
+            attempted <- try effect
+            pure $ case attempted of
+                Right outcome -> outcome
+                Left exc -> Step.TeardownFailed (displayException (exc :: SomeException))
 
     {- Run the verb's reverse projection of the same validated plan (§ W).
 
@@ -1471,7 +1643,7 @@ projectCommandGroup project finalizedSpec progName initBuilder =
     @PreserveOnReverse@ step (the durable host root) never enters either
     projection at all, which is the whole of the never-delete-@.data@ invariant.
     -}
-    reverseProjection ::
+    _reverseProjection ::
         forall rootId spec planId configId frame verb.
         ProjectPlan (V.Production projectId) spec planId configId cfg ->
         CurrentFrame (V.Production projectId) planId frame ->
@@ -1480,7 +1652,7 @@ projectCommandGroup project finalizedSpec progName initBuilder =
         HostConfig ->
         Authority.ProjectVerb verb ->
         IO ()
-    reverseProjection plan currentFrame root ctx cfg verb = do
+    _reverseProjection plan currentFrame root ctx cfg verb = do
         let projection = Teardown.teardownPlan plan currentFrame verb
         self <- currentSelfRef ("/usr/local/bin/" ++ progName)
         descended <- newIORef Nothing
@@ -1498,7 +1670,7 @@ projectCommandGroup project finalizedSpec progName initBuilder =
                         (\_ -> descendCurrent self descended current)
                         (\_ -> ordinaryReverse)
                         (\_ -> descentReverse self descended current)
-                        announce
+                        _announce
                 case driven of
                     Left outstanding ->
                         die
@@ -1605,30 +1777,13 @@ projectCommandGroup project finalizedSpec progName initBuilder =
                 pure (Left (invalidDescentDetail "the descent parent is not this opening frame"))
             | otherwise =
                 Teardown.withDescentWorkSubtree descent $ \childProjection ->
-                    if
-                        Teardown.teardownPlanFrameId childProjection
-                            /= Teardown.descentWorkChildFrame descent
-                        then
-                            pure
-                                ( Left
-                                    ( invalidDescentDetail
-                                        "the retained child projection does not match the descent edge"
-                                    )
-                                )
+                    if Teardown.teardownPlanFrameId childProjection /= Teardown.descentWorkChildFrame descent
+                        then pure (Left (invalidDescentDetail "the retained child projection does not match the descent edge"))
                         else do
-                            raw <-
-                                descendOnce
-                                    self
-                                    descended
-                                    (Teardown.descentWorkParentFrame descent)
-                                    (Teardown.descentWorkChildFrame descent)
-                            pure
-                                ( Left
-                                    ( rawChildProofRefusal
-                                        (Teardown.descentWorkChildFrame descent)
-                                        raw
-                                    )
-                                )
+                            raw <- descendOnce self descended
+                                (Teardown.descentWorkParentFrame descent)
+                                (Teardown.descentWorkChildFrame descent)
+                            pure (Left (rawChildProofRefusal (Teardown.descentWorkChildFrame descent) raw))
 
         descendCurrent self descended current = case nextFrameAfter (topology plan) current of
             Nothing ->
@@ -1736,7 +1891,7 @@ projectCommandGroup project finalizedSpec progName initBuilder =
     {- One structured row per node of the reverse projection (§ Y). The five
     outcomes stay distinct because an operator resolves them differently, and
     because the test harness's report card consumes exactly these rows. -}
-    announce key outcome = case outcome of
+    _announce key outcome = case outcome of
         Step.TeardownReleased -> putStrLn ("project teardown: released " ++ T.unpack key)
         Step.TeardownForeignRetained detail ->
             putStrLn ("project teardown: retained " ++ T.unpack key ++ " — " ++ detail)
@@ -1778,11 +1933,27 @@ The returned failure is still descriptive rather than authorizing.  Callers
 decide whether it is a Production command failure or a Harness report outcome;
 neither can replace any of the indexed evidence consumed here.
 -}
+runFailedDeclared ::
+    HostConfig ->
+    Teardown.LocalWork scope planId frame Authority.VerbUp ->
+    IO Step.TeardownOutcome
+runFailedDeclared cfg local =
+    case Teardown.localWorkRun local of
+        Just declared -> do
+            attempted <- try (declared cfg (Teardown.localWorkAction local))
+            pure $ case attempted of
+                Right outcome -> outcome
+                Left exc -> Step.TeardownFailed (displayException (exc :: SomeException))
+        Nothing -> pure (Step.TeardownForeignRetained "the node acquired nothing this frame must release")
+
 runExactProjectUp ::
     forall scope specDigest planDigest planId configId cfg frame brokerGeneration.
     (ProjectCfg cfg) =>
     HostConfig ->
     SelfRef ->
+    HandoffScope scope ->
+    IO (Either String ProjectSigningKey) ->
+    (forall localPlanId localFrame. Teardown.LocalWork scope localPlanId localFrame Authority.VerbUp -> IO Step.TeardownOutcome) ->
     FinalizedProjectSpec scope specDigest cfg ->
     Authority.RootInvocationAuthority scope brokerGeneration Authority.VerbUp ->
     BoundRunLease scope specDigest planDigest brokerGeneration ->
@@ -1792,7 +1963,7 @@ runExactProjectUp ::
     ProjectPlan scope specDigest planId configId cfg ->
     LifecycleContext.ValidatedLifecycleContext scope specDigest planId configId frame ->
     IO (Either String ())
-runExactProjectUp cfg self exactSpec rootAuthority lease verified bound binding plan lifecycleContext =
+runExactProjectUp cfg self handoffScope loadSigningKey runFailedLocal exactSpec rootAuthority lease verified bound binding plan lifecycleContext =
     withRootProjectUpLifecycleEntry
         exactSpec
         rootAuthority
@@ -1803,7 +1974,13 @@ runExactProjectUp cfg self exactSpec rootAuthority lease verified bound binding 
         lease
         plan
         lifecycleContext
-        (runRootProjectUpLifecycleEntry cfg self)
+        (runRootProjectUpLifecycleEntry cfg self handoffScope loadSigningKey runFailedLocal)
+
+loadForwardSigningKey :: IO (Either String ProjectSigningKey)
+loadForwardSigningKey = do
+    executable <- getExecutablePath
+    fmap (either (Left . handoffErrorMessage) Right)
+        (installedProjectSigningKey (executable <> ".handoff.key"))
 
 {- | Drive one exact Harness destroy projection and return its settled proof.
 
@@ -1823,6 +2000,7 @@ runExactDestroyProjection ::
     IO (Teardown.DestroySettled scope planId)
 runExactDestroyProjection progName plan currentFrame root ctx cfg = do
     let projection = Teardown.teardownPlan plan currentFrame verb
+    store <- openHarnessAuthorityStore root
     self <- currentSelfRef ("/usr/local/bin/" ++ progName)
     descended <- newIORef Nothing
     let current = currentFrameId currentFrame
@@ -1835,7 +2013,7 @@ runExactDestroyProjection progName plan currentFrame root ctx cfg = do
         Teardown.driveTeardownForest
             opened
             (\_ -> descendCurrent self descended current)
-            (\_ -> ordinaryReverse)
+            (\_ -> ordinaryReverse store)
             (\_ -> descentReverse self descended current)
             announce
     completed <-
@@ -1870,18 +2048,15 @@ runExactDestroyProjection progName plan currentFrame root ctx cfg = do
     verb = Authority.ProjectDestroy
 
     ordinaryReverse ::
+        ProtectedStore ->
         Teardown.LocalWork scope planId frame Authority.VerbDestroy ->
         IO Step.TeardownOutcome
-    ordinaryReverse local =
+    ordinaryReverse store local =
         case (Teardown.localWorkRun local, Teardown.localWorkPolicy local) of
             (Just declared, _) ->
                 guardedReverse (declared cfg (Teardown.localWorkAction local))
             (Nothing, Step.CoreManagedReverse) ->
-                guardedReverse
-                    ( coreManaged
-                        (Teardown.localWorkKey local)
-                        (Teardown.localWorkAction local)
-                    )
+                coreManaged store local
             (Nothing, _) ->
                 pure
                     ( Step.TeardownForeignRetained
@@ -1994,7 +2169,17 @@ runExactDestroyProjection progName plan currentFrame root ctx cfg = do
             Right outcome -> outcome
             Left exc -> Step.TeardownFailed (displayException (exc :: SomeException))
 
-    coreManaged _key reverseAction = case reverseAction of
+    openHarnessAuthorityStore projectRoot = do
+        opened <-
+            openProtectedStore
+                ( canonicalProjectRootPath projectRoot
+                    </> ".hostbootstrap"
+                    </> "authority"
+                    </> progName
+                )
+        either (die . T.unpack . protectedErrorMessage) pure opened
+
+    coreManaged store local = case Teardown.localWorkAction local of
         Step.DeleteCluster
             | currentFrameOwnsCluster ctx plan -> do
                 withCurrentDirectory
@@ -2008,7 +2193,30 @@ runExactDestroyProjection progName plan currentFrame root ctx cfg = do
                             ++ T.unpack (Context.currentFrame ctx)
                         )
                     )
-        _ -> pure (Step.TeardownForeignRetained "released with the cluster that contains it")
+        _ ->
+            case withChartWorkloadResource plan (Teardown.localWorkOperationKey local) $ \chart -> do
+                let planDigest = stablePlanSnapshotDigest (renderSnapshot plan)
+                    chartFrame = ProjectPlan.chartWorkloadResourceFrame chart
+                    resource = ProjectPlan.chartWorkloadResourceKey chart
+                case resourceRecordKey planDigest chartFrame resource of
+                    Left failure -> pure (Step.TeardownFailed (show failure))
+                    Right recordName ->
+                        case mkRecordKey recordName of
+                            Left failure -> pure (Step.TeardownFailed (T.unpack (protectedErrorMessage failure)))
+                            Right recordKey -> do
+                                opened <- withProtectedEntry store $ \session -> readProtectedRecord session recordKey
+                                case opened of
+                                    Left failure -> pure (Step.TeardownFailed (T.unpack (protectedErrorMessage failure)))
+                                    Right Nothing -> pure (Step.TeardownForeignRetained "the exact chart ownership record is absent")
+                                    Right (Just record) ->
+                                        case verifyProjectChartResourceRecordBundle plan chart (protectedRecordBytes record) of
+                                            Left failure -> pure (Step.TeardownFailed (show failure))
+                                            Right bundle -> do
+                                                cleaned <- runVerifiedChartWorkloadCleanupCall cfg chart bundle
+                                                pure (either (Step.TeardownFailed . show) (const Step.TeardownReleased) cleaned)
+             of
+                Left _ -> pure (Step.TeardownForeignRetained "the core-managed node has no chart cleanup projection")
+                Right cleanup -> cleanup
 
     announce key outcome = case outcome of
         Step.TeardownReleased -> putStrLn ("project teardown: released " ++ T.unpack key)
@@ -2051,7 +2259,6 @@ config — fails fast. It then reads the variant from the project's
 -}
 serviceCommandGroup ::
     forall cfg configScope specDigest.
-    (ProjectCfg cfg) =>
     ProjectCodec configScope specDigest cfg ->
     String ->
     FinalizedServiceRegistry configScope specDigest (cfg configScope) ->
@@ -2090,50 +2297,59 @@ serviceCommandGroup codec progName registry initBuilder =
         putStrLn (T.unpack (projectCodecSchemaText codec))
         putStrLn ""
         putStrLn (T.unpack (serviceRoleSchemaFamilies registry))
-    runServiceRun =
-        withSiblingValidatedProjectConfigContext codec (T.pack progName) Context.ServiceCommand [] $ \wire validated serviceCtx -> do
-            let projectCfg = validatedConfigValue validated
-            unless (Context.contextKind serviceCtx `elem` [Context.ClusterService, Context.Daemon]) $
+    runServiceRun = do
+        revisionPath <- requiredAbsoluteRuntimePath "HOSTBOOTSTRAP_SERVICE_ACTIVATION"
+        keyPath <- requiredAbsoluteRuntimePath "HOSTBOOTSTRAP_ACTIVATION_KEY"
+        authorityPath <- requiredAbsoluteRuntimePath "HOSTBOOTSTRAP_AUTHORITY_STORE"
+        revision <- either (die . serviceRuntimePrefix . serviceActivationErrorMessage) pure (serviceActivationRevision revisionPath)
+        keyBytes <- ByteString.readFile keyPath
+        verification <-
+            either
+                (die . serviceRuntimePrefix . show)
+                pure
+                (activationVerificationKeyFromBytes keyBytes)
+        opened <- openProtectedStore authorityPath
+        store <- either (die . serviceRuntimePrefix . T.unpack . protectedErrorMessage) pure opened
+        executable <- getExecutablePath
+        binaryDigest <- hashFile executable
+        instanceIdentity <- measuredServiceInstance
+        outcome <-
+            runInstalledServiceProgram
+                store
+                verification
+                revision
+                binaryDigest
+                instanceIdentity
+                (runIdentity (Dhall.rootDirectory (const (Identity revisionPath)) Dhall.defaultInputSettings))
+                registry
+        report <- either (die . serviceRuntimePrefix . serviceRuntimeErrorMessage) pure outcome
+        putStrLn (renderRoleExitReport report)
+        unless (roleExitReportOk report) (die "service run: the verified role lifecycle did not exit cleanly")
+
+    serviceRuntimePrefix detail = "service run: " ++ detail
+
+    requiredAbsoluteRuntimePath name = do
+        coordinate <- lookupEnv name
+        case coordinate of
+            Just path | isAbsolute path -> pure path
+            Just _ -> die ("service run: " ++ name ++ " must be an absolute path")
+            Nothing -> die ("service run: missing platform runtime coordinate " ++ name)
+
+    hashFile path = do
+        bytes <- ByteString.readFile path
+        pure (T.pack (show (Hash.hash bytes :: Hash.Digest Hash.SHA256)))
+
+    measuredServiceInstance = do
+        podUid <- lookupEnv "HOSTBOOTSTRAP_POD_UID"
+        restartCount <- lookupEnv "HOSTBOOTSTRAP_CONTAINER_RESTART_COUNT"
+        hostNonce <- lookupEnv "HOSTBOOTSTRAP_SERVICE_INVOCATION_NONCE"
+        case (podUid, restartCount, hostNonce) of
+            (Just uid, Just rawCount, Nothing)
+                | Just count <- readMaybe rawCount -> pure (KubernetesInstance (T.pack uid) count)
+            (Nothing, Nothing, Just nonce) -> pure (HostServiceInstance (T.pack nonce))
+            _ ->
                 die
-                    ( "service run: contextKind "
-                        ++ show (Context.contextKind serviceCtx)
-                        ++ " is not a service leaf; expected ClusterService or Daemon"
-                    )
-            (identity, declared, serviceAction) <-
-                either
-                    (die . ("service run: " ++))
-                    pure
-                    ( withSelectedServiceRequest
-                        (verifiedConfigDigest wire)
-                        (inspectLocalContext serviceCtx)
-                        projectCfg
-                        registry
-                        ( \selectedIdentity _ _ declaredEffects serviceEffect ->
-                            (selectedIdentity, declaredEffects, serviceEffect)
-                        )
-                    )
-            putStrLn ("service run: selected " ++ serviceIdText identity)
-            -- The row the registry fixed for this variant. Once the deploy step
-            -- installs a signed activation, this is exactly the row
-            -- 'authorizeServiceEffects' compares against the placement's signed
-            -- ceiling; printing it now means the declaration is observable
-            -- before the authorization that will consume it exists.
-            putStrLn
-                ( "service run: declared effects "
-                    ++ renderDeclaredEffects declared
-                )
-            serviceAction
-
-{- | Render a declared effect row for the operator.
-
-An empty row is spelled out rather than printed as @[]@: "this role declares no
-effects" is a real and meaningful declaration — it is the one that drops its
-ceiling's lease requirement — and it should not read like missing output.
--}
-renderDeclaredEffects :: [RoleEffect] -> String
-renderDeclaredEffects [] = "(none)"
-renderDeclaredEffects effects =
-    intercalate ", " (map (T.unpack . roleEffectName) effects)
+                    "service run: supply exactly Kubernetes pod UID plus restart count, or one host-service invocation nonce"
 
 hostConfig :: IO HostConfig
 hostConfig = do

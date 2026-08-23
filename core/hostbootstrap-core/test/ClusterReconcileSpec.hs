@@ -2,10 +2,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
-module ClusterReconcileSpec (tests, FixtureScope, withClusterFixtureM, withHarnessClusterFixtureM, withPlannedClusterFixture) where
+module ClusterReconcileSpec (tests, FixtureScope, withClusterFixtureM, withNvkindClusterFixtureM, withHarnessClusterFixtureM, withPlannedClusterFixture, withChartWorkloadFixture) where
 
 import Data.List.NonEmpty (NonEmpty (..))
-import Data.List (isSuffixOf)
+import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
+import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.Text as Text
 import Data.Foldable (find)
 import qualified Data.Map.Strict as Map
@@ -24,7 +25,7 @@ import HostBootstrap.Cluster.Reconcile
 import HostBootstrap.Config.Vocab (Harness, Production)
 import HostBootstrap.Context (ResourceEnvelope (..))
 import HostBootstrap.HostConfig (HostConfig (..))
-import HostBootstrap.HostTool (AbsExe, HostTool (Docker, Kind, Kubectl, Python3), mkAbsExe)
+import HostBootstrap.HostTool (AbsExe, HostTool (Docker, Helm, Kind, Kubectl, Nvkind), mkAbsExe)
 import qualified HostBootstrap.Lifecycle.Execution as Execution
 import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 import HostBootstrap.Lift (localContext)
@@ -38,16 +39,24 @@ import HostBootstrap.Protected (
     readProtectedRecord,
     withProtectedEntry,
  )
+import HostBootstrap.Cluster.Lifecycle
+    ( ClusterDriver (..)
+    , planOwnedClusterDurableRoot
+    , planOwnedClusterName
+    , withPlanOwnedCluster
+    , withPlanOwnedClusterConfig
+    )
+import HostBootstrap.Handoff (childConfigDigest)
 import HostBootstrap.Reconcile
 import HostBootstrap.Substrate (Arch (Arm64), Substrate (..), SubstrateName (LinuxCpu))
 import HostBootstrap.Substrate.Provider.Backend
 import HostBootstrap.Substrate.Provider.Reconcile
 import HostBootstrap.Step
 import PrepareFixture (gateFor)
-import System.Directory (canonicalizePath, createDirectory, createDirectoryIfMissing)
+import System.Directory (canonicalizePath, createDirectory)
 import System.Environment (getExecutablePath)
 import System.IO.Temp (withSystemTempDirectory)
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -113,6 +122,19 @@ type ClusterPlanPreparedConsumer summary =
         journalVersion ->
     IO (Either ReconcileError summary)
 
+type ChartWorkloadFixtureConsumer summary =
+    forall projectId specDigest planId configId clusterId clusterFrame chartId chartFrame budgetId capabilityId wallSpecId workloadSetId partitionId readinessPhase.
+    ProjectPlan.ProjectPlan (Production projectId) specDigest planId configId Fixture.ProjectConfig ->
+    PlannedResource (Production projectId) planId clusterId ClusterResource clusterFrame ->
+    ProjectPlan.ChartWorkloadResource (Production projectId) planId chartId chartFrame ->
+    PlannedWorkloadSet (Production projectId) planId workloadSetId ->
+    BudgetPartition (Production projectId) planId budgetId LimaProvider capabilityId wallSpecId workloadSetId partitionId ->
+    Execution.StepExecution (Production projectId) planId ->
+    ClusterReadiness (Production projectId) planId clusterId readinessPhase ->
+    StrongClusterBackend ->
+    FilePath ->
+    IO (Either ReconcileError summary)
+
 type HarnessClusterPreparedConsumer summary =
     forall projectId runId specDigest planId configId clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion.
     PreparedClusterReconcile
@@ -162,17 +184,55 @@ packageCases =
         , testCase "Production preparation binds the exact plan-derived config digest" $
             withClusterFixture (\prepared -> pure (Right (preparedClusterConfigPath prepared, preparedClusterConfigDigest prepared))) >>= \case
                 Right (Just path, Just digest) -> do
-                    assertBool "config path is kind.yaml" ("kind.yaml" `isSuffixOf` path)
+                    assertBool "config path is the driver-owned config.yaml" ("cluster/kind/config.yaml" `isSuffixOf` path)
                     assertBool "SHA-256 is lowercase hex" (Text.length digest == 64)
                 other -> assertFailure ("expected a bound config path/digest, got " ++ show other)
-        , testCase "a real Harness plan retains its run key and omits Production config/ports" $
+        , testCase "preparation retains the closed driver, canonical bytes, mappings, ports, and workload slice" $
+            withClusterFixture
+                ( \prepared ->
+                    pure
+                        ( Right
+                            ( preparedClusterDriver prepared
+                            , preparedClusterConfigBytes prepared
+                            , preparedClusterLoopbackPorts prepared
+                            , preparedClusterNodeMappings prepared
+                            , preparedClusterWorkloadSlice prepared
+                            )
+                        )
+                )
+                >>= \case
+                    Right (KindDriver, bytes, [("registry", 30500)], [("control-plane", node)], ["core:deploy-chart"]) -> do
+                        bytes @?= ByteStringChar8.pack "kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\n"
+                        assertBool "the node mapping lost the plan-owned cluster identity" ("-control-plane" `Text.isSuffixOf` node)
+                    other -> assertFailure ("expected complete exact cluster config retention, got " ++ show other)
+        , testCase "the config binder is closed over both drivers and every independent mismatch" $ do
+            lifecycleSource <- readFile "src/HostBootstrap/Cluster/Lifecycle.hs"
+            reconcileSource <- readFile "src/HostBootstrap/Cluster/Reconcile.hs"
+            let requiredBinderChecks =
+                    [ "KindDriver -> \"kind\""
+                    , "NvkindDriver -> \"nvkind\""
+                    , "the canonical cluster config digest disagrees with its bytes"
+                    , "the cluster state path disagrees with the plan-owned durable root and driver"
+                    , "the cluster config path disagrees with the plan-owned durable root and driver"
+                    , "the loopback publication set contains a duplicate"
+                    , "the loopback publication set contains an out-of-range port"
+                    , "the node mapping disagrees with the closed driver"
+                    , "the workload slice is empty or contains a duplicate"
+                    ]
+            assertBool "the opaque binder lost a closed driver or refusal" (all (`isInfixOf` lifecycleSource) requiredBinderChecks)
+            assertBool
+                "cluster preparation reconstructed raw plan/config inputs"
+                ( "withPreparedClusterReconcile ::\n    PlanOwnedClusterConfig" `isInfixOf` reconcileSource
+                    && not ("prepareClusterConfig ::" `isInfixOf` reconcileSource)
+                )
+        , testCase "a real Harness plan retains its run key and exact isolated config" $
             harnessPackageSummary >>= \case
                 Right (profileName, name, durableRoot, configPath, ports) -> do
                     assertBool "fixture admitted a real Harness profile" ("harness:run-" `Text.isPrefixOf` profileName)
                     let runKey = Text.drop (Text.length "harness:") profileName
                     assertBool "cluster name retains the exact Harness run key" (Text.unpack runKey `isSuffixOf` name)
                     assertBool "durable root retains the exact Harness run key" (Text.unpack runKey `isSuffixOf` durableRoot)
-                    configPath @?= Nothing
+                    assertBool "Harness config is beneath its isolated durable root" (maybe False (durableRoot `isPrefixOf`) configPath)
                     ports @?= False
                 other -> assertFailure ("expected exact Harness package, got " ++ show other)
         , testCase "the exact provider probe is run internally before preparation is offered" $
@@ -258,6 +318,10 @@ inFrameReconcileCases =
                     replacementConflicted @?= True
                     probeFailed @?= True
                 other -> assertFailure ("expected fresh backend-bound readiness results, got " ++ show other)
+        , testCase "the lexical readiness opener enters only after its own fresh observation" $
+            withClusterFixture freshReadinessContinuationCase >>= \case
+                Right (Right True, Left (Failure _)) -> pure ()
+                other -> assertFailure ("expected one fresh continuation and one refusal, got " ++ show other)
         , testCase "cleanup retains the exact package and refuses a replacement" $
             withClusterFixture cleanupCases >>= \case
                 Right (removed, replaced) -> do
@@ -500,6 +564,17 @@ freshReadinessReprobeCases prepared =
                             _ -> False
                     pure (Right (versionAdvanced, unreadyFailed, replacementConflicted, probeFailed))
 
+freshReadinessContinuationCase ::
+    PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
+    IO (Either ReconcileError (Either ReconcileError Bool, Either ReconcileError Bool))
+freshReadinessContinuationCase prepared =
+    withClusterClient prepared $ \backend root ->
+        withAppliedFixtureCordon backend prepared $ \applied -> do
+            entered <- withFreshClusterReadiness applied (runClusterReadinessCall backend applied) (const True)
+            setNodesRunning root False
+            refused <- withFreshClusterReadiness applied (runClusterReadinessCall backend applied) (const True)
+            pure (Right (entered, refused))
+
 createdIdentityWins ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
     IO (Either ReconcileError (Word64, Word64, Word64))
@@ -571,6 +646,33 @@ withAppliedFixtureCordon ::
 withAppliedFixtureCordon backend prepared consume =
     withCordonAndApplied backend prepared (\_cordon applied -> consume applied)
 
+withAppliedFixtureSettlement ::
+    StrongClusterBackend ->
+    PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
+    ( ManagedClusterHandle scope planId clusterId Provisioned ->
+      OwnershipReceipt scope planId clusterId ClusterResource ->
+      AppliedClusterCordon scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId Provisioned ->
+      IO (Either ReconcileError result)
+    ) ->
+    IO (Either ReconcileError result)
+withAppliedFixtureSettlement backend prepared consume = do
+    createdResult <- runClusterReconcileCall backend prepared
+    case settleClusterReconcile Nothing prepared createdResult of
+        Left err -> pure (Left err)
+        Right created ->
+            withClusterReconcileSettlement
+                created
+                ( \managed receipt _ ->
+                    case withPreparedClusterCordon prepared managed id of
+                        Left err -> pure (Left err)
+                        Right cordon -> do
+                            cordonResult <- runClusterCordonCall backend cordon
+                            case settleClusterCordon cordon cordonResult of
+                                Left err -> pure (Left err)
+                                Right applied -> consume managed receipt applied
+                )
+                (\_ _ _ _ -> pure (Left (fixtureFailure "created cluster became foreign")))
+
 {- | The same, keeping the prepared cordon a second application can be run from. -}
 withCordonAndApplied ::
     StrongClusterBackend ->
@@ -619,7 +721,7 @@ withClusterClient prepared consume =
         root <- canonicalizePath temporary
         _ <- FakeCluster.newClusterFixture root (preparedClusterNodeNames prepared)
         self <- getExecutablePath
-        discovered <- discoverStrongClusterBackend (clusterClientHostConfig self)
+        discovered <- withPreparedPlanOwnedClusterConfig prepared (discoverStrongClusterBackend (clusterClientHostConfig self))
         case discovered of
             Left err -> pure (Left err)
             Right backend ->
@@ -634,6 +736,8 @@ clusterClientHostConfig self =
                 [ (Kind, fixtureExe self)
                 , (Docker, fixtureExe self)
                 , (Kubectl, fixtureExe self)
+                , (Helm, fixtureExe self)
+                , (Nvkind, fixtureExe self)
                 ]
         }
 
@@ -728,6 +832,12 @@ withClusterFixtureM ::
 withClusterFixtureM =
     withClusterFixtureUsingM ReprobeAnswers
 
+withNvkindClusterFixtureM ::
+    ClusterPreparedConsumer summary ->
+    IO (Either ReconcileError summary)
+withNvkindClusterFixtureM consume =
+    withClusterFixtureUsingPlanDriverM NvkindDriver ReprobeAnswers (\_plan prepared -> consume prepared)
+
 withClusterPlanFixtureM ::
     ClusterPlanPreparedConsumer summary ->
     IO (Either ReconcileError summary)
@@ -774,6 +884,58 @@ withClusterFixture ::
     IO (Either ReconcileError summary)
 withClusterFixture = withClusterFixtureM
 
+withChartWorkloadFixture ::
+    ChartWorkloadFixtureConsumer summary ->
+    IO (Either ReconcileError summary)
+withChartWorkloadFixture consume =
+    Fixture.withFixtureProjectPlan chartWorkloadPlan $ \plan -> do
+        let planDigest = ProjectPlan.stablePlanSnapshotDigest (ProjectPlan.renderSnapshot plan)
+        providerGate <- gateFor planDigest "core:deploy-vm"
+        clusterGate <- gateFor planDigest "core:deploy-kind"
+        providerKey <- requireOperationKey "core:deploy-vm" plan
+        clusterKey <- requireOperationKey "core:deploy-kind" plan
+        chartKey <- requireOperationKey "core:deploy-chart" plan
+        projected <-
+            requirePlanProjection $
+                joinProject $
+                    ProjectPlan.withPlannedResourceOfKind plan ProjectPlan.ProviderResourceKind providerKey $ \provider ->
+                        joinProject $
+                            ProjectPlan.withPlannedResourceOfKind plan ProjectPlan.ClusterResourceKind clusterKey $ \cluster ->
+                                ProjectPlan.withChartWorkloadResource plan chartKey $ \chart ->
+                                    prepareExactFixtureWithDriver KindDriver ReprobeAnswers providerGate clusterGate plan provider cluster $ \workloads partition prepared ->
+                                        withClusterClient prepared $ \backend root ->
+                                            withAppliedFixtureSettlement backend prepared $ \managed receipt applied -> do
+                                                carrier <- Execution.newResourceCarrier
+                                                runtime <- Execution.newStepRuntime carrier
+                                                self <- getExecutablePath
+                                                clusterNode <- requireNode "core:deploy-kind" plan
+                                                chartNode <- requireNode "core:deploy-chart" plan
+                                                let executionHostConfig = clusterClientHostConfig self
+                                                    clusterExecution = stepExecutionFor plan executionHostConfig runtime clusterNode
+                                                    chartExecution = stepExecutionFor plan executionHostConfig runtime chartNode
+                                                    scopeCommitment = "fixture-chart-successor"
+                                                    route = "runtime://cluster/fixture"
+                                                carried <- carryClusterReconcileSettlement clusterExecution managed receipt
+                                                case carried of
+                                                    Left err -> pure (Left err)
+                                                    Right () -> do
+                                                        fresh <- withFreshClusterReadiness applied (runClusterReadinessCall backend applied) $ \readiness -> do
+                                                            registered <- registerClusterRuntimeDependencyPackage backend clusterExecution scopeCommitment clusterGate applied readiness route 100
+                                                            case registered of
+                                                                Left err -> pure (Left err)
+                                                                Right _ -> do
+                                                                    successor <-
+                                                                        withFreshClusterRuntimeDependency chartExecution scopeCommitment cluster (Text.pack (ProjectPlan.operationKeyText clusterKey)) route 1 "fixture-readiness-nonce" $ \recovered ->
+                                                                            consume plan cluster chart workloads partition chartExecution recovered backend root
+                                                                    either (pure . Left) id successor
+                                                        either (pure . Left) id fresh
+        projected
+  where
+    joinProject = either Left id
+    requireNode key plan =
+        maybe (fail ("chart fixture lacks node " <> key)) pure
+            (find ((== key) . ProjectPlan.operationKeyText . ProjectPlan.plannedStepOperationKey) (ProjectPlan.forward plan))
+
 withClusterFixtureUsing ::
     ProviderReprobe ->
     ClusterPreparedConsumer summary ->
@@ -792,6 +954,14 @@ withClusterFixtureUsingPlanM ::
     ClusterPlanPreparedConsumer summary ->
     IO (Either ReconcileError summary)
 withClusterFixtureUsingPlanM providerReprobe consume =
+    withClusterFixtureUsingPlanDriverM KindDriver providerReprobe consume
+
+withClusterFixtureUsingPlanDriverM ::
+    ClusterDriver ->
+    ProviderReprobe ->
+    ClusterPlanPreparedConsumer summary ->
+    IO (Either ReconcileError summary)
+withClusterFixtureUsingPlanDriverM driver providerReprobe consume =
     Fixture.withFixtureProjectPlan testPlan $ \plan -> do
         let planDigest = ProjectPlan.stablePlanSnapshotDigest (ProjectPlan.renderSnapshot plan)
         providerGate <- gateFor planDigest "core:deploy-vm"
@@ -810,14 +980,15 @@ withClusterFixtureUsingPlanM providerReprobe consume =
                             ProjectPlan.ClusterResourceKind
                             clusterKey
                             ( \cluster ->
-                                prepareExactFixture
+                                prepareExactFixtureWithDriver
+                                    driver
                                     providerReprobe
                                     providerGate
                                     clusterGate
                                     plan
                                     provider
                                     cluster
-                                    (consume plan)
+                                    (\_ _ prepared -> consume plan prepared)
                             )
                     )
         action <- requirePlanProjection projected
@@ -855,11 +1026,44 @@ prepareExactFixture ::
     ) ->
     IO (Either ReconcileError summary)
 prepareExactFixture providerReprobe providerGate clusterGate plan provider cluster consume =
+    prepareExactFixtureWithDriver KindDriver providerReprobe providerGate clusterGate plan provider cluster (\_ _ prepared -> consume prepared)
+
+prepareExactFixtureWithDriver ::
+    ClusterDriver ->
+    ProviderReprobe ->
+    PreparedGate ->
+    PreparedGate ->
+    ProjectPlan.ProjectPlan scope specDigest planId configId Fixture.ProjectConfig ->
+    PlannedResource scope planId providerId ProviderResource providerFrame ->
+    PlannedResource scope planId clusterId ClusterResource clusterFrame ->
+    ( forall budgetId capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion.
+      PlannedWorkloadSet scope planId workloadSetId ->
+      BudgetPartition scope planId budgetId LimaProvider capabilityId wallSpecId workloadSetId partitionId ->
+      PreparedClusterReconcile
+        scope
+        specDigest
+        planId
+        configId
+        Fixture.ProjectConfig
+        clusterId
+        clusterFrame
+        providerId
+        providerFrame
+        budgetId
+        LimaProvider
+        capabilityId
+        wallSpecId
+        workloadSetId
+        partitionId
+        operationKey
+        callDigest
+        attempt
+        journalVersion ->
+      IO (Either ReconcileError summary)
+    ) ->
+    IO (Either ReconcileError summary)
+prepareExactFixtureWithDriver driver providerReprobe providerGate clusterGate plan provider cluster consume =
     withRunningProviderDependencyFixture providerReprobe providerGate plan provider $ \runningProvider -> do
-        let root = ProjectPlan.stablePlanSnapshotRoot (ProjectPlan.renderSnapshot plan)
-            configPath = root </> "kind.yaml"
-        createDirectoryIfMissing True (takeDirectory configPath)
-        writeFile configPath "kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\n"
         workload <- requireBudget (mkWorkload cluster 1 1 gib gib)
         overhead <- requireString (mkResourceBudget 1 gib gib)
         sliceBudget <- requireString (mkResourceBudget 6 (10 * gib) (80 * gib))
@@ -877,20 +1081,37 @@ prepareExactFixture providerReprobe providerGate clusterGate plan provider clust
                                             joinBudget $
                                                 withBudgetPartition effective fit overhead (request :| []) $ \_partition slices ->
                                                     withResourceSliceFor cluster slices $ \slice ->
-                                                        withPreparedClusterReconcile
-                                                            plan
-                                                            cluster
-                                                            provider
-                                                            (ProjectPlan.topology plan)
-                                                            slice
-                                                            runningProvider
-                                                            clusterGate
-                                                            consume
+                                                        case withPlanOwnedCluster plan cluster provider (ProjectPlan.topology plan) slice of
+                                                            Left packageError -> pure (Left (fixtureFailure (Text.pack (show packageError))))
+                                                            Right base -> do
+                                                                let bytes = ByteStringChar8.pack "kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\n"
+                                                                    durableRoot = planOwnedClusterDurableRoot base
+                                                                    driverName = case driver of KindDriver -> "kind"; NvkindDriver -> "nvkind"
+                                                                    statePath = durableRoot </> "cluster" </> driverName </> "state"
+                                                                    configPath = durableRoot </> "cluster" </> driverName </> "config.yaml"
+                                                                    mappings = case driver of
+                                                                        KindDriver -> [("control-plane", Text.pack (planOwnedClusterName base ++ "-control-plane"))]
+                                                                        NvkindDriver -> [("control-plane", Text.pack (planOwnedClusterName base ++ "-control-plane")), ("worker", Text.pack (planOwnedClusterName base ++ "-worker"))]
+                                                                    bound =
+                                                                        withPlanOwnedClusterConfig
+                                                                            base
+                                                                            driver
+                                                                            bytes
+                                                                            (childConfigDigest bytes)
+                                                                            statePath
+                                                                            configPath
+                                                                            [("registry", 30500)]
+                                                                            mappings
+                                                                            ["core:deploy-chart"]
+                                                                            id
+                                                                case bound of
+                                                                    Left packageError -> pure (Left (fixtureFailure (Text.pack (show packageError))))
+                                                                    Right configured -> do
+                                                                        prepared <- withPreparedClusterReconcile configured runningProvider clusterGate (consume workloads _partition)
+                                                                        either (pure . Left) id prepared
         case budgetAction of
             Left err -> pure (Left (fixtureFailure (Text.pack (show err))))
-            Right action -> do
-                prepared <- action
-                either (pure . Left) id prepared
+            Right action -> action
 
 {- | Whether the provider's egress probe still answers when it is reprobed.
 
@@ -986,7 +1207,6 @@ withProviderHostConfig reprobe use =
         root <- canonicalizePath temporary
         let admissible = root </> "data"
         createDirectory admissible
-        python <- Fixture.newFakeTool root "python3" ""
         docker <- case reprobe of
             ReprobeAnswers -> Fixture.newFakeTool root "docker" "{}"
             ReprobeStopsAnswering ->
@@ -996,8 +1216,7 @@ withProviderHostConfig reprobe use =
                 { hcSubstrate = Substrate LinuxCpu Arm64
                 , hcToolPaths =
                     Map.fromList
-                        [ (Python3, fixtureExe python)
-                        , (Docker, fixtureExe docker)
+                        [ (Docker, fixtureExe docker)
                         ]
                 }
             admissible
@@ -1013,6 +1232,28 @@ testPlan =
         ( mkStepPlan
             [ descendsVia localContext (deployVMStep "provider" (StepFrame "host" "Host") (const (pure StepChanged)))
             , deployKindStep "cluster" (StepFrame "provider" "Provider") (const (pure StepChanged))
+            ]
+        )
+
+chartWorkloadPlan :: StepPlan
+chartWorkloadPlan =
+    either
+        (error . show)
+        id
+        ( mkStepPlan
+            [ descendsVia localContext (deployVMStep "provider" (StepFrame "host" "Host") (const (pure StepChanged)))
+            , deployKindStep "cluster" (StepFrame "provider" "Provider") (const (pure StepChanged))
+            , declaresChartWorkloadResource
+                "demo-chart@sha256:chart"
+                "demo"
+                "demo-system"
+                "sha256:776ae142428e754b67d7d6e3dfdbe1b448f0bac355d8fa24ec9471e21d90b432"
+                "demo@sha256:image"
+                "workload-set:743653e5cbea58631accf95218253ec81fa73f5111d68e219c09791116d4b395"
+                "7d14bc8fd996b0ab663fffd1d991ad3e5db5211f40b3d2644de1de62d9622692"
+                "api"
+                ["deployment:demo"]
+                (deployChartStep "chart" (StepFrame "provider" "Provider") (const (pure StepChanged)))
             ]
         )
 

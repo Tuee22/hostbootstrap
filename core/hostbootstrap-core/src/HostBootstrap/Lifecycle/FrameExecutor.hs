@@ -40,6 +40,7 @@ whose next request fails to pair.
 module HostBootstrap.Lifecycle.FrameExecutor
     ( FrameExecutor
     , withOpenedFrameExecutorKernel
+    , withOpenedFrameExecutorForPlanKernel
     , withFrameExecutorRequestKernel
     , withAdvancedFrameExecutorKernel
     , withExecutedFrameNodeKernel
@@ -65,6 +66,7 @@ import HostBootstrap.Handoff
 import HostBootstrap.Handoff.Rooted
     ( renderRootedLifecycleRequestKernel
     , rootedCloseFrameRequestKernel
+    , rootedDescendResultRequestKernel
     , rootedNextNodeRequestKernel
     , rootedReceiptConfirmRequestKernel
     , rootedSettleNodeRequestKernel
@@ -111,7 +113,7 @@ data FrameExecutor
         Text ->
         Text ->
         [ExecutionNode] ->
-        ResourceCarrier scope frame ->
+        ResourceCarrier scope rootPlanId ->
         [Text] ->
         Text ->
         Text ->
@@ -164,7 +166,7 @@ withOpenedFrameExecutorKernel ::
     IO (Either Text ())
 {-# OPAQUE withOpenedFrameExecutorKernel #-}
 withOpenedFrameExecutorKernel key scope verb frameName planDigest nodes request signedOpened use =
-    case admit of
+    case admitOpenedFrame key frameName planDigest nodes request signedOpened of
         Left failure -> pure (Left failure)
         Right (path, session, stage, ordinal) -> do
             carrier <- newResourceCarrier
@@ -182,8 +184,30 @@ withOpenedFrameExecutorKernel key scope verb frameName planDigest nodes request 
                     ordinal
                     (childConfigDigest signedOpened)
                 )
-  where
-    admit = do
+
+withOpenedFrameExecutorForPlanKernel ::
+    ProjectVerificationKey ->
+    AuthenticatedRootScope scope ->
+    ProjectVerb verb ->
+    Text ->
+    Text ->
+    [ExecutionNode] ->
+    ResourceCarrier scope planId ->
+    ByteString ->
+    ByteString ->
+    ( forall brokerGeneration catalogId frame sessionId.
+      FrameExecutor scope planId brokerGeneration catalogId frame sessionId verb ->
+      IO (Either Text ())
+    ) ->
+    IO (Either Text ())
+{-# OPAQUE withOpenedFrameExecutorForPlanKernel #-}
+withOpenedFrameExecutorForPlanKernel key scope verb frameName planDigest nodes carrier request signedOpened use =
+    case admitOpenedFrame key frameName planDigest nodes request signedOpened of
+        Left failure -> pure (Left failure)
+        Right (path, session, stage, ordinal) ->
+            use (FrameExecutor scope verb frameName planDigest nodes carrier path session stage ordinal (childConfigDigest signedOpened))
+admitOpenedFrame :: ProjectVerificationKey -> Text -> Text -> [ExecutionNode] -> ByteString -> ByteString -> Either Text ([Text], Text, Text, Word64)
+admitOpenedFrame key frameName planDigest nodes request signedOpened = do
         require "the executing frame is empty" (not (Text.null frameName))
         require "the frame plan digest is empty" (not (Text.null planDigest))
         require "the frame plan has no execution node" (not (null nodes))
@@ -203,7 +227,7 @@ withOpenedFrameExecutorKernel key scope verb frameName planDigest nodes request 
             (\_ _ _ _ _ _ _ _ -> beforeOpened)
             (\_ _ _ _ _ _ _ _ -> beforeOpened)
             (\_ _ _ _ _ _ _ _ -> beforeOpened)
-
+  where
     keys = map executionNodeOperationKey nodes
 
     beforeOpened =
@@ -211,7 +235,7 @@ withOpenedFrameExecutorKernel key scope verb frameName planDigest nodes request 
 
 {- | Build this frame's next request from coordinates it did not choose.
 
-The four post-open families a frame may raise are named by a closed selector
+The five post-open families a frame may raise are named by a closed selector
 rather than assembled from parts, so there is no shape here that produces a
 request outside them and none at all that produces an @OpenFrame@ — an executor
 exists only because one was already answered.
@@ -247,6 +271,17 @@ withFrameExecutorRequestKernel executor family nonce body use =
             wire (rootedCloseFrameRequestKernel path session stage ordinal nonce predecessor)
         ("receipt-confirm", Nothing) ->
             wire (rootedReceiptConfirmRequestKernel path session stage ordinal nonce predecessor)
+        ("descend-result", Just observation) ->
+            wire
+                ( rootedDescendResultRequestKernel
+                    path
+                    session
+                    stage
+                    ordinal
+                    nonce
+                    predecessor
+                    observation
+                )
         ("settle-node", Just observation) ->
             wire
                 ( rootedSettleNodeRequestKernel
@@ -259,8 +294,8 @@ withFrameExecutorRequestKernel executor family nonce body use =
                     observation
                 )
         (_, Just _) ->
-            Left (executorFailure "only a settle-node request carries an observation body")
-        _ -> Left (executorFailure "a frame executor raises no request outside its four families")
+            Left (executorFailure "only settle-node and descend-result requests carry observation bodies")
+        _ -> Left (executorFailure "a frame executor raises no request outside its five families")
     wire = either (Left . executorFailure) Right
 
 {- | Advance to the successor the verified response selected.
@@ -364,7 +399,7 @@ withExecutedFrameNodeKernel ::
     ( ExecutionNode ->
       PreparedGate ->
       [PreparedGate] ->
-      ResourceCarrier scope frame ->
+      ResourceCarrier scope rootPlanId ->
       IO (Either Text ByteString)
     ) ->
     (ByteString -> IO (Either Text ())) ->

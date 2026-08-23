@@ -54,6 +54,25 @@ programTests =
             outcome @?= Right ()
             -- the backend sees the acquired names, in the handler's order
             readIORef served >>= (@?= [[("public", "public-app"), ("ingress", "ingress-app")]])
+    , testCase "a handler receives Ready handles only inside the closed program" $
+        withRole mutatingEffects storeDraft $ \_ _ placement _ -> do
+            served <- newIORef []
+            authorization <-
+                expectAuthorized
+                    (authorizeServiceEffects placement (WithEffect NetworkListenName NoEffects))
+            let handles = readyServiceHandles ["public"]
+                program = withReadyServiceHandles $ \ready ->
+                    case lookupAcquiredResource ready "public" of
+                        Nothing -> pure ()
+                        Just public -> serve [(public, "public-app")]
+            outcome <-
+                interpretServiceProgramWithReady
+                    authorization
+                    handles
+                    (recordingBackend served)
+                    program
+            outcome @?= Right ()
+            readIORef served >>= (@?= [[("public", "public-app")]])
     , testCase "a resource the engine never acquired has no handle to name" $ do
         let handles = readyServiceHandles ["public"] :: ReadyServiceHandles ()
         readyServiceHandleNames handles @?= ["public"]

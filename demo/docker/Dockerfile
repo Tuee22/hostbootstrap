@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # check=skip=InvalidDefaultArgInFrom
 #
 # The idiomatic hostbootstrap-demo project container — the reference shape every
@@ -14,6 +15,11 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
+# The verification key is public but is provisioned independently of source,
+# config, and the signed handoff envelope.  Build #3 supplies the exact public
+# half installed beside the root binary.
+ARG HANDOFF_VERIFICATION_KEY_HEX
+
 WORKDIR /workspace
 # The demo is L0-direct: it needs hostbootstrap-core's source (the in-repo
 # cabal.project references ../core/hostbootstrap-core).
@@ -21,24 +27,30 @@ COPY core/hostbootstrap-core /workspace/core/hostbootstrap-core
 COPY demo /workspace/demo
 
 WORKDIR /workspace/demo
-# Build with the same project used host-native. Cache misses resolve and compile
-# normally; the inherited Cabal store is a best-effort acceleration only.
+# The coordinator-selected builder is an integrity-bound named build context;
+# it is not confidential and can exceed BuildKit's 500 KiB secret limit.  The
+# canonical image-build config remains a secret.  Both are installed before
+# any source-generated binary can authorize the gate, and the signed channel
+# binds their exact bytes.
+COPY --from=hostbootstrap-builder hostbootstrap-demo /usr/local/bin/hostbootstrap-demo
+RUN --mount=type=secret,id=hostbootstrap-build-config,required=true \
+    chmod 0755 /usr/local/bin/hostbootstrap-demo \
+    && install -m 0644 /run/secrets/hostbootstrap-build-config /usr/local/bin/hostbootstrap-demo.dhall \
+    && test "${#HANDOFF_VERIFICATION_KEY_HEX}" -eq 64 \
+    && python3 -c "import binascii,sys; open('/usr/local/bin/hostbootstrap-demo.handoff.pub','wb').write(binascii.unhexlify(sys.argv[1]))" "${HANDOFF_VERIFICATION_KEY_HEX}" \
+    && chmod 0644 /usr/local/bin/hostbootstrap-demo.handoff.pub
+
+# The mandatory code-check quality gate accepts only the signed, one-RUN secret
+# presentation. No channel or verification key is persisted in the image.
+RUN --mount=type=secret,id=hostbootstrap-build-channel,required=true \
+    --mount=type=secret,id=hostbootstrap-build-verification,required=true \
+    --mount=type=secret,id=hostbootstrap-build-coordinator,required=true \
+    hostbootstrap-demo check-code
+
+# Build and install the source-produced binary only after the independently
+# selected builder has authenticated and passed the warning-clean gate.
 RUN cabal build --enable-tests --enable-benchmarks all \
     && install -m 0755 "$(cabal list-bin --enable-tests --enable-benchmarks exe:hostbootstrap-demo)" /usr/local/bin/hostbootstrap-demo
-
-# The bootstrap-only image-build config is allowed before normal command gating.
-RUN hostbootstrap-demo project init \
-    --role image-build-container \
-    --output /usr/local/bin/hostbootstrap-demo.dhall \
-    --source-root /workspace/demo \
-    --dockerfile docker/Dockerfile \
-    --cpu 6 \
-    --memory 10GiB \
-    --storage 80GiB \
-    --ha-replicas 1
-
-# The mandatory code-check quality gate: the image cannot exist with violations.
-RUN hostbootstrap-demo check-code
 
 # The web build: compile the Halogen SPA from the bridge-generated PureScript
 # types and bundle it. The bridge codegen is re-homed into the build-image chain

@@ -571,4 +571,4 @@ withCoreSourceRoot use = do
     repoRoot <-
         findRepoRoot cwd
             >>= maybe (assertFailure ("could not locate repo root from " <> cwd)) pure
-    use (repoRoot </> "core" </> "hostbootstrap-core" </> "src")
+    use (repoRoot </> "core" </> "hostbootstrap-core" </> "internal" </> "ownership")

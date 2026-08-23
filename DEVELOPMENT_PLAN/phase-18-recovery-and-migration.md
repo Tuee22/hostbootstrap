@@ -1,6 +1,7 @@
 # Phase 18 — Recovery and migration
 
-**Status**: Active
+**Status**: Done
+**Current sprint**: None — phase complete
 **Depends on**: Phase 17 (the recursive lifecycle command)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`
@@ -124,9 +125,9 @@ completed lineage switch, idempotent commit, both crash classifications, and con
 
 None.
 
-### Sprint 18.4: Verified resource-record bundles [Planned]
+### Sprint 18.4: Verified resource-record bundles [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
 `core/hostbootstrap-core/test/ResourceRecordSpec.hs`
@@ -151,16 +152,19 @@ evidence recovery needs.
 `ResourceRecordSpec` pins canonical round trips and every wrong-binding refusal. `CompileFailSpec` pins the
 hidden constructor and the separation between owned receipts and released tombstones.
 
+On 2026-08-22, the focused resource-record group passed all five runtime and compile-fail cases, and
+`cabal test all --ghc-options=-Werror` passed all 2,319 tests on linux-cpu.
+
 #### Remaining Work
 
-All deliverables in this sprint.
+None.
 
-### Sprint 18.5: Resource settlement recording [Planned]
+### Sprint 18.5: Resource settlement recording [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
 
@@ -182,15 +186,20 @@ disposition.
 `ChainSpec` and `ReconcileSpec` cover owned, adopted, released, repaired, and phase-transition records,
 idempotent retry, and kills on both sides of the protected settlement write.
 
+On 2026-08-22, the focused `ChainSpec` gate passed all 43 cases and the focused reconciliation gate passed
+all 65 matching cases. `cabal test all --ghc-options=-Werror` then passed all 2,324 tests on linux-cpu,
+including governed documentation validation.
+
 #### Remaining Work
 
-All deliverables in this sprint.
+None.
 
-### Sprint 18.6: The complete resource-record set [Planned]
+### Sprint 18.6: The complete resource-record set [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/test/ResourceRecordSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -213,13 +222,19 @@ Prove that recovery and migration hold exactly the resource members declared by 
 `ResourceRecordSpec` covers every completeness refusal, ordering-independent digest stability, immutable
 read-back, and evidence from one snapshot being unusable for another.
 
+On 2026-08-22, all six focused `ResourceRecordSpec` cases passed, including exact-set success, missing and
+extra refusal, canonical member refusals, and stable immutable read-back. The two public compile-fail cases
+then proved that callers can neither construct `VerifiedResourceRecordSet` nor combine snapshot evidence
+from distinct plan digests. `cabal test all --ghc-options=-Werror` passed all 2,329 tests on linux-cpu,
+including governed documentation validation.
+
 #### Remaining Work
 
-All deliverables in this sprint.
+None.
 
-### Sprint 18.7: Broker-bound resource rehydration [Planned]
+### Sprint 18.7: Broker-bound resource rehydration [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/test/ResourceRecordSpec.hs`
@@ -245,13 +260,19 @@ authority from raw bytes.
 `ResourceRecordSpec` covers successful owned and released rebinding, every stale-store refusal, all-or-nothing
 failure, and fresh broker separation. `CompileFailSpec` pins that raw receipt bytes have no recovery edge.
 
+On 2026-08-22, all eight focused `ResourceRecordSpec` cases passed, including mixed owned/released
+rehydration and wrong-store refusal. Three focused public compile-fail cases proved the rehydrated set is
+unforgeable, raw ownership receipts cannot become rehydrated receipts, and broker indices are nominal.
+`cabal test all --ghc-options=-Werror` passed all 2,334 tests on linux-cpu, including governed documentation
+validation.
+
 #### Remaining Work
 
-All deliverables in this sprint.
+None.
 
-### Sprint 18.8: Scope-correct prospective migration [Planned]
+### Sprint 18.8: Scope-correct prospective migration [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
@@ -277,13 +298,19 @@ old revision freezes.
 `AuthoritySpec` covers the scope-correct success path, byte-identical read-back, every mismatch, same-plan and
 empty-draft refusal, and a crash after candidate persistence with the old revision still active.
 
+On 2026-08-22, all 12 focused plan-migration authority cases passed, including scope-correct canonical
+construction, same-plan refusal, exact authoritative read-back, conflicting persisted bytes, config/draft
+mismatch, and the pre-freeze active-revision invariant. Two focused public compile-fail cases proved that an
+empty draft list and cross-config wire/config evidence cannot enter the bracket. `cabal test all
+--ghc-options=-Werror` passed all 2,339 tests on linux-cpu, including governed documentation validation.
+
 #### Remaining Work
 
-All deliverables in this sprint.
+None.
 
-### Sprint 18.9: Configful completed-plan reconstruction [Planned]
+### Sprint 18.9: Configful completed-plan reconstruction [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
@@ -308,13 +335,19 @@ Rebuild configful forward state only when the supplied config and draft render t
 `AuthoritySpec` covers exact reconstruction and changed config, changed draft, wrong implementation revision,
 wrong stable key, missing record, malformed record, and unknown-version refusals.
 
+On 2026-08-22, the focused migration group passed all 20 cases, including exact configful reconstruction,
+changed config/draft and implementation refusal, stable candidate revalidation, malformed/unknown/missing
+candidate refusal, and retention of the committed lease. The public constructor-forging boundary for the
+completed recovery profile also passed. `cabal test all --ghc-options=-Werror` passed all 2,341 tests on
+linux-cpu, including governed documentation validation.
+
 #### Remaining Work
 
-All deliverables in this sprint.
+None.
 
-### Sprint 18.10: Complete-set migration freeze [Planned]
+### Sprint 18.10: Complete-set migration freeze [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`
@@ -339,13 +372,21 @@ Freeze the old revision only while holding its exact session, operation, prepara
 `AuthoritySpec` and `SessionSpec` cover session/freeze races, prepared-operation drainage, every exact-set
 refusal, retry convergence, and kills before and after the atomic freeze.
 
+On 2026-08-22, the focused migration group passed all 20 cases. The migration fixture now uses a canonical
+old plan and its exact protected resource record; freeze derives membership from the snapshot retained by the
+sole profile producer, runs the established fence/manifest/interpreter/Closed-session chain, and persists the
+64-character SHA-256 set digest in the frozen lease. Exact stable-key/set retry converged. The existing
+`ResourceRecordSpec` and `SessionSpec` exact-set, independently enumerated session, prepared-operation fence,
+and crash-retry cases passed as part of the full gate. `cabal test all --ghc-options=-Werror` passed all 2,341
+tests on linux-cpu, including governed documentation validation.
+
 #### Remaining Work
 
-All deliverables in this sprint.
+None.
 
-### Sprint 18.11: Frozen migration recovery [Planned]
+### Sprint 18.11: Frozen migration recovery [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
@@ -370,13 +411,21 @@ Resume or cancel the exact frozen old-active migration after a pre-commit proces
 `AuthoritySpec` covers post-freeze resume and cancellation, edited/deleted config, every stable-key/snapshot/set
 substitution, retry convergence, and absence of preparation authority before commit.
 
+On 2026-08-22, the focused migration group passed all 21 cases. Frozen reconstruction rereads and matches the
+incomplete revision kind, full frozen lease tuple, stable-keyed prospective bytes, canonical old snapshot, and
+recomputed exact-set digest before the rank-2 configful plan continuation; it exposes no session/preparation
+authority. Typed down/destroy cancellation restored only the old bound digest and converged across both verbs.
+The pre-existing candidate/config/draft and exact-set refusal suites cover edited, missing, malformed, and
+substituted durable evidence. `cabal test all --ghc-options=-Werror` passed all 2,342 tests on linux-cpu,
+including governed documentation validation.
+
 #### Remaining Work
 
-All deliverables in this sprint.
+None.
 
-### Sprint 18.12: Complete-set migration commit [Planned]
+### Sprint 18.12: Complete-set migration commit [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
@@ -402,13 +451,20 @@ Switch revision lineage only by consuming the frozen lease and the exact staged 
 `AuthoritySpec` covers the atomic lineage switch, owned and released members, every frozen/candidate/set
 substitution, both crash sides, and idempotent completion.
 
+On 2026-08-22, the focused migration group passed all 23 cases, including post-freeze candidate and exact-set
+corruption refusal, stable barrier/set-digest equality, the pre-CAS frozen side, and idempotent post-CAS repair.
+The commit CAS now writes a strict `migrated-bound` lease frame containing the stable key, set digest, and both
+old/new spec-plan pairs; completed recovery recomputes and compares the exact set before yielding its barrier.
+Owned/released dispositions remain in their unchanged canonical resource records. `cabal test all
+--ghc-options=-Werror` passed all 2,344 tests on linux-cpu, including governed documentation validation.
+
 #### Remaining Work
 
-All deliverables in this sprint.
+None.
 
-### Sprint 18.13: Complete-set migrated activation [Planned]
+### Sprint 18.13: Complete-set migrated activation [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
@@ -433,13 +489,22 @@ Admit the new revision only from its local plan binding and the complete set car
 `AuthoritySpec` and `SessionSpec` cover both activation producers, every binding refusal, old-session and
 prepared-operation exclusion, and kill injection between commit and admission.
 
+On 2026-08-22, the focused migration group passed all 23 cases. Configful activation now requires the exact
+candidate `ProjectPlan`, same-index digest binding, migrated-bound lease/barrier, broker epoch, and complete
+broker-rehydrated old set. Completed configless recovery yields that same set from its protected exact-set read
+and enters the shared activation kernel. The kernel checks lease, broker, lineage, plan/binding, and set digests
+before the established old-session/prepared-permit settlement and new-session admission chain. The focused
+ordinary-admission source guard passed after being narrowed to the shared kernel. `cabal test all
+--ghc-options=-Werror` passed all 2,344 tests on linux-cpu, including `SessionSpec` race/fence coverage and
+governed documentation validation.
+
 #### Remaining Work
 
-All deliverables in this sprint.
+None.
 
-### Sprint 18.14: Snapshot-derived recovery frames [Planned]
+### Sprint 18.14: Snapshot-derived recovery frames [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Recovery.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
@@ -469,13 +534,24 @@ reconstructing normal child config.
 adapters; wrong resource membership; and owned/released elimination. `CompileFailSpec` pins the hidden frame
 constructor.
 
+On 2026-08-22, `RecoverySpec` passed all 8 selected cases and the focused migration group passed all 23
+cases. Strict canonical decoding now reconstructs the linear root/nested frame topology and reverse-adapter
+revision from the verified snapshot. `RecoveredProjectFrame` is nominal and constructor-hidden, retains the
+complete broker-rehydrated set, and its fold exposes only an owned handle with its receipt or a released
+tombstone at that frame. Completed migration recovery loads both the stable-keyed prospective snapshot and
+the superseded verified snapshot; candidate frames are admitted over the superseded set only when their
+canonical resource coordinates are identical. The configless harness path performs this frame reconstruction
+before migrated activation. Config-present/edited/absent, foreign membership, released disposition, unknown
+adapter revision, and constructor-forging cases refuse or eliminate as required. `cabal test all
+--ghc-options=-Werror` passed all 2,351 tests on linux-cpu, including governed documentation validation.
+
 #### Remaining Work
 
-All deliverables in this sprint.
+None.
 
-### Sprint 18.15: Recovery-wire boundary admission [Planned]
+### Sprint 18.15: Recovery-wire boundary admission [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Recovery.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
 `core/hostbootstrap-core/test/RecoverySpec.hs`
@@ -502,13 +578,22 @@ Use the authenticated-handoff phase's recovery wire as the sole nested entry fro
 `RecoverySpec` pins the exact round trip and every wrong-binding or replay refusal across a real process
 boundary. `CompileFailSpec` pins that config handoff and recovery handoff are not interchangeable.
 
+On 2026-08-22, the focused recovery selection passed all 93 cases and `RecoverySpec` passed its 9 cases.
+The root-only recovered-edge constructor now checks the exact parent relation and shared complete set, then
+canonically frames the set digest, child frame, adapter kind, and revision before calling
+`mkRecoveryProjectionBinding` with the root broker. The established authenticated recovery receiver verifies
+that wire and its independently signed grant, joins it only to a teardown-phase Down/Destroy handoff, and
+refuses wrong keys, stores, broker generations, plans, edges, payloads, phases, verbs, and replay. Existing
+compile-fail fixtures keep config grants and recovery grants non-interchangeable. `cabal test all
+--ghc-options=-Werror` passed all 2,352 tests on linux-cpu, including governed documentation validation.
+
 #### Remaining Work
 
-All deliverables in this sprint.
+None.
 
-### Sprint 18.16: Child-first abandoned-run teardown [Planned]
+### Sprint 18.16: Child-first abandoned-run teardown [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Recovery.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`
@@ -535,13 +620,24 @@ Resolve a bound abandoned run that acquired resources by driving its recovered f
 that retain ownership, successful settled closure, repeated recovery, and config deletion between kill and
 recovery.
 
+On 2026-08-22, `RecoverySpec` passed all 13 cases, the abandoned-run selection passed all 33 cases, and the
+focused recovered selection passed all 38 cases. The abandoned bound branch now rehydrates the snapshot's
+complete resource set at the reopened broker, drives its frames child-first through the installed closed
+recovery executor, skips backend dispatch for released tombstones, and CASes each successful owned release to
+its canonical released record. Failure leaves the lease, mode, snapshot, and records recoverable; an exact
+retry converges. Only the opaque complete-forest result plus an independently enumerated
+`VerifiedAllSessionsClosed` can mint recovered settled-Destroy closure, after which the established persisted
+Harness close authorization reclaims the run and finalizes it. The nested recovery-wire verifier from Sprint
+18.15 remains the sole authenticated foreign-cursor boundary. `cabal test all --ghc-options=-Werror` passed all
+2,359 tests on linux-cpu, including governed documentation validation.
+
 #### Remaining Work
 
-All deliverables in this sprint.
+None.
 
-### Sprint 18.17: Production lifecycle ownership adoption [Planned]
+### Sprint 18.17: Production lifecycle ownership adoption [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/test/LifecycleSpec.hs`
@@ -568,16 +664,28 @@ lifecycle command.
 `LifecycleSpec` and `AuthoritySpec` cover the composite entry, snapshot read-back, exact lease binding,
 true-pre-effect close, recoverable post-bind failure, and every scope/plan/broker substitution.
 
+On 2026-08-22, the focused Production selection passed all 100 cases. The command's fresh route enters through
+one `withProductionRoot`, derives its lifecycle profile and sole `ProjectPlan` beneath that composite root,
+and calls `withPersistedPlanSnapshot` before the bound package enters `runExactProjectUp`. The recovered route
+admits the existing bound snapshot once, refines the finalized spec/config/drafts under the same generative
+plan identity, and threads the root authority, mode, lease, verified snapshot, bound snapshot, digest binding,
+plan, current frame, and lifecycle context together. Source-shape and compile-fail cases exclude compatibility
+or independently minted plan routes and cover every scope/spec/plan/broker substitution. The unchanged code
+was included in the immediately preceding `cabal test all --ghc-options=-Werror` gate, which passed all 2,359
+tests on linux-cpu.
+
 #### Remaining Work
 
-All deliverables in this sprint.
+None.
 
-### Sprint 18.18: Settled Production destroy closure [Planned]
+### Sprint 18.18: Settled Production destroy closure [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
-`core/hostbootstrap-core/test/LifecycleSpec.hs`
+`core/hostbootstrap-core/test/LifecycleSpec.hs`, `core/hostbootstrap-core/test/AuthoritySpec.hs`,
+`core/hostbootstrap-core/test/HandoffSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
 
@@ -600,13 +708,23 @@ Consume the recursive destroy proof at the Production closure boundary and nowhe
 `LifecycleSpec` and `AuthoritySpec` cover settled destroy closure, down and partial-destroy refusal, wrong-lease
 and open-session refusal, retry convergence, and absence of a second close or mode release.
 
+On 2026-08-22, the settled Destroy boundary was completed. The sealed root entry first validates the exact
+root subtree, promotes it through `verifyDestroySettled`, and joins it with the bound lease and independently
+verified closed-session set through `destroySettledClosure`. Reverse terminalization now carries that proof,
+the Destroy-only close root, and the resulting closure evidence into one exclusive protected-store entry: the
+retained terminal-intent CAS is read back before the bound lease and Production mode are released. Down carries
+no closure package, and every incomplete, wrong-plan, wrong-lease, open-session, or mismatched-close path
+refuses before release. The focused Authority (112), Lifecycle excluding the separately named recursive group
+(141), and Handoff (107) suites passed; `cabal test all --ghc-options=-Werror` then passed all 2,359 tests on
+linux-cpu.
+
 #### Remaining Work
 
-All deliverables in this sprint.
+None.
 
-### Sprint 18.19: Deterministic interruption fixtures [Planned]
+### Sprint 18.19: Deterministic interruption fixtures [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/test/RecoveryInterruptionSpec.hs`,
 `core/hostbootstrap-core/test/Spec.hs`
 **Substrates**: linux-cpu
@@ -635,14 +753,25 @@ on linux-cpu from `core/` with
 `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern recovery-interruption'`;
 that acceptance is not part of this phase's closure gate.
 
+On 2026-08-22, the named `recovery-interruption` group passed all five subprocess cases. Each producer reaches
+the real protected-store boundary, publishes readiness, and is hard-killed; each successor is a separately
+exec'd test process opening the same store. The matrix covers owned-resource settlement with exact-once
+child-first backend release, incomplete and completed migration sides, persisted `Closing` with fresh-permit
+refusal, and a public root/VM/container Destroy followed by a fresh Up and Destroy. The last case exposed and
+fixed closed Production-lease reuse: only a fresh Up broker may reopen the fixed Production lease, clear the
+prior invocation acknowledgment, and consume an older retained terminal intent; Down, Destroy, and stale
+generations remain unable to rearm it. On 2026-08-22 (linux-cpu, GHC 9.12.4),
+`cabal test all --ghc-options=-Werror --test-options='--hide-successes' --test-show-details=direct`
+from `core/` passed all 2364 tests in 146.93 seconds.
+
 #### Remaining Work
 
-All deliverables in this sprint.
+None.
 
 ## Remaining Work
 
-Sprints 18.4–18.19. Phase 18 closes when they pass the host-static gate and its governed documentation aligns;
-the later test-harness phase owns live linux-cpu infrastructure confirmation.
+None. Phase 18 passed its host-static gate and its governed documentation aligns; the later test-harness phase
+owns the named live linux-cpu acceptance rerun.
 
 ## Documentation Requirements
 

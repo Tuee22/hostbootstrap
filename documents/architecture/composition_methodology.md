@@ -25,16 +25,20 @@
   schedules only the current-frame suffix. The projection is pure and non-authorizing; receipt-bound
   traversal is a later layer (§ W).
 - **The exact Chain is the current-frame foundation of the recursive, fractal interpreter.** `renderChain`
-  consumes the admitted plan's complete `forward` projection. In the target rooted runtime, the root process
-  is the sole lifecycle
-  coordinator: it owns one `ProtectedStore`, global lease/snapshot/acquisition, recursive
+  consumes the admitted plan's complete `forward` projection. The implemented root-Up entry uses the
+  root-only Chain path without loading a signing key, or, when its catalog has descendants, becomes the sole
+  lifecycle coordinator: it owns one `ProtectedStore`, global lease/snapshot/acquisition, recursive
   `RootedPlanCatalog`, and every frame journal. Children are long-lived storeless `FrameExecutor`s. For each
   node, the root durably prepares exact own/projected keys and signs a bounded response; the child
   exact-compares its locally reconstructed `ExecutionNode`, reifies the same-CAS gate through a hidden
   allow-listed mint, performs the local effect, and returns an observation for root settlement. Production
   dispatch retains or reconstructs the exact root plan through rendering and persistence; its Cabal-private
-  root-Up `LifecycleEntry` alone derives durable authority. Rooted child execution and proof-complete
-  traversal remain with the
+  root-Up `LifecycleEntry` alone derives durable authority. Before Chain starts, the coordinator opens every
+  catalog child session root-first. Chain's descent continuation selects only the exact catalog edge and
+   policy-validating process route whose crossing argv is derived by the sole Lift fold; rooted requests dispatch only to the matching retained session. A nested child
+  repeats the immediate-target projection through a keyless link and receives neither catalog nor root
+  authority. Terminal reporting remains fail-closed until exact settlement evidence exists. Rooted child
+  execution and proof-complete traversal remain with the
   [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md);
   topology or command arguments alone mint no child admission. Descent is always the same shape:
   *provision the frame → build/install the `pb` in it → hand off `pb project up`*.
@@ -75,6 +79,24 @@
   `expose-port`, `post-handoff`); the project contributes workload step kinds (`deploy-minio`,
   `deploy-registry`, `push-image`, accelerator-daemon placement, …) into the *same* `[Step]`. Host and workload steps interleave freely — this is the
   workload-extension seam.
+- **The Linux CPU VM producer is exact through Ready.** The demo's Incus `deploy-vm` action consumes the
+  interpreter-supplied `StepExecution`, resolves its provider resource by the execution's opaque operation key,
+  and derives observation, provision, and Ready gates from the same prepared journal fence. Only managed Ready
+  settlement is carried with its reverse identity and registered as a pending invocation-local provider
+  dependency package. The package contains commitments and a bounded route rather than a managed handle or
+  readiness witness; later lexical recovery must freshly re-probe the retained backend. Registration follows
+  settlement, so every refusal and provisional branch leaves the dependency registry unchanged.
+- **The Direct producer reserves; it does not deploy a VM.** Its plan-declared provider resource is attached
+  to the current metal-frame build node. That node receives its own `StepExecution`, admits the canonical host
+  root and configured base-image egress through the Direct backend, and uses the same provision/Ready/carry/
+  register sequence before CUDA, image construction, or nvkind work. Its carried operation is `reserved`, so
+  later reverse work may terminalize the exact journal reservation but cannot claim a physical stop or delete.
+- **A VM share is its own exact node.** `copy-source` follows the VM producer and precedes its descent. The
+  node freshly recovers the package-bound Running provider, resolves its plan-owned durable-share resource,
+  prepares from a live dependency probe, calls and settles the provider share backend, and keeps the managed
+  share lexical through mount/alias work. Its host source is the canonical durable root and its guest target is
+  the unchanged provider projection. Returning closes the continuation; neither execution packages nor the
+  generic carried-resource channel contain the provider/share handles.
 - **The same algebra expresses deployment and runtime business logic.** "Bring up a cluster" and "run an
   inference/training pipeline" are the same kind of composition over durable external stores at different
   altitudes; both are steps in the one chain.
@@ -131,7 +153,7 @@ local host. The implementation boundary is layered:
 | provider lifecycle realization | [Host providers and the self-reference lift](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md) | Incus/Lima/WSL2/direct-host probes and lifecycle builders consume and reexport lower target/rendering data |
 | network/registry additions | [Composition and network algebra](../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md) | `reachLeaf`, blob leaves, and Registry-owned authenticated dispatch consume generic Lift |
 
-These source boundaries and their gates remain Active in numerical phase order in the
+These source boundaries and their gates are tracked in numerical phase order in the
 [development-plan status table](../../DEVELOPMENT_PLAN/README.md). The target recursive interpreter then
 operates over that stack:
 
@@ -189,10 +211,10 @@ returns a forest whose progress, authorization branches, closed work packages, s
 only after the exact plan/current-frame package proves that subtree is the topology's unique root. Neither function accepts an acquisition
 journal, ownership receipt, revision permit, or effect authority, and neither turns a declared callback
 into authorized release.
-Production `HostBootstrap.Command` retains or reconstructs the exact plan/current-frame pair and reaches
-this projection directly. That plan-derived work is not exact teardown command authority; nested entry
-fails closed until [the recursive-lifecycle-command
-phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) supplies the operator/descent gates.
+Production `HostBootstrap.Command` retains or reconstructs the exact plan/current-frame pair. That
+plan-derived work is not exact teardown command authority; the
+[recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
+supplies the operator/descent gates used for nested entry.
 
 The [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
 owns the rooted child-to-parent unwind. The root retains the only store, global lease and snapshot, recursive
@@ -206,7 +228,9 @@ protocol records or resumes exact Down/Destroy source coordinates under root liv
 Bound reverse-descent rows retain the exact plan-owned adapter and edge, support exact retry and token-free
 rehydration, and expose no child execution authority. Canonical reports, semantic completion, root-resident
 parent acknowledgement, keyless routing, finalized child projection, and inert planned-forward packaging are
-also implemented lower substrate, but remain fail-closed without the rooted runtime adopter.
+also implemented lower substrate. A prepared reverse descent now opens only its retained child projection,
+and its rooted service retains the exact Offer and advances one forest through root-owned pre-descent,
+child-executed local settlement, completed deeper descent, canonical close, and acknowledged receipt.
 
 Recursive admission is implemented on that same footing. One shared VLC-free immediate-target kernel owns
 descriptor, context, configuration, and target-plan validation for a single declared descent, and both the
@@ -245,8 +269,9 @@ WSL run noninteractively at `/`, reaching root through noninteractive sudo where
 not already root. Its closed grammar refuses `ConfigDelivery`, container extra arguments, a container that
 outlives its own exchange, and any derived name that reads as an option, a separator, or a descriptor
 request, so the detach, TTY, attach, standard-input, entrypoint, working-directory, and signal overrides have
-no path into the rendered vector. The child's command is the invocation's own closed verb under `project`,
-rendered rather than accepted, and every rendered path is absolute and free of the mount delimiter.
+no path into the rendered vector. The child's command is the fixed coordinate-free
+`--hostbootstrap-lifecycle-child` entry marker; the authenticated Offer is the sole source of its verb.
+Every rendered path is absolute and free of the mount delimiter.
 
 Launching that route is one bracket's whole job. The owner resolves the route's host tool to an absolute
 path through the installed configuration, spawns it into a new process group with private stdin/stdout pipes
@@ -256,6 +281,44 @@ release path: group TERM, a fixed grace, group KILL if the group is still there,
 only then the pipes closed. It bounds the launch and the grace and nothing else — the relay bounds the frames
 a peer owes immediately, and the wait between admission and the completed report belongs to the admitted
 effect's own policy — and it treats neither EOF nor a zero exit as completion.
+
+The same bracket may install one provider reprobe endpoint by narrowing its existing `BrokerLink` for the
+duration of the lexical provider kernel and child process. The child-side client uses only the authenticated
+duplex already retained by its `ReceivedEdge`: one request is outstanding, each of at most 64 nonces is
+consumed once, and only the exact request identity, closed response tag, canonical package commitment, nonce,
+and observation/refusal are accepted. A nested parent forwards those field bytes unchanged through its own
+keyless parent link, so arbitrary depth repeats the same edge-local operation and no intermediate frame gains
+a root key, provider handle, package interpreter, or result-minting authority. The upstream response wait is
+bounded to one second; frame and codec ceilings bound size. Closing either surrounding bracket removes the
+only service path, and no socket, environment, argument, config, or durable-file substitute exists.
+
+A child whose admitted plan contains cross-frame dependencies queries that endpoint only after its config,
+plan, current frame, and immediate edge have all been authenticated. The query carries no candidate package:
+the Process-owned parent answers with its exact carried provider package or explicit absence. A present
+provider-domain package and its hidden nonce client are seeded into the child's one invocation-wide carrier
+before the frame executor opens, so all local step runtimes see the same canonical/live pair and a deeper
+descent can relay it unchanged. This is carriage, not refinement: no probe runs and no Running provider,
+managed handle, readiness proof, receipt, or channel enters plan/config bytes or the carrier.
+
+The fixed cluster node is the first consumer of that carriage. It selects the one provider package named by
+its authenticated plan prefix, rebinds the carried provider receipt, and asks the parent-serviced nonce route
+for a fresh generation; it does not rediscover the parent's backend in the child. Its opaque `StepExecution`
+then supplies the cluster resource, provider edge, plan/config digest, profile, project root, and frame used to
+form the action-side plan-owned package. The one call site writes only its canonical rendered bytes, discovers
+the closed Kind/nvkind backend, reconciles and carries ownership, applies the exact cordon, settles a fresh
+readiness observation, and finally registers the pending cluster-domain package and separate live service.
+No sibling `ProjectPlan`, independent driver/name/path, raw tool invocation, or readiness flag participates.
+
+At the far end, the fixed lifecycle-child marker enters the private receiver before ordinary command
+parsing or sibling-config loading. The receiver loads the independently installed public key from
+`<executable>.handoff.pub`. A forward package authenticates its exact canonical config wire; a recovery
+package independently decodes and canonically re-renders its child config, reconstructs the digest-bound
+child plan, and byte-compares the supplied reverse adapter with that plan's exact Down/Destroy projection.
+Both arms then open one storeless `FrameExecutor`. Each root-signed `Prepared` response is matched to the
+exact plan work before a local effect runs. A reverse `Descend` advances only when its signed body contains
+canonical observations that replay to the exact retained child subtree. The child returns observations
+through the rooted protocol, confirms the root's terminal receipt, and never opens the protected store or
+settles a durable row.
 
 A route points in one direction only: down, at the child a frame is about to launch. It is not that frame's
 own place in the conversation, and the distinction matters because a middle frame holds both at once — it is
@@ -295,22 +358,76 @@ check may still refuse the other fields and framing overhead. The root selects t
 `EdgeAdmission` authenticates the complete config/digest, `RecoveryAdmission` independently authenticates the
 extracted adapter, and the exact Offer is routed to the signer already installed behind the private relay.
 A storeless executor verifies the authenticated root scope, exact package, root-signed prepared grant, and
-local plan/node plus operation/projected-gate packages before any local teardown effect.
+local plan/node plus operation/projected-gate packages before any local teardown effect. Its reverse arm
+reuses the same request pairing, ordinal advancement, settlement request, close, and receipt-confirmation
+loop as forward execution. It cannot construct semantic completion: the bytes it finally hands to Receiver
+are the exact report carried by the root's signed `FrameComplete`, and success waits for the matching signed
+`ReceiptRecorded`.
+
+Prepared reverse process launch preserves that lineage without exposing package bytes. The private teardown
+owner canonically decodes the exact `RecoveryChildPackage` retained in `ReverseDescent` and releases it only
+with the plan-owned lift context, binding input, and closed verb. A witness-only route kernel fixes the opaque
+route's scope and broker indices to that same prepared lineage; the process owner then derives and launches
+the sanitized route inside one lexical continuation. The witnesses are empty proxies, not authority, and raw
+package bytes, argv, tools, or route constructors never reach the coordinator.
+
+The reverse broker link is deliberately narrower than the general root link: config opening and activation
+signing are closed refusals, while recoverable opening, recovery signing, rooted requests, and lifecycle
+acknowledgements remain. Grant first retains the exact Offer in the prepared frame service. That service
+derives the child terminal origin from the same prepared lineage and binding, publishes only the canonical
+completed report, and retains verified `SubtreeSettled` through receipt. After the child transmits that exact
+report, the existing process owner validates Bound and durably adopts it before returning. A mismatched Offer,
+observation, descent result, report, or receipt advances no forest.
+
+The root command frame and a descent's parent frame are separate nominal coordinates. A prepared reverse
+descent existentially retains the root lifecycle context, teardown cursor, and command authority while its
+public indices name the selected parent/child edge in that same root plan. Preparation therefore validates
+the command against the root context and independently validates the edge against topology and the recursive
+catalog. Deeper descent neither forges a child command authority nor coerces the root frame into its parent.
+
+Production `project down` and `project destroy` now enter that machinery at one call site. The reverse-entry
+producer reconstructs the committed target plan, retains the target lease, and lends the command driver an
+opaque entry plus a terminalization continuation. The driver opens the plan forest once, executes siblings in
+its declared order, and maps every descent to one prepared session/service/process bracket. A parent receives
+only the `SubtreeSettled` value retained after the child's signed close, receipt, Bound verification, and
+durable adoption; a process exit or an unverified report cannot advance the forest. The terminal continuation
+first verifies that all rooted sessions for the retained plan digest are closed and only then consumes the
+settled root proof under the retained lease.
+
+The local reverse callback receives that reconstructed `ProjectPlan` together with its opaque `LocalWork`.
+For a chart node, the operation key projects exactly one plan-owned chart resource; the command derives the
+protected-record key from the stable plan digest, frame, and resource identity, verifies those same coordinates
+against the canonical record bytes, and only then derives the Helm release and namespace from the chart.
+Missing ownership is retained as foreign, malformed or mismatched ownership fails before mutation, and a
+verified released tombstone is already converged. Chart cleanup therefore precedes cluster cleanup by the
+forest's ordinary child-first/reverse-forward order without reconstructing a forward execution package.
+
+A failed forward run has a deliberately narrower authority shape. Hidden
+`FailedUpUnwindAuthority scope rootPlanId brokerGeneration catalogId` can be produced only from the sealed
+root Up entry, that entry's catalog, and either a receipt-recorded rooted `forward/failed` report or the
+canonical root-local failed report published from the same live broker. The producer independently rejoins
+project, broker generation, catalog record identity, root plan digest, report binding, and every reported
+operation with the frozen reached prefix. It freezes both reached order and its unresolved subset and rejects
+duplicates or an unresolved operation that was never reached. Its only operational fold returns the frozen
+unresolved cleanup order. It exposes no store, Mode transition, root-authority constructor, or Destroy verb,
+and exact retry must reproduce every retained report and reachability coordinate.
 
 The target coordinator admits every planned or recovery edge into `RootedPlanCatalog` before launching a
 sealed Process/Receiver bracket, opens one `RootedFrameSession` per exact frame, and issues
 `PreparedNodeGrant` only after durable Unknown. Observations settle at the root, and terminal receipt follows
 Published → signed `FrameComplete` → `ReceiptConfirm` → Received → signed `ReceiptRecorded`. Successful
 reverse completion then terminalizes and rearms the durable root intent; failed-Up unwind uses the same
-child-first driver while retaining its original failure as a distinct origin. The forest still carries every
+durable Prepared/Bound child-first recovery driver while the Up command and cursor remain at Execute. The
+forward failure and reverse unwind publish separate canonical terminal records; cleanup failure does not
+replace the retained original error. The forest still carries every
 frame level, and one memoized descent settles the deeper ones; the phantom index, rather than the forest's
 contents, makes the boundary hold. Cleanup aggregates failures, and neither
 verb places the plan's data path in its cluster-teardown removal set — `down`'s removal set is empty and
 `destroy`'s holds only derived paths. The demo creates host
 `<project-root>/.data` and carries it through provider shares and the stable Linux alias, so provider
 deletion does not intentionally delete that host directory. End-to-end destroy/up/readback remains
-unvalidated; see [durable_state](durable_state.md). A failed `project up` attempts best-effort root cleanup. An external
-hard kill runs no teardown, and the next run is not proven to converge every partially owned resource.
+unvalidated; see [durable_state](durable_state.md). An external hard kill runs no teardown, and cross-process
+restart convergence of every partially owned resource remains a Phase 18 recovery concern.
 See
 [`HostBootstrap.Lift`](hostbootstrap_core_library.md).
 
@@ -450,6 +567,18 @@ recover by replay + refetch rather than by holding authoritative local state. Th
 verification, and one-use lifecycle admission yield the sole initial Prereq cursor; the core-owned runner
 privately drives Prereq → Acquire → Ready → Serve → Drain → Exit. The concrete bus/store/role primitives
 are L1's delta.
+
+The role admission key is a bounded domain-separated digest of the signed plan/frame/revision and measured
+instance. Its durable row moves from `Reserved <role-plan-digest>` to `Consumed <role-plan-digest>`.
+A lost reservation acknowledgement rehydrates the same version-bound reservation; a lost cursor-delivery
+acknowledgement reports `RoleAdmissionOpenUnknown`, and `resumeRuntimeRolePlanOpen` reconstructs only that
+same consumed lineage. The nominal plan, binding, placement, effect authorization, and cursor indices cannot
+be coerced across identities. The initial cursor is one-use even in-process. Callback results are forced
+inside the masked exception boundary; a caught asynchronous exception becomes the phase's typed failure and
+the runner still reaches Drain. For an unknown acquisition, the release callback's deliberately narrow
+contract is a total idempotent reprobe-and-release: only `Released` resolves the unknown; failure retains it
+in the exit report. An orderly `ServeShutdown` is clean exactly when Drain has no failure or unresolved
+resource, matching `roleExitReportOk`.
 
 The invariant: **stateless roles + durable external stores + topic-as-contract = repeatable composition
 without mutable coordination.** "Bring up a cluster" declares in-cluster services; "run a pipeline"
@@ -1157,10 +1286,12 @@ standardized harness.
 The current `context-init` action body only announces a frame anchor. VM projection/streaming happens
 inside the composite bootstrap action; the container projection is carried by the descent that same
 `context-init` step declares (`descendsVia`), so the announcing node and the bytes the child receives
-are one plan value rather than two independently supplied ones; and service config uses a ConfigMap. The
+are one plan value rather than two independently supplied ones; and service config is carried by the exact
+chart transaction's ConfigMap template. The
 target plan additionally makes projection, authentication, durable preparation, and delivery one
-operation. `deploy-kind`/`deploy-chart`
-bring up the cluster and workload; `deploy-minio` creates registry backing before
+operation. `deploy-kind` registers the acknowledged cluster package after fresh readiness, and `deploy-chart`
+opens that package from its own execution descriptor before the producer-owned service runs the exact Helm and
+Deployment-rollout transaction. `deploy-minio` creates registry backing before
 `deploy-registry`/`push-image` install the in-cluster registry and push
 the project image; `context inspect` renders the topology with the current frame marked.
 
@@ -1183,6 +1314,29 @@ payload both still match; anything else is a reported conflict and is left intac
 is therefore refused rather than treated as harness input. See
 [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md) and
 [generic_project_model.md](generic_project_model.md).
+
+## Activated service composition
+
+`service run` is the leaf-runtime join, not another project-plan interpreter. The platform supplies three
+absolute coordinates: `HOSTBOOTSTRAP_SERVICE_ACTIVATION` names one immutable digest-addressed revision,
+`HOSTBOOTSTRAP_ACTIVATION_KEY` names the independently installed public key, and
+`HOSTBOOTSTRAP_AUTHORITY_STORE` names the protected store whose identity the activation retains. Kubernetes
+also supplies `HOSTBOOTSTRAP_POD_UID` plus `HOSTBOOTSTRAP_CONTAINER_RESTART_COUNT`; a host service supplies
+the mutually exclusive `HOSTBOOTSTRAP_SERVICE_INVOCATION_NONCE`.
+
+The command hashes its own executable and the installer-owned role/config and private-bundle bytes. Signature,
+revision identity, key equality, manifest equality, binary/config/secret measurements, concrete instance, and
+protected-store origin must all agree before registry selection. The signed specification digest then authorizes
+the one internal nominal reindex of the finalized registry. Selection uses only the activation's service identity
+and narrowed role wire; the sibling full project config is neither opened nor passed to the handler.
+
+One `serviceProgramDefinition` packages its immutable role draft, acquisition/probe/release backend, declared
+type-level effect row, payload-family backend, role codec, and `RoleParams -> ServiceProgram` handler. Plan opening
+consumes the exact decoded `ValidatedServiceRequest`, retaining its config, secret, specification, and service
+indices through `VerifiedServicePlacement`. `authorizeServiceEffects` can therefore mint only the authorization
+for that definition's row, and `interpretServiceProgramWithReady` receives only the resource handles which the
+engine acquired and probed. A lost Reserved→Consumed acknowledgment reopens that same request-indexed plan; a
+different request, frame, service, instance, store, effect ceiling, or specification refuses before acquisition.
 
 ## Foundational Principles
 

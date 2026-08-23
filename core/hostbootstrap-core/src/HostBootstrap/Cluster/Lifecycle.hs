@@ -17,6 +17,19 @@ module HostBootstrap.Cluster.Lifecycle (
     ClusterPackageError (..),
     PlanOwnedCluster,
     withPlanOwnedCluster,
+    withExecutionOwnedCluster,
+    PlanOwnedClusterConfig,
+    withPlanOwnedClusterConfig,
+    planOwnedClusterConfigBase,
+    planOwnedClusterConfigDriver,
+    planOwnedClusterConfigBytes,
+    planOwnedClusterConfigDigest,
+    planOwnedClusterConfigStatePath,
+    planOwnedRenderedConfigPath,
+    planOwnedClusterConfigLoopbackPorts,
+    planOwnedClusterConfigNodeMappings,
+    planOwnedClusterConfigWorkloadSlice,
+    withPlanOwnedClusterPreparation,
     planOwnedClusterName,
     planOwnedClusterStateDirectory,
     planOwnedClusterDurableRoot,
@@ -66,10 +79,17 @@ where
 import Control.Exception (SomeException, displayException)
 import Control.Exception.Safe (try)
 import Control.Monad (forM_, unless, when)
+import Crypto.Hash (Digest, SHA256, hash)
+import Data.ByteArray.Encoding (Base (Base16), convertToBase)
+import Data.ByteString (ByteString)
+import qualified Data.ByteString as ByteString
 import Data.Char (isAlphaNum)
+import Data.List (nub)
 import Data.Maybe (catMaybes, maybeToList)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TextEncoding
+import Numeric.Natural (Natural)
 import HostBootstrap.Cluster.Budget
     ( ResourceSlice
     , resourceSliceBudget
@@ -91,6 +111,18 @@ import HostBootstrap.Ensure (runTool)
 import qualified HostBootstrap.Ensure.Cuda as Cuda
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Docker, Helm, Kind, Kubectl, Nvkind))
+import HostBootstrap.Lifecycle.Execution.Internal
+    ( StepExecution
+    , executionNodeDependencies
+    , executionNodeFrame
+    , executionNodeOperationKey
+    , planExecutionPackageNode
+    , planExecutionPackageProfile
+    , planExecutionPackageProject
+    , planExecutionPackageRoot
+    , stepExecutionPackage
+    , stepExecutionPlanDigest
+    )
 import HostBootstrap.Readiness (ProbeResult (..), nodePoll, pollUntilReady)
 import HostBootstrap.ProjectPlan
     ( ClusterResource
@@ -205,8 +237,47 @@ data PlanOwnedCluster
         ClusterPlan
         Text
         (Text, Text)
+    | ExecutionOwnedCluster
+        (StepExecution scope planId)
+        (PlannedResource scope planId clusterId ClusterResource clusterFrame)
+        (PlannedResource scope planId providerId ProviderResource providerFrame)
+        ( ResourceSlice
+            scope
+            planId
+            budgetId
+            provider
+            capabilityId
+            wallSpecId
+            workloadSetId
+            partitionId
+            clusterFrame
+            clusterId
+        )
+        ClusterPlan
+        Text
+        (Text, Text)
 
 type role PlanOwnedCluster nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
+
+{- | Exact rendered configuration attached to one admitted cluster package.
+
+The constructor is hidden. The value retains every descriptive input that a
+backend may observe, so preparation cannot select a driver or reread an
+independently resolved configuration.
+-}
+data PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId
+    = PlanOwnedClusterConfig
+        (PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId)
+        ClusterDriver
+        ByteString
+        Text
+        FilePath
+        FilePath
+        [(Text, Natural)]
+        [(Text, Text)]
+        [Text]
+
+type role PlanOwnedClusterConfig nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
 
 {- | Join the one admitted plan to its exact cluster resource, direct provider
 dependency, retained topology, and cluster budget slice.
@@ -289,6 +360,143 @@ withPlanOwnedCluster plan cluster provider suppliedTopology slice = do
         | condition = Right ()
         | otherwise = Left (ClusterPackageMismatch detail)
 
+{- | Join the executing cluster node to the exact resource/dependency metadata
+projected into its opaque descriptor. This is the action-side peer of
+'withPlanOwnedCluster': it reconstructs no sibling plan and accepts no caller
+plan digest, profile, project, root, frame, or dependency list.
+-}
+withExecutionOwnedCluster ::
+    StepExecution scope planId ->
+    PlannedResource scope planId clusterId ClusterResource clusterFrame ->
+    PlannedResource scope planId providerId ProviderResource providerFrame ->
+    ResourceSlice scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId clusterFrame clusterId ->
+    Either ClusterPackageError (PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId)
+withExecutionOwnedCluster execution cluster provider slice = do
+    requirePackage "the executing node is not the exact cluster resource" (plannedResourceKey cluster == operation && plannedResourceFrame cluster == frame)
+    requirePackage "the provider is not an exact dependency of the executing cluster node" ((plannedResourceKey provider, plannedResourceFrame provider) `elem` dependencies)
+    requirePackage "the supplied budget slice belongs to another cluster resource" (resourceSliceName slice == T.unpack (plannedResourceKey cluster) && resourceSliceFrame slice == T.unpack frame)
+    profile <- profileFromPlanName (planExecutionPackageProfile package)
+    let resolved = absolutizeClusterConfig (planExecutionPackageRoot package) (resolvePlan (T.unpack (planExecutionPackageProject package)) (planExecutionPackageRoot package) profile)
+        owner = stepExecutionPlanDigest execution <> ":" <> plannedResourceKey cluster
+    pure (ExecutionOwnedCluster execution cluster provider slice resolved owner (plannedResourceFrame provider, frame))
+  where
+    package = stepExecutionPackage execution
+    node = planExecutionPackageNode package
+    operation = executionNodeOperationKey node
+    frame = executionNodeFrame node
+    dependencies = executionNodeDependencies node
+    requirePackage detail condition
+        | condition = Right ()
+        | otherwise = Left (ClusterPackageMismatch detail)
+
+{- | Bind canonical rendered output to an already joined plan-owned cluster.
+
+The binder derives paths and node identities from the base package and closed
+driver. Callers may submit rendered material for checking, but cannot choose an
+independent cluster name, durable root, or placement.
+-}
+withPlanOwnedClusterConfig ::
+    PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId ->
+    ClusterDriver ->
+    ByteString ->
+    Text ->
+    FilePath ->
+    FilePath ->
+    [(Text, Natural)] ->
+    [(Text, Text)] ->
+    [Text] ->
+    (PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> result) ->
+    Either ClusterPackageError result
+withPlanOwnedClusterConfig base driver bytes suppliedDigest suppliedState suppliedPath ports mappings workload consume = do
+    requireConfig (not (nullBytes bytes)) "the canonical cluster config is empty"
+    requireConfig (ByteString.length bytes <= 1048576) "the canonical cluster config exceeds 1 MiB"
+    requireConfig (suppliedDigest == digestBytes bytes) "the canonical cluster config digest disagrees with its bytes"
+    requireConfig (suppliedState == expectedState) "the cluster state path disagrees with the plan-owned durable root and driver"
+    requireConfig (suppliedPath == expectedPath) "the cluster config path disagrees with the plan-owned durable root and driver"
+    requireConfig (not (null ports)) "the loopback publication set is empty"
+    requireConfig (unique (map fst ports) && unique (map snd ports)) "the loopback publication set contains a duplicate"
+    requireConfig (all (\(_, port) -> port >= 1 && port <= 65535) ports) "the loopback publication set contains an out-of-range port"
+    requireConfig (mappings == expectedMappings) "the node mapping disagrees with the closed driver"
+    requireConfig (not (null workload) && unique workload) "the workload slice is empty or contains a duplicate"
+    pure (consume (PlanOwnedClusterConfig adjusted driver bytes suppliedDigest suppliedState suppliedPath ports mappings workload))
+  where
+    driverName = case driver of
+        KindDriver -> "kind"
+        NvkindDriver -> "nvkind"
+    durableRoot = planOwnedClusterDurableRoot base
+    expectedState = durableRoot </> "cluster" </> driverName </> "state"
+    expectedPath = durableRoot </> "cluster" </> driverName </> "config.yaml"
+    expectedMappings =
+        [ (T.pack suffix, T.pack (planOwnedClusterName base ++ "-" ++ suffix))
+        | suffix <- driverNodeSuffixes driver
+        ]
+    adjusted = setPlanOwnedClusterRendering driver suppliedState suppliedPath base
+    unique values = length values == length (nub values)
+    nullBytes = ByteString.null
+    digestBytes = TextEncoding.decodeUtf8 . convertToBase Base16 . (hash :: ByteString -> Digest SHA256)
+    requireConfig condition detail
+        | condition = Right ()
+        | otherwise = Left (ClusterPackageMismatch detail)
+
+setPlanOwnedClusterRendering ::
+    ClusterDriver ->
+    FilePath ->
+    FilePath ->
+    PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId ->
+    PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId
+setPlanOwnedClusterRendering driver statePath configPath (PlanOwnedCluster plan cluster provider topologyProjection slice resolved owner placement) =
+    PlanOwnedCluster
+        plan
+        cluster
+        provider
+        topologyProjection
+        slice
+        resolved
+            { derivedPaths = [statePath]
+            , clusterDriver = driver
+            , clusterConfigFile = Just configPath
+            , clusterNodeSuffixes = driverNodeSuffixes driver
+            }
+        owner
+        placement
+setPlanOwnedClusterRendering driver statePath configPath (ExecutionOwnedCluster execution cluster provider slice resolved owner placement) =
+    ExecutionOwnedCluster execution cluster provider slice resolved{derivedPaths = [statePath], clusterDriver = driver, clusterConfigFile = Just configPath, clusterNodeSuffixes = driverNodeSuffixes driver} owner placement
+
+planOwnedClusterConfigBase :: PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId
+planOwnedClusterConfigBase (PlanOwnedClusterConfig base _ _ _ _ _ _ _ _) = base
+
+planOwnedClusterConfigDriver :: PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> ClusterDriver
+planOwnedClusterConfigDriver (PlanOwnedClusterConfig _ driver _ _ _ _ _ _ _) = driver
+
+planOwnedClusterConfigBytes :: PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> ByteString
+planOwnedClusterConfigBytes (PlanOwnedClusterConfig _ _ bytes _ _ _ _ _ _) = bytes
+
+planOwnedClusterConfigDigest :: PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> Text
+planOwnedClusterConfigDigest (PlanOwnedClusterConfig _ _ _ digest _ _ _ _ _) = digest
+
+planOwnedClusterConfigStatePath :: PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> FilePath
+planOwnedClusterConfigStatePath (PlanOwnedClusterConfig _ _ _ _ statePath _ _ _ _) = statePath
+
+planOwnedRenderedConfigPath :: PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> FilePath
+planOwnedRenderedConfigPath (PlanOwnedClusterConfig _ _ _ _ _ configPath _ _ _) = configPath
+
+planOwnedClusterConfigLoopbackPorts :: PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> [(Text, Natural)]
+planOwnedClusterConfigLoopbackPorts (PlanOwnedClusterConfig _ _ _ _ _ _ ports _ _) = ports
+
+planOwnedClusterConfigNodeMappings :: PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> [(Text, Text)]
+planOwnedClusterConfigNodeMappings (PlanOwnedClusterConfig _ _ _ _ _ _ _ mappings _) = mappings
+
+planOwnedClusterConfigWorkloadSlice :: PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> [Text]
+planOwnedClusterConfigWorkloadSlice (PlanOwnedClusterConfig _ _ _ _ _ _ _ _ workload) = workload
+
+withPlanOwnedClusterPreparation ::
+    PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId ->
+    (ProjectPlan scope specDigest planId configId cfg -> PlannedResource scope planId clusterId ClusterResource clusterFrame -> result) ->
+    (StepExecution scope planId -> PlannedResource scope planId clusterId ClusterResource clusterFrame -> result) ->
+    result
+withPlanOwnedClusterPreparation (PlanOwnedCluster plan cluster _ _ _ _ _ _) fromPlan _ = fromPlan plan cluster
+withPlanOwnedClusterPreparation (ExecutionOwnedCluster execution cluster _ _ _ _ _) _ fromExecution = fromExecution execution cluster
+
 profileFromPlanName :: Text -> Either ClusterPackageError ClusterProfile
 profileFromPlanName "production" = Right Production
 profileFromPlanName profileName =
@@ -319,37 +527,50 @@ absolutizeClusterConfig root resolved =
 
 planOwnedClusterName :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> String
 planOwnedClusterName (PlanOwnedCluster _ _ _ _ _ resolved _ _) = clusterName resolved
+planOwnedClusterName (ExecutionOwnedCluster _ _ _ _ resolved _ _) = clusterName resolved
 
 planOwnedClusterStateDirectory :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> FilePath
 planOwnedClusterStateDirectory (PlanOwnedCluster _ _ _ _ _ resolved _ _) =
     case derivedPaths resolved of
         stateDirectory : _ -> stateDirectory
         [] -> error "a resolved cluster plan must retain one derived state directory"
+planOwnedClusterStateDirectory (ExecutionOwnedCluster _ _ _ _ resolved _ _) =
+    case derivedPaths resolved of
+        stateDirectory : _ -> stateDirectory
+        [] -> error "a resolved cluster plan must retain one derived state directory"
 
 planOwnedClusterDurableRoot :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> FilePath
 planOwnedClusterDurableRoot (PlanOwnedCluster _ _ _ _ _ resolved _ _) = dataPath resolved
+planOwnedClusterDurableRoot (ExecutionOwnedCluster _ _ _ _ resolved _ _) = dataPath resolved
 
 planOwnedClusterPublishesHostPorts :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> Bool
 planOwnedClusterPublishesHostPorts (PlanOwnedCluster _ _ _ _ _ resolved _ _) = publishesHostPorts resolved
+planOwnedClusterPublishesHostPorts (ExecutionOwnedCluster _ _ _ _ resolved _ _) = publishesHostPorts resolved
 
 planOwnedClusterConfigPath :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> Maybe FilePath
 planOwnedClusterConfigPath (PlanOwnedCluster _ _ _ _ _ resolved _ _) = clusterConfigFile resolved
+planOwnedClusterConfigPath (ExecutionOwnedCluster _ _ _ _ resolved _ _) = clusterConfigFile resolved
 
 planOwnedClusterPlacement :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> (Text, Text)
 planOwnedClusterPlacement (PlanOwnedCluster _ _ _ _ _ _ _ placement) = placement
+planOwnedClusterPlacement (ExecutionOwnedCluster _ _ _ _ _ _ placement) = placement
 
 planOwnedClusterProviderKey :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> Text
 planOwnedClusterProviderKey (PlanOwnedCluster _ _ provider _ _ _ _ _) = plannedResourceKey provider
+planOwnedClusterProviderKey (ExecutionOwnedCluster _ _ provider _ _ _ _) = plannedResourceKey provider
 
 planOwnedClusterOwnershipIdentity :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> Text
 planOwnedClusterOwnershipIdentity (PlanOwnedCluster _ _ _ _ _ _ owner _) = owner
+planOwnedClusterOwnershipIdentity (ExecutionOwnedCluster _ _ _ _ _ owner _) = owner
 
 planOwnedClusterBudget :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> ResourceBudget
 planOwnedClusterBudget (PlanOwnedCluster _ _ _ _ slice _ _ _) = resourceSliceBudget slice
+planOwnedClusterBudget (ExecutionOwnedCluster _ _ _ slice _ _ _) = resourceSliceBudget slice
 
 planOwnedClusterNodeNames :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> [String]
 planOwnedClusterNodeNames (PlanOwnedCluster _ _ _ _ _ resolved _ _) =
     clusterNodeNames resolved
+planOwnedClusterNodeNames (ExecutionOwnedCluster _ _ _ _ resolved _ _) = clusterNodeNames resolved
 
 -- | Resolve a cluster plan for a project, rooted at @root@, under a profile.
 resolvePlan :: String -> FilePath -> ClusterProfile -> ClusterPlan

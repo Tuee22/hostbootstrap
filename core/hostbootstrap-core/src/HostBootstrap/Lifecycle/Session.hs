@@ -169,6 +169,14 @@ module HostBootstrap.Lifecycle.Session (
     interpretedRecoveryOperations,
     interpretRecordedSessions,
 
+    -- * Broker-bound resource recovery
+    RehydratedResourceSet,
+    RehydratedResourceHandle,
+    RehydratedOwnershipReceipt,
+    RehydratedReleasedTombstone,
+    withRehydratedResourceSet,
+    foldRehydratedResourceSet,
+
     -- * Current-broker admission
     CurrentBrokerSessionAdmission,
     admissionPlanDigest,
@@ -259,6 +267,15 @@ import HostBootstrap.ProjectPlan.Frame (
     ProjectFrame,
     projectFrameId,
  )
+import HostBootstrap.Lifecycle.ResourceRecord
+    ( RehydratedOwnershipReceipt
+    , RehydratedReleasedTombstone
+    , RehydratedResourceHandle
+    , RehydratedResourceSet
+    , VerifiedResourceRecordSet
+    , foldRehydratedResourceSetKernel
+    , rehydrateResourceRecordSetKernel
+    )
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
     ProtectedError,
@@ -281,6 +298,30 @@ import HostBootstrap.Protected (
     sessionStoreIdentity,
     withProtectedEntry,
  )
+
+withRehydratedResourceSet ::
+    ProtectedSession session ->
+    BrokerEpoch brokerGeneration ->
+    VerifiedResourceRecordSet scope planId ->
+    (RehydratedResourceSet scope planId brokerGeneration -> result) ->
+    Either SessionError result
+withRehydratedResourceSet session epoch verified consume =
+    either
+        (Left . SessionRecordCorrupt . ("resource rehydration: " <>))
+        (Right . consume)
+        ( rehydrateResourceRecordSetKernel
+            (protectedStoreIdentityText (sessionStoreIdentity session))
+            (brokerEpochWord epoch)
+            verified
+        )
+
+foldRehydratedResourceSet ::
+    RehydratedResourceSet scope planId brokerGeneration ->
+    result ->
+    (forall id. result -> RehydratedResourceHandle scope planId id brokerGeneration -> RehydratedOwnershipReceipt scope planId id brokerGeneration -> result) ->
+    (forall id. result -> RehydratedReleasedTombstone scope planId id brokerGeneration -> result) ->
+    (Text, result)
+foldRehydratedResourceSet = foldRehydratedResourceSetKernel
 
 -- ---------------------------------------------------------------------------
 -- The project journal
@@ -2430,7 +2471,10 @@ rootedFrameSessionKeyKernel rootPlanDigest catalogIdentity frame = do
     lineage <- recordName rootPlanDigest
     catalog <- recordName catalogIdentity
     named <- recordName frame
-    keyFor ("rooted-frame-session." <> lineage <> "." <> catalog <> "." <> named)
+    keyFor
+        ( "rooted-frame-session."
+            <> rootedCoordinateDigest [lineage, catalog, named]
+        )
 
 {- | Publish one root-opened rooted frame session row, or converge on it.
 
@@ -2526,7 +2570,10 @@ rootedNodeUnknownKeyKernel rootPlanDigest catalogIdentity frame operation = do
     catalog <- recordName catalogIdentity
     named <- recordName frame
     op <- recordName operation
-    keyFor ("rooted-node-unknown." <> lineage <> "." <> catalog <> "." <> named <> "." <> op)
+    keyFor
+        ( "rooted-node-unknown."
+            <> rootedCoordinateDigest [lineage, catalog, named, op]
+        )
 
 {- | Derive the durable key one rooted node settlement is addressed by.
 
@@ -2542,9 +2589,21 @@ rootedSettlementKeyKernel rootPlanDigest catalogIdentity frame node ordinal = do
     settled <- recordName node
     at <- recordName (Text.pack (show ordinal))
     keyFor
-        ( "rooted-node-settlement." <> lineage <> "." <> catalog <> "." <> named
-            <> "." <> settled <> "." <> at
+        ( "rooted-node-settlement."
+            <> rootedCoordinateDigest [lineage, catalog, named, settled, at]
         )
+
+{- | Hash an already-validated rooted coordinate tuple into one bounded key
+component. NUL cannot occur in a record-name component, so the framing is
+injective before SHA-256 is applied; changing any coordinate changes the
+durable identity without letting long plan or catalog digests exceed the
+protected store's 200-character key limit.
+-}
+rootedCoordinateDigest :: [Text] -> Text
+rootedCoordinateDigest =
+    sha256Hex
+        . TextEncoding.encodeUtf8
+        . Text.intercalate "\NUL"
 
 {- | Publish one exact rooted unknown row and read back what the store holds.
 
@@ -2728,7 +2787,8 @@ operationKeyFor planDigest (SessionId sid) opKey = do
 
 operationPrefixFor :: Text -> SessionId -> Either SessionError Text
 operationPrefixFor planDigest (SessionId sid) = do
-    digest <- recordName planDigest
+    _ <- recordName planDigest
+    let digest = sha256Hex (TextEncoding.encodeUtf8 planDigest)
     name <- recordName sid
     pure ("op." <> digest <> "." <> name <> ".")
 
@@ -3409,7 +3469,8 @@ under.
 -}
 operationKeyNamespace :: Text -> Either SessionError Text
 operationKeyNamespace planDigest = do
-    digest <- recordName planDigest
+    _ <- recordName planDigest
+    let digest = sha256Hex (TextEncoding.encodeUtf8 planDigest)
     pure ("op." <> digest <> ".")
 
 {- | Read one operation record by its raw store key, recovering the session and

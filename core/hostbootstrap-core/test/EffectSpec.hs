@@ -31,6 +31,7 @@ import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (AbsExe, HostTool (Docker, Lima), mkAbsExe)
 import HostBootstrap.Lift (
     ContainerLift (..),
+    ContainerPlacement (ProviderGuestContainer),
     LiftLeaf (RawCmd),
     LimaVM (LimaVM),
     foldLeafCommand,
@@ -103,7 +104,7 @@ tests =
                     , SourceGuard.countHaskellTokenSequence ["runBoundedGrouped", "::"] source > 0
                     ]
             sites @?= [runnerPath]
-        , testCase "process-group teardown belongs to the three group owners" $ do
+        , testCase "process-group teardown belongs to the declared group owners" $ do
             sources <- commandComposingSources
             let sites =
                     [ path
@@ -190,6 +191,7 @@ tests =
     container =
         ContainerLift
             { clImage = "demo:latest"
+            , clPlacement = ProviderGuestContainer
             , clMounts = []
             , clExtraArgs = []
             , clRemoveAfter = True
@@ -217,6 +219,7 @@ stdio disposition, which is exactly what § KK admits one runner to prevent.
 launchBoundaries :: [FilePath]
 launchBoundaries =
     [ runnerPath
+    , colimaRunnerPath
     , "core/hostbootstrap-core/src/HostBootstrap/Detached.hs"
     , handoffProcessPath
     , handoffTransactionPath
@@ -241,12 +244,16 @@ conditionalized, so no host family loses the far side of a crossing (§ JJ).
 handoffTransactionPath :: FilePath
 handoffTransactionPath = "core/hostbootstrap-core/src/HostBootstrap/Handoff/Transaction.hs"
 
-{- | Every module allowed to signal a process group. Three, because three
-boundaries own a group; a fourth would be a teardown nobody compared with
+{- | Every module allowed to signal a process group. Each listed boundary owns
+the group it terminates; another site would be a teardown nobody compared with
 these.
 -}
 groupOwners :: [FilePath]
-groupOwners = [runnerPath, handoffProcessPath, handoffTransactionPath]
+groupOwners = [runnerPath, colimaRunnerPath, handoffProcessPath, handoffTransactionPath]
+
+-- | The shipped Colima command transaction owns the group it kills on parent death.
+colimaRunnerPath :: FilePath
+colimaRunnerPath = "core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Runner.hs"
 
 -- | The one interpreter for the closed effect vocabulary (§ KK).
 interpreterPath :: FilePath

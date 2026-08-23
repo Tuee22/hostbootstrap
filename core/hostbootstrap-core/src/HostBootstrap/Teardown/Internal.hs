@@ -3,6 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RoleAnnotations #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 {- | Package-private durable preparation of one exact reverse descent.
 
@@ -13,9 +14,14 @@ entry and records the canonical recovery adapter before an edge exists.
 module HostBootstrap.Teardown.Internal
     ( ReverseDescent
     , withReverseDescentLiftContextKernel
+    , withReverseDescentProcessInputsKernel
+    , withPreparedReverseForestKernel
+    , withPreparedReverseAdmissionsKernel
+    , renderPreparedReverseTerminalOriginKernel
     , withPreparedReverseDescentKernel
     , withBoundReverseDescentKernel
     , withRehydratedBoundReverseDescentKernel
+    , withRehydratedAdoptedReverseDescentKernel
     , withVerifiedBoundReverseDescentReportKernel
     , withVerifiedBoundReverseDescentObservationsKernel
     , withVerifiedReverseAdapterKernel
@@ -25,6 +31,7 @@ where
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
+import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.List (nub)
 import Data.Text (Text)
@@ -36,8 +43,10 @@ import HostBootstrap.Authority.Kernel (rootAuthorityStoreIdentity)
 import HostBootstrap.Handoff
 import HostBootstrap.Handoff.Internal (RecoverySigningKernel, consumeRecoverySigningKernel)
 import HostBootstrap.Handoff.Recovery
-    ( recoveryChildPackageKernel
+    ( recoveryChildPackageFromWireKernel
+    , recoveryChildPackageKernel
     , renderRecoveryChildPackageKernel
+    , withRecoveryChildPackageKernel
     )
 import HostBootstrap.Lifecycle.Context (ValidatedLifecycleContext)
 import HostBootstrap.Lifecycle.Context.Internal (withValidatedRootLifecycleContext)
@@ -67,11 +76,11 @@ data ReverseDescent
         RootInvocationAuthority scope brokerGeneration verb ->
         ProjectVerb verb ->
         ProjectPlan scope specDigest planId configId cfg ->
-        ValidatedLifecycleContext scope specDigest planId configId parentFrame ->
+        ValidatedLifecycleContext scope specDigest planId configId rootFrame ->
         AcquisitionJournal scope planId brokerGeneration ->
-        LifecycleCursor scope planId parentFrame brokerGeneration verb TeardownPhase ->
-        CommandAuthority scope planId parentFrame brokerGeneration verb TeardownPhase ->
-        IO (Either AuthorityError (CommandAuthority scope planId parentFrame brokerGeneration verb TeardownPhase)) ->
+        LifecycleCursor scope planId rootFrame brokerGeneration verb phase ->
+        CommandAuthority scope planId rootFrame brokerGeneration verb phase ->
+        IO (Either AuthorityError (CommandAuthority scope planId rootFrame brokerGeneration verb phase)) ->
         DescentWork scope planId parentFrame childFrame verb ->
         HandoffBindingInput ->
         ByteString ->
@@ -119,6 +128,127 @@ withReverseDescentLiftContextKernel reverseDescent use = case reverseDescent of
                             pure (Left "the retained descent subtree has a different reverse verb")
                         | otherwise -> context `seq` use context
 
+{- | Recover the exact opaque package and route inputs retained by preparation.
+Canonical decoding happens inside the owning module; callers receive neither
+raw package bytes nor a constructor.
+-}
+withReverseDescentProcessInputsKernel ::
+    ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId ->
+    (RecoveryChildPackage -> LiftContext -> HandoffBindingInput -> ProjectVerb verb -> IO (Either Text ())) ->
+    IO (Either Text ())
+withReverseDescentProcessInputsKernel descent use =
+    withReverseDescentLiftContextKernel descent $ \route -> case descent of
+        PreparedReverseDescent _ verb _ _ _ _ _ _ _ input package _ _ _ _ _ _ _ ->
+            case recoveryChildPackageFromWireKernel package of
+                Left failure -> pure (Left failure)
+                Right recovered -> use recovered route input verb
+
+{- | Open the exact child projection retained by prepared descent.
+
+The projection and forest remain continuation-bound to the hidden descent
+index, so a rooted service can schedule this child without reconstructing its
+plan position from descriptive frame text.
+-}
+withPreparedReverseForestKernel ::
+    ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId ->
+    ( TeardownPlan scope planId childFrame verb ->
+      TeardownForest scope planId childFrame verb ->
+      result
+    ) ->
+    Either TeardownError result
+withPreparedReverseForestKernel
+    (PreparedReverseDescent _ _ _ _ _ _ _ _ descent _ _ _ _ _ _ _ _ _)
+    use =
+        withDescentWorkSubtree descent $ \projection -> do
+            forest <- openTeardownForest projection
+            pure (use projection forest)
+
+{- | Lend the exact edge and recovery admissions retained by preparation.
+
+The callbacks compare canonical binding input and the independently signed
+recovery coordinates before returning the package's canonical adapter. They
+remain lexical to the prepared value and expose neither package bytes nor a
+constructor.
+-}
+withPreparedReverseAdmissionsKernel ::
+    ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId ->
+    ( (HandoffBindingInput -> IO (Either Text ())) ->
+      ( forall planDigest recoveryParent recoveryChild.
+        RecoveryProjectionBindingInput planDigest recoveryParent recoveryChild ->
+        IO (Either Text ByteString)
+      ) ->
+      result
+    ) ->
+    result
+withPreparedReverseAdmissionsKernel
+    (PreparedReverseDescent _ _ _plan _ _ _ _ _ descent expectedInput package _ _ _ _ _ _ _)
+    use =
+        use admitEdge admitRecovery
+  where
+    parent = descentWorkParentFrame descent
+    child = descentWorkChildFrame descent
+    digest = requestedPlanRevision expectedInput
+
+    admitEdge observed =
+        pure $
+            if renderHandoffBindingInput observed == renderHandoffBindingInput expectedInput
+                then Right ()
+                else Left "the requested reverse edge differs from its prepared binding input"
+
+    admitRecovery :: forall planDigest recoveryParent recoveryChild.
+        RecoveryProjectionBindingInput planDigest recoveryParent recoveryChild ->
+        IO (Either Text ByteString)
+    admitRecovery observed
+        | requestedRecoveryPlanDigest observed /= digest = refused "the recovery plan digest differs"
+        | requestedRecoveryParentFrame observed /= parent = refused "the recovery parent frame differs"
+        | requestedRecoveryChildFrame observed /= child = refused "the recovery child frame differs"
+        | otherwise =
+            pure $ do
+                recovered <- recoveryChildPackageFromWireKernel package
+                Right (withRecoveryChildPackageKernel recovered (\_ adapter -> adapter))
+
+    refused = pure . Left
+
+{- | Render the reverse terminal origin predicted by one prepared descent and
+the exact binding the root retained for its Offer. This is the root-side twin
+of the recovery child's sealed origin renderer.
+-}
+renderPreparedReverseTerminalOriginKernel ::
+    ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId ->
+    ByteString ->
+    Either Text ByteString
+renderPreparedReverseTerminalOriginKernel
+    (PreparedReverseDescent _ verb _plan _ journal cursor authority _ descent input _ packageDigest _ _ _ _ _ _)
+    binding = do
+        require "the retained binding is empty" (not (ByteString.null binding))
+        require "the binding child differs" (requestedChildFrame input == descentWorkChildFrame descent)
+        let digest = requestedPlanRevision input
+            frame = descentWorkChildFrame descent
+            closed = projectVerbName verb
+        pure . ByteString.concat . map frameWire $
+            [ "child-recovery-terminal-origin-v1"
+            , "1"
+            , binding
+            , TextEncoding.encodeUtf8 digest
+            , TextEncoding.encodeUtf8 digest
+            , TextEncoding.encodeUtf8 (invocationIdText (commandAuthorityInvocation authority))
+            , word (acquisitionJournalRecordVersion journal)
+            , word (lifecycleCursorRecordVersion cursor)
+            , TextEncoding.encodeUtf8 frame
+            , word (brokerEpochWord (commandAuthorityEpoch authority))
+            , TextEncoding.encodeUtf8 closed
+            , TextEncoding.encodeUtf8 (projectVerbName (commandAuthorityVerb authority))
+            , TextEncoding.encodeUtf8 (lifecyclePhaseName (commandAuthorityPhase authority))
+            , TextEncoding.encodeUtf8 frame
+            , TextEncoding.encodeUtf8 closed
+            , TextEncoding.encodeUtf8 packageDigest
+            ]
+  where
+    word = ByteStringChar8.pack . show
+    require failure accepted
+        | accepted = Right ()
+        | otherwise = Left failure
+
 {- | Prepare one exact root-entry descent, or return its unchanged work.
 
 The hidden admission is scrutinized before any retained term. Exact command
@@ -139,11 +269,11 @@ withPreparedReverseDescentKernel ::
     ProjectVerb verb ->
     ProjectPlan scope specDigest planId configId cfg ->
     RootedPlanCatalog scope planId brokerGeneration catalogId ->
-    ValidatedLifecycleContext scope specDigest planId configId parentFrame ->
+    ValidatedLifecycleContext scope specDigest planId configId rootFrame ->
     AcquisitionJournal scope planId brokerGeneration ->
-    LifecycleCursor scope planId parentFrame brokerGeneration verb TeardownPhase ->
-    CommandAuthority scope planId parentFrame brokerGeneration verb TeardownPhase ->
-    IO (Either AuthorityError (CommandAuthority scope planId parentFrame brokerGeneration verb TeardownPhase)) ->
+    LifecycleCursor scope planId rootFrame brokerGeneration verb phase ->
+    CommandAuthority scope planId rootFrame brokerGeneration verb phase ->
+    IO (Either AuthorityError (CommandAuthority scope planId rootFrame brokerGeneration verb phase)) ->
     DescentWork scope planId parentFrame childFrame verb ->
     ( forall descentId.
       ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId ->
@@ -171,21 +301,19 @@ withPreparedReverseDescentKernel admission =
                         Right childForest ->
                             let expected = teardownForestOutstanding childForest
                                 snapshot = renderSnapshot plan
-                                planDigest = stablePlanSnapshotDigest snapshot
                                 specDigest = stablePlanSnapshotSpecDigest snapshot
                                 parent = descentWorkParentFrame descent
                                 child = descentWorkChildFrame descent
                                 invocation = invocationIdText (commandAuthorityInvocation retained)
-                                adapter = renderReverseAdapter planDigest verb parent child expected
-                             in case catalogPackage parent child adapter of
+                             in case catalogPackage parent child expected of
                                     Left detail -> pure (Left (refusal detail, descent))
-                                    Right (childConfig, configDigest, package) ->
+                                    Right (childPlanDigest, adapter, childConfig, configDigest, package) ->
                                         let packageDigest = childConfigDigest package
                                             input =
                                                 HandoffBindingInput
                                                     { requestedSpecDigest = specDigest
                                                     , requestedPayloadKind = RecoveryAdapterWire
-                                                    , requestedPlanRevision = planDigest
+                                                    , requestedPlanRevision = childPlanDigest
                                                     , requestedParentFrame = parent
                                                     , requestedChildFrame = child
                                                     , requestedChildConfigDigest = packageDigest
@@ -195,14 +323,15 @@ withPreparedReverseDescentKernel admission =
                                          in admitPrepared store current frame childProjection snapshot parent child expected
                                                 adapter childConfig configDigest package packageDigest invocation input bytes
 
-            catalogPackage parent child adapter = do
-                (childConfig, configDigest) <-
+            catalogPackage parent child expected = do
+                (childPlanDigest, childConfig, configDigest) <-
                     withRootedPlanCatalogEdgeKernel catalog parent child selectChildConfig
+                let adapter = renderReverseAdapter childPlanDigest verb parent child expected
                 package <- recoveryChildPackageKernel childConfig adapter
-                pure (childConfig, configDigest, renderRecoveryChildPackageKernel package)
+                pure (childPlanDigest, adapter, childConfig, configDigest, renderRecoveryChildPackageKernel package)
 
-            selectChildConfig _parentCurrent _plan _binding _current _raw _route payload configDigest _payloadDigest _keys =
-                (payload, configDigest)
+            selectChildConfig _parentCurrent _plan binding _current _raw _route payload configDigest _payloadDigest _keys =
+                (Plan.planDigestBindingDigestKernel binding, payload, configDigest)
 
             admitPrepared store current frame childProjection snapshot parent child expected adapter childConfig configDigest package packageDigest invocation input bytes =
                             case validate store current frame childProjection snapshot parent child expected adapter childConfig configDigest package bytes of
@@ -241,16 +370,16 @@ withPreparedReverseDescentKernel admission =
                                                                         )
 
             validate store current frame childProjection snapshot parent child expected adapter childConfig configDigest package preparedBytes = do
-                require "project up cannot prepare reverse descent" $ case verb of
-                    ProjectUp -> False
-                    ProjectDown -> True
-                    ProjectDestroy -> True
+                require "the verb and lifecycle phase cannot prepare cleanup descent" $
+                    case verb of
+                        ProjectUp -> retainedPhase == "execute"
+                        ProjectDown -> retainedPhase == "teardown"
+                        ProjectDestroy -> retainedPhase == "teardown"
                 require "the root verb differs" (verbName == projectVerbName (rootAuthorityVerb root))
                 require "the journal verb differs" (verbName == acquisitionJournalRootVerb journal)
                 require "the cursor verb differs" (verbName == projectVerbName (lifecycleCursorVerb cursor))
                 require "the command verb differs" (verbName == projectVerbName (commandAuthorityVerb retained))
-                require "the cursor is not at teardown" (lifecyclePhaseName (lifecycleCursorPhase cursor) == "teardown")
-                require "the command is not at teardown" (lifecyclePhaseName (commandAuthorityPhase retained) == "teardown")
+                require "the cursor and command phases differ" (lifecyclePhaseName (lifecycleCursorPhase cursor) == retainedPhase)
                 require "the project identity differs" (projectPlanProjectName plan == rootAuthorityProjectName root)
                 require "the protected store differs" (storeIdentity == rootAuthorityStoreIdentity root)
                 require "the plan store differs" (Plan.projectPlanProfileStoreIdentityKernel plan == storeIdentity)
@@ -260,10 +389,9 @@ withPreparedReverseDescentKernel admission =
                 require "the broker generation differs" (epoch == acquisitionJournalBrokerGeneration journal)
                 require "the plan broker generation differs" (epoch == Plan.projectPlanProfileEpochKernel plan)
                 require "the command broker generation differs" (epoch == brokerEpochWord (commandAuthorityEpoch retained))
-                require "the context current frame differs" (currentFrameId current == parent)
-                require "the context project frame differs" (projectFrameId frame == parent)
-                require "the cursor frame differs" (lifecycleCursorFrame cursor == parent)
-                require "the command frame differs" (commandAuthorityFrame retained == parent)
+                require "the context current frame differs from its project frame" (currentFrameId current == projectFrameId frame)
+                require "the cursor frame differs from the root context" (lifecycleCursorFrame cursor == currentFrameId current)
+                require "the command frame differs from the root context" (commandAuthorityFrame retained == currentFrameId current)
                 require "the child projection opening frame differs" (teardownPlanFrameId childProjection == child)
                 require "the child projection verb differs" (teardownPlanVerbName childProjection == verbName)
                 require "the parent and child frames are equal" (parent /= child)
@@ -295,6 +423,7 @@ withPreparedReverseDescentKernel admission =
                 storeIdentity = protectedStoreIdentityText (protectedStoreIdentity store)
                 epoch = brokerEpochWord (rootAuthorityEpoch root)
                 verbName = projectVerbName verb
+                retainedPhase = lifecyclePhaseName (commandAuthorityPhase retained)
                 invocation = invocationIdText (commandAuthorityInvocation retained)
                 renderedPackage =
                     either
@@ -424,7 +553,13 @@ withBoundReverseDescentKernel kernel =
         require "the recovery offer token is empty" (not (ByteString.null token))
         require "the recovery offer binding is not canonical" (bindingBytes == renderHandoffBinding binding)
         require "the recovery offer project differs" (handoffInstalledProject binding == rootAuthorityProjectName root)
-        require "the recovery offer scope differs" (handoffScope binding == acquisitionJournalStableScope journal)
+        require
+            "the recovery offer scope differs"
+            ( handoffScope binding
+                == if acquisitionJournalStableScope journal == "production"
+                    then "Production"
+                    else acquisitionJournalStableScope journal
+            )
         require "the recovery offer store differs" (handoffStoreIdentity binding == rootAuthorityStoreIdentity root)
         require "the recovery offer broker differs" (handoffBrokerGeneration binding == brokerEpochWord (rootAuthorityEpoch root))
         require "the recovery offer verb differs" (handoffVerb binding == projectVerbName verb)
@@ -432,7 +567,7 @@ withBoundReverseDescentKernel kernel =
         require "the recovery offer phase differs" (handoffPhase binding == "teardown")
         require "the recovery offer token commitment is empty" (not (Text.null (handoffTokenCommitment binding)))
         require "the recovery offer specification differs" (handoffSpecDigest binding == stablePlanSnapshotSpecDigest snapshot)
-        require "the recovery offer plan differs" (handoffPlanRevision binding == stablePlanSnapshotDigest snapshot)
+        require "the recovery offer plan differs" (handoffPlanRevision binding == requestedPlanRevision input)
         require "the recovery offer parent differs" (handoffParentFrame binding == requestedParentFrame input)
         require "the recovery offer child differs" (handoffChildFrame binding == requestedChildFrame input)
         require "the recovery offer package digest differs" (handoffChildConfigDigest binding == childConfigDigest package)
@@ -544,6 +679,36 @@ withRehydratedBoundReverseDescentKernel kernel =
         _ -> Left (refusal "the exact bound record is absent")
     refusal = TeardownReverseDescentRefused
     refused prepared detail = pure (Left (refusal detail, prepared))
+
+{- | Rehydrate Bound descent and its exact parent Adopted acknowledgement.
+
+The Bound record and lifecycle cursor are checked first. The retained store is
+then used only for the read-only Adopted verifier; no token, offer, mutation,
+process, or local teardown action is reopened.
+-}
+withRehydratedAdoptedReverseDescentKernel ::
+    RecoverySigningKernel ->
+    ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId ->
+    ByteString ->
+    ( ReverseDescent (HandoffOffer scope brokerGeneration)
+        scope planId parentFrame childFrame brokerGeneration verb descentId ->
+      ByteString ->
+      IO (Either Text ())
+    ) ->
+    IO (Either
+        (TeardownError, ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId)
+        (Either Text ()))
+{-# OPAQUE withRehydratedAdoptedReverseDescentKernel #-}
+withRehydratedAdoptedReverseDescentKernel kernel prepared report use =
+    withRehydratedBoundReverseDescentKernel kernel prepared $ \bound ->
+        case bound of
+            BoundReverseDescent
+                (PreparedReverseDescent _ _ _ _ _ _ _ _ _ _ _ _ _ _ store _ _ _)
+                binding _ _ -> do
+                    adopted <-
+                        rehydrateAdoptedLifecycleAcknowledgementKernel
+                            kernel store binding report (use bound)
+                    pure $ either (Left . Text.pack . handoffErrorMessage) id adopted
 
 {- | Revalidate one Bound report coordinate without minting settlement proof. -}
 withVerifiedBoundReverseDescentReportKernel ::

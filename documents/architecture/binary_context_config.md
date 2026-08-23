@@ -1888,6 +1888,52 @@ composes it at recursive call sites and owns traversal, while the
 [recovery phase](../../DEVELOPMENT_PLAN/phase-18-recovery-and-migration.md) owns migration and recovery
 policy.
 
+Canonical runtime dependency commitments do not change that rule. They contain only domain-separated plan,
+scope, resource, frame, origin, generation, journal/receipt, bounded route, and expiry text. The corresponding
+fresh reprobe closure is invocation-local state in a separate private live registry, never Dhall, handoff,
+stable-plan, or dependency-package bytes. Opening a provider package as a cluster package—or changing any
+commitment, route, generation, or lifetime—refuses before the live closure can be selected.
+
+The authenticated handoff vocabulary reserves closed, singleton-field frames for a provider dependency
+package, its probe request, and its probe response. The package field is the canonical provider-domain
+`RuntimeDependencyPackage` rendering; the request adds one bounded nonce; and the response is either the
+matching observed generation or a bounded non-empty refusal reason. Decoding enforces the exact version,
+domain, field count, canonical length and integer encodings, complete re-render, 64-KiB package bound, and
+128-KiB probe-frame bound. Consequently duplicate or trailing fields, changed package bytes, replayed nonces,
+wrong domains, empty refusals, and oversized input fail closed. These tags carry data only: they install no
+service, add no state-machine transition, and encode no backend command, handle, readiness witness, receipt
+authority, closure, or reusable secret. The bracket-scoped service and relay remain separate live protocol
+concerns rather than values a receiver can deserialize.
+
+The owning frame's caller-free reprobe kernel brackets one lexical provider observation behind a data-only
+request handler. Before backend access it opens the provider package against the exact plan, scope, resource,
+frame, backend origin/generation, journal and Ready-receipt commitments, route, and current tick, then validates
+the request's complete package commitment and nonce. Nonces are atomically consumed before observation, with
+at most 64 accepted requests per bracket and a fixed 100-millisecond local probe deadline. Success requires the observed
+generation to equal the admitted generation; replay, capacity exhaustion, timeout, provider closure/refusal,
+or generation change yields a canonical nonce-bound refusal. A malformed or unauthenticated request yields no
+backend access. The continuation receives only the bounded byte handler, never the lexical probe or authority.
+
+`Handoff.Process` installs that handler by record-narrowing the existing live `BrokerLink` inside the same
+provider-kernel and child-process brackets. An admitted child sends the closed request tag on its retained
+duplex and accepts one response with the exact edge request identity and response tag. Its hidden client
+allows one outstanding request, consumes at most 64 nonces, and returns only the verified observation/refusal
+sum. Every intermediate `BrokerLink` forwards the unchanged field list over its already authenticated parent
+channel; it has no endpoint, key, package interpreter, or result constructor. The upstream wait has a fixed
+one-second deadline, while Protocol retains its 8-MiB frame ceiling and each codec retains its tighter bound.
+Closing any Process, receiver, or provider-kernel continuation closes the only reachable endpoint. No socket,
+environment value, argv term, config field, durable file, or generic carrier supplies another channel.
+
+After authenticated child admission, a frame with cross-frame dependencies sends the closed package query on
+that retained duplex. The parent answers with either the exact canonical provider package installed in its
+lexical endpoint or the canonical empty absence; the child cannot name a package or route in the query. A
+present package is decoded in the provider domain and registered in the new frame's invocation-wide
+`ResourceCarrier`, then its hidden client is installed in the carrier's separate live-service registry. Every
+`StepRuntime` built for that frame shares those two entries, and a deeper descent forwards the same canonical
+package and fixed service. This admission performs no probe, calls no provider opener, and mints no managed,
+Running, readiness, receipt, key, channel, or journal authority. Absence leaves both registries empty; malformed,
+wrong-domain, duplicate, or changed packages refuse before the frame executor opens.
+
 ## Per-Frame Fail-Fast On Handoff
 
 The target recursive interpreter descends frame by frame: each frame runs its chain steps, then hands off

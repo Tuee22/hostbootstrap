@@ -71,16 +71,20 @@ opens; it is not exported from the active coordinator or accepted from the chann
 signing operation holds its live-state lock through signature construction, and an escaped coordinator refuses
 after the bracket closes.
 
-This protocol is distinct from an ordinary developer invocation of `check-code`. The developer path
-remains sibling-config-gated and non-attesting. The current derived Dockerfile still uses that path
-until the build backend supplies the secret channel and the command/Dockerfile integration consumes the
-rank-2 build authority. That seam must derive the source root from the actual engine context, derive the
-builder path from the running executable, and either acknowledge one presentation or durably consume the
-signed `buildId` so a fresh verifier call cannot replay the channel. That concrete consumer integration belongs
-to the active [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md), not to the
-[authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)'s
-protocol definition. A baked `image-build-container` config alone is not authenticated build evidence and
-must not be reported as such.
+This protocol is distinct from an ordinary developer invocation of `check-code`, which remains
+sibling-config-gated and non-attesting. The demo's VM and Direct builders now create a clean measured context,
+resolve the rolling base to its freshly pulled repository digest, measure the selected coordinator and builder,
+and sign a fresh binding. Channel, Build public key, coordinator identity, and canonical image-build config
+reach Docker only as BuildKit secrets. The selected builder reaches the Dockerfile through the read-only
+`hostbootstrap-builder` named build context, avoiding BuildKit's secret-size limit without weakening its measured
+binding. The build disables layer-cache reuse, and VM transient authority files and builder context are removed
+after the attempt. Inside the image, `check-code` derives `/workspace/demo` and its own
+executable path, verifies the grant, and consumes `CheckCodePhase` before the project hook. Only afterward does
+the Dockerfile compile and install the source-produced binary. A baked config alone remains non-authoritative.
+
+The coordinator requires the distinct provisioned `<executable>.build.key`; the handoff key is not accepted as
+a substitute. Missing or malformed Build keys/channels, changed source/config/builder bytes, a foreign project
+or coordinator, and repeated phase use refuse explicitly.
 
 ## Rolling selection and evidence
 

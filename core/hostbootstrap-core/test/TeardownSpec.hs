@@ -320,13 +320,13 @@ sourceShapeTests =
                     ("missing canonical ProjectVerb behavior: " ++ Text.unpack required)
                     (required `Text.isInfixOf` normalized)
             )
-            [ "= TeardownPlan (ProjectVerb verb) Text Text [Text] [[ReverseStep]]"
+            [ "= TeardownPlan (ProjectVerb verb) Bool Text Text [Text] [[ReverseStep]]"
             , "= TeardownForest (TeardownPlan scope planId frame verb) [Node]"
             , "= CompletedTeardownForest (ProjectVerb verb) Text Text [(OperationKey, TeardownOutcome)]"
             , "actionFor ProjectUp _ = Nothing"
             , "actionFor ProjectDown (CoreStepIdentity DeployVMId) = Just StopFrame"
             , "actionFor ProjectDestroy (CoreStepIdentity DeployVMId) = Just DeleteFrame"
-            , "openTeardownForest projection@(TeardownPlan verb _ _ _ levels) | ProjectUp <- verb = Left TeardownProjectUpHasNoReverse"
+            , "openTeardownForest projection@(TeardownPlan verb failedUp _ _ _ levels) | ProjectUp <- verb, not failedUp = Left TeardownProjectUpHasNoReverse"
             , "ProjectUp -> Nothing ProjectDown -> Nothing ProjectDestroy -> Just (verifyDestroySettled plan current settled)"
             ]
         assertBool
@@ -581,6 +581,21 @@ projectionTests =
             case openTeardownForest (teardownPlan plan current ProjectUp) of
                 Left TeardownProjectUpHasNoReverse -> pure ()
                 other -> assertFailure ("expected the project-up refusal, got " ++ describeOpen other)
+    , testCase "failed-Up cleanup retains Up while projecting only the exact reached prefix" $
+        withPlan $ \plan current -> do
+            projected <-
+                either (assertFailure . teardownErrorMessage) pure
+                    (failedUpTeardownPlanKernel plan current ["core:deploy-vm", "core:build-pb"])
+            teardownPlanVerbName projected @?= projectVerbName ProjectUp
+            forest <- openOrFail projected
+            teardownForestOutstanding forest @?= ["core:build-pb", "core:deploy-vm"]
+            localActionFor "core:deploy-vm" forest @?= Just DeleteFrame
+            case failedUpTeardownPlanKernel plan current ["core:deploy-vm", "core:deploy-vm"] of
+                Left (TeardownReverseDescentRefused _) -> pure ()
+                other -> assertFailure ("duplicate reached operations were accepted: " ++ showProjection other)
+            case failedUpTeardownPlanKernel plan current ["project:not-in-plan"] of
+                Left (TeardownReverseDescentRefused _) -> pure ()
+                other -> assertFailure ("a foreign reached operation was accepted: " ++ showProjection other)
     , testCase "a plan whose every step preserves projects nothing and cannot open" $
         withPreservedPlan $ \plan current ->
             case openTeardownForest (teardownPlan plan current ProjectDestroy) of
@@ -588,6 +603,7 @@ projectionTests =
                 other -> assertFailure ("expected an empty projection, got " ++ describeOpen other)
     ]
   where
+    showProjection = either teardownErrorMessage (const "projection")
     inContainer root =
         Context.deriveContainerContext
             (Context.deriveVMContext root "/fixture/vm")

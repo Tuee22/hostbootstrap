@@ -48,19 +48,26 @@ module HostBootstrap.CLI (
 )
 where
 
-import Control.Monad (foldM, join)
+import Control.Monad (join)
 import Data.List (group, sort)
-import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Dhall (FromDhall, ToDhall)
-import GHC.Generics (Generic)
 import HostBootstrap.Authority (
     InstalledProjectIdentity,
     authorityErrorMessage,
     withInstalledProjectIdentity,
  )
 import HostBootstrap.Command (coreCommands)
+import HostBootstrap.Command.Child (lifecycleChildArguments, runForwardLifecycleChild)
+import HostBootstrap.CLI.Bare
+    ( BareConfig
+    , bareAssemble
+    , bareClusterLiveSuite
+    , bareInit
+    , bareStepPlan
+    , bareTestCodec
+    , bareTestInit
+    )
 import HostBootstrap.Config.Class (
     AssemblyRequest (..),
     ConfigAssembly,
@@ -69,25 +76,25 @@ import HostBootstrap.Config.Class (
     ProjectCfg (..),
     TestCfg (..),
     configInputPath,
-    failConfigAssembly,
-    pureConfigAssembly,
     runConfigAssembly,
-    withProjectCodec,
  )
 import HostBootstrap.Config.Fields (ScopeKind (ProductionScope))
 import HostBootstrap.Config.Vocab (Production)
-import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (
     CodecWitness,
     ConfigArtifact,
     artifactName,
-    autoCodecWitness,
     coreArtifacts,
-    requireCodecWitness,
  )
 import HostBootstrap.Handoff.Transaction (classifyFrameChild, frameInterpreter, runFrameChildEntry)
 import HostBootstrap.Ownership.Shipped (interpretShippedOwnership)
-import HostBootstrap.Harness (TestSuite, caseIdText, emptySuite, testSuiteCaseCount, testSuiteCaseIds)
+import HostBootstrap.Ensure.Colima.Backend.Runner (runShippedCommandEntry, shippedCommandEntryArguments)
+import HostBootstrap.Harness
+    ( TestSuite
+    , caseIdText
+    , testSuiteCaseCount
+    , testSuiteCaseIds
+    )
 import HostBootstrap.Lift.Context (LiftContext)
 import HostBootstrap.ProjectPlan.Construct
     ( FinalizedProjectSpec
@@ -101,8 +108,14 @@ import HostBootstrap.Service (
     mergeServiceRegistries,
     serviceVariantNames,
  )
-import HostBootstrap.Step (Step, StepPlan, StepPlanError (..), mkStepPlan)
+import HostBootstrap.Step
+    ( Step
+    , StepPlan
+    , StepPlanError (..)
+    , mkStepPlan
+    )
 import Options.Applicative
+import System.Directory (getCurrentDirectory)
 import System.Environment (getArgs)
 import System.Exit (die)
 import System.IO (hSetEncoding, stderr, stdout, utf8)
@@ -418,34 +431,14 @@ runHostBootstrapCLI progName spec = do
                         )
     either (die . T.unpack . authorityErrorMessage) pure admitted
 
-{- | The bare core binary's trivial project config: a newtype over the universal
-'Context.BinaryContext'. It carries no project fields (no resources, no
-Dockerfile, no deploy), so the bare binary type-checks against the generic spec
-without inventing a project config shape. The @init@/@test@ builders below give
-it the minimal behaviour the bare surface needs.
--}
-newtype BareConfig scope = BareConfig {bareContext :: Context.BinaryContext}
-    deriving (Eq, Show, Generic, FromDhall, ToDhall)
-
-instance ProjectCfg BareConfig where
-    withProductionProjectCodec =
-        withProjectCodec
-            (T.pack "BareConfig/Production")
-            (requireCodecWitness "BareConfig" autoCodecWitness)
-    withHarnessProjectCodec _ =
-        withProjectCodec
-            (T.pack "BareConfig/Harness")
-            (requireCodecWitness "BareConfig" autoCodecWitness)
-    cfgContext = bareContext
-
-{- | Run the bare core binary. This is the only supported path that intentionally
-has no project artifacts, an empty test matrix, and no service registry. Its
-config builders interpret the parsed @init@ flags into a 'BareConfig' (just the
-derived context) and a trivial test config (the bare binary ships no test cases).
+{- | Run the bare core binary. Its one compiled @cluster-live@ case is a normal
+harness variant: the exact Harness plan owns cluster creation and reverse, while
+the case body performs read-only node observation and the post-reverse assertion
+proves both labelled-container absence and durable-root preservation.
 -}
 runBareHostBootstrapCLI :: String -> IO ()
 runBareHostBootstrapCLI progName = do
-    let testCodec = requireCodecWitness "bare test config" (autoCodecWitness @())
+    invocationRoot <- getCurrentDirectory
     configureUtf8Output
     admitted <-
         withInstalledProjectIdentity (T.pack progName) $
@@ -455,59 +448,23 @@ runBareHostBootstrapCLI progName = do
                         ProductionScope
                         baseCodec
                         emptyServiceRegistry
-                        (\_ _ -> Left EmptyStepPlan)
+                        (bareStepPlan progName)
                         refuseForwardChildPlan
                         ( \finalizedSpec ->
                             runCLI
                                 project
                                 finalizedSpec
-                                testCodec
+                                bareTestCodec
                                 progName
                                 []
-                                emptySuite
+                                (bareClusterLiveSuite progName)
                                 (putStrLn "check-code: bare core binary has no project checks")
                                 []
-                                bareAssemble
-                                (either fail pure . bareInit)
-                                (const ())
+                                (bareAssemble progName invocationRoot)
+                                (either fail pure . bareInit progName invocationRoot)
+                                bareTestInit
                         )
     either (die . T.unpack . authorityErrorMessage) pure admitted
-  where
-    bareAssemble ::
-        forall projectId scope.
-        AssemblyRequest projectId () () scope ->
-        ConfigAssembly scope (BareConfig scope)
-    bareAssemble (ProductionAssembly args) =
-        either failConfigAssembly pureConfigAssembly (bareInit args)
-    bareAssemble (HarnessAssembly _ _ _) =
-        either failConfigAssembly pureConfigAssembly (bareInit defaultBareArgs)
-    defaultBareArgs =
-        InitArgs
-            { role = Context.HostOrchestrator
-            , alsoRoles = []
-            , output = Nothing
-            , sourceRoot = Nothing
-            , mCpu = Nothing
-            , memory = Nothing
-            , storage = Nothing
-            , dockerfile = Nothing
-            , haReplicas = Nothing
-            , force = False
-            , ifMissing = False
-            }
-    -- A refused extra role stops assembly: @--also-role@ is operator input, and
-    -- silently dropping it would produce a config that looks authorized.
-    bareInit :: InitArgs -> Either String (BareConfig scope)
-    bareInit args =
-        let baseCtx =
-                Context.contextForKind
-                    (T.pack progName)
-                    (T.pack progName)
-                    (T.pack (fromMaybe "." (sourceRoot args)))
-                    (role args)
-         in case foldM (flip Context.addRole) baseCtx (alsoRoles args) of
-                Left err -> Left (Context.contextErrorMessage err)
-                Right ctx -> Right (BareConfig ctx)
 
 configureUtf8Output :: IO ()
 configureUtf8Output = do
@@ -534,9 +491,14 @@ runCLI ::
     IO ()
 runCLI project finalizedSpec testCodec progName projectArtifacts testSuite checkCode assemblyInputs assemble initBuilder testInit = do
     argv <- getArgs
-    case classifyFrameChild argv of
-        Just entry -> runFrameChildEntry (frameInterpreter interpretShippedOwnership) entry
-        Nothing -> join (customExecParser (prefs showHelpOnEmpty) opts)
+    if argv == shippedCommandEntryArguments
+        then runShippedCommandEntry
+        else
+            if argv == lifecycleChildArguments
+                then runForwardLifecycleChild project finalizedSpec
+                else case classifyFrameChild argv of
+                    Just entry -> runFrameChildEntry (frameInterpreter interpretShippedOwnership) entry
+                    Nothing -> join (customExecParser (prefs showHelpOnEmpty) opts)
   where
     allCommands =
         coreCommands

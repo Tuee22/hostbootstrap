@@ -139,10 +139,9 @@ One operation must have one representation. Forward ordering is the `[Step]` ret
 `chain`; exact admission creates an opaque `ProjectPlan scope specDigest planId configId cfg`, whose
 topology and current-frame forward and reverse projections come from that same sequence. Each descent
 is declared by a plan node (`descendsVia`), and each acquiring node declares the effect that releases it
-(`reversedBy`). Current verbs consume those exact current-frame projections. The complete interpreter
-will authenticate entry at each child, traverse forward frame by frame, and drive child-first reverse
-work from receipt-bound ownership. Until that protocol lands, nested entry fails closed rather than
-treating descriptive topology as command authority. The canonical home is
+(`reversedBy`). Current verbs consume those exact current-frame projections. The recursive interpreter
+authenticates entry at each child, traverses forward frame by frame, and drives child-first reverse work
+from receipt-bound ownership. Descriptive topology never substitutes for command authority. The canonical home is
 [composition_methodology § Single Representation](../architecture/composition_methodology.md#single-representation-the-chain-is-the-representation)
 (and [development_plan_standards § W](../../DEVELOPMENT_PLAN/development_plan_standards.md)); the
 summary for shape 2:
@@ -167,6 +166,15 @@ summary for shape 2:
 The same algebra composes runtime logic. Each is an extension (L1/L2 via the extension-stream merge) that
 relies only on an L0 affordance (the role-lifecycle skeleton, Dhall config/schema-gen, the extension
 streams) — so L0 hosts it without modification.
+
+For a runtime role, verify the signed activation and project-owned non-empty role draft before entering the
+protected admission. Treat `RoleAdmissionReserved` as the only ordinary open input,
+`RoleAdmissionOpenUnknown` as a lost-acknowledgement signal for `resumeRuntimeRolePlanOpen`, and every
+contradictory predecessor as recovery work rather than a new run. Supply total callback outcomes. In
+particular, `engineRelease` must idempotently reprobe-and-release a resource whose acquisition result was
+unknown; returning `Released` is the proof that resolves it. The core runner consumes the Prereq cursor once,
+forces each callback result inside its interruption guard, drives every successor internally, and always
+attempts all Drain releases after any possible acquisition.
 
 - **Message-bus + object-store workflow** — a stateless **role** consumes a request topic, dispatches
   to a consumer engine, publishes a result topic; static artifacts ride the object store by reference; a
@@ -220,10 +228,9 @@ The **plan surface** this cookbook describes is the running system: the core com
 `demoChainFor :: Substrate -> CanonicalProjectRoot scope rootId -> ProjectConfig scope -> [Step]`
 (`demo/src/HostBootstrapDemo/Commands.hs`), whose result is accepted only through `addSteps` and
 `finalizeProjectSpec`; its VM-backed branch declares shape 2 as one ordered plan ending at a live web
-service. Complete execution across its declared frames still requires authenticated child admission and
-recursive traversal. The lift
+service. Execution across its declared frames uses authenticated child admission and recursive traversal. The lift
 primitive uses provider-backed folds for Incus and Lima (and WSL2 on Windows, with authenticated recursive
-closure still owned by the [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) — see
+closure owned by the [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) — see
 [wsl2](wsl2.md)) and a topology-aware binary-context gate. The
 reconcilers (`clusterUp`, `clusterCreate`, `deployChart`, `clusterDown`, `clusterDelete`) live in
 `HostBootstrap.Cluster.Lifecycle`, invoked by the chain steps and the lifecycle command.

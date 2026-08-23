@@ -19,7 +19,6 @@ module HostBootstrap.Lifecycle.Prepared.Internal (
     renderPreparedNodeKeysKernel,
     mintPreparedNodeGrantKernel,
     withPreparedNodeGrantKernel,
-    preparedNodeGrantResponseKernel,
 ) where
 
 import Data.Bits (shiftL, (.|.))
@@ -76,7 +75,6 @@ data PreparedNodeGrant
     scope rootPlanId brokerGeneration catalogId frame sessionId node verb
     where
     PreparedNodeGrant ::
-        ByteString ->
         Text ->
         [Text] ->
         ByteString ->
@@ -222,7 +220,6 @@ renderPreparedGatePackagesKernel packages =
 
 {- | Package-internal constructor, reachable only after durable preparation. -}
 mintPreparedNodeGrantKernel ::
-    ByteString ->
     Text ->
     [Text] ->
     ByteString ->
@@ -240,14 +237,8 @@ withPreparedNodeGrantKernel ::
     PreparedNodeGrant scope rootPlanId brokerGeneration catalogId frame sessionId node verb ->
     (Text -> [Text] -> ByteString -> ByteString -> IO (Either Text ())) ->
     IO (Either Text ())
-withPreparedNodeGrantKernel (PreparedNodeGrant _ node dependencies operationGate projectedGates) use =
+withPreparedNodeGrantKernel (PreparedNodeGrant node dependencies operationGate projectedGates) use =
     use node dependencies operationGate projectedGates
-
--- | The exact canonical signed response bytes the root already produced.
-preparedNodeGrantResponseKernel ::
-    PreparedNodeGrant scope rootPlanId brokerGeneration catalogId frame sessionId node verb ->
-    ByteString
-preparedNodeGrantResponseKernel (PreparedNodeGrant signed _ _ _ _) = signed
 
 framed :: Text -> ByteString
 framed = frame' . TextEncoding.encodeUtf8

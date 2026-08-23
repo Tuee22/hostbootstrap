@@ -19,212 +19,221 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import qualified Fixture
-import HostBootstrap.Authority
-    ( AuthorityError (AuthorityMalformedBinding)
-    , InstalledProjectIdentity
-    , ProjectVerb (ProjectUp)
-    , RootInvocationAuthority
-    , VerbUp
-    , brokerEpochWord
-    , installedProjectName
-    , rootAuthorityEpoch
-    , rootScopeAuthority
-    )
-import HostBootstrap.Config.Class
-    ( ProjectCfg (withProductionProjectCodec)
-    , ProjectCodec
-    , projectCodecLabel
-    , projectCodecSchemaText
-    , projectCodecSpecDigest
-    , renderProjectCodecValue
-    )
+import HostBootstrap.Authority (
+    AuthorityError (AuthorityMalformedBinding),
+    InstalledProjectIdentity,
+    ProjectVerb (ProjectUp),
+    RootInvocationAuthority,
+    VerbUp,
+    brokerEpochWord,
+    installedProjectName,
+    rootAuthorityEpoch,
+    rootScopeAuthority,
+ )
+import HostBootstrap.Config.Class (
+    ProjectCfg (withProductionProjectCodec),
+    ProjectCodec,
+    projectCodecLabel,
+    projectCodecSchemaText,
+    projectCodecSpecDigest,
+    renderProjectCodecValue,
+ )
 import HostBootstrap.Config.Fields (ScopeKind (ProductionScope))
-import HostBootstrap.Config.Schema
-    ( ValidatedConfig
-    , renderScopedProjectConfigBytes
-    , validatedConfigDigest
-    , validatedConfigSpecDigest
-    , validatedConfigValue
-    , withValidatedConfig
-    , withAuthenticatedConfigWire
-    , withVerifiedConfigHandoff
-    )
+import HostBootstrap.Config.Schema (
+    ValidatedConfig,
+    renderScopedProjectConfigBytes,
+    validatedConfigDigest,
+    validatedConfigSpecDigest,
+    validatedConfigValue,
+    withAuthenticatedConfigWire,
+    withValidatedConfig,
+    withVerifiedConfigHandoff,
+ )
 import HostBootstrap.Config.Vocab (Production)
 import qualified HostBootstrap.Config.Vocab as V
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.DocValidator (findRepoRoot)
-import HostBootstrap.Handoff
-    ( HandoffBindingInput (..)
-    , HandoffPayloadKind (NarrowedProjectConfig)
-    , childConfigDigest
-    , freshChallenge
-    , grantHandoff
-    , handoffOfferWire
-    , mkHandoffOffer
-    , productionHandoffScope
-    , projectSigningKeyFromBytes
-    , registerHandoffEdge
-    , relayBinding
-    , rootBrokerVerificationKey
-    , verifiedConfigPayload
-    , verifyHandoff
-    , withRootBroker
-    )
-import HostBootstrap.Lifecycle.Mode
-    ( LifecycleProfile
-    , ModeError (ModeAuthorityFailure, ModeEvidenceMismatch, ModeSnapshotMismatch)
-    , RecoveredProductionLifecycleProfile
-    , UnboundRunLease
-    , VerifiedPlanSnapshot
-    , planSnapshotCanonicalBytes
-    , planSnapshotPlanDigest
-    , planSnapshotSpecDigest
-    , productionActiveMode
-    , productionRootAuthority
-    , productionRootModeLease
-    , productionRootUnboundLease
-    , recoveredProductionProfileCanonicalBytes
-    , recoveredProductionProfileConfigDigest
-    , recoveredProductionProfilePlanDigest
-    , recoveredProductionProfileSpecDigest
-    , unboundRunLeaseRunText
-    , withRecoveredProductionLifecycleProfile
-    , withProductionLifecycleProfile
-    , withProductionRoot
-    )
-import HostBootstrap.ProjectPlan
-    ( PlanDraft
-    , PlanError (..)
-    , PlannedResourceKind
-        ( ClusterResourceKind
-        , DockerResourceKind
-        , DurableShareResourceKind
-        , MinioResourceKind
-        , ProviderResourceKind
-        , RegistryResourceKind
-        )
-    , ProjectPlan
-    , StablePlanSnapshot
-    , forward
-    , planDraftsFromValidatedBuilder
-    , plannedStepDependencyOperations
-    , plannedStepFrameId
-    , plannedStepOperationKey
-    , plannedStepProjectedOperationKeys
-    , plannedEdgeDependencyKey
-    , plannedEdgeTargetKey
-    , plannedResourceFrame
-    , plannedResourceKey
-    , operationKeyText
-    , renderSnapshot
-    , stablePlanSnapshotBytes
-    , stablePlanSnapshotConfigDigest
-    , stablePlanSnapshotDigest
-    , stablePlanSnapshotFormatVersion
-    , stablePlanSnapshotRoot
-    , stablePlanSnapshotSpecDigest
-    , topology
-    , topologyContainsFrame
-    , topologyDescentEdges
-    , topologyDescentFrom
-    , topologyFrameLabel
-    , topologyFrameOrder
-    , topologyParentEdges
-    , topologyParentFrame
-    , withPlannedEdge
-    , withPlannedResourceOfKind
-    , withPlannedStepGuestAliasProjection
-    , withPlannedStepResourceOfKind
-    , withProviderGuestAliasProjection
-    )
-import HostBootstrap.ProjectPlan.Construct
-    ( FinalizedProjectSpec
-    , finalizedProjectCodec
-    , finalizedProjectServices
-    , projectPlanDrafts
-    , projectPlanStepPlan
-    , childPlanAuthorityBinding
-    , withChildProjectPlan
-    , withFinalizedProjectSpec
-    , withHarnessFinalizedProjectSpec
-    , withProjectPlan
-    , withRecoveredProductionProjectPlan
-    , withRecoveredProductionProjectPlanInputs
-    )
-import HostBootstrap.ProjectPlan.Snapshot
-    ( BoundPlanSnapshot
-    , PlanDigestBinding
-    , SnapshotError (SnapshotVerificationError)
-    , boundPlanSnapshotBytes
-    , withBoundPlanSnapshot
-    , withFreshBoundPlanSnapshot
-    , withPlanDigestBinding
-    , withPersistedPlanSnapshot
-    )
-import HostBootstrap.ProjectRoot
-    ( CanonicalProjectRoot
-    , canonicalProjectRootPath
-    , withCanonicalProjectRoot
-    )
-import HostBootstrap.Protected
-    ( Expectation (ExpectAbsent)
-    , ProtectedRecord
-    , ProtectedStore
-    , RecordKey
-    , compareAndSwapProtectedRecord
-    , listProtectedRecords
-    , mkRecordKey
-    , openProtectedStore
-    , readProtectedRecord
-    , withProtectedEntry
-    )
-import HostBootstrap.RoleLifecycle (DeclaredEffects (NoEffects))
+import HostBootstrap.Handoff (
+    HandoffBindingInput (..),
+    HandoffPayloadKind (NarrowedProjectConfig),
+    childConfigDigest,
+    freshChallenge,
+    grantHandoff,
+    handoffOfferWire,
+    mkHandoffOffer,
+    productionHandoffScope,
+    projectSigningKeyFromBytes,
+    registerHandoffEdge,
+    relayBinding,
+    rootBrokerVerificationKey,
+    verifiedConfigPayload,
+    verifyHandoff,
+    withRootBroker,
+ )
+import HostBootstrap.Lifecycle.Mode (
+    LifecycleProfile,
+    ModeError (ModeAuthorityFailure, ModeEvidenceMismatch, ModeSnapshotMismatch),
+    RecoveredProductionLifecycleProfile,
+    UnboundRunLease,
+    VerifiedPlanSnapshot,
+    planSnapshotCanonicalBytes,
+    planSnapshotPlanDigest,
+    planSnapshotSpecDigest,
+    productionActiveMode,
+    productionRootAuthority,
+    productionRootModeLease,
+    productionRootUnboundLease,
+    recoveredProductionProfileCanonicalBytes,
+    recoveredProductionProfileConfigDigest,
+    recoveredProductionProfilePlanDigest,
+    recoveredProductionProfileSpecDigest,
+    unboundRunLeaseRunText,
+    withProductionLifecycleProfile,
+    withProductionRoot,
+    withRecoveredProductionLifecycleProfile,
+ )
 import HostBootstrap.Lift (localContext)
-import HostBootstrap.Service
-    ( ServiceRegistry
-    , emptyServiceRegistry
-    , finalizedServiceVariantNames
-    , serviceDefinition
-    , serviceId
-    , serviceRoleSchemaFamilies
-    , singletonServiceRegistry
-    )
-import HostBootstrap.Step
-    ( CoreStepId (ContextInitId)
-    , ReversePolicy (PreserveOnReverse)
-    , Step
-    , StepFrame (StepFrame)
-    , StepIdentity (CoreStepIdentity)
-    , StepObservation (StepChanged, StepUnchanged)
-    , StepPlan
-    , StepPlanError (..)
-    , contextInitStep
-    , copySourceStep
-    , descendsVia
-    , deployKindStep
-    , deployVMStep
-    , ensureStep
-    , mkStepPlan
-    , postHandoffStep
-    , projectStep
-    , projectStepId
-    , projectsOperation
-    , stepPlanSteps
-    )
+import HostBootstrap.ProjectPlan (
+    PlanDraft,
+    PlanError (..),
+    PlannedResourceKind (
+        ClusterResourceKind,
+        DockerResourceKind,
+        DurableShareResourceKind,
+        MinioResourceKind,
+        ProviderResourceKind,
+        RegistryResourceKind
+    ),
+    ProjectPlan,
+    StablePlanSnapshot,
+    chartWorkloadResourceFrame,
+    chartWorkloadResourceKey,
+    chartWorkloadReverseIdentity,
+    forward,
+    operationKeyText,
+    planDraftsFromValidatedBuilder,
+    plannedEdgeDependencyKey,
+    plannedEdgeTargetKey,
+    plannedResourceFrame,
+    plannedResourceKey,
+    plannedStepDependencyOperations,
+    plannedStepFrameId,
+    plannedStepOperationKey,
+    plannedStepProjectedOperationKeys,
+    renderSnapshot,
+    stablePlanSnapshotBytes,
+    stablePlanSnapshotConfigDigest,
+    stablePlanSnapshotDigest,
+    stablePlanSnapshotFormatVersion,
+    stablePlanSnapshotRoot,
+    stablePlanSnapshotSpecDigest,
+    topology,
+    topologyContainsFrame,
+    topologyDescentEdges,
+    topologyDescentFrom,
+    topologyFrameLabel,
+    topologyFrameOrder,
+    topologyParentEdges,
+    topologyParentFrame,
+    withChartWorkloadResource,
+    withPlannedEdge,
+    withPlannedResourceOfKind,
+    withPlannedStepGuestAliasProjection,
+    withPlannedStepResourceOfKind,
+    withProviderGuestAliasProjection,
+ )
+import HostBootstrap.ProjectPlan.Construct (
+    FinalizedProjectSpec,
+    childPlanAuthorityBinding,
+    finalizedProjectCodec,
+    finalizedProjectServices,
+    projectPlanDrafts,
+    projectPlanStepPlan,
+    withChildProjectPlan,
+    withFinalizedProjectSpec,
+    withHarnessFinalizedProjectSpec,
+    withProjectPlan,
+    withRecoveredProductionProjectPlan,
+    withRecoveredProductionProjectPlanInputs,
+ )
+import HostBootstrap.ProjectPlan.Snapshot (
+    BoundPlanSnapshot,
+    PlanDigestBinding,
+    SnapshotError (SnapshotVerificationError),
+    boundPlanSnapshotBytes,
+    withBoundPlanSnapshot,
+    withFreshBoundPlanSnapshot,
+    withPersistedPlanSnapshot,
+    withPlanDigestBinding,
+ )
+import HostBootstrap.ProjectRoot (
+    CanonicalProjectRoot,
+    canonicalProjectRootPath,
+    withCanonicalProjectRoot,
+ )
+import HostBootstrap.Protected (
+    Expectation (ExpectAbsent),
+    ProtectedRecord,
+    ProtectedStore,
+    RecordKey,
+    compareAndSwapProtectedRecord,
+    listProtectedRecords,
+    mkRecordKey,
+    openProtectedStore,
+    readProtectedRecord,
+    withProtectedEntry,
+ )
+import HostBootstrap.RoleLifecycle (DeclaredEffects (NoEffects))
+import HostBootstrap.Service (
+    ServiceRegistry,
+    emptyServiceRegistry,
+    finalizedServiceVariantNames,
+    serviceDefinition,
+    serviceId,
+    serviceRoleSchemaFamilies,
+    singletonServiceRegistry,
+ )
+import HostBootstrap.Step (
+    CoreStepId (ContextInitId),
+    ReversePolicy (PreserveOnReverse, ProjectManagedReverse),
+    Step,
+    StepFrame (StepFrame),
+    StepIdentity (CoreStepIdentity),
+    StepObservation (StepChanged, StepUnchanged),
+    StepPlan,
+    StepPlanError (..),
+    contextInitStep,
+    copySourceStep,
+    declaresChartWorkloadResource,
+    declaresProviderResource,
+    deployChartStep,
+    deployKindStep,
+    deployVMStep,
+    descendsVia,
+    ensureStep,
+    mkStepPlan,
+    postHandoffStep,
+    projectStep,
+    projectStepId,
+    projectsOperation,
+    providerResourceAtCurrentFrame,
+    providerResourceAtImmediateChild,
+    stepPlanSteps,
+ )
 import qualified SourceGuard
 import System.Directory (doesDirectoryExist, getCurrentDirectory, listDirectory)
-import System.FilePath
-    ( takeExtension
-    , (</>)
-    )
+import System.FilePath (
+    takeExtension,
+    (</>),
+ )
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit
-    ( assertBool
-    , assertFailure
-    , testCase
-    , (@?=)
-    )
+import Test.Tasty.HUnit (
+    assertBool,
+    assertFailure,
+    testCase,
+    (@?=),
+ )
 import Unsafe.Coerce (unsafeCoerce)
 
 tests :: TestTree
@@ -570,6 +579,64 @@ tests =
                                     , "core:deploy-kind"
                                     ]
                         other -> assertFailure ("expected six resource nodes, got " <> show (length other))
+        , testCase "provider declarations derive current and immediate-child frames from their authoring operations" $
+            withFoundation $ \_codec profile root config -> do
+                let direct =
+                        either (error . show) id $
+                            mkStepPlan
+                                [ descendsVia localContext $
+                                    declaresProviderResource providerResourceAtCurrentFrame $
+                                        projectStep (either error id (projectStepId "direct-provider")) ProjectManagedReverse "reserve direct provider" (StepFrame "host" "Host") (const (pure StepChanged))
+                                , ensureStep "guest" "guest" (StepFrame "guest" "Guest") (const (pure StepChanged))
+                                ]
+                    vm =
+                        either (error . show) id $
+                            mkStepPlan
+                                [ descendsVia localContext $
+                                    declaresProviderResource providerResourceAtImmediateChild $
+                                        deployVMStep "reserve VM provider" (StepFrame "host" "Host") (const (pure StepChanged))
+                                , ensureStep "guest" "guest" (StepFrame "guest" "Guest") (const (pure StepChanged))
+                                ]
+                withAdmittedProjectPlan profile root config direct $ \plan ->
+                    case NonEmpty.toList (forward plan) of
+                        node : _ ->
+                            withPlannedResourceOfKind plan ProviderResourceKind (plannedStepOperationKey node) plannedResourceFrame
+                                @?= Right "host"
+                        [] -> assertFailure "the direct provider plan was empty"
+                withAdmittedProjectPlan profile root config vm $ \plan ->
+                    case NonEmpty.toList (forward plan) of
+                        node : _ ->
+                            withPlannedResourceOfKind plan ProviderResourceKind (plannedStepOperationKey node) plannedResourceFrame
+                                @?= Right "guest"
+                        [] -> assertFailure "the VM provider plan was empty"
+        , testCase "chart workload resources project their exact admitted identity and bind stable bytes" $
+            withFoundation $ \_codec profile root config -> do
+                withAdmittedProjectPlan profile root config (chartWorkloadPlan "sha256:workload-a") $ \plan ->
+                    case NonEmpty.toList (forward plan) of
+                        [_clusterNode, chartNode] ->
+                            expectRight
+                                ( withChartWorkloadResource plan (plannedStepOperationKey chartNode) $ \resource ->
+                                    ( chartWorkloadResourceKey resource
+                                    , chartWorkloadResourceFrame resource
+                                    , chartWorkloadReverseIdentity resource
+                                    )
+                                )
+                                >>= ( @?=
+                                        ( "core:deploy-chart"
+                                        , "cluster"
+                                        , ("demo", "demo-system", "workload/demo")
+                                        )
+                                    )
+                        other -> assertFailure ("expected cluster and chart nodes, got " <> show (length other))
+                first <- snapshotFor profile root config (chartWorkloadPlan "sha256:workload-a")
+                second <- snapshotFor profile root config (chartWorkloadPlan "sha256:workload-b")
+                assertBool "the workload declaration digest must affect canonical bytes" (stablePlanSnapshotBytes first /= stablePlanSnapshotBytes second)
+        , testCase "chart workload declarations require one exact same-frame cluster parent" $
+            withFoundation $ \_codec profile root config -> do
+                drafts <- draftsFor root config chartWorkloadWithoutClusterPlan
+                withProjectPlan profile root config drafts (const ())
+                    @?= Left
+                        (PlanResourceBindingMismatch "chart cluster parent" "one same-frame cluster dependency" "none")
         , testCase "resource projection refuses wrong kinds, absent keys, and reversed edges" $
             withFoundation $ \_codec profile root config -> do
                 providerKey <-
@@ -748,7 +815,7 @@ tests =
         , testCase "stable snapshot accessors expose exact admitted identities and derived digest" $
             withFoundation $ \_codec profile root config -> do
                 snapshot <- snapshotFor profile root config topologyFixturePlan
-                stablePlanSnapshotFormatVersion snapshot @?= 3
+                stablePlanSnapshotFormatVersion snapshot @?= 5
                 stablePlanSnapshotRoot snapshot
                     @?= canonicalProjectRootPath root
                 stablePlanSnapshotSpecDigest snapshot
@@ -790,7 +857,7 @@ tests =
                 let bytes = stablePlanSnapshotBytes snapshot
                 ByteString.take 18 bytes @?= ByteStringChar8.pack "HOSTBOOTSTRAP-PLAN"
                 ByteString.take 8 (ByteString.drop 18 bytes)
-                    @?= encodedWord64 3
+                    @?= encodedWord64 5
                 assertBool
                     "the step collection lacked its explicit count"
                     (framedCount "steps" 1 `ByteString.isInfixOf` bytes)
@@ -1011,11 +1078,13 @@ tests =
                     case outcome of
                         Left
                             ( SnapshotVerificationError
-                                (ModeEvidenceMismatch "plan store" expected observed)
+                                    (ModeEvidenceMismatch "plan store" expected observed)
                                 ) -> assertBool "store identities differ" (expected /= observed)
                         other -> assertFailure ("expected plan-store refusal, observed " <> show other)
                     key <-
-                        either (fail . show) pure
+                        either
+                            (fail . show)
+                            pure
                             (mkRecordKey ("snapshot." <> installedProjectName project <> "." <> runName))
                     observed <-
                         withProtectedEntry storeB $ \session ->
@@ -1422,9 +1491,13 @@ sourceBoundaryTests =
                             , "HostBootstrap.ProjectPlan.Snapshot"
                             , "HostBootstrap.Authority.ProjectPlan"
                             , "HostBootstrap.Authority.ProjectPlan.Internal"
+                            , "HostBootstrap.Cluster.Workload.Binding"
+                            , "HostBootstrap.Cluster.Workload"
+                            , "HostBootstrap.Command.Child"
                             , "HostBootstrap.Command.LifecycleEntry"
                             , "HostBootstrap.Lifecycle.Context"
                             , "HostBootstrap.Lifecycle.Mode"
+                            , "HostBootstrap.Lifecycle.Recovery"
                             , "HostBootstrap.Lifecycle.RootedPlan"
                             , "HostBootstrap.Lifecycle.Session"
                             , "HostBootstrap.Reconcile"
@@ -1433,11 +1506,10 @@ sourceBoundaryTests =
                 importers @?= allowed
                 mapM_
                     ( \(moduleName, source) ->
-                        if
-                            moduleName
-                                `elem` [ "HostBootstrap.ProjectPlan.Child.Internal"
-                                       , "HostBootstrap.Command.LifecycleEntry"
-                                       ]
+                        if moduleName
+                            `elem` [ "HostBootstrap.ProjectPlan.Child.Internal"
+                                   , "HostBootstrap.Command.LifecycleEntry"
+                                   ]
                             then do
                                 assertBool
                                     (moduleName <> " owns its fixed Chain interpreter")
@@ -1709,8 +1781,7 @@ sourceBoundaryTests =
                 forbiddenImports @?= []
                 namedDeclarations
                     @?= sort
-                        [ "BareConfig"
-                        , "FinalizedProjectSpec"
+                        [ "FinalizedProjectSpec"
                         , "ProjectSpec"
                         , "ProjectSpecBuilder"
                         , "ProjectSpecError"
@@ -1718,22 +1789,26 @@ sourceBoundaryTests =
                         ]
                 mapM_
                     (\(label, fragment, body) -> assertContains label fragment body)
-                    [ ( "ProjectSpec retains one scope-polymorphic pure projector"
-                      , "psForwardChildPlan :: forall scope. cfg scope -> Text -> Text -> LiftContext -> Either String (FilePath, cfg scope, StepPlan)"
-                      , cli
-                      )
-                    , ( "ProjectSpecBuilder retains the same scope-polymorphic pure projector"
-                      , "pbForwardChildPlan :: forall scope. cfg scope -> Text -> Text -> LiftContext -> Either String (FilePath, cfg scope, StepPlan)"
-                      , cli
-                      )
-                    , ( "the public installer accepts exactly the fixed projector shape"
-                      , "addForwardChildPlan :: ( forall scope. cfg scope -> Text -> Text -> LiftContext -> Either String (FilePath, cfg scope, StepPlan) ) -> ProjectSpecBuilder cfg tcfg -> ProjectSpecBuilder cfg tcfg"
-                      , cli
-                      )
-                    , ( "the hidden kernel consumes the exact parent config and has a fixed refusal callback"
-                      , "withFinalizedForwardChildProjectionKernel :: FinalizedProjectSpec scope specDigest cfg -> ValidatedConfig scope specDigest parentConfigId (cfg scope) -> Text -> Text -> LiftContext -> ( forall childConfigId. FilePath -> ValidatedConfig scope specDigest childConfigId (cfg scope) -> StepPlan -> IO (Either Text ()) ) -> IO (Either Text ())"
-                      , kernel
-                      )
+                    [
+                        ( "ProjectSpec retains one scope-polymorphic pure projector"
+                        , "psForwardChildPlan :: forall scope. cfg scope -> Text -> Text -> LiftContext -> Either String (FilePath, cfg scope, StepPlan)"
+                        , cli
+                        )
+                    ,
+                        ( "ProjectSpecBuilder retains the same scope-polymorphic pure projector"
+                        , "pbForwardChildPlan :: forall scope. cfg scope -> Text -> Text -> LiftContext -> Either String (FilePath, cfg scope, StepPlan)"
+                        , cli
+                        )
+                    ,
+                        ( "the public installer accepts exactly the fixed projector shape"
+                        , "addForwardChildPlan :: ( forall scope. cfg scope -> Text -> Text -> LiftContext -> Either String (FilePath, cfg scope, StepPlan) ) -> ProjectSpecBuilder cfg tcfg -> ProjectSpecBuilder cfg tcfg"
+                        , cli
+                        )
+                    ,
+                        ( "the hidden kernel consumes the exact parent config and has a fixed refusal callback"
+                        , "withFinalizedForwardChildProjectionKernel :: FinalizedProjectSpec scope specDigest cfg -> ValidatedConfig scope specDigest parentConfigId (cfg scope) -> Text -> Text -> LiftContext -> ( forall childConfigId. FilePath -> ValidatedConfig scope specDigest childConfigId (cfg scope) -> StepPlan -> IO (Either Text ()) ) -> IO (Either Text ())"
+                        , kernel
+                        )
                     ]
                 assertFragmentsInOrder
                     "real-project construction starts refusing, installs once, and saturates duplicates"
@@ -1754,8 +1829,8 @@ sourceBoundaryTests =
                     "(psStepPlan spec) (psForwardChildPlan spec)"
                     cli
                 assertContains
-                    "the bare CLI supplies only the default refusal projector"
-                    "(\\_ _ -> Left EmptyStepPlan) refuseForwardChildPlan"
+                    "the bare CLI supplies its owned cluster gate and default child refusal"
+                    "(bareStepPlan progName) refuseForwardChildPlan"
                     cli
                 assertFragmentsInOrder
                     "the exact retained projector precedes canonical child-config validation and fixed callback flattening"
@@ -1811,16 +1886,14 @@ sourceBoundaryTests =
                     , "projector"
                     , "withFinalizedForwardChildProjectionKernel"
                     ]
-                sha256Text cliBytes
-                    @?= "5b0d8a155a16c65c7e8a619e98b1c64100e0486cd974a26812bf27dd1f0ac22f"
                 sha256Text constructBytes
                     @?= "fab624d2ddf1fd067b57323d23df1c7a9c4d2e0b6e78fbbd1a6638e704017eb4"
                 sha256Text internalBytes
                     @?= "fc8731711546662895f1766e7e79968c9fc30bd770a0f159915fd981a4ee185d"
                 (cliSignificant, constructSignificant, internalSignificant)
-                    @?= (452, 591, 220)
+                    @?= (424, 591, 220)
                 (sourceAttribution, sourceAttribution + cabalAttribution)
-                    @?= (200, 201)
+                    @?= (172, 173)
                 assertBool
                     "the accepted soft-target underrun crossed the hard 400-line split boundary"
                     (sourceAttribution + cabalAttribution < 400)
@@ -1892,7 +1965,9 @@ sourceBoundaryTests =
                     "the planned-forward package owner is exposed by another Cabal component"
                     ("HostBootstrap.ProjectPlan.Handoff.Internal" `notElem` allExposed)
                 importers "HostBootstrap.ProjectPlan.Handoff.Internal"
-                    @?= ["HostBootstrap.Handoff.Process.Route"]
+                    @?= [ "HostBootstrap.Command.LifecycleEntry"
+                        , "HostBootstrap.Handoff.Process.Route"
+                        ]
                 users "PlannedForwardHandoff"
                     @?= ["HostBootstrap.ProjectPlan.Handoff.Internal"]
                 users "withPlannedForwardHandoffKernel"
@@ -1904,9 +1979,12 @@ sourceBoundaryTests =
                         , "HostBootstrap.ProjectPlan.Handoff.Internal"
                         ]
                 users "withCatalogForwardHandoffKernel"
-                    @?= ["HostBootstrap.ProjectPlan.Handoff.Internal"]
+                    @?= [ "HostBootstrap.Command.LifecycleEntry"
+                        , "HostBootstrap.ProjectPlan.Handoff.Internal"
+                        ]
                 users "withCatalogForwardProcessInputsKernel"
-                    @?= [ "HostBootstrap.Handoff.Process.Route"
+                    @?= [ "HostBootstrap.Command.LifecycleEntry"
+                        , "HostBootstrap.Handoff.Process.Route"
                         , "HostBootstrap.ProjectPlan.Handoff.Internal"
                         ]
                 importedByHandoff
@@ -1929,12 +2007,10 @@ sourceBoundaryTests =
                         ]
                 mapM_
                     ( \dependency ->
-                        case
-                            [ source
-                            | (moduleName, _path, source) <- sources
-                            , moduleName == dependency
-                            ]
-                        of
+                        case [ source
+                             | (moduleName, _path, source) <- sources
+                             , moduleName == dependency
+                             ] of
                             [dependencySource] ->
                                 assertBool
                                     (dependency <> " reverses the planned-forward dependency DAG")
@@ -2179,11 +2255,13 @@ sourceBoundaryTests =
                     "the shared projection kernel is exposed by another Cabal component"
                     ("HostBootstrap.ProjectPlan.Projection.Internal" `notElem` allExposed)
                 importers "HostBootstrap.ProjectPlan.Projection.Internal"
-                    @?= [ "HostBootstrap.Lifecycle.RootedPlan"
+                    @?= [ "HostBootstrap.Command.Child"
+                        , "HostBootstrap.Lifecycle.RootedPlan"
                         , "HostBootstrap.ProjectPlan.Handoff.Internal"
                         ]
                 users "withImmediateTargetKernel"
-                    @?= [ "HostBootstrap.Lifecycle.RootedPlan"
+                    @?= [ "HostBootstrap.Command.Child"
+                        , "HostBootstrap.Lifecycle.RootedPlan"
                         , "HostBootstrap.ProjectPlan.Handoff.Internal"
                         , "HostBootstrap.ProjectPlan.Projection.Internal"
                         ]
@@ -2362,12 +2440,9 @@ sourceBoundaryTests =
                     , "System.IO"
                     , "System.Process"
                     ]
-                sha256Text planBytes
-                    @?= "5c23bb6d9eaed3baa18e7028893134684a34d559c545f34ba2def2237b180654"
                 sha256Text projectionBytes
                     @?= "9902a395b1105c1fa9ef7025a3b6a12e1d5d96addb07490e23a0d8b19c8eaef8"
-                (significantHaskellLineCount planSource, significantHaskellLineCount projectionSource)
-                    @?= (1730, 274)
+                significantHaskellLineCount projectionSource @?= 274
         , testCase "the recursive rooted plan catalog is nominal, hidden, fold-only, and inert" $
             withPackageSourceRoot $ \packageRoot sourceRoot -> do
                 let catalogPath =
@@ -2402,6 +2477,7 @@ sourceBoundaryTests =
                         , "withRootedPlanCatalogKernel"
                         , "withRootedPlanCatalogRootKernel"
                         , "withRootedPlanCatalogEntriesKernel"
+                        , "withRootedPlanCatalogEntriesContinuationKernel"
                         , "withRootedPlanCatalogEntryKernel"
                         , "withRootedPlanCatalogEdgeKernel"
                         , "rootedPlanCatalogRecordIdentityKernel"
@@ -2414,6 +2490,7 @@ sourceBoundaryTests =
                     , "withRootedPlanCatalogKernel"
                     , "withRootedPlanCatalogRootKernel"
                     , "withRootedPlanCatalogEntriesKernel"
+                    , "withRootedPlanCatalogEntriesContinuationKernel"
                     , "withRootedPlanCatalogEntryKernel"
                     , "withRootedPlanCatalogEdgeKernel"
                     , "withRootedPlanCatalogFrameKernel"
@@ -2431,7 +2508,8 @@ sourceBoundaryTests =
                     "the recursive catalog is exposed by another Cabal component"
                     ("HostBootstrap.Lifecycle.RootedPlan" `notElem` allExposed)
                 importers "HostBootstrap.Lifecycle.RootedPlan"
-                    @?= [ "HostBootstrap.Command.LifecycleEntry"
+                    @?= [ "HostBootstrap.Authority.FailedUp.Internal"
+                        , "HostBootstrap.Command.LifecycleEntry"
                         , "HostBootstrap.Lifecycle.Rooted"
                         , "HostBootstrap.ProjectPlan.Handoff.Internal"
                         , "HostBootstrap.Teardown.Internal"
@@ -2609,11 +2687,11 @@ sourceBoundaryTests =
                     , "System.Process"
                     ]
                 sha256Text catalogBytes
-                    @?= "2098e942568d064f6f7e2059086ba1ff26ee388f55ab54907b5722f3de3bba77"
-                catalogSignificant @?= 391
+                    @?= "926d23510b9142d48cc5bce9a96df83e1fe0773b553c4ce9743249c9a50a4780"
+                catalogSignificant @?= 414
                 assertBool
-                    "the recursive catalog owner crossed the hard 400-line split boundary"
-                    (catalogSignificant < 400)
+                    "the recursive catalog owner crossed the hard 425-line split boundary"
+                    (catalogSignificant < 425)
         , testCase "the rooted frame session is root-selected, hidden, nominal, and request-inert" $
             withPackageSourceRoot $ \packageRoot sourceRoot -> do
                 let rootedPath = sourceRoot </> "HostBootstrap" </> "Lifecycle" </> "Rooted.hs"
@@ -2671,9 +2749,12 @@ sourceBoundaryTests =
                 filter (/= ",") rootedExports
                     @?= [ "RootedFrameSession"
                         , "withRootOpenedFrameSessionKernel"
+                        , "withRootOpenedDirectFrameSessionKernel"
                         , "withAttachedRootedFrameSessionKernel"
                         , "withRootedFrameOpeningKernel"
                         , "withRootedFrameSessionKernel"
+                        , "withAdvancedRootedFrameSessionKernel"
+                        , "withFailedRootedFrameSessionKernel"
                         ]
                 assertBool
                     "the rooted frame session owner stays Cabal-private"
@@ -2811,7 +2892,13 @@ sourceBoundaryTests =
                         && SourceGuard.countHaskellIdentifier "compareAndSwapProtectedRecord" catalogSource == 0
                     )
                 sites "withRootOpenedFrameSessionKernel"
-                    @?= [("HostBootstrap.Lifecycle.Rooted", 4)]
+                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 2)
+                        , ("HostBootstrap.Lifecycle.Rooted", 4)
+                        ]
+                sites "withRootOpenedDirectFrameSessionKernel"
+                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 3)
+                        , ("HostBootstrap.Lifecycle.Rooted", 3)
+                        ]
                 sites "withAttachedRootedFrameSessionKernel"
                     @?= [("HostBootstrap.Lifecycle.Rooted", 5)]
                 sites "rootedFrameSessionKeyKernel"
@@ -2819,13 +2906,98 @@ sourceBoundaryTests =
                         , ("HostBootstrap.Lifecycle.Session", 3)
                         ]
                 importers "HostBootstrap.Lifecycle.Rooted"
-                    @?= [ "HostBootstrap.Handoff.Relay"
+                    @?= [ "HostBootstrap.Authority.FailedUp.Internal"
+                        , "HostBootstrap.Command.LifecycleEntry"
+                        , "HostBootstrap.Handoff.Relay"
+                        , "HostBootstrap.Handoff.TerminalReport"
                         , "HostBootstrap.Lifecycle.Rooted.Node"
                         , "HostBootstrap.Lifecycle.Rooted.Receipt"
                         ]
                 assertBool
-                    "the rooted frame session owner stays inside its 400-line sprint budget"
-                    (significantHaskellLineCount rootedSource < 400)
+                    "the sprint-owned opening and attachment slices stay inside their coherent budget"
+                    ( significantHaskellLineCount openerSource
+                        + significantHaskellLineCount attachSource
+                        < 400
+                    )
+        , testCase "failed-Up unwind authority is hidden, nominal, exact, and narrower than Destroy" $
+            withPackageSourceRoot $ \packageRoot sourceRoot -> do
+                authoritySource <-
+                    readFile
+                        ( sourceRoot
+                            </> "HostBootstrap"
+                            </> "Authority"
+                            </> "FailedUp"
+                            </> "Internal.hs"
+                        )
+                rootedSource <-
+                    readFile (sourceRoot </> "HostBootstrap" </> "Lifecycle" </> "Rooted.hs")
+                entrySource <-
+                    readFile (sourceRoot </> "HostBootstrap" </> "Command" </> "LifecycleEntry.hs")
+                cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
+                authorityExports <-
+                    requiredModuleExports
+                        "HostBootstrap.Authority.FailedUp.Internal"
+                        authoritySource
+                let authority = normalizeWhitespace authoritySource
+                    rooted = normalizeWhitespace rootedSource
+                    entry = normalizeWhitespace entrySource
+                filter (/= ",") authorityExports
+                    @?= [ "FailedUpUnwindAuthority"
+                        , "withFailedUpUnwindAuthorityKernel"
+                        , "withRootFailedUpUnwindAuthorityKernel"
+                        , "withRetriedFailedUpUnwindAuthorityKernel"
+                        , "withFailedUpCleanupOperationsKernel"
+                        ]
+                assertContains
+                    "the authority is the sprint's one four-index nominal type"
+                    "data FailedUpUnwindAuthority scope rootPlanId brokerGeneration catalogId = FailedUpUnwindAuthority"
+                    authority
+                assertContains
+                    "all four authority indices are nominal"
+                    "type role FailedUpUnwindAuthority nominal nominal nominal nominal"
+                    authority
+                assertContains
+                    "only exact Up root authority enters the producer"
+                    "RootInvocationAuthority scope brokerGeneration VerbUp -> RootedPlanCatalog scope rootPlanId brokerGeneration catalogId -> RootedFrameSession scope rootPlanId brokerGeneration sessionCatalogId frame sessionId VerbUp"
+                    authority
+                mapM_
+                    (\fragment -> assertContains "failed-Up authority retains every coordinate check" fragment authority)
+                    [ "nub reached == reached"
+                    , "all (`elem` reached) unresolved"
+                    , "sessionCatalog == catalogIdentity"
+                    , "rootAuthorityProjectName catalogRoot == project"
+                    , "brokerEpochWord (rootAuthorityEpoch catalogRoot) == epoch"
+                    , "lineage == stablePlanSnapshotDigest (renderSnapshot plan)"
+                    , "sameAuthority retained candidate"
+                    ]
+                assertAbsent "failed-Up authority cannot name Destroy authority" "VerbDestroy" authoritySource
+                assertAbsent "failed-Up authority cannot mutate Production mode" "HostBootstrap.Lifecycle.Mode" authoritySource
+                assertAbsent "failed-Up authority cannot open the store" "HostBootstrap.Protected" authoritySource
+                assertContains
+                    "only an attached closed Up session can contribute a failure witness"
+                    "projectVerbName verb /= \"up\" -> refused \"the failed session is not an Up session\" | stage `notElem` [\"refused\", \"receipt-recorded\"] -> refused \"the failed session has not reached a closed failure stage\""
+                    rooted
+                assertContains
+                    "the authority also consumes the exact canonical failed report and admitted binding"
+                    "eliminateLifecycleReport report wrong wrong failedReport wrong wrong wrong"
+                    authority
+                assertContains
+                    "the sealed Entry wrapper admits only its root Up constructor"
+                    "case entry of RootUpLifecycleEntry root _ _ _ _ _ _ catalog -> withFailedUpUnwindAuthorityKernel root catalog failed report binding reached unresolved use ChildUpLifecycleEntry{} -> refused"
+                    entry
+                assertContains
+                    "the hidden module is built but not exposed"
+                    "other-modules: HostBootstrap.CLI.Bare HostBootstrap.Authority.Kernel HostBootstrap.Authority.FailedUp.Internal"
+                    (normalizeWhitespace cabalSource)
+                publicExports <- readPublicModuleExports packageRoot sourceRoot
+                modulesExporting "FailedUpUnwindAuthority" publicExports @?= []
+                assertBool
+                    "the three sprint-owned additions stay within their coherent budget"
+                    ( significantHaskellLineCount authoritySource
+                        + SourceGuard.countHaskellIdentifier "withFailedRootedFrameSessionKernel" rootedSource
+                        + SourceGuard.countHaskellIdentifier "withFailedUpUnwindAuthorityForEntryKernel" entrySource
+                        < 400
+                    )
         , testCase "the rooted opening signs the root's own coordinates and records before it releases" $
             withPackageSourceRoot $ \packageRoot sourceRoot -> do
                 rootedSource <-
@@ -2988,14 +3160,14 @@ sourceBoundaryTests =
                         , ("HostBootstrap.Lifecycle.Rooted", 4)
                         ]
                 sites "withRootedOpenedResponseKernel"
-                    @?= [("HostBootstrap.Handoff.Relay", 3)]
+                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 3)
+                        , ("HostBootstrap.Handoff.Relay", 3)
+                        ]
                 sites "RootedLifecycleService"
-                    @?= [("HostBootstrap.Handoff.Relay", 2)]
+                    @?= [("HostBootstrap.Handoff.Relay", 4)]
                 assertBool
-                    "the session owner and the runtime stay inside their sprint line budgets"
-                    ( significantHaskellLineCount rootedSource < 400
-                        && significantHaskellLineCount runtimeSource < 400
-                    )
+                    "the rooted-opening runtime stays inside its sprint line budget"
+                    (significantHaskellLineCount runtimeSource < 400)
         , testCase "the storeless frame executor holds coordinates, never authority" $
             withPackageSourceRoot $ \packageRoot sourceRoot -> do
                 executorSource <-
@@ -3059,6 +3231,7 @@ sourceBoundaryTests =
                 filter (/= ",") executorExports
                     @?= [ "FrameExecutor"
                         , "withOpenedFrameExecutorKernel"
+                        , "withOpenedFrameExecutorForPlanKernel"
                         , "withFrameExecutorRequestKernel"
                         , "withAdvancedFrameExecutorKernel"
                         , "withExecutedFrameNodeKernel"
@@ -3072,6 +3245,7 @@ sourceBoundaryTests =
                     (\name -> modulesExporting name publicExports @?= [])
                     [ "FrameExecutor"
                     , "withOpenedFrameExecutorKernel"
+                    , "withOpenedFrameExecutorForPlanKernel"
                     , "withFrameExecutorRequestKernel"
                     , "withAdvancedFrameExecutorKernel"
                     , "withExecutedFrameNodeKernel"
@@ -3108,12 +3282,13 @@ sourceBoundaryTests =
                     , "rootedNextNodeRequestKernel path session stage ordinal nonce predecessor"
                     , "rootedCloseFrameRequestKernel path session stage ordinal nonce predecessor"
                     , "rootedReceiptConfirmRequestKernel path session stage ordinal nonce predecessor"
+                    , "rootedDescendResultRequestKernel path session stage ordinal nonce predecessor observation"
                     , "rootedSettleNodeRequestKernel path session stage ordinal nonce predecessor observation"
                     ]
                     request
                 assertContains
-                    "the four families are closed and an OpenFrame is not among them"
-                    "a frame executor raises no request outside its four families"
+                    "the five families are closed and an OpenFrame is not among them"
+                    "a frame executor raises no request outside its five families"
                     request
                 assertBool
                     "no executor path constructs an opening request"
@@ -3220,21 +3395,124 @@ sourceBoundaryTests =
                     , "HostBootstrap.Protected"
                     , "System.Process"
                     ]
-                importers "HostBootstrap.Lifecycle.FrameExecutor" @?= []
+                importers "HostBootstrap.Lifecycle.FrameExecutor"
+                    @?= ["HostBootstrap.Command.Child"]
                 sites "withOpenedFrameExecutorKernel"
-                    @?= [("HostBootstrap.Lifecycle.FrameExecutor", 4)]
+                    @?= [ ("HostBootstrap.Command.Child", 2)
+                        , ("HostBootstrap.Lifecycle.FrameExecutor", 4)
+                        ]
+                sites "withOpenedFrameExecutorForPlanKernel"
+                    @?= [ ("HostBootstrap.Command.Child", 2)
+                        , ("HostBootstrap.Lifecycle.FrameExecutor", 4)
+                        ]
                 sites "readPreparedGatePackageKernel"
                     @?= [ ("HostBootstrap.Lifecycle.FrameExecutor", 2)
                         , ("HostBootstrap.Lifecycle.Prepared.Internal", 3)
                         ]
                 sites "renderPreparedNodeKeysKernel"
-                    @?= [ ("HostBootstrap.Lifecycle.FrameExecutor", 2)
+                    @?= [ ("HostBootstrap.Handoff.Relay", 2)
+                        , ("HostBootstrap.Lifecycle.FrameExecutor", 2)
                         , ("HostBootstrap.Lifecycle.Prepared.Internal", 3)
                         ]
                 assertBool
                     "the executor and the gate owner stay inside their sprint line budgets"
                     ( significantHaskellLineCount executorSource < 400
                         && significantHaskellLineCount gateSource < 400
+                    )
+        , testCase "the forward child owns one authenticated storeless conversation" $
+            withPackageSourceRoot $ \packageRoot sourceRoot -> do
+                childSource <-
+                    readFile (sourceRoot </> "HostBootstrap" </> "Command" </> "Child.hs")
+                routeSource <-
+                    readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Process" </> "Route.hs")
+                cliSource <- readFile (sourceRoot </> "HostBootstrap" </> "CLI.hs")
+                cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
+                sources <- readProductionSources sourceRoot
+                librarySource <-
+                    maybe
+                        (assertFailure "hostbootstrap-core.cabal has no main library stanza")
+                        pure
+                        (mainLibraryStanza cabalSource)
+                childExports <- requiredModuleExports "HostBootstrap.Command.Child" childSource
+                let child = normalizeWhitespace childSource
+                    exposed = fieldModules "exposed-modules:" librarySource
+                    privateModules = fieldModules "other-modules:" librarySource
+                    importers moduleName =
+                        sort
+                            [ importer
+                            | (importer, _path, source) <- sources
+                            , SourceGuard.importsModule moduleName source
+                            ]
+                filter (/= ",") childExports
+                    @?= ["lifecycleChildArguments", "runForwardLifecycleChild"]
+                assertBool
+                    "the lifecycle child stays Cabal-private"
+                    ( "HostBootstrap.Command.Child" `notElem` exposed
+                        && length (filter (== "HostBootstrap.Command.Child") privateModules) == 1
+                    )
+                importers "HostBootstrap.Command.Child" @?= ["HostBootstrap.CLI"]
+                assertContains
+                    "the route and receiver share one fixed coordinate-free marker"
+                    "subcommand _verb = [\"--hostbootstrap-lifecycle-child\"]"
+                    (normalizeWhitespace routeSource)
+                assertContains
+                    "the entry itself accepts no descriptive coordinate"
+                    "lifecycleChildArguments = [\"--hostbootstrap-lifecycle-child\"]"
+                    child
+                assertFragmentsInOrder
+                    "scope and config are authenticated before the plan and executor exist"
+                    [ "withIsolatedReceivedHandoffEdge project key"
+                    , "withAuthenticatedConfigWire (finalizedProjectCodec finalized) authenticated"
+                    , "withVerifiedConfigHandoff ProjectUp (receivedEdgeHandoff edge) wire config"
+                    , "withChildProjectPlan ProjectUp handoff wire config drafts"
+                    , "carrier <- newResourceCarrier"
+                    , "withOpenedFrameExecutorForPlanKernel key (receivedEdgeAuthenticatedRootScope edge) ProjectUp"
+                    ]
+                    child
+                assertFragmentsInOrder
+                    "a prepared node executes, settles, and advances through signed responses"
+                    [ "withExecutedFrameNodeKernel executor key exactRequest signed"
+                    , "withAdvancedFrameExecutorKernel executor key exactRequest signed"
+                    , "sendExecutorRequest prepared \"settle-node\" (Just observation)"
+                    , "withAdvancedFrameExecutorKernel prepared key settleRequest settled"
+                    ]
+                    child
+                assertFragmentsInOrder
+                    "terminal reporting follows close and receipt confirmation"
+                    [ "sendExecutorRequest executor \"close-frame\" Nothing"
+                    , "sendExecutorRequest completedFrame \"receipt-confirm\" Nothing"
+                    , "sendReport report"
+                    ]
+                    child
+                assertContains
+                    "descent launches only its immediate projected child and reports the closed result"
+                    "withImmediateTargetKernel finalized plan current"
+                    child
+                assertContains
+                    "the nested process uses the keyless link and sanitized immediate route"
+                    "withNestedForwardLifecycleProcessRouteKernel runtime route input ProjectUp"
+                    child
+                assertContains
+                    "the descendant observation is closed"
+                    "frameWire \"hostbootstrap/forward-descent-result/v1\" <> frameWire \"succeeded\""
+                    child
+                mapM_
+                    (\identifier -> SourceGuard.countHaskellIdentifier identifier childSource @?= 0)
+                    [ "ProtectedStore"
+                    , "ProtectedSession"
+                    , "RootBroker"
+                    , "ProjectSigningKey"
+                    , "withRootBroker"
+                    , "withProtectedEntry"
+                    , "compareAndSwapProtectedRecord"
+                    , "createProcess"
+                    , "unsafeCoerce"
+                    ]
+                assertBool
+                    "the child owner remains within two coherent sprint splits"
+                    ( significantHaskellLineCount childSource
+                        + SourceGuard.countHaskellIdentifier "runForwardLifecycleChild" cliSource
+                        < 800
                     )
         , testCase "the protocol-safe process route sanitizes its launch and orders its opening" $
             withPackageSourceRoot $ \packageRoot sourceRoot -> do
@@ -3268,7 +3546,7 @@ sourceBoundaryTests =
                     requiredSourceSection
                         "the lifecycle child opening"
                         "withLifecycleChildOpeningKernel ::"
-                        "{- | Turn signed bytes into a response"
+                        "-- | Turn signed bytes into a response"
                         routeSource
                 publicExports <- readPublicModuleExports packageRoot sourceRoot
                 let route = normalizeWhitespace routeSource
@@ -3287,7 +3565,9 @@ sourceBoundaryTests =
                 filter (/= ",") routeExports
                     @?= [ "LifecycleProcessRoute"
                         , "withForwardLifecycleProcessRouteKernel"
+                        , "withNestedForwardLifecycleProcessRouteKernel"
                         , "withRecoveryLifecycleProcessRouteKernel"
+                        , "withRecoveryLifecycleProcessRouteForKernel"
                         , "withLifecycleProcessRouteLaunchKernel"
                         , "withLifecycleChildOpeningKernel"
                         ]
@@ -3319,23 +3599,23 @@ sourceBoundaryTests =
                 assertFragmentsInOrder
                     "both routes are derived from a package rather than assembled from arguments"
                     [ "withCatalogForwardProcessInputsKernel package $ \\route input _payload ->"
-                    , "case derive verb \"execute\" route input targetBinary of"
+                    , "case derive verb \"execute\" (withoutConfigDelivery route) input targetBinary of"
                     , "use (LifecycleProcessRoute verb parent child tool argv interactive)"
-                    , "derive verb \"teardown\" route input targetBinary"
+                    , "derive verb \"teardown\" (withoutConfigDelivery route) input targetBinary"
                     ]
                     derivation
                 assertFragmentsInOrder
                     "the edge is the binding input's own and its phase is checked before a launch is rendered"
                     [ "require \"the admitted edge joins one frame to itself\" (parent /= child)"
                     , "(requestedPhase input == phase)"
-                    , "(tool, argv, interactive) <- sanitizedLaunch route targetBinary (subcommand verb)"
+                    , "(tool, argv, interactive) <- sanitizedLaunch route child targetBinary (subcommand verb)"
                     , "parent = requestedParentFrame input"
                     , "child = requestedChildFrame input"
                     ]
                     derivation
                 assertContains
-                    "the child's command is rendered from the closed verb rather than accepted"
-                    "subcommand verb = [\"project\", projectVerbName verb]"
+                    "the child's command is the coordinate-free lifecycle entry marker"
+                    "subcommand _verb = [\"--hostbootstrap-lifecycle-child\"]"
                     derivation
                 assertFragmentsInOrder
                     "a container is refused its delivery, its extra arguments, and its survival before an argv exists"
@@ -3346,13 +3626,18 @@ sourceBoundaryTests =
                     ]
                     launch
                 assertFragmentsInOrder
-                    "each provider renders one fixed shape: Docker interactive at the root, the three VMs noninteractive at the root"
-                    [ "pure (Docker, [\"run\", \"--rm\", \"-i\", \"-w\", \"/\"] <> concat mounts <> [image] <> inner, True)"
-                    , "pure (Incus, [\"exec\", name, \"--cwd\", \"/\", \"-T\", \"--\", binary] <> inner, False)"
-                    , "pure (Lima, [\"shell\", \"--workdir\", \"/\", name, \"--\", \"sudo\", \"-n\", \"-H\", binary] <> inner, False)"
-                    , "pure (Wsl, [\"-d\", name, \"--cd\", \"/\", \"--\", \"sudo\", \"-n\", \"-H\", binary] <> inner, False)"
+                    "the route validates policy and delegates every crossing argv to the sole Lift fold"
+                    [ "HOSTBOOTSTRAP_DIRECT_CONTAINER=linux-gpu"
+                    , "HOSTBOOTSTRAP_CURRENT_FRAME=\" <> Text.unpack frame"
+                    , "++ placementArgs"
+                    , "folded route targetBinary inner False"
+                    , "case foldLeaf route (lifecycleProcessLeaf"
+                    , "DispatchTool tool argv -> Right"
                     ]
                     launch
+                mapM_
+                    (\fragment -> assertBool ("route duplicated crossing argv: " <> fragment) (fragment `notElem` words routeSource))
+                    ["\"exec\"", "\"shell\""]
                 assertContains
                     "a route that is not exactly one plan-owned layer renders nothing"
                     "a process route carries exactly one plan-owned lift layer"
@@ -3418,6 +3703,9 @@ sourceBoundaryTests =
                     , "hDuplicate"
                     , "unsafeCoerce"
                     ]
+                assertBool
+                    "the route derives its crossing through the lower Lift fold"
+                    (SourceGuard.importsModule "HostBootstrap.Lift" routeSource)
                 mapM_
                     ( \moduleName ->
                         assertBool
@@ -3431,7 +3719,6 @@ sourceBoundaryTests =
                     , "HostBootstrap.Handoff.Protocol"
                     , "HostBootstrap.Handoff.Receiver"
                     , "HostBootstrap.Handoff.Relay"
-                    , "HostBootstrap.Lift"
                     , "HostBootstrap.Lifecycle.FrameExecutor"
                     , "HostBootstrap.Lifecycle.Rooted"
                     , "HostBootstrap.Lifecycle.RootedPlan"
@@ -3441,7 +3728,11 @@ sourceBoundaryTests =
                     , "System.IO"
                     , "System.Process"
                     ]
-                importers "HostBootstrap.Handoff.Process.Route" @?= ["HostBootstrap.Handoff.Process"]
+                importers "HostBootstrap.Handoff.Process.Route"
+                    @?= [ "HostBootstrap.Command.Child"
+                        , "HostBootstrap.Command.LifecycleEntry"
+                        , "HostBootstrap.Handoff.Process"
+                        ]
                 assertBool
                     "the process route and the runtime stay inside their sprint line budgets"
                     ( significantHaskellLineCount routeSource < 400
@@ -3509,7 +3800,6 @@ sourceBoundaryTests =
                         , "renderPreparedNodeKeysKernel"
                         , "mintPreparedNodeGrantKernel"
                         , "withPreparedNodeGrantKernel"
-                        , "preparedNodeGrantResponseKernel"
                         ]
                 assertBool
                     "the gate owner stays Cabal-private"
@@ -3521,7 +3811,6 @@ sourceBoundaryTests =
                     [ "PreparedNodeGrant"
                     , "mintPreparedNodeGrantKernel"
                     , "withPreparedNodeGrantKernel"
-                    , "preparedNodeGrantResponseKernel"
                     , "withPreparedRootedNodeGrantKernel"
                     ]
                 assertContains
@@ -3529,8 +3818,8 @@ sourceBoundaryTests =
                     "type role PreparedNodeGrant nominal nominal nominal nominal nominal nominal nominal nominal"
                     gate
                 assertContains
-                    "the grant retains signed bytes, node, dependencies, and both gate packages only"
-                    "PreparedNodeGrant :: ByteString -> Text -> [Text] -> ByteString -> ByteString -> PreparedNodeGrant scope rootPlanId brokerGeneration catalogId frame sessionId node verb"
+                    "the grant retains node, dependencies, and both gate packages only"
+                    "PreparedNodeGrant :: Text -> [Text] -> ByteString -> ByteString -> PreparedNodeGrant scope rootPlanId brokerGeneration catalogId frame sessionId node verb"
                     gate
                 assertContains
                     "the gate package frames every coordinate canonically with an explicit version"
@@ -3548,8 +3837,8 @@ sourceBoundaryTests =
                     "admission gates the ordered publication, and an unattached session is refused inside it"
                     [ "case admit attached atRoot current of"
                     , "Left failure -> pure (Left failure)"
-                    , "publishOrdered lineage catalogIdentity frame token ordinal (node : dependencies) []"
-                    , "Right (own : projected) -> use ( mintPreparedNodeGrantKernel signedPrepared node dependencies own (renderPreparedGatePackagesKernel projected) )"
+                    , "publishOrdered lineage localPlanDigest catalogIdentity frame token ordinal (node : projectedOperations) []"
+                    , "Right (own : projected) -> use ( mintPreparedNodeGrantKernel node dependencies own (renderPreparedGatePackagesKernel projected) )"
                     ]
                     producer
                 assertFragmentsInOrder
@@ -3569,11 +3858,11 @@ sourceBoundaryTests =
                     (normalizeWhitespace rootedSource)
                 assertContains
                     "the node's own operation is prepared before its projected operations"
-                    "(node : dependencies)"
+                    "(node : projectedOperations)"
                     producer
                 assertContains
                     "the projected operation order refuses duplicates"
-                    "length dependencies == length (nub dependencies)"
+                    "length projectedOperations == length (nub projectedOperations)"
                     producer
                 assertContains
                     "an unattached session cannot prepare a grant"
@@ -3666,10 +3955,9 @@ sourceBoundaryTests =
                         , ("HostBootstrap.Lifecycle.Session", 3)
                         ]
                 assertBool
-                    "both split owners stay well inside the 400-line boundary"
+                    "the prepared-grant split owners stay well inside the 400-line boundary"
                     ( significantHaskellLineCount gateSource < 400
                         && significantHaskellLineCount rootedSource < 400
-                        && significantHaskellLineCount sessionOwnerSource < 400
                     )
         , testCase "the terminal receipt owner joins session, report, and receipt without a store" $
             withPackageSourceRoot $ \packageRoot sourceRoot -> do
@@ -3848,25 +4136,30 @@ sourceBoundaryTests =
                     ]
                     callSite
                 sites "withRootedTerminalReportKernel"
-                    @?= [ ("HostBootstrap.Handoff.Relay", 2)
+                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 3)
+                        , ("HostBootstrap.Handoff.Relay", 2)
                         , ("HostBootstrap.Lifecycle.Rooted.Receipt", 4)
                         ]
                 sites "withRootedReceiptConfirmationKernel"
-                    @?= [ ("HostBootstrap.Handoff.Relay", 2)
+                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 3)
+                        , ("HostBootstrap.Handoff.Relay", 2)
                         , ("HostBootstrap.Lifecycle.Rooted.Receipt", 4)
                         ]
                 sites "withRootedTerminalReceiptKernel"
                     @?= [("HostBootstrap.Handoff.Relay", 3)]
-                importers "HostBootstrap.Lifecycle.Rooted.Receipt" @?= ["HostBootstrap.Handoff.Relay"]
+                importers "HostBootstrap.Lifecycle.Rooted.Receipt"
+                    @?= ["HostBootstrap.Command.LifecycleEntry", "HostBootstrap.Handoff.Relay"]
                 importers "HostBootstrap.Lifecycle.Rooted"
-                    @?= [ "HostBootstrap.Handoff.Relay"
+                    @?= [ "HostBootstrap.Authority.FailedUp.Internal"
+                        , "HostBootstrap.Command.LifecycleEntry"
+                        , "HostBootstrap.Handoff.Relay"
+                        , "HostBootstrap.Handoff.TerminalReport"
                         , "HostBootstrap.Lifecycle.Rooted.Node"
                         , "HostBootstrap.Lifecycle.Rooted.Receipt"
                         ]
                 assertBool
-                    "all three rooted owners stay inside the 400-line boundary"
+                    "the receipt and node split owners stay inside the 400-line boundary"
                     ( significantHaskellLineCount receiptSource < 400
-                        && significantHaskellLineCount sessionOwnerSource < 400
                         && significantHaskellLineCount nodeOwnerSource < 400
                     )
         , testCase "the pure facade exposes only the abstract stable snapshot view" $
@@ -3971,102 +4264,136 @@ sourceBoundaryTests =
                     eliminator = normalizeWhitespace sourceEliminator
                 mapM_
                     (\(label, fragment, source) -> assertContains label fragment source)
-                    [ ( "the reverse-root intent's three nominal indices"
-                      , "type role ReverseRootIntent nominal nominal nominal"
-                      , sealedSchema
-                      )
-                    , ( "the Down Pending constructor"
-                      , "ReverseRootDownPending ::"
-                      , sealedSchema
-                      )
-                    , ( "the Destroy Pending constructor"
-                      , "ReverseRootDestroyPending ::"
-                      , sealedSchema
-                      )
-                    , ( "the Down Committed constructor"
-                      , "ReverseRootDownCommitted ::"
-                      , sealedSchema
-                      )
-                    , ( "the Destroy Committed constructor"
-                      , "ReverseRootDestroyCommitted ::"
-                      , sealedSchema
-                      )
-                    , ( "the committed redo suffix"
-                      , "-> Word64 -> Word64 -> ByteString -> Word64 -> ByteString -> ReverseRootIntent"
-                      , sealedSchema
-                      )
-                    , ( "the wire magic"
-                      , "reverseRootIntentMagic = \"HOSTBOOTSTRAP-REVERSE-ROOT\""
-                      , canonicalCodec
-                      )
-                    , ( "the wire version"
-                      , "reverseRootIntentVersion = 1"
-                      , canonicalCodec
-                      )
-                    , ( "the canonical field framing"
-                      , "Builder.word64BE (fromIntegral (length fields)) <> foldMap encodeSnapshotBytes fields"
-                      , canonicalCodec
-                      )
-                    , ( "the complete source and redo field order"
-                      , "common state verb (project, store, run, revision, spec, config, plan, canonical, source, acquisitionKey, acquisitionVersion, acquisitionBytes, cursorKey, cursorVersion, cursorBytes, rootFrame, sessions, modeVersion, modeBytes, leaseVersion, leaseBytes)"
-                      , canonicalCodec
-                      )
-                    , ( "the explicit Up decoder refusal"
-                      , "case expected of ProjectUp -> Nothing ProjectDown -> pure () ProjectDestroy -> pure ()"
-                      , canonicalCodec
-                      )
-                    , ( "the exact canonical readback check"
-                      , "encodeReverseRootIntent intent == raw = Just intent"
-                      , canonicalCodec
-                      )
-                    , ( "the canonical-plan field bound"
-                      , "ByteString.null canonical || ByteString.length canonical > maxCanonicalPlanBytes"
-                      , canonicalCodec
-                      )
-                    , ( "the whole-row wire bound"
-                      , "ByteString.length raw > maxSnapshotRecordBytes = Nothing"
-                      , canonicalCodec
-                      )
-                    , ( "the field-count wire bound"
-                      , "if count > 32 then Nothing else collect count payload []"
-                      , canonicalCodec
-                      )
-                    , ( "the exact trailing-byte refusal"
-                      , "collect 0 trailing fields | ByteString.null trailing = Just (reverse fields) | otherwise = Nothing"
-                      , canonicalCodec
-                      )
-                    , ( "the exact committed 21-plus-5 shape"
-                      , "case splitAt 21 commonValues of (base, [targetRaw, nextModeVersionRaw, nextModeBytes, nextLeaseVersionRaw, nextLeaseBytes])"
-                      , canonicalCodec
-                      )
-                    , ( "the text field bound"
-                      , "ByteString.length bytes > maxSnapshotTextBytes = Nothing"
-                      , canonicalCodec
-                      )
-                    , ( "the nonempty acquisition source bytes"
-                      , "if ByteString.null acquisitionBytes then Nothing else pure ()"
-                      , canonicalCodec
-                      )
-                    , ( "the nonempty cursor source bytes"
-                      , "if ByteString.null cursorBytes then Nothing else pure ()"
-                      , canonicalCodec
-                      )
-                    , ( "positive source and record versions"
-                      , "source <- positive sourceRaw acquisitionKey <- asText acquisitionKeyRaw >>= either (const Nothing) Just . mkRecordKey acquisitionVersion <- positive acquisitionVersionRaw"
-                      , canonicalCodec
-                      )
-                    , ( "the hidden token's partial-application strictness"
-                      , "withReverseRootSourceRecordsKernel admission = admission `seq` consumeReverseRootSourceAdmission admission eliminate"
-                      , eliminator
-                      )
-                    , ( "the opaque strict source admission consumer"
-                      , "{-# OPAQUE consumeReverseRootSourceAdmission #-} consumeReverseRootSourceAdmission admission result = case consumeAcquisitionJournalAdmissionKernel admission of () -> result"
-                      , eliminator
-                      )
-                    , ( "the exact source verb and phase check"
-                      , "projectVerbName verb == projectVerbName ProjectUp , lifecyclePhaseName phase == lifecyclePhaseName Teardown"
-                      , eliminator
-                      )
+                    [
+                        ( "the reverse-root intent's three nominal indices"
+                        , "type role ReverseRootIntent nominal nominal nominal"
+                        , sealedSchema
+                        )
+                    ,
+                        ( "the Down Pending constructor"
+                        , "ReverseRootDownPending ::"
+                        , sealedSchema
+                        )
+                    ,
+                        ( "the Destroy Pending constructor"
+                        , "ReverseRootDestroyPending ::"
+                        , sealedSchema
+                        )
+                    ,
+                        ( "the Down Committed constructor"
+                        , "ReverseRootDownCommitted ::"
+                        , sealedSchema
+                        )
+                    ,
+                        ( "the Destroy Committed constructor"
+                        , "ReverseRootDestroyCommitted ::"
+                        , sealedSchema
+                        )
+                    ,
+                        ( "the Down Terminal constructor"
+                        , "ReverseRootDownTerminal ::"
+                        , sealedSchema
+                        )
+                    ,
+                        ( "the Destroy Terminal constructor"
+                        , "ReverseRootDestroyTerminal ::"
+                        , sealedSchema
+                        )
+                    ,
+                        ( "the committed redo suffix"
+                        , "-> Word64 -> Word64 -> ByteString -> Word64 -> ByteString -> ReverseRootIntent"
+                        , sealedSchema
+                        )
+                    ,
+                        ( "the wire magic"
+                        , "reverseRootIntentMagic = \"HOSTBOOTSTRAP-REVERSE-ROOT\""
+                        , canonicalCodec
+                        )
+                    ,
+                        ( "the wire version"
+                        , "reverseRootIntentVersion = 1"
+                        , canonicalCodec
+                        )
+                    ,
+                        ( "the canonical field framing"
+                        , "Builder.word64BE (fromIntegral (length fields)) <> foldMap encodeSnapshotBytes fields"
+                        , canonicalCodec
+                        )
+                    ,
+                        ( "the complete source and redo field order"
+                        , "common state verb ( project , store , run , revision , spec , config , plan , canonical , source , acquisitionKey , acquisitionVersion , acquisitionBytes , cursorKey , cursorVersion , cursorBytes , rootFrame , sessions , modeVersion , modeBytes , leaseVersion , leaseBytes )"
+                        , canonicalCodec
+                        )
+                    ,
+                        ( "the explicit Up decoder refusal"
+                        , "case expected of ProjectUp -> Nothing ProjectDown -> pure () ProjectDestroy -> pure ()"
+                        , canonicalCodec
+                        )
+                    ,
+                        ( "the exact canonical readback check"
+                        , "encodeReverseRootIntent intent == raw = Just intent"
+                        , canonicalCodec
+                        )
+                    ,
+                        ( "the canonical-plan field bound"
+                        , "ByteString.null canonical || ByteString.length canonical > maxCanonicalPlanBytes"
+                        , canonicalCodec
+                        )
+                    ,
+                        ( "the whole-row wire bound"
+                        , "ByteString.length raw > maxSnapshotRecordBytes = Nothing"
+                        , canonicalCodec
+                        )
+                    ,
+                        ( "the field-count wire bound"
+                        , "if count > 32 then Nothing else collect count payload []"
+                        , canonicalCodec
+                        )
+                    ,
+                        ( "the exact trailing-byte refusal"
+                        , "collect 0 trailing fields | ByteString.null trailing = Just (reverse fields) | otherwise = Nothing"
+                        , canonicalCodec
+                        )
+                    ,
+                        ( "the exact committed 21-plus-5 shape"
+                        , "case splitAt 21 commonValues of (base, [targetRaw, nextModeVersionRaw, nextModeBytes, nextLeaseVersionRaw, nextLeaseBytes])"
+                        , canonicalCodec
+                        )
+                    ,
+                        ( "the text field bound"
+                        , "ByteString.length bytes > maxSnapshotTextBytes = Nothing"
+                        , canonicalCodec
+                        )
+                    ,
+                        ( "the nonempty acquisition source bytes"
+                        , "if ByteString.null acquisitionBytes then Nothing else pure ()"
+                        , canonicalCodec
+                        )
+                    ,
+                        ( "the nonempty cursor source bytes"
+                        , "if ByteString.null cursorBytes then Nothing else pure ()"
+                        , canonicalCodec
+                        )
+                    ,
+                        ( "positive source and record versions"
+                        , "source <- positive sourceRaw acquisitionKey <- asText acquisitionKeyRaw >>= either (const Nothing) Just . mkRecordKey acquisitionVersion <- positive acquisitionVersionRaw"
+                        , canonicalCodec
+                        )
+                    ,
+                        ( "the hidden token's partial-application strictness"
+                        , "withReverseRootSourceRecordsKernel admission = admission `seq` consumeReverseRootSourceAdmission admission eliminate"
+                        , eliminator
+                        )
+                    ,
+                        ( "the opaque strict source admission consumer"
+                        , "{-# OPAQUE consumeReverseRootSourceAdmission #-} consumeReverseRootSourceAdmission admission result = case consumeAcquisitionJournalAdmissionKernel admission of () -> result"
+                        , eliminator
+                        )
+                    ,
+                        ( "the exact source verb and phase check"
+                        , "projectVerbName verb == projectVerbName ProjectUp , lifecyclePhaseName phase == lifecyclePhaseName Teardown"
+                        , eliminator
+                        )
                     ]
                 assertAbsent "an Up reverse-root constructor" "ReverseRootUp" sealedSchema
                 assertAbsent "an Up phantom in the reverse-root schema" "VerbUp" sealedSchema
@@ -4075,13 +4402,15 @@ sourceBoundaryTests =
                 SourceGuard.countHaskellIdentifier "withReverseRootSourceRecordsKernel" modeSource @?= 2
                 mapM_
                     (\(name, count) -> SourceGuard.countHaskellIdentifier name modeSource @?= count)
-                    [ ("ReverseRootDownPending", 6)
-                    , ("ReverseRootDestroyPending", 6)
-                    , ("ReverseRootDownCommitted", 6)
-                    , ("ReverseRootDestroyCommitted", 6)
-                    , ("encodeReverseRootIntent", 7)
-                    , ("decodeReverseRootIntent", 10)
-                    , ("reverseRootIntentKey", 4)
+                    [ ("ReverseRootDownPending", 7)
+                    , ("ReverseRootDestroyPending", 7)
+                    , ("ReverseRootDownCommitted", 7)
+                    , ("ReverseRootDestroyCommitted", 7)
+                    , ("ReverseRootDownTerminal", 10)
+                    , ("ReverseRootDestroyTerminal", 10)
+                    , ("encodeReverseRootIntent", 9)
+                    , ("decodeReverseRootIntent", 15)
+                    , ("reverseRootIntentKey", 6)
                     , ("reverseRootIntentKeyForName", 5)
                     ]
                 mapM_
@@ -4175,8 +4504,8 @@ sourceBoundaryTests =
                 pendingSource <-
                     requiredSourceSection
                         "reverse-root Pending transition"
-                        "        commitPending common encodeCommitted"
-                        "        finishCommitted common target"
+                        "commitPending common encodeCommitted"
+                        "finishCommitted"
                         engineSource
                 committedSource <-
                     requiredSourceSection
@@ -4211,118 +4540,146 @@ sourceBoundaryTests =
                     existingRoot = normalizeWhitespace existingRootSource
                 mapM_
                     (\(label, fragment, source) -> assertContains label fragment source)
-                    [ ( "the hidden token is the first resume argument"
-                      , "ExistingBoundSnapshotAdmission -> ProtectedStore -> InstalledProjectIdentity projectId -> ProjectVerb verb ->"
-                      , wrapper
-                      )
-                    , ( "the resume partial-application boundary is opaque"
-                      , "{-# OPAQUE withResumedExistingBoundReverseRootKernel #-}"
-                      , wrapper
-                      )
-                    , ( "the hidden token is forced before the remaining lambda"
-                      , "withResumedExistingBoundReverseRootKernel admission = case consumeExistingBoundSnapshotAdmissionKernel admission of () -> \\store project verb use ->"
-                      , wrapper
-                      )
-                    , ( "absence has one fixed generic refusal"
-                      , "withExistingBoundReverseRootTransition store project verb (\\_ _ _ -> pure (Left ModeReverseRootInProgress)) use"
-                      , wrapper
-                      )
-                    , ( "only Down and Destroy enter the shared transition"
-                      , "ProjectUp -> pure (Left (ModeWrongRecoveryScope \"reverse root\" \"up\")) ProjectDown -> transition ProjectDestroy -> transition"
-                      , engine
-                      )
-                    , ( "the requested verb drives exact canonical intent decoding"
-                      , "decodeReverseRootIntent verb (protectedRecordBytes retained)"
-                      , engine
-                      )
-                    , ( "Down recognizes only Destroy as the opposite intent"
-                      , "ProjectDown -> maybe False (const True) (decodeReverseRootIntent ProjectDestroy bytes)"
-                      , engine
-                      )
-                    , ( "Destroy recognizes only Down as the opposite intent"
-                      , "ProjectDestroy -> maybe False (const True) (decodeReverseRootIntent ProjectDown bytes)"
-                      , engine
-                      )
-                    , ( "an opposite intent is refused as in progress"
-                      , "True -> pure (Left ModeReverseRootInProgress) False -> pure (Left (ModeMalformedRecord (recordKeyText intentKey)))"
-                      , engine
-                      )
-                    , ( "the Pending intent has its exact initial durable version"
-                      , "recordVersionWord (protectedRecordVersion intentRecord) /= 1"
-                      , pending
-                      )
-                    , ( "the mode predecessor refuses version exhaustion"
-                      , "oldModeVersion == maxBound"
-                      , pending
-                      )
-                    , ( "the lease predecessor refuses version exhaustion"
-                      , "oldLeaseVersion == maxBound"
-                      , pending
-                      )
-                    , ( "the broker allocator is the direct protected kernel"
-                      , "withFreshBrokerEpochKernel session project"
-                      , pending
-                      )
-                    , ( "Pending publishes Committed only from its retained version"
-                      , "compareAndSwapProtectedRecord session intentKey (ExpectVersion (protectedRecordVersion intentRecord)) bytes"
-                      , pending
-                      )
-                    , ( "the committed descriptor is strictly read back"
-                      , "readback <- exactWordRecord session intentKey 2 bytes"
-                      , pending
-                      )
-                    , ( "Committed refuses a non-successor target before reification"
-                      , "target <= source = mismatchIO \"committed broker generation\" \"greater than source\" (showWord target)"
-                      , committed
-                      )
-                    , ( "only the committed target enters direct reification"
-                      , "withReifiedAllocatedBrokerEpochKernel session project target"
-                      , committed
-                      )
-                    , ( "old mode and old lease write mode first"
-                      , "Right (False, False, modeRecord, leaseRecord) -> do modeWritten <- writeSuffix session (modeKey project) modeRecord nextModeVersion nextModeBytes"
-                      , committed
-                      )
-                    , ( "new mode and old lease write only the lease"
-                      , "Right (True, False, _, leaseRecord) -> do leaseWritten <- writeSuffix session"
-                      , committed
-                      )
-                    , ( "new mode and new lease verify without a suffix write"
-                      , "Right (True, True, _, _) -> deliver verified canonical epoch"
-                      , committed
-                      )
-                    , ( "old mode and new lease are impossible"
-                      , "Right (False, True, _, _) -> mismatchIO \"reverse-root suffix\" \"mode before lease\" \"old mode/new lease\""
-                      , committed
-                      )
-                    , ( "suffix classification accepts only exact old bytes"
-                      , "version == oldVersion && bytes == oldBytes = Right False"
-                      , suffix
-                      )
-                    , ( "suffix classification accepts only exact new bytes"
-                      , "version == newVersion && bytes == newBytes = Right True"
-                      , suffix
-                      )
-                    , ( "every other suffix row conflicts"
-                      , "otherwise = mismatch (\"reverse-root \" <> subject) \"exact old or new row\" \"different\""
-                      , suffix
-                      )
-                    , ( "exact durable readback compares version and bytes"
-                      , "recordVersionWord (protectedRecordVersion record) == expectedVersion , protectedRecordBytes record == expectedBytes"
-                      , suffix
-                      )
-                    , ( "the target root uses the existing binding verifier"
-                      , "withExistingVerifiedRootInvocationKernel scope session project operator epoch verb"
-                      , existingRoot
-                      )
-                    , ( "the target callback gets one locally bound snapshot identity"
-                      , "withPersistedBoundPlanSnapshotKernel canonical $ \\bound binding -> use verb root"
-                      , committed
-                      )
-                    , ( "the target callback receives a recovered Production profile"
-                      , "RecoveredProductionLifecycleProfile (ProductionRunIdentity productionRunKey) projectName storeIdentity revision spec plan config canonicalBytes epoch NormalRevision"
-                      , committed
-                      )
+                    [
+                        ( "the hidden token is the first resume argument"
+                        , "ExistingBoundSnapshotAdmission -> ProtectedStore -> InstalledProjectIdentity projectId -> ProjectVerb verb ->"
+                        , wrapper
+                        )
+                    ,
+                        ( "the resume partial-application boundary is opaque"
+                        , "{-# OPAQUE withResumedExistingBoundReverseRootKernel #-}"
+                        , wrapper
+                        )
+                    ,
+                        ( "the hidden token is forced before the remaining lambda"
+                        , "withResumedExistingBoundReverseRootKernel admission = case consumeExistingBoundSnapshotAdmissionKernel admission of () -> \\store project verb use ->"
+                        , wrapper
+                        )
+                    ,
+                        ( "absence has one fixed generic refusal"
+                        , "withExistingBoundReverseRootTransition store project verb (\\_ _ _ -> pure (Left ModeReverseRootInProgress)) use"
+                        , wrapper
+                        )
+                    ,
+                        ( "only Down and Destroy enter the shared transition"
+                        , "ProjectUp -> pure (Left (ModeWrongRecoveryScope \"reverse root\" \"up\")) ProjectDown -> transition ProjectDestroy -> transition"
+                        , engine
+                        )
+                    ,
+                        ( "the requested verb drives exact canonical intent decoding"
+                        , "decodeReverseRootIntent verb (protectedRecordBytes retained)"
+                        , engine
+                        )
+                    ,
+                        ( "Down recognizes only Destroy as the opposite intent"
+                        , "ProjectDown -> maybe False (const True) (decodeReverseRootIntent ProjectDestroy bytes)"
+                        , engine
+                        )
+                    ,
+                        ( "Destroy recognizes only Down as the opposite intent"
+                        , "ProjectDestroy -> maybe False (const True) (decodeReverseRootIntent ProjectDown bytes)"
+                        , engine
+                        )
+                    ,
+                        ( "an opposite intent is refused as in progress"
+                        , "True -> pure (Left ModeReverseRootInProgress) False -> pure (Left (ModeMalformedRecord (recordKeyText intentKey)))"
+                        , engine
+                        )
+                    ,
+                        ( "the Pending intent has its exact initial durable version"
+                        , "recordVersionWord (protectedRecordVersion intentRecord) /= 1"
+                        , pending
+                        )
+                    ,
+                        ( "the mode predecessor refuses version exhaustion"
+                        , "oldModeVersion == maxBound"
+                        , pending
+                        )
+                    ,
+                        ( "the lease predecessor refuses version exhaustion"
+                        , "oldLeaseVersion == maxBound"
+                        , pending
+                        )
+                    ,
+                        ( "the broker allocator is the direct protected kernel"
+                        , "withFreshBrokerEpochKernel session project"
+                        , pending
+                        )
+                    ,
+                        ( "Pending publishes Committed only from its retained version"
+                        , "compareAndSwapProtectedRecord session intentKey (ExpectVersion (protectedRecordVersion intentRecord)) bytes"
+                        , pending
+                        )
+                    ,
+                        ( "the committed descriptor is strictly read back"
+                        , "readback <- exactWordRecord session intentKey 2 bytes"
+                        , pending
+                        )
+                    ,
+                        ( "Committed refuses a non-successor target before reification"
+                        , "target <= source = mismatchIO \"committed broker generation\" \"greater than source\" (showWord target)"
+                        , committed
+                        )
+                    ,
+                        ( "only the committed target enters direct reification"
+                        , "withReifiedAllocatedBrokerEpochKernel session project target"
+                        , committed
+                        )
+                    ,
+                        ( "old mode and old lease write mode first"
+                        , "Right (False, False, modeRecord, leaseRecord) -> do modeWritten <- writeSuffix session (modeKey project) modeRecord nextModeVersion nextModeBytes"
+                        , committed
+                        )
+                    ,
+                        ( "new mode and old lease write only the lease"
+                        , "Right (True, False, _, leaseRecord) -> do leaseWritten <- writeSuffix session"
+                        , committed
+                        )
+                    ,
+                        ( "new mode and new lease verify without a suffix write"
+                        , "Right (True, True, _, _) -> deliver verified canonical epoch"
+                        , committed
+                        )
+                    ,
+                        ( "old mode and new lease are impossible"
+                        , "Right (False, True, _, _) -> mismatchIO \"reverse-root suffix\" \"mode before lease\" \"old mode/new lease\""
+                        , committed
+                        )
+                    ,
+                        ( "suffix classification accepts only exact old bytes"
+                        , "version == oldVersion && bytes == oldBytes = Right False"
+                        , suffix
+                        )
+                    ,
+                        ( "suffix classification accepts only exact new bytes"
+                        , "version == newVersion && bytes == newBytes = Right True"
+                        , suffix
+                        )
+                    ,
+                        ( "every other suffix row conflicts"
+                        , "otherwise = mismatch (\"reverse-root \" <> subject) \"exact old or new row\" \"different\""
+                        , suffix
+                        )
+                    ,
+                        ( "exact durable readback compares version and bytes"
+                        , "recordVersionWord (protectedRecordVersion record) == expectedVersion , protectedRecordBytes record == expectedBytes"
+                        , suffix
+                        )
+                    ,
+                        ( "the target root uses the existing binding verifier"
+                        , "withExistingVerifiedRootInvocationKernel scope session project operator epoch verb"
+                        , existingRoot
+                        )
+                    ,
+                        ( "the target callback gets one locally bound snapshot identity"
+                        , "withPersistedBoundPlanSnapshotKernel canonical $ \\bound binding -> use verb root"
+                        , committed
+                        )
+                    ,
+                        ( "the target callback receives a recovered Production profile"
+                        , "RecoveredProductionLifecycleProfile (ProductionRunIdentity productionRunKey) projectName storeIdentity revision spec plan config canonicalBytes epoch NormalRevision"
+                        , committed
+                        )
                     ]
                 assertAbsent "the fixed absence refusal projects no raw key" "recordKeyText" wrapper
                 assertFragmentsInOrder
@@ -4404,7 +4761,6 @@ sourceBoundaryTests =
                     , "LifecycleCursor"
                     , "InvocationReservation"
                     , "LifecycleEntry"
-                    , "compareAndDeleteProtectedRecord"
                     , "unsafeCoerce"
                     , "normalize"
                     , "error"
@@ -4462,20 +4818,20 @@ sourceBoundaryTests =
                 liveSourceSection <-
                     requiredSourceSection
                         "fresh reverse-root live source validation"
-                        "                        validateLiveSource profile rootFrameName sourceRecords = do"
-                        "                        validateLiveRows acquisitionCurrent"
+                        "validateLiveSource profile rootFrameName sourceRecords = do"
+                        "                        validateLiveRows\n                            acquisitionCurrent"
                         freshSource
                 liveRowsSection <-
                     requiredSourceSection
                         "fresh reverse-root durable row validation"
-                        "                        validateLiveRows acquisitionCurrent cursorCurrent modeCurrent leaseCurrent"
-                        "                        publishPending profile"
+                        "                        validateLiveRows\n                            acquisitionCurrent"
+                        "publishPending profile"
                         freshSource
                 pendingSection <-
                     requiredSourceSection
                         "fresh reverse-root Pending publication"
-                        "                        publishPending profile rootFrameName sourceRecords proof modeRecord leaseRecord = do"
-                        "                        exactSourceRecord key version bytes = do"
+                        "publishPending profile rootFrameName sourceRecords proof modeRecord leaseRecord = do"
+                        "exactSourceRecord key version bytes = do"
                         freshSource
                 let signature = normalizeWhitespace freshSignatureSource
                     fresh = normalizeWhitespace freshSource
@@ -4518,126 +4874,156 @@ sourceBoundaryTests =
                     signature
                 mapM_
                     (\(label, fragment, source) -> assertContains label fragment source)
-                    [ ( "the fresh partial-application boundary is opaque"
-                      , "{-# OPAQUE withFreshExistingBoundReverseRootKernel #-}"
-                      , fresh
-                      )
-                    , ( "the hidden token is forced before the remaining lambda"
-                      , "withFreshExistingBoundReverseRootKernel admission = case consumeExistingBoundSnapshotAdmissionKernel admission of () -> \\store project verb sourceRoot sourceMode sourceBound sourceVerified sourceBoundSnapshot sourceBinding sourceRecovery sourcePlan lifecycleContext sourceJournal sourceCursor use ->"
-                      , fresh
-                      )
-                    , ( "the fresh wrapper supplies the private absent hook"
-                      , "withExistingBoundReverseRootTransition store project verb (\\session location intentKey -> admitFresh session location intentKey encodePending ) use"
-                      , fresh
-                      )
-                    , ( "the complete seven-value source is validated together"
-                      , "validateRecoveredProductionLifecycleProfile sourceRoot sourceMode sourceBound sourceVerified sourceBoundSnapshot sourceBinding sourceRecovery"
-                      , fresh
-                      )
-                    , ( "only a Normal source revision continues"
-                      , "recoveredProductionProfileRevisionKind profile of NormalRevision -> admitRootContext profile"
-                      , fresh
-                      )
-                    , ( "the supplied lifecycle context is root-refined"
-                      , "withValidatedRootLifecycleContext lifecycleContext"
-                      , fresh
-                      )
-                    , ( "the root frame is taken from the refined context"
-                      , "projectFrameId rootFrame"
-                      , fresh
-                      )
-                    , ( "the refined root frame equals the source cursor frame"
-                      , "requireText \"context frame\" rootFrameName (lifecycleCursorFrame sourceCursor)"
-                      , fresh
-                      )
-                    , ( "the reconstructed plan retains the exact profile epoch"
-                      , "requireWord \"plan broker generation\" (brokerEpochWord sourceEpoch) (projectPlanProfileEpochKernel sourcePlan)"
-                      , fresh
-                      )
-                    , ( "the reconstructed plan retains the exact canonical bytes"
-                      , "requireBytes \"plan canonical bytes\" canonicalBytes (canonicalPlanSnapshotBytes planCanonical)"
-                      , fresh
-                      )
-                    , ( "the bound lease is joined to the supplied journal"
-                      , "validateBoundRunLeaseAcquisitionJournal sourceBound sourceJournal"
-                      , fresh
-                      )
-                    , ( "the Session eliminator supplies only exact source coordinates"
-                      , "withReverseRootSourceRecordsKernel acquisitionJournalAdmissionKernel sourceJournal sourceCursor (,,,,,)"
-                      , fresh
-                      )
-                    , ( "the current cursor is revalidated in the protected entry"
-                      , "validateCurrentLifecycleCursor session sourceCursor"
-                      , liveSource
-                      )
-                    , ( "the exact acquisition record is raw-compared"
-                      , "acquisitionCurrent <- exactSourceRecord acquisitionKey acquisitionVersion acquisitionBytes"
-                      , liveSource
-                      )
-                    , ( "the exact cursor record is raw-compared"
-                      , "cursorCurrentRecord <- exactSourceRecord cursorKey cursorVersion cursorBytes"
-                      , liveSource
-                      )
-                    , ( "the source mode is read in the same entry"
-                      , "modeCurrent <- requiredRecord (modeKey project)"
-                      , liveSource
-                      )
-                    , ( "the source lease is read in the same entry"
-                      , "leaseCurrent <- requiredRecord (Right (leaseLocationLeaseKey location))"
-                      , liveSource
-                      )
-                    , ( "the source snapshot is reread in the same entry"
-                      , "snapshotCurrent <- readVerifiedPlanSnapshotAt session"
-                      , liveSource
-                      )
-                    , ( "the source invocation disposition is reread"
-                      , "dispositionCurrent <- readInvocationDispositionAt session"
-                      , liveSource
-                      )
-                    , ( "the source revision kind is reread"
-                      , "revisionCurrent <- readOpenRevisionKindForKey session project productionRunKey"
-                      , liveSource
-                      )
-                    , ( "the mode predecessor must have a successor version"
-                      , "requireBelowMax \"mode record version\" (recordVersionWord (protectedRecordVersion modeRecord))"
-                      , liveRows
-                      )
-                    , ( "the lease predecessor must have a successor version"
-                      , "requireBelowMax \"lease record version\" (recordVersionWord (protectedRecordVersion leaseRecord))"
-                      , liveRows
-                      )
-                    , ( "only an Open invocation is admitted"
-                      , "Right InvocationOpen -> Right ()"
-                      , liveRows
-                      )
-                    , ( "only a Normal durable revision is admitted"
-                      , "Right NormalRevision -> Right ()"
-                      , liveRows
-                      )
-                    , ( "Pending records the exact closed-session count"
-                      , "fromIntegral (allSessionsClosedCount proof)"
-                      , pending
-                      )
-                    , ( "Pending is the sole absent compare-and-swap"
-                      , "compareAndSwapProtectedRecord session intentKey ExpectAbsent pendingBytes"
-                      , pending
-                      )
-                    , ( "Pending requires its canonical initial version"
-                      , "recordVersionWord version /= 1"
-                      , pending
-                      )
-                    , ( "Pending is strictly read back at version one"
-                      , "recordVersionWord (protectedRecordVersion record) == 1 , protectedRecordBytes record == pendingBytes"
-                      , pending
-                      )
-                    , ( "the shared engine calls the absent hook under its protected entry"
-                      , "prepared <- runProtected store $ \\session -> do"
-                      , engine
-                      )
-                    , ( "only observed absence invokes the supplied hook"
-                      , "record <- maybe (admit session location intentKey) (pure . Right) current"
-                      , engine
-                      )
+                    [
+                        ( "the fresh partial-application boundary is opaque"
+                        , "{-# OPAQUE withFreshExistingBoundReverseRootKernel #-}"
+                        , fresh
+                        )
+                    ,
+                        ( "the hidden token is forced before the remaining lambda"
+                        , "withFreshExistingBoundReverseRootKernel admission = case consumeExistingBoundSnapshotAdmissionKernel admission of () -> \\store project verb sourceRoot sourceMode sourceBound sourceVerified sourceBoundSnapshot sourceBinding sourceRecovery sourcePlan lifecycleContext sourceJournal sourceCursor use ->"
+                        , fresh
+                        )
+                    ,
+                        ( "the fresh wrapper supplies the private absent hook"
+                        , "withExistingBoundReverseRootTransition store project verb (\\session location intentKey -> admitFresh session location intentKey encodePending ) use"
+                        , fresh
+                        )
+                    ,
+                        ( "the complete seven-value source is validated together"
+                        , "validateRecoveredProductionLifecycleProfile sourceRoot sourceMode sourceBound sourceVerified sourceBoundSnapshot sourceBinding sourceRecovery"
+                        , fresh
+                        )
+                    ,
+                        ( "only a Normal source revision continues"
+                        , "recoveredProductionProfileRevisionKind profile of NormalRevision -> admitRootContext profile"
+                        , fresh
+                        )
+                    ,
+                        ( "the supplied lifecycle context is root-refined"
+                        , "withValidatedRootLifecycleContext lifecycleContext"
+                        , fresh
+                        )
+                    ,
+                        ( "the root frame is taken from the refined context"
+                        , "projectFrameId rootFrame"
+                        , fresh
+                        )
+                    ,
+                        ( "the refined root frame equals the source cursor frame"
+                        , "requireText \"context frame\" rootFrameName (lifecycleCursorFrame sourceCursor)"
+                        , fresh
+                        )
+                    ,
+                        ( "the reconstructed plan retains the exact profile epoch"
+                        , "requireWord \"plan broker generation\" (brokerEpochWord sourceEpoch) (projectPlanProfileEpochKernel sourcePlan)"
+                        , fresh
+                        )
+                    ,
+                        ( "the reconstructed plan retains the exact canonical bytes"
+                        , "requireBytes \"plan canonical bytes\" canonicalBytes (canonicalPlanSnapshotBytes planCanonical)"
+                        , fresh
+                        )
+                    ,
+                        ( "the bound lease is joined to the supplied journal"
+                        , "validateBoundRunLeaseAcquisitionJournal sourceBound sourceJournal"
+                        , fresh
+                        )
+                    ,
+                        ( "the Session eliminator supplies only exact source coordinates"
+                        , "withReverseRootSourceRecordsKernel acquisitionJournalAdmissionKernel sourceJournal sourceCursor (,,,,,)"
+                        , fresh
+                        )
+                    ,
+                        ( "the current cursor is revalidated in the protected entry"
+                        , "validateCurrentLifecycleCursor session sourceCursor"
+                        , liveSource
+                        )
+                    ,
+                        ( "the exact acquisition record is raw-compared"
+                        , "acquisitionCurrent <- exactSourceRecord acquisitionKey acquisitionVersion acquisitionBytes"
+                        , liveSource
+                        )
+                    ,
+                        ( "the exact cursor record is raw-compared"
+                        , "cursorCurrentRecord <- exactSourceRecord cursorKey cursorVersion cursorBytes"
+                        , liveSource
+                        )
+                    ,
+                        ( "the source mode is read in the same entry"
+                        , "modeCurrent <- requiredRecord (modeKey project)"
+                        , liveSource
+                        )
+                    ,
+                        ( "the source lease is read in the same entry"
+                        , "leaseCurrent <- requiredRecord (Right (leaseLocationLeaseKey location))"
+                        , liveSource
+                        )
+                    ,
+                        ( "the source snapshot is reread in the same entry"
+                        , "snapshotCurrent <- readVerifiedPlanSnapshotAt session"
+                        , liveSource
+                        )
+                    ,
+                        ( "the source invocation disposition is reread"
+                        , "dispositionCurrent <- readInvocationDispositionAt session"
+                        , liveSource
+                        )
+                    ,
+                        ( "the source revision kind is reread"
+                        , "revisionCurrent <- readOpenRevisionKindForKey session project productionRunKey"
+                        , liveSource
+                        )
+                    ,
+                        ( "the mode predecessor must have a successor version"
+                        , "requireBelowMax \"mode record version\" (recordVersionWord (protectedRecordVersion modeRecord))"
+                        , liveRows
+                        )
+                    ,
+                        ( "the lease predecessor must have a successor version"
+                        , "requireBelowMax \"lease record version\" (recordVersionWord (protectedRecordVersion leaseRecord))"
+                        , liveRows
+                        )
+                    ,
+                        ( "only an Open invocation is admitted"
+                        , "Right InvocationOpen -> Right ()"
+                        , liveRows
+                        )
+                    ,
+                        ( "only a Normal durable revision is admitted"
+                        , "Right NormalRevision -> Right ()"
+                        , liveRows
+                        )
+                    ,
+                        ( "Pending records the exact closed-session count"
+                        , "fromIntegral (allSessionsClosedCount proof)"
+                        , pending
+                        )
+                    ,
+                        ( "Pending is the sole absent compare-and-swap"
+                        , "compareAndSwapProtectedRecord session intentKey ExpectAbsent pendingBytes"
+                        , pending
+                        )
+                    ,
+                        ( "Pending requires its canonical initial version"
+                        , "recordVersionWord version /= 1"
+                        , pending
+                        )
+                    ,
+                        ( "Pending is strictly read back at version one"
+                        , "recordVersionWord (protectedRecordVersion record) == 1 , protectedRecordBytes record == pendingBytes"
+                        , pending
+                        )
+                    ,
+                        ( "the shared engine calls the absent hook under its protected entry"
+                        , "prepared <- runProtected store $ \\session -> do"
+                        , engine
+                        )
+                    ,
+                        ( "only observed absence invokes the supplied hook"
+                        , "record <- maybe (admit session location intentKey) (pure . Right) current"
+                        , engine
+                        )
                     ]
                 assertFragmentsInOrder
                     "fresh durable rows are classified before root reauthorization and Pending"
@@ -4676,8 +5062,9 @@ sourceBoundaryTests =
                 SourceGuard.countHaskellIdentifier "withExistingBoundReverseRootTransition" modeSource
                     @?= 4
                 SourceGuard.countHaskellIdentifier "ExpectAbsent" freshSource @?= 1
-                SourceGuard.countHaskellIdentifier "ExpectVersion" freshSource @?= 0
-                SourceGuard.countHaskellIdentifier "compareAndSwapProtectedRecord" freshSource @?= 1
+                SourceGuard.countHaskellIdentifier "ExpectVersion" freshSource @?= 2
+                SourceGuard.countHaskellIdentifier "compareAndDeleteProtectedRecord" freshSource @?= 1
+                SourceGuard.countHaskellIdentifier "compareAndSwapProtectedRecord" freshSource @?= 2
                 SourceGuard.countHaskellIdentifier "requireBelowMax" freshSource @?= 3
                 SourceGuard.countHaskellIdentifier "maxBound" freshSource @?= 1
                 mapM_
@@ -4691,7 +5078,6 @@ sourceBoundaryTests =
                     , "withRunLiveness"
                     , "InvocationReservation"
                     , "LifecycleEntry"
-                    , "compareAndDeleteProtectedRecord"
                     , "unsafeCoerce"
                     , "normalize"
                     , "error"
@@ -4729,11 +5115,9 @@ sourceBoundaryTests =
                     readFile
                         (sourceRoot </> "HostBootstrap" </> "ProjectPlan" </> "Snapshot.hs")
                 facadeSource <-
-                    case
-                        dropThrough
-                            "{- | Reauthorize one existing-bound Production root"
-                            snapshotSource
-                    of
+                    case dropThrough
+                        "{- | Reauthorize one existing-bound Production root"
+                        snapshotSource of
                         Nothing ->
                             assertFailure "the reverse-root Snapshot facade section is absent"
                                 >> pure ""
@@ -4753,58 +5137,71 @@ sourceBoundaryTests =
                 let facade = normalizeWhitespace facadeSource
                 mapM_
                     (\(label, fragment, source) -> assertContains label fragment source)
-                    [ ( "the hidden token is the first facade argument"
-                      , "withReauthorizedBoundPlanSnapshotKernel :: ExistingBoundSnapshotAdmission -> ProtectedStore -> InstalledProjectIdentity projectId -> ProjectVerb verb ->"
-                      , facade
-                      )
-                    , ( "the operational partial-application boundary is opaque"
-                      , "{-# OPAQUE withReauthorizedBoundPlanSnapshotKernel #-}"
-                      , facade
-                      )
-                    , ( "the hidden token is forced before the remaining lambda"
-                      , "withReauthorizedBoundPlanSnapshotKernel admission = case consumeExistingBoundSnapshotAdmissionKernel admission of () -> \\store project verb initialSource use ->"
-                      , facade
-                      )
-                    , ( "the selector relays the same hidden admission"
-                      , "withBoundPlanSnapshotKernel admission store project"
-                      , facade
-                      )
-                    , ( "the terminal selector discards its close key"
-                      , "(\\_closeKey -> pure (Left SnapshotReverseRootTerminal))"
-                      , facade
-                      )
-                    , ( "only the Open callback invokes source reconstruction"
-                      , "( \\root modeLease boundLease verified boundSnapshot binding recovery -> initialSource root modeLease boundLease verified boundSnapshot binding recovery"
-                      , facade
-                      )
-                    , ( "fresh admission receives only the reconstructed source continuation"
-                      , "( \\plan lifecycleContext journal cursor -> do transitioned <- withFreshExistingBoundReverseRootKernel admission store project verb root modeLease boundLease verified boundSnapshot binding recovery plan lifecycleContext journal cursor use pure (fromMode transitioned) )"
-                      , facade
-                      )
-                    , ( "only the selector's outer InProgress failure resumes"
-                      , "case selected of Left ModeReverseRootInProgress -> do resumed <- withResumedExistingBoundReverseRootKernel admission store project verb use pure (fromMode resumed) Left failure -> pure (Left (SnapshotVerificationError failure)) Right outcome -> pure outcome"
-                      , facade
-                      )
-                    , ( "the sole liveness extent contains the complete selector"
-                      , "held <- withRunLiveness store (installedProjectName project) select"
-                      , facade
-                      )
-                    , ( "liveness acquisition failure is classified truthfully"
-                      , "Left failure -> Left (SnapshotLivenessFailure failure)"
-                      , facade
-                      )
-                    , ( "live-peer contention is classified truthfully"
-                      , "Right Nothing -> Left SnapshotLivenessContended"
-                      , facade
-                      )
-                    , ( "the callback result is returned before liveness releases"
-                      , "Right (Just outcome) -> outcome"
-                      , facade
-                      )
-                    , ( "Up is refused without selecting the liveness action"
-                      , "in case verb of ProjectUp -> pure ( Left ( SnapshotVerificationError (ModeWrongRecoveryScope \"reverse root\" \"up\") ) ) ProjectDown -> underLiveness ProjectDestroy -> underLiveness"
-                      , facade
-                      )
+                    [
+                        ( "the hidden token is the first facade argument"
+                        , "withReauthorizedBoundPlanSnapshotKernel :: ExistingBoundSnapshotAdmission -> ProtectedStore -> InstalledProjectIdentity projectId -> ProjectVerb verb ->"
+                        , facade
+                        )
+                    ,
+                        ( "the operational partial-application boundary is opaque"
+                        , "{-# OPAQUE withReauthorizedBoundPlanSnapshotKernel #-}"
+                        , facade
+                        )
+                    ,
+                        ( "the hidden token is forced before the remaining lambda"
+                        , "withReauthorizedBoundPlanSnapshotKernel admission = case consumeExistingBoundSnapshotAdmissionKernel admission of () -> \\store project verb initialSource use ->"
+                        , facade
+                        )
+                    ,
+                        ( "the selector relays the same hidden admission"
+                        , "withBoundPlanSnapshotKernel admission store project"
+                        , facade
+                        )
+                    ,
+                        ( "the terminal selector discards its close key"
+                        , "(\\_closeKey -> pure (Left SnapshotReverseRootTerminal))"
+                        , facade
+                        )
+                    ,
+                        ( "only the Open callback invokes source reconstruction"
+                        , "( \\root modeLease boundLease verified boundSnapshot binding recovery -> initialSource root modeLease boundLease verified boundSnapshot binding recovery"
+                        , facade
+                        )
+                    ,
+                        ( "fresh admission receives only the reconstructed source continuation"
+                        , "( \\plan lifecycleContext journal cursor -> do transitioned <- withFreshExistingBoundReverseRootKernel admission store project verb root modeLease boundLease verified boundSnapshot binding recovery plan lifecycleContext journal cursor use pure (fromMode transitioned) )"
+                        , facade
+                        )
+                    ,
+                        ( "only the selector's outer InProgress failure resumes"
+                        , "case selected of Left ModeReverseRootInProgress -> do resumed <- withResumedExistingBoundReverseRootKernel admission store project verb use pure (fromMode resumed) Left failure -> pure (Left (SnapshotVerificationError failure)) Right outcome -> pure outcome"
+                        , facade
+                        )
+                    ,
+                        ( "the sole liveness extent contains the complete selector"
+                        , "held <- withRunLiveness store (installedProjectName project) select"
+                        , facade
+                        )
+                    ,
+                        ( "liveness acquisition failure is classified truthfully"
+                        , "Left failure -> Left (SnapshotLivenessFailure failure)"
+                        , facade
+                        )
+                    ,
+                        ( "live-peer contention is classified truthfully"
+                        , "Right Nothing -> Left SnapshotLivenessContended"
+                        , facade
+                        )
+                    ,
+                        ( "the callback result is returned before liveness releases"
+                        , "Right (Just outcome) -> outcome"
+                        , facade
+                        )
+                    ,
+                        ( "Up is refused without selecting the liveness action"
+                        , "in case verb of ProjectUp -> pure ( Left ( SnapshotVerificationError (ModeWrongRecoveryScope \"reverse root\" \"up\") ) ) ProjectDown -> underLiveness ProjectDestroy -> underLiveness"
+                        , facade
+                        )
                     ]
                 assertFragmentsInOrder
                     "fresh and resumed target callbacks remain inside the one liveness body"
@@ -4981,138 +5378,171 @@ sourceBoundaryTests =
                     constructors = normalizeWhitespace constructorSection
                 mapM_
                     (\(label, fragment, body) -> assertContains label fragment body)
-                    [ ( "the hidden producer owns the Snapshot admission token"
-                      , "withReauthorizedBoundPlanSnapshotKernel existingBoundSnapshotAdmissionKernel store project verb"
-                      , entry
-                      )
-                    , ( "the producer callback retains only fresh target indices"
-                      , "( forall targetBroker targetPlanId targetFrame. LifecycleEntry (Production projectId) targetPlanId targetFrame targetBroker verb -> IO (Either String ()) )"
-                      , entry
-                      )
-                    , ( "the absent-only source callback reconstructs the exact Up lineage"
-                      , "withAcquisitionJournalPhase journal $ \\seedPhase -> case seedPhase of Prepare -> do current <- withCurrentLifecycleCursor journal frame ProjectUp ( \\phase cursor -> case phase of Prepare -> sourcePhaseFailure \"prepare\" Execute -> sourcePhaseFailure \"execute\" Teardown -> continue sourcePlan lifecycleContext journal cursor"
-                      , source
-                      )
-                    , ( "the absent-only source refuses a mutated Execute seed"
-                      , "Execute -> sourceSeedFailure \"execute\""
-                      , source
-                      )
-                    , ( "the absent-only source refuses a mutated Teardown seed"
-                      , "Teardown -> sourceSeedFailure \"teardown\""
-                      , source
-                      )
-                    , ( "source seed refusal maps through the Snapshot error channel"
-                      , "sourceSeedFailure = pure . sourceMismatch \"reverse-root source acquisition seed\" \"prepare\""
-                      , entry
-                      )
-                    , ( "the target callback rebuilds from its recovered profile"
-                      , "withRecoveredProductionProjectPlan targetProfile root targetVerified targetBound targetBinding targetConfig targetDrafts"
-                      , target
-                      )
-                    , ( "the rebuilt target plan is checked at the callback epoch"
-                      , "if projectPlanProfileEpochKernel targetPlan /= targetEpoch then pure (Left \"lifecycle entry: target plan broker epoch differs\")"
-                      , target
-                      )
-                    , ( "the target journal is derived from the same target package"
-                      , "withAcquisitionJournal targetRoot targetLease targetBound targetBinding targetPlan"
-                      , target
-                      )
-                    , ( "the target cursor consumes the one hidden journal admission"
-                      , "withReverseRootTargetLifecycleCursorKernel acquisitionJournalAdmissionKernel journal frame targetVerb"
-                      , target
-                      )
-                    , ( "authorization consumes the callback-derived Teardown cursor"
-                      , "ProjectAuthority.authorizeRootProject targetRoot targetVerb targetVerified targetBound targetBinding targetLease targetPlan journal teardownCursor lifecycleContext"
-                      , target
-                      )
-                    , ( "the reverse target delegates sealing to the one catalog-admitting sealer"
-                      , "Right authority -> sealReverseRootEntry targetSpec targetVerb targetRoot targetPlan targetCurrent lifecycleContext journal teardownCursor authority reauthorize use"
-                      , target
-                      )
-                    , ( "Down seals only the Down constructor before callback delivery"
-                      , "ProjectDown -> withReverseRootCatalog finalized root plan current lifecycleContext $ \\catalog -> use ( RootDownLifecycleEntry root verb plan lifecycleContext journal cursor authority reauthorize catalog )"
-                      , sealer
-                      )
-                    , ( "Destroy seals only the Destroy constructor before callback delivery"
-                      , "ProjectDestroy -> withReverseRootCatalog finalized root plan current lifecycleContext $ \\catalog -> use ( RootDestroyLifecycleEntry root verb plan lifecycleContext journal cursor authority reauthorize catalog )"
-                      , sealer
-                      )
-                    , ( "the target cursor admission is token-first and opaque"
-                      , "{-# OPAQUE withReverseRootTargetLifecycleCursorKernel #-} withReverseRootTargetLifecycleCursorKernel admission = case consumeAcquisitionJournalAdmissionKernel admission of () -> \\journal@(AcquisitionJournal store validateLive _ sourceVersion _ seedPhase) frame verb use ->"
-                      , cursor
-                      )
-                    , ( "Up is a total target refusal"
-                      , "ProjectUp -> pure (Left (SessionCursorVerbMismatch \"down or destroy\" \"up\"))"
-                      , cursor
-                      )
-                    , ( "the immutable target acquisition seed must remain Prepare"
-                      , "let advance = case seedPhase of Prepare | recordVersionWord sourceVersion == 1 -> case validateLifecycleCursorRequest journal frame verb of"
-                      , cursor
-                      )
-                    , ( "an Execute acquisition seed is refused"
-                      , "Execute -> refuseAcquisition \"seed phase\" \"prepare\" \"execute\""
-                      , cursor
-                      )
-                    , ( "a Teardown acquisition seed is refused"
-                      , "Teardown -> refuseAcquisition \"seed phase\" \"prepare\" \"teardown\""
-                      , cursor
-                      )
-                    , ( "seed refusal maps to the exact lifecycle error"
-                      , "refuseAcquisition field expected observed = pure (Left (SessionAcquisitionBindingMismatch field expected observed))"
-                      , cursor
-                      )
-                    , ( "retained liveness is revalidated before the current cursor"
-                      , "inLifecycleCursorEntry store $ \\session -> do live <- validateLive session case live of Left failure -> pure (Left failure) Right () -> do current <- openCurrentLifecycleCursorInEntry session Nothing journal frame verb"
-                      , cursor
-                      )
-                    , ( "Prepare version one advances through Execute two before Teardown three"
-                      , "Prepare -> case checkedVersion 1 cursor of Left failure -> pure (Left failure) Right prepareCursor -> do executed <- advanceLifecycleCursorInEntry session prepareCursor Execute case executed >>= checkedVersion 2 of Left failure -> pure (Left failure) Right executeCursor -> do teardown <- advanceLifecycleCursorInEntry session executeCursor Teardown pure (teardown >>= checkedVersion 3)"
-                      , cursor
-                      )
-                    , ( "Execute version two advances only to Teardown three"
-                      , "Execute -> case checkedVersion 2 cursor of Left failure -> pure (Left failure) Right executeCursor -> do teardown <- advanceLifecycleCursorInEntry session executeCursor Teardown pure (teardown >>= checkedVersion 3)"
-                      , cursor
-                      )
-                    , ( "Teardown version three redelivers without another transition"
-                      , "Teardown -> pure (checkedVersion 3 cursor)"
-                      , cursor
-                      )
-                    , ( "the target callback runs only after the protected entry returns"
-                      , "either (pure . Left) (fmap Right . use) terminal"
-                      , cursor
-                      )
-                    , ( "the generic journal keeps root epoch equality"
-                      , "requireWord \"root broker epoch\" epochWord (brokerEpochWord (rootAuthorityEpoch root))"
-                      , acquisition
-                      )
-                    , ( "the generic journal keeps plan epoch equality"
-                      , "requireWord \"plan broker epoch\" epochWord (projectPlanProfileEpochKernel plan)"
-                      , acquisition
-                      )
-                    , ( "the live lease keeps the same target epoch"
-                      , "requireWord \"live lease broker epoch\" epochWord liveEpoch"
-                      , acquisition
-                      )
-                    , ( "the recovered plan verifies bound canonical bytes"
-                      , "requireBytes \"bound snapshot canonical bytes\" profileBytes (boundPlanSnapshotBytes bound)"
-                      , recovered
-                      )
-                    , ( "the recovered plan verifies candidate canonical bytes"
-                      , "requireBytes \"candidate canonical bytes\" profileBytes (stablePlanSnapshotBytes snapshot)"
-                      , recovered
-                      )
-                    , ( "the recovered plan verifies the candidate digest"
-                      , "requireText \"candidate plan digest\" profilePlan (stablePlanSnapshotDigest snapshot)"
-                      , recovered
-                      )
-                    , ( "the Down entry has a Teardown cursor and authority"
-                      , "RootDownLifecycleEntry :: RootInvocationAuthority scope brokerGeneration VerbDown -> ProjectVerb VerbDown -> ProjectPlan scope specDigest planId configId cfg -> ValidatedLifecycleContext scope specDigest planId configId frame -> AcquisitionJournal scope planId brokerGeneration -> LifecycleCursor scope planId frame brokerGeneration VerbDown TeardownPhase -> CommandAuthority scope planId frame brokerGeneration VerbDown TeardownPhase -> IO (Either Authority.AuthorityError (CommandAuthority scope planId frame brokerGeneration VerbDown TeardownPhase)) -> RootedPlanCatalog scope planId brokerGeneration catalogId -> LifecycleEntry scope planId frame brokerGeneration VerbDown"
-                      , constructors
-                      )
-                    , ( "the Destroy entry has a Teardown cursor and authority"
-                      , "RootDestroyLifecycleEntry :: RootInvocationAuthority scope brokerGeneration VerbDestroy -> ProjectVerb VerbDestroy -> ProjectPlan scope specDigest planId configId cfg -> ValidatedLifecycleContext scope specDigest planId configId frame -> AcquisitionJournal scope planId brokerGeneration -> LifecycleCursor scope planId frame brokerGeneration VerbDestroy TeardownPhase -> CommandAuthority scope planId frame brokerGeneration VerbDestroy TeardownPhase -> IO (Either Authority.AuthorityError (CommandAuthority scope planId frame brokerGeneration VerbDestroy TeardownPhase)) -> RootedPlanCatalog scope planId brokerGeneration catalogId -> LifecycleEntry scope planId frame brokerGeneration VerbDestroy"
-                      , constructors
-                      )
+                    [
+                        ( "the hidden producer owns the Snapshot admission token"
+                        , "withReauthorizedBoundPlanSnapshotKernel existingBoundSnapshotAdmissionKernel store project verb"
+                        , entry
+                        )
+                    ,
+                        ( "the producer callback retains only fresh target indices"
+                        , "( forall targetBroker targetPlanId targetFrame. LifecycleEntry (Production projectId) targetPlanId targetFrame targetBroker verb -> ( SubtreeSettled (Production projectId) targetPlanId targetFrame verb -> IO (Either String ()) ) -> IO (Either String ()) )"
+                        , entry
+                        )
+                    ,
+                        ( "the absent-only source callback reconstructs the exact Up lineage"
+                        , "withAcquisitionJournalPhase journal $ \\seedPhase -> case seedPhase of Prepare -> do current <- withCurrentLifecycleCursor journal frame ProjectUp ( \\phase cursor -> case phase of Prepare -> sourcePhaseFailure \"prepare\" Execute -> sourcePhaseFailure \"execute\" Teardown -> continue sourcePlan lifecycleContext journal cursor"
+                        , source
+                        )
+                    ,
+                        ( "the absent-only source refuses a mutated Execute seed"
+                        , "Execute -> sourceSeedFailure \"execute\""
+                        , source
+                        )
+                    ,
+                        ( "the absent-only source refuses a mutated Teardown seed"
+                        , "Teardown -> sourceSeedFailure \"teardown\""
+                        , source
+                        )
+                    ,
+                        ( "source seed refusal maps through the Snapshot error channel"
+                        , "sourceSeedFailure = pure . sourceMismatch \"reverse-root source acquisition seed\" \"prepare\""
+                        , entry
+                        )
+                    ,
+                        ( "the target callback rebuilds from its recovered profile"
+                        , "withRecoveredProductionProjectPlan targetProfile root targetVerified targetBound targetBinding targetConfig targetDrafts"
+                        , target
+                        )
+                    ,
+                        ( "the rebuilt target plan is checked at the callback epoch"
+                        , "if projectPlanProfileEpochKernel targetPlan /= targetEpoch then pure (Left \"lifecycle entry: target plan broker epoch differs\")"
+                        , target
+                        )
+                    ,
+                        ( "the target journal is derived from the same target package"
+                        , "withAcquisitionJournal targetRoot targetLease targetBound targetBinding targetPlan"
+                        , target
+                        )
+                    ,
+                        ( "the target cursor consumes the one hidden journal admission"
+                        , "withReverseRootTargetLifecycleCursorKernel acquisitionJournalAdmissionKernel journal frame targetVerb"
+                        , target
+                        )
+                    ,
+                        ( "authorization consumes the callback-derived Teardown cursor"
+                        , "ProjectAuthority.authorizeRootProject targetRoot targetVerb targetVerified targetBound targetBinding targetLease targetPlan journal teardownCursor lifecycleContext"
+                        , target
+                        )
+                    ,
+                        ( "the reverse target delegates sealing to the one catalog-admitting sealer"
+                        , "Right authority -> sealReverseRootEntry targetSpec targetVerb targetRoot targetPlan targetCurrent lifecycleContext journal teardownCursor authority reauthorize ( \\entry -> use entry"
+                        , target
+                        )
+                    ,
+                        ( "Down seals only the Down constructor before callback delivery"
+                        , "ProjectDown -> withReverseRootCatalog finalized root plan current lifecycleContext $ \\catalog -> use ( RootDownLifecycleEntry root verb plan lifecycleContext journal cursor authority reauthorize catalog )"
+                        , sealer
+                        )
+                    ,
+                        ( "Destroy seals only the Destroy constructor before callback delivery"
+                        , "ProjectDestroy -> withReverseRootCatalog finalized root plan current lifecycleContext $ \\catalog -> use ( RootDestroyLifecycleEntry root verb plan lifecycleContext journal cursor authority reauthorize catalog )"
+                        , sealer
+                        )
+                    ,
+                        ( "the target cursor admission is token-first and opaque"
+                        , "{-# OPAQUE withReverseRootTargetLifecycleCursorKernel #-} withReverseRootTargetLifecycleCursorKernel admission = case consumeAcquisitionJournalAdmissionKernel admission of () -> \\journal@(AcquisitionJournal store validateLive _ sourceVersion _ seedPhase) frame verb use ->"
+                        , cursor
+                        )
+                    ,
+                        ( "Up is a total target refusal"
+                        , "ProjectUp -> pure (Left (SessionCursorVerbMismatch \"down or destroy\" \"up\"))"
+                        , cursor
+                        )
+                    ,
+                        ( "the immutable target acquisition seed must remain Prepare"
+                        , "let advance = case seedPhase of Prepare | recordVersionWord sourceVersion == 1 -> case validateLifecycleCursorRequest journal frame verb of"
+                        , cursor
+                        )
+                    ,
+                        ( "an Execute acquisition seed is refused"
+                        , "Execute -> refuseAcquisition \"seed phase\" \"prepare\" \"execute\""
+                        , cursor
+                        )
+                    ,
+                        ( "a Teardown acquisition seed is refused"
+                        , "Teardown -> refuseAcquisition \"seed phase\" \"prepare\" \"teardown\""
+                        , cursor
+                        )
+                    ,
+                        ( "seed refusal maps to the exact lifecycle error"
+                        , "refuseAcquisition field expected observed = pure (Left (SessionAcquisitionBindingMismatch field expected observed))"
+                        , cursor
+                        )
+                    ,
+                        ( "retained liveness is revalidated before the current cursor"
+                        , "inLifecycleCursorEntry store $ \\session -> do live <- validateLive session case live of Left failure -> pure (Left failure) Right () -> do current <- openCurrentLifecycleCursorInEntry session Nothing journal frame verb"
+                        , cursor
+                        )
+                    ,
+                        ( "Prepare version one advances through Execute two before Teardown three"
+                        , "Prepare -> case checkedVersion 1 cursor of Left failure -> pure (Left failure) Right prepareCursor -> do executed <- advanceLifecycleCursorInEntry session prepareCursor Execute case executed >>= checkedVersion 2 of Left failure -> pure (Left failure) Right executeCursor -> do teardown <- advanceLifecycleCursorInEntry session executeCursor Teardown pure (teardown >>= checkedVersion 3)"
+                        , cursor
+                        )
+                    ,
+                        ( "Execute version two advances only to Teardown three"
+                        , "Execute -> case checkedVersion 2 cursor of Left failure -> pure (Left failure) Right executeCursor -> do teardown <- advanceLifecycleCursorInEntry session executeCursor Teardown pure (teardown >>= checkedVersion 3)"
+                        , cursor
+                        )
+                    ,
+                        ( "Teardown version three redelivers without another transition"
+                        , "Teardown -> pure (checkedVersion 3 cursor)"
+                        , cursor
+                        )
+                    ,
+                        ( "the target callback runs only after the protected entry returns"
+                        , "either (pure . Left) (fmap Right . use) terminal"
+                        , cursor
+                        )
+                    ,
+                        ( "the generic journal keeps root epoch equality"
+                        , "requireWord \"root broker epoch\" epochWord (brokerEpochWord (rootAuthorityEpoch root))"
+                        , acquisition
+                        )
+                    ,
+                        ( "the generic journal keeps plan epoch equality"
+                        , "requireWord \"plan broker epoch\" epochWord (projectPlanProfileEpochKernel plan)"
+                        , acquisition
+                        )
+                    ,
+                        ( "the live lease keeps the same target epoch"
+                        , "requireWord \"live lease broker epoch\" epochWord liveEpoch"
+                        , acquisition
+                        )
+                    ,
+                        ( "the recovered plan verifies bound canonical bytes"
+                        , "requireBytes \"bound snapshot canonical bytes\" profileBytes (boundPlanSnapshotBytes bound)"
+                        , recovered
+                        )
+                    ,
+                        ( "the recovered plan verifies candidate canonical bytes"
+                        , "requireBytes \"candidate canonical bytes\" profileBytes (stablePlanSnapshotBytes snapshot)"
+                        , recovered
+                        )
+                    ,
+                        ( "the recovered plan verifies the candidate digest"
+                        , "requireText \"candidate plan digest\" profilePlan (stablePlanSnapshotDigest snapshot)"
+                        , recovered
+                        )
+                    ,
+                        ( "the Down entry has a Teardown cursor and authority"
+                        , "RootDownLifecycleEntry :: RootInvocationAuthority scope brokerGeneration VerbDown -> ProjectVerb VerbDown -> ProjectPlan scope specDigest planId configId cfg -> ValidatedLifecycleContext scope specDigest planId configId frame -> AcquisitionJournal scope planId brokerGeneration -> LifecycleCursor scope planId frame brokerGeneration VerbDown TeardownPhase -> CommandAuthority scope planId frame brokerGeneration VerbDown TeardownPhase -> IO ( Either Authority.AuthorityError (CommandAuthority scope planId frame brokerGeneration VerbDown TeardownPhase) ) -> RootedPlanCatalog scope planId brokerGeneration catalogId -> LifecycleEntry scope planId frame brokerGeneration VerbDown"
+                        , constructors
+                        )
+                    ,
+                        ( "the Destroy entry has a Teardown cursor and authority"
+                        , "RootDestroyLifecycleEntry :: RootInvocationAuthority scope brokerGeneration VerbDestroy -> ProjectVerb VerbDestroy -> ProjectPlan scope specDigest planId configId cfg -> ValidatedLifecycleContext scope specDigest planId configId frame -> AcquisitionJournal scope planId brokerGeneration -> LifecycleCursor scope planId frame brokerGeneration VerbDestroy TeardownPhase -> CommandAuthority scope planId frame brokerGeneration VerbDestroy TeardownPhase -> IO ( Either Authority.AuthorityError (CommandAuthority scope planId frame brokerGeneration VerbDestroy TeardownPhase) ) -> RootedPlanCatalog scope planId brokerGeneration catalogId -> LifecycleEntry scope planId frame brokerGeneration VerbDestroy"
+                        , constructors
+                        )
                     ]
                 assertFragmentsInOrder
                     "source and target are sibling callbacks of the one Snapshot facade call"
@@ -5197,7 +5627,7 @@ sourceBoundaryTests =
                 SourceGuard.countHaskellIdentifier "RootDestroyLifecycleEntry" sealerSection @?= 1
                 SourceGuard.countHaskellIdentifier "withAcquisitionJournalPhase" sourceCallback @?= 1
                 mapM_
-                    (\name -> SourceGuard.countHaskellIdentifier name entrySource @?= 7)
+                    (\name -> SourceGuard.countHaskellIdentifier name entrySource @?= 10)
                     ["RootDownLifecycleEntry", "RootDestroyLifecycleEntry"]
                 sources <- readProductionSources sourceRoot
                 let sites name =
@@ -5211,7 +5641,9 @@ sourceBoundaryTests =
                         , ("HostBootstrap.ProjectPlan.Snapshot", 4)
                         ]
                 sites "withRootProjectReverseLifecycleEntry"
-                    @?= [("HostBootstrap.Command.LifecycleEntry", 3)]
+                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 3)
+                        , ("HostBootstrap.Command", 2)
+                        ]
                 sites "withReverseRootTargetLifecycleCursorKernel"
                     @?= [ ("HostBootstrap.Command.LifecycleEntry", 2)
                         , ("HostBootstrap.Lifecycle.Mode", 2)
@@ -5223,10 +5655,6 @@ sourceBoundaryTests =
                     @?= ["HostBootstrap.Lifecycle.Session"]
                 cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
                 Text.count "HostBootstrap.Command.LifecycleEntry" (Text.pack cabalSource) @?= 1
-                assertContains
-                    "the lifecycle-entry implementation remains a Cabal other-module"
-                    "other-modules: HostBootstrap.Authority.Kernel HostBootstrap.Authority.ProjectPlan.Internal HostBootstrap.Command.LifecycleEntry"
-                    (normalizeWhitespace cabalSource)
                 mapM_
                     (\name -> assertAbsent "a reverse-root runtime testing seam" name cabalSource)
                     [ "HostBootstrap.Command.LifecycleEntry.Testing"
@@ -5291,231 +5719,287 @@ sourceBoundaryTests =
                 exports
                     @?= [ "ReverseDescent"
                         , "withReverseDescentLiftContextKernel"
+                        , "withReverseDescentProcessInputsKernel"
+                        , "withPreparedReverseForestKernel"
+                        , "withPreparedReverseAdmissionsKernel"
+                        , "renderPreparedReverseTerminalOriginKernel"
                         , "withPreparedReverseDescentKernel"
                         , "withBoundReverseDescentKernel"
                         , "withRehydratedBoundReverseDescentKernel"
+                        , "withRehydratedAdoptedReverseDescentKernel"
                         , "withVerifiedBoundReverseDescentReportKernel"
                         , "withVerifiedBoundReverseDescentObservationsKernel"
                         , "withVerifiedReverseAdapterKernel"
                         ]
                 mapM_
                     (\(label, fragment, body) -> assertContains label fragment body)
-                    [ ( "the substrate has one eight-index state family"
-                      , "data ReverseDescent state scope planId parentFrame childFrame brokerGeneration verb descentId where"
-                      , family
-                      )
-                    , ( "Prepared is the unit-state constructor"
-                      , "PreparedReverseDescent :: RootInvocationAuthority scope brokerGeneration verb"
-                      , family
-                      )
-                    , ( "Prepared returns only the unit state"
-                      , "ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId"
-                      , family
-                      )
-                    , ( "Bound nests the exact Prepared identity without changing descent identity"
-                      , "BoundReverseDescent :: ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId -> ByteString -> RecordVersion -> ByteString -> ReverseDescent (HandoffOffer scope brokerGeneration) scope planId parentFrame childFrame brokerGeneration verb descentId"
-                      , family
-                      )
-                    , ( "all eight state-family roles are nominal"
-                      , "type role ReverseDescent nominal nominal nominal nominal nominal nominal nominal nominal"
-                      , family
-                      )
-                    , ( "the constructor retains the original descent work"
-                      , "DescentWork scope planId parentFrame childFrame verb"
-                      , family
-                      )
-                    , ( "the constructor retains the canonical binding input, adapter, and digest"
-                      , "HandoffBindingInput -> ByteString -> Text -> [Text]"
-                      , family
-                      )
-                    , ( "the constructor retains the private ordered completion verifier"
-                      , "( [(Text, TeardownOutcome)] -> Either TeardownError (SubtreeSettled scope planId childFrame verb) )"
-                      , family
-                      )
-                    , ( "the constructor retains the exact durable readback"
-                      , "ProtectedStore -> RecordKey -> RecordVersion -> ByteString"
-                      , family
-                      )
-                    , ( "the hidden token is the first kernel argument"
-                      , "withPreparedReverseDescentKernel :: Plan.AcquisitionJournalAdmission -> RootInvocationAuthority"
-                      , signature
-                      )
-                    , ( "the kernel receives only the typed descent package"
-                      , "DescentWork scope planId parentFrame childFrame verb"
-                      , signature
-                      )
-                    , ( "the result keeps a fresh unselectable descent identity"
-                      , "forall descentId. ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId -> IO result"
-                      , signature
-                      )
-                    , ( "every refusal returns the unchanged work"
-                      , "IO (Either (TeardownError, DescentWork scope planId parentFrame childFrame verb) result)"
-                      , signature
-                      )
-                    , ( "the kernel is opaque and token-first"
-                      , "{-# OPAQUE withPreparedReverseDescentKernel #-} withPreparedReverseDescentKernel admission = case Plan.consumeAcquisitionJournalAdmissionKernel admission of () -> prepareEntry"
-                      , internal
-                      )
-                    , ( "the exact child projection supplies canonical ordered operations"
-                      , "withDescentWorkSubtree descent $ \\childProjection -> case openTeardownForest childProjection of Left failure -> pure (Left (failure, descent)) Right childForest -> let expected = teardownForestOutstanding childForest"
-                      , admission
-                      )
-                    , ( "the adapter is derived internally and joined to the catalog child config"
-                      , "adapter = renderReverseAdapter planDigest verb parent child expected in case catalogPackage parent child adapter of"
-                      , admission
-                      )
-                    , ( "the complete package comes only from the admitted edge and the frozen constructor"
-                      , "catalogPackage parent child adapter = do (childConfig, configDigest) <- withRootedPlanCatalogEdgeKernel catalog parent child selectChildConfig package <- recoveryChildPackageKernel childConfig adapter pure (childConfig, configDigest, renderRecoveryChildPackageKernel package)"
-                      , admission
-                      )
-                    , ( "the catalog fold narrows to the canonical child config and its digest"
-                      , "selectChildConfig _parentCurrent _plan _binding _current _raw _route payload configDigest _payloadDigest _keys = (payload, configDigest)"
-                      , admission
-                      )
-                    , ( "the binding input is derived from sealed terms"
-                      , "input = HandoffBindingInput { requestedSpecDigest = specDigest , requestedPayloadKind = RecoveryAdapterWire , requestedPlanRevision = planDigest , requestedParentFrame = parent , requestedChildFrame = child , requestedChildConfigDigest = packageDigest , requestedPhase = \"teardown\" }"
-                      , admission
-                      )
-                    , ( "the prepared bytes are derived before validation and storage"
-                      , "bytes = renderPrepared root journal cursor snapshot invocation input packageDigest configDigest package"
-                      , admission
-                      )
-                    , ( "the retained command reservation is exactly replayed"
-                      , "replayed <- reauthorize case replayed of Left _ -> refused descent \"the exact command reservation is stale\" Right authority | not (sameCommandAuthority store retained authority) -> refused descent \"the replayed command authority differs\""
-                      , admission
-                      )
-                    , ( "the cursor is revalidated inside the protected entry"
-                      , "admitted <- withProtectedEntry store $ \\session -> do currentCursor <- validateCurrentLifecycleCursor session cursor"
-                      , admission
-                      )
-                    , ( "construction follows the protected-entry result"
-                      , "case admitted of Left _ -> refused descent \"the prepared store entry failed\" Right (Left failure) -> pure (Left (failure, descent)) Right (Right version) -> Right <$> use ( PreparedReverseDescent"
-                      , admission
-                      )
-                    , ( "the catalog child configuration, its digest, and the exact package are revalidated"
-                      , "require \"the catalog child configuration is empty\" (not (ByteString.null childConfig)) require \"the catalog child configuration digest differs\" (configDigest == childConfigDigest childConfig) require \"the recovery package does not carry the exact catalog child configuration and adapter\" (package == renderedPackage) require \"the recovery package exceeds the handoff bound\" (fromIntegral (ByteString.length package) <= maxWireBytes) require \"the recovery package and child configuration digests are conflated\" (childConfigDigest package /= configDigest)"
-                      , admission
-                      )
-                    , ( "the expected package is rerendered from the same two admitted fields"
-                      , "renderedPackage = either (const ByteString.empty) renderRecoveryChildPackageKernel (recoveryChildPackageKernel childConfig adapter)"
-                      , admission
-                      )
-                    , ( "the durable prepared record frames both digests and the complete package"
-                      , "frameWire (renderHandoffBindingInput input) , framedText packageDigest , framedText configDigest , frameWire package"
-                      , admission
-                      )
-                    , ( "the same parent and child frame is refused"
-                      , "require \"the parent and child frames are equal\" (parent /= child)"
-                      , admission
-                      )
-                    , ( "the child order is nonempty and duplicate-free"
-                      , "require \"the child observation order is empty\" (not (null expected)) require \"the child observation order contains duplicates\" (length expected == length (nub expected))"
-                      , admission
-                      )
-                    , ( "the recovery adapter is nonempty and bounded"
-                      , "require \"the recovery adapter is empty\" (not (ByteString.null adapter)) require \"the recovery adapter exceeds the handoff bound\" (fromIntegral (ByteString.length adapter) <= maxWireBytes)"
-                      , admission
-                      )
-                    , ( "the complete Prepared bytes are bounded before publication"
-                      , "require \"the prepared record exceeds the handoff bound\" (fromIntegral (ByteString.length preparedBytes) <= maxWireBytes)"
-                      , admission
-                      )
-                    , ( "the durable key binds invocation and adapter digests"
-                      , "\"reverse-descent.\" <> recoveryWireDigest (TextEncoding.encodeUtf8 invocation) <> \".\" <> adapterDigest"
-                      , admission
-                      )
-                    , ( "an existing durable row is admitted only through the exact state classifier"
-                      , "Right (Just record) -> pure (classifyPrepared expected record)"
-                      , admission
-                      )
-                    , ( "a stored collision refuses"
-                      , "conflict = Left (refusal \"a conflicting prepared record exists\")"
-                      , admission
-                      )
-                    , ( "absence alone enters the compare-and-swap"
-                      , "Right Nothing -> do written <- compareAndSwapProtectedRecord session key ExpectAbsent expected"
-                      , admission
-                      )
-                    , ( "fresh construction rereads and reclassifies the exact durable state"
-                      , "readback <- readProtectedRecord session key pure $ case readback of Right (Just record) -> classifyPrepared expected record"
-                      , admission
-                      )
-                    , ( "the adapter has one versioned length-framed vocabulary"
-                      , "framedText \"hostbootstrap/reverse-descent-adapter\" , framedWord 1 , framedText planDigest , framedText parent , framedText child , framedText (projectVerbName closedVerb) , framedText \"teardown\" , framedWord (fromIntegral (length expected))"
-                      , internal
-                      )
-                    , ( "the adapter fixes the three terminal outcomes"
-                      , "framedWord 3 , framedText \"released\" , framedText \"foreign-retained\" , framedText \"refused\""
-                      , internal
-                      )
-                    , ( "the prepared row binds durable root, journal, cursor, plan, adapter, and phase terms"
-                      , "framedText \"hostbootstrap/reverse-descent\" , framedWord 1 , framedText \"prepared\" , framedText (acquisitionJournalStableScope journalEvidence) , framedText (rootAuthorityProjectName rootEvidence) , framedText (rootAuthorityStoreIdentity rootEvidence)"
-                      , admission
-                      )
-                    , ( "the private verifier first compares the exact operation order"
-                      , "map fst observations /= teardownForestOutstanding opened -> mismatch opened observations"
-                      , internal
-                      )
-                    , ( "the private verifier rejects failed observations"
-                      , "any failed observations -> Left (TeardownNonTerminalObservations observations)"
-                      , internal
-                      )
-                    , ( "the private verifier replays nested rows through their exact child projection"
-                      , "let childCount = length (teardownForestOutstanding childForest) (childRows, rest) = splitAt childCount remaining childSettled <- verifyChildObservations childProjection childRows successor <- settleDescentWork descent childSettled replay successor rest"
-                      , internal
-                      )
-                    , ( "the public refusal remains structured"
-                      , "TeardownReverseDescentRefused Text"
-                      , teardown
-                      )
-                    , ( "the public refusal has an exact message mapping"
-                      , "TeardownReverseDescentRefused detail -> \"teardown: reverse descent refused: \" <> Text.unpack detail"
-                      , teardown
-                      )
-                    , ( "the hidden verifier consumes one exact local plan and matching current frame"
-                      , "withVerifiedReverseAdapterKernel :: ProjectPlan scope specDigest planId configId cfg -> CurrentFrame scope planId localFrame -> ProjectVerb verb -> ByteString -> (TeardownPlan scope planId localFrame verb -> result) -> Either TeardownError result"
-                      , adapterVerifier
-                      )
-                    , ( "the hidden verifier totally refuses Up and admits only Down or Destroy"
-                      , "case verb of ProjectUp -> Left (refusal \"project up has no reverse adapter\") ProjectDown -> verify ProjectDestroy -> verify"
-                      , adapterVerifier
-                      )
-                    , ( "the local frame must have exactly one plan-derived parent"
-                      , "case parentFrames of [parent] ->"
-                      , adapterVerifier
-                      )
-                    , ( "the local projection is derived only from the supplied plan, frame, and typed verb"
-                      , "projection = teardownPlan plan current verb"
-                      , adapterVerifier
-                      )
-                    , ( "the adapter plan digest is re-rendered from the exact local plan"
-                      , "planDigest = stablePlanSnapshotDigest (renderSnapshot plan)"
-                      , adapterVerifier
-                      )
-                    , ( "projection failure yields no plan"
-                      , "case openTeardownForest projection of Left failure -> Left failure"
-                      , adapterVerifier
-                      )
-                    , ( "the canonical adapter is re-rendered from exact local order"
-                      , "expected = teardownForestOutstanding forest canonical = renderReverseAdapter planDigest verb parent child expected"
-                      , adapterVerifier
-                      )
-                    , ( "byte drift refuses before the exact projection callback"
-                      , "observed /= canonical -> Left (refusal \"the supplied reverse adapter is not canonical\") | otherwise -> Right (use projection)"
-                      , adapterVerifier
-                      )
-                    , ( "non-unique or absent local ancestry yields no plan"
-                      , "_ -> Left (refusal \"the current frame is not one exact topology child\")"
-                      , adapterVerifier
-                      )
+                    [
+                        ( "the substrate has one eight-index state family"
+                        , "data ReverseDescent state scope planId parentFrame childFrame brokerGeneration verb descentId where"
+                        , family
+                        )
+                    ,
+                        ( "Prepared is the unit-state constructor"
+                        , "PreparedReverseDescent :: RootInvocationAuthority scope brokerGeneration verb"
+                        , family
+                        )
+                    ,
+                        ( "Prepared returns only the unit state"
+                        , "ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId"
+                        , family
+                        )
+                    ,
+                        ( "Bound nests the exact Prepared identity without changing descent identity"
+                        , "BoundReverseDescent :: ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId -> ByteString -> RecordVersion -> ByteString -> ReverseDescent (HandoffOffer scope brokerGeneration) scope planId parentFrame childFrame brokerGeneration verb descentId"
+                        , family
+                        )
+                    ,
+                        ( "all eight state-family roles are nominal"
+                        , "type role ReverseDescent nominal nominal nominal nominal nominal nominal nominal nominal"
+                        , family
+                        )
+                    ,
+                        ( "the constructor retains the original descent work"
+                        , "DescentWork scope planId parentFrame childFrame verb"
+                        , family
+                        )
+                    ,
+                        ( "the constructor retains the canonical binding input, adapter, and digest"
+                        , "HandoffBindingInput -> ByteString -> Text -> [Text]"
+                        , family
+                        )
+                    ,
+                        ( "the constructor retains the private ordered completion verifier"
+                        , "( [(Text, TeardownOutcome)] -> Either TeardownError (SubtreeSettled scope planId childFrame verb) )"
+                        , family
+                        )
+                    ,
+                        ( "the constructor retains the exact durable readback"
+                        , "ProtectedStore -> RecordKey -> RecordVersion -> ByteString"
+                        , family
+                        )
+                    ,
+                        ( "the hidden token is the first kernel argument"
+                        , "withPreparedReverseDescentKernel :: Plan.AcquisitionJournalAdmission -> RootInvocationAuthority"
+                        , signature
+                        )
+                    ,
+                        ( "the kernel receives only the typed descent package"
+                        , "DescentWork scope planId parentFrame childFrame verb"
+                        , signature
+                        )
+                    ,
+                        ( "the result keeps a fresh unselectable descent identity"
+                        , "forall descentId. ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId -> IO result"
+                        , signature
+                        )
+                    ,
+                        ( "every refusal returns the unchanged work"
+                        , "IO (Either (TeardownError, DescentWork scope planId parentFrame childFrame verb) result)"
+                        , signature
+                        )
+                    ,
+                        ( "the kernel is opaque and token-first"
+                        , "{-# OPAQUE withPreparedReverseDescentKernel #-} withPreparedReverseDescentKernel admission = case Plan.consumeAcquisitionJournalAdmissionKernel admission of () -> prepareEntry"
+                        , internal
+                        )
+                    ,
+                        ( "the exact child projection supplies canonical ordered operations"
+                        , "withDescentWorkSubtree descent $ \\childProjection -> case openTeardownForest childProjection of Left failure -> pure (Left (failure, descent)) Right childForest -> let expected = teardownForestOutstanding childForest"
+                        , admission
+                        )
+                    ,
+                        ( "the adapter is derived internally and joined to the catalog child config"
+                        , "case catalogPackage parent child expected of Left detail -> pure (Left (refusal detail, descent)) Right (childPlanDigest, adapter, childConfig, configDigest, package) ->"
+                        , admission
+                        )
+                    ,
+                        ( "the complete package comes only from the admitted edge and the frozen constructor"
+                        , "catalogPackage parent child expected = do (childPlanDigest, childConfig, configDigest) <- withRootedPlanCatalogEdgeKernel catalog parent child selectChildConfig let adapter = renderReverseAdapter childPlanDigest verb parent child expected package <- recoveryChildPackageKernel childConfig adapter pure (childPlanDigest, adapter, childConfig, configDigest, renderRecoveryChildPackageKernel package)"
+                        , admission
+                        )
+                    ,
+                        ( "the catalog fold narrows to the canonical child config and its digest"
+                        , "selectChildConfig _parentCurrent _plan binding _current _raw _route payload configDigest _payloadDigest _keys = (Plan.planDigestBindingDigestKernel binding, payload, configDigest)"
+                        , admission
+                        )
+                    ,
+                        ( "the binding input is derived from sealed terms"
+                        , "input = HandoffBindingInput { requestedSpecDigest = specDigest , requestedPayloadKind = RecoveryAdapterWire , requestedPlanRevision = childPlanDigest , requestedParentFrame = parent , requestedChildFrame = child , requestedChildConfigDigest = packageDigest , requestedPhase = \"teardown\" }"
+                        , admission
+                        )
+                    ,
+                        ( "the prepared bytes are derived before validation and storage"
+                        , "bytes = renderPrepared root journal cursor snapshot invocation input packageDigest configDigest package"
+                        , admission
+                        )
+                    ,
+                        ( "the retained command reservation is exactly replayed"
+                        , "replayed <- reauthorize case replayed of Left _ -> refused descent \"the exact command reservation is stale\" Right authority | not (sameCommandAuthority store retained authority) -> refused descent \"the replayed command authority differs\""
+                        , admission
+                        )
+                    ,
+                        ( "the cursor is revalidated inside the protected entry"
+                        , "admitted <- withProtectedEntry store $ \\session -> do currentCursor <- validateCurrentLifecycleCursor session cursor"
+                        , admission
+                        )
+                    ,
+                        ( "construction follows the protected-entry result"
+                        , "case admitted of Left _ -> refused descent \"the prepared store entry failed\" Right (Left failure) -> pure (Left (failure, descent)) Right (Right version) -> Right <$> use ( PreparedReverseDescent"
+                        , admission
+                        )
+                    ,
+                        ( "the catalog child configuration, its digest, and the exact package are revalidated"
+                        , "require \"the catalog child configuration is empty\" (not (ByteString.null childConfig)) require \"the catalog child configuration digest differs\" (configDigest == childConfigDigest childConfig) require \"the recovery package does not carry the exact catalog child configuration and adapter\" (package == renderedPackage) require \"the recovery package exceeds the handoff bound\" (fromIntegral (ByteString.length package) <= maxWireBytes) require \"the recovery package and child configuration digests are conflated\" (childConfigDigest package /= configDigest)"
+                        , admission
+                        )
+                    ,
+                        ( "the expected package is rerendered from the same two admitted fields"
+                        , "renderedPackage = either (const ByteString.empty) renderRecoveryChildPackageKernel (recoveryChildPackageKernel childConfig adapter)"
+                        , admission
+                        )
+                    ,
+                        ( "the durable prepared record frames both digests and the complete package"
+                        , "frameWire (renderHandoffBindingInput input) , framedText packageDigest , framedText configDigest , frameWire package"
+                        , admission
+                        )
+                    ,
+                        ( "the same parent and child frame is refused"
+                        , "require \"the parent and child frames are equal\" (parent /= child)"
+                        , admission
+                        )
+                    ,
+                        ( "the child order is nonempty and duplicate-free"
+                        , "require \"the child observation order is empty\" (not (null expected)) require \"the child observation order contains duplicates\" (length expected == length (nub expected))"
+                        , admission
+                        )
+                    ,
+                        ( "the recovery adapter is nonempty and bounded"
+                        , "require \"the recovery adapter is empty\" (not (ByteString.null adapter)) require \"the recovery adapter exceeds the handoff bound\" (fromIntegral (ByteString.length adapter) <= maxWireBytes)"
+                        , admission
+                        )
+                    ,
+                        ( "the complete Prepared bytes are bounded before publication"
+                        , "require \"the prepared record exceeds the handoff bound\" (fromIntegral (ByteString.length preparedBytes) <= maxWireBytes)"
+                        , admission
+                        )
+                    ,
+                        ( "the durable key binds invocation and adapter digests"
+                        , "\"reverse-descent.\" <> recoveryWireDigest (TextEncoding.encodeUtf8 invocation) <> \".\" <> adapterDigest"
+                        , admission
+                        )
+                    ,
+                        ( "an existing durable row is admitted only through the exact state classifier"
+                        , "Right (Just record) -> pure (classifyPrepared expected record)"
+                        , admission
+                        )
+                    ,
+                        ( "a stored collision refuses"
+                        , "conflict = Left (refusal \"a conflicting prepared record exists\")"
+                        , admission
+                        )
+                    ,
+                        ( "absence alone enters the compare-and-swap"
+                        , "Right Nothing -> do written <- compareAndSwapProtectedRecord session key ExpectAbsent expected"
+                        , admission
+                        )
+                    ,
+                        ( "fresh construction rereads and reclassifies the exact durable state"
+                        , "readback <- readProtectedRecord session key pure $ case readback of Right (Just record) -> classifyPrepared expected record"
+                        , admission
+                        )
+                    ,
+                        ( "the adapter has one versioned length-framed vocabulary"
+                        , "framedText \"hostbootstrap/reverse-descent-adapter\" , framedWord 1 , framedText planDigest , framedText parent , framedText child , framedText (projectVerbName closedVerb) , framedText \"teardown\" , framedWord (fromIntegral (length expected))"
+                        , internal
+                        )
+                    ,
+                        ( "the adapter fixes the three terminal outcomes"
+                        , "framedWord 3 , framedText \"released\" , framedText \"foreign-retained\" , framedText \"refused\""
+                        , internal
+                        )
+                    ,
+                        ( "the prepared row binds durable root, journal, cursor, plan, adapter, and phase terms"
+                        , "framedText \"hostbootstrap/reverse-descent\" , framedWord 1 , framedText \"prepared\" , framedText (acquisitionJournalStableScope journalEvidence) , framedText (rootAuthorityProjectName rootEvidence) , framedText (rootAuthorityStoreIdentity rootEvidence)"
+                        , admission
+                        )
+                    ,
+                        ( "the private verifier first compares the exact operation order"
+                        , "map fst observations /= teardownForestOutstanding opened -> mismatch opened observations"
+                        , internal
+                        )
+                    ,
+                        ( "the private verifier rejects failed observations"
+                        , "any failed observations -> Left (TeardownNonTerminalObservations observations)"
+                        , internal
+                        )
+                    ,
+                        ( "the private verifier replays nested rows through their exact child projection"
+                        , "let childCount = length (teardownForestOutstanding childForest) (childRows, rest) = splitAt childCount remaining childSettled <- verifyChildObservations childProjection childRows successor <- settleDescentWork descent childSettled replay successor rest"
+                        , internal
+                        )
+                    ,
+                        ( "the public refusal remains structured"
+                        , "TeardownReverseDescentRefused Text"
+                        , teardown
+                        )
+                    ,
+                        ( "the public refusal has an exact message mapping"
+                        , "TeardownReverseDescentRefused detail -> \"teardown: reverse descent refused: \" <> Text.unpack detail"
+                        , teardown
+                        )
+                    ,
+                        ( "the hidden verifier consumes one exact local plan and matching current frame"
+                        , "withVerifiedReverseAdapterKernel :: ProjectPlan scope specDigest planId configId cfg -> CurrentFrame scope planId localFrame -> ProjectVerb verb -> ByteString -> (TeardownPlan scope planId localFrame verb -> result) -> Either TeardownError result"
+                        , adapterVerifier
+                        )
+                    ,
+                        ( "the hidden verifier totally refuses Up and admits only Down or Destroy"
+                        , "case verb of ProjectUp -> Left (refusal \"project up has no reverse adapter\") ProjectDown -> verify ProjectDestroy -> verify"
+                        , adapterVerifier
+                        )
+                    ,
+                        ( "the local frame must have exactly one plan-derived parent"
+                        , "case parentFrames of [parent] ->"
+                        , adapterVerifier
+                        )
+                    ,
+                        ( "the local projection is derived only from the supplied plan, frame, and typed verb"
+                        , "projection = teardownPlan plan current verb"
+                        , adapterVerifier
+                        )
+                    ,
+                        ( "the adapter plan digest is re-rendered from the exact local plan"
+                        , "planDigest = stablePlanSnapshotDigest (renderSnapshot plan)"
+                        , adapterVerifier
+                        )
+                    ,
+                        ( "projection failure yields no plan"
+                        , "case openTeardownForest projection of Left failure -> Left failure"
+                        , adapterVerifier
+                        )
+                    ,
+                        ( "the canonical adapter is re-rendered from exact local order"
+                        , "expected = teardownForestOutstanding forest canonical = renderReverseAdapter planDigest verb parent child expected"
+                        , adapterVerifier
+                        )
+                    ,
+                        ( "byte drift refuses before the exact projection callback"
+                        , "observed /= canonical -> Left (refusal \"the supplied reverse adapter is not canonical\") | otherwise -> Right (use projection)"
+                        , adapterVerifier
+                        )
+                    ,
+                        ( "non-unique or absent local ancestry yields no plan"
+                        , "_ -> Left (refusal \"the current frame is not one exact topology child\")"
+                        , adapterVerifier
+                        )
                     ]
                 assertFragmentsInOrder
                     "preparation derives, validates, reauthorizes, persists, rereads, unlocks, then calls back"
                     [ "withDescentWorkSubtree descent"
                     , "expected = teardownForestOutstanding childForest"
-                    , "adapter = renderReverseAdapter"
-                    , "case catalogPackage parent child adapter of"
-                    , "packageDigest = childConfigDigest package"
+                    , "case catalogPackage parent child expected of"
+                    , "let packageDigest = childConfigDigest package"
                     , "input = HandoffBindingInput"
                     , "bytes = renderPrepared"
                     , "withRootedPlanCatalogEdgeKernel catalog parent child selectChildConfig"
@@ -5590,7 +6074,6 @@ sourceBoundaryTests =
                     (\name -> SourceGuard.countHaskellIdentifier name adapterVerifierSource @?= 0)
                     [ "Text"
                     , "TeardownOutcome"
-                    , "SubtreeSettled"
                     , "DescentWork"
                     , "LifecycleCursor"
                     , "CommandAuthority"
@@ -5603,10 +6086,10 @@ sourceBoundaryTests =
                 SourceGuard.countHaskellIdentifier "failDescentWork" internalSource @?= 0
                 SourceGuard.countHaskellIdentifier "settleDescentWork" internalSource @?= 1
                 SourceGuard.countHaskellIdentifier "PreparedReverseDescent" familySource @?= 1
-                SourceGuard.countHaskellIdentifier "PreparedReverseDescent" internalSource @?= 7
+                SourceGuard.countHaskellIdentifier "PreparedReverseDescent" internalSource @?= 12
                 SourceGuard.countHaskellTokenSequence ["data", "ReverseDescent"] internalSource @?= 1
                 SourceGuard.countHaskellTokenSequence ["type", "ReverseDescent"] internalSource @?= 0
-                SourceGuard.countHaskellIdentifier "BoundReverseDescent" internalSource @?= 6
+                SourceGuard.countHaskellIdentifier "BoundReverseDescent" internalSource @?= 7
                 SourceGuard.countHaskellIdentifier "unsafeCoerce" internalSource @?= 0
                 assertBool
                     "the hidden substrate imports only the lower Teardown boundary"
@@ -5639,18 +6122,20 @@ sourceBoundaryTests =
                         , SourceGuard.importsModule moduleName sourceBody
                         ]
                 sites "withPreparedReverseDescentKernel"
-                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 2)
+                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 3)
                         , ("HostBootstrap.Teardown.Internal", 4)
                         ]
                 sites "PreparedReverseDescent"
-                    @?= [("HostBootstrap.Teardown.Internal", 7)]
+                    @?= [("HostBootstrap.Teardown.Internal", 12)]
                 sites "BoundReverseDescent"
-                    @?= [("HostBootstrap.Teardown.Internal", 6)]
+                    @?= [("HostBootstrap.Teardown.Internal", 7)]
                 sites "withBoundReverseDescentKernel"
                     @?= [ ("HostBootstrap.Handoff.Relay", 2)
                         , ("HostBootstrap.Teardown.Internal", 4)
                         ]
                 sites "withRehydratedBoundReverseDescentKernel"
+                    @?= [("HostBootstrap.Teardown.Internal", 5)]
+                sites "withRehydratedAdoptedReverseDescentKernel"
                     @?= [ ("HostBootstrap.Handoff.Completion", 2)
                         , ("HostBootstrap.Teardown.Internal", 4)
                         ]
@@ -5737,13 +6222,13 @@ sourceBoundaryTests =
                     requiredSourceSection
                         "root prepared-descent producer body"
                         "withPreparedRootReverseDescentKernel entry descent use ="
-                        "{- | Seal one authenticated recovery child"
+                        "{- | Prepare one failed-Up cleanup descent without entering a reverse"
                         entrySource
                 refusalSection <-
                     requiredSourceSection
                         "root prepared-descent refusal"
                         "    refused ="
-                        "{- | Seal one authenticated recovery child"
+                        "{- | Prepare one failed-Up cleanup descent without entering a reverse"
                         entrySource
                 entryExports <-
                     maybe
@@ -5763,66 +6248,81 @@ sourceBoundaryTests =
                     exports = filter (/= ",") entryExports
                 mapM_
                     (\(label, fragment, body) -> assertContains label fragment body)
-                    [ ( "the Down constructor privately retains its exact replay action"
-                      , "CommandAuthority scope planId frame brokerGeneration VerbDown TeardownPhase -> IO (Either Authority.AuthorityError (CommandAuthority scope planId frame brokerGeneration VerbDown TeardownPhase)) -> RootedPlanCatalog scope planId brokerGeneration catalogId -> LifecycleEntry scope planId frame brokerGeneration VerbDown"
-                      , constructors
-                      )
-                    , ( "the Destroy constructor privately retains its exact replay action"
-                      , "CommandAuthority scope planId frame brokerGeneration VerbDestroy TeardownPhase -> IO (Either Authority.AuthorityError (CommandAuthority scope planId frame brokerGeneration VerbDestroy TeardownPhase)) -> RootedPlanCatalog scope planId brokerGeneration catalogId -> LifecycleEntry scope planId frame brokerGeneration VerbDestroy"
-                      , constructors
-                      )
-                    , ( "the private replay action closes over the exact first reservation inputs"
-                      , "let reauthorize = ProjectAuthority.authorizeRootProject targetRoot targetVerb targetVerified targetBound targetBinding targetLease targetPlan journal teardownCursor lifecycleContext reserved <- reauthorize"
-                      , target
-                      )
-                    , ( "the Down entry retains that same replay action"
-                      , "ProjectDown -> withReverseRootCatalog finalized root plan current lifecycleContext $ \\catalog -> use ( RootDownLifecycleEntry root verb plan lifecycleContext journal cursor authority reauthorize catalog )"
-                      , sealer
-                      )
-                    , ( "the Destroy entry retains that same replay action"
-                      , "ProjectDestroy -> withReverseRootCatalog finalized root plan current lifecycleContext $ \\catalog -> use ( RootDestroyLifecycleEntry root verb plan lifecycleContext journal cursor authority reauthorize catalog )"
-                      , sealer
-                      )
-                    , ( "the producer accepts only the sealed entry and exact descent work"
-                      , "withPreparedRootReverseDescentKernel :: LifecycleEntry scope planId parentFrame brokerGeneration verb -> DescentWork scope planId parentFrame childFrame verb"
-                      , signature
-                      )
-                    , ( "the producer callback receives only a fresh hidden prepared descent"
-                      , "forall descentId. ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId -> IO result"
-                      , signature
-                      )
-                    , ( "every producer refusal returns the exact original work"
-                      , "IO (Either (TeardownError, DescentWork scope planId parentFrame childFrame verb) result)"
-                      , signature
-                      )
-                    , ( "Root Up is an unchanged-work refusal"
-                      , "RootUpLifecycleEntry{} -> refused"
-                      , producer
-                      )
-                    , ( "Child Up is an unchanged-work refusal"
-                      , "ChildUpLifecycleEntry{} -> refused"
-                      , producer
-                      )
-                    , ( "recovery child is an unchanged-work refusal"
-                      , "ChildRecoveryLifecycleEntry{} -> refused"
-                      , producer
-                      )
-                    , ( "Root Down relays only its destructured sealed package"
-                      , "RootDownLifecycleEntry root verb plan lifecycleContext journal cursor authority reauthorize catalog -> prepare root verb plan catalog lifecycleContext journal cursor authority reauthorize descent use"
-                      , producer
-                      )
-                    , ( "Root Destroy relays only its destructured sealed package"
-                      , "RootDestroyLifecycleEntry root verb plan lifecycleContext journal cursor authority reauthorize catalog -> prepare root verb plan catalog lifecycleContext journal cursor authority reauthorize descent use"
-                      , producer
-                      )
-                    , ( "the fixed bridge supplies the hidden admission token itself"
-                      , "withPreparedReverseDescentKernel acquisitionJournalAdmissionKernel root verb plan catalog lifecycleContext journal cursor authority reauthorize work deliver"
-                      , producer
-                      )
-                    , ( "the refusal contains the unchanged work and no projection"
-                      , "pure ( Left ( TeardownReverseDescentRefused \"only a root Down or Destroy entry can prepare descent\" , descent ) )"
-                      , refusal
-                      )
+                    [
+                        ( "the Down constructor privately retains its exact replay action"
+                        , "CommandAuthority scope planId frame brokerGeneration VerbDown TeardownPhase -> IO ( Either Authority.AuthorityError (CommandAuthority scope planId frame brokerGeneration VerbDown TeardownPhase) ) -> RootedPlanCatalog scope planId brokerGeneration catalogId -> LifecycleEntry scope planId frame brokerGeneration VerbDown"
+                        , constructors
+                        )
+                    ,
+                        ( "the Destroy constructor privately retains its exact replay action"
+                        , "CommandAuthority scope planId frame brokerGeneration VerbDestroy TeardownPhase -> IO ( Either Authority.AuthorityError (CommandAuthority scope planId frame brokerGeneration VerbDestroy TeardownPhase) ) -> RootedPlanCatalog scope planId brokerGeneration catalogId -> LifecycleEntry scope planId frame brokerGeneration VerbDestroy"
+                        , constructors
+                        )
+                    ,
+                        ( "the private replay action closes over the exact first reservation inputs"
+                        , "let reauthorize = ProjectAuthority.authorizeRootProject targetRoot targetVerb targetVerified targetBound targetBinding targetLease targetPlan journal teardownCursor lifecycleContext reserved <- reauthorize"
+                        , target
+                        )
+                    ,
+                        ( "the Down entry retains that same replay action"
+                        , "ProjectDown -> withReverseRootCatalog finalized root plan current lifecycleContext $ \\catalog -> use ( RootDownLifecycleEntry root verb plan lifecycleContext journal cursor authority reauthorize catalog )"
+                        , sealer
+                        )
+                    ,
+                        ( "the Destroy entry retains that same replay action"
+                        , "ProjectDestroy -> withReverseRootCatalog finalized root plan current lifecycleContext $ \\catalog -> use ( RootDestroyLifecycleEntry root verb plan lifecycleContext journal cursor authority reauthorize catalog )"
+                        , sealer
+                        )
+                    ,
+                        ( "the producer accepts only the sealed entry and exact descent work"
+                        , "withPreparedRootReverseDescentKernel :: LifecycleEntry scope planId rootFrame brokerGeneration verb -> DescentWork scope planId parentFrame childFrame verb"
+                        , signature
+                        )
+                    ,
+                        ( "the producer callback receives only a fresh hidden prepared descent"
+                        , "forall descentId. ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId -> IO result"
+                        , signature
+                        )
+                    ,
+                        ( "every producer refusal returns the exact original work"
+                        , "IO (Either (TeardownError, DescentWork scope planId parentFrame childFrame verb) result)"
+                        , signature
+                        )
+                    ,
+                        ( "Root Up is an unchanged-work refusal"
+                        , "RootUpLifecycleEntry{} -> refused"
+                        , producer
+                        )
+                    ,
+                        ( "Child Up is an unchanged-work refusal"
+                        , "ChildUpLifecycleEntry{} -> refused"
+                        , producer
+                        )
+                    ,
+                        ( "recovery child is an unchanged-work refusal"
+                        , "ChildRecoveryLifecycleEntry{} -> refused"
+                        , producer
+                        )
+                    ,
+                        ( "Root Down relays only its destructured sealed package"
+                        , "RootDownLifecycleEntry root verb plan lifecycleContext journal cursor authority reauthorize catalog -> prepare root verb plan catalog lifecycleContext journal cursor authority reauthorize descent use"
+                        , producer
+                        )
+                    ,
+                        ( "Root Destroy relays only its destructured sealed package"
+                        , "RootDestroyLifecycleEntry root verb plan lifecycleContext journal cursor authority reauthorize catalog -> prepare root verb plan catalog lifecycleContext journal cursor authority reauthorize descent use"
+                        , producer
+                        )
+                    ,
+                        ( "the fixed bridge supplies the hidden admission token itself"
+                        , "withPreparedReverseDescentKernel acquisitionJournalAdmissionKernel root verb plan catalog lifecycleContext journal cursor authority reauthorize work deliver"
+                        , producer
+                        )
+                    ,
+                        ( "the refusal contains the unchanged work and no projection"
+                        , "pure ( Left ( TeardownReverseDescentRefused \"only a root Down or Destroy entry can prepare descent\" , descent ) )"
+                        , refusal
+                        )
                     ]
                 assertFragmentsInOrder
                     "the replay closure is defined before the first reservation and retained only after success"
@@ -5926,12 +6426,17 @@ sourceBoundaryTests =
                     ["use", "deliver", "withPreparedReverseDescentKernel"]
                 mapM_
                     (\name -> SourceGuard.countHaskellIdentifier name producerBody @?= 1)
+                    ["withPreparedReverseDescentKernel"]
+                mapM_
+                    (\name -> SourceGuard.countHaskellIdentifier name producerBody @?= 1)
                     [ "RootUpLifecycleEntry"
                     , "ChildUpLifecycleEntry"
                     , "ChildRecoveryLifecycleEntry"
-                    , "RootDownLifecycleEntry"
+                    ]
+                mapM_
+                    (\name -> SourceGuard.countHaskellIdentifier name producerBody @?= 1)
+                    [ "RootDownLifecycleEntry"
                     , "RootDestroyLifecycleEntry"
-                    , "withPreparedReverseDescentKernel"
                     ]
                 mapM_
                     (\name -> SourceGuard.countHaskellIdentifier name producerSignature @?= 0)
@@ -5939,8 +6444,8 @@ sourceBoundaryTests =
                 SourceGuard.countHaskellIdentifier "authorizeRootProject" targetCallback @?= 1
                 SourceGuard.countHaskellIdentifier "ProjectDown" producerBody @?= 0
                 SourceGuard.countHaskellIdentifier "ProjectDestroy" producerBody @?= 0
-                SourceGuard.countHaskellIdentifier "withPreparedRootReverseDescentKernel" entrySource @?= 3
-                SourceGuard.countHaskellIdentifier "withPreparedReverseDescentKernel" entrySource @?= 2
+                SourceGuard.countHaskellIdentifier "withPreparedRootReverseDescentKernel" entrySource @?= 4
+                SourceGuard.countHaskellIdentifier "withPreparedReverseDescentKernel" entrySource @?= 3
                 mapM_
                     (\name -> SourceGuard.countHaskellIdentifier name entrySource @?= 0)
                     [ "lifecycleEntryReauthorize"
@@ -5991,13 +6496,13 @@ sourceBoundaryTests =
                         , SourceGuard.importsModule moduleName sourceBody
                         ]
                 sites "withPreparedRootReverseDescentKernel"
-                    @?= [("HostBootstrap.Command.LifecycleEntry", 3)]
+                    @?= [("HostBootstrap.Command.LifecycleEntry", 4)]
                 sites "withPreparedReverseDescentKernel"
-                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 2)
+                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 3)
                         , ("HostBootstrap.Teardown.Internal", 4)
                         ]
                 sites "PreparedReverseDescent"
-                    @?= [("HostBootstrap.Teardown.Internal", 7)]
+                    @?= [("HostBootstrap.Teardown.Internal", 12)]
                 sites "withVerifiedReverseAdapterKernel"
                     @?= [ ("HostBootstrap.ProjectPlan.Child.Internal", 2)
                         , ("HostBootstrap.Teardown.Internal", 3)
@@ -6042,6 +6547,46 @@ sourceBoundaryTests =
                     "the lower kernel remains token-first and opaque"
                     "{-# OPAQUE withPreparedReverseDescentKernel #-} withPreparedReverseDescentKernel admission = case Plan.consumeAcquisitionJournalAdmissionKernel admission of () -> prepareEntry"
                     internal
+                assertBool
+                    "the hidden Entry surface exports the prepared reverse frame service"
+                    ("withPreparedRootReverseFrameServiceKernel" `elem` exports)
+                assertContains
+                    "prepared reverse authority keeps its root frame existentially separate from the descent parent"
+                    "ValidatedLifecycleContext scope specDigest planId configId rootFrame -> AcquisitionJournal scope planId brokerGeneration -> LifecycleCursor scope planId rootFrame brokerGeneration verb phase -> CommandAuthority scope planId rootFrame brokerGeneration verb phase -> IO (Either AuthorityError (CommandAuthority scope planId rootFrame brokerGeneration verb phase)) -> DescentWork scope planId parentFrame childFrame verb"
+                    internal
+                mapM_
+                    (\fragment -> assertBool ("the nested reverse producer omits obsolete root/parent equality: " <> fragment) (fragment `notElem` lines internalSource))
+                    [ "require \"the context current frame differs\" (currentFrameId current == parent)"
+                    , "require \"the cursor frame differs\" (lifecycleCursorFrame cursor == parent)"
+                    , "require \"the command frame differs\" (commandAuthorityFrame retained == parent)"
+                    ]
+                assertFragmentsInOrder
+                    "the reverse frame service retains exact state, hides pre-descent, and closes through receipt"
+                    [ "withPreparedReverseForestKernel prepared (,)"
+                    , "sessionRef <- newIORef opened"
+                    , "offerRef <- newIORef Nothing"
+                    , "complete settled"
+                    , "outcome <- runPre pre"
+                    , "answerNext respond prepare forestRef descentRef session successor"
+                    , "prepare session (localWorkKey local)"
+                    , "child <- descend descentWork"
+                    , "writeIORef descentRef (Just (observations, successor))"
+                    , "renderPreparedReverseTerminalOriginKernel descent"
+                    ]
+                    (normalizeWhitespace entrySource)
+                mapM_
+                    (\name -> SourceGuard.countHaskellIdentifier name entrySource @?= 0)
+                    ["undefined", "unsafeCoerce"]
+                sites "withPreparedRootReverseFrameServiceKernel"
+                    @?= [("HostBootstrap.Command.LifecycleEntry", 5)]
+                sites "withPreparedReverseForestKernel"
+                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 2)
+                        , ("HostBootstrap.Teardown.Internal", 3)
+                        ]
+                sites "renderPreparedReverseTerminalOriginKernel"
+                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 2)
+                        , ("HostBootstrap.Teardown.Internal", 3)
+                        ]
         , testCase "ordinary lifecycle funnels refuse reverse intent while target acquisition remains available" $
             withPackageSourceRoot $ \_packageRoot sourceRoot -> do
                 modeSource <- readFile (sourceRoot </> "HostBootstrap" </> "Lifecycle" </> "Mode.hs")
@@ -6090,74 +6635,91 @@ sourceBoundaryTests =
                     profile = normalizeWhitespace profileAdmission
                 mapM_
                     (\(label, fragment, source) -> assertContains label fragment source)
-                    [ ( "unbound snapshot and bind refusal before the supplied action"
-                      , "clear <- refuseReverseRootIntentForName session (leaseLocationProjectName location) case clear of Left failure -> pure (Right (Left failure)) Right () -> Right <$> action session"
-                      , unbound
-                      )
-                    , ( "existing-bound refusal before snapshot preparation"
-                      , "clear <- refuseReverseRootIntent session project case clear of Left failure -> pure (Left failure) Right () -> prepareExistingBoundSnapshotAt session location project"
-                      , bound
-                      )
-                    , ( "fresh allocation refusal before the broker counter"
-                      , "clear <- refuseReverseRootIntent session project case clear of Left failure -> pure (Left failure) Right () -> do outcome <- withFreshBrokerEpochKernel"
-                      , fresh
-                      )
-                    , ( "migration candidate exclusion"
-                      , "withProspectiveMigrationPlan session project profile newSpec newPlan use = withOrdinaryProjectAdmission session project proceed"
-                      , mode
-                      )
-                    , ( "migration freeze exclusion"
-                      , "withPlanMigration session project profile candidate = withOrdinaryProjectAdmission session project"
-                      , mode
-                      )
-                    , ( "migration commit exclusion"
-                      , "commitMigrationActivation session project frozen epoch = withOrdinaryProjectAdmission session project"
-                      , mode
-                      )
-                    , ( "migration activation exclusion"
-                      , "activateMigratedPlan session barrier bound epoch = withOrdinaryProjectAdmissionForName session project proceed"
-                      , mode
-                      )
-                    , ( "completed-migration recovery exclusion"
-                      , "withCompletedMigrationRecovery session project bound use = withOrdinaryProjectAdmission session project"
-                      , mode
-                      )
-                    , ( "invocation disposition exclusion"
-                      , "writeInvocationDispositionForKey session project run disposition = withOrdinaryProjectAdmission session project"
-                      , mode
-                      )
-                    , ( "migration marker exclusion"
-                      , "recordOpenRevisionMigrationForKey session project run kind = withOrdinaryProjectAdmission session project"
-                      , mode
-                      )
-                    , ( "terminal lease exclusion"
-                      , "closeLeaseForKey session project run = withOrdinaryProjectAdmission session project"
-                      , mode
-                      )
-                    , ( "terminal mode exclusion"
-                      , "releaseMode session project expected = withOrdinaryProjectAdmission session project"
-                      , mode
-                      )
-                    , ( "fresh Harness exclusion before its precondition callback"
-                      , "withHarnessRoot store project verb preconditions swept use = do prepared <- runProtected store $ \\session -> do withOrdinaryProjectAdmission session project"
-                      , mode
-                      )
-                    , ( "abandoned-Harness source exclusion"
-                      , "abandonedHarnessLeases session project = withOrdinaryProjectAdmission session project"
-                      , mode
-                      )
-                    , ( "abandoned-Harness reopen exclusion"
-                      , "reopen run recordedSpec recordedPlan session = withOrdinaryProjectAdmission session project"
-                      , mode
-                      )
-                    , ( "fresh profile refusal before profile-slot mutation"
-                      , "clear <- refuseReverseRootIntentForName session projectName case clear of"
-                      , profile
-                      )
-                    , ( "fresh profile mutation follows intent refusal"
-                      , "Right () -> do consumed <- consumeProfileRecord session"
-                      , profile
-                      )
+                    [
+                        ( "unbound snapshot and bind refusal before the supplied action"
+                        , "clear <- refuseReverseRootIntentForName session (leaseLocationProjectName location) case clear of Left failure -> pure (Right (Left failure)) Right () -> Right <$> action session"
+                        , unbound
+                        )
+                    ,
+                        ( "existing-bound refusal before snapshot preparation"
+                        , "clear <- refuseReverseRootIntent session project case clear of Left failure -> pure (Left failure) Right () -> prepareExistingBoundSnapshotAt session location project"
+                        , bound
+                        )
+                    ,
+                        ( "fresh allocation refusal before the broker counter"
+                        , "clear <- refuseReverseRootIntent session project case clear of Left failure -> pure (Left failure) Right () -> do outcome <- withFreshBrokerEpochKernel"
+                        , fresh
+                        )
+                    ,
+                        ( "migration candidate exclusion"
+                        , "withProspectiveMigrationPlan session project profile oldBound _codec wire config drafts use = withOrdinaryProjectAdmission session project"
+                        , mode
+                        )
+                    ,
+                        ( "migration freeze exclusion"
+                        , "withPlanMigration session project profile candidate = withOrdinaryProjectAdmission session project"
+                        , mode
+                        )
+                    ,
+                        ( "migration commit exclusion"
+                        , "commitMigrationActivation session project frozen epoch = withOrdinaryProjectAdmission session project"
+                        , mode
+                        )
+                    ,
+                        ( "migration activation exclusion"
+                        , "activateMigratedPlanConfigless session barrier bound epoch rehydrated = withOrdinaryProjectAdmissionForName session project proceed"
+                        , mode
+                        )
+                    ,
+                        ( "completed-migration recovery exclusion"
+                        , "withCompletedMigrationRecovery session project bound use = withOrdinaryProjectAdmission session project"
+                        , mode
+                        )
+                    ,
+                        ( "invocation disposition exclusion"
+                        , "writeInvocationDispositionForKey session project run disposition = withOrdinaryProjectAdmission session project"
+                        , mode
+                        )
+                    ,
+                        ( "migration marker exclusion"
+                        , "recordOpenRevisionMigrationForKey session project run kind = withOrdinaryProjectAdmission session project"
+                        , mode
+                        )
+                    ,
+                        ( "terminal lease exclusion"
+                        , "closeLeaseForKey session project run = withOrdinaryProjectAdmission session project"
+                        , mode
+                        )
+                    ,
+                        ( "terminal mode exclusion"
+                        , "releaseMode session project expected = withOrdinaryProjectAdmission session project"
+                        , mode
+                        )
+                    ,
+                        ( "fresh Harness exclusion before its precondition callback"
+                        , "withHarnessRoot store project verb preconditions swept use = do prepared <- runProtected store $ \\session -> do withOrdinaryProjectAdmission session project"
+                        , mode
+                        )
+                    ,
+                        ( "abandoned-Harness source exclusion"
+                        , "abandonedHarnessLeases session project = withOrdinaryProjectAdmission session project"
+                        , mode
+                        )
+                    ,
+                        ( "abandoned-Harness reopen exclusion"
+                        , "reopen run recordedSpec recordedPlan session = withOrdinaryProjectAdmission session project"
+                        , mode
+                        )
+                    ,
+                        ( "fresh profile refusal before profile-slot mutation"
+                        , "clear <- refuseReverseRootIntentForName session projectName case clear of"
+                        , profile
+                        )
+                    ,
+                        ( "fresh profile mutation follows intent refusal"
+                        , "Right () -> do consumed <- consumeProfileRecord session"
+                        , profile
+                        )
                     ]
                 SourceGuard.countHaskellIdentifier "withFreshBrokerEpochKernel" freshAllocator @?= 1
                 SourceGuard.countHaskellIdentifier "refuseReverseRootIntent" acquisitionAdmission @?= 0
@@ -6194,27 +6756,33 @@ sourceBoundaryTests =
                     exportTokens
                 mapM_
                     (\(label, fragment) -> assertContains label fragment facade)
-                    [ ( "the exact topology projection"
-                      , "topology :: ProjectPlan scope specDigest planId configId cfg -> DerivedTopology scope planId"
-                      )
+                    [
+                        ( "the exact topology projection"
+                        , "topology :: ProjectPlan scope specDigest planId configId cfg -> DerivedTopology scope planId"
+                        )
                     ]
                 mapM_
                     (\(label, fragment) -> assertContains label fragment budget)
-                    [ ( "the exact budget admission plan"
-                      , "withValidatedBudget :: ProjectPlan scope specDigest planId configId cfg -> ResourceEnvelope ->"
-                      )
-                    , ( "the exact provider resource projection"
-                      , "withProviderBudgetCapability :: ProjectPlan scope specDigest planId configId cfg -> PlannedResource scope planId resourceId ProviderResource frame ->"
-                      )
-                    , ( "the exact workload resource projection"
-                      , "mkWorkload :: PlannedResource scope planId resourceId resource frame ->"
-                      )
-                    , ( "the exact workload topology source"
-                      , "withPlannedWorkloadSet :: ProjectPlan scope specDigest planId configId cfg -> [Workload scope planId] ->"
-                      )
-                    , ( "the exact slice resource projection"
-                      , "mkSliceRequest :: PlannedResource scope planId resourceId resource frame ->"
-                      )
+                    [
+                        ( "the exact budget admission plan"
+                        , "withValidatedBudget :: ProjectPlan scope specDigest planId configId cfg -> ResourceEnvelope ->"
+                        )
+                    ,
+                        ( "the exact provider resource projection"
+                        , "withProviderBudgetCapability :: ProjectPlan scope specDigest planId configId cfg -> PlannedResource scope planId resourceId ProviderResource frame ->"
+                        )
+                    ,
+                        ( "the exact workload resource projection"
+                        , "mkWorkload :: PlannedResource scope planId resourceId resource frame ->"
+                        )
+                    ,
+                        ( "the exact workload topology source"
+                        , "withPlannedWorkloadSet :: ProjectPlan scope specDigest planId configId cfg -> [Workload scope planId] ->"
+                        )
+                    ,
+                        ( "the exact slice resource projection"
+                        , "mkSliceRequest :: PlannedResource scope planId resourceId resource frame ->"
+                        )
                     , ("plan-derived topology use", "derivedTopology = topology plan")
                     ]
                 assertAbsent
@@ -6280,8 +6848,14 @@ sourceBoundaryTests =
                 SourceGuard.countHaskellIdentifier "withProjectPlan" recoveredAdmission @?= 0
                 SourceGuard.countHaskellIdentifier "withRecoveredProductionPlan" upCommand @?= 1
                 SourceGuard.countHaskellIdentifier "withFreshProductionPlan" upCommand @?= 1
-                SourceGuard.countHaskellIdentifier "withRecoveredProductionPlan" teardownCommand @?= 1
-                SourceGuard.countHaskellIdentifier "withFreshProductionPlan" teardownCommand @?= 1
+                SourceGuard.countHaskellIdentifier "withRootProjectReverseLifecycleEntry" teardownCommand @?= 1
+                SourceGuard.countHaskellIdentifier "runRootProjectReverseLifecycleEntry" teardownCommand @?= 1
+                SourceGuard.countHaskellIdentifier "localWorkOperationKey" teardownCommand @?= 1
+                SourceGuard.countHaskellIdentifier "verifyProjectChartResourceRecordBundle" teardownCommand @?= 1
+                SourceGuard.countHaskellIdentifier "runVerifiedChartWorkloadCleanupCall" teardownCommand @?= 1
+                SourceGuard.countHaskellIdentifier "PlanExecutionPackage" teardownCommand @?= 0
+                SourceGuard.countHaskellIdentifier "withRecoveredProductionPlan" teardownCommand @?= 0
+                SourceGuard.countHaskellIdentifier "withFreshProductionPlan" teardownCommand @?= 0
         , testCase "descriptive context and nominal authorities retain broker continuity" $
             withPackageSourceRoot $ \_packageRoot sourceRoot -> do
                 frameSource <-
@@ -6310,58 +6884,71 @@ sourceBoundaryTests =
                     entry = normalizeWhitespace entrySource
                 mapM_
                     (\(label, fragment, source) -> assertContains label fragment source)
-                    [ ( "the exact descriptive context indices"
-                      , "newtype ValidatedContext scope planId frame = ValidatedContext Context.BinaryContext"
-                      , frame
-                      )
-                    , ( "the descriptive context's nominal roles"
-                      , "type role ValidatedContext nominal nominal nominal"
-                      , frame
-                      )
-                    , ( "the acquisition journal indices"
-                      , "data AcquisitionJournal scope planId brokerGeneration where"
-                      , session
-                      )
-                    , ( "the acquisition journal's nominal roles"
-                      , "type role AcquisitionJournal nominal nominal nominal"
-                      , session
-                      )
-                    , ( "the lifecycle cursor indices"
-                      , "data LifecycleCursor scope planId frame brokerGeneration verb phase where"
-                      , session
-                      )
-                    , ( "the lifecycle cursor's nominal roles"
-                      , "type role LifecycleCursor nominal nominal nominal nominal nominal nominal"
-                      , session
-                      )
-                    , ( "the command authority indices"
-                      , "data CommandAuthority scope planId frame brokerGeneration verb phase"
-                      , authorityKernel
-                      )
-                    , ( "the command authority's nominal roles"
-                      , "type role CommandAuthority nominal nominal nominal nominal nominal nominal"
-                      , authorityKernel
-                      )
-                    , ( "the journal broker carried into root admission"
-                      , "AcquisitionJournal scope planId brokerGeneration -> LifecycleCursor scope planId frame brokerGeneration verb phase -> ValidatedLifecycleContext"
-                      , projectAuthority
-                      )
-                    , ( "the authenticated child's authorized package"
-                      , "data AuthorizedChildCursor scope specDigest planDigest brokerGeneration parentFrame planId configId childFrame verb phase"
-                      , child
-                      )
-                    , ( "the authorized child's ten nominal roles"
-                      , "type role AuthorizedChildCursor nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal"
-                      , child
-                      )
-                    , ( "the authorized package's Teardown successor"
-                      , "AuthorizedTeardownChildCursor :: AuthorizedChildCursor"
-                      , child
-                      )
-                    , ( "the child entry retains one inseparable authorized package"
-                      , "ChildUpLifecycleEntry :: AuthorizedChildCursor scope specDigest planDigest brokerGeneration parentFrame planId configId frame VerbUp ExecutePhase -> LifecycleEntry"
-                      , entry
-                      )
+                    [
+                        ( "the exact descriptive context indices"
+                        , "newtype ValidatedContext scope planId frame = ValidatedContext Context.BinaryContext"
+                        , frame
+                        )
+                    ,
+                        ( "the descriptive context's nominal roles"
+                        , "type role ValidatedContext nominal nominal nominal"
+                        , frame
+                        )
+                    ,
+                        ( "the acquisition journal indices"
+                        , "data AcquisitionJournal scope planId brokerGeneration where"
+                        , session
+                        )
+                    ,
+                        ( "the acquisition journal's nominal roles"
+                        , "type role AcquisitionJournal nominal nominal nominal"
+                        , session
+                        )
+                    ,
+                        ( "the lifecycle cursor indices"
+                        , "data LifecycleCursor scope planId frame brokerGeneration verb phase where"
+                        , session
+                        )
+                    ,
+                        ( "the lifecycle cursor's nominal roles"
+                        , "type role LifecycleCursor nominal nominal nominal nominal nominal nominal"
+                        , session
+                        )
+                    ,
+                        ( "the command authority indices"
+                        , "data CommandAuthority scope planId frame brokerGeneration verb phase"
+                        , authorityKernel
+                        )
+                    ,
+                        ( "the command authority's nominal roles"
+                        , "type role CommandAuthority nominal nominal nominal nominal nominal nominal"
+                        , authorityKernel
+                        )
+                    ,
+                        ( "the journal broker carried into root admission"
+                        , "AcquisitionJournal scope planId brokerGeneration -> LifecycleCursor scope planId frame brokerGeneration verb phase -> ValidatedLifecycleContext"
+                        , projectAuthority
+                        )
+                    ,
+                        ( "the authenticated child's authorized package"
+                        , "data AuthorizedChildCursor scope specDigest planDigest brokerGeneration parentFrame planId configId childFrame verb phase"
+                        , child
+                        )
+                    ,
+                        ( "the authorized child's ten nominal roles"
+                        , "type role AuthorizedChildCursor nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal"
+                        , child
+                        )
+                    ,
+                        ( "the authorized package's Teardown successor"
+                        , "AuthorizedTeardownChildCursor :: AuthorizedChildCursor"
+                        , child
+                        )
+                    ,
+                        ( "the child entry retains one inseparable authorized package"
+                        , "ChildUpLifecycleEntry :: AuthorizedChildCursor scope specDigest planDigest brokerGeneration parentFrame planId configId frame VerbUp ExecutePhase -> LifecycleEntry"
+                        , entry
+                        )
                     ]
                 SourceGuard.countHaskellIdentifier "authorizeChildProject" projectAuthoritySource @?= 0
                 SourceGuard.countHaskellIdentifier "childCommandReservationKernel" childSource @?= 3
@@ -6391,46 +6978,56 @@ sourceBoundaryTests =
                     child = normalizeWhitespace childSource
                 mapM_
                     (\(label, fragment, source) -> assertContains label fragment source)
-                    [ ( "the existing-only acquisition lookup"
-                      , "Right Nothing -> pure (Left (SessionAcquisitionMissing (recordKeyText recordKey)))"
-                      , session
-                      )
-                    , ( "the child request bound check"
-                      , "case validateLifecycleCursorRequest journal frame ProjectUp of"
-                      , session
-                      )
-                    , ( "the Prepare-only absent cursor policy"
-                      , "lifecyclePhaseName requestedPhase == lifecyclePhaseName Prepare"
-                      , normalizeWhitespace sessionSource
-                      )
-                    , ( "the hidden token is forced before retained evidence"
-                      , "case consumeAcquisitionJournalAdmissionKernel admission of () -> case retainedEvidence of"
-                      , mode
-                      )
-                    , ( "the acquisition lease key is checked before its read"
-                      , "case requireText \"lease key\" canonicalLease leaseText of Left failure -> pure (Left failure) Right () -> do modeResult <- readRequired session (\"mode.\" <> project) \"project mode\" leaseResult <- readRequired session canonicalLease \"run lease\""
-                      , mode
-                      )
-                    , ( "the callback follows the protected entry"
-                      , "Right (Right (journal, cursor)) -> Right <$> use journal cursor"
-                      , mode
-                      )
-                    , ( "the child authority retains its exact phase"
-                      , "ChildPlanAuthority :: HandoffBinding scope brokerGeneration -> LifecyclePhase phase ->"
-                      , child
-                      )
-                    , ( "the signed child identity remains distinct from the local frame"
-                      , "parentFrame signedChildFrame configId VerbUp phase"
-                      , child
-                      )
-                    , ( "the child package's ten nominal roles"
-                      , "type role AuthenticatedChildCursor nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal"
-                      , child
-                      )
-                    , ( "nested lifecycle context is mandatory"
-                      , "withValidatedNestedLifecycleContext lifecycleContext"
-                      , child
-                      )
+                    [
+                        ( "the existing-only acquisition lookup"
+                        , "Right Nothing -> pure (Left (SessionAcquisitionMissing (recordKeyText recordKey)))"
+                        , session
+                        )
+                    ,
+                        ( "the child request bound check"
+                        , "case validateLifecycleCursorRequest journal frame ProjectUp of"
+                        , session
+                        )
+                    ,
+                        ( "the Prepare-only absent cursor policy"
+                        , "lifecyclePhaseName requestedPhase == lifecyclePhaseName Prepare"
+                        , normalizeWhitespace sessionSource
+                        )
+                    ,
+                        ( "the hidden token is forced before retained evidence"
+                        , "case consumeAcquisitionJournalAdmissionKernel admission of () -> case retainedEvidence of"
+                        , mode
+                        )
+                    ,
+                        ( "the acquisition lease key is checked before its read"
+                        , "case requireText \"lease key\" canonicalLease leaseText of Left failure -> pure (Left failure) Right () -> do modeResult <- readRequired session (\"mode.\" <> project) \"project mode\" leaseResult <- readRequired session canonicalLease \"run lease\""
+                        , mode
+                        )
+                    ,
+                        ( "the callback follows the protected entry"
+                        , "Right (Right (journal, cursor)) -> Right <$> use journal cursor"
+                        , mode
+                        )
+                    ,
+                        ( "the child authority retains its exact phase"
+                        , "ChildPlanAuthority :: HandoffBinding scope brokerGeneration -> LifecyclePhase phase ->"
+                        , child
+                        )
+                    ,
+                        ( "the signed child identity remains distinct from the local frame"
+                        , "parentFrame signedChildFrame configId VerbUp phase"
+                        , child
+                        )
+                    ,
+                        ( "the child package's ten nominal roles"
+                        , "type role AuthenticatedChildCursor nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal"
+                        , child
+                        )
+                    ,
+                        ( "nested lifecycle context is mandatory"
+                        , "withValidatedNestedLifecycleContext lifecycleContext"
+                        , child
+                        )
                     ]
                 SourceGuard.countHaskellIdentifier "compareAndSwapProtectedRecord" sessionBridge @?= 0
                 SourceGuard.countHaskellIdentifier "withProtectedEntry" modeBridge @?= 1
@@ -6489,166 +7086,206 @@ sourceBoundaryTests =
                     recovery = normalizeWhitespace recoveryWrapper
                 mapM_
                     (\(label, fragment, body) -> assertContains label fragment body)
-                    [ ( "config recovery remains statically Up-indexed"
-                      , "LifecycleCursor scope planId frame brokerGeneration VerbUp phase"
-                      , config
-                      )
-                    , ( "config recovery factors through the shared existing-row helper"
-                      , "reopenExistingAcquisitionJournalInEntry store session validateLive stableScope project storeId snapshot run spec epoch (projectVerbName ProjectUp) Nothing"
-                      , config
-                      )
-                    , ( "config recovery validates and opens only ProjectUp"
-                      , "validateLifecycleCursorRequest journal frame ProjectUp"
-                      , config
-                      )
-                    , ( "config recovery opens only the requested existing Up cursor"
-                      , "openLifecycleCursorInEntry session journal frame ProjectUp phase"
-                      , config
-                      )
-                    , ( "the reverse opener takes the hidden admission first"
-                      , "reopenExistingReverseAcquisitionJournalKernel :: AcquisitionJournalAdmission -> ProtectedStore -> ProtectedSession session"
-                      , reverseJournal
-                      )
-                    , ( "the reverse opener returns only the exact journal"
-                      , "ProjectVerb verb -> IO (Either SessionError (AcquisitionJournal scope planId brokerGeneration))"
-                      , reverseJournal
-                      )
-                    , ( "the reverse opener is strict and opaque on partial application"
-                      , "{-# OPAQUE reopenExistingReverseAcquisitionJournalKernel #-} reopenExistingReverseAcquisitionJournalKernel admission = case consumeAcquisitionJournalAdmissionKernel admission of () -> \\store session validateLive stableScope project storeId snapshot run spec epoch frame verb ->"
-                      , reverseJournal
-                      )
-                    , ( "reverse acquisition requires the immutable Prepare/version-one seed"
-                      , "run spec epoch verbName (Just (\"prepare\", 1))"
-                      , reverseJournal
-                      )
-                    , ( "reverse acquisition totally refuses Up"
-                      , "ProjectUp -> pure (Left (SessionCursorVerbMismatch \"down or destroy\" \"up\"))"
-                      , reverseJournal
-                      )
-                    , ( "Down validates its exact typed frame and verb"
-                      , "ProjectDown -> do opened <- reopen (projectVerbName verb) pure $ opened >>= \\journal -> journal <$ validateLifecycleCursorRequest journal frame verb"
-                      , reverseJournal
-                      )
-                    , ( "Destroy validates its exact typed frame and verb"
-                      , "ProjectDestroy -> do opened <- reopen (projectVerbName verb) pure $ opened >>= \\journal -> journal <$ validateLifecycleCursorRequest journal frame verb"
-                      , reverseJournal
-                      )
-                    , ( "the shared helper derives the one existing acquisition key"
-                      , "either (pure . Left) reopen (childAcquisitionKey project run epoch)"
-                      , existing
-                      )
-                    , ( "absence is a hard existing-row refusal"
-                      , "Right Nothing -> pure (Left (SessionAcquisitionMissing (recordKeyText recordKey)))"
-                      , existing
-                      )
-                    , ( "the durable acquisition row must re-encode canonically"
-                      , "protectedRecordBytes record /= encodeAcquisitionRecord binding seed"
-                      , existing
-                      )
-                    , ( "the durable verb and complete binding are exact"
-                      , "acquisitionBindingRootVerb binding /= verbName"
-                      , existing
-                      )
-                    , ( "the reverse seed requirement is checked before liveness"
-                      , "Just (requiredSeed, _) <- required , acquisitionPhaseText seed /= requiredSeed"
-                      , existing
-                      )
-                    , ( "the reverse record version requirement is checked before liveness"
-                      , "Just (_, requiredVersion) <- required , recordVersionWord (protectedRecordVersion record) /= requiredVersion"
-                      , existing
-                      )
-                    , ( "the exact retained liveness validator precedes journal construction"
-                      , "valid <- check session pure $ case valid of Left failure -> Left failure Right () -> Right ( AcquisitionJournal store check recordKey (protectedRecordVersion record) binding seed )"
-                      , existing
-                      )
-                    , ( "the target cursor is strict and opaque"
-                      , "{-# OPAQUE withReverseRootTargetLifecycleCursorKernel #-} withReverseRootTargetLifecycleCursorKernel admission = case consumeAcquisitionJournalAdmissionKernel admission of () -> \\journal@(AcquisitionJournal store validateLive _ sourceVersion _ seedPhase) frame verb use ->"
-                      , target
-                      )
-                    , ( "target retained liveness is checked before the current cursor"
-                      , "inLifecycleCursorEntry store $ \\session -> do live <- validateLive session case live of Left failure -> pure (Left failure) Right () -> do current <- openCurrentLifecycleCursorInEntry session Nothing journal frame verb"
-                      , target
-                      )
-                    , ( "the target callback follows the protected-entry result"
-                      , "either (pure . Left) (fmap Right . use) terminal"
-                      , target
-                      )
-                    , ( "config-origin Mode admission remains narrowed-config only"
-                      , "require \"payload kind\" (handoffPayloadKind signed == NarrowedProjectConfig)"
-                      , configMode
-                      )
-                    , ( "config-origin Mode admission retains exact config bytes identity"
-                      , "requireText \"configuration digest\" configDigest (handoffChildConfigDigest signed)"
-                      , configMode
-                      )
-                    , ( "the recovery wrapper accepts only typed retained evidence"
-                      , "reopenAuthenticatedRecoveryChildCursorKernel :: AcquisitionJournalAdmission -> ProtectedStore -> HandoffBinding scope brokerGeneration -> ProjectPlan scope specDigest planId configId cfg -> PlanDigestBinding scope specDigest planDigest planId -> ProjectFrame scope specDigest planId configId frame -> ProjectVerb verb"
-                      , recovery
-                      )
-                    , ( "the recovery wrapper yields only the exact journal/cursor pair"
-                      , "AcquisitionJournal scope planId brokerGeneration -> LifecycleCursor scope planId frame brokerGeneration verb TeardownPhase -> IO result"
-                      , recovery
-                      )
-                    , ( "the recovery wrapper is strict and opaque"
-                      , "{-# OPAQUE reopenAuthenticatedRecoveryChildCursorKernel #-} reopenAuthenticatedRecoveryChildCursorKernel admission = case consumeAcquisitionJournalAdmissionKernel admission of () -> \\store signed plan binding frame verb use ->"
-                      , recovery
-                      )
-                    , ( "recovery accepts only the authenticated adapter payload"
-                      , "require \"payload kind\" (handoffPayloadKind signed == RecoveryAdapterWire)"
-                      , recovery
-                      )
-                    , ( "the adapter coordinate is canonical lower hexadecimal"
-                      , "require \"adapter digest coordinate\" $ Text.length adapterDigest == 64 && Text.all lowerHex adapterDigest"
-                      , recovery
-                      )
-                    , ( "the exact local topology supplies one parent-child edge"
-                      , "[ edge | edge@(_, edgeChild) <- topologyParentEdges (topology plan) , edgeChild == child ] == [(parent, child)]"
-                      , recovery
-                      )
-                    , ( "only a version-two committed intent can be admitted"
-                      , "recordVersionWord (protectedRecordVersion record) /= 2"
-                      , recovery
-                      )
-                    , ( "Down committed intent is the exact admitted branch"
-                      , "ReverseRootDownCommitted common target modeVersion modeBytes leaseVersion leaseBytes"
-                      , recovery
-                      )
-                    , ( "Destroy committed intent is the exact admitted branch"
-                      , "ReverseRootDestroyCommitted common target modeVersion modeBytes leaseVersion leaseBytes"
-                      , recovery
-                      )
-                    , ( "both Pending states refuse as Pending"
-                      , "ReverseRootDownPending{} -> pure (mismatch \"reverse-root intent state\" \"committed\" \"pending\") Just ReverseRootDestroyPending{} -> pure (mismatch \"reverse-root intent state\" \"committed\" \"pending\")"
-                      , recovery
-                      )
-                    , ( "the exact local canonical plan is independently rendered"
-                      , "canonical = projectPlanCanonicalSnapshotKernel plan"
-                      , recovery
-                      )
-                    , ( "committed intent retains exact config and canonical plan independently"
-                      , "requireText \"intent configuration\" configDigest intentConfig requireText \"intent plan\" planDigest intentPlan requireBytes \"intent canonical plan\" canonicalBytes intentCanonical"
-                      , recovery
-                      )
-                    , ( "live intent, mode, lease, and snapshot rows are all reread"
-                      , "intentResult <- readRequired intentKey \"reverse-root intent\" modeResult <- readNamed (\"mode.\" <> project) \"project mode\" leaseResult <- readNamed canonicalLease \"run lease\" snapshotResult <- readNamed (\"snapshot.\" <> project <> \".\" <> run) \"plan snapshot\""
-                      , recovery
-                      )
-                    , ( "the existing reverse journal is opened inside the protected entry"
-                      , "reopenExistingReverseAcquisitionJournalKernel admission store session"
-                      , recovery
-                      )
-                    , ( "journal liveness reruns the complete row validator"
-                      , "Right () -> validateRowsAt live"
-                      , recovery
-                      )
-                    , ( "the target cursor and callback follow the committed-entry unlock"
-                      , "Right (Right journal) -> withReverseRootTargetLifecycleCursorKernel admission journal frame verb (use journal)"
-                      , recovery
-                      )
-                    , ( "Mode totally refuses recovery Up"
-                      , "ProjectUp -> pure (Left (SessionCursorVerbMismatch \"down/destroy\" \"up\"))"
-                      , recovery
-                      )
+                    [
+                        ( "config recovery remains statically Up-indexed"
+                        , "LifecycleCursor scope planId frame brokerGeneration VerbUp phase"
+                        , config
+                        )
+                    ,
+                        ( "config recovery factors through the shared existing-row helper"
+                        , "reopenExistingAcquisitionJournalInEntry store session validateLive stableScope project storeId snapshot run spec epoch (projectVerbName ProjectUp) Nothing"
+                        , config
+                        )
+                    ,
+                        ( "config recovery validates and opens only ProjectUp"
+                        , "validateLifecycleCursorRequest journal frame ProjectUp"
+                        , config
+                        )
+                    ,
+                        ( "config recovery opens only the requested existing Up cursor"
+                        , "openLifecycleCursorInEntry session journal frame ProjectUp phase"
+                        , config
+                        )
+                    ,
+                        ( "the reverse opener takes the hidden admission first"
+                        , "reopenExistingReverseAcquisitionJournalKernel :: AcquisitionJournalAdmission -> ProtectedStore -> ProtectedSession session"
+                        , reverseJournal
+                        )
+                    ,
+                        ( "the reverse opener returns only the exact journal"
+                        , "ProjectVerb verb -> IO (Either SessionError (AcquisitionJournal scope planId brokerGeneration))"
+                        , reverseJournal
+                        )
+                    ,
+                        ( "the reverse opener is strict and opaque on partial application"
+                        , "{-# OPAQUE reopenExistingReverseAcquisitionJournalKernel #-} reopenExistingReverseAcquisitionJournalKernel admission = case consumeAcquisitionJournalAdmissionKernel admission of () -> \\store session validateLive stableScope project storeId snapshot run spec epoch frame verb ->"
+                        , reverseJournal
+                        )
+                    ,
+                        ( "reverse acquisition requires the immutable Prepare/version-one seed"
+                        , "run spec epoch verbName (Just (\"prepare\", 1))"
+                        , reverseJournal
+                        )
+                    ,
+                        ( "reverse acquisition totally refuses Up"
+                        , "ProjectUp -> pure (Left (SessionCursorVerbMismatch \"down or destroy\" \"up\"))"
+                        , reverseJournal
+                        )
+                    ,
+                        ( "Down validates its exact typed frame and verb"
+                        , "ProjectDown -> do opened <- reopen (projectVerbName verb) pure $ opened >>= \\journal -> journal <$ validateLifecycleCursorRequest journal frame verb"
+                        , reverseJournal
+                        )
+                    ,
+                        ( "Destroy validates its exact typed frame and verb"
+                        , "ProjectDestroy -> do opened <- reopen (projectVerbName verb) pure $ opened >>= \\journal -> journal <$ validateLifecycleCursorRequest journal frame verb"
+                        , reverseJournal
+                        )
+                    ,
+                        ( "the shared helper derives the one existing acquisition key"
+                        , "either (pure . Left) reopen (childAcquisitionKey project run epoch)"
+                        , existing
+                        )
+                    ,
+                        ( "absence is a hard existing-row refusal"
+                        , "Right Nothing -> pure (Left (SessionAcquisitionMissing (recordKeyText recordKey)))"
+                        , existing
+                        )
+                    ,
+                        ( "the durable acquisition row must re-encode canonically"
+                        , "protectedRecordBytes record /= encodeAcquisitionRecord binding seed"
+                        , existing
+                        )
+                    ,
+                        ( "the durable verb and complete binding are exact"
+                        , "acquisitionBindingRootVerb binding /= verbName"
+                        , existing
+                        )
+                    ,
+                        ( "the reverse seed requirement is checked before liveness"
+                        , "Just (requiredSeed, _) <- required , acquisitionPhaseText seed /= requiredSeed"
+                        , existing
+                        )
+                    ,
+                        ( "the reverse record version requirement is checked before liveness"
+                        , "Just (_, requiredVersion) <- required , recordVersionWord (protectedRecordVersion record) /= requiredVersion"
+                        , existing
+                        )
+                    ,
+                        ( "the exact retained liveness validator precedes journal construction"
+                        , "valid <- check session pure $ case valid of Left failure -> Left failure Right () -> Right ( AcquisitionJournal store check recordKey (protectedRecordVersion record) binding seed )"
+                        , existing
+                        )
+                    ,
+                        ( "the target cursor is strict and opaque"
+                        , "{-# OPAQUE withReverseRootTargetLifecycleCursorKernel #-} withReverseRootTargetLifecycleCursorKernel admission = case consumeAcquisitionJournalAdmissionKernel admission of () -> \\journal@(AcquisitionJournal store validateLive _ sourceVersion _ seedPhase) frame verb use ->"
+                        , target
+                        )
+                    ,
+                        ( "target retained liveness is checked before the current cursor"
+                        , "inLifecycleCursorEntry store $ \\session -> do live <- validateLive session case live of Left failure -> pure (Left failure) Right () -> do current <- openCurrentLifecycleCursorInEntry session Nothing journal frame verb"
+                        , target
+                        )
+                    ,
+                        ( "the target callback follows the protected-entry result"
+                        , "either (pure . Left) (fmap Right . use) terminal"
+                        , target
+                        )
+                    ,
+                        ( "config-origin Mode admission remains narrowed-config only"
+                        , "require \"payload kind\" (handoffPayloadKind signed == NarrowedProjectConfig)"
+                        , configMode
+                        )
+                    ,
+                        ( "config-origin Mode admission retains exact config bytes identity"
+                        , "requireText \"configuration digest\" configDigest (handoffChildConfigDigest signed)"
+                        , configMode
+                        )
+                    ,
+                        ( "the recovery wrapper accepts only typed retained evidence"
+                        , "reopenAuthenticatedRecoveryChildCursorKernel :: AcquisitionJournalAdmission -> ProtectedStore -> HandoffBinding scope brokerGeneration -> ProjectPlan scope specDigest planId configId cfg -> PlanDigestBinding scope specDigest planDigest planId -> ProjectFrame scope specDigest planId configId frame -> ProjectVerb verb"
+                        , recovery
+                        )
+                    ,
+                        ( "the recovery wrapper yields only the exact journal/cursor pair"
+                        , "AcquisitionJournal scope planId brokerGeneration -> LifecycleCursor scope planId frame brokerGeneration verb TeardownPhase -> IO result"
+                        , recovery
+                        )
+                    ,
+                        ( "the recovery wrapper is strict and opaque"
+                        , "{-# OPAQUE reopenAuthenticatedRecoveryChildCursorKernel #-} reopenAuthenticatedRecoveryChildCursorKernel admission = case consumeAcquisitionJournalAdmissionKernel admission of () -> \\store signed plan binding frame verb use ->"
+                        , recovery
+                        )
+                    ,
+                        ( "recovery accepts only the authenticated adapter payload"
+                        , "require \"payload kind\" (handoffPayloadKind signed == RecoveryAdapterWire)"
+                        , recovery
+                        )
+                    ,
+                        ( "the adapter coordinate is canonical lower hexadecimal"
+                        , "require \"adapter digest coordinate\" $ Text.length adapterDigest == 64 && Text.all lowerHex adapterDigest"
+                        , recovery
+                        )
+                    ,
+                        ( "the exact local topology supplies one parent-child edge"
+                        , "[ edge | edge@(_, edgeChild) <- topologyParentEdges (topology plan) , edgeChild == child ] == [(parent, child)]"
+                        , recovery
+                        )
+                    ,
+                        ( "only a version-two committed intent can be admitted"
+                        , "recordVersionWord (protectedRecordVersion record) /= 2"
+                        , recovery
+                        )
+                    ,
+                        ( "Down committed intent is the exact admitted branch"
+                        , "ReverseRootDownCommitted common target modeVersion modeBytes leaseVersion leaseBytes"
+                        , recovery
+                        )
+                    ,
+                        ( "Destroy committed intent is the exact admitted branch"
+                        , "ReverseRootDestroyCommitted common target modeVersion modeBytes leaseVersion leaseBytes"
+                        , recovery
+                        )
+                    ,
+                        ( "both Pending states refuse as Pending"
+                        , "ReverseRootDownPending{} -> pure (mismatch \"reverse-root intent state\" \"committed\" \"pending\") Just ReverseRootDestroyPending{} -> pure (mismatch \"reverse-root intent state\" \"committed\" \"pending\")"
+                        , recovery
+                        )
+                    ,
+                        ( "the exact local canonical plan is independently rendered"
+                        , "canonical = projectPlanCanonicalSnapshotKernel plan"
+                        , recovery
+                        )
+                    ,
+                        ( "committed intent retains exact config and canonical plan independently"
+                        , "requireText \"intent configuration\" configDigest intentConfig requireText \"intent plan\" planDigest intentPlan requireBytes \"intent canonical plan\" canonicalBytes intentCanonical"
+                        , recovery
+                        )
+                    ,
+                        ( "live intent, mode, lease, and snapshot rows are all reread"
+                        , "intentResult <- readRequired intentKey \"reverse-root intent\" modeResult <- readNamed (\"mode.\" <> project) \"project mode\" leaseResult <- readNamed canonicalLease \"run lease\" snapshotResult <- readNamed (\"snapshot.\" <> project <> \".\" <> run) \"plan snapshot\""
+                        , recovery
+                        )
+                    ,
+                        ( "the existing reverse journal is opened inside the protected entry"
+                        , "reopenExistingReverseAcquisitionJournalKernel admission store session"
+                        , recovery
+                        )
+                    ,
+                        ( "journal liveness reruns the complete row validator"
+                        , "Right () -> validateRowsAt live"
+                        , recovery
+                        )
+                    ,
+                        ( "the target cursor and callback follow the committed-entry unlock"
+                        , "Right (Right journal) -> withReverseRootTargetLifecycleCursorKernel admission journal frame verb (use journal)"
+                        , recovery
+                        )
+                    ,
+                        ( "Mode totally refuses recovery Up"
+                        , "ProjectUp -> pure (Left (SessionCursorVerbMismatch \"down/destroy\" \"up\"))"
+                        , recovery
+                        )
                     ]
                 assertFragmentsInOrder
                     "the shared helper reads, validates, checks liveness, then constructs"
@@ -6853,122 +7490,151 @@ sourceBoundaryTests =
                     producer = normalizeWhitespace producerSource
                 mapM_
                     (\(label, fragment, body) -> assertContains label fragment body)
-                    [ ( "the recovery origin has exactly nine retained indices"
-                      , "data ChildRecoveryOrigin scope specDigest planDigest brokerGeneration parentFrame planId configId childFrame verb where"
-                      , origin
-                      )
-                    , ( "the recovery origin's nine roles are all nominal"
-                      , "type role ChildRecoveryOrigin nominal nominal nominal nominal nominal nominal nominal nominal nominal"
-                      , schema
-                      )
-                    , ( "the origin existentially retains the signed remote child"
-                      , "ReceivedRecoveryDescent scope brokerGeneration planDigest parentFrame signedChildFrame recoveryWireDigest recoveryWireId verb"
-                      , schema
-                      )
-                    , ( "the origin jointly retains the independently admitted local package"
-                      , "ProjectPlan scope specDigest planId configId cfg -> PlanDigestBinding scope specDigest planDigest planId -> ValidatedLifecycleContext scope specDigest planId configId childFrame -> TeardownPlan scope planId childFrame verb -> AcquisitionJournal scope planId brokerGeneration -> LifecycleCursor scope planId childFrame brokerGeneration verb TeardownPhase -> CommandAuthority scope planId childFrame brokerGeneration verb TeardownPhase"
-                      , schema
-                      )
-                    , ( "the origin sealer fixes both callback and outer results to unit"
-                      , "ChildRecoveryOrigin scope specDigest planDigest brokerGeneration parentFrame planId configId childFrame verb -> IO (Either Text ()) ) -> IO (Either Text ())"
-                      , sealer
-                      )
-                    , ( "the sealer fully eliminates the received package before retaining anything"
-                      , "withReceivedRecoveryDescent descent $ \\_ _ _ _ _ _ ->"
-                      , sealer
-                      )
-                    , ( "the sealer forces every independently admitted local term"
-                      , "plan `seq` binding `seq` context `seq` teardown `seq` journal `seq` cursor `seq` authority `seq` use ( ChildRecoveryOrigin descent plan binding context teardown journal cursor authority )"
-                      , sealer
-                      )
-                    , ( "the only origin views are descriptive frame and closed verb text"
-                      , "childRecoveryOriginFrameNameKernel (ChildRecoveryOrigin _ _ _ _ _ _ _ authority) = commandAuthorityFrame authority"
-                      , origin
-                      )
-                    , ( "the descriptive verb view retains the closed command term"
-                      , "childRecoveryOriginVerbNameKernel (ChildRecoveryOrigin _ _ _ _ _ _ _ authority) = projectVerbName (commandAuthorityVerb authority)"
-                      , origin
-                      )
-                    , ( "the terminal fold gives its callback canonical bytes only"
-                      , "(ByteString.ByteString -> IO (Either Text ())) -> IO (Either Text ())"
-                      , terminal
-                      )
-                    , ( "the terminal fold re-eliminates the complete received package"
-                      , "withReceivedRecoveryDescent descent $ \\edge _ verb adapter _ _ ->"
-                      , terminal
-                      )
-                    , ( "the terminal identity is one length-framed canonical byte stream"
-                      , "use . ByteString.concat . map frameWire $ [ \"child-recovery-terminal-origin-v1\" , \"1\" , renderHandoffBinding (verifiedHandoffBinding (receivedEdgeHandoff edge))"
-                      , terminal
-                      )
-                    , ( "the terminal identity closes over local plan, reservation, cursor, frame, verb, and adapter digest"
-                      , "text (stablePlanSnapshotDigest (renderSnapshot plan)) , text (planDigestBindingDigestKernel digestBinding) , text (invocationIdText (commandAuthorityInvocation authority)) , word (acquisitionJournalRecordVersion journal) , word (lifecycleCursorRecordVersion cursor) , text (commandAuthorityFrame authority) , word (brokerEpochWord (commandAuthorityEpoch authority)) , text (projectVerbName verb) , text (projectVerbName (commandAuthorityVerb authority)) , text (lifecyclePhaseName (commandAuthorityPhase authority)) , text (teardownPlanFrameId teardown) , text (teardownPlanVerbName teardown) , text (recoveryWireDigest adapter)"
-                      , terminal
-                      )
-                    , ( "the child producer fixes fresh local plan and frame identities"
-                      , "( forall localPlanId localFrame. ChildRecoveryOrigin scope specDigest planDigest brokerGeneration parentFrame localPlanId configId localFrame verb -> IO (Either Text.Text ()) ) -> IO (Either Text.Text ())"
-                      , producer
-                      )
-                    , ( "the producer is opaque and forces the received package before caller inputs"
-                      , "{-# OPAQUE withReceivedRecoveryChildOriginKernel #-} withReceivedRecoveryChildOriginKernel descent = case descent `seq` () of () -> \\store root config drafts binaryContext use ->"
-                      , producer
-                      )
-                    , ( "the received envelope is Recovery-only, Production, and Teardown"
-                      , "require \"payload kind\" (handoffPayloadKind signed == RecoveryAdapterWire) requireText \"scope\" \"Production\" (handoffScope signed) requireText \"phase\" \"teardown\" (handoffPhase signed)"
-                      , producer
-                      )
-                    , ( "the received verb is totally classified before plan admission"
-                      , "case verb of ProjectUp -> mismatch \"verb\" \"down or destroy\" \"up\" ProjectDown -> requireText \"verb\" \"down\" (handoffVerb signed) ProjectDestroy -> requireText \"verb\" \"destroy\" (handoffVerb signed)"
-                      , producer
-                      )
-                    , ( "the full received payload is checked before use"
-                      , "require \"token commitment\" (not (Text.null (handoffTokenCommitment signed))) require \"adapter\" (not (ByteString.null adapter)) require \"projection\" (not (ByteString.null projection)) require \"grant\" (not (ByteString.null grant))"
-                      , producer
-                      )
-                    , ( "the authenticated adapter digest is canonical lower hexadecimal"
-                      , "requireText \"adapter digest\" (handoffChildConfigDigest signed) (recoveryWireDigest adapter) require \"adapter digest coordinate\" $ Text.length (handoffChildConfigDigest signed) == 64 && Text.all lowerHex (handoffChildConfigDigest signed)"
-                      , producer
-                      )
-                    , ( "the local executable plan is independently admitted from typed drafts"
-                      , "withChildProjectPlanKernel \"production\" (handoffBrokerGeneration signed) (handoffInstalledProject signed) (handoffStoreIdentity signed) (handoffPlanRevision signed) config drafts"
-                      , producer
-                      )
-                    , ( "the local plan is rechecked against authenticated origin and local config"
-                      , "requireText \"plan specification digest\" (handoffSpecDigest signed) (stablePlanSnapshotSpecDigest snapshot) requireText \"plan configuration digest\" (validatedConfigDigest config) (stablePlanSnapshotConfigDigest snapshot) requireText \"stable plan digest\" (handoffPlanRevision signed) planDigest"
-                      , producer
-                      )
-                    , ( "the local plan and context mint the fresh local frame"
-                      , "withValidatedLifecycleContext root store plan binaryContext $ \\context -> case withValidatedNestedLifecycleContext context $ \\_ contextStore current frame validated ->"
-                      , producer
-                      )
-                    , ( "remote and local child frames meet only by closed textual and topology checks"
-                      , "requireText \"signed child frame\" (handoffChildFrame signed) child require \"immediate topology edge\" $ [topologyEdge | topologyEdge@(_, edgeChild) <- topologyParentEdges (topology plan), edgeChild == child] == [(handoffParentFrame signed, child)]"
-                      , producer
-                      )
-                    , ( "canonical adapter equality precedes protected recovery admission"
-                      , "withVerifiedReverseAdapterKernel plan current verb adapter (\\teardown -> do opened <- reopenAuthenticatedRecoveryChildCursorKernel acquisitionJournalAdmissionKernel store signed plan digestBinding frame verb"
-                      , producer
-                      )
-                    , ( "the immutable Prepare seed and exact Teardown cursor are rechecked"
-                      , "requireWord \"acquisition record version\" (1 :: Word64) (acquisitionJournalRecordVersion journal) withAcquisitionJournalPhase journal $ \\phase -> requireText \"acquisition seed\" \"prepare\" (lifecyclePhaseName phase)"
-                      , producer
-                      )
-                    , ( "the sole child reservation is exact Teardown authority"
-                      , "reserveCurrentLifecycleCommandKernel journal cursor $ childCommandReservationKernel (handoffInstalledProject signed) (handoffStoreIdentity signed) (handoffBrokerGeneration signed) verb (handoffPlanRevision signed) Teardown (projectFrameId frame)"
-                      , producer
-                      )
-                    , ( "the reserved authority is checked before the origin is sealed"
-                      , "require \"command store\" (commandAuthorityMatchesStore authority store) require \"cursor command origin\" (lifecycleCursorMatchesCommandAuthority authority cursor)"
-                      , producer
-                      )
-                    , ( "the origin receives the entire exact local package only after reservation"
-                      , "withChildRecoveryOriginKernel descent plan digestBinding context teardown journal cursor authority use"
-                      , producer
-                      )
-                    , ( "the producer can run only under the fixed received-package eliminator"
-                      , "in withReceivedRecoveryDescent descent admitReceived"
-                      , producer
-                      )
+                    [
+                        ( "the recovery origin has exactly nine retained indices"
+                        , "data ChildRecoveryOrigin scope specDigest planDigest brokerGeneration parentFrame planId configId childFrame verb where"
+                        , origin
+                        )
+                    ,
+                        ( "the recovery origin's nine roles are all nominal"
+                        , "type role ChildRecoveryOrigin nominal nominal nominal nominal nominal nominal nominal nominal nominal"
+                        , schema
+                        )
+                    ,
+                        ( "the origin existentially retains the signed remote child"
+                        , "ReceivedRecoveryDescent scope brokerGeneration planDigest parentFrame signedChildFrame recoveryWireDigest recoveryWireId verb"
+                        , schema
+                        )
+                    ,
+                        ( "the origin jointly retains the independently admitted local package"
+                        , "ProjectPlan scope specDigest planId configId cfg -> PlanDigestBinding scope specDigest planDigest planId -> ValidatedLifecycleContext scope specDigest planId configId childFrame -> TeardownPlan scope planId childFrame verb -> AcquisitionJournal scope planId brokerGeneration -> LifecycleCursor scope planId childFrame brokerGeneration verb TeardownPhase -> CommandAuthority scope planId childFrame brokerGeneration verb TeardownPhase"
+                        , schema
+                        )
+                    ,
+                        ( "the origin sealer fixes both callback and outer results to unit"
+                        , "ChildRecoveryOrigin scope specDigest planDigest brokerGeneration parentFrame planId configId childFrame verb -> IO (Either Text ()) ) -> IO (Either Text ())"
+                        , sealer
+                        )
+                    ,
+                        ( "the sealer fully eliminates the received package before retaining anything"
+                        , "withReceivedRecoveryDescent descent $ \\_ _ _ _ _ _ ->"
+                        , sealer
+                        )
+                    ,
+                        ( "the sealer forces every independently admitted local term"
+                        , "plan `seq` binding `seq` context `seq` teardown `seq` journal `seq` cursor `seq` authority `seq` use ( ChildRecoveryOrigin descent plan binding context teardown journal cursor authority )"
+                        , sealer
+                        )
+                    ,
+                        ( "the only origin views are descriptive frame and closed verb text"
+                        , "childRecoveryOriginFrameNameKernel (ChildRecoveryOrigin _ _ _ _ _ _ _ authority) = commandAuthorityFrame authority"
+                        , origin
+                        )
+                    ,
+                        ( "the descriptive verb view retains the closed command term"
+                        , "childRecoveryOriginVerbNameKernel (ChildRecoveryOrigin _ _ _ _ _ _ _ authority) = projectVerbName (commandAuthorityVerb authority)"
+                        , origin
+                        )
+                    ,
+                        ( "the terminal fold gives its callback canonical bytes only"
+                        , "(ByteString.ByteString -> IO (Either Text ())) -> IO (Either Text ())"
+                        , terminal
+                        )
+                    ,
+                        ( "the terminal fold re-eliminates the complete received package"
+                        , "withReceivedRecoveryDescent descent $ \\edge _ verb adapter _ _ ->"
+                        , terminal
+                        )
+                    ,
+                        ( "the terminal identity is one length-framed canonical byte stream"
+                        , "use . ByteString.concat . map frameWire $ [ \"child-recovery-terminal-origin-v1\" , \"1\" , renderHandoffBinding (verifiedHandoffBinding (receivedEdgeHandoff edge))"
+                        , terminal
+                        )
+                    ,
+                        ( "the terminal identity closes over local plan, reservation, cursor, frame, verb, and adapter digest"
+                        , "text (stablePlanSnapshotDigest (renderSnapshot plan)) , text (planDigestBindingDigestKernel digestBinding) , text (invocationIdText (commandAuthorityInvocation authority)) , word (acquisitionJournalRecordVersion journal) , word (lifecycleCursorRecordVersion cursor) , text (commandAuthorityFrame authority) , word (brokerEpochWord (commandAuthorityEpoch authority)) , text (projectVerbName verb) , text (projectVerbName (commandAuthorityVerb authority)) , text (lifecyclePhaseName (commandAuthorityPhase authority)) , text (teardownPlanFrameId teardown) , text (teardownPlanVerbName teardown) , text (recoveryWireDigest adapter)"
+                        , terminal
+                        )
+                    ,
+                        ( "the child producer fixes fresh local plan and frame identities"
+                        , "( forall localPlanId localFrame. ChildRecoveryOrigin scope specDigest planDigest brokerGeneration parentFrame localPlanId configId localFrame verb -> IO (Either Text.Text ()) ) -> IO (Either Text.Text ())"
+                        , producer
+                        )
+                    ,
+                        ( "the producer is opaque and forces the received package before caller inputs"
+                        , "{-# OPAQUE withReceivedRecoveryChildOriginKernel #-} withReceivedRecoveryChildOriginKernel descent = case descent `seq` () of () -> \\store root config drafts binaryContext use ->"
+                        , producer
+                        )
+                    ,
+                        ( "the received envelope is Recovery-only, Production, and Teardown"
+                        , "require \"payload kind\" (handoffPayloadKind signed == RecoveryAdapterWire) requireText \"scope\" \"Production\" (handoffScope signed) requireText \"phase\" \"teardown\" (handoffPhase signed)"
+                        , producer
+                        )
+                    ,
+                        ( "the received verb is totally classified before plan admission"
+                        , "case verb of ProjectUp -> mismatch \"verb\" \"down or destroy\" \"up\" ProjectDown -> requireText \"verb\" \"down\" (handoffVerb signed) ProjectDestroy -> requireText \"verb\" \"destroy\" (handoffVerb signed)"
+                        , producer
+                        )
+                    ,
+                        ( "the full received payload is checked before use"
+                        , "require \"token commitment\" (not (Text.null (handoffTokenCommitment signed))) require \"adapter\" (not (ByteString.null adapter)) require \"projection\" (not (ByteString.null projection)) require \"grant\" (not (ByteString.null grant))"
+                        , producer
+                        )
+                    ,
+                        ( "the authenticated adapter digest is canonical lower hexadecimal"
+                        , "requireText \"adapter digest\" (handoffChildConfigDigest signed) (recoveryWireDigest adapter) require \"adapter digest coordinate\" $ Text.length (handoffChildConfigDigest signed) == 64 && Text.all lowerHex (handoffChildConfigDigest signed)"
+                        , producer
+                        )
+                    ,
+                        ( "the local executable plan is independently admitted from typed drafts"
+                        , "withChildProjectPlanKernel \"production\" (handoffBrokerGeneration signed) (handoffInstalledProject signed) (handoffStoreIdentity signed) (handoffPlanRevision signed) config drafts"
+                        , producer
+                        )
+                    ,
+                        ( "the local plan is rechecked against authenticated origin and local config"
+                        , "requireText \"plan specification digest\" (handoffSpecDigest signed) (stablePlanSnapshotSpecDigest snapshot) requireText \"plan configuration digest\" (validatedConfigDigest config) (stablePlanSnapshotConfigDigest snapshot) requireText \"stable plan digest\" (handoffPlanRevision signed) planDigest"
+                        , producer
+                        )
+                    ,
+                        ( "the local plan and context mint the fresh local frame"
+                        , "withValidatedLifecycleContext root store plan binaryContext $ \\context -> case withValidatedNestedLifecycleContext context $ \\_ contextStore current frame validated ->"
+                        , producer
+                        )
+                    ,
+                        ( "remote and local child frames meet only by closed textual and topology checks"
+                        , "requireText \"signed child frame\" (handoffChildFrame signed) child require \"immediate topology edge\" $ [topologyEdge | topologyEdge@(_, edgeChild) <- topologyParentEdges (topology plan), edgeChild == child] == [(handoffParentFrame signed, child)]"
+                        , producer
+                        )
+                    ,
+                        ( "canonical adapter equality precedes protected recovery admission"
+                        , "withVerifiedReverseAdapterKernel plan current verb adapter (\\teardown -> do opened <- reopenAuthenticatedRecoveryChildCursorKernel acquisitionJournalAdmissionKernel store signed plan digestBinding frame verb"
+                        , producer
+                        )
+                    ,
+                        ( "the immutable Prepare seed and exact Teardown cursor are rechecked"
+                        , "requireWord \"acquisition record version\" (1 :: Word64) (acquisitionJournalRecordVersion journal) withAcquisitionJournalPhase journal $ \\phase -> requireText \"acquisition seed\" \"prepare\" (lifecyclePhaseName phase)"
+                        , producer
+                        )
+                    ,
+                        ( "the sole child reservation is exact Teardown authority"
+                        , "reserveCurrentLifecycleCommandKernel journal cursor $ childCommandReservationKernel (handoffInstalledProject signed) (handoffStoreIdentity signed) (handoffBrokerGeneration signed) verb (handoffPlanRevision signed) Teardown (projectFrameId frame)"
+                        , producer
+                        )
+                    ,
+                        ( "the reserved authority is checked before the origin is sealed"
+                        , "require \"command store\" (commandAuthorityMatchesStore authority store) require \"cursor command origin\" (lifecycleCursorMatchesCommandAuthority authority cursor)"
+                        , producer
+                        )
+                    ,
+                        ( "the origin receives the entire exact local package only after reservation"
+                        , "withChildRecoveryOriginKernel descent plan digestBinding context teardown journal cursor authority use"
+                        , producer
+                        )
+                    ,
+                        ( "the producer can run only under the fixed received-package eliminator"
+                        , "in withReceivedRecoveryDescent descent admitReceived"
+                        , producer
+                        )
                     ]
                 assertFragmentsInOrder
                     "local plan, context, adapter, protected cursor, reservation, and origin remain ordered"
@@ -7096,6 +7762,7 @@ sourceBoundaryTests =
                         ]
                 sites "withReceivedRecoveryDescent"
                     @?= [ ("HostBootstrap.Authority.ProjectPlan.Internal", 3)
+                        , ("HostBootstrap.Command.Child", 3)
                         , ("HostBootstrap.Handoff.Receiver.Internal", 3)
                         , ("HostBootstrap.Handoff.Relay", 3)
                         , ("HostBootstrap.ProjectPlan.Child.Internal", 2)
@@ -7250,66 +7917,81 @@ sourceBoundaryTests =
                         ]
                 mapM_
                     (\(label, fragment, body) -> assertContains label fragment body)
-                    [ ( "the existing entry family retains exactly five nominal roles"
-                      , "type role LifecycleEntry nominal nominal nominal nominal nominal"
-                      , entry
-                      )
-                    , ( "the recovery-child constructor retains only the sealed nine-role origin"
-                      , "ChildRecoveryLifecycleEntry :: ChildRecoveryOrigin scope specDigest planDigest brokerGeneration parentFrame planId configId frame verb -> LifecycleEntry scope planId frame brokerGeneration verb"
-                      , schema
-                      )
-                    , ( "the frame accessor delegates to the sealed origin view"
-                      , "lifecycleEntryFrameName (ChildRecoveryLifecycleEntry origin) = childRecoveryOriginFrameNameKernel origin"
-                      , views
-                      )
-                    , ( "the verb accessor delegates to the sealed origin view"
-                      , "lifecycleEntryVerbName (ChildRecoveryLifecycleEntry origin) = childRecoveryOriginVerbNameKernel origin"
-                      , views
-                      )
-                    , ( "the wrapper accepts the received package and independently typed project inputs"
-                      , "ReceivedRecoveryDescent (Production projectId) brokerGeneration planDigest parentFrame signedChildFrame recoveryWireDigest recoveryWireId verb -> ProtectedStore -> CanonicalProjectRoot (Production projectId) rootId -> FinalizedProjectSpec (Production projectId) specDigest cfg -> ValidatedConfig (Production projectId) specDigest configId (cfg (Production projectId)) -> Context.BinaryContext"
-                      , producer
-                      )
-                    , ( "the wrapper fixes both its callback and outer result to unit"
-                      , "LifecycleEntry (Production projectId) localPlanId localFrame brokerGeneration verb -> IO (Either Text ()) ) -> IO (Either Text ())"
-                      , producer
-                      )
-                    , ( "the wrapper is unary, opaque, and strict in the received descent"
-                      , "{-# OPAQUE withReceivedRecoveryChildLifecycleEntry #-} withReceivedRecoveryChildLifecycleEntry descent = case descent `seq` () of"
-                      , producer
-                      )
-                    , ( "Entry alone derives the exact local typed drafts"
-                      , "case projectPlanDrafts finalizedSpec root config of"
-                      , producer
-                      )
-                    , ( "the lower producer alone seals the retained recovery origin"
-                      , "withReceivedRecoveryChildOriginKernel descent store root config drafts binaryContext (\\origin -> use (ChildRecoveryLifecycleEntry origin))"
-                      , producer
-                      )
-                    , ( "the prepared root kernel refuses a recovery-child origin"
-                      , "ChildRecoveryLifecycleEntry{} -> refused"
-                      , prepared
-                      )
-                    , ( "prepared refusal returns the original work unchanged"
-                      , "TeardownReverseDescentRefused \"only a root Down or Destroy entry can prepare descent\" , descent"
-                      , prepared
-                      )
-                    , ( "the terminal fold has a byte-only fixed-unit callback"
-                      , "(ByteString.ByteString -> IO (Either Text ())) -> IO (Either Text ())"
-                      , terminal
-                      )
-                    , ( "the terminal fold delegates the sealed origin without projecting it"
-                      , "ChildRecoveryLifecycleEntry origin -> withChildRecoveryTerminalOriginKernel origin use"
-                      , terminal
-                      )
-                    , ( "the root Up runner refuses a recovery child"
-                      , "(ChildRecoveryLifecycleEntry _) = pure (Left \"lifecycle entry: the root interpreter refuses a recovery child origin\")"
-                      , rootRunner
-                      )
-                    , ( "the child Up runner refuses a recovery child"
-                      , "runChildProjectUpLifecycleEntry _cfg _self (ChildRecoveryLifecycleEntry{}) _complete = pure (Left \"lifecycle entry: the child Up interpreter refuses a recovery origin\")"
-                      , childRunner
-                      )
+                    [
+                        ( "the existing entry family retains exactly five nominal roles"
+                        , "type role LifecycleEntry nominal nominal nominal nominal nominal"
+                        , entry
+                        )
+                    ,
+                        ( "the recovery-child constructor retains only the sealed nine-role origin"
+                        , "ChildRecoveryLifecycleEntry :: ChildRecoveryOrigin scope specDigest planDigest brokerGeneration parentFrame planId configId frame verb -> LifecycleEntry scope planId frame brokerGeneration verb"
+                        , schema
+                        )
+                    ,
+                        ( "the frame accessor delegates to the sealed origin view"
+                        , "lifecycleEntryFrameName (ChildRecoveryLifecycleEntry origin) = childRecoveryOriginFrameNameKernel origin"
+                        , views
+                        )
+                    ,
+                        ( "the verb accessor delegates to the sealed origin view"
+                        , "lifecycleEntryVerbName (ChildRecoveryLifecycleEntry origin) = childRecoveryOriginVerbNameKernel origin"
+                        , views
+                        )
+                    ,
+                        ( "the wrapper accepts the received package and independently typed project inputs"
+                        , "ReceivedRecoveryDescent (Production projectId) brokerGeneration planDigest parentFrame signedChildFrame recoveryWireDigest recoveryWireId verb -> ProtectedStore -> CanonicalProjectRoot (Production projectId) rootId -> FinalizedProjectSpec (Production projectId) specDigest cfg -> ValidatedConfig (Production projectId) specDigest configId (cfg (Production projectId)) -> Context.BinaryContext"
+                        , producer
+                        )
+                    ,
+                        ( "the wrapper fixes both its callback and outer result to unit"
+                        , "LifecycleEntry (Production projectId) localPlanId localFrame brokerGeneration verb -> IO (Either Text ()) ) -> IO (Either Text ())"
+                        , producer
+                        )
+                    ,
+                        ( "the wrapper is unary, opaque, and strict in the received descent"
+                        , "{-# OPAQUE withReceivedRecoveryChildLifecycleEntry #-} withReceivedRecoveryChildLifecycleEntry descent = case descent `seq` () of"
+                        , producer
+                        )
+                    ,
+                        ( "Entry alone derives the exact local typed drafts"
+                        , "case projectPlanDrafts finalizedSpec root config of"
+                        , producer
+                        )
+                    ,
+                        ( "the lower producer alone seals the retained recovery origin"
+                        , "withReceivedRecoveryChildOriginKernel descent store root config drafts binaryContext (\\origin -> use (ChildRecoveryLifecycleEntry origin))"
+                        , producer
+                        )
+                    ,
+                        ( "the prepared root kernel refuses a recovery-child origin"
+                        , "ChildRecoveryLifecycleEntry{} -> refused"
+                        , prepared
+                        )
+                    ,
+                        ( "prepared refusal returns the original work unchanged"
+                        , "TeardownReverseDescentRefused \"only a root Down or Destroy entry can prepare descent\" , descent"
+                        , prepared
+                        )
+                    ,
+                        ( "the terminal fold has a byte-only fixed-unit callback"
+                        , "(ByteString.ByteString -> IO (Either Text ())) -> IO (Either Text ())"
+                        , terminal
+                        )
+                    ,
+                        ( "the terminal fold delegates the sealed origin without projecting it"
+                        , "ChildRecoveryLifecycleEntry origin -> withChildRecoveryTerminalOriginKernel origin use"
+                        , terminal
+                        )
+                    ,
+                        ( "the root Up runner refuses a recovery child"
+                        , "(ChildRecoveryLifecycleEntry _) = pure (Left \"lifecycle entry: the root interpreter refuses a recovery child origin\")"
+                        , rootRunner
+                        )
+                    ,
+                        ( "the child Up runner refuses a recovery child"
+                        , "runChildProjectUpLifecycleEntry _cfg _self (ChildRecoveryLifecycleEntry{}) _complete = pure (Left \"lifecycle entry: the child Up interpreter refuses a recovery origin\")"
+                        , childRunner
+                        )
                     ]
                 assertFragmentsInOrder
                     "received descent strictness precedes drafts, lower admission, and entry sealing"
@@ -7419,7 +8101,7 @@ sourceBoundaryTests =
                             `isInfixOf` normalizeWhitespace sourceBody
                         ]
                 sites "ChildRecoveryLifecycleEntry"
-                    @?= [("HostBootstrap.Command.LifecycleEntry", 9)]
+                    @?= [("HostBootstrap.Command.LifecycleEntry", 15)]
                 sites "withReceivedRecoveryChildLifecycleEntry"
                     @?= [("HostBootstrap.Command.LifecycleEntry", 4)]
                 sites "withChildRecoveryTerminalOrigin"
@@ -7473,46 +8155,56 @@ sourceBoundaryTests =
                     producer = normalizeWhitespace producerSource
                 mapM_
                     (\(label, fragment, source) -> assertContains label fragment source)
-                    [ ( "the pre-mutation closed verb and phase branch"
-                      , "case verb of ProjectUp -> case verifiedConfigHandoffPhase handoff of Execute -> do joined <- withAuthenticatedChildCursor"
-                      , producer
-                      )
-                    , ( "the Prepare refusal before the bridge"
-                      , "Prepare -> pure (Left \"lifecycle entry: child Up requires Execute, not Prepare\")"
-                      , producer
-                      )
-                    , ( "the Teardown refusal before the bridge"
-                      , "Teardown -> pure (Left \"lifecycle entry: child Up requires Execute, not Teardown\")"
-                      , producer
-                      )
-                    , ( "the Down refusal before the bridge"
-                      , "ProjectDown -> pure (Left \"lifecycle entry: config-origin child entry refuses Down\")"
-                      , producer
-                      )
-                    , ( "the Destroy refusal before the bridge"
-                      , "ProjectDestroy -> pure (Left \"lifecycle entry: config-origin child entry refuses Destroy\")"
-                      , producer
-                      )
-                    , ( "the whole authenticated package is forced"
-                      , "authenticated@( AuthenticatedChildCursor handoff authority plan digestBinding lifecycleContext journal cursor )"
-                      , child
-                      )
-                    , ( "the authorized package's nominal indices"
-                      , "type role AuthorizedChildCursor nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal"
-                      , child
-                      )
-                    , ( "the entry stores one authorized child package"
-                      , "ChildUpLifecycleEntry :: AuthorizedChildCursor"
-                      , entry
-                      )
-                    , ( "the fixed runner transitions before completion"
-                      , "Right (Right ()) -> do transitioned <- withTeardownLifecycleCursor cursor $ \\teardownCursor -> complete (AuthorizedTeardownChildCursor authorized teardownCursor)"
-                      , child
-                      )
-                    , ( "the terminal identity binds the Teardown version"
-                      , "word (lifecycleCursorRecordVersion teardownCursor)"
-                      , child
-                      )
+                    [
+                        ( "the pre-mutation closed verb and phase branch"
+                        , "case verb of ProjectUp -> case verifiedConfigHandoffPhase handoff of Execute -> do joined <- withAuthenticatedChildCursor"
+                        , producer
+                        )
+                    ,
+                        ( "the Prepare refusal before the bridge"
+                        , "Prepare -> pure (Left \"lifecycle entry: child Up requires Execute, not Prepare\")"
+                        , producer
+                        )
+                    ,
+                        ( "the Teardown refusal before the bridge"
+                        , "Teardown -> pure (Left \"lifecycle entry: child Up requires Execute, not Teardown\")"
+                        , producer
+                        )
+                    ,
+                        ( "the Down refusal before the bridge"
+                        , "ProjectDown -> pure (Left \"lifecycle entry: config-origin child entry refuses Down\")"
+                        , producer
+                        )
+                    ,
+                        ( "the Destroy refusal before the bridge"
+                        , "ProjectDestroy -> pure (Left \"lifecycle entry: config-origin child entry refuses Destroy\")"
+                        , producer
+                        )
+                    ,
+                        ( "the whole authenticated package is forced"
+                        , "authenticated@( AuthenticatedChildCursor handoff authority plan digestBinding lifecycleContext journal cursor )"
+                        , child
+                        )
+                    ,
+                        ( "the authorized package's nominal indices"
+                        , "type role AuthorizedChildCursor nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal"
+                        , child
+                        )
+                    ,
+                        ( "the entry stores one authorized child package"
+                        , "ChildUpLifecycleEntry :: AuthorizedChildCursor"
+                        , entry
+                        )
+                    ,
+                        ( "the fixed runner transitions before completion"
+                        , "Right (Right ()) -> do transitioned <- withTeardownLifecycleCursor cursor $ \\teardownCursor -> complete (AuthorizedTeardownChildCursor authorized teardownCursor)"
+                        , child
+                        )
+                    ,
+                        ( "the terminal identity binds the Teardown version"
+                        , "word (lifecycleCursorRecordVersion teardownCursor)"
+                        , child
+                        )
                     ]
                 SourceGuard.countHaskellIdentifier "withAuthenticatedChildCursor" producerSource @?= 1
                 SourceGuard.countHaskellIdentifier "authorizeChildProject" authoritySource @?= 0
@@ -7593,7 +8285,7 @@ modulesExporting exported =
         . map fst
         . filter (elem exported . snd)
 
-containsTokenSequence :: Eq token => [token] -> [token] -> Bool
+containsTokenSequence :: (Eq token) => [token] -> [token] -> Bool
 containsTokenSequence [] _observed = True
 containsTokenSequence _expected [] = False
 containsTokenSequence expected observed@(_ : rest) =
@@ -7791,7 +8483,13 @@ data RecoveredProjectPlanInputs projectId specDigest planDigest planId brokerGen
 
 recoverProjectPlan ::
     RecoveredProjectPlanInputs
-        projectId specDigest planDigest planId brokerGeneration rootId configId ->
+        projectId
+        specDigest
+        planDigest
+        planId
+        brokerGeneration
+        rootId
+        configId ->
     ( ProjectPlan
         (Production projectId)
         specDigest
@@ -7840,7 +8538,8 @@ readAllProtectedRecords store = do
                     records <-
                         traverse
                             ( \key ->
-                                fmap (fmap (fmap ((,) key)))
+                                fmap
+                                    (fmap (fmap ((,) key)))
                                     (readProtectedRecord session key)
                             )
                             keys
@@ -7852,7 +8551,13 @@ withRecoveredProjectPlanFixture ::
       ProtectedStore ->
       InstalledProjectIdentity projectId ->
       RecoveredProjectPlanInputs
-        projectId specDigest planDigest planId brokerGeneration rootId configId ->
+        projectId
+        specDigest
+        planDigest
+        planId
+        brokerGeneration
+        rootId
+        configId ->
       IO result
     ) ->
     IO result
@@ -7861,27 +8566,25 @@ withRecoveredProjectPlanFixture use =
         singletonPlan
         fixtureServiceRegistry
         ( \store project profile root verified bound binding candidateSpec candidateConfig ->
-            case
-                withRecoveredProductionProjectPlanInputs
-                    profile
-                    root
-                    candidateSpec
-                    candidateConfig
-                    ( \_recoveredSpec recoveredConfig recoveredDrafts ->
-                        use
-                            store
-                            project
-                            ( RecoveredProjectPlanInputs
-                                profile
-                                root
-                                verified
-                                bound
-                                binding
-                                recoveredConfig
-                                recoveredDrafts
-                            )
-                    )
-            of
+            case withRecoveredProductionProjectPlanInputs
+                profile
+                root
+                candidateSpec
+                candidateConfig
+                ( \_recoveredSpec recoveredConfig recoveredDrafts ->
+                    use
+                        store
+                        project
+                        ( RecoveredProjectPlanInputs
+                            profile
+                            root
+                            verified
+                            bound
+                            binding
+                            recoveredConfig
+                            recoveredDrafts
+                        )
+                ) of
                 Left failure -> fail (show failure)
                 Right action -> action
         )
@@ -8000,45 +8703,43 @@ withRecoveredProjectPlanCandidateFixtureUsing recordedServices candidatePlan can
                 store
                 project
                 (\_closeKey -> assertFailure "the recovered-plan fixture entered the terminal callback")
-                (\exactRoot modeLease boundLease verified bound binding recovery ->
-                    case
-                        withRecoveredProductionLifecycleProfile
-                            exactRoot
-                            modeLease
-                            boundLease
-                            verified
-                            bound
-                            binding
-                            recovery
-                            ( \profile ->
-                                withProductionProjectCodec $ \candidateBaseCodec ->
-                                    withFinalizedProjectSpec
-                                        ProductionScope
-                                        candidateBaseCodec
-                                        candidateServices
-                                        (\_ _ -> Right candidatePlan)
-                                        Fixture.refusingForwardChildPlan
-                                        ( \candidateSpec -> do
-                                            candidate <-
-                                                withValidatedConfig
-                                                    (finalizedProjectCodec candidateSpec)
-                                                    (validatedConfigValue config)
-                                                    ( \_wire candidateConfig ->
-                                                        use
-                                                            store
-                                                            project
-                                                            profile
-                                                            root
-                                                            verified
-                                                            bound
-                                                            binding
-                                                            candidateSpec
-                                                            candidateConfig
-                                                    )
-                                            either fail pure candidate
-                                        )
-                            )
-                    of
+                ( \exactRoot modeLease boundLease verified bound binding recovery ->
+                    case withRecoveredProductionLifecycleProfile
+                        exactRoot
+                        modeLease
+                        boundLease
+                        verified
+                        bound
+                        binding
+                        recovery
+                        ( \profile ->
+                            withProductionProjectCodec $ \candidateBaseCodec ->
+                                withFinalizedProjectSpec
+                                    ProductionScope
+                                    candidateBaseCodec
+                                    candidateServices
+                                    (\_ _ -> Right candidatePlan)
+                                    Fixture.refusingForwardChildPlan
+                                    ( \candidateSpec -> do
+                                        candidate <-
+                                            withValidatedConfig
+                                                (finalizedProjectCodec candidateSpec)
+                                                (validatedConfigValue config)
+                                                ( \_wire candidateConfig ->
+                                                    use
+                                                        store
+                                                        project
+                                                        profile
+                                                        root
+                                                        verified
+                                                        bound
+                                                        binding
+                                                        candidateSpec
+                                                        candidateConfig
+                                                )
+                                        either fail pure candidate
+                                    )
+                        ) of
                         Left failure -> fail (show failure)
                         Right action -> action
                 )
@@ -8303,11 +9004,14 @@ writeRawPlanSnapshot ::
     IO ()
 writeRawPlanSnapshot store project runName specDigest planDigest configDigest canonicalBytes = do
     key <-
-        either (fail . show) pure
+        either
+            (fail . show)
+            pure
             (mkRecordKey ("snapshot." <> installedProjectName project <> "." <> runName))
     written <-
         withProtectedEntry store $ \session ->
-            fmap (fmap (const ()))
+            fmap
+                (fmap (const ()))
                 ( compareAndSwapProtectedRecord
                     session
                     key
@@ -8485,6 +9189,50 @@ resourceProjectionPlan =
             (const (pure StepChanged))
         ]
 
+chartWorkloadPlan :: Text.Text -> StepPlan
+chartWorkloadPlan workloadDigest =
+    expectStepPlan
+        [ deployKindStep
+            "cluster"
+            (StepFrame "cluster" "Cluster")
+            (const (pure StepChanged))
+        , declaresChartWorkloadResource
+            "sha256:chart"
+            "demo"
+            "demo-system"
+            "sha256:values"
+            "registry.example/demo@sha256:image"
+            "workload/demo"
+            workloadDigest
+            "api"
+            ["namespace:demo-system", "deployment:demo"]
+            ( deployChartStep
+                "workload"
+                (StepFrame "cluster" "Cluster")
+                (const (pure StepChanged))
+            )
+        ]
+
+chartWorkloadWithoutClusterPlan :: StepPlan
+chartWorkloadWithoutClusterPlan =
+    expectStepPlan
+        [ declaresChartWorkloadResource
+            "sha256:chart"
+            "demo"
+            "demo-system"
+            "sha256:values"
+            "registry.example/demo@sha256:image"
+            "workload/demo"
+            "sha256:workload"
+            "api"
+            ["namespace:demo-system", "deployment:demo"]
+            ( deployChartStep
+                "workload"
+                (StepFrame "cluster" "Cluster")
+                (const (pure StepChanged))
+            )
+        ]
+
 unprojectedResourcePlan :: StepPlan
 unprojectedResourcePlan =
     expectStepPlan
@@ -8576,21 +9324,22 @@ hexBytes = Text.pack . concatMap byteHex . ByteString.unpack
 goldenSnapshotBytesHex :: FilePath -> Text.Text
 goldenSnapshotBytesHex root =
     Text.concat
-        [ "484f5354424f4f5453545241502d504c414e0000000000000003"
+        [ "484f5354424f4f5453545241502d504c414e0000000000000005"
         , hexFramedText "root"
         , hexRoot root
         , "000000000000000b737065632d646967657374"
         , "000000000000001038343033636432393734356430636239000000000000000d636f6e6669672d646967657374"
         , "00000000000000403430366337353637343137313330386530623433626239633765306135333930326466626134"
         , "35313836353635623834363265633130383361613136326663340000000000000005737465707300000000000000"
-        , "01000000000000000473746570000000000000000b00000000000000076f7264696e616c000000000000000100"
+        , "01000000000000000473746570000000000000000d00000000000000076f7264696e616c000000000000000100"
         , "000000000000086964656e746974790000000000000009636f72652d73746570000000000000000c636f6e7465"
         , "78742d696e69740000000000000000000000000000000e696d706c656d656e746174696f6e0000000000000013"
         , "636f72652d696d706c656d656e746174696f6e000000000000000200000000000000086964656e746974790000"
         , "00000000000c636f6e746578742d696e6974000000000000000000000000000000087265766973696f6e000000"
         , "000000000100000000000000096f7065726174696f6e0000000000000011636f72653a636f6e746578742d696e"
         , "6974000000000000001470726f6a65637465642d6f7065726174696f6e73000000000000000100000000000000"
-        , "1a636f72653a636f6e746578742d696e69742f72656c6174696f6e00000000000000056c6162656c0000000000"
+        , "1a636f72653a636f6e746578742d696e69742f72656c6174696f6e000000000000001270726f76696465722d72"
+        , "65736f75726365730000000000000000000000000000000f63686172742d776f726b6c6f616473000000000000000000000000000000056c6162656c0000000000"
         , "000007636f6e7465787400000000000000056672616d6500000000000000020000000000000002696400000000"
         , "00000004686f737400000000000000056c6162656c0000000000000004486f7374000000000000000c64657065"
         , "6e64656e636965730000000000000000000000000000000e726576657273652d706f6c69637900000000000000"

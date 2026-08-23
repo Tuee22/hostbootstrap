@@ -111,7 +111,81 @@ portableCases =
         commandArguments (directEgressCommand imageName) @?= ["manifest", "inspect", imageName]
     , testCase "the Direct root admission refuses one observed fact at a time" directRootAdmissionCase
     , testCase "the backend reaches every process through the one interpreter" backendHasNoExecutionSeamCase
+    , testCase "settled Ready publishes one pending provider package and live reprobe" providerRuntimePackageCase
     ]
+
+providerRuntimePackageCase :: IO ()
+providerRuntimePackageCase = withFakeHost $ \host ->
+    withBackend host $ \backend ->
+        withProvisionedProvider backend $ \execution planned _ provisioned -> do
+            gate <- providerGate execution
+            result <-
+                resolveEitherIO $
+                    withPreparedProviderReady execution planned provisioned (providerStartableAfterProvision provisioned) gate $ \prepared -> do
+                        call <- readyCall backend prepared
+                        case settleProviderReady prepared call of
+                            Left failure -> pure (Left failure)
+                            Right advance ->
+                                do
+                                    first <- register 100
+                                    retry <- register 100
+                                    stale <- register 101
+                                    carried <- carryRunningProviderSettlement execution advance "provisioned" "provider-adapter-1"
+                                    fresh <-
+                                        withFreshRunningProviderDependency
+                                            execution
+                                            "production"
+                                            (providerBackendBinding (underTestBackend backend))
+                                            "core:deploy-vm"
+                                            "runtime://provider/fresh-readiness"
+                                            99
+                                            "nonce-1"
+                                            (const ())
+                                    replay <-
+                                        withFreshRunningProviderDependency
+                                            execution
+                                            "production"
+                                            (providerBackendBinding (underTestBackend backend))
+                                            "core:deploy-vm"
+                                            "runtime://provider/fresh-readiness"
+                                            99
+                                            "nonce-1"
+                                            (const ())
+                                    expired <-
+                                        withFreshRunningProviderDependency
+                                            execution
+                                            "production"
+                                            (providerBackendBinding (underTestBackend backend))
+                                            "core:deploy-vm"
+                                            "runtime://provider/fresh-readiness"
+                                            100
+                                            "nonce-2"
+                                            (const ())
+                                    pure $ do
+                                        package <- first
+                                        retryPackage <- retry
+                                        carried
+                                        fresh
+                                        if package /= retryPackage
+                                            then Left (Failure (FailureDetail "register provider runtime dependency" "exact retry changed the package" DoNotRetry))
+                                            else case stale of
+                                                Left _
+                                                    | either (const True) (const False) replay
+                                                        && either (const True) (const False) expired -> Right package
+                                                    | otherwise -> Left (Failure (FailureDetail "recover provider runtime dependency" "replay or expiry was accepted" DoNotRetry))
+                                                Right _ -> Left (Failure (FailureDetail "register provider runtime dependency" "a changed package replaced the pending commitment" DoNotRetry))
+                              where
+                                register expiry =
+                                    registerRunningProviderDependencyPackage
+                                        (underTestBackend backend)
+                                        execution
+                                        "production"
+                                        gate
+                                        prepared
+                                        advance
+                                        "runtime://provider/fresh-readiness"
+                                        expiry
+            void (either (assertFailure . show) pure result)
 
 {- | The Direct root's admission, applied to every observation it refuses.
 
@@ -202,7 +276,7 @@ listProductionSources root = do
 
 directReadyValidationCase :: IO ()
 directReadyValidationCase =
-    withDirectTools "{}" 0 $ \config root recorded -> do
+    withDirectTools "{\n\t\"schemaVersion\": 2\n}" 0 $ \config root recorded -> do
         result <- runDirectReadyWith config root
         result @?= Right ()
         readRecorded recorded >>= (@?= ["docker"])
@@ -888,10 +962,7 @@ fakeResolvedHostConfig =
     emptyHostConfig
         { hcToolPaths =
             Map.fromList
-                [ (Incus, fixtureExe fixtureIncus)
-                , (Python3, fixtureExe fixturePython)
-                , (Flock, fixtureExe fixtureFlock)
-                ]
+                [(Incus, fixtureExe fixtureIncus)]
         }
 
 {- | The host tools this suite's fixtures name.
@@ -901,10 +972,8 @@ constructor production uses admits it on every supported outer host realization
 (§ JJ), and the request assertions compare those same values rather than a
 POSIX literal the host would call relative.
 -}
-fixturePython, fixtureIncus, fixtureFlock :: FilePath
-fixturePython = hostFixturePath "/usr/bin/python3"
+fixtureIncus :: FilePath
 fixtureIncus = hostFixturePath "/usr/bin/incus"
-fixtureFlock = hostFixturePath "/usr/bin/flock"
 
 providerGate :: Execution.StepExecution scope planId -> IO PreparedGate
 providerGate execution = gateFor (Execution.stepExecutionPlanDigest execution) (Execution.stepExecutionOperationKey execution)

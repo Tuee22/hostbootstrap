@@ -1,7 +1,7 @@
 # Phase 16 — Cluster lifecycle, budgets, and cordoning
 
-**Status**: Active
-**Current sprint**: Sprint 16.45 — The readiness, cordon, and cleanup drivers
+**Status**: Done
+**Current sprint**: None — phase complete
 **Depends on**: Phase 12 (the generic plan-indexed budget boundary), Phase 14 (the four ownership clauses
 and the ownership seam), Phase 15 (host providers and the self-reference lift)
 **Substrates**: linux-cpu
@@ -1979,11 +1979,12 @@ retired program are gone, and twelve that a Windows gate host previously compile
 
 None.
 
-### Sprint 16.47: The direct-Colima ownership driver [Planned]
+### Sprint 16.47: The direct-Colima ownership driver [Done]
 
-**Status**: Planned
-**Implementation**: `core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Internal.hs`,
-`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Runner.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima/Ownership.hs`,
+`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Runner.hs`,
+`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Stage.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/ensure_reconcilers.md`,
 `documents/engineering/applied_cordon.md`
@@ -2013,15 +2014,125 @@ Live confirmation against real Colima is the
 [Apple-Silicon-substrate phase](phase-25-apple-silicon-substrate.md)'s and is recorded as owed here. The
 crash windows that a fault-injection argument reaches today are named as owed rather than counted.
 
+The focused `ColimaSpec` gate passed 51/51 on 2026-08-21 (x86_64-linux, GHC 9.12.4, Cabal
+3.16.1.0) in 80.56 seconds. It covers the closed durable-stage vocabulary, canonical parser/renderer,
+idempotent re-entry, every adjacent transition, and refusals for skipped, reversed, and cross-lineage
+transitions. A second focused run passed 51/51 in 74.66 seconds after the retained record reader and
+stage-file matcher were changed to derive their admitted names from that vocabulary, removing the
+embedded program's duplicate hand-written state set.
+
+The ownership vocabulary now lives in the private `ownership-internal` sublibrary, below both the public
+library and `colima-backend-internal`; `cabal build all --ghc-options=-Werror` passed after that dependency
+recut. The Colima compatibility identity is backed by the shared `ObjectIdentity` encoding while retaining
+the existing two-word wire view. The focused gate then passed 66/66 in 74.01 seconds.
+
+The native driver now describes its complete Colima/Lima/Docker effect set as `HostCommand` values in
+`HostBootstrap.Ensure.Colima.Command`: the exact three-tool membership and all list, start, delete,
+machine-identity, disk, context, and routed-Docker argument vectors are pinned by application. Route
+override refusal is a single private pure decision shared with the compatibility backend. The repository
+built under `-Werror`; the focused command check passed in the 51-test `direct` slice in 1.09 seconds (the
+whole `ColimaSpec` had passed 52/52 in 76.10 seconds immediately before the route decision was centralized).
+`HostBootstrap.Ensure.Colima.Report` now supplies strict, total Colima-list and machine-identity result
+classification, including exit/stderr/framing/shape/duplicate refusals and the canonical machine epoch.
+Those value tests and the centralized route refusal passed again in the 51-test `direct` slice in 1.20
+seconds.
+The stage graph is now also total over intent, durable stage, and authoritative observation. It distinguishes
+successor publication from the start/delete/namespace-release mutations that must retain their current
+stage until re-observation, and refuses every other product input. Its exact focused case passed in 0.01
+seconds.
+`HostBootstrap.Ensure.Colima.Ownership` now derives the stage/home/context/disk record keys from the fixed
+profile and holds them under one shared protected-store entry; invalid profile identities mint no entry.
+The `direct` slice exercised a real protected store and compare-and-swap under that entry and passed 51/51
+in 1.09 seconds.
+The same native entry now interprets the total-profile observation through the sole effect interpreter;
+an unresolved command was exercised as a typed refusal while a real kernel entry was held. Home/context
+directory acquisition and release now compose the shared enter, durable-origin, create, bind, reobserve,
+and identity-conditional release producers over shared `OriginRecord` bytes. The real-kernel acquire/release
+case and result classifiers passed in the 51-test `direct` slice in 1.17 seconds.
+The durable stage record now has one canonical owner/lineage/invocation codec, with non-canonical bytes
+refused. Native namespace preparation publishes `Reserved`, acquires and identity-binds the exact home and
+Docker-config directories through shared artifact records, advances only adjacent stages to `Prepared`, and
+idempotently re-enters both identities on retry. That real-kernel transaction passed in the 51-test
+`direct` slice in 1.07 seconds.
+Native profile start now keeps `Prepared` durable across the outcome-unknown window, observes and starts
+only through the described-command interpreter, and publishes shared reported-origin records for both the
+profile and its data disk before the creating command. A value-driven interpreter test (no executable
+stand-in) covered absent → origin publication → start → exact running readback → machine identity; an
+unavailable production interpreter retained `Prepared`. The `direct` slice passed 51/51 in 1.04 seconds.
+The profile's reported machine identity and the data disk's kernel identity now bind their pre-start shared
+origins. `Managed` has a canonical evidence-bearing stage record (machine/epoch/context/complete wall), and
+the sole `Prepared` → `Managed` publisher requires both bindings plus exact context-directory re-entry.
+Managed evidence persists across cleanup successors and an evidence-free Managed record is unrepresentable.
+The value-driven start, real-kernel bindings, and Managed settlement passed in the 51-test `direct` slice in
+1.20 seconds.
+Docker context inspection now has a strict total classifier, and its semantic JSON value is hashed together
+with the shared context-directory identity so whitespace and object-key ordering cannot change authority.
+The canonical-equivalence test and native transaction checks passed in the 51-test `direct` slice in 1.16
+seconds.
+Native clause-4 cleanup now binds the cleanup invocation durably before delete, revalidates the bound
+machine and kernel disk identities, performs the described delete, proves both artifacts absent before
+forgetting their shared records, and identity-conditionally releases the context and home namespaces in
+stage order. The same entry now carries routed Docker execution, with the Managed lineage, context,
+running profile, and machine binding revalidated on both sides of the command. Real-kernel/value-report
+coverage for both transactions passed in the four-case `direct` slice in 0.86 seconds; the test launches no
+stand-in executable.
+The native artifact observer now admits exactly the derived Lima disk name/directory/instance/size tuple,
+reads the real data-file identity, and joins canonical Docker-context JSON to the already-bound context
+directory identity. Its value-reported commands and real-kernel identity observation passed with cleanup and
+post-Docker replacement refusal in the four-case `direct` slice in 0.85 seconds.
+The private shared seam now supplies one canonical `OwnershipManifest`: a sorted, duplicate-free set of
+canonical relative paths paired with opaque kernel identities, with strict parser/renderer and SHA-256
+digest. Reordering is authority-neutral while traversal and duplicate names are refused. The manifest value
+case and native driver transactions passed in the four-case `direct` slice in 1.08 seconds after
+`cabal build all --ghc-options=-Werror` succeeded.
+The manifest vocabulary now distinguishes mutable files, immutable payload-bound files, directories,
+symbolic links with exact target bytes, and sockets while retaining mode and kernel identity. The POSIX row
+walks home and Docker-config descriptor-relatively without following file or directory links, and the native
+artifact observer persists their merged, namespaced manifest. Managed settlement, live Docker, and cleanup
+must reproduce it; an added context file refuses before any Docker command. These real-kernel cases passed
+in the four-case `direct` slice in 0.85 seconds.
+Acquisition is now one protected-entry native transaction with explicit `Applied` versus `AlreadyExact`
+results. Exact re-entry re-observes the running wall, machine epoch, Lima disk, Docker context, complete
+manifest, and both retained identity bindings without issuing start. The public prepared-wall adapter,
+settlement seam, routed Docker call, and cleanup path now consume that native result and run the described
+commands in the bounded Haskell runner's closed namespace; none calls the embedded acquire, live-Docker,
+or cleanup backend. The focused public lifecycle case passed in 3.87 seconds, including exact replay,
+pre-command manifest drift refusal, failed-delete resume, cleanup-invocation fencing, context removal, and
+Released replay. `cabal build all --ghc-options=-Werror` also passed after the adapter recut.
+The bounded native command is now shipped to a hidden entry in the installed Haskell binary. Its request
+is a length-framed absolute executable plus argv, and the owning runner keeps the entry's private stdin
+pipe open for exactly the transaction lifetime. Kernel EOF after hard parent death makes the entry kill
+its complete process group; ordinary completion returns through the shared bounded capture. The public
+lifecycle case passed through this shipped entry in 1.24 seconds, and the complete repository again built
+under `-Werror`. The dedicated gate hard-kills the owning process after its descendant publishes a real
+PID, then proves the descendant is gone; it passed in 0.30 seconds. The entry polls both its retained
+kernel parent identity and the nonblocking EOF channel, so the non-threaded runtime cannot suspend the
+death watch in a blocking foreign wait.
+The backend contains only the native acquire, cleanup, live-Docker, namespace, and shipped-command
+transactions; driver-local identity/directory-chain codecs and crash-point request fields are absent. The
+test matrix exercises values and real kernel objects without stand-in Colima, Docker, or Lima binaries.
+`Resolver.Native` inspects the fixed production or
+fixture candidate table in Haskell, validates canonical formula targets, executable ownership/mode, home
+shape, Docker Desktop fallback, and every helper-directory identity, then feeds the same strict opaque
+authority settlement. Its eight-case adversarial slice passed 8/8 in 0.04 seconds; fixture candidates are
+inert executable identity objects and are never invoked.
+On 2026-08-21, `cabal build all --ghc-options=-Werror` and
+`cabal build hostbootstrap-core-test --ghc-options=-Werror` passed on x86_64 Linux with GHC 9.12.4 and
+Cabal 3.16.1.0. The focused `ColimaSpec` gate passed all 17 value, kernel, and process cases in 0.37
+seconds, including the hard-parent-death group kill, native resolver adversarial matrix, and mechanical
+absence guard for interpreter sources and stand-in behavior. `git diff --check` passed and the tree
+contained no `.log` artifact.
+
 #### Remaining Work
 
-All adoption, tests, guards, and documentation.
+None.
 
-### Sprint 16.48: The live cluster gate as a harness case [Planned]
+### Sprint 16.48: The live cluster gate as a harness case [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/app/Main.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/CLI.hs`
+`core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/CLI/Bare.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/cluster_lifecycle.md`,
 `documents/engineering/testing.md`
@@ -2048,13 +2159,23 @@ readiness, answers a read-only observation, is deleted, leaves no labelled node 
 durable-root sentinel byte-identical. Record the date, host, architecture, toolchain versions, duration,
 and result with the phase acceptance below.
 
+**2026-08-21 — passed.** On Linux 7.0.0-28-generic x86_64 with Docker 29.7.1, Kind 0.32.0,
+kubectl 1.36.4, and Kubernetes 1.36.1, the bare binary's `test run cluster-live` exited 0 in 30
+seconds. Its generative `run-53dce11d81dc3` plan created and cordoned
+`hostbootstrap-test-run-53dce11d81dc3`, reached node readiness, returned the client/server version and
+non-empty node observation, deleted the cluster through that same closed-over plan, proved no matching
+labelled node container remained, and re-read the exact sentinel under
+`.test_data/run-53dce11d81dc3`. The harness then released its own data generation. The client binary was
+downloaded from the official Kubernetes distribution and matched its published SHA-256 before the run;
+the temporary gate directory and generated test config were removed afterward.
+
 #### Remaining Work
 
-All implementation, tests, and documentation.
+None.
 
-### Sprint 16.49: The enumeration names what the binary drives [Planned]
+### Sprint 16.49: The enumeration names what the binary drives [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
 `core/hostbootstrap-core/test/HostToolSpec.hs`
@@ -2087,9 +2208,15 @@ Narrow the `HostTool` enumeration to the tools the binary still delegates to, an
 `HostToolSpec`'s exact membership assertion, proved non-vacuous by naming the complete set rather than a
 lower bound; `ClusterBackendSpec` and `ProviderBackendSpec` over the narrowed discovery.
 
+On 2026-08-21, `cabal build all --ghc-options=-Werror` and
+`cabal build hostbootstrap-core-test --ghc-options=-Werror` passed on x86_64 Linux with GHC 9.12.4 and
+Cabal 3.16.1.0. The focused exact-membership, cluster-backend, and provider-backend gate passed all 65
+cases in 2.91 seconds. Fixture `HostConfig` values contain only the tools their tested production route
+actually resolves; the provider alias retains its separate guest-local exclusion vocabulary.
+
 #### Remaining Work
 
-All narrowing, the pin, and documentation.
+None.
 
 ## Static Validation Evidence
 
@@ -2144,31 +2271,16 @@ half created `hostbootstrap-phase16-19575488ca6342ebaeebffa2`, waited for its no
 performed the required read-only node observation, deleted the cluster, proved its labelled node containers
 absent, and re-read the durable-root sentinel with its exact original contents.
 
+**2026-08-21 — passed.** On Linux 7.0.0-28-generic x86_64 with GHC 9.12.4, Cabal 3.16.1.0,
+Docker 29.7.1, Kind 0.32.0, kubectl 1.36.4, and Kubernetes 1.36.1, the final composed gate exited 0.
+The static half passed all 2,300 tests in 135.52 seconds. The live half then created and cordoned
+`hostbootstrap-test-run-53dce11d81dc3`, reached node readiness, returned the client/server version,
+deleted the cluster through the exact same closed-over plan, proved no matching container remained, and
+re-read the byte-identical sentinel outside the deletion boundary. The harness reported 1/1 passed.
+
 ## Remaining Work
 
-Every sprint through 16.46 is complete. The **cluster ownership driver** is built and adopted: Sprint 16.40
-made the read-only status probe one bounded run and one total function, Sprint 16.41 made every cluster
-effect a described command, Sprint 16.42 made what each answer means a total function of the bytes, Sprint
-16.43 made where a transaction stands a total function of three values, Sprint 16.44 composed them into the
-clause-holding create, Sprint 16.45 put readiness, cordon, and release on the same face, and Sprint 16.46
-deleted the program they replace along with the private component its injected executor lived in. What
-remains is the phase's shape under § KK, § LL, and § NN, in three parts:
-- **The direct-Colima ownership driver** does the same for its six durable stages, and its bounded-command
-  supervision becomes a transaction shipped to this machine — the parent-death watch that kills the group
-  when the owning process disappears has no in-process equivalent, so it stays a separate process rather
-  than becoming an ordinary bounded run.
-- **The live gate is a case behind the fixed `test` verb.** The bare binary already carries the test-suite
-  seam, and the harness already owns the exclusive run, the lease, the clause-holding cleanup, and the
-  report card that a gate otherwise hand-rolls.
-- **The enumeration narrows.** Once the two drivers above stop resolving an interpreter and a locking front
-  end, `Python3`, `Flock`, and `Lockf` name nothing the binary drives, and Sprint 16.49 removes them and
-  pins the set against re-entry.
-
-Two consequences are worth stating rather than discovering. The crash windows that a patchable instruction
-point reaches today are **named as owed** in the sprints that replace it rather than counted as covered
-(§ NN). And the sprints that describe the mechanism their own boundaries hold today are restated in the same
-change that moves them onto the seam — § A rewrites a phase in place, and § C keeps the plan describing the
-current repository state rather than the intended one, so neither happens first.
+None.
 
 ## Documentation Requirements
 

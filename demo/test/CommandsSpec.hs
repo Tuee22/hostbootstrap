@@ -2,12 +2,12 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
 
-module CommandsSpec (tests) where
+module CommandsSpec (hostCfg, tests) where
 
 import Control.Exception (SomeException, bracket, try)
 import Data.Either (isLeft)
 import Data.Function ((&))
-import Data.List (isInfixOf, isSuffixOf)
+import Data.List (findIndex, isInfixOf, isSuffixOf, tails)
 import qualified Data.Text as T
 import qualified Dhall
 import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon), AcceleratorIngressPlan (ingressKindListenAddress), ClusterDriver (..), ClusterPlan (clusterConfigFile, clusterDriver, clusterName, dataPath, publishesHostPorts), ClusterProfile (Production, TestCase), acceleratorIngressPlan, profileDataPath, profileDataSegments)
@@ -30,8 +30,8 @@ import HostBootstrap.Config.Fields (
  )
 import HostBootstrap.Config.Vocab (Mount (..))
 import HostBootstrap.Context (ContextKind (HostOrchestrator, VMOrchestrator, VMProjectContainer))
-import HostBootstrap.Detached (detachedLaunchArguments, detachedLaunchExecutable)
 import qualified HostBootstrap.Context as Context
+import HostBootstrap.Detached (detachedLaunchArguments, detachedLaunchExecutable)
 import HostBootstrap.Dhall.Gen (artifactName)
 import HostBootstrap.HostTool (absExePath)
 import HostBootstrap.Lift (ContainerLift (clExtraArgs, clMounts), LiftContext (..), LiftLayer (ViaContainer), localContext)
@@ -42,6 +42,7 @@ import HostBootstrap.RegistryPlan (
     registryPlanRevision,
     settleBlobRoute,
  )
+import HostBootstrap.RoleLifecycle (RoleEffect (DurableStore, NetworkListen, ProcessSpawn))
 import HostBootstrap.Service (
     serviceIdText,
     serviceRoleSchemaFamilies,
@@ -49,15 +50,8 @@ import HostBootstrap.Service (
     withFinalizedServiceRegistry,
     withSelectedServiceRequest,
  )
-import HostBootstrap.RoleLifecycle (RoleEffect (DurableStore, NetworkListen, ProcessSpawn))
-import HostBootstrap.Step (Step, StepFrame (..), StepPlan, chainFrames, frameDescent, frameId, mkStepPlan, postHandoffStepsForFrame, renderChainPlan, stepKind, stepKindName, stepLabel, stepPlanSteps)
+import HostBootstrap.Step (Step, StepFrame (..), StepIdentity (..), StepPlan, chainFrames, frameDescent, frameId, mkStepPlan, postHandoffStepsForFrame, projectStepId, providerResourceDeclarationTargetsChild, renderChainPlan, stepFrame, stepIdentity, stepKind, stepKindName, stepLabel, stepPlanSteps, stepProviderResourceDeclarations)
 import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (Substrate), SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu))
-import HostBootstrapDemo.Container (
-    baseDigestArgs,
-    basePullArgs,
-    dockerBuildArgs,
-    pinnedBaseReference,
- )
 import HostBootstrapDemo.Commands (
     absoluteHostAcceleratorDaemonExePath,
     acceleratorDaemonManifest,
@@ -66,11 +60,15 @@ import HostBootstrapDemo.Commands (
     demoArtifacts,
     demoBaseImageFor,
     demoChainFor,
+    demoDirectParentJoin,
+    demoForwardChildPlan,
     demoRegistryPlan,
     demoServices,
     demoTestFrameContext,
     directClusterPresence,
     directClusterTeardownArgs,
+    dockerBuildArgsWithVerificationKey,
+    foldDemoOperationRole,
     hostAcceleratorDaemonArgs,
     hostAcceleratorDaemonLaunch,
     hostAcceleratorDaemonPowerShellScript,
@@ -82,11 +80,11 @@ import HostBootstrapDemo.Commands (
     readHostAcceleratorDaemonPid,
     registryConfigYaml,
     registryEndpoint,
-    uploadSessionUrl,
     renderRetainedDaemonOutput,
     renderServiceConfigForContext,
     repoRootOfProjectRoot,
     serviceConfigMapManifest,
+    uploadSessionUrl,
     validateAcceleratorReplicaCount,
  )
 import HostBootstrapDemo.Config (
@@ -102,6 +100,12 @@ import HostBootstrapDemo.Config (
     deriveProjectConfigForKind,
     mkPort,
     projectConfigForRole,
+ )
+import HostBootstrapDemo.Container (
+    baseDigestArgs,
+    basePullArgs,
+    dockerBuildArgs,
+    pinnedBaseReference,
  )
 import HostBootstrapDemo.Web.Bridge (writeBridge)
 import Numeric.Natural (Natural)
@@ -136,6 +140,9 @@ withDemoRoot action = do
 validPort :: Natural -> Port
 validPort = either (error . ("invalid test port: " ++)) id . mkPort
 
+substringOffset :: String -> String -> Maybe Int
+substringOffset needle = findIndex (isInfixOf needle . take (length needle)) . tails
+
 {- | A @\/v2\/@ answer dressed up as an observation: the status is fine and the
 port is right, but the probe was liveness, not a blob request.
 -}
@@ -153,7 +160,226 @@ tests :: TestTree
 tests =
     testGroup
         "CommandsSpec"
-        [ testCase "the registry config renders proxy delivery from the plan, not a flag" $ do
+        [ testCase "cluster config is derived only from the exact plan slices" $ do
+            commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
+            let rendererSource =
+                    maybe
+                        ""
+                        (`drop` commandsSource)
+                        (substringOffset "demoExactRenderedClusterConfig ::" commandsSource)
+                exactDerivation =
+                    [ "demoExactPlanSlices cfg plan"
+                    , "plannedStepFrameId planned"
+                    , "frame == T.pack directContainerRuntimeFrameId"
+                    , "NvkindDriver"
+                    , "KindDriver"
+                    , "renderExactClusterConfig driver digest cfg clusterSlice published"
+                    ]
+                positions = traverse (`substringOffset` rendererSource) exactDerivation
+            case positions of
+                Nothing -> assertFailure "the command projection lost an exact cluster-config derivation stage"
+                Just offsets ->
+                    assertBool
+                        "cluster config stages are not ordered slice/driver/render"
+                        (and (zipWith (<) offsets (drop 1 offsets)))
+            assertBool
+                "the command projection accepts an independently supplied driver"
+                (not ("demoExactRenderedClusterConfig driver" `isInfixOf` rendererSource))
+            assertBool
+                "the command projection accepts independently supplied ports"
+                (not ("demoExactRenderedClusterConfig published" `isInfixOf` rendererSource))
+        , testCase "the cluster action adopts exact provider, reconcile, cordon, readiness, and package order" $ do
+            commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
+            let adopter = maybe "" (`drop` commandsSource) (substringOffset "deployKindAction stepCfg execution" commandsSource)
+                stages =
+                    [ "withFreshCarriedRunningProviderDependency"
+                    , "withExecutionOwnedCluster"
+                    , "withExactPlanOwnedClusterConfig"
+                    , "discoverStrongClusterBackend"
+                    , "withPreparedClusterReconcile"
+                    , "runClusterReconcileCall"
+                    , "carryClusterReconcileSettlement"
+                    , "runClusterCordonCall"
+                    , "runClusterReadinessCall"
+                    , "registerClusterRuntimeDependencyPackage"
+                    ]
+            offsets <- maybe (assertFailure "the exact cluster adopter lost a required stage") pure (traverse (`substringOffset` adopter) stages)
+            assertBool "cluster adoption stages are out of order" (and (zipWith (<) offsets (drop 1 offsets)))
+            assertBool "the VM provider route is absent" ("core:deploy-vm" `isInfixOf` adopter && "runtime://provider/demo-vm-readiness" `isInfixOf` adopter)
+            assertBool "the Direct provider route is absent" ("providerKey = \"core:deploy-vm\"" `isInfixOf` adopter && "runtime://provider/demo-direct-readiness" `isInfixOf` adopter)
+            assertBool "the adopted action still calls the compatibility cluster mutator" (not ("clusterCreate cfg" `isInfixOf` adopter))
+        , testCase "the chart action consumes the exact cluster package and generic workload transaction" $ do
+            commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
+            let adopterTail = maybe "" (`drop` commandsSource) (substringOffset "deployChartAction stepCfg execution" commandsSource)
+                adopter = maybe adopterTail (`take` adopterTail) (substringOffset "{- | The accelerator hub" adopterTail)
+                stages =
+                    [ "stepExecutionPreparedGate execution"
+                    , "withNodeResourceOfKind execution ClusterResourceKind \"core:deploy-kind\""
+                    , "withNodeChartWorkloadResource execution"
+                    , "withFreshClusterRuntimeDependency execution"
+                    , "withPreparedChartWorkload chart cluster readiness execution values gate"
+                    , "runChartWorkloadCall Nothing"
+                    ]
+            offsets <- maybe (assertFailure "the exact chart adopter lost a required stage") pure (traverse (`substringOffset` adopter) stages)
+            assertBool "chart adoption stages are out of order" (and (zipWith (<) offsets (drop 1 offsets)))
+            assertBool "the chart adopter still calls the compatibility mutator" (not ("deployChart cfg" `isInfixOf` adopter))
+            assertBool "the chart adopter still applies a caller-built ConfigMap" (not ("runOrDieStdin cfg Kubectl [\"apply\"" `isInfixOf` adopter))
+        , testCase "the reverse command authenticates exact chart ownership without a forward package" $ do
+            commandSource <- readFile "../core/hostbootstrap-core/src/HostBootstrap/Command.hs"
+            let productionTail = maybe "" (`drop` commandSource) (substringOffset "runProductionTeardown root validated ctx cfg verb = do" commandSource)
+                production = maybe productionTail (`take` productionTail) (substringOffset "_reverseProjection ::" productionTail)
+                stages =
+                    [ "runRootProjectReverseLifecycleEntry"
+                    , "localWorkOperationKey local"
+                    , "resourceRecordKey planDigest frame resource"
+                    , "readProtectedRecord session recordKey"
+                    , "verifyProjectChartResourceRecordBundle plan chart"
+                    , "runVerifiedChartWorkloadCleanupCall cfg chart bundle"
+                    ]
+            offsets <- maybe (assertFailure "the reverse chart adopter lost an authenticated stage") pure (traverse (`substringOffset` production) stages)
+            assertBool "reverse chart stages are out of order" (and (zipWith (<) offsets (drop 1 offsets)))
+            assertBool "reverse adoption reconstructs a forward execution package" (not ("PlanExecutionPackage" `isInfixOf` production))
+        , testCase "the VM deployment performs exact provider settlement before package registration" $ do
+            commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
+            let adopterSource =
+                    maybe
+                        ""
+                        (`drop` commandsSource)
+                        (substringOffset "runExactIncusProvider ::" commandsSource)
+                exactCallsite =
+                    [ "stepExecutionPreparedGate execution"
+                    , "withNodeResourceOfKind execution ProviderResourceKind (stepExecutionOperationKey execution)"
+                    , "withNodeObservedResource execution planned"
+                    , "withPreparedProviderProvision execution"
+                    , "runProviderProvisionCall backend preparedProvision"
+                    , "settleProviderProvision Nothing preparedProvision provisionCall"
+                    , "withPreparedProviderReady execution"
+                    , "runProviderReadyCall backend preparedReady"
+                    , "settleProviderReady preparedReady readyCall"
+                    , "carryRunningProviderSettlement execution advance \"provisioned\" \"demo-incus-provider-v1\""
+                    , "registerRunningProviderDependencyPackage"
+                    ]
+                positions = traverse (`substringOffset` adopterSource) exactCallsite
+            case positions of
+                Nothing -> assertFailure "the exact Incus provider callsite lost a required lifecycle stage"
+                Just offsets ->
+                    assertBool
+                        "provider lifecycle stages are not ordered prepare/provision/ready/carry/register"
+                        (and (zipWith (<) offsets (drop 1 offsets)))
+            assertBool
+                "the VM action does not receive its exact StepExecution"
+                ("changed (runVmUp cfg)" `isInfixOf` commandsSource)
+            assertBool
+                "the provider package route is no longer the fixed invocation-local readiness route"
+                ("\"runtime://provider/demo-vm-readiness\"" `isInfixOf` commandsSource)
+            assertBool
+                "the provider adopter reconstructed an operation-name fallback"
+                (not ("withNodeResourceOfKind execution ProviderResourceKind \"" `isInfixOf` commandsSource))
+        , testCase "the Direct reservation settles exactly before CUDA and package consumers" $ do
+            commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
+            let bootstrapSource =
+                    maybe
+                        ""
+                        (`drop` commandsSource)
+                        (substringOffset "runDirectProviderReservation ::" commandsSource)
+                adopterSource =
+                    maybe
+                        ""
+                        (`drop` commandsSource)
+                        (substringOffset "runExactDirectProvider ::" commandsSource)
+                exactCallsite =
+                    [ "stepExecutionPreparedGate execution"
+                    , "mkDirectHostBackendSpec cfg canonicalRoot (demoBaseImage cfg)"
+                    , "withNodeResourceOfKind execution ProviderResourceKind (stepExecutionOperationKey execution)"
+                    , "withNodeObservedResource execution planned"
+                    , "withPreparedProviderProvision execution"
+                    , "runProviderProvisionCall backend preparedProvision"
+                    , "settleProviderProvision Nothing preparedProvision provisionCall"
+                    , "withPreparedProviderReady execution"
+                    , "runProviderReadyCall backend preparedReady"
+                    , "settleProviderReady preparedReady readyCall"
+                    , "carryCreatedRunningProviderSettlement execution advance \"demo-direct-provider-v1\""
+                    , "registerRunningProviderDependencyPackage"
+                    ]
+                positions = traverse (`substringOffset` adopterSource) exactCallsite
+            case positions of
+                Nothing -> assertFailure "the exact Direct provider callsite lost a required lifecycle stage"
+                Just offsets ->
+                    assertBool
+                        "Direct lifecycle stages are not ordered prepare/reserve/ready/carry/register"
+                        (and (zipWith (<) offsets (drop 1 offsets)))
+            assertBool
+                "the Direct build action does not receive its exact StepExecution"
+                ("changed (runDirectProviderReservation cfg)" `isInfixOf` commandsSource)
+            assertBool
+                "Direct reservation is not settled before CUDA mutation"
+                ( case (substringOffset "runExactDirectProvider parentCfg cfgAfterDocker execution absoluteRoot" bootstrapSource, substringOffset "runEnsure EnsureCuda.reconciler" bootstrapSource) of
+                    (Just exactOffset, Just cudaOffset) -> exactOffset < cudaOffset
+                    _ -> False
+                )
+            assertBool
+                "the Direct package route is no longer the fixed invocation-local readiness route"
+                ("\"runtime://provider/demo-direct-readiness\"" `isInfixOf` adopterSource)
+            assertBool
+                "the Direct adopter reconstructed an operation-name fallback"
+                (not ("withNodeResourceOfKind execution ProviderResourceKind \"" `isInfixOf` adopterSource))
+        , testCase "copy-source keeps the exact writable share lexical before VM descent" $ do
+            commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
+            let adopterSource =
+                    maybe
+                        ""
+                        (`drop` commandsSource)
+                        (substringOffset "runExactIncusShare ::" commandsSource)
+                exactCallsite =
+                    [ "stepExecutionPreparedGate execution"
+                    , "mkProviderShareSpec (hpsHostPath durableShare) (hpsGuestPath durableShare)"
+                    , "withNodeResourceOfKind execution DurableShareResourceKind (stepExecutionOperationKey execution)"
+                    , "withFreshRunningProviderHandle"
+                    , "withPreparedProviderShare execution plannedShare shareHandle managedProvider (dependencyProbe reprobe) shareSpec gate"
+                    , "runProviderShareCall backend preparedShare"
+                    , "settleProviderShare Nothing preparedShare shareCall"
+                    , "withProviderShareSettlement"
+                    , "withProviderBoundExec backend managedProvider"
+                    , "reconcileNodeGuestAlias"
+                    ]
+                positions = traverse (`substringOffset` adopterSource) exactCallsite
+            case positions of
+                Nothing -> assertFailure "the exact copy-source adopter lost a required lexical stage"
+                Just offsets ->
+                    assertBool
+                        "copy-source stages are not ordered recover/prepare/attach/settle/use/close"
+                        (and (zipWith (<) offsets (drop 1 offsets)))
+            vmPlan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxCpu Amd64) root hostCfg)))
+            directPlan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxGpu Amd64) root hostCfg)))
+            assertBool
+                "the VM topology does not contain exactly one copy-source action"
+                (length (filter ((== "copy-source") . stepKindName . stepKind) (stepPlanSteps vmPlan)) == 1)
+            assertBool
+                "the Direct topology acquired a VM-only copy-source action"
+                (all ((/= "copy-source") . stepKindName . stepKind) (stepPlanSteps directPlan))
+            assertBool
+                "the managed share was written into a cross-node carrier"
+                (not ("carryManagedResource" `isInfixOf` adopterSource))
+        , testCase "the guest alias settles inside the managed copy-source continuation" $ do
+            commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
+            let adopterSource =
+                    maybe "" (`drop` commandsSource) (substringOffset "runExactIncusShare ::" commandsSource)
+            assertBool
+                "copy-source no longer declares its exact guest-alias projection"
+                ("Step.projectsOperation\n        \"core:copy-source/guest-alias\"" `isInfixOf` commandsSource)
+            assertBool
+                "the exact alias does not retain the stable path and provider-selected target"
+                ("mkGuestAliasSpec durableDockerHostPath (hpsGuestPath durableShare)" `isInfixOf` adopterSource)
+            assertBool
+                "alias reconciliation escaped the provider/share settlement continuation"
+                ( case (substringOffset "\\managedShare _ -> do" adopterSource, substringOffset "reconcileNodeGuestAlias" adopterSource) of
+                    (Just shareOffset, Just aliasOffset) -> shareOffset < aliasOffset
+                    _ -> False
+                )
+            assertBool
+                "the exact Incus adopter retained the compatibility alias mutator"
+                (not ("mintDurableAlias" `isInfixOf` adopterSource))
+        , testCase "the registry config renders proxy delivery from the plan, not a flag" $ do
             -- § GG: the boolean is OUTPUT. The topology (host-local client,
             -- cluster-only store) admits no reachability witness, so the plan
             -- can only be `Proxy`, and proxy delivery must disable redirects.
@@ -214,7 +440,8 @@ tests =
             let steps = stepPlanSteps plan
             map frameId (chainFrames plan) @?= ["host-orchestrator-0", "vm-project-container-1"]
             map (stepKindName . stepKind) steps
-                @?= [ "build-image"
+                @?= [ "deploy-vm"
+                    , "build-image"
                     , "context-init"
                     , "deploy-kind"
                     , "deploy-minio"
@@ -233,6 +460,83 @@ tests =
             clusterConfigFile (containerPlan Production directCtx) @?= Just "nvkind-in-cluster.yaml"
             clusterDriver (containerPlan Production ordinaryCtx) @?= KindDriver
             clusterConfigFile (containerPlan Production ordinaryCtx) @?= Just "kind-in-cluster.yaml"
+        , testCase "VM and Direct topologies author distinct provider resources at their exact target frames" $ do
+            vmPlan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxCpu Amd64) root hostCfg)))
+            directPlan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxGpu Amd64) root hostCfg)))
+            let declarations plan =
+                    [ (frameId (stepFrame step), providerResourceDeclarationTargetsChild declaration)
+                    | step <- stepPlanSteps plan
+                    , declaration <- stepProviderResourceDeclarations step
+                    ]
+            declarations vmPlan @?= [("host-orchestrator-0", True)]
+            declarations directPlan @?= [("host-orchestrator-0", False)]
+        , testCase "the exact forward-child projector covers VM, container, Direct, and Harness scopes" $ do
+            withDemoRoot $ \root -> do
+                let project parent child cfg lift =
+                        either assertFailure pure (demoForwardChildPlan cfg parent child lift)
+                    requireDescent frame plan =
+                        maybe (assertFailure ("missing descent from " ++ frame)) pure (frameDescent frame plan)
+                vmRootPlan <- pure (expectPlan (demoChainFor (Substrate LinuxCpu Amd64) root hostCfg))
+                vmLift <- requireDescent "host-orchestrator-0" vmRootPlan
+                (vmPath, vmCfg, vmPlan) <- project "host-orchestrator-0" "vm-orchestrator-1" hostCfg vmLift
+                vmPath @?= "/root/hostbootstrap/demo"
+                Context.currentFrame (context vmCfg) @?= "vm-orchestrator-1"
+                containerLift <- requireDescent "vm-orchestrator-1" vmPlan
+                (containerPath, containerCfg, _containerPlan) <- project "vm-orchestrator-1" "vm-project-container-2" vmCfg containerLift
+                containerPath @?= "/workspace/demo"
+                Context.currentFrame (context containerCfg) @?= "vm-project-container-2"
+
+                directRootPlan <- pure (expectPlan (demoChainFor (Substrate LinuxGpu Amd64) root hostCfg))
+                directLift <- requireDescent "host-orchestrator-0" directRootPlan
+                (directPath, directCfg, _directPlan) <- project "host-orchestrator-0" "vm-project-container-1" hostCfg directLift
+                directPath @?= "/workspace/demo"
+                Context.currentFrame (context directCfg) @?= "vm-project-container-1"
+
+                let harnessCfg = hostCfg{runProfile = HarnessRun "run-42"}
+                harnessPlan <- pure (expectPlan (demoChainFor (Substrate LinuxGpu Amd64) root harnessCfg))
+                harnessLift <- requireDescent "host-orchestrator-0" harnessPlan
+                (_, projectedHarness, _) <- project "host-orchestrator-0" "vm-project-container-1" harnessCfg harnessLift
+                clusterProfileOf projectedHarness @?= TestCase "run-42"
+
+                assertBool "a foreign child edge was projected" (isLeft (demoForwardChildPlan hostCfg "host-orchestrator-0" "foreign" directLift))
+                assertBool "a VM lift was accepted for the Direct child" (isLeft (demoForwardChildPlan hostCfg "host-orchestrator-0" "vm-project-container-1" vmLift))
+        , testCase "the provider/cluster join accepts only one exact immediate parent" $ do
+            let parents frame
+                    | frame == "cluster" = Just "provider"
+                    | frame == "provider" = Just "host"
+                    | frame == "sibling" = Just "host"
+                    | otherwise = Nothing
+            demoDirectParentJoin ["provider"] ["cluster"] parents
+                @?= Right ("provider", "cluster")
+            assertBool "an absent provider was accepted" (isLeft (demoDirectParentJoin [] ["cluster"] parents))
+            assertBool "duplicate providers were accepted" (isLeft (demoDirectParentJoin ["provider", "sibling"] ["cluster"] parents))
+            assertBool "an absent cluster was accepted" (isLeft (demoDirectParentJoin ["provider"] [] parents))
+            assertBool "duplicate clusters were accepted" (isLeft (demoDirectParentJoin ["provider"] ["cluster", "sibling"] parents))
+            assertBool "an ancestor provider was accepted" (isLeft (demoDirectParentJoin ["host"] ["cluster"] parents))
+            assertBool "a sibling provider was accepted" (isLeft (demoDirectParentJoin ["sibling"] ["cluster"] parents))
+            assertBool "a root cluster without a parent was accepted" (isLeft (demoDirectParentJoin ["provider"] ["root"] parents))
+        , testCase "VM and Direct operations partition by closed identity in exact order" $ do
+            vmPlan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxCpu Amd64) root hostCfg)))
+            directPlan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxGpu Amd64) root hostCfg)))
+            let roles :: StepPlan -> [String]
+                roles = map (roleOf . stepIdentity) . stepPlanSteps
+                roleOf :: StepIdentity -> String
+                roleOf identity =
+                    either error id (foldDemoOperationRole identity "provider" "cluster" "workload" "service" "assertion")
+            roles vmPlan
+                @?= replicate 5 "provider"
+                    ++ ["cluster"]
+                    ++ replicate 4 "workload"
+                    ++ ["assertion", "service"]
+            roles directPlan
+                @?= replicate 3 "provider"
+                    ++ ["cluster"]
+                    ++ replicate 4 "workload"
+                    ++ ["assertion", "service"]
+            unknown <- either assertFailure pure (projectStepId "unknown-demo-operation")
+            assertBool
+                "an unknown typed project identity was accepted"
+                (isLeft (foldDemoOperationRole (ProjectStepIdentity unknown) () () () () ()))
         , {- The profile a container-frame plan resolves under is the run's own,
           so a harness run never takes the production cluster name, the durable
           @.data@ root, or the fixed host ports (the worked-demo phase). -}
@@ -316,7 +620,7 @@ tests =
                 (directConfig, directFrame) = renderServiceConfigForContext hostCfg directCtx
                 (incusConfig, incusFrame) = renderServiceConfigForContext hostCfg incusCtx
                 (wslConfig, wslFrame) = renderServiceConfigForContext hostCfg wslCtx
-                manifest = serviceConfigMapManifest directConfig
+                manifest = serviceConfigMapManifest "hostbootstrap-demo-test-case" directConfig
             directFrame @?= "cluster-service-2"
             incusFrame @?= "cluster-service-3"
             wslFrame @?= "cluster-service-3"
@@ -325,6 +629,13 @@ tests =
             assertBool "WSL2 provider survives into the service projection" ("Wsl2VMProvider" `T.isInfixOf` wslConfig)
             assertBool "manifest carries every derived config line" $
                 all (\line -> ("    " ++ line) `isInfixOf` manifest) (filter (not . null) (lines (T.unpack directConfig)))
+        , testCase "durable-readback is a lifecycle-free write/read assertion" $ do
+            commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
+            let assertionTail = maybe "" (`drop` commandsSource) (substringOffset "assertDurableReadback cfg frame" commandsSource)
+                assertion = maybe assertionTail (`take` assertionTail) (substringOffset "demoProjectImage ::" assertionTail)
+            assertBool "durable-readback does not POST the marker" ("-X POST" `isInfixOf` assertion)
+            assertBool "durable-readback does not read the marker back" ("curl --fail --silent --show-error" `isInfixOf` assertion && "hostbootstrap-destroy-up-v1" `isInfixOf` assertion)
+            assertBool "project-owned assertion code must not invoke lifecycle" (not ("[\"project\", \"destroy\"]" `isInfixOf` assertion || "[\"project\", \"up\"]" `isInfixOf` assertion))
         , testCase "chart and kind configs consume the placement-specific exposure" $ do
             serviceTemplate <- readFile ("chart" ++ "/templates/service.yaml")
             deploymentTemplate <- readFile ("chart" ++ "/templates/deployment.yaml")
@@ -340,10 +651,10 @@ tests =
             assertBool "chart omits nodePort unless the plan selects NodePort" ("if eq .Values.service.accelerator.type \"NodePort\"" `isInfixOf` serviceTemplate)
             assertBool "chart consumes the derived service frame" (".Values.service.currentFrame" `isInfixOf` deploymentTemplate)
             assertBool "chart rolls when the applied service config changes" (".Values.service.configHash" `isInfixOf` deploymentTemplate)
-            assertBool "durable web identity is owned by a StatefulSet" ("kind: StatefulSet" `isInfixOf` deploymentTemplate)
-            assertBool "single-peer web rollout stays ordered" ("serviceName:" `isInfixOf` deploymentTemplate && "podManagementPolicy: OrderedReady" `isInfixOf` deploymentTemplate && "updateStrategy:" `isInfixOf` deploymentTemplate)
+            assertBool "the chart exposes the exact deployment readiness target" ("kind: Deployment" `isInfixOf` deploymentTemplate)
+            assertBool "the chart consumes the exact planned image identity" (".Values.image.identity" `isInfixOf` deploymentTemplate)
             assertBool "web pod mounts the kind-node durable host path" ("path: /var/lib/hostbootstrap-demo-data/web" `isInfixOf` deploymentTemplate && "type: DirectoryOrCreate" `isInfixOf` deploymentTemplate && "mountPath: /var/lib/hostbootstrap-demo-data/web" `isInfixOf` deploymentTemplate)
-            assertBool "there is no hand-written topology ConfigMap" (not staticConfigMap)
+            assertBool "the service config is owned by the chart transaction" staticConfigMap
             assertBool "browser engines serialize against the single accelerator session" ("workers: 1" `isInfixOf` playwrightConfig)
             assertBool "in-cluster config has no accelerator host mapping" (not ("hostPort: 30081" `isInfixOf` inClusterKind))
             assertBool "nvkind template injects all GPUs into its worker" ("/var/run/nvidia-container-devices/all" `isInfixOf` nvkindTemplate)
@@ -371,7 +682,7 @@ tests =
         , testCase "a derived build always pulls, so a stale local base cannot be used" $ do
             let argv =
                     dockerBuildArgs
-                        (projectConfigForRole
+                        ( projectConfigForRole
                             "hostbootstrap-demo"
                             "hostbootstrap-demo"
                             "/srv"
@@ -379,7 +690,8 @@ tests =
                             demoDefaultResources
                             demoDefaultDeployConfig
                             demoDefaultMessage
-                            Context.HostOrchestrator)
+                            Context.HostOrchestrator
+                        )
                         "docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64"
             -- Without this a host that once built the rolling tag locally would
             -- build FROM that stale image and never notice (94w FF).
@@ -389,6 +701,24 @@ tests =
                 ( "BASE_IMAGE=docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64"
                     `elem` argv
                 )
+        , testCase "the derived image receives the independently provisioned verification key" $ do
+            let keyHex = replicate 64 'a'
+                argv =
+                    dockerBuildArgsWithVerificationKey
+                        ( projectConfigForRole
+                            "hostbootstrap-demo"
+                            "hostbootstrap-demo"
+                            "/srv"
+                            "docker/Dockerfile"
+                            demoDefaultResources
+                            demoDefaultDeployConfig
+                            demoDefaultMessage
+                            Context.HostOrchestrator
+                        )
+                        "docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64"
+                        keyHex
+            assertBool "the public key is a build argument" ("HANDOFF_VERIFICATION_KEY_HEX=" ++ keyHex `elem` argv)
+            last argv @?= "."
         , testCase "a published digest pins the repository, not the tag text" $ do
             pinnedBaseReference
                 "docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64"
@@ -414,7 +744,7 @@ tests =
             assertBool "inspect targets the tag" ("repo/base:tag" `elem` inspectArgv)
             assertBool "inspect asks for repository digests" $
                 any ("RepoDigests" `isInfixOf`) inspectArgv
-        , testCase "direct project-container handoff passes the GPU and normal handoff does not" $ do
+        , testCase "project-container handoffs carry no plan-authored Docker arguments" $ do
             canonicalDemo <- canonicalizePath "."
             -- Both descents are read off the plan itself: the direct lane's is
             -- declared by its metal @context-init@ node, the VM-backed lane's by
@@ -431,8 +761,8 @@ tests =
                         ordinaryArgs = clExtraArgs ordinaryLift
                         durableMount = Mount (T.pack (canonicalDemo </> ".data")) "/workspace/demo/.data" False
                         guestDurableMount = Mount "/var/tmp/hostbootstrap-demo-data" "/workspace/demo/.data" False
-                    assertBool "direct handoff has --gpus=all" ("--gpus=all" `elem` directArgs)
-                    assertBool "ordinary handoff has no GPU flag" ("--gpus=all" `notElem` ordinaryArgs)
+                    directArgs @?= []
+                    ordinaryArgs @?= []
                     assertBool "direct handoff carries the canonical host durable root" (durableMount `elem` clMounts directLift)
                     assertBool "VM-backed handoff carries the provider-shared durable root" (guestDurableMount `elem` clMounts ordinaryLift)
                 other -> assertBool ("unexpected frame contexts: " ++ show other) False
@@ -459,15 +789,15 @@ tests =
             repoRootOfProjectRoot ("/workspace" </> "hostbootstrap" </> "demo")
                 @?= ("/workspace" </> "hostbootstrap")
         , testCase "accelerator daemon manifest requests a GPU only in the CUDA lane" $ do
-            let cpuManifest = acceleratorDaemonManifest False "daemon-3" "config" 8081
-                gpuManifest = acceleratorDaemonManifest True "daemon-3" "config" 8081
-                customPortManifest = acceleratorDaemonManifest False "daemon-3" "config" 9091
+            let cpuManifest = acceleratorDaemonManifest "hostbootstrap-demo-test-case" False "daemon-3" "config" 8081
+                gpuManifest = acceleratorDaemonManifest "hostbootstrap-demo-test-case" True "daemon-3" "config" 8081
+                customPortManifest = acceleratorDaemonManifest "hostbootstrap-demo-test-case" False "daemon-3" "config" 9091
             assertBool "CPU pod has no GPU request" (not ("nvidia.com/gpu" `isInfixOf` cpuManifest))
             assertBool "GPU pod requests one GPU" ("nvidia.com/gpu: 1" `isInfixOf` gpuManifest)
             assertBool "GPU pod selects the nvkind NVIDIA runtime" ("runtimeClassName: nvidia" `isInfixOf` gpuManifest)
             assertBool "CPU pod stays on the default runtime" (not ("runtimeClassName: nvidia" `isInfixOf` cpuManifest))
-            assertBool "daemon dials the dedicated ClusterIP service" ("hostbootstrap-demo-accelerator:8081" `isInfixOf` gpuManifest)
-            assertBool "daemon dials a configured accelerator port" ("hostbootstrap-demo-accelerator:9091" `isInfixOf` customPortManifest)
+            assertBool "daemon dials the run-scoped ClusterIP service" ("hostbootstrap-demo-test-case-accelerator:8081" `isInfixOf` gpuManifest)
+            assertBool "daemon dials a configured accelerator port" ("hostbootstrap-demo-test-case-accelerator:9091" `isInfixOf` customPortManifest)
             assertBool "daemon config changes roll its subPath-mounted pod" ("hostbootstrap.io/config-hash" `isInfixOf` gpuManifest)
             assertBool "daemon rollout cannot overlap reconnecting peers" ("type: Recreate" `isInfixOf` gpuManifest)
             assertBool "daemon rollout waits for its connection readiness marker" ("HOSTBOOTSTRAP_ACCELERATOR_READY_FILE" `isInfixOf` gpuManifest && "readinessProbe:" `isInfixOf` gpuManifest)
@@ -674,55 +1004,55 @@ tests =
             acceleratorIdentity @?= "accelerator"
             assertBool "accelerator wire retains only its service fields" ("acceleratorParameters" `T.isInfixOf` acceleratorWire)
             assertBool "accelerator wire excludes web fields" (all (not . (`T.isInfixOf` acceleratorWire)) ["servedMessage", "webParameters"])
-    , testCase "each role declares its own effect row, not the union of both" $ do
-        let webCfg =
-                projectConfigForRole
-                    "hostbootstrap-demo"
-                    "hostbootstrap-demo"
-                    "/srv"
-                    "docker/Dockerfile"
-                    demoDefaultResources
-                    demoDefaultDeployConfig
-                    demoDefaultMessage
-                    Context.ClusterService
-            acceleratorCfg =
-                projectConfigForRole
-                    "hostbootstrap-demo"
-                    "hostbootstrap-demo"
-                    "/srv"
-                    "docker/Dockerfile"
-                    demoDefaultResources
-                    demoDefaultDeployConfig
-                    demoDefaultMessage
-                    Context.Daemon
-            declaredFor cfg =
-                withProductionProjectCodec @ProjectConfig @() $ \baseCodec ->
-                    withFinalizedServiceRegistry
-                        ProductionScope
-                        baseCodec
-                        demoServices
-                        ( \_ registry ->
-                            withSelectedServiceRequest
-                                "verified-config-digest"
-                                (inspectLocalContext (context cfg))
-                                cfg
-                                registry
-                                (\_ _ _ declared _ -> declared)
-                        )
-        webDeclared <- either (fail . show) pure (declaredFor webCfg)
-        acceleratorDeclared <- either (fail . show) pure (declaredFor acceleratorCfg)
-        -- The web role reaches the durable root; the accelerator does not.
-        webDeclared @?= [NetworkListen, DurableStore]
-        -- The accelerator runs a worker process; the web role does not.
-        acceleratorDeclared @?= [NetworkListen, ProcessSpawn]
-        -- Neither is the union: least authority is a property of the
-        -- declaration, so a widening shows up as a diff here.
-        assertBool
-            "the web role does not declare process spawn"
-            (ProcessSpawn `notElem` webDeclared)
-        assertBool
-            "the accelerator does not declare durable store"
-            (DurableStore `notElem` acceleratorDeclared)
+        , testCase "each role declares its own effect row, not the union of both" $ do
+            let webCfg =
+                    projectConfigForRole
+                        "hostbootstrap-demo"
+                        "hostbootstrap-demo"
+                        "/srv"
+                        "docker/Dockerfile"
+                        demoDefaultResources
+                        demoDefaultDeployConfig
+                        demoDefaultMessage
+                        Context.ClusterService
+                acceleratorCfg =
+                    projectConfigForRole
+                        "hostbootstrap-demo"
+                        "hostbootstrap-demo"
+                        "/srv"
+                        "docker/Dockerfile"
+                        demoDefaultResources
+                        demoDefaultDeployConfig
+                        demoDefaultMessage
+                        Context.Daemon
+                declaredFor cfg =
+                    withProductionProjectCodec @ProjectConfig @() $ \baseCodec ->
+                        withFinalizedServiceRegistry
+                            ProductionScope
+                            baseCodec
+                            demoServices
+                            ( \_ registry ->
+                                withSelectedServiceRequest
+                                    "verified-config-digest"
+                                    (inspectLocalContext (context cfg))
+                                    cfg
+                                    registry
+                                    (\_ _ _ declared _ -> declared)
+                            )
+            webDeclared <- either (fail . show) pure (declaredFor webCfg)
+            acceleratorDeclared <- either (fail . show) pure (declaredFor acceleratorCfg)
+            -- The web role reaches the durable root; the accelerator does not.
+            webDeclared @?= [NetworkListen, DurableStore]
+            -- The accelerator runs a worker process; the web role does not.
+            acceleratorDeclared @?= [NetworkListen, ProcessSpawn]
+            -- Neither is the union: least authority is a property of the
+            -- declaration, so a widening shows up as a diff here.
+            assertBool
+                "the web role does not declare process spawn"
+                (ProcessSpawn `notElem` webDeclared)
+            assertBool
+                "the accelerator does not declare durable store"
+                (DurableStore `notElem` acceleratorDeclared)
         , testCase "common envelope agrees across full and role wires and rejects changed tags" $ do
             let webCfg =
                     projectConfigForRole
@@ -785,6 +1115,38 @@ tests =
                             )
                             & either (assertFailure . show) id
                     )
+        , testCase "the Direct derived build uses only the authenticated BuildKit channel" $ do
+            commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
+            dockerfileSource <- readFile "docker/Dockerfile"
+            coreCommandSource <- readFile "../core/hostbootstrap-core/src/HostBootstrap/Command.hs"
+            let coordinatorTail = maybe "" (`drop` commandsSource) (substringOffset "runAuthenticatedDirectImageBuild ::" commandsSource)
+                coordinator = maybe coordinatorTail (`take` coordinatorTail) (substringOffset "copyBuildTree ::" coordinatorTail)
+                coordinatorStages =
+                    [ "installedBuildSigningKey"
+                    , "measureBinaryDigest executable"
+                    , "measureSourceDigest (staged </> \"demo\")"
+                    , "BuildBinding"
+                    , "signBuildGrant coordinator binding"
+                    , "renderBuildChannel channel"
+                    , "--secret"
+                    ]
+                dockerStages =
+                    [ "COPY demo /workspace/demo"
+                    , "COPY --from=hostbootstrap-builder hostbootstrap-demo"
+                    , "id=hostbootstrap-build-channel,required=true"
+                    , "hostbootstrap-demo check-code"
+                    , "cabal build --enable-tests --enable-benchmarks all"
+                    ]
+            coordinatorOffsets <- maybe (assertFailure "the authenticated coordinator lost a required stage") pure (traverse (`substringOffset` coordinator) coordinatorStages)
+            dockerOffsets <- maybe (assertFailure "the Dockerfile lost a required authenticated stage") pure (traverse (`substringOffset` dockerfileSource) dockerStages)
+            assertBool "coordinator stages are out of order" (and (zipWith (<) coordinatorOffsets (drop 1 coordinatorOffsets)))
+            assertBool "Dockerfile stages are out of order" (and (zipWith (<) dockerOffsets (drop 1 dockerOffsets)))
+            assertBool "the Dockerfile still mints its own image-build config" (not ("hostbootstrap-demo project init" `isInfixOf` dockerfileSource))
+            assertBool "image-build check-code does not require the fixed channel" ("/run/secrets/hostbootstrap-build-channel" `isInfixOf` coreCommandSource)
+            assertBool "the Direct call site still invokes raw docker build" ("runAuthenticatedDirectImageBuild execution parentCfg cfg repoRoot repoRootCfg pinnedBase verificationKeyHex" `isInfixOf` commandsSource)
+            assertBool "the measured builder is not delivered by named context" ("hostbootstrap-builder=" `isInfixOf` coordinator)
+            assertBool "the VM call site omits published-base digest resolution" ("resolvePublishedBaseInVM cfg provider mAuth" `isInfixOf` commandsSource)
+            assertBool "the VM call site omits authenticated BuildKit secrets" ("withAuthenticatedVmBuildSecrets execution parentCfg cfg provider" `isInfixOf` commandsSource)
         ]
 
 withBridgeTempDirectory :: (FilePath -> IO a) -> IO a

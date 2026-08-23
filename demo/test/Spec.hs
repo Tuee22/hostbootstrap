@@ -2,6 +2,7 @@ module Main (main) where
 
 import qualified AcceleratorRuntimeSpec
 import qualified AcceleratorSpec
+import qualified ClusterConfigSpec
 import qualified CommandsSpec
 import qualified ConfigSpec
 import Data.List (isInfixOf)
@@ -19,6 +20,7 @@ main =
             "hostbootstrap-demo"
             [ AcceleratorSpec.tests
             , AcceleratorRuntimeSpec.tests
+            , ClusterConfigSpec.tests
             , CommandsSpec.tests
             , ConfigSpec.tests
             , WebServerSpec.tests

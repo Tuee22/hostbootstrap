@@ -61,6 +61,7 @@ module HostBootstrap.Substrate.Provider.Backend (
     runProviderReadyCall,
     RunningProviderDependency,
     withRunningProviderDependency,
+    registerRunningProviderDependencyPackage,
     runProviderStopCall,
     runProviderShareCall,
     runProviderDeleteCall,
@@ -78,6 +79,7 @@ import Data.ByteArray.Encoding (Base (Base16), convertToBase)
 import qualified Data.ByteString.Char8 as ByteString
 import Data.Char (isAlphaNum)
 import Data.List (isPrefixOf)
+import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
@@ -86,6 +88,29 @@ import HostBootstrap.Effect.Run (CapturedRun (capturedExit, capturedStderr, capt
 import HostBootstrap.Effect.Vocabulary (HostCommand, hostCommand)
 import HostBootstrap.HostConfig (HostConfig (hcSubstrate), resolveMaybe)
 import HostBootstrap.HostTool (HostTool (Docker, Incus), absExePath)
+import HostBootstrap.Lifecycle.Dependency.Internal (
+    RuntimeDependencyPackage,
+    mkProviderRuntimeDependencyPackage,
+    renderRuntimeDependencyProbeResponse,
+    withRuntimeDependencyProbeRequest,
+ )
+import HostBootstrap.Lifecycle.Execution.Internal (
+    StepExecution,
+    registerStepRuntimeDependencyPackage,
+    replaceStepRuntimeDependencyService,
+    stepExecutionFrame,
+    stepExecutionPlanDigest,
+    stepExecutionRuntime,
+ )
+import HostBootstrap.Lifecycle.Prepared (
+    PreparedGate,
+    preparedGateAttempt,
+    preparedGateFence,
+    preparedGateJournalVersion,
+    preparedGateOperation,
+    preparedGatePlan,
+    preparedGateSession,
+ )
 import HostBootstrap.Readiness (Micros, microsValue, seconds)
 import HostBootstrap.Reconcile (
     ConflictDetail (..),
@@ -178,9 +203,7 @@ import HostBootstrap.Substrate.Provider.Resume (
  )
 import HostBootstrap.Substrate.Provider.Report (
     ProviderReportFault (ProviderCommandUnrun),
-    classifyProviderReport,
     providerReportFaultMessage,
-    providerReportLineBound,
  )
 import HostBootstrap.Substrate.Provider.Reconcile (
     PreparedProviderBinding,
@@ -192,6 +215,7 @@ import HostBootstrap.Substrate.Provider.Reconcile (
     ProviderPhaseAdvance,
     managedProviderGeneration,
     managedProviderKey,
+    managedProviderObservationVersion,
     preparedProviderBindingCallDigest,
     preparedProviderBindingGeneration,
     preparedProviderBindingOperationKey,
@@ -566,6 +590,104 @@ withRunningProviderDependency backend advance consume =
                 )
             )
 
+{- | Publish the pending canonical provider commitment and its invocation-only
+fresh-readiness service from one already-settled Ready transition.
+
+The operation's own still-unacknowledged gate supplies the journal commitment:
+this function runs inside the action, before @Chain@ acknowledges that gate.
+The live closure captures the strong backend and exact managed handle only in
+the separate service registry; neither can enter the canonical package.
+-}
+registerRunningProviderDependencyPackage ::
+    StrongProviderBackend backendId ->
+    StepExecution scope planId ->
+    Text ->
+    PreparedGate ->
+    PreparedProviderReady scope planId backendId providerId fromPhase operationKey callDigest attempt journalVersion ->
+    ProviderPhaseAdvance scope planId backendId providerId Running ->
+    Text ->
+    Word64 ->
+    IO (Either ReconcileError (RuntimeDependencyPackage scope planId))
+registerRunningProviderDependencyPackage backend execution scopeCommitment gate prepared advance route expiry =
+    withProviderPhaseAdvance advance $ \managed -> do
+        let binding = preparedProviderReadyBinding prepared
+            runtime = stepExecutionRuntime execution
+        case () of
+            _ | preparedGatePlan gate /= preparedProviderBindingPlanDigest binding ->
+                    pure (Left (Failure (failed "register provider runtime dependency" "the producer gate names another plan")))
+                | preparedGateOperation gate /= preparedProviderBindingOperationKey binding ->
+                    pure (Left (Failure (failed "register provider runtime dependency" "the producer gate names another operation")))
+              | otherwise ->
+                    case
+                        mkProviderRuntimeDependencyPackage
+                            (stepExecutionPlanDigest execution)
+                            scopeCommitment
+                            (preparedProviderBindingResourceKey binding)
+                            (stepExecutionFrame execution)
+                            (preparedProviderBindingOwner binding)
+                            (managedProviderGeneration managed)
+                            (providerGateCommitment gate)
+                            (providerReadyCommitment binding managed)
+                            route
+                            expiry of
+                        Left refusal -> pure (Left (Failure (failed "register provider runtime dependency" refusal)))
+                        Right package -> do
+                            registered <- registerStepRuntimeDependencyPackage runtime package
+                            case registered of
+                                Left refusal -> pure (Left (Failure (failed "register provider runtime dependency" refusal)))
+                                Right () -> do
+                                    usedNonces <- newIORef []
+                                    installed <-
+                                        replaceStepRuntimeDependencyService runtime package $ \request ->
+                                            case withRuntimeDependencyProbeRequest package request id of
+                                                Left refusal -> pure (Left refusal)
+                                                Right nonce -> do
+                                                    replay <-
+                                                        atomicModifyIORef' usedNonces $ \seen ->
+                                                            if nonce `elem` seen
+                                                                then (seen, True)
+                                                                else (nonce : seen, False)
+                                                    if replay
+                                                        then pure (Left "runtime dependency probe nonce has already been consumed")
+                                                        else
+                                                            either
+                                                                (Left . Text.pack . show)
+                                                                (Right . renderRuntimeDependencyProbeResponse package nonce)
+                                                                <$> probeRunningProvider backend managed
+                                    pure $ case installed of
+                                        Left refusal -> Left (Failure (failed "register provider runtime dependency" refusal))
+                                        Right () -> Right package
+
+providerGateCommitment :: PreparedGate -> Text
+providerGateCommitment gate =
+    providerCommitment
+        "gate"
+        [ preparedGatePlan gate
+        , preparedGateOperation gate
+        , preparedGateSession gate
+        , Text.pack (show (preparedGateFence gate))
+        , Text.pack (show (preparedGateAttempt gate))
+        , Text.pack (show (preparedGateJournalVersion gate))
+        ]
+
+providerReadyCommitment ::
+    PreparedProviderBinding scope planId backendId providerId ->
+    ManagedProviderHandle scope planId backendId providerId Running ->
+    Text
+providerReadyCommitment binding managed =
+    providerCommitment
+        "ready"
+        [ preparedProviderBindingCallDigest binding
+        , Text.pack (show (managedProviderObservationVersion managed))
+        ]
+
+providerCommitment :: Text -> [Text] -> Text
+providerCommitment domain fields =
+    Text.pack (ByteString.unpack (convertToBase Base16 digest))
+  where
+    framed value = Text.pack (show (Text.length value)) <> ":" <> value
+    digest = hash (ByteString.pack (Text.unpack (Text.concat (map framed ("hostbootstrap/provider-runtime/" <> domain <> "/v1" : fields))))) :: Digest SHA256
+
 probeRunningProvider ::
     StrongProviderBackend backendId ->
     ManagedProviderHandle scope planId backendId providerId Running ->
@@ -644,11 +766,25 @@ wrote on standard output is not read, because the probe's answer /is/ its exit
 status.
 -}
 directReadyProbeFailure :: Text -> Either String CapturedRun -> Maybe FailureDetail
-directReadyProbeFailure operation captured =
-    case classifyProviderReport providerReportLineBound captured of
-        Right _ -> Nothing
-        Left fault ->
-            Just (failed operation ("the exact probe " <> providerReportFaultMessage fault))
+directReadyProbeFailure operation captured = case captured of
+    Left refusal -> Just (failed operation ("the exact probe did not run: " <> Text.pack refusal))
+    Right run -> case capturedExit run of
+        ExitFailure code ->
+            Just
+                ( failed
+                    operation
+                    ( "the exact probe exited "
+                        <> Text.pack (show code)
+                        <> ": "
+                        <> Text.pack (firstOutputLine (capturedStderr run))
+                    )
+                )
+        ExitSuccess
+            | not (null (capturedStderr run)) ->
+                Just (failed operation ("the exact probe wrote stderr: " <> Text.pack (firstOutputLine (capturedStderr run))))
+            | otherwise -> Nothing
+  where
+    firstOutputLine = takeWhile (/= '\n')
 
 pollProviderReady ::
     HostConfig ->
@@ -1332,4 +1468,3 @@ identityGeneration :: String -> Word64
 identityGeneration = max 1 . foldl step 1469598103934665603
   where
     step acc character = (acc `xor` fromIntegral (fromEnum character)) * 1099511628211
-

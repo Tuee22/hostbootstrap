@@ -51,6 +51,7 @@ container :: ContainerLift
 container =
   ContainerLift
     { clImage = "demo:local",
+      clPlacement = ProviderGuestContainer,
       clMounts = [sockMount],
       clExtraArgs = ["--network=host"],
       clRemoveAfter = True,
@@ -183,6 +184,7 @@ containerCases =
       containerRunArgs
         ContainerLift
           { clImage = "img",
+            clPlacement = ProviderGuestContainer,
             clMounts = [V.Mount {V.source = "/host", V.target = "/in", V.readOnly = True}],
             clExtraArgs = [],
             clRemoveAfter = False,

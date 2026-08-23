@@ -162,7 +162,7 @@ fixtureSpec progName =
                                 case request of
                                     ProductionAssembly args ->
                                         pureConfigAssembly (Fixture.projectInit (T.pack progName) args)
-                                    HarnessAssembly _ _ _ ->
+                                    HarnessAssembly _ _ _ _ ->
                                         pureConfigAssembly
                                             ( Fixture.defaultProjectConfig
                                                 (T.pack progName)

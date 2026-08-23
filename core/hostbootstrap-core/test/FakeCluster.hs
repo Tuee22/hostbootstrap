@@ -44,6 +44,10 @@ module FakeCluster (
     fixtureNodeIdentity,
     armReplacementAfter,
     armApiUnready,
+    armHelmNoChanges,
+    armHelmMalformed,
+    armHelmCleanupMalformed,
+    armRolloutRefusal,
     armCreateRefusal,
     replacementIdentity,
     crashAfterCreatePath,
@@ -135,6 +139,12 @@ really refuse.
 -}
 armApiUnready :: FilePath -> IO ()
 armApiUnready root = writeFile (apiUnreadyPath root) "once\n"
+
+armHelmNoChanges, armHelmMalformed, armHelmCleanupMalformed, armRolloutRefusal :: FilePath -> IO ()
+armHelmNoChanges root = writeFile (root </> "helm-no-changes") "once\n"
+armHelmMalformed root = writeFile (root </> "helm-malformed") "once\n"
+armHelmCleanupMalformed root = writeFile (root </> "helm-cleanup-malformed") "once\n"
+armRolloutRefusal root = writeFile (root </> "rollout-refusal") "once\n"
 
 apiUnreadyPath :: FilePath -> FilePath
 apiUnreadyPath root = root </> "api-unready"
@@ -294,6 +304,44 @@ runFakeClusterClient root argv = case argv of
         case held of
             [] -> pure ()
             ((name, _) : _) -> replaceIfArmed root "nodes" name
+    ["upgrade", "--install", release, _artifact, "--namespace", _namespace, "--create-namespace=false", "--values", "-", "--set-string", _image, "--atomic", "--wait"] -> do
+        let noChanges = root </> "helm-no-changes"
+            malformed = root </> "helm-malformed"
+            installed = root </> ("helm-release-" <> release)
+        ifM (doesFileExist noChanges)
+            (removeFile noChanges >> putStrLn "no changes")
+            ( ifM (doesFileExist malformed)
+                (removeFile malformed >> putStrLn "an unfamiliar successful Helm response")
+                ( do
+                    alreadyInstalled <- doesFileExist installed
+                    writeFile installed "installed\n"
+                    putStrLn
+                        ( "Release \""
+                            <> release
+                            <> if alreadyInstalled then "\" has been upgraded" else "\" has been installed"
+                        )
+                )
+            )
+    ["rollout", "status", "--namespace", _namespace, target, "--timeout=5m"]
+        | "deployment/" `isPrefixOf` target -> do
+            let refusal = root </> "rollout-refusal"
+            ifM (doesFileExist refusal)
+                (removeFile refusal >> refuse "deployment did not become ready")
+                (putStrLn "deployment successfully rolled out")
+    ["uninstall", release, "--namespace", _namespace, "--wait"] -> do
+        let malformed = root </> "helm-cleanup-malformed"
+            installed = root </> ("helm-release-" <> release)
+        ifM (doesFileExist malformed)
+            (removeFile malformed >> putStrLn "unfamiliar uninstall success")
+            ( do
+                present <- doesFileExist installed
+                if present
+                    then removeFile installed >> putStrLn ("release \"" <> release <> "\" uninstalled")
+                    else refuse ("release " <> release <> " not found")
+            )
+    ["status", release, "--namespace", _namespace] -> do
+        present <- doesFileExist (root </> ("helm-release-" <> release))
+        if present then putStrLn "deployed" else refuse ("release " <> release <> " not found")
     _ -> refuse ("the cluster fixture does not recognize " <> show argv)
 
 -- ---------------------------------------------------------------------------
@@ -404,3 +452,6 @@ refuse :: String -> IO ()
 refuse reason = do
     hPutStrLn stderr reason
     exitWith (ExitFailure 1)
+
+ifM :: Monad monad => monad Bool -> monad value -> monad value -> monad value
+ifM condition whenTrue whenFalse = condition >>= \answer -> if answer then whenTrue else whenFalse

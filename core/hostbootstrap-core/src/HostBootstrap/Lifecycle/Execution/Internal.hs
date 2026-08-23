@@ -1,17 +1,31 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RoleAnnotations #-}
 
 module HostBootstrap.Lifecycle.Execution.Internal (
     ExecutionNode (..),
+    PlanExecutionPackage,
+    mintPlanExecutionPackage,
+    planExecutionPackagePlanDigest,
+    planExecutionPackageSpecDigest,
+    planExecutionPackageConfigDigest,
+    planExecutionPackageNodeIdentity,
+    planExecutionPackageProfile,
+    planExecutionPackageGeneration,
+    planExecutionPackageProject,
+    planExecutionPackageRoot,
+    planExecutionPackageNode,
     StepExecution,
     mintStepExecution,
     stepExecutionHostConfig,
     stepExecutionPlanDigest,
+    stepExecutionSpecDigest,
     stepExecutionConfigDigest,
     stepExecutionNodeIdentity,
     stepExecutionOperationKey,
     stepExecutionFrame,
     stepExecutionNode,
     stepExecutionRuntime,
+    stepExecutionPackage,
     executionNodeDependencyKeys,
 
     -- * The per-node runtime the interpreter opens
@@ -24,23 +38,38 @@ module HostBootstrap.Lifecycle.Execution.Internal (
     stepRuntimeTakenGates,
     takeStepRuntimeGate,
     stepRuntimeCarrier,
+    registerStepRuntimeDependencyPackage,
+    stepRuntimeDependencyPackages,
+    replaceStepRuntimeDependencyService,
+    invokeStepRuntimeDependencyService,
 
     -- * The in-process carrier for managed handles
     ResourceCarrier,
     newResourceCarrier,
     CarriedResource,
     mintCarriedResource,
+    mintTransferredCarriedResource,
+    mintSettledCarriedResource,
     carriedResourceKey,
     carriedResourceGeneration,
     carriedResourceObservationVersion,
+    carriedResourceOwnershipOperation,
+    carriedResourceSettlement,
     pushCarriedResource,
     readCarriedResources,
 ) where
 
+import Data.ByteString (ByteString)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Text (Text)
 import Data.Word (Word64)
 import HostBootstrap.HostConfig (HostConfig)
+import HostBootstrap.Lifecycle.Dependency.Internal (
+    RuntimeDependencyPackage,
+    runtimeDependencyPackageCommitment,
+    runtimeDependencyPackageKey,
+    runtimeDependencyPackageRoute,
+ )
 import HostBootstrap.Lifecycle.Prepared.Internal (PreparedGate, preparedGateOperation)
 
 {- | A neutral view of one validated plan node.
@@ -57,20 +86,74 @@ data ExecutionNode = ExecutionNode
     { executionNodeOperationKey :: Text
     , executionNodeFrame :: Text
     , executionNodeDependencies :: [(Text, Text)]
-    -- ^ This node's exact ordered plan prefix, each member as its operation key
-    -- paired with the frame the plan placed it in.  The frame travels with the
-    -- key because a node that adopts a dependency's resource must name the same
-    -- planned resource the plan did, and a planned resource is keyed by frame.
+    {- ^ This node's exact ordered plan prefix, each member as its operation key
+    paired with the frame the plan placed it in.  The frame travels with the
+    key because a node that adopts a dependency's resource must name the same
+    planned resource the plan did, and a planned resource is keyed by frame.
+    -}
     , executionNodeProjectedKeys :: [Text]
-    -- ^ The operations this node projects: keys the plan validated as living
-    -- under this node's own key.  A relating resource's key is a projection of
-    -- the keys it relates and is therefore nobody's own key, so this is the
-    -- only route by which a node can reach one.
+    {- ^ The operations this node projects: keys the plan validated as living
+    under this node's own key.  A relating resource's key is a projection of
+    the keys it relates and is therefore nobody's own key, so this is the
+    only route by which a node can reach one.
+    -}
+    , executionNodeChartWorkload :: Maybe (Text, Text, Text, Text, Text, Text, Text, Text, [Text], Text)
     }
     deriving (Eq, Show)
 
 executionNodeDependencyKeys :: ExecutionNode -> [Text]
 executionNodeDependencyKeys = map fst . executionNodeDependencies
+
+{- | Canonical, backend-neutral metadata projected from one exact admitted plan
+for one executing node. The nominal indices bind it to that plan and scope;
+the value contains no callback, backend witness, mutable gate, or carried
+resource.
+-}
+data PlanExecutionPackage scope planId
+    = PlanExecutionPackage
+        Text
+        Text
+        Text
+        Text
+        Text
+        Word64
+        Text
+        FilePath
+        ExecutionNode
+    deriving (Eq, Show)
+
+type role PlanExecutionPackage nominal nominal
+
+mintPlanExecutionPackage ::
+    Text -> Text -> Text -> Text -> Text -> Word64 -> Text -> FilePath -> ExecutionNode -> PlanExecutionPackage scope planId
+mintPlanExecutionPackage = PlanExecutionPackage
+
+planExecutionPackageSpecDigest :: PlanExecutionPackage scope planId -> Text
+planExecutionPackageSpecDigest (PlanExecutionPackage value _ _ _ _ _ _ _ _) = value
+
+planExecutionPackagePlanDigest :: PlanExecutionPackage scope planId -> Text
+planExecutionPackagePlanDigest (PlanExecutionPackage _ value _ _ _ _ _ _ _) = value
+
+planExecutionPackageConfigDigest :: PlanExecutionPackage scope planId -> Text
+planExecutionPackageConfigDigest (PlanExecutionPackage _ _ value _ _ _ _ _ _) = value
+
+planExecutionPackageNodeIdentity :: PlanExecutionPackage scope planId -> Text
+planExecutionPackageNodeIdentity (PlanExecutionPackage _ _ _ value _ _ _ _ _) = value
+
+planExecutionPackageProfile :: PlanExecutionPackage scope planId -> Text
+planExecutionPackageProfile (PlanExecutionPackage _ _ _ _ value _ _ _ _) = value
+
+planExecutionPackageGeneration :: PlanExecutionPackage scope planId -> Word64
+planExecutionPackageGeneration (PlanExecutionPackage _ _ _ _ _ value _ _ _) = value
+
+planExecutionPackageProject :: PlanExecutionPackage scope planId -> Text
+planExecutionPackageProject (PlanExecutionPackage _ _ _ _ _ _ value _ _) = value
+
+planExecutionPackageRoot :: PlanExecutionPackage scope planId -> FilePath
+planExecutionPackageRoot (PlanExecutionPackage _ _ _ _ _ _ _ value _) = value
+
+planExecutionPackageNode :: PlanExecutionPackage scope planId -> ExecutionNode
+planExecutionPackageNode (PlanExecutionPackage _ _ _ _ _ _ _ _ value) = value
 
 {- | Plan-minted authority to execute one exact step.
 
@@ -79,13 +162,11 @@ minted it.  Its constructor stays private even inside the package: trusted
 interpreters use 'mintStepExecution', while project callbacks receive only the
 opaque public type from "HostBootstrap.Lifecycle.Execution".
 -}
-data StepExecution scope planId = StepExecution
-    HostConfig
-    Text
-    Text
-    Text
-    ExecutionNode
-    (StepRuntime scope planId)
+data StepExecution scope planId
+    = StepExecution
+        HostConfig
+        (PlanExecutionPackage scope planId)
+        (StepRuntime scope planId)
 
 type role StepExecution nominal nominal
 
@@ -100,23 +181,23 @@ entry, which is a strictly later moment than the pure mint.
 -}
 mintStepExecution ::
     HostConfig ->
-    Text ->
-    Text ->
-    Text ->
-    ExecutionNode ->
+    PlanExecutionPackage scope planId ->
     StepRuntime scope planId ->
     StepExecution scope planId
 mintStepExecution = StepExecution
 
 stepExecutionHostConfig :: StepExecution scope planId -> HostConfig
-stepExecutionHostConfig (StepExecution cfg _ _ _ _ _) = cfg
+stepExecutionHostConfig (StepExecution cfg _ _) = cfg
 
 stepExecutionPlanDigest :: StepExecution scope planId -> Text
-stepExecutionPlanDigest (StepExecution _ digest _ _ _ _) = digest
+stepExecutionPlanDigest (StepExecution _ package _) = planExecutionPackagePlanDigest package
+
+stepExecutionSpecDigest :: StepExecution scope planId -> Text
+stepExecutionSpecDigest (StepExecution _ package _) = planExecutionPackageSpecDigest package
 
 -- | The stable digest of the exact configuration admitted with the plan.
 stepExecutionConfigDigest :: StepExecution scope planId -> Text
-stepExecutionConfigDigest (StepExecution _ _ digest _ _ _) = digest
+stepExecutionConfigDigest (StepExecution _ package _) = planExecutionPackageConfigDigest package
 
 {- | Reporting view of the exact stable node identity retained by the plan.
 
@@ -125,7 +206,7 @@ does not import "HostBootstrap.Step" and create a @Step -> Execution -> Step@
 module cycle. It is never parsed back into authority.
 -}
 stepExecutionNodeIdentity :: StepExecution scope planId -> Text
-stepExecutionNodeIdentity (StepExecution _ _ _ identity _ _) = identity
+stepExecutionNodeIdentity (StepExecution _ package _) = planExecutionPackageNodeIdentity package
 
 stepExecutionOperationKey :: StepExecution scope planId -> Text
 stepExecutionOperationKey = executionNodeOperationKey . stepExecutionNode
@@ -135,11 +216,14 @@ stepExecutionFrame = executionNodeFrame . stepExecutionNode
 
 -- | Package-internal view of the descriptor's exact current node.
 stepExecutionNode :: StepExecution scope planId -> ExecutionNode
-stepExecutionNode (StepExecution _ _ _ _ node _) = node
+stepExecutionNode (StepExecution _ package _) = planExecutionPackageNode package
 
 -- | Package-internal view of the interpreter state behind the descriptor.
 stepExecutionRuntime :: StepExecution scope planId -> StepRuntime scope planId
-stepExecutionRuntime (StepExecution _ _ _ _ _ runtime) = runtime
+stepExecutionRuntime (StepExecution _ _ runtime) = runtime
+
+stepExecutionPackage :: StepExecution scope planId -> PlanExecutionPackage scope planId
+stepExecutionPackage (StepExecution _ package _) = package
 
 -- ---------------------------------------------------------------------------
 -- The per-node runtime
@@ -232,6 +316,75 @@ takeStepRuntimeGate (StepRuntime _ available taken _) key = do
 stepRuntimeCarrier :: StepRuntime scope planId -> ResourceCarrier scope planId
 stepRuntimeCarrier (StepRuntime _ _ _ carrier) = carrier
 
+{- | Register one canonical dependency commitment in the invocation-wide
+registry. Exact retries converge; a different package under the same closed
+domain/resource key refuses rather than replacing recovery identity.
+-}
+registerStepRuntimeDependencyPackage ::
+    StepRuntime scope planId ->
+    RuntimeDependencyPackage scope planId ->
+    IO (Either Text ())
+registerStepRuntimeDependencyPackage runtime package =
+    let ResourceCarrier (_, packages, _) = stepRuntimeCarrier runtime
+     in atomicModifyIORef' packages $ \current ->
+            case filter ((== runtimeDependencyPackageKey package) . runtimeDependencyPackageKey) current of
+                [] -> (current ++ [package], Right ())
+                [existing]
+                    | existing == package -> (current, Right ())
+                    | otherwise -> (current, Left "runtime dependency key already names another canonical package")
+                _ -> (current, Left "runtime dependency registry contains a duplicate canonical key")
+
+stepRuntimeDependencyPackages :: StepRuntime scope planId -> IO [RuntimeDependencyPackage scope planId]
+stepRuntimeDependencyPackages runtime =
+    let ResourceCarrier (_, packages, _) = stepRuntimeCarrier runtime
+     in readIORef packages
+
+{- | Install or replace the live closure for one already-registered exact
+package. The closure is held only in the separate live tuple and is never a
+field of the canonical package.
+-}
+replaceStepRuntimeDependencyService ::
+    StepRuntime scope planId ->
+    RuntimeDependencyPackage scope planId ->
+    (ByteString -> IO (Either Text ByteString)) ->
+    IO (Either Text ())
+replaceStepRuntimeDependencyService runtime package service = do
+    let ResourceCarrier (_, packages, services) = stepRuntimeCarrier runtime
+        route = runtimeDependencyPackageRoute package
+        commitment = runtimeDependencyPackageCommitment package
+    canonical <- readIORef packages
+    if package `notElem` canonical
+        then pure (Left "runtime dependency live service has no exact canonical package")
+        else do
+            atomicModifyIORef'
+                services
+                (\current -> (filter (\(existingRoute, _, _) -> existingRoute /= route) current ++ [(route, commitment, service)], ()))
+            pure (Right ())
+
+{- | Invoke the separately retained live closure only after the exact package,
+route, and canonical commitment all match. A refusal returns before the closure
+is evaluated.
+-}
+invokeStepRuntimeDependencyService ::
+    StepRuntime scope planId ->
+    RuntimeDependencyPackage scope planId ->
+    ByteString ->
+    IO (Either Text ByteString)
+invokeStepRuntimeDependencyService runtime package request = do
+    let ResourceCarrier (_, packages, services) = stepRuntimeCarrier runtime
+        route = runtimeDependencyPackageRoute package
+        commitment = runtimeDependencyPackageCommitment package
+    canonical <- readIORef packages
+    live <- readIORef services
+    if package `notElem` canonical
+        then pure (Left "runtime dependency probe has no exact canonical package")
+        else case [(observedCommitment, service) | (observedRoute, observedCommitment, service) <- live, observedRoute == route] of
+            [(observedCommitment, service)]
+                | observedCommitment == commitment -> service request
+                | otherwise -> pure (Left "runtime dependency live commitment mismatch")
+            [] -> pure (Left "runtime dependency live service is absent")
+            _ -> pure (Left "runtime dependency live route is duplicated")
+
 -- ---------------------------------------------------------------------------
 -- The in-process carrier
 
@@ -245,20 +398,41 @@ handle is never serialised (§ EE), so this is how the node that acquires a
 resource hands it to the node that depends on it — in process, inside one
 interpretation.
 -}
-data CarriedResource = CarriedResource Text Word64 Word64
+data CarriedResource = CarriedResource Text Word64 Word64 (Maybe Text) (Maybe (Text, Maybe ByteString, ByteString))
     deriving (Eq, Show)
 
 mintCarriedResource :: Text -> Word64 -> Word64 -> CarriedResource
-mintCarriedResource = CarriedResource
+mintCarriedResource key generation version =
+    CarriedResource key generation version Nothing Nothing
+
+{- | Reconstitute authenticated ownership evidence transferred from another
+lifecycle frame without claiming that this frame owns its settlement.
+-}
+mintTransferredCarriedResource :: Text -> Word64 -> Word64 -> Text -> CarriedResource
+mintTransferredCarriedResource key generation version operation =
+    CarriedResource key generation version (Just operation) Nothing
+
+{- | Retain the exact frame and canonical resource member that Chain must
+publish before acknowledging the matching operation outcome.
+-}
+mintSettledCarriedResource :: Text -> Word64 -> Word64 -> Text -> Text -> Maybe ByteString -> ByteString -> CarriedResource
+mintSettledCarriedResource key generation version frame operation expected bytes =
+    CarriedResource key generation version (Just operation) (Just (frame, expected, bytes))
 
 carriedResourceKey :: CarriedResource -> Text
-carriedResourceKey (CarriedResource key _ _) = key
+carriedResourceKey (CarriedResource key _ _ _ _) = key
 
 carriedResourceGeneration :: CarriedResource -> Word64
-carriedResourceGeneration (CarriedResource _ generation _) = generation
+carriedResourceGeneration (CarriedResource _ generation _ _ _) = generation
 
 carriedResourceObservationVersion :: CarriedResource -> Word64
-carriedResourceObservationVersion (CarriedResource _ _ version) = version
+carriedResourceObservationVersion (CarriedResource _ _ version _ _) = version
+
+carriedResourceOwnershipOperation :: CarriedResource -> Maybe Text
+carriedResourceOwnershipOperation (CarriedResource _ _ _ operation _) = operation
+
+carriedResourceSettlement :: CarriedResource -> Maybe (Text, Maybe ByteString, ByteString)
+carriedResourceSettlement (CarriedResource _ _ _ _ settlement) = settlement
 
 {- | The managed resources one interpretation has acquired so far.
 
@@ -266,12 +440,21 @@ It is indexed by the plan's @scope@ and @planId@, so a handle carried under one
 interpretation cannot be read out under another even though the erased form
 carries no index of its own.
 -}
-newtype ResourceCarrier scope planId = ResourceCarrier (IORef [CarriedResource])
+newtype ResourceCarrier scope planId
+    = ResourceCarrier
+        ( IORef [CarriedResource]
+        , IORef [RuntimeDependencyPackage scope planId]
+        , IORef [(Text, Text, ByteString -> IO (Either Text ByteString))]
+        )
 
 type role ResourceCarrier nominal nominal
 
 newResourceCarrier :: IO (ResourceCarrier scope planId)
-newResourceCarrier = ResourceCarrier <$> newIORef []
+newResourceCarrier = do
+    carried <- newIORef []
+    packages <- newIORef []
+    services <- newIORef []
+    pure (ResourceCarrier (carried, packages, services))
 
 {- | Carry one managed resource, replacing any earlier entry under the same
 operation key.  A node that re-runs mints a fresh handle for the same key, and
@@ -279,7 +462,7 @@ the dependency-snapshot traversal refuses a key it finds twice, so the newest
 identity is the one that must be visible.
 -}
 pushCarriedResource :: ResourceCarrier scope planId -> CarriedResource -> IO ()
-pushCarriedResource (ResourceCarrier entries) entry =
+pushCarriedResource (ResourceCarrier (entries, _, _)) entry =
     atomicModifyIORef'
         entries
         ( \carried ->
@@ -289,4 +472,4 @@ pushCarriedResource (ResourceCarrier entries) entry =
         )
 
 readCarriedResources :: ResourceCarrier scope planId -> IO [CarriedResource]
-readCarriedResources (ResourceCarrier entries) = readIORef entries
+readCarriedResources (ResourceCarrier (entries, _, _)) = readIORef entries

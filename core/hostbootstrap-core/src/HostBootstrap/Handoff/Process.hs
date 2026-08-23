@@ -47,20 +47,43 @@ everywhere, an absent row is a refusal it can read rather than a module that is
 not there, and the case that covers it asserts that refusal instead of
 disappearing.
 -}
-module HostBootstrap.Handoff.Process
-    ( withForwardLifecycleChildProcess
-    , withReverseLifecycleChildProcess
-    )
+module HostBootstrap.Handoff.Process (
+    withForwardLifecycleChildProcess,
+    withProviderDependencyForwardLifecycleChildProcess,
+    withCarriedProviderDependencyForwardLifecycleChildProcess,
+    seedProviderDependencyCarrierKernel,
+    withCarriedProviderDependencyFromCarrierKernel,
+    withPreparedReverseLifecycleChildProcess,
+    withReverseLifecycleChildProcess,
+)
 where
 
 import Data.ByteString (ByteString)
+import Data.Proxy (Proxy (Proxy))
 import Data.Text (Text)
 import Data.Word (Word64)
-import HostBootstrap.Handoff (HandoffBindingInput)
-import HostBootstrap.Handoff.Process.Route (LifecycleProcessRoute)
-import HostBootstrap.Handoff.Relay (BrokerLink)
+import HostBootstrap.Handoff (HandoffBindingInput, providerDependencyPackageFields, providerDependencyProbeRequestFromFields, withProviderDependencyReprobeKernel)
+import HostBootstrap.Handoff.Process.Route (
+    LifecycleProcessRoute,
+    withRecoveryLifecycleProcessRouteForKernel,
+ )
+import HostBootstrap.Handoff.Relay (BrokerLink, withProviderDependencyReprobeEndpointKernel)
 import HostBootstrap.HostConfig (HostConfig)
-import HostBootstrap.Teardown.Internal (ReverseDescent)
+import qualified HostBootstrap.Lifecycle.Dependency.Internal as Dependency
+import HostBootstrap.Lifecycle.Execution.Internal (
+    ResourceCarrier,
+    invokeStepRuntimeDependencyService,
+    mintTransferredCarriedResource,
+    newStepRuntime,
+    pushCarriedResource,
+    registerStepRuntimeDependencyPackage,
+    replaceStepRuntimeDependencyService,
+    stepRuntimeDependencyPackages,
+ )
+import HostBootstrap.Teardown.Internal (
+    ReverseDescent,
+    withReverseDescentProcessInputsKernel,
+ )
 #if !defined(mingw32_HOST_OS)
 import Control.Concurrent (threadDelay)
 import qualified Control.Exception as Exception
@@ -122,6 +145,139 @@ withForwardLifecycleChildProcess config link route request input payload =
                 \_ -> pure (Right ())
 #endif
 
+{- | Install one lexical provider reprobe service inside the same Process
+exchange that owns the child. Closing the exchange closes both endpoint and
+kernel; the child receives no probe, handle, or reusable authority.
+-}
+withProviderDependencyForwardLifecycleChildProcess ::
+    HostConfig ->
+    BrokerLink scope brokerGeneration ->
+    LifecycleProcessRoute scope rootPlanId brokerGeneration catalogId parent child verb ->
+    Word64 ->
+    HandoffBindingInput ->
+    ByteString ->
+    ByteString ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    IO (Either Text Word64) ->
+    IO (Either Text ())
+withProviderDependencyForwardLifecycleChildProcess config link route request input payload packageWire plan scope resource frame origin generation journal receipt providerRoute now probe =
+    withProviderDependencyReprobeKernel
+        packageWire
+        plan
+        scope
+        resource
+        frame
+        origin
+        generation
+        journal
+        receipt
+        providerRoute
+        now
+        probe
+        $ \endpoint ->
+            withProviderDependencyReprobeEndpointKernel link packageWire endpoint $ \installed ->
+                withForwardLifecycleChildProcess config installed route request input payload
+
+{- | Carry an already registered invocation-local provider package and its
+fixed live service into one authenticated child exchange. The endpoint checks
+the canonical package/request join before invoking the retained service.
+-}
+withCarriedProviderDependencyForwardLifecycleChildProcess ::
+    HostConfig ->
+    BrokerLink scope brokerGeneration ->
+    LifecycleProcessRoute scope rootPlanId brokerGeneration catalogId parent child verb ->
+    Word64 ->
+    HandoffBindingInput ->
+    ByteString ->
+    ByteString ->
+    (ByteString -> IO (Either Text ByteString)) ->
+    IO (Either Text ())
+withCarriedProviderDependencyForwardLifecycleChildProcess config link route request input payload packageWire service =
+    case providerDependencyPackageFields packageWire of
+        Left failure -> pure (Left failure)
+        Right _ ->
+            withProviderDependencyReprobeEndpointKernel link packageWire endpoint $ \installed ->
+                withForwardLifecycleChildProcess config installed route request input payload
+  where
+    endpoint fields = case providerDependencyProbeRequestFromFields packageWire fields of
+        Left failure -> pure (Left failure)
+        Right _nonce -> case fields of
+            [requestWire] -> fmap (fmap pure) (service requestWire)
+            _ -> pure (Left "provider dependency request fields changed after validation")
+
+seedProviderDependencyCarrierKernel ::
+    ResourceCarrier scope planId ->
+    ByteString ->
+    (Text -> IO (Either Text (Either Text Word64))) ->
+    IO (Either Text ())
+seedProviderDependencyCarrierKernel carrier packageWire client =
+    case Dependency.runtimeDependencyPackageFromWire packageWire of
+        Left failure -> pure (Left failure)
+        Right package
+            | Dependency.runtimeDependencyPackageDomain package /= "provider" ->
+                pure (Left "forward child: the admitted dependency package is not a provider package")
+            | otherwise -> do
+                -- The authenticated package transfers ownership evidence, but
+                -- not the parent frame's settlement.  Version 1 is only the
+                -- descriptive child-side handle version; the package binds the
+                -- exact resource, generation, receipt, and live reprobe.
+                pushCarriedResource
+                    carrier
+                    ( mintTransferredCarriedResource
+                        (Dependency.runtimeDependencyPackageResource package)
+                        (Dependency.runtimeDependencyPackageGeneration package)
+                        1
+                        (Dependency.runtimeDependencyPackageResource package)
+                    )
+                runtime <- newStepRuntime carrier
+                registered <- registerStepRuntimeDependencyPackage runtime package
+                case registered of
+                    Left failure -> pure (Left failure)
+                    Right () -> replaceStepRuntimeDependencyService runtime package $ \requestWire ->
+                        case Dependency.withRuntimeDependencyProbeRequest package requestWire id of
+                            Left failure -> pure (Left failure)
+                            Right nonce -> fmap (encodeOutcome package nonce) (client nonce)
+  where
+    encodeOutcome package nonce outcome = case outcome of
+        Left failure -> Left failure
+        Right (Left reason) -> Dependency.renderRuntimeDependencyProbeRefusal package nonce reason
+        Right (Right observed) -> Right (Dependency.renderRuntimeDependencyProbeResponse package nonce observed)
+
+withCarriedProviderDependencyFromCarrierKernel ::
+    HostConfig ->
+    BrokerLink scope brokerGeneration ->
+    LifecycleProcessRoute scope rootPlanId brokerGeneration catalogId parent child verb ->
+    Word64 ->
+    HandoffBindingInput ->
+    ByteString ->
+    ResourceCarrier scope planId ->
+    IO (Either Text ())
+withCarriedProviderDependencyFromCarrierKernel config link route request input payload carrier = do
+    runtime <- newStepRuntime carrier
+    packages <- stepRuntimeDependencyPackages runtime
+    case filter ((== "provider") . Dependency.runtimeDependencyPackageDomain) packages of
+        [] -> withForwardLifecycleChildProcess config link route request input payload
+        [package] ->
+            withCarriedProviderDependencyForwardLifecycleChildProcess
+                config
+                link
+                route
+                request
+                input
+                payload
+                (Dependency.runtimeDependencyPackageWire package)
+                (invokeStepRuntimeDependencyService runtime package)
+        _ -> pure (Left "forward child: multiple provider dependency packages are carried")
+
 {- | Launch one reverse child and complete its edge on the same terms.
 
 The prepared descent carries its own catalog-admitted package, so this entry
@@ -155,6 +311,28 @@ withReverseLifecycleChildProcess config link route request descent =
         offerReverseDescentKernel link channel request descent $ \bound report persist ->
             withAcknowledgedBoundReverseLifecycleCompletionKernel bound report persist $
                 \_ -> pure (Right ())
+
+{- | Derive and own one reverse child directly from its prepared descent.
+
+The target binary is the only platform-dependent description supplied by the
+root coordinator. Package, lift route, binding input, and verb all come from
+the opaque prepared value and remain lexical to route construction.
+-}
+withPreparedReverseLifecycleChildProcess ::
+    forall scope brokerGeneration planId parentFrame childFrame verb descentId.
+    HostConfig ->
+    BrokerLink scope brokerGeneration ->
+    Word64 ->
+    Text ->
+    ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId ->
+    IO (Either Text ())
+withPreparedReverseLifecycleChildProcess config link request targetBinary descent = do
+    withReverseDescentProcessInputsKernel descent $ \package route input verb ->
+        withRecoveryLifecycleProcessRouteForKernel
+            (Proxy :: Proxy scope)
+            (Proxy :: Proxy brokerGeneration)
+            package route input verb targetBinary $ \processRoute ->
+                withReverseLifecycleChildProcess config link processRoute request descent
 
 {- | Hold one child, its pipes, and its group for exactly one exchange.
 

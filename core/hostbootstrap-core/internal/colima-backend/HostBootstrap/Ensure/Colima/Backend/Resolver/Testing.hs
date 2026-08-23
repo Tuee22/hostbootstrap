@@ -7,8 +7,7 @@ module HostBootstrap.Ensure.Colima.Backend.Resolver.Testing
     ResolverInstallScenarioView (..),
     ResolverFixtureLayout (..),
     resolverFixtureLayout,
-    resolverFixtureProgram,
-    resolverFixtureProgramForHomeRoot,
+    executeNativeResolverFixture,
     parseResolverProtocolView,
     parseResolverFixtureProtocolView,
     settleResolverExecutionView,
@@ -33,10 +32,7 @@ import HostBootstrap.Ensure.Colima.Backend.Resolver
     trustedApplePythonPath,
     trustedAppleToolchainFingerprint,
   )
-import HostBootstrap.Ensure.Colima.Backend.Resolver.Program
-  ( resolverProgramForFixtureRoot,
-    resolverProgramForFixtureRootAndHomeRoot,
-  )
+import HostBootstrap.Ensure.Colima.Backend.Resolver.Native (resolveNativeResolverFixture)
 import HostBootstrap.Ensure.Colima.Backend.Resolver.Install
   ( TrustedInstallActions (..),
     TrustedInstallResult (..),
@@ -52,6 +48,7 @@ import HostBootstrap.Ensure.Colima.Backend.Resolver.Protocol
     TrustedToolIdentity (..),
     parseTrustedResolverOutput,
     parseTrustedResolverOutputForFixtureRoot,
+    renderTrustedResolverProtocol,
     trustedDirectoryBindingsFingerprint,
   )
 import HostBootstrap.Ensure.Colima.Backend.Runner
@@ -153,11 +150,10 @@ resolverFixtureLayout root =
             [root </> "usr" </> "bin", root </> "bin", root </> "usr" </> "sbin", root </> "sbin"]
         }
 
-resolverFixtureProgram :: FilePath -> Either String String
-resolverFixtureProgram = resolverProgramForFixtureRoot
-
-resolverFixtureProgramForHomeRoot :: FilePath -> FilePath -> Either String String
-resolverFixtureProgramForHomeRoot = resolverProgramForFixtureRootAndHomeRoot
+executeNativeResolverFixture :: FilePath -> FilePath -> IO ResolverExecutionFixture
+executeNativeResolverFixture root home = do
+  protocol <- resolveNativeResolverFixture root home
+  pure (ResolverExecutionCompleted ExitSuccess (renderTrustedResolverProtocol protocol) "")
 
 parseResolverProtocolView :: String -> Either String ResolverProtocolView
 parseResolverProtocolView = fmap protocolView . parseTrustedResolverOutput

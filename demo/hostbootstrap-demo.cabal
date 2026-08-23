@@ -33,6 +33,7 @@ executable hostbootstrap-demo
       HostBootstrapDemo.Accelerator.Daemon
       HostBootstrapDemo.Accelerator.Protocol
       HostBootstrapDemo.Commands
+      HostBootstrapDemo.ClusterConfig
       HostBootstrapDemo.Config
       HostBootstrapDemo.Container
       HostBootstrapDemo.Web.Api
@@ -42,6 +43,7 @@ executable hostbootstrap-demo
       base >=4.18 && <5
     , aeson
     , bytestring
+    , cryptonite
     , dhall
     , directory
     , filepath
@@ -52,6 +54,7 @@ executable hostbootstrap-demo
     , purescript-bridge
     , stm
     , text
+    , temporary
     , wai
     , wai-websockets
     , warp
@@ -69,12 +72,14 @@ test-suite hostbootstrap-demo-test
       AcceleratorSpec
       AcceleratorRuntimeSpec
       CommandsSpec
+      ClusterConfigSpec
       ConfigSpec
       WebServerSpec
       HostBootstrapDemo.Accelerator
       HostBootstrapDemo.Accelerator.Daemon
       HostBootstrapDemo.Accelerator.Protocol
       HostBootstrapDemo.Commands
+      HostBootstrapDemo.ClusterConfig
       HostBootstrapDemo.Config
       HostBootstrapDemo.Container
       HostBootstrapDemo.Web.Api
@@ -84,6 +89,7 @@ test-suite hostbootstrap-demo-test
       aeson
     , base >=4.18 && <5
     , bytestring
+    , cryptonite
     , dhall
     , directory
     , filepath
@@ -96,6 +102,7 @@ test-suite hostbootstrap-demo-test
     , tasty
     , tasty-hunit
     , text
+    , temporary
     , wai
     , wai-websockets
     , warp

@@ -46,25 +46,17 @@ import HostBootstrap.Ensure.Colima.Backend.Resolver.Override
     currentResolverOverride,
   )
 import HostBootstrap.Ensure.Colima.Backend.Resolver.Protocol (TrustedToolIdentity (..))
+import HostBootstrap.Ensure.Colima.Backend.Resolver.Native (resolveNativeAppleToolchain)
 import HostBootstrap.Ensure.Colima.Backend.Runner (BoundedToolResult (..))
 #if !defined(mingw32_HOST_OS)
-import HostBootstrap.Ensure.Colima.Backend.Runner
-  ( BackendNamespace (..),
-    runBoundedTool,
-  )
 import HostBootstrap.Ensure.Colima.Backend.Resolver.Protocol
   ( ResolvedTool (..),
     TrustedResolverProtocol (..),
     parseTrustedResolverOutput,
     parseTrustedResolverOutputForFixtureRoot,
-    renderSearchPath,
-    systemHelperDirectories,
-    trustedPythonCandidate,
   )
 import Control.Exception (IOException, bracket, try)
 import Control.Monad (unless)
-import HostBootstrap.Ensure.Colima.Backend.Resolver.Program (resolverProgram)
-import System.FilePath ((</>))
 import System.Exit (ExitCode (ExitSuccess))
 import System.Posix.Files
   ( FileStatus,
@@ -119,14 +111,8 @@ resolveTrustedAppleToolchain effectiveHome = do
       case bootstrap of
         Left reason -> pure (TrustedResolverUnsupported reason)
         Right bootstrapIdentity -> do
-          result <-
-            runBoundedTool
-              resolverTimeoutSeconds
-              (resolverNamespace effectiveHome)
-              trustedPythonCandidate
-              trustedPythonCandidate
-              ["-I", "-S", "-c", resolverProgram, effectiveHome]
-          pure (settleResolverResult effectiveHome bootstrapIdentity result)
+          protocol <- resolveNativeAppleToolchain effectiveHome
+          pure (settleTrustedProtocol effectiveHome bootstrapIdentity protocol)
 #endif
 
 currentTrustedResolverOverrideHomeForTesting :: IO (Maybe FilePath)
@@ -181,22 +167,6 @@ settleTrustedResolverFixtureResultForTesting root =
 #endif
 
 #if !defined(mingw32_HOST_OS)
-resolverTimeoutSeconds :: Int
-resolverTimeoutSeconds = 15
-
-resolverNamespace :: FilePath -> BackendNamespace
-resolverNamespace effectiveHome =
-  BackendNamespace
-    { namespaceHomeDirectory = effectiveHome,
-      namespaceColimaHome = effectiveHome </> ".colima",
-      namespaceLimaHome = effectiveHome,
-      namespaceColimaCacheHome = effectiveHome,
-      namespaceTemporaryDirectory = effectiveHome,
-      namespaceDockerConfig = effectiveHome </> ".docker",
-      namespaceWorkingDirectory = "/usr",
-      namespaceExecutablePath = renderSearchPath systemHelperDirectories
-    }
-
 settleResolverResult :: FilePath -> TrustedToolIdentity -> BoundedToolResult -> TrustedResolverResult
 settleResolverResult = settleResolverResultWithParser parseTrustedResolverOutput
 

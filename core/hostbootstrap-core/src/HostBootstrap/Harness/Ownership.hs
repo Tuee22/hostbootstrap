@@ -69,6 +69,8 @@ module HostBootstrap.Harness.Ownership (
     acquireOwnedRunConfig,
     releaseOwnedRunConfig,
     protectedProjectRunOwnership,
+    protectedProjectRunOwnershipWithRecovery,
+    RecoveredResourceExecutor (..),
     protectedRunOwnership,
     harnessAuthorityStoreDirectory,
 ) where
@@ -118,10 +120,21 @@ import HostBootstrap.Lifecycle.Mode (
     HarnessBoundRecovery (HarnessOpenRevisionRecovery, HarnessPersistedClosing),
     HarnessRoot,
     IncompleteLeaseKind (IncompleteBound, IncompleteUnbound),
-    ModeError (ModeOwnershipUnresolved, ModeStoreFailure),
+    ModeError (ModeOwnershipUnresolved, ModeSessionFailure, ModeStoreFailure),
     OpenRevisionKind (CompletedMigration, IncompleteMigration, NormalRevision),
+    ProjectClosureEvidence,
+    RecoveredForestSettled,
     abandonedHarnessBroker,
-    activateMigratedPlan,
+    abandonedHarnessAdmission,
+    abandonedHarnessSnapshot,
+    authorizeHarnessClose,
+    activateMigratedPlanConfigless,
+    withMigratedRecoveredProjectFrames,
+    driveRecoveredForest,
+    planSnapshotPlanDigest,
+    recordRecoveredResourceReleased,
+    recoveredDestroySettledClosure,
+    withRehydratedSnapshotResourceSet,
     withCompletedMigrationRecovery,
     RunId,
     VerifiedIncompleteRunLease,
@@ -148,6 +161,11 @@ import HostBootstrap.Lifecycle.Mode (
     withAbandonedHarnessRun,
     withHarnessRoot,
  )
+import HostBootstrap.Lifecycle.Session
+    ( RehydratedOwnershipReceipt
+    , RehydratedResourceHandle
+    , verifyAllSessionsClosed
+    )
 import HostBootstrap.ProjectRoot (
     CanonicalProjectRoot,
     canonicalProjectRootPath,
@@ -244,6 +262,32 @@ releaseOwnedRunConfig (OwnedHarnessRoot store project _ root _) owned = do
                         (releaseGeneratedConfig ownershipRow session key owned)
     pure (either (Left . Text.unpack . generatedConfigErrorMessage) Right outcome)
 
+newtype RecoveredResourceExecutor = RecoveredResourceExecutor
+    { executeRecoveredResource ::
+        forall scope planId id brokerGeneration.
+        Text ->
+        Text ->
+        Word64 ->
+        RehydratedResourceHandle scope planId id brokerGeneration ->
+        RehydratedOwnershipReceipt scope planId id brokerGeneration ->
+        IO (Either Text ())
+    }
+
+refusingRecoveredResourceExecutor :: RecoveredResourceExecutor
+refusingRecoveredResourceExecutor =
+    RecoveredResourceExecutor $ \frame adapter revision _ _ ->
+        pure
+            ( Left
+                ( "no recovered backend is installed for owned resource at "
+                    <> frame
+                    <> " ("
+                    <> adapter
+                    <> " v"
+                    <> Text.pack (show revision)
+                    <> ")"
+                )
+            )
+
 protectedProjectRunOwnership ::
     InstalledProjectIdentity projectId ->
     CanonicalProjectRoot rootScope rootId ->
@@ -253,8 +297,24 @@ protectedProjectRunOwnership ::
     FilePath ->
     HarnessRunOwnership (OwnedHarnessRoot projectId)
 protectedProjectRunOwnership project stateRoot siblingDirectory dataParent =
+    protectedProjectRunOwnershipWithRecovery
+        refusingRecoveredResourceExecutor
+        project
+        stateRoot
+        siblingDirectory
+        dataParent
+
+protectedProjectRunOwnershipWithRecovery ::
+    RecoveredResourceExecutor ->
+    InstalledProjectIdentity projectId ->
+    CanonicalProjectRoot rootScope rootId ->
+    FilePath ->
+    FilePath ->
+    HarnessRunOwnership (OwnedHarnessRoot projectId)
+protectedProjectRunOwnershipWithRecovery executor project stateRoot siblingDirectory dataParent =
     HarnessRunOwnership
         ( ownProjectRun
+            executor
             project
             ( canonicalProjectRootPath stateRoot
                 </> harnessAuthorityStoreDirectory
@@ -291,6 +351,7 @@ ownRun ::
     IO (Either String (result, Maybe HarnessRunCleanupFailure))
 ownRun project stateRoot siblingDirectory dataParent body =
     ownProjectRun
+        refusingRecoveredResourceExecutor
         project
         (stateRoot </> harnessAuthorityStoreDirectory)
         siblingDirectory
@@ -302,13 +363,14 @@ ownRun project stateRoot siblingDirectory dataParent body =
 
 ownProjectRun ::
     forall projectId result.
+    RecoveredResourceExecutor ->
     InstalledProjectIdentity projectId ->
     FilePath ->
     FilePath ->
     FilePath ->
     (OwnedHarnessRoot projectId -> IO result) ->
     IO (Either String (result, Maybe HarnessRunCleanupFailure))
-ownProjectRun project storeRoot siblingDirectory dataParent body = do
+ownProjectRun recoveryExecutor project storeRoot siblingDirectory dataParent body = do
     opened <- openProtectedStore storeRoot
     case opened of
         Left failure -> pure (Left (storeRefused failure))
@@ -335,7 +397,7 @@ ownProjectRun project storeRoot siblingDirectory dataParent body = do
                 store
                 project
                 (reclaimAbandonedRun store project dataParent configPath)
-                (resolveBoundRun store project dataParent configPath)
+                (resolveBoundRun recoveryExecutor store project dataParent configPath)
         case swept of
             Left failure -> pure (Left (modeRefused failure))
             Right proof -> do
@@ -566,13 +628,14 @@ lease close.
 -}
 resolveBoundRun ::
     forall projectId.
+    RecoveredResourceExecutor ->
     ProtectedStore ->
     InstalledProjectIdentity projectId ->
     FilePath ->
     FilePath ->
     VerifiedIncompleteRunLease projectId ->
     IO (Either ModeError ())
-resolveBoundRun store project dataParent configPath lease =
+resolveBoundRun recoveryExecutor store project dataParent configPath lease =
     case incompleteRunLeaseKind lease of
         IncompleteUnbound -> pure (Right ())
         IncompleteBound _ _ ->
@@ -588,7 +651,7 @@ resolveBoundRun store project dataParent configPath lease =
                             -- proof the normal branch takes, not the
                             -- classification: a staging that acquired anything
                             -- wrote an effect record, and the proof refuses.
-                            IncompleteMigration _ -> closeIfNothingAcquired reopened
+                            IncompleteMigration _ -> closeOrRecoverResources reopened
                             -- The barrier *was* crossed. The activation
                             -- compare-and-swap committed, so the project's live
                             -- revision is the new one and following it through
@@ -596,7 +659,7 @@ resolveBoundRun store project dataParent configPath lease =
                             -- driven to completion first, and only then is the
                             -- run settled the ordinary way.
                             CompletedMigration _ -> resumeCompletedMigration reopened
-                            NormalRevision -> closeIfNothingAcquired reopened
+                            NormalRevision -> closeOrRecoverResources reopened
   where
     {- Finish a close the abandoned run had already authorized. Ordinary project
     destroy and its closure proof precede that authorization; the terminal
@@ -653,43 +716,119 @@ resolveBoundRun store project dataParent configPath lease =
                     session
                     project
                     (abandonedHarnessBoundLease reopened)
-                    $ \barrier ->
-                    fmap
-                        (fmap (const ()))
-                        ( activateMigratedPlan
-                            session
-                            barrier
-                            (abandonedHarnessBoundLease reopened)
-                            (abandonedHarnessBroker reopened)
-                        )
+                    $ \_profile barrier candidateSnapshot oldSnapshot rehydrated ->
+                    case withMigratedRecoveredProjectFrames candidateSnapshot oldSnapshot rehydrated (\_ count -> count + (1 :: Int)) 0 of
+                        Left failure -> pure (Left failure)
+                        Right 0 -> pure (Left (ModeOwnershipUnresolved "completed-migration" "recovered no frames"))
+                        Right _ ->
+                            fmap
+                                (fmap (const ()))
+                                ( activateMigratedPlanConfigless
+                                    session
+                                    barrier
+                                    (abandonedHarnessBoundLease reopened)
+                                    (abandonedHarnessBroker reopened)
+                                    rehydrated
+                                )
         case activated of
             Left failure -> pure (Left failure)
-            Right () -> closeIfNothingAcquired reopened
+            Right () -> closeOrRecoverResources reopened
 
-    closeIfNothingAcquired ::
+    closeOrRecoverResources ::
         forall oldRunId specDigest planDigest planId brokerGeneration.
         AbandonedHarnessRun projectId oldRunId specDigest planDigest planId brokerGeneration ->
         IO (Either ModeError ())
-    closeIfNothingAcquired reopened = do
-        -- The proof is taken first: nothing is reclaimed and no lease is closed
-        -- until the run's own records show it acquired nothing.
-        proved <-
-            verifyBoundRunHasNoProjectResourcesAcquired
-                (abandonedHarnessBoundLease reopened)
+    closeOrRecoverResources reopened = do
+        proved <- verifyBoundRunHasNoProjectResourcesAcquired (abandonedHarnessBoundLease reopened)
         case proved of
+            Right evidence -> closeWithNoResources reopened evidence
+            Left ownershipFailure -> do
+                recovered <- withRehydratedSnapshotResourceSet
+                    store
+                    (abandonedHarnessSnapshot reopened)
+                    (abandonedHarnessBroker reopened)
+                    (abandonedHarnessAdmission reopened)
+                    $ \resources -> do
+                        settled <-
+                            driveRecoveredForest
+                                (abandonedHarnessSnapshot reopened)
+                                resources
+                                (\frame adapter revision handle receipt -> do
+                                    executed <- executeRecoveredResource recoveryExecutor frame adapter revision handle receipt
+                                    case executed of
+                                        Left failure -> pure (Left failure)
+                                        Right () -> do
+                                            recorded <-
+                                                recordRecoveredResourceReleased
+                                                    store
+                                                    (planSnapshotPlanDigest (abandonedHarnessSnapshot reopened))
+                                                    handle
+                                                    receipt
+                                            pure (either (Left . modeErrorMessage) Right recorded))
+                        case settled of
+                            Left failure -> pure (Left failure)
+                            Right forest -> finishRecoveredClose reopened forest
+                pure $ case recovered of
+                    Left failure@(ModeOwnershipUnresolved _ _) -> Left failure
+                    Left _ -> Left ownershipFailure
+                    Right () -> Right ()
+
+    finishRecoveredClose ::
+        forall oldRunId specDigest planDigest planId brokerGeneration.
+        AbandonedHarnessRun projectId oldRunId specDigest planDigest planId brokerGeneration ->
+        RecoveredForestSettled (Harness projectId oldRunId) planId brokerGeneration ->
+        IO (Either ModeError ())
+    finishRecoveredClose reopened forest = do
+        closed <-
+            runInEntry store $ \session ->
+                fmap (either (Left . ModeSessionFailure) Right) $
+                    verifyAllSessionsClosed
+                        session
+                        (planSnapshotPlanDigest (abandonedHarnessSnapshot reopened))
+        case closed of
             Left failure -> pure (Left failure)
-            Right evidence -> do
-                reclaimed <- reclaimAbandonedRun store project dataParent configPath lease
-                case reclaimed of
+            Right sessions ->
+                case recoveredDestroySettledClosure (abandonedHarnessBoundLease reopened) sessions forest of
                     Left failure -> pure (Left failure)
-                    Right () ->
-                        runInEntry store $ \session ->
-                            closeHarnessRun
-                                session
-                                project
-                                (abandonedHarnessCloseRoot reopened)
-                                (abandonedHarnessModeLease reopened)
-                                evidence
+                    Right closure -> do
+                        authorized <-
+                            runInEntry store $ \session ->
+                                authorizeHarnessClose
+                                    session
+                                    project
+                                    (abandonedHarnessCloseRoot reopened)
+                                    (abandonedHarnessModeLease reopened)
+                                    (abandonedHarnessBoundLease reopened)
+                                    sessions
+                                    closure
+                                    1
+                        case authorized of
+                            Left failure -> pure (Left failure)
+                            Right authorization -> do
+                                reclaimed <- reclaimAbandonedRun store project dataParent configPath lease
+                                case reclaimed of
+                                    Left failure -> pure (Left failure)
+                                    Right () ->
+                                        runInEntry store $ \session ->
+                                            fmap (fmap (const ())) (finalizeHarnessClose session project authorization)
+
+    closeWithNoResources ::
+        forall oldRunId specDigest planDigest planId brokerGeneration.
+        AbandonedHarnessRun projectId oldRunId specDigest planDigest planId brokerGeneration ->
+        ProjectClosureEvidence (Harness projectId oldRunId) ->
+        IO (Either ModeError ())
+    closeWithNoResources reopened evidence = do
+        reclaimed <- reclaimAbandonedRun store project dataParent configPath lease
+        case reclaimed of
+            Left failure -> pure (Left failure)
+            Right () ->
+                runInEntry store $ \session ->
+                    closeHarnessRun
+                        session
+                        project
+                        (abandonedHarnessCloseRoot reopened)
+                        (abandonedHarnessModeLease reopened)
+                        evidence
 
 -- | Run one recovery decision inside the store's exclusive entry.
 runInEntry ::

@@ -35,7 +35,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
-import HostBootstrap.Handoff (childConfigDigest, frameWire, maxWireBytes)
+import HostBootstrap.Handoff (childConfigDigest, frameWire)
 import HostBootstrap.Handoff.Rooted
     ( rootedLifecycleRequestFromWireKernel
     , rootedLifecycleResponseFromWireKernel
@@ -90,15 +90,16 @@ withPreparedRootedNodeGrantKernel ::
     ProtectedStore ->
     Word64 ->
     Text ->
+    Text ->
     [Text] ->
-    ByteString ->
+    [Text] ->
     ( forall node.
       PreparedNodeGrant scope rootPlanId brokerGeneration catalogId frame sessionId node verb ->
       IO (Either Text ())
     ) ->
     IO (Either Text ())
 {-# OPAQUE withPreparedRootedNodeGrantKernel #-}
-withPreparedRootedNodeGrantKernel runtime session store generation node dependencies signedPrepared use =
+withPreparedRootedNodeGrantKernel runtime session store generation localPlanDigest node dependencies projectedOperations use =
     withRootedFrameSessionKernel session $
         \attached _verb lineage catalogIdentity frame _path token _stage ordinal _predecessor ->
             withRecursiveHandoffRuntimeKernel runtime $
@@ -107,14 +108,13 @@ withPreparedRootedNodeGrantKernel runtime session store generation node dependen
                         Left failure -> pure (Left failure)
                         Right () -> do
                             prepared <-
-                                publishOrdered lineage catalogIdentity frame token ordinal (node : dependencies) []
+                                publishOrdered lineage localPlanDigest catalogIdentity frame token ordinal (node : projectedOperations) []
                             case prepared of
                                 Left failure -> pure (Left failure)
                                 Right [] -> pure (Left (nodeFailure "no durable unknown row was prepared"))
                                 Right (own : projected) ->
                                     use
                                         ( mintPreparedNodeGrantKernel
-                                            signedPrepared
                                             node
                                             dependencies
                                             own
@@ -126,17 +126,15 @@ withPreparedRootedNodeGrantKernel runtime session store generation node dependen
         require "a keyless nested arm cannot prepare a node grant" atRoot
         require "the runtime is not path-agnostic" (isNothing current)
         require "the prepared node key is empty" (not (Text.null node))
-        require "the prepared node appears in its own dependencies" (node `notElem` dependencies)
+        require "a dependency operation key is empty" (not (any Text.null dependencies))
+        require "the prepared node appears in its own projections" (node `notElem` projectedOperations)
         require "the projected operation order contains duplicates"
-            (length dependencies == length (nub dependencies))
-        require "a projected operation key is empty" (not (any Text.null dependencies))
-        require "the signed Prepared response is empty" (not (ByteString.null signedPrepared))
-        require "the signed Prepared response exceeds the durable bound"
-            (fromIntegral (ByteString.length signedPrepared) <= maxWireBytes)
+            (length projectedOperations == length (nub projectedOperations))
+        require "a projected operation key is empty" (not (any Text.null projectedOperations))
         require "the broker generation is zero" (generation > 0)
 
-    publishOrdered _ _ _ _ _ [] packages = pure (Right (reverse packages))
-    publishOrdered lineage catalogIdentity frame token ordinal (operation : remaining) packages =
+    publishOrdered _ _ _ _ _ _ [] packages = pure (Right (reverse packages))
+    publishOrdered lineage localDigest catalogIdentity frame token ordinal (operation : remaining) packages =
         case rootedNodeUnknownKeyKernel lineage catalogIdentity frame operation of
             Left failure -> pure (Left (nodeFailure (Text.pack (sessionErrorMessage failure))))
             Right key -> do
@@ -146,9 +144,9 @@ withPreparedRootedNodeGrantKernel runtime session store generation node dependen
                     Left failure -> pure (Left failure)
                     Right version ->
                         publishOrdered
-                            lineage catalogIdentity frame token ordinal remaining
+                            lineage localDigest catalogIdentity frame token ordinal remaining
                             ( renderPreparedGatePackageKernel
-                                lineage catalogIdentity frame token generation ordinal version
+                                localDigest catalogIdentity frame token generation ordinal version
                                 : packages
                             )
 

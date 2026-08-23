@@ -118,8 +118,11 @@ tests =
                     requiredModuleExports "HostBootstrap.Service.Internal" ownerSource
                 let owner = normalizeWhitespace ownerSource
                 exportedNames ownerExports
-                    @?= [ "ServiceId"
+                        @?= [ "ServiceId"
                         , "ServiceHandler"
+                        , "ProgramServiceHandler"
+                        , "ServiceResourceBackend"
+                        , "ServiceAction"
                         , "FinalizedServiceDefinition"
                         , "FinalizedServiceRegistry"
                         , "reindexFinalizedServiceRegistryKernel"
@@ -138,6 +141,7 @@ tests =
                         , "HostBootstrap.Config.Fields.Internal"
                         , "HostBootstrap.Config.Schema.Internal"
                         , "HostBootstrap.RoleLifecycle"
+                        , "HostBootstrap.Service.Program"
                         ]
                 SourceGuard.countHaskellTokenSequence
                     ["data", "FinalizedServiceRegistry"]
@@ -204,6 +208,7 @@ tests =
                         , "HostBootstrap.Config.Schema"
                         , "HostBootstrap.ProjectPlan.Construct"
                         , "HostBootstrap.ProjectPlan.Construct.Internal"
+                        , "HostBootstrap.Service"
                         , "HostBootstrap.Service.Internal"
                         ]
                 assertContains
@@ -267,7 +272,10 @@ tests =
                         , "serviceIdText"
                         , "ServiceDefinition"
                         , "ServiceHandler"
+                        , "ProgramServiceHandler"
+                        , "ServiceResourceBackend"
                         , "serviceDefinition"
+                        , "serviceProgramDefinition"
                         , "serviceDeclaredEffects"
                         , "ServiceRegistry"
                         , "ServiceRegistryError"
@@ -282,6 +290,18 @@ tests =
                         , "serviceRoleSchemaFamilies"
                         , "withSelectedServiceRequest"
                         , "selectServiceAction"
+                        , "withSelectedServiceProgram"
+                        , "withDecodedServiceProgram"
+                        , "ServiceActivationRevision"
+                        , "serviceActivationRevision"
+                        , "serviceActivationRevisionPath"
+                        , "ServiceActivationError"
+                        , "serviceActivationErrorMessage"
+                        , "installServiceActivationRevision"
+                        , "withInstalledServiceActivation"
+                        , "ServiceRuntimeError"
+                        , "serviceRuntimeErrorMessage"
+                        , "runInstalledServiceProgram"
                         ]
                 assertBool
                     "the config facade no longer owns the codec representation"

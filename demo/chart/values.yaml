@@ -2,6 +2,7 @@
 # the project container (build #3) and loaded into / pulled by the kind cluster;
 # IfNotPresent so a kind-loaded image is used without a registry round-trip.
 image:
+  identity: hostbootstrap-demo:local
   repository: hostbootstrap-demo
   tag: local
   pullPolicy: IfNotPresent
@@ -28,3 +29,5 @@ service:
     port: 8081
     targetPort: 8081
     nodePort: 30081
+
+serviceConfig: ""

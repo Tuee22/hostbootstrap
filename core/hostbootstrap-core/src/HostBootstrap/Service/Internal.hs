@@ -16,6 +16,9 @@ minted by 'HostBootstrap.Config.Schema.Internal'.
 module HostBootstrap.Service.Internal
     ( ServiceId (..)
     , ServiceHandler
+    , ProgramServiceHandler
+    , ServiceResourceBackend (..)
+    , ServiceAction (..)
     , FinalizedServiceDefinition (..)
     , FinalizedServiceRegistry (..)
     , reindexFinalizedServiceRegistryKernel
@@ -31,7 +34,16 @@ import HostBootstrap.Config.Schema.Internal
     ( RecoverySpecReindex
     , recoverySpecReindexDigestKernel
     )
-import HostBootstrap.RoleLifecycle (DeclaredEffects)
+import HostBootstrap.RoleLifecycle
+    ( DeclaredEffects
+    , RoleAcquireOutcome
+    , RolePlanDraft
+    , RolePrereqOutcome
+    , RoleProbeOutcome
+    , RoleReleaseOutcome
+    , RoleResourceRequest
+    )
+import HostBootstrap.Service.Program (ServiceBackend, ServiceProgram)
 
 -- | A validated service identity. Its constructor stays below this boundary.
 newtype ServiceId = ServiceId String
@@ -49,6 +61,39 @@ type ServiceHandler fields =
     RoleParams specDigest configId secretDigest fields service ->
     IO ()
 
+{- | The target handler boundary: one immutable role-parameter bundle in and
+one closed effect-indexed program out.  The payload family and declared effect
+row are fixed by the enclosing definition; the service identity stays
+generative with the selected role codec.
+-}
+type ProgramServiceHandler payload effects fields =
+    forall specDigest configId secretDigest service.
+    RoleParams specDigest configId secretDigest fields service ->
+    ServiceProgram payload service effects ()
+
+{- | The lifecycle half of a program service backend.
+
+The immutable draft and its per-resource operations live in the same
+definition as the effect backend.  Selection therefore cannot pair a handler
+with another role's acquisition plan, and Serve receives only handles for the
+resources this backend actually acquired and probed.
+-}
+data ServiceResourceBackend = ServiceResourceBackend
+    { serviceRolePlanDraft :: RolePlanDraft
+    , servicePrerequisite :: IO RolePrereqOutcome
+    , serviceAcquireResource :: RoleResourceRequest -> IO RoleAcquireOutcome
+    , serviceProbeResource :: RoleResourceRequest -> IO RoleProbeOutcome
+    , serviceReleaseResource :: RoleResourceRequest -> IO RoleReleaseOutcome
+    }
+
+data ServiceAction fields effects
+    = LegacyServiceAction (ServiceHandler fields)
+    | forall payload.
+      ProgramServiceAction
+        ServiceResourceBackend
+        (ServiceBackend payload)
+        (ProgramServiceHandler payload effects fields)
+
 {- | One finalized service's identity, scope-specialized projection, declared
 effect row, handler, and role codec, all sharing one specification index.
 -}
@@ -58,7 +103,7 @@ data FinalizedServiceDefinition scope specDigest cfg =
         ServiceId
         (cfg -> Either String (Maybe fields))
         (DeclaredEffects effects)
-        (ServiceHandler fields)
+        (ServiceAction fields effects)
         (RoleCodec scope specDigest fields service)
 
 {- | The closed finalized registry: the exact specification digest its

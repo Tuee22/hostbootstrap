@@ -468,4 +468,4 @@ withCoreSourceRoot use = do
         findRepoRoot cwd
             >>= maybe (assertFailure ("could not locate repo root from " <> cwd)) pure
     let packageRoot = repoRoot </> "core" </> "hostbootstrap-core"
-    use packageRoot (packageRoot </> "src")
+    use packageRoot (packageRoot </> "internal" </> "ownership")

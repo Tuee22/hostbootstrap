@@ -23,6 +23,12 @@ module HostBootstrap.Cluster.Reconcile (
     preparedClusterPublishesHostPorts,
     preparedClusterConfigPath,
     preparedClusterConfigDigest,
+    preparedClusterDriver,
+    preparedClusterConfigBytes,
+    preparedClusterLoopbackPorts,
+    preparedClusterNodeMappings,
+    preparedClusterWorkloadSlice,
+    withPreparedPlanOwnedClusterConfig,
     preparedClusterPlacement,
     preparedClusterProviderKey,
     preparedClusterOwnershipIdentity,
@@ -33,6 +39,7 @@ module HostBootstrap.Cluster.Reconcile (
     managedClusterGeneration,
     ClusterReconcileSettlement,
     withClusterReconcileSettlement,
+    carryClusterReconcileSettlement,
     settleClusterReconcile,
     ClusterCordonCallResult,
     ClusterCordonResultView (..),
@@ -57,8 +64,11 @@ module HostBootstrap.Cluster.Reconcile (
     clusterReadinessResultView,
     ClusterReadiness,
     settleClusterReadiness,
+    withFreshClusterReadiness,
     reprobeClusterReadiness,
     clusterReadinessProbe,
+    withClusterReadinessResourceHandle,
+    withRecoveredClusterReadiness,
     ClusterCleanupCallResult,
     ClusterCleanupResultView (..),
     clusterCleanupResultView,
@@ -71,6 +81,7 @@ module HostBootstrap.Cluster.Reconcile (
     preparedCleanupConfigPath,
     preparedCleanupNodeNames,
     settleClusterCleanup,
+    runExactClusterCleanupKernel,
 )
 where
 
@@ -78,126 +89,149 @@ import Control.Exception (SomeException, displayException)
 import Control.Exception.Safe (try)
 import Crypto.Hash (Digest, SHA256, hash)
 import Data.ByteArray.Encoding (Base (Base16), convertToBase)
-import qualified Data.ByteString as ByteString
+import Data.ByteString (ByteString)
 import Data.Char (digitToInt)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
-import HostBootstrap.Cluster.Budget (ResourceSlice)
-import HostBootstrap.Cluster.Cordon.Foundation
-    ( ResourceBudget
-    , budgetCpu
-    , budgetMemoryBytes
-    , budgetStorageBytes
-    )
-import HostBootstrap.Cluster.Lifecycle
-    ( ClusterPackageError (..)
-    , PlanOwnedCluster
-    , planOwnedClusterBudget
-    , planOwnedClusterConfigPath
-    , planOwnedClusterDurableRoot
-    , planOwnedClusterName
-    , planOwnedClusterNodeNames
-    , planOwnedClusterOwnershipIdentity
-    , planOwnedClusterPlacement
-    , planOwnedClusterProviderKey
-    , planOwnedClusterPublishesHostPorts
-    , planOwnedClusterStateDirectory
-    , withPlanOwnedCluster
-    )
-import HostBootstrap.Cluster.Observation.Internal
-    ( ClusterCleanupCallResult (..)
-    , ClusterBackendBinding
-    , clusterBackendBindingIdentity
-    , ClusterCleanupObservation (..)
-    , ClusterCordonCallResult (..)
-    , ClusterCordonObservation (..)
-    , ClusterReadinessCallResult (..)
-    , ClusterReadinessObservation (..)
-    , ClusterReconcileCallResult (..)
-    , ClusterReconcileObservation (..)
-    , ManagedClusterHandle (..)
-    , managedClusterBackendIdentity
-    , managedClusterReceipt
-    , managedClusterResourceHandle
-    )
-import HostBootstrap.Lifecycle.Prepared
-    ( PreparedGate
-    , preparedGateJournalVersion
-    )
-import HostBootstrap.ProjectPlan
-    ( ClusterResource
-    , DerivedTopology
-    , PlannedResource
-    , ProjectPlan
-    , ProviderResource
-    )
-import HostBootstrap.Reconcile
-    ( BackendReconcileObservation (..)
-    , ChangeView
-    , ConflictDetail (..)
-    , DependencyProbe
-    , FailureDetail (..)
-    , ForeignObservation (..)
-    , Observed
-    , OwnershipReceipt
-    , PreparedOperation
-    , PreparedPreconditions
-    , PriorCommitProof
-    , Provisioned
-    , ReconcileError (..)
-    , ReconcileResult
-    , RecoveryDisposition (DoNotRetry, ReprobeBeforeRetry)
-    , ResourceHandle
-    , Unclassified
-    , completePreparedUnchanged
-    , completeReconcile
-    , dependencyProbe
-    , emptyDependencySnapshot
-    , plannedProjectOperation
-    , resourceHandleGeneration
-    , resourceHandleKey
-    , resourceHandleObservationVersion
-    , validateOwnershipReceipt
-    , withDependencySnapshotEntry
-    , withObservedProjectResource
-    , withOperationPreconditions
-    , withPreparedOperation
-    , withReconcileResult
-    )
-import HostBootstrap.Substrate.Provider.Dependency.Internal
-    ( RunningProviderDependency
-    , runningProviderDependencyHandle
-    , runningProviderDependencyReprobe
-    )
-import System.Directory (doesFileExist, pathIsSymbolicLink)
+import Data.IORef (atomicModifyIORef', newIORef)
+import Numeric.Natural (Natural)
+import HostBootstrap.Authority (ProjectVerb (ProjectDestroy, ProjectDown, ProjectUp))
+import HostBootstrap.Cluster.Cordon.Foundation (
+    ResourceBudget,
+    budgetCpu,
+    budgetMemoryBytes,
+    budgetStorageBytes,
+ )
+import HostBootstrap.Cluster.Lifecycle (
+    ClusterDriver,
+    PlanOwnedCluster,
+    PlanOwnedClusterConfig,
+    planOwnedClusterConfigBase,
+    planOwnedClusterConfigBytes,
+    planOwnedClusterConfigDigest,
+    planOwnedClusterConfigDriver,
+    planOwnedClusterConfigLoopbackPorts,
+    planOwnedClusterConfigNodeMappings,
+    planOwnedClusterConfigWorkloadSlice,
+    planOwnedRenderedConfigPath,
+    planOwnedClusterBudget,
+    planOwnedClusterDurableRoot,
+    planOwnedClusterName,
+    planOwnedClusterNodeNames,
+    planOwnedClusterOwnershipIdentity,
+    planOwnedClusterPlacement,
+    planOwnedClusterProviderKey,
+    planOwnedClusterPublishesHostPorts,
+    planOwnedClusterStateDirectory,
+    withPlanOwnedClusterPreparation,
+ )
+import HostBootstrap.Cluster.Observation.Internal (
+    ClusterBackendBinding,
+    ClusterCleanupCallResult (..),
+    ClusterCleanupObservation (..),
+    ClusterCordonCallResult (..),
+    ClusterCordonObservation (..),
+    ClusterReadinessCallResult (..),
+    ClusterReadinessObservation (..),
+    ClusterReconcileCallResult (..),
+    ClusterReconcileObservation (..),
+    ManagedClusterHandle (..),
+    clusterBackendBindingIdentity,
+    managedClusterBackendIdentity,
+    managedClusterReceipt,
+    managedClusterResourceHandle,
+ )
+import HostBootstrap.Lifecycle.Prepared (
+    PreparedGate,
+    preparedGateJournalVersion,
+    preparedGateOperation,
+    preparedGatePlan,
+ )
+import HostBootstrap.Lifecycle.Execution (StepExecution)
+import HostBootstrap.ProjectPlan (
+    ClusterResource,
+    ProjectPlan,
+    renderSnapshot,
+    stablePlanSnapshotDigest,
+ )
+import HostBootstrap.Reconcile (
+    BackendReconcileObservation (..),
+    ChangeView,
+    ConflictDetail (..),
+    DependencyProbe,
+    FailureDetail (..),
+    ForeignObservation (..),
+    Managed,
+    Observed,
+    OwnershipReceipt,
+    PreparedOperation,
+    PreparedPreconditions,
+    PriorCommitProof,
+    Provisioned,
+    ReconcileError (..),
+    ReconcileResult,
+    RecoveryDisposition (DoNotRetry, ReprobeBeforeRetry),
+    ResourceHandle,
+    Unclassified,
+    completePreparedUnchanged,
+    completeReconcile,
+    carryManagedResourceSettlement,
+    dependencyProbe,
+    emptyDependencySnapshot,
+    plannedNodeOperation,
+    plannedProjectOperation,
+    resourceHandleGeneration,
+    resourceHandleKey,
+    resourceHandleObservationVersion,
+    validateOwnershipReceipt,
+    withDependencySnapshotEntry,
+    withNodeObservedResource,
+    withObservedProjectResource,
+    withOperationPreconditions,
+    withPreparedOperation,
+    withReconcileResult,
+ )
+import HostBootstrap.Substrate.Provider.Dependency.Internal (
+    RunningProviderDependency,
+    runningProviderDependencyHandle,
+    runningProviderDependencyReprobe,
+ )
+import HostBootstrap.Teardown (
+    LocalWork,
+    TeardownAction (DeleteCluster),
+    TeardownOutcome (TeardownFailed, TeardownReleased),
+    localWorkAction,
+    localWorkKey,
+ )
 
 {- | The complete prepared reconcile.  Every source-package identity remains a
 nominal index through the effect boundary.
 -}
-data PreparedClusterReconcile
-    scope
-    specDigest
-    planId
-    configId
-    cfg
-    clusterId
-    clusterFrame
-    providerId
-    providerFrame
-    budgetId
-    provider
-    capabilityId
-    wallSpecId
-    workloadSetId
-    partitionId
-    operationKey
-    callDigest
-    attempt
-    journalVersion
+data
+    PreparedClusterReconcile
+        scope
+        specDigest
+        planId
+        configId
+        cfg
+        clusterId
+        clusterFrame
+        providerId
+        providerFrame
+        budgetId
+        provider
+        capabilityId
+        wallSpecId
+        workloadSetId
+        partitionId
+        operationKey
+        callDigest
+        attempt
+        journalVersion
     = PreparedClusterReconcile
-        ( PlanOwnedCluster
+        ( PlanOwnedClusterConfig
             scope
             specDigest
             planId
@@ -221,9 +255,10 @@ data PreparedClusterReconcile
 
 type role PreparedClusterReconcile nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
 
--- | Exact bytes observed at preparation for the plan-derived config path.
--- The constructor is private; the backend receives only path/digest
--- projections and revalidates both under the ownership lock before mutation.
+{- | Exact bytes observed at preparation for the plan-derived config path.
+The constructor is private; the backend receives only path/digest
+projections and revalidates both under the ownership lock before mutation.
+-}
 data PreparedClusterConfig = PreparedClusterConfig FilePath Text
 
 {- | Prepare only the exact package projected by one admitted plan.
@@ -233,11 +268,7 @@ there is no caller-supplied dependency snapshot, digest, frame, cluster profile,
 or independently resolved root.
 -}
 withPreparedClusterReconcile ::
-    ProjectPlan scope specDigest planId configId cfg ->
-    PlannedResource scope planId clusterId ClusterResource clusterFrame ->
-    PlannedResource scope planId providerId ProviderResource providerFrame ->
-    DerivedTopology scope planId ->
-    ResourceSlice scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId clusterFrame clusterId ->
+    PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId ->
     RunningProviderDependency scope planId providerId ->
     PreparedGate ->
     ( forall operationKey callDigest attempt journalVersion.
@@ -265,56 +296,39 @@ withPreparedClusterReconcile ::
     ) ->
     IO (Either ReconcileError result)
 withPreparedClusterReconcile
-    plan
-    cluster
-    provider
-    suppliedTopology
-    slice
+    configured
     runningProvider
     gate
-    consume =
-        case withPlanOwnedCluster plan cluster provider suppliedTopology slice of
-            Left packageError -> pure (Left (packageFailure packageError))
-            Right package -> do
-                configResult <- prepareClusterConfig package
-                case configResult of
+    consume = do
+        withPlanOwnedClusterPreparation
+            package
+            (\plan cluster ->
+                case withObservedProjectResource plan cluster generation version id of
                     Left err -> pure (Left err)
-                    Right configBinding ->
-                      case
-                          withObservedProjectResource
-                              plan
-                              cluster
-                              (clusterResourceGeneration package)
-                              (preparedGateJournalVersion gate)
-                              id
-                        of
-                        Left err -> pure (Left err)
-                        Right observed ->
-                          case plannedProjectOperation plan cluster observed (clusterCallDigest package configBinding) of
-                            Left err -> pure (Left err)
-                            Right descriptor -> do
-                                let snapshot =
-                                        withDependencySnapshotEntry
-                                            (runningProviderDependencyHandle runningProvider)
-                                            (dependencyProbe (runningProviderDependencyReprobe runningProvider))
-                                            emptyDependencySnapshot
-                                sealed <- withOperationPreconditions descriptor snapshot
-                                pure $ do
-                                    preconditionSet <- sealed
-                                    withPreparedOperation
-                                        descriptor
-                                        preconditionSet
-                                        gate
-                                        ( \prepared preconditions ->
-                                            consume
-                                                ( PreparedClusterReconcile
-                                                    package
-                                                    configBinding
-                                                    observed
-                                                    prepared
-                                                    preconditions
-                                                )
-                                        )
+                    Right observed -> finish observed (plannedProjectOperation plan cluster observed digest))
+            (\execution cluster ->
+                case withNodeObservedResource execution cluster generation version id of
+                    Left err -> pure (Left err)
+                    Right observed -> finish observed (plannedNodeOperation execution cluster observed digest))
+  where
+    package = planOwnedClusterConfigBase configured
+    configBinding = Just (PreparedClusterConfig (planOwnedRenderedConfigPath configured) (planOwnedClusterConfigDigest configured))
+    generation = clusterResourceGeneration package
+    version = preparedGateJournalVersion gate
+    digest = clusterCallDigest package configBinding
+    finish observed described = case described of
+        Left err -> pure (Left err)
+        Right descriptor -> do
+            let snapshot =
+                    withDependencySnapshotEntry
+                        (runningProviderDependencyHandle runningProvider)
+                        (dependencyProbe (runningProviderDependencyReprobe runningProvider))
+                        emptyDependencySnapshot
+            sealed <- withOperationPreconditions descriptor snapshot
+            pure $ do
+                preconditionSet <- sealed
+                withPreparedOperation descriptor preconditionSet gate $ \prepared preconditions ->
+                    consume (PreparedClusterReconcile configured configBinding observed prepared preconditions)
 
 {- | Stable generation of this exact admitted cluster resource.
 
@@ -334,73 +348,22 @@ clusterResourceGeneration package =
         generation = Text.foldl' (\value digit -> value * 16 + fromIntegral (digitToInt digit)) 0 hex
      in if generation == 0 then 1 else generation
 
-packageFailure :: ClusterPackageError -> ReconcileError
-packageFailure (ClusterPackageMismatch detail) =
-    Failure (FailureDetail "prepare plan-owned cluster" detail DoNotRetry)
-
 clusterCallDigest :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> Maybe PreparedClusterConfig -> Text
 clusterCallDigest package configBinding =
     let budget = planOwnedClusterBudget package
         configDigest = maybe "config-absent" (\(PreparedClusterConfig _ digest) -> "config-" <> digest) configBinding
-     in
-    Text.intercalate
-        ":"
-        [ "cluster-reconcile"
-        , planOwnedClusterOwnershipIdentity package
-        , planOwnedClusterProviderKey package
-        , fst (planOwnedClusterPlacement package)
-        , snd (planOwnedClusterPlacement package)
-        , Text.pack (show (budgetCpu budget))
-        , Text.pack (show (budgetMemoryBytes budget))
-        , Text.pack (show (budgetStorageBytes budget))
-        , configDigest
-        ]
-
-prepareClusterConfig ::
-    PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId ->
-    IO (Either ReconcileError (Maybe PreparedClusterConfig))
-prepareClusterConfig package =
-    case planOwnedClusterConfigPath package of
-        Nothing -> pure (Right Nothing)
-        Just path -> do
-            observed <- try (observe path) :: IO (Either SomeException (Either Text ByteString.ByteString))
-            pure $ case observed of
-                Left failure -> configFailure (Text.pack (displayException failure))
-                Right (Left reason) -> configFailure reason
-                Right (Right bytes) ->
-                    let digest = hash bytes :: Digest SHA256
-                     in Right
-                            ( Just
-                                ( PreparedClusterConfig
-                                    path
-                                    (TextEncoding.decodeUtf8 (convertToBase Base16 digest))
-                                )
-                            )
-  where
-    observe path = do
-        symbolic <- pathIsSymbolicLink path
-        regular <- doesFileExist path
-        if symbolic
-            then pure (Left "the plan-derived cluster config is a symbolic link")
-            else
-                if not regular
-                    then pure (Left "the plan-derived cluster config is absent or not a regular file")
-                    else do
-                        bytes <- ByteString.readFile path
-                        pure
-                            ( if ByteString.length bytes > 1048576
-                                then Left "the plan-derived cluster config exceeds 1 MiB"
-                                else Right bytes
-                            )
-    configFailure reason =
-        Left
-            ( Failure
-                ( FailureDetail
-                    "bind plan-owned cluster config"
-                    reason
-                    DoNotRetry
-                )
-            )
+     in Text.intercalate
+            ":"
+            [ "cluster-reconcile"
+            , planOwnedClusterOwnershipIdentity package
+            , planOwnedClusterProviderKey package
+            , fst (planOwnedClusterPlacement package)
+            , snd (planOwnedClusterPlacement package)
+            , Text.pack (show (budgetCpu budget))
+            , Text.pack (show (budgetMemoryBytes budget))
+            , Text.pack (show (budgetStorageBytes budget))
+            , configDigest
+            ]
 
 preparedClusterReconcileHandle ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
@@ -408,16 +371,16 @@ preparedClusterReconcileHandle ::
 preparedClusterReconcileHandle (PreparedClusterReconcile _ _ handle _ _) = handle
 
 preparedClusterName :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> String
-preparedClusterName (PreparedClusterReconcile package _ _ _ _) = planOwnedClusterName package
+preparedClusterName (PreparedClusterReconcile package _ _ _ _) = planOwnedClusterName (planOwnedClusterConfigBase package)
 
 preparedClusterStateDirectory :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> FilePath
-preparedClusterStateDirectory (PreparedClusterReconcile package _ _ _ _) = planOwnedClusterStateDirectory package
+preparedClusterStateDirectory (PreparedClusterReconcile package _ _ _ _) = planOwnedClusterStateDirectory (planOwnedClusterConfigBase package)
 
 preparedClusterDurableRoot :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> FilePath
-preparedClusterDurableRoot (PreparedClusterReconcile package _ _ _ _) = planOwnedClusterDurableRoot package
+preparedClusterDurableRoot (PreparedClusterReconcile package _ _ _ _) = planOwnedClusterDurableRoot (planOwnedClusterConfigBase package)
 
 preparedClusterPublishesHostPorts :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> Bool
-preparedClusterPublishesHostPorts (PreparedClusterReconcile package _ _ _ _) = planOwnedClusterPublishesHostPorts package
+preparedClusterPublishesHostPorts (PreparedClusterReconcile package _ _ _ _) = planOwnedClusterPublishesHostPorts (planOwnedClusterConfigBase package)
 
 preparedClusterConfigPath :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> Maybe FilePath
 preparedClusterConfigPath (PreparedClusterReconcile _ config _ _ _) =
@@ -427,20 +390,41 @@ preparedClusterConfigDigest :: PreparedClusterReconcile scope specDigest planId 
 preparedClusterConfigDigest (PreparedClusterReconcile _ config _ _ _) =
     fmap (\(PreparedClusterConfig _ digest) -> digest) config
 
+preparedClusterDriver :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> ClusterDriver
+preparedClusterDriver (PreparedClusterReconcile configured _ _ _ _) = planOwnedClusterConfigDriver configured
+
+preparedClusterConfigBytes :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> ByteString
+preparedClusterConfigBytes (PreparedClusterReconcile configured _ _ _ _) = planOwnedClusterConfigBytes configured
+
+preparedClusterLoopbackPorts :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> [(Text, Natural)]
+preparedClusterLoopbackPorts (PreparedClusterReconcile configured _ _ _ _) = planOwnedClusterConfigLoopbackPorts configured
+
+preparedClusterNodeMappings :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> [(Text, Text)]
+preparedClusterNodeMappings (PreparedClusterReconcile configured _ _ _ _) = planOwnedClusterConfigNodeMappings configured
+
+preparedClusterWorkloadSlice :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> [Text]
+preparedClusterWorkloadSlice (PreparedClusterReconcile configured _ _ _ _) = planOwnedClusterConfigWorkloadSlice configured
+
+withPreparedPlanOwnedClusterConfig ::
+    PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
+    (PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> result) ->
+    result
+withPreparedPlanOwnedClusterConfig (PreparedClusterReconcile configured _ _ _ _) consume = consume configured
+
 preparedClusterPlacement :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> (Text, Text)
-preparedClusterPlacement (PreparedClusterReconcile package _ _ _ _) = planOwnedClusterPlacement package
+preparedClusterPlacement (PreparedClusterReconcile package _ _ _ _) = planOwnedClusterPlacement (planOwnedClusterConfigBase package)
 
 preparedClusterProviderKey :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> Text
-preparedClusterProviderKey (PreparedClusterReconcile package _ _ _ _) = planOwnedClusterProviderKey package
+preparedClusterProviderKey (PreparedClusterReconcile package _ _ _ _) = planOwnedClusterProviderKey (planOwnedClusterConfigBase package)
 
 preparedClusterOwnershipIdentity :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> Text
-preparedClusterOwnershipIdentity (PreparedClusterReconcile package _ _ _ _) = planOwnedClusterOwnershipIdentity package
+preparedClusterOwnershipIdentity (PreparedClusterReconcile package _ _ _ _) = planOwnedClusterOwnershipIdentity (planOwnedClusterConfigBase package)
 
 preparedClusterBudget :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> ResourceBudget
-preparedClusterBudget (PreparedClusterReconcile package _ _ _ _) = planOwnedClusterBudget package
+preparedClusterBudget (PreparedClusterReconcile package _ _ _ _) = planOwnedClusterBudget (planOwnedClusterConfigBase package)
 
 preparedClusterNodeNames :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> [String]
-preparedClusterNodeNames (PreparedClusterReconcile package _ _ _ _) = planOwnedClusterNodeNames package
+preparedClusterNodeNames (PreparedClusterReconcile package _ _ _ _) = planOwnedClusterNodeNames (planOwnedClusterConfigBase package)
 
 -- | Descriptive projections from the opaque settled cluster authority.
 managedClusterKey :: ManagedClusterHandle scope planId clusterId phase -> Text
@@ -491,6 +475,14 @@ withClusterReconcileSettlement settlement consumeManaged consumeForeign =
         ManagedClusterProvision managed receipt change -> consumeManaged managed receipt change
         ForeignClusterProvision key generation version foreignObservation ->
             consumeForeign key generation version foreignObservation
+
+carryClusterReconcileSettlement ::
+    StepExecution scope planId ->
+    ManagedClusterHandle scope planId clusterId phase ->
+    OwnershipReceipt scope planId clusterId ClusterResource ->
+    IO (Either ReconcileError ())
+carryClusterReconcileSettlement execution managed receipt =
+    carryManagedResourceSettlement execution (managedClusterResourceHandle managed) receipt "provisioned" "cluster-reconcile-v1"
 
 settleClusterReconcile ::
     Maybe (PriorCommitProof scope planId clusterId ClusterResource) ->
@@ -602,25 +594,26 @@ clusterCordonResultView (ClusterCordonCallResult observation) = case observation
 {- | Cordon authority exists only after the exact reconcile settled to a
 managed handle and its matching ownership receipt.
 -}
-data PreparedClusterCordon
-    scope
-    specDigest
-    planId
-    configId
-    cfg
-    clusterId
-    clusterFrame
-    providerId
-    providerFrame
-    budgetId
-    provider
-    capabilityId
-    wallSpecId
-    workloadSetId
-    partitionId
-    phase
+data
+    PreparedClusterCordon
+        scope
+        specDigest
+        planId
+        configId
+        cfg
+        clusterId
+        clusterFrame
+        providerId
+        providerFrame
+        budgetId
+        provider
+        capabilityId
+        wallSpecId
+        workloadSetId
+        partitionId
+        phase
     = PreparedClusterCordon
-        ( PlanOwnedCluster
+        ( PlanOwnedClusterConfig
             scope
             specDigest
             planId
@@ -671,52 +664,54 @@ preparedClusterCordonHandle (PreparedClusterCordon _ managed) = managed
 preparedClusterCordonName ::
     PreparedClusterCordon scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
     String
-preparedClusterCordonName (PreparedClusterCordon package _) = planOwnedClusterName package
+preparedClusterCordonName (PreparedClusterCordon package _) = planOwnedClusterName (planOwnedClusterConfigBase package)
 
 preparedClusterCordonStateDirectory ::
     PreparedClusterCordon scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
     FilePath
-preparedClusterCordonStateDirectory (PreparedClusterCordon package _) = planOwnedClusterStateDirectory package
+preparedClusterCordonStateDirectory (PreparedClusterCordon package _) = planOwnedClusterStateDirectory (planOwnedClusterConfigBase package)
 
 preparedClusterCordonOwnershipIdentity ::
     PreparedClusterCordon scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
     Text
 preparedClusterCordonOwnershipIdentity (PreparedClusterCordon package _) =
-    planOwnedClusterOwnershipIdentity package
+    planOwnedClusterOwnershipIdentity (planOwnedClusterConfigBase package)
 
 preparedClusterCordonNodeNames ::
     PreparedClusterCordon scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
     [String]
 preparedClusterCordonNodeNames (PreparedClusterCordon package _) =
-    planOwnedClusterNodeNames package
+    planOwnedClusterNodeNames (planOwnedClusterConfigBase package)
 
 preparedClusterCordonBudget ::
     PreparedClusterCordon scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
     ResourceBudget
 preparedClusterCordonBudget (PreparedClusterCordon package _) =
-    planOwnedClusterBudget package
+    planOwnedClusterBudget (planOwnedClusterConfigBase package)
 
--- | Settled cordon evidence gates readiness and therefore every dependent
--- cluster operation.
-data AppliedClusterCordon
-    scope
-    specDigest
-    planId
-    configId
-    cfg
-    clusterId
-    clusterFrame
-    providerId
-    providerFrame
-    budgetId
-    provider
-    capabilityId
-    wallSpecId
-    workloadSetId
-    partitionId
-    phase
+{- | Settled cordon evidence gates readiness and therefore every dependent
+cluster operation.
+-}
+data
+    AppliedClusterCordon
+        scope
+        specDigest
+        planId
+        configId
+        cfg
+        clusterId
+        clusterFrame
+        providerId
+        providerFrame
+        budgetId
+        provider
+        capabilityId
+        wallSpecId
+        workloadSetId
+        partitionId
+        phase
     = AppliedClusterCordon
-        ( PlanOwnedCluster
+        ( PlanOwnedClusterConfig
             scope
             specDigest
             planId
@@ -745,25 +740,25 @@ appliedClusterCordonHandle (AppliedClusterCordon _ managed) = managed
 appliedClusterCordonName ::
     AppliedClusterCordon scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
     String
-appliedClusterCordonName (AppliedClusterCordon package _) = planOwnedClusterName package
+appliedClusterCordonName (AppliedClusterCordon package _) = planOwnedClusterName (planOwnedClusterConfigBase package)
 
 appliedClusterCordonStateDirectory ::
     AppliedClusterCordon scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
     FilePath
 appliedClusterCordonStateDirectory (AppliedClusterCordon package _) =
-    planOwnedClusterStateDirectory package
+    planOwnedClusterStateDirectory (planOwnedClusterConfigBase package)
 
 appliedClusterCordonOwnershipIdentity ::
     AppliedClusterCordon scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
     Text
 appliedClusterCordonOwnershipIdentity (AppliedClusterCordon package _) =
-    planOwnedClusterOwnershipIdentity package
+    planOwnedClusterOwnershipIdentity (planOwnedClusterConfigBase package)
 
 appliedClusterCordonNodeNames ::
     AppliedClusterCordon scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
     [String]
 appliedClusterCordonNodeNames (AppliedClusterCordon package _) =
-    planOwnedClusterNodeNames package
+    planOwnedClusterNodeNames (planOwnedClusterConfigBase package)
 
 settleClusterCordon ::
     PreparedClusterCordon scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
@@ -816,6 +811,10 @@ data ClusterReadiness scope planId clusterId phase where
                 phase
             ) ->
         ClusterReadiness scope planId clusterId phase
+    RecoveredClusterReadiness ::
+        ResourceHandle scope planId clusterId ClusterResource Managed observedPhase ->
+        IO (Either ReconcileError Word64) ->
+        ClusterReadiness scope planId clusterId phase
 
 type role ClusterReadiness nominal nominal nominal nominal
 
@@ -826,6 +825,20 @@ settleClusterReadiness ::
 settleClusterReadiness (AppliedClusterCordon _ managed) (ClusterReadinessCallResult version observation reprobe) = do
     _ <- settleClusterReadinessObservation managed version observation
     Right (ClusterReadiness managed reprobe)
+
+{- | Reconstruct readiness only inside a continuation from a newly executed
+backend observation.  Neither the call result nor the opaque readiness witness
+can be supplied by the continuation, and a failed or stale observation never
+enters it.
+-}
+withFreshClusterReadiness ::
+    AppliedClusterCordon scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
+    IO (ClusterReadinessCallResult scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase) ->
+    (ClusterReadiness scope planId clusterId phase -> result) ->
+    IO (Either ReconcileError result)
+withFreshClusterReadiness applied observe consume = do
+    fresh <- observe
+    pure (consume <$> settleClusterReadiness applied fresh)
 
 settleClusterReadinessObservation ::
     ManagedClusterHandle scope planId clusterId phase ->
@@ -862,13 +875,37 @@ settleClusterReadinessObservation managed version observation =
         ClusterReadinessProbeFailed reason ->
             Left (Failure (FailureDetail "probe cluster readiness" reason ReprobeBeforeRetry))
 
--- | The only cluster-module dependency probe producer consumes readiness
--- evidence, so a dependent planned operation cannot be offered before the
--- exact managed cluster generation has been observed ready.
+{- | The only cluster-module dependency probe producer consumes readiness
+evidence, so a dependent planned operation cannot be offered before the
+exact managed cluster generation has been observed ready.
+-}
 clusterReadinessProbe ::
     ClusterReadiness scope planId clusterId phase ->
     DependencyProbe scope planId clusterId ClusterResource
 clusterReadinessProbe evidence = dependencyProbe (reprobeClusterReadiness evidence)
+
+withClusterReadinessResourceHandle ::
+    ClusterReadiness scope planId clusterId phase ->
+    (forall observedPhase. ResourceHandle scope planId clusterId ClusterResource Managed observedPhase -> result) ->
+    result
+withClusterReadinessResourceHandle (ClusterReadiness managed _) consume = consume (managedClusterResourceHandle managed)
+withClusterReadinessResourceHandle (RecoveredClusterReadiness handle _) consume = consume handle
+
+withRecoveredClusterReadiness ::
+    ResourceHandle scope planId clusterId ClusterResource Managed observedPhase ->
+    Word64 ->
+    (ClusterReadiness scope planId clusterId phase -> result) ->
+    IO (Either ReconcileError result)
+withRecoveredClusterReadiness handle version consume
+    | version == 0 = pure (Left (Failure (FailureDetail "recover cluster readiness" "fresh observation version must be positive" DoNotRetry)))
+    | otherwise = do
+        unused <- newIORef True
+        let reprobe = do
+                available <- atomicModifyIORef' unused (\current -> (False, current))
+                pure $ if available
+                    then Right version
+                    else Left (Failure (FailureDetail "recover cluster readiness" "fresh readiness observation has already been consumed" DoNotRetry))
+        pure (Right (consume (RecoveredClusterReadiness handle reprobe)))
 
 {- | Rerun the backend-bound read-only readiness probe retained by the opaque
 evidence.  The returned version is descriptive and non-authorizing on its own;
@@ -881,6 +918,7 @@ reprobeClusterReadiness ::
 reprobeClusterReadiness (ClusterReadiness managed reprobe) = do
     ClusterReadinessCallResult version observation _ <- reprobe
     pure (settleClusterReadinessObservation managed version observation)
+reprobeClusterReadiness (RecoveredClusterReadiness _ reprobe) = reprobe
 
 -- | Descriptive, non-authorizing projection of a strong cleanup result.
 data ClusterCleanupResultView
@@ -897,25 +935,26 @@ clusterCleanupResultView (ClusterCleanupCallResult observation) = case observati
     ClusterCleanupReplaced identity -> ClusterCleanupResultReplaced identity
     ClusterCleanupFailed err -> ClusterCleanupResultFailed err
 
-data PreparedClusterCleanup
-    scope
-    specDigest
-    planId
-    configId
-    cfg
-    clusterId
-    clusterFrame
-    providerId
-    providerFrame
-    budgetId
-    provider
-    capabilityId
-    wallSpecId
-    workloadSetId
-    partitionId
-    phase
+data
+    PreparedClusterCleanup
+        scope
+        specDigest
+        planId
+        configId
+        cfg
+        clusterId
+        clusterFrame
+        providerId
+        providerFrame
+        budgetId
+        provider
+        capabilityId
+        wallSpecId
+        workloadSetId
+        partitionId
+        phase
     = PreparedClusterCleanup
-        ( PlanOwnedCluster
+        ( PlanOwnedClusterConfig
             scope
             specDigest
             planId
@@ -964,20 +1003,20 @@ preparedClusterCleanupHandle ::
 preparedClusterCleanupHandle (PreparedClusterCleanup _ managed) = managed
 
 preparedCleanupClusterName :: PreparedClusterCleanup scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase -> String
-preparedCleanupClusterName (PreparedClusterCleanup package _) = planOwnedClusterName package
+preparedCleanupClusterName (PreparedClusterCleanup package _) = planOwnedClusterName (planOwnedClusterConfigBase package)
 
 preparedCleanupStateDirectory :: PreparedClusterCleanup scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase -> FilePath
-preparedCleanupStateDirectory (PreparedClusterCleanup package _) = planOwnedClusterStateDirectory package
+preparedCleanupStateDirectory (PreparedClusterCleanup package _) = planOwnedClusterStateDirectory (planOwnedClusterConfigBase package)
 
 preparedCleanupOwnershipIdentity :: PreparedClusterCleanup scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase -> Text
 preparedCleanupOwnershipIdentity (PreparedClusterCleanup package _) =
-    planOwnedClusterOwnershipIdentity package
+    planOwnedClusterOwnershipIdentity (planOwnedClusterConfigBase package)
 
 preparedCleanupConfigPath :: PreparedClusterCleanup scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase -> Maybe FilePath
-preparedCleanupConfigPath (PreparedClusterCleanup package _) = planOwnedClusterConfigPath package
+preparedCleanupConfigPath (PreparedClusterCleanup package _) = Just (planOwnedRenderedConfigPath package)
 
 preparedCleanupNodeNames :: PreparedClusterCleanup scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase -> [String]
-preparedCleanupNodeNames (PreparedClusterCleanup package _) = planOwnedClusterNodeNames package
+preparedCleanupNodeNames (PreparedClusterCleanup package _) = planOwnedClusterNodeNames (planOwnedClusterConfigBase package)
 
 settleClusterCleanup ::
     PreparedClusterCleanup scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
@@ -989,6 +1028,37 @@ settleClusterCleanup (PreparedClusterCleanup _ managed) (ClusterCleanupCallResul
         ClusterCleanupReplaced identity ->
             clusterIdentityConflict managed identity "a different cluster now holds the name; refusing to delete state this plan does not own"
         ClusterCleanupFailed err -> Left err
+
+{- | Run the one core-managed cluster cleanup selected by an exact reverse entry.
+
+The durable gate and local work must name the same admitted plan and operation.
+The closed verb chooses the effect; callers cannot pass a retain/delete flag.
+-}
+runExactClusterCleanupKernel ::
+    ProjectPlan scope specDigest planId configId cfg ->
+    ProjectVerb verb ->
+    PreparedGate ->
+    LocalWork scope planId frame verb ->
+    IO () ->
+    IO () ->
+    IO TeardownOutcome
+runExactClusterCleanupKernel plan verb gate local runDown runDestroy
+    | preparedGatePlan gate /= stablePlanSnapshotDigest (renderSnapshot plan) =
+        pure (TeardownFailed "cluster cleanup: the durable gate names another plan")
+    | preparedGateOperation gate /= localWorkKey local =
+        pure (TeardownFailed "cluster cleanup: the durable gate names another operation")
+    | localWorkAction local /= DeleteCluster =
+        pure (TeardownFailed "cluster cleanup: the reverse work is not the plan's cluster action")
+    | otherwise = case verb of
+        ProjectUp -> pure (TeardownFailed "cluster cleanup: project up has no cleanup policy")
+        ProjectDown -> run runDown
+        ProjectDestroy -> run runDestroy
+  where
+    run action = do
+        attempted <- try action
+        pure $ case attempted of
+            Left exception -> TeardownFailed (displayException (exception :: SomeException))
+            Right () -> TeardownReleased
 
 sameObservedResource ::
     ResourceHandle scope planId id resource ownershipA phaseA ->

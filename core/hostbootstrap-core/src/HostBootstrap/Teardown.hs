@@ -55,6 +55,7 @@ module HostBootstrap.Teardown (
     TeardownAction (..),
     TeardownPlan,
     teardownPlan,
+    failedUpTeardownPlanKernel,
     teardownPlanVerbName,
     teardownPlanFrameId,
 
@@ -81,6 +82,7 @@ module HostBootstrap.Teardown (
     LocalWork,
     localWorkAction,
     localWorkKey,
+    localWorkOperationKey,
     localWorkPolicy,
     localWorkRun,
     DescentWork,
@@ -108,6 +110,7 @@ module HostBootstrap.Teardown (
     subtreeSettledTerminalObservations,
     subtreeSettledReleasedOperationKeys,
     verifySubtreeSettled,
+    validateRootSubtreeSettled,
     DestroySettled,
     destroySettledPlanDigest,
     destroySettledTerminalObservations,
@@ -123,12 +126,14 @@ module HostBootstrap.Teardown (
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.ByteString (ByteString)
 import Data.Kind (Type)
+import Data.List (nub, sort)
 import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import HostBootstrap.Authority (
     ProjectVerb (..),
     VerbDestroy,
+    VerbUp,
     projectVerbName,
  )
 import HostBootstrap.HostConfig (HostConfig)
@@ -200,19 +205,20 @@ operation keys — the structural property § W requires of the forward and
 reverse projections.
 -}
 data TeardownPlan scope planId frame verb
-    = TeardownPlan (ProjectVerb verb) Text Text [Text] [[ReverseStep]]
+    = TeardownPlan (ProjectVerb verb) Bool Text Text [Text] [[ReverseStep]]
 
 type role TeardownPlan nominal nominal nominal nominal
 
 teardownPlanVerbName :: TeardownPlan scope planId frame verb -> Text
-teardownPlanVerbName (TeardownPlan verb _ _ _ _) = projectVerbName verb
+teardownPlanVerbName (TeardownPlan verb _ _ _ _ _) = projectVerbName verb
 
 -- | The exact semantic frame from which this reverse projection begins.
 teardownPlanFrameId :: TeardownPlan scope planId frame verb -> Text
-teardownPlanFrameId (TeardownPlan _ _ frame _ _) = frame
+teardownPlanFrameId (TeardownPlan _ _ _ frame _ _) = frame
+
 
 projectedOperationKeys :: TeardownPlan scope planId frame verb -> [OperationKey]
-projectedOperationKeys (TeardownPlan _ _ _ _ levels) =
+projectedOperationKeys (TeardownPlan _ _ _ _ _ levels) =
     [reverseOperationKey step | level <- levels, step <- level]
 
 {- | Project the validated plan onto its reverse form for one verb.
@@ -230,6 +236,7 @@ teardownPlan ::
 teardownPlan plan current verb =
     TeardownPlan
         verb
+        False
         (stablePlanSnapshotDigest (renderSnapshot plan))
         currentId
         frames
@@ -259,6 +266,62 @@ teardownPlan plan current verb =
         | step <- steps
         , plannedStepFrameId step == frame
         , plannedStepReversePolicy step /= PreserveOnReverse
+        ]
+
+{- | Project only effects whose durable Prepared gates were reached by one
+failed Up.  The retained verb remains Up, so this value cannot be promoted to
+Destroy settlement or used to open a reverse Production intent; action
+selection is cleanup-only and uses destroy-strength release for the exact
+reached prefix.
+-}
+failedUpTeardownPlanKernel ::
+    ProjectPlan scope specDigest planId configId cfg ->
+    CurrentFrame scope planId frame ->
+    [Text] ->
+    Either TeardownError (TeardownPlan scope planId frame VerbUp)
+failedUpTeardownPlanKernel plan current reached
+    | length reached /= length (nub reached) =
+        Left (TeardownReverseDescentRefused "the failed-Up reached set contains a duplicate")
+    | sort reached /= sort projected =
+        Left
+            ( TeardownReverseDescentRefused
+                ( "the failed-Up reached set differs from the admitted plan: expected "
+                    <> Text.intercalate ", " projected
+                    <> ", observed "
+                    <> Text.intercalate ", " reached
+                )
+            )
+    | otherwise = Right (TeardownPlan ProjectUp True digest currentId frames levels)
+  where
+    digest = stablePlanSnapshotDigest (renderSnapshot plan)
+    currentId = currentFrameId current
+    steps = NonEmpty.toList (forward plan)
+    frames =
+        dropWhile
+            (/= currentId)
+            (map fst (NonEmpty.toList (topologyFrameOrder (topology plan))))
+    placementFor frame
+        | frame == currentId = ReverseLocal currentId
+        | otherwise = case frames of
+            (_opening : child : _) -> ReverseDescent currentId child
+            _ -> ReverseLocal currentId
+    selected frame =
+        [ step
+        | step <- steps
+        , plannedStepFrameId step == frame
+        , Text.pack (operationKeyText (plannedStepOperationKey step)) `elem` reached
+        , plannedStepReversePolicy step /= PreserveOnReverse
+        ]
+    levels =
+        [ level
+        | frame <- reverse frames
+        , let level = reverse (mapMaybe (reverseStepFor ProjectDestroy (placementFor frame)) (selected frame))
+        , not (null level)
+        ]
+    projected =
+        [ Text.pack (operationKeyText (plannedStepOperationKey step))
+        | frame <- frames
+        , step <- selected frame
         ]
 
 reverseStepFor ::
@@ -336,8 +399,8 @@ stopped and its retained children are unreachable until it is started again.
 openTeardownForest ::
     TeardownPlan scope planId frame verb ->
     Either TeardownError (TeardownForest scope planId frame verb)
-openTeardownForest projection@(TeardownPlan verb _ _ _ levels)
-    | ProjectUp <- verb = Left TeardownProjectUpHasNoReverse
+openTeardownForest projection@(TeardownPlan verb failedUp _ _ _ levels)
+    | ProjectUp <- verb, not failedUp = Left TeardownProjectUpHasNoReverse
     | null levels = Left (TeardownPlanEmpty (projectVerbName verb))
     | otherwise = Right (TeardownForest projection (nest verb levels))
 
@@ -550,6 +613,9 @@ localWorkAction (LocalWork _ (TeardownCursor step)) = reverseAction step
 localWorkKey :: LocalWork scope planId frame verb -> Text
 localWorkKey (LocalWork _ (TeardownCursor step)) = reverseKey step
 
+localWorkOperationKey :: LocalWork scope planId frame verb -> OperationKey
+localWorkOperationKey (LocalWork _ (TeardownCursor step)) = reverseOperationKey step
+
 -- | The reverse policy the node's forward step declared.
 localWorkPolicy :: LocalWork scope planId frame verb -> ReversePolicy
 localWorkPolicy (LocalWork _ (TeardownCursor step)) = reversePolicy step
@@ -609,7 +675,7 @@ schedulable.
 nextTeardownWork ::
     TeardownForest scope planId frame verb ->
     TeardownProgress scope planId frame verb
-nextTeardownWork forest@(TeardownForest (TeardownPlan verb digest frame _ _) nodes) =
+nextTeardownWork forest@(TeardownForest (TeardownPlan verb _ digest frame _ _) nodes) =
     case firstJust [searchAll FreshWork [] nodes, searchAll RetryWork [] nodes] of
         Just (path, node, preDescent) ->
             ProgressWork (TeardownAuthorizationPoint forest path node preDescent)
@@ -715,10 +781,11 @@ descentProjection ::
     TeardownPlan scope planId childFrame verb
 descentProjection (TeardownAuthorizationPoint (TeardownForest parentProjection _) _ _ _) child =
     case parentProjection of
-        TeardownPlan verb digest _ frames levels ->
+        TeardownPlan verb failedUp digest _ frames levels ->
             let exactChildFrames = dropWhile (/= child) frames
              in TeardownPlan
                     verb
+                    failedUp
                     digest
                     child
                     exactChildFrames
@@ -1042,7 +1109,7 @@ validateCompleted ::
     Text ->
     [(OperationKey, TeardownOutcome)] ->
     Either TeardownError ()
-validateCompleted projection@(TeardownPlan projectedVerb projectedDigest projectedFrame _ _) completedVerb completedDigest completedFrame observations
+validateCompleted projection@(TeardownPlan projectedVerb _ projectedDigest projectedFrame _ _) completedVerb completedDigest completedFrame observations
     | projectVerbName completedVerb /= projectVerbName projectedVerb =
         Left
             ( TeardownProjectVerbMismatch
@@ -1075,6 +1142,26 @@ validateSubtreeSettled ::
     Either TeardownError ()
 validateSubtreeSettled projection (SubtreeSettled verb digest frame observations) =
     validateCompleted projection verb digest frame observations
+
+{- | Recheck that a settled subtree is the exact unique-root forest. This
+verb-polymorphic check gives Down the same nested-frame refusal that
+'verifyDestroySettled' necessarily applies before minting destroy evidence.
+-}
+validateRootSubtreeSettled ::
+    ProjectPlan scope specDigest planId configId cfg ->
+    CurrentFrame scope planId frame ->
+    SubtreeSettled scope planId frame verb ->
+    Either TeardownError ()
+validateRootSubtreeSettled plan current settled
+    | roots /= [currentId] = Left (TeardownRootFrameMismatch currentId roots)
+    | otherwise = validateSubtreeSettled (teardownPlan plan current verb) settled
+  where
+    verb = case settled of SubtreeSettled retained _ _ _ -> retained
+    currentId = currentFrameId current
+    derived = topology plan
+    orderedFrames = map fst (NonEmpty.toList (topologyFrameOrder derived))
+    children = map snd (topologyParentEdges derived)
+    roots = [frame | frame <- orderedFrames, frame `notElem` children]
 
 renderTerminalObservations ::
     [(OperationKey, TeardownOutcome)] ->

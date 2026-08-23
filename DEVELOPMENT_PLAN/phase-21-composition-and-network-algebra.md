@@ -1,6 +1,6 @@
 # Phase 21 — Composition and network algebra
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 16 (cluster lifecycle, budgets, and cordoning)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`
@@ -18,9 +18,9 @@ callbacks a caller can skip.
 
 ## Sprints
 
-### Sprint 21.1: Scope-indexed endpoints and reachability [Active]
+### Sprint 21.1: Scope-indexed endpoints and reachability [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Network.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`,
 `core/hostbootstrap-core/test/RegistrySpec.hs`
@@ -47,13 +47,18 @@ Make "this client can reach this endpoint" a typed fact.
 exact `reachLeaf` argument shape. A source guard distinguishes the later additive helper from the lower Lift
 fold contract.
 
+#### Completion Evidence
+
+`RegistrySpec` passes all 21 cases under `-Werror`, including the exact reachability leaf and dependency
+direction guards; the complete phase gate is green.
+
 #### Remaining Work
 
-The complete phase gate.
+None.
 
-### Sprint 21.2: Proof-gated blob delivery [Active]
+### Sprint 21.2: Proof-gated blob delivery [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Registry.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/RegistryPlan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`,
@@ -84,15 +89,19 @@ registry-auth forwarding, and the refusal when the route is not settled, with a 
 unreachable configuration is refused rather than redirecting. A source guard pins the `Registry -> Lift`
 dependency direction.
 
+#### Completion Evidence
+
+`RegistrySpec` passes 21/21 and `RegistryPlanSpec` passes 22/22 under `-Werror`. The former pins every
+argument of the upload-session, upload-patch, upload-finish, and blob-head leaves. The source guard proves
+Registry depends on lower Lift and that generic Lift imports no credential policy.
+
 #### Remaining Work
 
-Add exact argument-shape coverage for all four blob Lift leaves, rerun the focused registry suites, and run
-the complete phase gate. The Registry-owned authenticated entry and `Registry -> Lift` dependency guard are
-implemented.
+None.
 
-### Sprint 21.3: The opaque role phase machine [Active]
+### Sprint 21.3: The opaque role phase machine [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
 `core/hostbootstrap-core/test/RoleLifecycleSpec.hs`
 **Substrates**: linux-cpu
@@ -118,34 +127,30 @@ Drive a long-running role through phases a caller cannot skip.
 `RoleLifecycleSpec` covers the admission chain, the derived lease requirement, each phase transition including
 failures, the aggregate drain, and a live exclusive holder refusing a peer before it acquires anything.
 
+#### Completion Evidence
+
+`RoleLifecycleSpec` passes 42/42 under `-Werror`. It covers the one-use cursor, a distinct measured peer
+refused by the live exclusive kernel holder before acquisition, forced delayed failures, asynchronous
+interruption reaching Drain, clean shutdown reporting, and Reserved/Consumed lost-acknowledgement recovery.
+`CoerceRoleLifecycleAuthorityRoles.hs` pins every nominal axis of the plan, binding, placement, effect
+authorization, and cursor. Unknown acquisition cleanup has the documented narrow total
+reprobe-and-release contract. Adoption at `service run` remains Phase 22's work.
+
 #### Remaining Work
 
-The 2026-08-08 authority audit reopened this sprint. Before it can close:
+None.
 
-- make every opaque role-plan, binding, placement, effect-authorization, and phase-cursor identity nominal and
-  pin all axes with exact compile-fail evidence;
-- replace the reusable prerequisite cursor with a core-owned transition chain that actually yields every
-  successor and prevents a second run from the same cursor;
-- define and test the asynchronous-exception policy so interruption during a restored callback still reaches
-  Drain, and force callback outcomes inside that protection so a delayed exception cannot escape after it;
-- make shutdown reporting agree with `roleExitReportOk`, and either implement the promised unknown-receipt
-  reprobe before release or narrow the contract;
-- extend Phase 13's collision-free bounded admission key with the durable admission/open recovery protocol
-  described by the canonical standards: explicit lost-acknowledgement outcomes, identity-preserving
-  rehydration of Reserved/Consumed state, and no permanently lost sole cursor after callback interruption; and
-- rerun the focused suite and complete phase gate.
+## Completion Evidence
 
-Adoption at the `service run` call site remains the service-runtime phase's work.
+The lifecycle route validates its closed launch policy but derives every provider crossing through
+`foldLeaf`/`lifecycleProcessLeaf`; Registry authentication likewise builds on lower Lift. Thus § LL has one
+crossing renderer. On 2026-08-22 the exact gate `cabal test all --ghc-options=-Werror` passed all 2,375
+tests in 147.50 seconds. The architecture and engineering documents named below record the resulting
+network, admission, interruption, recovery, and authoring contracts.
 
 ## Remaining Work
 
-Sprint 21.2 still needs exact argument-shape coverage for its four blob Lift leaves. Sprint 21.3 is reopened
-for the role authority, transition, interruption, reporting, receipt-reprobe, and durable-resume gaps listed
-above. The phase additionally owns § LL's single crossing renderer: the lift fold is the only place a
-frame-crossing argument vector is produced, so the registry's authenticated descent derives from it instead
-of choosing between two crossing routes at runtime, and the sanitized lifecycle route derives from it
-instead of rendering its own vector for the same layer. The focused suites and a fresh complete phase gate
-validate the phase after those lanes close.
+None.
 
 ## Documentation Requirements
 

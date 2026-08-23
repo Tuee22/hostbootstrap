@@ -51,6 +51,7 @@ module Fixture (
     withFixtureProjectRoot,
     withFixtureProjectPlan,
     withFixtureProjectPlanContext,
+    withFixtureProjectPlanRoot,
     withFixtureHarnessProjectPlan,
     withFixtureHarnessAuthority,
     newFakeTool,
@@ -95,6 +96,7 @@ import HostBootstrap.Harness.Ownership (
  )
 import HostBootstrap.Lift.Context (LiftContext)
 import HostBootstrap.Lifecycle.Mode (
+    ProductionRoot,
     harnessActiveMode,
     harnessRootAuthority,
     harnessRootHarnessAuthority,
@@ -109,6 +111,7 @@ import HostBootstrap.Lifecycle.Mode (
     withProductionRoot,
     withHarnessLifecycleProfile,
  )
+import HostBootstrap.Authority (InstalledProjectIdentity, VerbUp)
 import HostBootstrap.ProjectPlan (
     ProjectPlan,
     planDraftsFromValidatedBuilder,
@@ -119,7 +122,7 @@ import HostBootstrap.ProjectRoot (
     canonicalProjectRootPath,
     withCanonicalProjectRoot,
  )
-import HostBootstrap.Protected (openProtectedStore)
+import HostBootstrap.Protected (ProtectedStore, openProtectedStore)
 import HostBootstrap.Step (Step, StepPlan, mkStepPlan)
 import Numeric.Natural (Natural)
 #if !defined(mingw32_HOST_OS)
@@ -352,6 +355,55 @@ withFixtureProjectPlanContext selectContext stepPlan use =
                             result <- either (fail . show) id opened
                             pure (Right result)
                     )
+            modeResult <- either (fail . show) pure rooted
+            either (fail . show) pure modeResult
+
+-- | Admit a real Production plan while retaining the exact store, installed
+-- project, and root that produced it. Recovery specs use this to exercise
+-- protected snapshot-indexed folds without manufacturing any authority.
+withFixtureProjectPlanRoot ::
+    StepPlan ->
+    ( forall projectId brokerGeneration specDigest planId configId.
+      ProtectedStore ->
+      InstalledProjectIdentity projectId ->
+      ProductionRoot projectId brokerGeneration VerbUp ->
+      ProjectPlan (V.Production projectId) specDigest planId configId ProjectConfig ->
+      IO result
+    ) ->
+    IO result
+withFixtureProjectPlanRoot stepPlan use =
+    withSystemTempDirectory "hostbootstrap-fixture-project-plan-root" $ \directory -> do
+        store <- openProtectedStore (directory </> "protected") >>= either (fail . show) pure
+        withFixtureInstalledProject $ \project -> do
+            rooted <-
+                withCanonicalProjectRoot (directory </> "fixture.dhall") "." $ \root ->
+                    withProductionRoot store project Authority.ProjectUp $ \productionRoot -> do
+                        opened <-
+                            withProductionLifecycleProfile
+                                (Authority.rootScopeAuthority (productionRootAuthority productionRoot))
+                                (productionActiveMode (productionRootModeLease productionRoot))
+                                (productionRootUnboundLease productionRoot)
+                                ( \profile ->
+                                    withProductionProjectCodec @ProjectConfig $ \codec -> do
+                                        let value =
+                                                defaultProjectConfig
+                                                    (Authority.installedProjectName project)
+                                                    (T.pack (canonicalProjectRootPath root))
+                                                    Context.HostOrchestrator
+                                        validated <-
+                                            withValidatedConfig codec value $ \_wire config -> do
+                                                drafts <-
+                                                    either (fail . show) pure $
+                                                        planDraftsFromValidatedBuilder root config (\_ _ -> Right stepPlan)
+                                                action <-
+                                                    either (fail . show) pure $
+                                                        withProjectPlan profile root config drafts $
+                                                            \plan -> use store project productionRoot plan
+                                                action
+                                        either fail pure validated
+                                )
+                        result <- either (fail . show) id opened
+                        pure (Right result)
             modeResult <- either (fail . show) pure rooted
             either (fail . show) pure modeResult
 

@@ -36,6 +36,10 @@ module HostBootstrap.Handoff.Relay (
     prepareLifecycleAcknowledgementThroughLink,
     adoptLifecycleAcknowledgementThroughLink,
     rootBrokerLink,
+    rootForwardBrokerLink,
+    rootReverseBrokerLink,
+    publishRootedLifecycleReportKernel,
+    persistRootedLifecycleCompletionKernel,
     withConfigBrokerLink,
     withRecoveryBrokerLink,
     withNestedRecursiveHandoffRuntimeKernel,
@@ -50,9 +54,15 @@ module HostBootstrap.Handoff.Relay (
 
     -- * Opening one rooted frame exchange
     withRootedOpenedResponseKernel,
+    withRootedPreparedResponseKernel,
+    withRootedPostOpenResponseKernel,
 
     -- * Confirming one terminal receipt
     withRootedTerminalReceiptKernel,
+
+    -- * Provider dependency reprobe service kernel
+    withProviderDependencyReprobeServiceKernel,
+    withProviderDependencyReprobeEndpointKernel,
 
     -- * Failures
     RelayError (..),
@@ -178,11 +188,14 @@ import HostBootstrap.Handoff (
     verifiedHandoffBinding,
     verifiedHandoffRoute,
     verifiedConfigPayload,
+    providerDependencyPackageFields,
+    withProviderDependencyReprobeKernel,
     withVerifiedRootedLifecycleResponse,
     withRecoveryProjectionBindingInput,
  )
 import HostBootstrap.Handoff.Internal (recoverySigningKernel)
 import qualified HostBootstrap.Handoff.Recovery as Recovery
+import qualified HostBootstrap.Handoff.Rooted as Rooted
 import HostBootstrap.Handoff.Protocol (
     HandoffChannel,
     ProtocolError (ProtocolRequestMismatch, ProtocolZeroRequestId),
@@ -205,6 +218,9 @@ import HostBootstrap.Handoff.Protocol (
         RecoveryRequestTag,
         RecoveryResponseTag,
         RefusedTag,
+        ProviderDependencyProbeRequestTag,
+        ProviderDependencyProbeResponseTag,
+        ProviderDependencyPackageTag,
         RootedLifecycleRequestTag,
         RootedLifecycleResponseTag
     ),
@@ -235,6 +251,12 @@ import HostBootstrap.Handoff.Receiver.Internal (
 import HostBootstrap.Lifecycle.Rooted (
     RootedFrameSession,
     withRootedFrameOpeningKernel,
+    withRootedFrameSessionKernel,
+ )
+import HostBootstrap.Lifecycle.Prepared.Internal (
+    PreparedNodeGrant,
+    renderPreparedNodeKeysKernel,
+    withPreparedNodeGrantKernel,
  )
 import HostBootstrap.Lifecycle.Rooted.Receipt (
     withRootedReceiptConfirmationKernel,
@@ -244,6 +266,23 @@ import HostBootstrap.Protected (ProtectedStore)
 import HostBootstrap.Teardown (teardownErrorMessage)
 import HostBootstrap.Teardown.Internal (ReverseDescent, withBoundReverseDescentKernel)
 import System.Timeout (timeout)
+
+withProviderDependencyReprobeServiceKernel ::
+    ByteString ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    IO (Either Text Word64) ->
+    (([ByteString] -> IO (Either Text [ByteString])) -> IO result) ->
+    IO result
+withProviderDependencyReprobeServiceKernel = withProviderDependencyReprobeKernel
 
 -- ---------------------------------------------------------------------------
 -- Reaching the root
@@ -368,6 +407,12 @@ data BrokerLink scope brokerGeneration = BrokerLink
     upstream outer refusal distinct from a successfully transported signed
     rooted response, without exposing either raw route as a module export.
     -}
+    , linkProviderDependencyRaw ::
+        [ByteString] -> IO (Either RelayError [ByteString])
+    {- ^ Carry one exact provider request to the nearest owning live kernel.
+    Root links refuse until Process installs that lexical endpoint; keyless
+    links preserve the canonical fields without interpreting them. -}
+    , linkProviderDependencyPackage :: Maybe ByteString
     , linkRejectResponse :: RelayError -> IO ()
     {- ^ Best-effort refusal for a malformed response. It is a no-op at the
     root and a protocol refusal on a relayed link.
@@ -430,12 +475,132 @@ rootBrokerLink broker scope activation admits admitsRecovery serveRooted = do
                         >>= requireRootedRequesterPath True path of
                         Left failure -> pure (Left failure)
                         Right () -> serveRooted path exactRequest
+                , linkProviderDependencyRaw = const (pure (Left (RelayEdgeNotPlanned "no provider reprobe endpoint is installed")))
+                , linkProviderDependencyPackage = Nothing
                 , linkRejectResponse = const (pure ())
                 , linkKeyDigest = brokerRouteVerificationKeyDigest route
                 }
   where
     route = rootBrokerRoute broker
     registered = either (Left . RelayHandoffFailure) (either (Left . RelayEdgeNotPlanned) Right)
+
+{- | The root link used by the recursive forward coordinator.
+
+It carries exactly the capabilities a forward lifecycle child can exercise.
+Activation and recovery signing are closed refusals, so the coordinator does
+not need to manufacture unrelated authority merely to own a child process.
+-}
+rootForwardBrokerLink ::
+    RootBroker scope brokerGeneration verb ->
+    HandoffScope scope ->
+    EdgeAdmission ->
+    (HandoffOffer scope brokerGeneration -> IO (Either Text ())) ->
+    RootedLifecycleService ->
+    IO (Either RelayError (BrokerLink scope brokerGeneration))
+rootForwardBrokerLink broker scope admits retainOffer serveRooted = do
+    authenticated <- signAuthenticatedRootScopeKernel recoverySigningKernel broker scope
+    pure $ do
+        rootScope <- either (Left . RelayHandoffFailure) Right authenticated
+        pure
+            BrokerLink
+                { linkRoute = route
+                , linkAuthenticatedRootScope = rootScope
+                , linkOpenRaw = \_ input -> registered <$> registerAdmittedHandoffEdge broker (admits input) input
+                , linkRecoverableOpenRaw = \_ _ _ ->
+                    pure (Left (RelayRecoveryNotPlanned "the forward coordinator admits no recovery edge"))
+                , linkGrantRaw = \_ offer challenge -> do
+                    retained <- retainOffer offer
+                    case retained of
+                        Left failure -> pure (Left (RelayEdgeNotPlanned failure))
+                        Right () -> fmap (either (Left . RelayHandoffFailure) Right) (grantHandoff broker offer challenge)
+                , linkSignActivationRaw = \_ _ ->
+                    pure (Left (RelayEdgeNotPlanned "the forward coordinator carries no activation signer"))
+                , linkRootedBindingRaw = \_ -> rootSignRootedBinding broker
+                , linkRecoveryFieldsRaw = \_ _ ->
+                    pure (Left (RelayRecoveryNotPlanned "the forward coordinator carries no recovery signer"))
+                , linkLifecycleAcknowledgementRaw = \_ request respond ->
+                    rootLifecycleAcknowledgement broker route request respond
+                , linkRootedLifecycleRaw = \path exactRequest ->
+                    case rootedRequestPath exactRequest >>= requireRootedRequesterPath True path of
+                        Left failure -> pure (Left failure)
+                        Right () -> serveRooted path exactRequest
+                , linkProviderDependencyRaw = const (pure (Left (RelayEdgeNotPlanned "no provider reprobe endpoint is installed")))
+                , linkProviderDependencyPackage = Nothing
+                , linkRejectResponse = const (pure ())
+                , linkKeyDigest = brokerRouteVerificationKeyDigest route
+                }
+  where
+    route = rootBrokerRoute broker
+    registered = either (Left . RelayHandoffFailure) (either (Left . RelayEdgeNotPlanned) Right)
+
+{- | Root link restricted to prepared reverse edges.
+
+Config opening and activation signing are closed refusals. Recoverable opening,
+recovery signing, rooted responses, and lifecycle acknowledgements remain the
+exact root-broker operations the prepared reverse exchange requires.
+-}
+rootReverseBrokerLink ::
+    RootBroker scope brokerGeneration verb ->
+    HandoffScope scope ->
+    EdgeAdmission ->
+    RecoveryAdmission ->
+    (HandoffOffer scope brokerGeneration -> IO (Either Text ())) ->
+    RootedLifecycleService ->
+    IO (Either RelayError (BrokerLink scope brokerGeneration))
+rootReverseBrokerLink broker scope admits admitsRecovery retainOffer serveRooted = do
+    authenticated <- signAuthenticatedRootScopeKernel recoverySigningKernel broker scope
+    pure $ do
+        rootScope <- either (Left . RelayHandoffFailure) Right authenticated
+        pure BrokerLink
+            { linkRoute = route
+            , linkAuthenticatedRootScope = rootScope
+            , linkOpenRaw = \_ _ -> pure (Left (RelayEdgeNotPlanned "the reverse coordinator admits no config edge"))
+            , linkRecoverableOpenRaw = \_ input adapter ->
+                registered <$> registerRecoverableAdmittedHandoffEdgeKernel
+                    recoverySigningKernel broker (admits input) input adapter
+            , linkGrantRaw = \_ offer challenge -> do
+                retained <- retainOffer offer
+                case retained of
+                    Left failure -> pure (Left (RelayEdgeNotPlanned failure))
+                    Right () -> fmap (either (Left . RelayHandoffFailure) Right) (grantHandoff broker offer challenge)
+            , linkSignActivationRaw = \_ _ ->
+                pure (Left (RelayEdgeNotPlanned "the reverse coordinator carries no activation signer"))
+            , linkRootedBindingRaw = \_ -> rootSignRootedBinding broker
+            , linkRecoveryFieldsRaw = \_ -> rootSignRecovery broker admitsRecovery
+            , linkLifecycleAcknowledgementRaw = \_ request respond ->
+                rootLifecycleAcknowledgement broker route request respond
+            , linkRootedLifecycleRaw = \path exactRequest ->
+                case rootedRequestPath exactRequest >>= requireRootedRequesterPath True path of
+                    Left failure -> pure (Left failure)
+                    Right () -> serveRooted path exactRequest
+            , linkProviderDependencyRaw = const (pure (Left (RelayEdgeNotPlanned "no provider reprobe endpoint is installed")))
+            , linkProviderDependencyPackage = Nothing
+            , linkRejectResponse = const (pure ())
+            , linkKeyDigest = brokerRouteVerificationKeyDigest route
+            }
+  where
+    route = rootBrokerRoute broker
+    registered = either (Left . RelayHandoffFailure) (either (Left . RelayEdgeNotPlanned) Right)
+
+-- | Publish and strictly reread the report carried by one rooted close.
+publishRootedLifecycleReportKernel ::
+    ProtectedStore -> ByteString -> IO (Either Text ())
+publishRootedLifecycleReportKernel store report = do
+    published <- publishLifecycleReportKernel recoverySigningKernel store report
+    pure $ either (Left . Text.pack . handoffErrorMessage) Right published
+
+-- | Convergently publish and acknowledge the exact rooted terminal report.
+persistRootedLifecycleCompletionKernel ::
+    ProtectedStore -> ByteString -> ByteString -> IO (Either Text ())
+persistRootedLifecycleCompletionKernel store report acknowledgement = do
+    published <- publishRootedLifecycleReportKernel store report
+    case published of
+        Left failure -> pure (Left failure)
+        Right () -> do
+            received <-
+                receiveLifecycleAcknowledgementKernel
+                    recoverySigningKernel store report acknowledgement
+            pure $ either (Left . Text.pack . handoffErrorMessage) Right received
 
 {- | Every other frame's link, derived from its already verified parent edge.
 
@@ -479,6 +644,8 @@ relayedBrokerLinkKernel edge =
                     request
                     (currentFrame : downstream)
                     exactRequest
+        , linkProviderDependencyRaw = relayProviderDependency channel request
+        , linkProviderDependencyPackage = Nothing
         , linkRejectResponse = \failure -> do
             _ <- refuse channel request failure
             pure ()
@@ -489,6 +656,22 @@ relayedBrokerLinkKernel edge =
     currentFrame = handoffChildFrame (verifiedHandoffBinding (receivedEdgeHandoff edge))
     channel = receivedEdgeChannel edge
     request = receivedEdgeRequestId edge
+
+{- | Install one bracket-scoped provider endpoint without changing any other
+root or relay capability. The handler is data-only and cannot escape the
+continuation that owns the Process exchange.
+-}
+withProviderDependencyReprobeEndpointKernel ::
+    BrokerLink scope brokerGeneration ->
+    ByteString ->
+    ([ByteString] -> IO (Either Text [ByteString])) ->
+    (BrokerLink scope brokerGeneration -> IO result) ->
+    IO result
+withProviderDependencyReprobeEndpointKernel link packageWire endpoint use =
+    use link
+        { linkProviderDependencyRaw = fmap (either (Left . RelayEdgeNotPlanned) Right) . endpoint
+        , linkProviderDependencyPackage = Just packageWire
+        }
 
 {- | Open a keyless child route only inside the exact config-kind branch.
 
@@ -677,6 +860,108 @@ withRootedOpenedResponseKernel runtime broker session store envelope request use
 
 openingFailure :: Text -> Text
 openingFailure detail = "rooted frame opening: " <> detail
+
+{- | Sign one Prepared only from evidence produced after durable Unknown rows.
+
+The session supplies every conversation coordinate, the exact request supplies
+the nonce and transcript digest, and the grant supplies only the four prepared
+body fields.  No caller can pass unsigned response bytes.
+-}
+withRootedPreparedResponseKernel ::
+    RootBroker scope brokerGeneration verb ->
+    RootedFrameSession scope rootPlanId brokerGeneration catalogId frame sessionId verb ->
+    ByteString ->
+    PreparedNodeGrant scope rootPlanId brokerGeneration catalogId frame sessionId node verb ->
+    (ByteString -> IO (Either Text ())) ->
+    IO (Either Text ())
+withRootedPreparedResponseKernel broker session request grant use =
+    withRootedFrameSessionKernel session $ \attached _verb _lineage _catalog _frame path token _stage ordinal _predecessor ->
+        if not attached
+            then pure (Left (responseFailure "an unattached session cannot issue Prepared"))
+            else case postOpenNonce "prepared" request of
+                Left failure -> pure (Left failure)
+                Right nonce ->
+                    withPreparedNodeGrantKernel grant $ \node dependencies own projected ->
+                        signAndUse
+                            broker request
+                            ( Rooted.rootedPreparedResponseUnsignedKernel
+                                (childConfigDigest request) path token "prepared" (ordinal + 1)
+                                nonce (TextEncoding.encodeUtf8 node)
+                                (renderPreparedNodeKeysKernel dependencies)
+                                own projected
+                            )
+                            use
+
+{- | Sign one closed non-Prepared post-open response family.
+
+The family selector is deliberately closed here. Coordinates come only from
+the attached root session and the nonce comes only from the exact paired
+request; callers supply at most the opaque semantic body.
+-}
+withRootedPostOpenResponseKernel ::
+    RootBroker scope brokerGeneration verb ->
+    RootedFrameSession scope rootPlanId brokerGeneration catalogId frame sessionId verb ->
+    Text ->
+    ByteString ->
+    ByteString ->
+    (ByteString -> IO (Either Text ())) ->
+    IO (Either Text ())
+withRootedPostOpenResponseKernel broker session family request body use =
+    withRootedFrameSessionKernel session $ \attached _verb _lineage _catalog _frame path token _stage ordinal _predecessor ->
+        if not attached
+            then pure (Left (responseFailure "an unattached session cannot issue a post-open response"))
+            else case postOpenNonce family request of
+                Left failure -> pure (Left failure)
+                Right nonce ->
+                    signAndUse broker request (build path token ordinal nonce) use
+  where
+    build path token ordinal nonce = case family of
+        "descend" -> opaque Rooted.rootedDescendResponseUnsignedKernel path token ordinal nonce
+        "settled" -> opaque Rooted.rootedSettledResponseUnsignedKernel path token ordinal nonce
+        "frame-complete" -> opaque Rooted.rootedFrameCompleteResponseUnsignedKernel path token ordinal nonce
+        "receipt-recorded" ->
+            Rooted.rootedReceiptRecordedResponseUnsignedKernel
+                digest path token "receipt-recorded" (ordinal + 1) nonce (TextEncoding.decodeUtf8Lenient body)
+        "refused" ->
+            Rooted.rootedRefusedResponseUnsignedKernel
+                digest path token "refused" (ordinal + 1) nonce (TextEncoding.decodeUtf8Lenient body)
+        _ -> Left (responseFailure "the post-open response family is not closed")
+      where
+        digest = childConfigDigest request
+        opaque builder p s o n = builder digest p s family (o + 1) n body
+
+signAndUse ::
+    RootBroker scope brokerGeneration verb ->
+    ByteString ->
+    Either Text ByteString ->
+    (ByteString -> IO (Either Text ())) ->
+    IO (Either Text ())
+signAndUse _ _ (Left failure) _ = pure (Left (responseFailure failure))
+signAndUse broker request (Right unsigned) use = do
+    signed <- signRootedLifecycleResponseKernel recoverySigningKernel broker request unsigned
+    case signed of
+        Left failure -> pure (Left (responseFailure (Text.pack (handoffErrorMessage failure))))
+        Right response -> use (renderRootedLifecycleResponse response)
+
+postOpenNonce :: Text -> ByteString -> Either Text ByteString
+postOpenNonce family request = do
+    decoded <- either (Left . responseFailure) Right (Rooted.rootedLifecycleRequestFromWireKernel request)
+    Rooted.withRootedLifecycleRequestKernel
+        decoded
+        (const outside)
+        (\_ _ _ _ nonce _ -> require ["prepared", "descend", "refused"] nonce)
+        (\_ _ _ _ nonce _ _ -> require ["settled", "refused"] nonce)
+        (\_ _ _ _ nonce _ _ -> require ["settled", "refused"] nonce)
+        (\_ _ _ _ nonce _ -> require ["frame-complete", "refused"] nonce)
+        (\_ _ _ _ nonce _ -> require ["receipt-recorded", "refused"] nonce)
+  where
+    require expected nonce
+        | family `elem` expected = Right nonce
+        | otherwise = outside
+    outside = Left (responseFailure "the response family does not pair with the request")
+
+responseFailure :: Text -> Text
+responseFailure detail = "rooted response: " <> detail
 
 {- | Confirm one frame's terminal receipt in the root-owned store.
 
@@ -2211,6 +2496,12 @@ serveMessage state link channel request offer challenge terminal message =
     (ParentServingAdmittedChild childFrame, RootedLifecycleRequestTag) ->
         continueAfter childFrame
             (serveRootedLifecycle childFrame link channel request message)
+    (ParentServingAdmittedChild childFrame, ProviderDependencyProbeRequestTag) ->
+        continueAfter childFrame
+            (serveProviderDependency link channel request message)
+    (ParentServingAdmittedChild childFrame, ProviderDependencyPackageTag) ->
+        continueAfter childFrame
+            (serveProviderDependencyPackage link channel request message)
     (_, tag) -> refuse channel request (RelayUnexpectedMessage tag)
   where
     continueAfter childFrame served = do
@@ -2224,6 +2515,51 @@ serveMessage state link channel request offer challenge terminal message =
                 )
             )
             outcome
+
+serveProviderDependency ::
+    BrokerLink scope brokerGeneration ->
+    HandoffChannel ->
+    Word64 ->
+    ProtocolMessage ->
+    IO (Either RelayError ())
+serveProviderDependency link channel request message = do
+    answered <- linkProviderDependencyRaw link (protocolMessageFields message)
+    case answered of
+        Left failure -> refuse channel request failure
+        Right fields -> transmit channel ProviderDependencyProbeResponseTag request fields
+
+relayProviderDependency ::
+    HandoffChannel ->
+    Word64 ->
+    [ByteString] ->
+    IO (Either RelayError [ByteString])
+relayProviderDependency channel request fields = do
+    sent <- transmit channel ProviderDependencyProbeRequestTag request fields
+    case sent of
+        Left failure -> pure (Left failure)
+        Right () -> do
+            answered <- timeout providerRelayMicros (await channel request ProviderDependencyProbeResponseTag)
+            pure (maybe (Left RelayControlFrameTimeout) id answered)
+
+providerRelayMicros :: Int
+providerRelayMicros = 1000000
+
+serveProviderDependencyPackage ::
+    BrokerLink scope brokerGeneration ->
+    HandoffChannel ->
+    Word64 ->
+    ProtocolMessage ->
+    IO (Either RelayError ())
+serveProviderDependencyPackage link channel request message =
+    case protocolMessageFields message of
+        [requestField]
+            | ByteString.null requestField ->
+                case linkProviderDependencyPackage link of
+                    Nothing -> transmit channel ProviderDependencyPackageTag request [ByteString.empty]
+                    Just packageWire -> case providerDependencyPackageFields packageWire of
+                        Left failure -> refuse channel request (RelayEdgeNotPlanned failure)
+                        Right fields -> transmit channel ProviderDependencyPackageTag request fields
+        fields -> refuse channel request (RelayMalformedMessage ProviderDependencyPackageTag (length fields))
 
 {- | Run one fixed terminal callback before acknowledging its exact report.
 
@@ -2283,13 +2619,15 @@ runLifecycleTerminal link channel request offer challenge report terminal =
                                     Nothing -> fixedPersistFailure
 
                 pending storedAcknowledgement =
-                    sendAcknowledgement storedAcknowledgement $ do
+                    do
                         adopted <-
                             adoptLifecycleAcknowledgementThroughLink
                                 link offer challenge report acknowledgement
                                 (recordDisposition True)
                                 (recordDisposition False)
-                        pure (either (const (Left RelayLifecycleFailure)) Right adopted)
+                        case adopted of
+                            Left _ -> pure (Left RelayLifecycleFailure)
+                            Right () -> sendAcknowledgement storedAcknowledgement (pure (Right ()))
 
                 alreadyAdopted storedAcknowledgement =
                     sendAcknowledgement storedAcknowledgement (recordDisposition False)

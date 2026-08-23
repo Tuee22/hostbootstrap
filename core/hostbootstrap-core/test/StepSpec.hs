@@ -21,8 +21,30 @@ tests =
         , testGroup "stable implementation identities" implementationIdentityCases
         , testGroup "plan validation" validationCases
         , testGroup "projected operations" projectionCases
+        , testGroup "provider resource declarations" providerDeclarationCases
         , testGroup "step observations" observationCases
         ]
+
+providerDeclarationCases :: [TestTree]
+providerDeclarationCases =
+    [ testCase "duplicate provider declarations are retained and refused" $ do
+        let step =
+                declaresProviderResource providerResourceAtCurrentFrame $
+                    declaresProviderResource providerResourceAtCurrentFrame $
+                        deployVMStep "provider" metal noop
+        case mkStepPlan [step] of
+            Left failure -> failure @?= DuplicateProviderResourceDeclaration (CoreStepIdentity DeployVMId) 2
+            Right _ -> assertFailure "duplicate provider declarations were admitted"
+    , testCase "an immediate-child provider requires one validated descent" $
+        case
+            mkStepPlan
+                [ declaresProviderResource
+                    providerResourceAtImmediateChild
+                    (deployVMStep "provider" metal noop)
+                ] of
+            Left failure -> failure @?= ProviderResourceChildWithoutUniqueDescent (CoreStepIdentity DeployVMId)
+            Right _ -> assertFailure "an immediate-child provider without a descent was admitted"
+    ]
 
 {- | A node's __projected__ operations (§ CC).
 

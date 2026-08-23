@@ -30,6 +30,11 @@ owner that joins them names no `ProtectedStore`: publishing the exact canonical 
 to Received both arrive as continuations from the relay that already holds the hidden recovery signing
 admission, and the exact digest of the complete signed `FrameComplete` bytes is the only thing a
 `ReceiptConfirm` can name a terminal report with. The
+reverse replay path is likewise read-only: it reauthorizes and rereads the exact version-two Bound descent
+under its live teardown cursor, then requires the exact version-three parent Adopted row derived from the
+same binding, report, and canonical acknowledgement. Only after both protected entries close does the shared
+semantic proof producer run. Rehydration performs no compare-and-swap and reopens no token map, child process,
+or local effect. The
 [authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
 owns the closed wire vocabulary and the
 [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) consumes
@@ -154,6 +159,22 @@ record keys or versions.
   neither the exact opened row nor the exact attached row refuses.
 
 Together these facts make `.data` host-carried state rather than frame-relative guest state.
+
+The Production reverse-root row has a retained terminal form. Pending publishes the exact successful-Up
+source coordinates; Committed adds the sole successor broker, mode, and bound-lease bytes; Terminal preserves
+that complete descriptor after the exact root subtree and independently enumerated frame sessions have all
+settled. Down requires the root `SubtreeSettled` proof. Destroy additionally requires the unique-root
+`DestroySettled` proof. Committed-to-Terminal is one compare-and-swap followed by an exact version-and-bytes
+readback, and an exact Terminal retry performs no mutation. Ordinary admission recognizes Terminal as settled,
+but Pending and Committed remain exclusive owners.
+
+A later reverse invocation may rearm the project only after its new successful-Up root lease, protected
+snapshot, acquisition row, teardown cursor, and closed session set have all been revalidated. At that point the
+fresh reverse admission accepts only the exact version-three Terminal row, proves its project/store coordinate
+and that the new broker generation is strictly newer, compare-and-deletes that retained terminal with strict
+absence readback, and publishes the next Pending row through the normal absent-only path. A stale lease cannot
+rearm, and a crash after terminal consumption is safe because the independently durable new Up source can
+recreate the absent Pending row.
 
 ## Open defects
 

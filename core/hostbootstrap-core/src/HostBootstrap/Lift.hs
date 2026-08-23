@@ -1,32 +1,34 @@
--- | The self-reference compositional lift: run a subcommand of /this same
--- binary/ in a nested execution context by invoking the binary again there.
---
--- This is the one foundational composition primitive (see
--- @development_plan_standards.md § U@). A deployment is ordinary @IO@ sequencing
--- of @ensure@/deploy steps; crossing a context boundary is the binary
--- re-invoking its own subcommand in the nested context — @limactl shell \<vm\> --
--- \<pb\> \<subcmd\>@ or @incus exec \<vm\> -- \<pb\> \<subcmd\>@ for a VM,
--- @docker run --rm \<image\> \<subcmd\>@ for a
--- container (whose @ENTRYPOINT@ /is/ the binary). A nested call runs the same
--- @optparse-applicative@ command tree, so each step runs "locally" in whatever
--- context it was placed in, unaware it was lifted.
---
--- Contexts compose as a stack of layers ('LiftContext'), outermost-first.
--- 'foldLift' is pure (the argv fold is unit-tested); 'liftSubcommand' is the thin
--- @IO@ seam. Raw tool/probe leaves use the same 'foldLeaf' route, so there is no
--- parallel tool-level provider dispatcher.
---
--- A container layer is terminal in the fold: its @ENTRYPOINT@ runs the binary
--- directly, so the subcommand is passed bare after the image and any deeper
--- nesting is the in-container binary's own runtime self-lift.
-module HostBootstrap.Lift
-  ( -- * Provider targets
+{- | The self-reference compositional lift: run a subcommand of /this same
+binary/ in a nested execution context by invoking the binary again there.
+
+This is the one foundational composition primitive (see
+@development_plan_standards.md § U@). A deployment is ordinary @IO@ sequencing
+of @ensure@/deploy steps; crossing a context boundary is the binary
+re-invoking its own subcommand in the nested context — @limactl shell \<vm\> --
+\<pb\> \<subcmd\>@ or @incus exec \<vm\> -- \<pb\> \<subcmd\>@ for a VM,
+@docker run --rm \<image\> \<subcmd\>@ for a
+container (whose @ENTRYPOINT@ /is/ the binary). A nested call runs the same
+@optparse-applicative@ command tree, so each step runs "locally" in whatever
+context it was placed in, unaware it was lifted.
+
+Contexts compose as a stack of layers ('LiftContext'), outermost-first.
+'foldLift' is pure (the argv fold is unit-tested); 'liftSubcommand' is the thin
+@IO@ seam. Raw tool/probe leaves use the same 'foldLeaf' route, so there is no
+parallel tool-level provider dispatcher.
+
+A container layer is terminal in the fold: its @ENTRYPOINT@ runs the binary
+directly, so the subcommand is passed bare after the image and any deeper
+nesting is the in-container binary's own runtime self-lift.
+-}
+module HostBootstrap.Lift (
+    -- * Provider targets
     IncusVM (..),
     LimaVM (..),
     Wsl2VM (..),
 
     -- * Contexts
     LiftLayer (..),
+    ContainerPlacement (..),
     ContainerLift (..),
     ConfigDelivery (..),
     LiftContext (..),
@@ -70,7 +72,8 @@ module HostBootstrap.Lift
     blobUploadPatchLeaf,
     blobUploadFinishLeaf,
     blobHeadLeaf,
-  )
+    lifecycleProcessLeaf,
+)
 where
 
 import qualified Data.Text as T
@@ -78,8 +81,8 @@ import qualified HostBootstrap.Config.Vocab as Vocab
 import HostBootstrap.Effect.Interpreter (interpretHostCommand)
 import HostBootstrap.Effect.Quote (shellQuoteArgs)
 import HostBootstrap.Effect.Run (capturedTriple)
-import HostBootstrap.Effect.Vocabulary
-  ( EffectFrame (CrossedInto, OuterHost),
+import HostBootstrap.Effect.Vocabulary (
+    EffectFrame (CrossedInto, OuterHost),
     EffectStdio (CaptureStreams),
     EffectTarget (SelfTarget),
     FrameCrossing (CrossContainer, CrossIncusVM, CrossLimaVM, CrossWsl2VM),
@@ -87,12 +90,13 @@ import HostBootstrap.Effect.Vocabulary
     hostCommand,
     inFrame,
     withCommandStdin,
-  )
+ )
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima, Wsl), toolCommandName)
-import HostBootstrap.Lift.Context
-  ( ConfigDelivery (..),
+import HostBootstrap.Lift.Context (
+    ConfigDelivery (..),
     ContainerLift (..),
+    ContainerPlacement (..),
     IncusVM (..),
     LiftContext (..),
     LiftLayer (..),
@@ -107,95 +111,110 @@ import HostBootstrap.Lift.Context
     localContext,
     shellVMArgs,
     wslExecArgs,
-  )
+ )
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode)
 
--- | How to invoke /this binary/ per context. The local path is the running
--- executable; the in-VM path is a deployment fact (e.g. the pipx/ghcup-installed
--- @\<project\>@ on the VM's @$PATH@). A container needs no path — its
--- @ENTRYPOINT@ is the binary.
+{- | How to invoke /this binary/ per context. The local path is the running
+executable; the in-VM path is a deployment fact (e.g. the pipx/ghcup-installed
+@\<project\>@ on the VM's @$PATH@). A container needs no path — its
+@ENTRYPOINT@ is the binary.
+-}
 data SelfRef = SelfRef
-  { localSelfPath :: FilePath,
-    inVMSelfPath :: FilePath
-  }
-  deriving (Eq, Show)
+    { localSelfPath :: FilePath
+    , inVMSelfPath :: FilePath
+    }
+    deriving (Eq, Show)
 
 -- | Build a 'SelfRef' from explicit paths (pure; used by the unit tests).
 mkSelfRef :: FilePath -> FilePath -> SelfRef
-mkSelfRef localP vmP = SelfRef {localSelfPath = localP, inVMSelfPath = vmP}
+mkSelfRef localP vmP = SelfRef{localSelfPath = localP, inVMSelfPath = vmP}
 
--- | Resolve a 'SelfRef' for the running binary: the local path from
--- 'getExecutablePath' (@/proc/self/exe@, not @argv0@); the in-VM path supplied by
--- the caller (where its bootstrap installs the binary).
+{- | Resolve a 'SelfRef' for the running binary: the local path from
+'getExecutablePath' (@/proc/self/exe@, not @argv0@); the in-VM path supplied by
+the caller (where its bootstrap installs the binary).
+-}
 currentSelfRef :: FilePath -> IO SelfRef
 currentSelfRef vmP = do
-  exe <- getExecutablePath
-  pure (mkSelfRef exe vmP)
+    exe <- getExecutablePath
+    pure (mkSelfRef exe vmP)
 
--- | The resolved host invocation a lift folds down to: either run the binary
--- itself locally, or run a host tool (@incus@/@docker@) whose args encode the
--- nested invocation.
+{- | The resolved host invocation a lift folds down to: either run the binary
+itself locally, or run a host tool (@incus@/@docker@) whose args encode the
+nested invocation.
+-}
 data LiftDispatch
-  = DispatchLocal FilePath [String]
-  | DispatchTool HostTool [String]
-  deriving (Eq, Show)
+    = DispatchLocal FilePath [String]
+    | DispatchTool HostTool [String]
+    deriving (Eq, Show)
 
--- | The @docker run@ argv for a container layer, with the in-container command as
--- the tail. Pure.
+{- | The @docker run@ argv for a container layer, with the in-container command as
+the tail. Pure.
+-}
 containerRunArgs :: ContainerLift -> [String] -> [String]
 containerRunArgs c inner =
-  ["run"]
-    ++ (["--rm" | clRemoveAfter c])
-    ++ concatMap mountArg (clMounts c)
-    ++ deliveryArgs
-    ++ clExtraArgs c
-    ++ [clImage c]
-    ++ innerTail
+    ["run"]
+        ++ (["--rm" | clRemoveAfter c])
+        ++ concatMap mountArg (clMounts c)
+        ++ deliveryArgs
+        ++ clExtraArgs c
+        ++ [clImage c]
+        ++ innerTail
   where
     -- With config delivery: keep the container's @stdin@ open (@-i@) so the
     -- in-container @cat@ receives the piped projection, and override the
     -- @ENTRYPOINT@ to a @sh@ that writes the sibling then @exec@s the binary.
     (deliveryArgs, innerTail) = case clConfigDelivery c of
-      Nothing -> ([], inner)
-      Just cd -> (["-i", "--entrypoint", "sh"], ["-c", configWriteScript cd inner])
+        Nothing -> ([], inner)
+        Just cd -> (["-i", "--entrypoint", "sh"], ["-c", configWriteScript cd inner])
     mountArg m =
-      [ "-v",
-        T.unpack (Vocab.source m)
-          ++ ":"
-          ++ T.unpack (Vocab.target m)
-          ++ (if Vocab.readOnly m then ":ro" else "")
-      ]
+        [ "-v"
+        , T.unpack (Vocab.source m)
+            ++ ":"
+            ++ T.unpack (Vocab.target m)
+            ++ (if Vocab.readOnly m then ":ro" else "")
+        ]
 
--- | The @sh -c@ body a delivering container runs: write the piped @stdin@ (the
--- child projection) to the sibling config path, then @exec@ the child binary with
--- the folded subcommand. The write path and the exec argv are single-quoted
--- ('shellQuoteArgs') so no re-splitting or glob expansion occurs; the payload
--- itself is /not/ in the script — it flows on @stdin@. Pure.
+{- | The @sh -c@ body a delivering container runs: write the piped @stdin@ (the
+child projection) to the sibling config path, then @exec@ the child binary with
+the folded subcommand. The write path and the exec argv are single-quoted
+('shellQuoteArgs') so no re-splitting or glob expansion occurs; the payload
+itself is /not/ in the script — it flows on @stdin@. Pure.
+-}
 configWriteScript :: ConfigDelivery -> [String] -> String
 configWriteScript cd inner =
-  "cat > "
-    ++ shellQuoteArgs [cdWritePath cd]
-    ++ " && exec "
-    ++ shellQuoteArgs (cdExecPath cd : inner)
+    "cat > "
+        ++ shellQuoteArgs [cdWritePath cd]
+        ++ " && exec "
+        ++ shellQuoteArgs (cdExecPath cd : inner)
 
--- | The innermost thing a lift runs at the bottom frame: either /this binary's/
--- own subcommand (whose path differs by frame — local vs in-VM), or an arbitrary
--- fixed command run as-is in that frame (e.g. @curl …@ or @bash -lc …@). The raw
--- form lets the /same/ pure fold place a reachability probe (or any command) into
--- the correct frame, so an assertion is provider-agnostic by construction — the
--- only thing that varies across Lima and Incus is the 'LiftLayer' constructor.
+{- | The innermost thing a lift runs at the bottom frame: either /this binary's/
+own subcommand (whose path differs by frame — local vs in-VM), or an arbitrary
+fixed command run as-is in that frame (e.g. @curl …@ or @bash -lc …@). The raw
+form lets the /same/ pure fold place a reachability probe (or any command) into
+the correct frame, so an assertion is provider-agnostic by construction — the
+only thing that varies across Lima and Incus is the 'LiftLayer' constructor.
+-}
 data LiftLeaf
-  = SelfSub SelfRef [String]
-  | RawCmd [String]
-  deriving (Eq, Show)
+    = SelfSub SelfRef [String]
+    | RawCmd [String]
+    | LifecycleProcessCmd String [String]
+    deriving (Eq, Show)
 
--- | A reachability-probe leaf: a quiet, bounded @curl@ of @url@. Placed in the
--- frame where the endpoint is published (the VM), it folds to
--- @incus exec \<vm\> -- curl …@ / @limactl shell \<vm\> -- curl …@, so the one
--- probe value is correct on every provider regardless of host port-forwarding.
+{- | A reachability-probe leaf: a quiet, bounded @curl@ of @url@. Placed in the
+frame where the endpoint is published (the VM), it folds to
+@incus exec \<vm\> -- curl …@ / @limactl shell \<vm\> -- curl …@, so the one
+probe value is correct on every provider regardless of host port-forwarding.
+-}
 reachLeaf :: String -> LiftLeaf
 reachLeaf url = RawCmd ["curl", "-fsS", "-m", "5", "-o", "/dev/null", url]
+
+{- | The fixed child-process leaf used by authenticated lifecycle descent.
+Provider-specific root/noninteractive placement is rendered only by
+'foldLeaf'; the route layer supplies merely the admitted binary and marker.
+-}
+lifecycleProcessLeaf :: String -> [String] -> LiftLeaf
+lifecycleProcessLeaf = LifecycleProcessCmd
 
 {- | Open a blob-upload session and print the response headers.
 
@@ -288,27 +307,41 @@ blobHeadLeaf url =
 leafInVMArgv :: LiftLeaf -> [String]
 leafInVMArgv (SelfSub self sub) = inVMSelfPath self : sub
 leafInVMArgv (RawCmd argv) = argv
+leafInVMArgv (LifecycleProcessCmd binary argv) = binary : argv
 
--- | The command tail passed after a container image. A 'SelfSub' relies on the
--- container @ENTRYPOINT@ being the binary, so only the subcommand is passed.
+{- | The command tail passed after a container image. A 'SelfSub' relies on the
+container @ENTRYPOINT@ being the binary, so only the subcommand is passed.
+-}
 leafContainerInner :: LiftLeaf -> [String]
 leafContainerInner (SelfSub _ sub) = sub
 leafContainerInner (RawCmd argv) = argv
+leafContainerInner (LifecycleProcessCmd _ argv) = argv
 
 -- | The dispatch when the stack is empty (run at the local host frame).
 leafLocalDispatch :: LiftLeaf -> LiftDispatch
 leafLocalDispatch (SelfSub self sub) = DispatchLocal (localSelfPath self) sub
 leafLocalDispatch (RawCmd (exe : args)) = DispatchLocal exe args
 leafLocalDispatch (RawCmd []) = DispatchLocal "" []
+leafLocalDispatch (LifecycleProcessCmd binary argv) = DispatchLocal binary argv
 
--- | Fold a context stack and a 'LiftLeaf' into the host invocation. Pure, so the
--- argv is unit-tested. Encodes the @§ K@ rule already implicit in 'execVMArgs':
--- only the outermost host dispatch names a tool that the resolver maps to an
--- absolute path; every nested tool is the target's own bare @$PATH@ name.
+{- | Fold a context stack and a 'LiftLeaf' into the host invocation. Pure, so the
+argv is unit-tested. Encodes the @§ K@ rule already implicit in 'execVMArgs':
+only the outermost host dispatch names a tool that the resolver maps to an
+absolute path; every nested tool is the target's own bare @$PATH@ name.
+-}
 foldLeaf :: LiftContext -> LiftLeaf -> LiftDispatch
 foldLeaf (LiftContext layers) leaf = build layers
   where
     build [] = leafLocalDispatch leaf
+    build [ViaVM vm]
+        | LifecycleProcessCmd binary argv <- leaf =
+            DispatchTool Incus (["exec", vmName vm, "--cwd", "/", "-T", "--", binary] ++ argv)
+    build [ViaLimaVM vm]
+        | LifecycleProcessCmd binary argv <- leaf =
+            DispatchTool Lima (["shell", limaName vm, "--workdir", "/", "--", "sudo", "-n", "-H", binary] ++ argv)
+    build [ViaWsl2VM vm]
+        | LifecycleProcessCmd binary argv <- leaf =
+            DispatchTool Wsl (["-d", wsl2Distro vm, "--cd", "/", "--", "sudo", "-n", "-H", binary] ++ argv)
     build (ViaVM vm : rest) = DispatchTool Incus (execVMArgs vm (insideVM rest))
     build (ViaLimaVM vm : rest) = DispatchTool Lima (shellVMArgs vm (insideVM rest))
     build (ViaWsl2VM vm : rest) = DispatchTool Wsl (wslExecArgs (wsl2Distro vm) (insideVM rest))
@@ -321,107 +354,118 @@ foldLeaf (LiftContext layers) leaf = build layers
     insideVM (ViaWsl2VM vm : rest) = toolCommandName Wsl : wslExecArgs (wsl2Distro vm) (insideVM rest)
     insideVM (ViaContainer c : _) = toolCommandName Docker : containerRunArgs c (leafContainerInner leaf)
 
--- | Fold a context stack and a subcommand of /this binary/ into the host
--- invocation — the 'SelfSub' special case of 'foldLeaf'.
+{- | Fold a context stack and a subcommand of /this binary/ into the host
+invocation — the 'SelfSub' special case of 'foldLeaf'.
+-}
 foldLift :: SelfRef -> LiftContext -> [String] -> LiftDispatch
 foldLift self ctx sub = foldLeaf ctx (SelfSub self sub)
 
--- | The @stdin@ a context wants piped into its innermost container handoff: a
--- terminal container layer's config-delivery payload (the narrowed child
--- projection), else empty. Pure. Lets the recursive handoff stream the child
--- config in-place without a host-side file or a config bind-mount (§ X).
+{- | The @stdin@ a context wants piped into its innermost container handoff: a
+terminal container layer's config-delivery payload (the narrowed child
+projection), else empty. Pure. Lets the recursive handoff stream the child
+config in-place without a host-side file or a config bind-mount (§ X).
+-}
 liftStdin :: LiftContext -> String
 liftStdin (LiftContext layers) = case reverse layers of
-  (ViaContainer c : _) -> maybe "" (T.unpack . cdPayload) (clConfigDelivery c)
-  _ -> ""
+    (ViaContainer c : _) -> maybe "" (T.unpack . cdPayload) (clConfigDelivery c)
+    _ -> ""
 
--- | The frame a context stack lands in, outermost crossing first (§ MM).
---
--- Descriptive rather than constructive: the argument vector that performs each
--- crossing comes from 'foldLeaf' and from nowhere else. This says only /where/
--- that argv is interpreted, which is what decides the grammar of the paths it
--- carries.
+{- | The frame a context stack lands in, outermost crossing first (§ MM).
+
+Descriptive rather than constructive: the argument vector that performs each
+crossing comes from 'foldLeaf' and from nowhere else. This says only /where/
+that argv is interpreted, which is what decides the grammar of the paths it
+carries.
+-}
 liftContextFrame :: LiftContext -> EffectFrame
 liftContextFrame (LiftContext layers) = case map crossingOf layers of
-  [] -> OuterHost
-  (outermost : inner) -> CrossedInto outermost inner
+    [] -> OuterHost
+    (outermost : inner) -> CrossedInto outermost inner
   where
     crossingOf (ViaVM vm) = CrossIncusVM (vmName vm)
     crossingOf (ViaLimaVM vm) = CrossLimaVM (limaName vm)
     crossingOf (ViaWsl2VM vm) = CrossWsl2VM (wsl2Distro vm)
     crossingOf (ViaContainer c) = CrossContainer (clImage c)
 
--- | The described command a leaf folds down to in a context (§ KK): the one
--- fold's dispatch, together with the frame that interprets it.
+{- | The described command a leaf folds down to in a context (§ KK): the one
+fold's dispatch, together with the frame that interprets it.
+-}
 foldLeafCommand :: LiftContext -> LiftLeaf -> HostCommand
 foldLeafCommand ctx leaf =
-  inFrame (liftContextFrame ctx) $ case foldLeaf ctx leaf of
-    DispatchLocal exe args -> selfCommand exe args
-    DispatchTool tool args -> hostCommand tool args
+    inFrame (liftContextFrame ctx) $ case foldLeaf ctx leaf of
+        DispatchLocal exe args -> selfCommand exe args
+        DispatchTool tool args -> hostCommand tool args
 
--- | A command naming this binary — or any executable the caller already holds an
--- absolute path for — rather than a resolved 'HostTool'.
+{- | A command naming this binary — or any executable the caller already holds an
+absolute path for — rather than a resolved 'HostTool'.
+-}
 selfCommand :: FilePath -> [String] -> HostCommand
 selfCommand exe args =
-  HostCommand
-    { commandTarget = SelfTarget exe,
-      commandArguments = args,
-      commandStdio = CaptureStreams "",
-      commandFrame = OuterHost
-    }
+    HostCommand
+        { commandTarget = SelfTarget exe
+        , commandArguments = args
+        , commandStdio = CaptureStreams ""
+        , commandFrame = OuterHost
+        }
 
--- | Run a 'LiftLeaf' in a context: fold to the described command, then hand it
--- to the one interpreter.
+{- | Run a 'LiftLeaf' in a context: fold to the described command, then hand it
+to the one interpreter.
+-}
 liftLeaf ::
-  HostConfig ->
-  LiftContext ->
-  LiftLeaf ->
-  IO (Either String (ExitCode, String, String))
+    HostConfig ->
+    LiftContext ->
+    LiftLeaf ->
+    IO (Either String (ExitCode, String, String))
 liftLeaf cfg ctx leaf = liftLeafWithStdin cfg ctx leaf ""
 
--- | Like 'liftLeaf', but feed @input@ to the folded invocation on @stdin@ (the
--- streamed child-config channel). 'liftLeaf' is @liftLeafWithStdin … ""@, so an
--- empty @input@ is byte-identical to it.
+{- | Like 'liftLeaf', but feed @input@ to the folded invocation on @stdin@ (the
+streamed child-config channel). 'liftLeaf' is @liftLeafWithStdin … ""@, so an
+empty @input@ is byte-identical to it.
+-}
 liftLeafWithStdin ::
-  HostConfig ->
-  LiftContext ->
-  LiftLeaf ->
-  String ->
-  IO (Either String (ExitCode, String, String))
+    HostConfig ->
+    LiftContext ->
+    LiftLeaf ->
+    String ->
+    IO (Either String (ExitCode, String, String))
 liftLeafWithStdin cfg ctx leaf input =
-  fmap capturedTriple <$> interpretHostCommand cfg (withCommandStdin input (foldLeafCommand ctx leaf))
+    fmap capturedTriple <$> interpretHostCommand cfg (withCommandStdin input (foldLeafCommand ctx leaf))
 
--- | Run a subcommand of this binary in a context — the 'SelfSub' special case of
--- 'liftLeaf'.
+{- | Run a subcommand of this binary in a context — the 'SelfSub' special case of
+'liftLeaf'.
+-}
 liftSubcommand ::
-  HostConfig ->
-  SelfRef ->
-  LiftContext ->
-  [String] ->
-  IO (Either String (ExitCode, String, String))
+    HostConfig ->
+    SelfRef ->
+    LiftContext ->
+    [String] ->
+    IO (Either String (ExitCode, String, String))
 liftSubcommand cfg self ctx sub = liftLeaf cfg ctx (SelfSub self sub)
 
--- | Like 'liftSubcommand', but feed @input@ to the nested invocation on @stdin@ —
--- the channel the recursive handoff uses to stream the next frame's child config
--- in-place (§ X). 'liftSubcommand' is @liftSubcommandWithStdin … ""@.
+{- | Like 'liftSubcommand', but feed @input@ to the nested invocation on @stdin@ —
+the channel the recursive handoff uses to stream the next frame's child config
+in-place (§ X). 'liftSubcommand' is @liftSubcommandWithStdin … ""@.
+-}
 liftSubcommandWithStdin ::
-  HostConfig ->
-  SelfRef ->
-  LiftContext ->
-  [String] ->
-  String ->
-  IO (Either String (ExitCode, String, String))
+    HostConfig ->
+    SelfRef ->
+    LiftContext ->
+    [String] ->
+    String ->
+    IO (Either String (ExitCode, String, String))
 liftSubcommandWithStdin cfg self ctx sub = liftLeafWithStdin cfg ctx (SelfSub self sub)
 
--- | Run a local executable (the binary itself — not a 'HostTool') capturing its
--- exit/stdout/stderr; 'Left' on an exec failure. The configuration is the one
--- every described command is interpreted against; a self target consults none of
--- it.
+{- | Run a local executable (the binary itself — not a 'HostTool') capturing its
+exit/stdout/stderr; 'Left' on an exec failure. The configuration is the one
+every described command is interpreted against; a self target consults none of
+it.
+-}
 runSelf :: HostConfig -> FilePath -> [String] -> IO (Either String (ExitCode, String, String))
 runSelf cfg exe args = runSelfWithStdin cfg exe args ""
 
--- | Like 'runSelf', but feed @stdin@ to the binary — the channel a streamed child
--- config travels on when the innermost frame is local.
+{- | Like 'runSelf', but feed @stdin@ to the binary — the channel a streamed child
+config travels on when the innermost frame is local.
+-}
 runSelfWithStdin :: HostConfig -> FilePath -> [String] -> String -> IO (Either String (ExitCode, String, String))
 runSelfWithStdin cfg exe args input =
-  fmap capturedTriple <$> interpretHostCommand cfg (withCommandStdin input (selfCommand exe args))
+    fmap capturedTriple <$> interpretHostCommand cfg (withCommandStdin input (selfCommand exe args))

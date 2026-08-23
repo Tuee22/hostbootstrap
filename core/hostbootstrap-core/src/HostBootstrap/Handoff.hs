@@ -62,7 +62,6 @@ module HostBootstrap.Handoff (
     renderAuthenticatedRootScope,
     signAuthenticatedRootScopeKernel,
     withAuthenticatedRootScopeFromWire,
-
     HandoffPayloadKind (..),
     HandoffBindingInput (..),
     renderHandoffBindingInput,
@@ -105,6 +104,17 @@ module HostBootstrap.Handoff (
     renderRootedLifecycleResponse,
     signRootedLifecycleResponseKernel,
     withVerifiedRootedLifecycleResponse,
+
+    -- * Canonical provider dependency wire
+    providerDependencyPackageFields,
+    providerDependencyPackageFromFields,
+    providerDependencyProbeRequestFields,
+    providerDependencyProbeRequestFromFields,
+    providerDependencyProbeResponseFields,
+    providerDependencyProbeRefusalFields,
+    providerDependencyProbeResponseFromFields,
+    withAuthenticatedProviderDependencyProbeRequest,
+    withProviderDependencyReprobeKernel,
 
     -- * Recovery-wire projection
     RecoveryHandoff,
@@ -195,6 +205,7 @@ module HostBootstrap.Handoff (
     renderForwardCompletedLifecycleReport,
     renderForwardRefusedLifecycleReport,
     renderForwardFailedLifecycleReport,
+    renderForwardFailedLifecycleReportWithObservations,
     renderReverseCompletedLifecycleReport,
     renderReverseRefusedLifecycleReport,
     renderReverseFailedLifecycleReport,
@@ -205,6 +216,7 @@ module HostBootstrap.Handoff (
     receiveLifecycleAcknowledgementKernel,
     prepareLifecycleAcknowledgementKernel,
     adoptLifecycleAcknowledgementKernel,
+    rehydrateAdoptedLifecycleAcknowledgementKernel,
 
     -- * Failures
     HandoffError (..),
@@ -246,15 +258,16 @@ import HostBootstrap.Config.Vocab (
     Production,
     harnessRunName,
  )
-import HostBootstrap.Handoff.Internal
-    ( RecoverySigningKernel
-    , consumeRecoverySigningKernel
-    , consumeRootedLifecycleResponseSigningKernel
-    )
+import HostBootstrap.Handoff.Internal (
+    RecoverySigningKernel,
+    consumeRecoverySigningKernel,
+    consumeRootedLifecycleResponseSigningKernel,
+ )
 import HostBootstrap.Handoff.Recovery (RecoveryChildPackage)
 import qualified HostBootstrap.Handoff.Recovery as Recovery
 import HostBootstrap.Handoff.Rooted (RootedLifecycleResponse, RootedPayloadBinding)
 import qualified HostBootstrap.Handoff.Rooted as Rooted
+import qualified HostBootstrap.Lifecycle.Dependency.Internal as Dependency
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
     ProtectedError,
@@ -271,6 +284,7 @@ import HostBootstrap.Protected (
     recordVersionWord,
     withProtectedEntry,
  )
+import System.Timeout (timeout)
 import System.Directory (doesFileExist)
 
 -- ---------------------------------------------------------------------------
@@ -336,10 +350,11 @@ renderLifecycleObservations rows = do
     bounded "lifecycle observations" wire
     pure wire
   where
-    wire = ByteString.concat
-        ( [frameWire "hostbootstrap/lifecycle-observations", lifecycleWord 1, lifecycleWord (fromIntegral (length rows))]
-            ++ concatMap (\(key, status, detail) -> map lifecycleText [key, status, detail]) rows
-        )
+    wire =
+        ByteString.concat
+            ( [frameWire "hostbootstrap/lifecycle-observations", lifecycleWord 1, lifecycleWord (fromIntegral (length rows))]
+                ++ concatMap (\(key, status, detail) -> map lifecycleText [key, status, detail]) rows
+            )
 
 lifecycleObservationsFromWire :: ByteString -> Either HandoffError [(Text, Text, Text)]
 lifecycleObservationsFromWire raw = do
@@ -347,7 +362,8 @@ lifecycleObservationsFromWire raw = do
     (domain, afterDomain) <- takeFrame raw
     (version, afterVersion) <- takeFrame afterDomain
     (countBytes, body) <- takeFrame afterVersion
-    requireLifecycle (domain == "hostbootstrap/lifecycle-observations" && version == lifecycleWordBytes 1)
+    requireLifecycle
+        (domain == "hostbootstrap/lifecycle-observations" && version == lifecycleWordBytes 1)
         "the lifecycle observations domain or version differs"
     count <- lifecycleCount countBytes
     rows <- takeRows count body []
@@ -374,6 +390,7 @@ validateLifecycleRows = go Set.empty
         requireLifecycle (not (Text.null key)) "a lifecycle observation key is empty"
         requireLifecycle (Set.notMember key seen) "lifecycle observation keys contain a duplicate"
         case status of
+            "succeeded" -> requireLifecycle (detail == "none") "a succeeded observation must carry detail none"
             "released" -> requireLifecycle (detail == "none") "a released observation must carry detail none"
             "foreign-retained" -> nonemptyDetail
             "refused" -> nonemptyDetail
@@ -381,8 +398,10 @@ validateLifecycleRows = go Set.empty
             _ -> requireLifecycle False "a lifecycle observation status is unknown"
         go (Set.insert key seen) rest
       where
-        nonemptyDetail = requireLifecycle (not (Text.null detail) && detail /= "none")
-            "a non-released observation requires non-none detail"
+        nonemptyDetail =
+            requireLifecycle
+                (not (Text.null detail) && detail /= "none")
+                "a non-released observation requires non-none detail"
 
 renderForwardCompletedLifecycleReport :: ByteString -> Either HandoffError ByteString
 renderForwardCompletedLifecycleReport origin = do
@@ -394,6 +413,15 @@ renderForwardRefusedLifecycleReport binding detail = emptyRows >>= renderLifecyc
 
 renderForwardFailedLifecycleReport :: ByteString -> Text -> Either HandoffError ByteString
 renderForwardFailedLifecycleReport binding detail = emptyRows >>= renderLifecycleReport "forward" "failed" binding (nonterminalOrigin "forward" "failed" binding) detail
+
+renderForwardFailedLifecycleReportWithObservations ::
+    ByteString ->
+    [(Text, Text, Text)] ->
+    Text ->
+    Either HandoffError ByteString
+renderForwardFailedLifecycleReportWithObservations binding rows detail =
+    renderLifecycleObservations rows
+        >>= renderLifecycleReport "forward" "failed" binding (nonterminalOrigin "forward" "failed" binding) detail
 
 renderReverseCompletedLifecycleReport :: ByteString -> ByteString -> Either HandoffError ByteString
 renderReverseCompletedLifecycleReport origin observations = do
@@ -418,25 +446,37 @@ renderLifecycleReport branch status binding origin detail observations = do
     bounded "lifecycle report" wire
     pure wire
   where
-    wire = ByteString.concat
-        [ frameWire "hostbootstrap/lifecycle-report", lifecycleWord 1
-        , lifecycleText branch, lifecycleText status, frameWire binding, frameWire origin
-        , frameWire observations, lifecycleText detail
-        ]
+    wire =
+        ByteString.concat
+            [ frameWire "hostbootstrap/lifecycle-report"
+            , lifecycleWord 1
+            , lifecycleText branch
+            , lifecycleText status
+            , frameWire binding
+            , frameWire origin
+            , frameWire observations
+            , lifecycleText detail
+            ]
 
 validateLifecycleBranch :: Text -> Text -> ByteString -> ByteString -> [(Text, Text, Text)] -> Text -> Either HandoffError ()
 validateLifecycleBranch branch status binding origin rows detail = do
     case (branch, status) of
         ("forward", "completed") -> noRows >> validCompletedOrigin >> completed
         ("forward", "refused") -> noRows >> nonterminal
-        ("forward", "failed") -> noRows >> nonterminal
+        ("forward", "failed") -> forwardFailureRows >> nonterminal
         ("reverse", "completed") -> requireLifecycle (not (null rows) && noFailed) "reverse completion requires non-failed observations" >> validCompletedOrigin >> completed
         ("reverse", "refused") -> requireLifecycle noFailed "reverse refusal cannot carry failed observations" >> nonterminal
         ("reverse", "failed") -> nonterminal
         _ -> requireLifecycle False "a lifecycle report branch/status pair is illegal"
   where
     noRows = requireLifecycle (null rows) "a forward lifecycle report cannot carry observations"
-    noFailed = all (\(_, rowStatus, _) -> rowStatus /= "failed") rows
+    forwardFailureRows =
+        requireLifecycle
+            ( (null rows || any (\(_, rowStatus, _) -> rowStatus == "failed") rows)
+                && all (\(_, rowStatus, _) -> rowStatus `elem` ["succeeded", "failed"]) rows
+            )
+            "a forward failed report with observations requires a failed row"
+    noFailed = all (\(_, rowStatus, _) -> rowStatus `notElem` ["failed", "succeeded"]) rows
     validCompletedOrigin = do
         (originBinding, _) <- completedOrigin branch origin
         requireLifecycle (originBinding == binding) "the terminal origin carries another binding"
@@ -463,7 +503,8 @@ forwardOrigin raw = do
             requireLifecycle (not (Text.null invocation)) "the forward terminal invocation is empty"
             versions <- traverse (canonicalPositive "forward terminal version") [acquisition, executeVersion, teardownVersion]
             requireLifecycle (versions == [1, 2, 3]) "the forward terminal record versions are not 1/2/3"
-            requireLifecycle (verb == "up" && executePhase == "execute" && teardownPhase == "teardown")
+            requireLifecycle
+                (verb == "up" && executePhase == "execute" && teardownPhase == "teardown")
                 "the forward terminal verb or phase differs"
             signedVerb <- bindingVerb "forward" binding
             requireLifecycle (signedVerb == verb) "the forward terminal binding verb differs"
@@ -477,25 +518,37 @@ reverseOrigin raw = do
     case fields of
         [domain, version, binding, snapshotBytes, planDigestBytes, invocationBytes, acquisition, cursorVersion, frameBytes, broker, verbBytes, commandVerbBytes, phaseBytes, teardownFrameBytes, teardownVerbBytes, adapterBytes] -> do
             coordinates <-
-                traverse (uncurry lifecycleTextFromWire)
-                    [ ("reverse snapshot", snapshotBytes), ("reverse digest binding", planDigestBytes)
-                    , ("reverse invocation", invocationBytes), ("reverse frame", frameBytes)
-                    , ("reverse verb", verbBytes), ("reverse command verb", commandVerbBytes)
-                    , ("reverse phase", phaseBytes), ("reverse teardown frame", teardownFrameBytes)
-                    , ("reverse teardown verb", teardownVerbBytes), ("reverse adapter digest", adapterBytes)
+                traverse
+                    (uncurry lifecycleTextFromWire)
+                    [ ("reverse snapshot", snapshotBytes)
+                    , ("reverse digest binding", planDigestBytes)
+                    , ("reverse invocation", invocationBytes)
+                    , ("reverse frame", frameBytes)
+                    , ("reverse verb", verbBytes)
+                    , ("reverse command verb", commandVerbBytes)
+                    , ("reverse phase", phaseBytes)
+                    , ("reverse teardown frame", teardownFrameBytes)
+                    , ("reverse teardown verb", teardownVerbBytes)
+                    , ("reverse adapter digest", adapterBytes)
                     ]
             case coordinates of
                 [snapshot, digest, invocation, frame, verb, commandVerb, phase, teardownFrame, teardownVerb, adapter] -> do
-                    requireLifecycle (domain == "child-recovery-terminal-origin-v1" && version == "1")
+                    requireLifecycle
+                        (domain == "child-recovery-terminal-origin-v1" && version == "1")
                         "the reverse terminal origin domain or version differs"
                     requireLifecycle (all (not . Text.null) [snapshot, invocation, frame]) "a reverse terminal coordinate is empty"
                     versions <- traverse (canonicalPositive "reverse terminal version") [acquisition, cursorVersion]
-                    requireLifecycle (versions == [1, 3]) "the reverse terminal record versions are not 1/3"
+                    requireLifecycle
+                        (versions == if verb == "up" then [1, 2] else [1, 3])
+                        "the reverse terminal record versions differ from the lifecycle branch"
                     brokerGeneration <- canonicalPositive "reverse terminal broker generation" broker
                     requireLifecycle (snapshot == digest && frame == teardownFrame) "the reverse terminal plan or frame copies differ"
-                    requireLifecycle (verb == commandVerb && verb == teardownVerb && verb `elem` ["down", "destroy"])
+                    requireLifecycle
+                        (verb == commandVerb && verb == teardownVerb && verb `elem` ["up", "down", "destroy"])
                         "the reverse terminal verb copies differ"
-                    requireLifecycle (phase == "teardown") "the reverse terminal phase differs"
+                    requireLifecycle
+                        (phase == if verb == "up" then "execute" else "teardown")
+                        "the reverse terminal phase differs"
                     requireLifecycle (Text.length adapter == 64 && Text.all lowerHex adapter) "the reverse adapter digest is not canonical"
                     signed <- validatedLifecycleBinding "reverse" binding
                     requireLifecycle
@@ -523,11 +576,13 @@ validatedLifecycleBinding branch raw = do
     case branch of
         "forward" -> do
             requireLifecycle (handoffPayloadKind binding == NarrowedProjectConfig) "a forward lifecycle binding has the wrong kind"
-            requireLifecycle (handoffVerb binding == "up" && handoffPhase binding == "execute")
+            requireLifecycle
+                (handoffVerb binding == "up" && handoffPhase binding == "execute")
                 "a forward lifecycle binding has the wrong verb or phase"
         "reverse" -> do
             requireLifecycle (handoffPayloadKind binding == RecoveryAdapterWire) "a reverse lifecycle binding has the wrong kind"
-            requireLifecycle (handoffVerb binding `elem` ["down", "destroy"] && handoffPhase binding == "teardown")
+            requireLifecycle
+                (handoffVerb binding `elem` ["up", "down", "destroy"] && handoffPhase binding == "teardown")
                 "a reverse lifecycle binding has the wrong verb or phase"
         _ -> requireLifecycle False "a lifecycle report branch is unknown"
     pure binding
@@ -557,7 +612,8 @@ eliminateLifecycleReport raw forwardCompleted forwardRefused forwardFailed rever
             branch <- lifecycleTextFromWire "report branch" branchBytes
             status <- lifecycleTextFromWire "report status" statusBytes
             detail <- lifecycleTextFromWire "report detail" detailBytes
-            requireLifecycle (domain == "hostbootstrap/lifecycle-report" && version == lifecycleWordBytes 1)
+            requireLifecycle
+                (domain == "hostbootstrap/lifecycle-report" && version == lifecycleWordBytes 1)
                 "the lifecycle report domain or version differs"
             canonical <- renderLifecycleReport branch status binding origin detail observations
             requireLifecycle (canonical == raw) "the lifecycle report is not canonical"
@@ -578,10 +634,12 @@ renderLifecycleAcknowledgement report = do
     bounded "lifecycle acknowledgement" acknowledgement
     pure acknowledgement
   where
-    acknowledgement = ByteString.concat
-        [ frameWire "hostbootstrap/lifecycle-acknowledgement", lifecycleWord 1
-        , lifecycleText (recoveryWireDigest report)
-        ]
+    acknowledgement =
+        ByteString.concat
+            [ frameWire "hostbootstrap/lifecycle-acknowledgement"
+            , lifecycleWord 1
+            , lifecycleText (recoveryWireDigest report)
+            ]
 
 verifyLifecycleAcknowledgement :: ByteString -> ByteString -> Either HandoffError ()
 verifyLifecycleAcknowledgement report observed = do
@@ -625,7 +683,7 @@ publishLifecycleReportKernel kernel =
                             pure (Right ())
                         | otherwise -> pure lifecycleRowConflict
 
-{- | Record the exact acknowledgement returned for one published child report. -}
+-- | Record the exact acknowledgement returned for one published child report.
 receiveLifecycleAcknowledgementKernel ::
     RecoverySigningKernel ->
     ProtectedStore ->
@@ -647,8 +705,13 @@ receiveLifecycleAcknowledgementKernel kernel =
                             | exactLifecycleRow 2 received record -> pure (Right ())
                             | exactLifecycleRow 1 published record ->
                                 do
-                                    written <- writeLifecycleRow session key
-                                        (ExpectVersion (protectedRecordVersion record)) 2 received
+                                    written <-
+                                        writeLifecycleRow
+                                            session
+                                            key
+                                            (ExpectVersion (protectedRecordVersion record))
+                                            2
+                                            received
                                     pure (() <$ written)
                             | otherwise -> pure lifecycleRowConflict
                         Right Nothing -> pure lifecycleRowConflict
@@ -724,6 +787,47 @@ adoptLifecycleAcknowledgementKernel kernel =
                 Right True -> Right <$> fresh
                 Right False -> Right <$> replay
 
+{- | Read one exact parent Adopted row without reopening its offer or token.
+
+The row could only have reached version three through authenticated live
+adoption. Rehydration therefore proves its complete binding/report/
+acknowledgement bytes and store identity, performs no write, and releases only
+the canonical acknowledgement after the protected entry closes.
+-}
+rehydrateAdoptedLifecycleAcknowledgementKernel ::
+    RecoverySigningKernel ->
+    ProtectedStore ->
+    ByteString ->
+    ByteString ->
+    (ByteString -> IO (Either Text ())) ->
+    IO (Either HandoffError (Either Text ()))
+{-# OPAQUE rehydrateAdoptedLifecycleAcknowledgementKernel #-}
+rehydrateAdoptedLifecycleAcknowledgementKernel kernel =
+    case consumeRecoverySigningKernel kernel () of
+        () -> \store bindingBytes report use ->
+            case material store bindingBytes report of
+                Left failure -> pure (Left failure)
+                Right (key, acknowledgement, adopted) -> do
+                    checked <- inLifecycleEntry store $ \session -> do
+                        observed <- readProtectedRecord session key
+                        pure $ case observed of
+                            Left failure -> Left (HandoffStoreFailure failure)
+                            Right (Just record) | exactLifecycleRow 3 adopted record -> Right ()
+                            _ -> lifecycleRowConflict
+                    either (pure . Left) (const (Right <$> use acknowledgement)) checked
+  where
+    material store bindingBytes report = do
+        reportBinding <- lifecycleReportBinding report
+        requireLifecycle (reportBinding == bindingBytes) "the adopted lifecycle report names another binding"
+        binding <- decodeHandoffBinding bindingBytes
+        requireLifecycle
+            (handoffStoreIdentity binding == protectedStoreIdentityText (protectedStoreIdentity store))
+            "the adopted lifecycle binding names another protected store"
+        acknowledgement <- renderLifecycleAcknowledgement report
+        key <- lifecycleRecordKey "parent" bindingBytes
+        adopted <- lifecycleDurableRow "parent" "adopted" bindingBytes report acknowledgement
+        pure (key, acknowledgement, adopted)
+
 lifecycleChildMaterial ::
     ProtectedStore ->
     ByteString ->
@@ -750,11 +854,14 @@ lifecycleParentMaterial broker offer report acknowledgement = do
     bindingBytes <- lifecycleReportBinding report
     let binding = handoffOfferBinding offer
     _ <- brokerRelay broker binding
-    requireLifecycle (bindingBytes == renderHandoffBinding binding)
+    requireLifecycle
+        (bindingBytes == renderHandoffBinding binding)
         "the lifecycle report does not name the authenticated offer"
-    requireLifecycle (handoffChildConfigDigest binding == childConfigDigest (offerPayload offer))
+    requireLifecycle
+        (handoffChildConfigDigest binding == childConfigDigest (offerPayload offer))
         "the lifecycle offer payload differs from its binding"
-    requireLifecycle (handoffTokenCommitment binding == tokenCommitment (offerToken offer))
+    requireLifecycle
+        (handoffTokenCommitment binding == tokenCommitment (offerToken offer))
         "the lifecycle offer token differs from its binding"
     verifyLifecycleAcknowledgement report acknowledgement
     key <- lifecycleRecordKey "parent" bindingBytes
@@ -770,7 +877,9 @@ lifecycleReportBinding report = eliminateLifecycleReport report binding binding 
 
 lifecycleRecordKey :: Text -> ByteString -> Either HandoffError RecordKey
 lifecycleRecordKey side binding =
-    either (Left . HandoffStoreFailure) Right
+    either
+        (Left . HandoffStoreFailure)
+        Right
         (mkRecordKey ("lifecycle-" <> side <> "." <> recoveryWireDigest binding))
 
 lifecycleDurableRow :: Text -> Text -> ByteString -> ByteString -> ByteString -> Either HandoffError ByteString
@@ -778,15 +887,16 @@ lifecycleDurableRow side stage binding report acknowledgement = do
     bounded "lifecycle durable row" raw
     pure raw
   where
-    raw = ByteString.concat
-        [ frameWire "hostbootstrap/lifecycle-durable"
-        , lifecycleWord 1
-        , lifecycleText side
-        , lifecycleText stage
-        , frameWire binding
-        , frameWire report
-        , frameWire acknowledgement
-        ]
+    raw =
+        ByteString.concat
+            [ frameWire "hostbootstrap/lifecycle-durable"
+            , lifecycleWord 1
+            , lifecycleText side
+            , lifecycleText stage
+            , frameWire binding
+            , frameWire report
+            , frameWire acknowledgement
+            ]
 
 validateGrantedLifecycleOffer ::
     ProtectedSession session ->
@@ -803,13 +913,19 @@ validateGrantedLifecycleOffer session broker offer challenge =
                 Left failure -> Left (HandoffStoreFailure failure)
                 Right (Just record)
                     | recordVersionWord (protectedRecordVersion record) == 2
-                    , protectedRecordBytes record == grantedEdgeRecord
-                        (TextEncoding.encodeUtf8 (digestBytes material)) -> Right ()
+                    , protectedRecordBytes record
+                        == grantedEdgeRecord
+                            (TextEncoding.encodeUtf8 (digestBytes material)) ->
+                        Right ()
                 _ -> Left (HandoffBindingMismatch "the lifecycle offer is not an authenticated granted edge")
   where
     binding = handoffOfferBinding offer
-    material = signedMaterial (rootBrokerVerificationKey broker) binding
-        (tokenFrame (offerToken offer)) challenge
+    material =
+        signedMaterial
+            (rootBrokerVerificationKey broker)
+            binding
+            (tokenFrame (offerToken offer))
+            challenge
 
 prepareParentRow ::
     ProtectedSession session ->
@@ -847,8 +963,12 @@ prepareParentRow session key reported acknowledged adopted = do
             Left failure -> pure (Left (HandoffStoreFailure failure))
             Right (Just record)
                 | exactLifecycleRow 1 reported record -> do
-                    written <- compareAndSwapProtectedRecord session key
-                        (ExpectVersion (protectedRecordVersion record)) acknowledged
+                    written <-
+                        compareAndSwapProtectedRecord
+                            session
+                            key
+                            (ExpectVersion (protectedRecordVersion record))
+                            acknowledged
                     latest <- readProtectedRecord session key
                     pure $ case latest of
                         Left failure -> Left (HandoffStoreFailure failure)
@@ -895,8 +1015,12 @@ adoptParentRow session key acknowledged adopted = do
         Right (Just record)
             | exactLifecycleRow 3 adopted record -> pure (Right False)
             | exactLifecycleRow 2 acknowledged record -> do
-                written <- compareAndSwapProtectedRecord session key
-                    (ExpectVersion (protectedRecordVersion record)) adopted
+                written <-
+                    compareAndSwapProtectedRecord
+                        session
+                        key
+                        (ExpectVersion (protectedRecordVersion record))
+                        adopted
                 latest <- readProtectedRecord session key
                 pure $ case latest of
                     Left failure -> Left (HandoffStoreFailure failure)
@@ -957,10 +1081,14 @@ emptyRows :: Either HandoffError ByteString
 emptyRows = renderLifecycleObservations []
 
 nonterminalOrigin :: Text -> Text -> ByteString -> ByteString
-nonterminalOrigin branch status binding = ByteString.concat
-    [ frameWire "hostbootstrap/lifecycle-nonterminal-origin", lifecycleWord 1
-    , lifecycleText branch, lifecycleText status, lifecycleText (recoveryWireDigest binding)
-    ]
+nonterminalOrigin branch status binding =
+    ByteString.concat
+        [ frameWire "hostbootstrap/lifecycle-nonterminal-origin"
+        , lifecycleWord 1
+        , lifecycleText branch
+        , lifecycleText status
+        , lifecycleText (recoveryWireDigest binding)
+        ]
 
 takeExactFrames :: Int -> ByteString -> Either HandoffError [ByteString]
 takeExactFrames count raw = go count raw
@@ -1082,6 +1210,12 @@ authenticatedRootScopeSignatureBytes = 64
 -- | Recover the exact seven-frame capsule wire.
 renderAuthenticatedRootScope :: AuthenticatedRootScope scope -> ByteString
 renderAuthenticatedRootScope (AuthenticatedRootScope raw) = raw
+
+{- | Recover only the narrow configuration authority from an already
+authenticated Harness scope capsule.  This does not recreate the stronger
+'HarnessAuthority': the opaque capsule is the required proof, and its nominal
+@runId@ fixes the result.
+-}
 
 {- | Authenticate the exact scope that created a still-live root broker.
 
@@ -1270,7 +1404,8 @@ verifyAuthenticatedRootScopeSignature
                 | Ed25519.verify
                     public
                     (authenticatedRootScopeSignedMaterial keyDigest unsigned)
-                    signature -> Right ()
+                    signature ->
+                    Right ()
                 | otherwise -> Left HandoffAuthenticatedRootScopeSignatureInvalid
 
 authenticatedRootScopeText :: Text -> ByteString -> Either HandoffError Text
@@ -1815,6 +1950,133 @@ recoveryProjectionBindingFromWire broker expected raw use = do
                         )
 
 -- | Exact request fields: canonical binding, then adapter wire.
+providerDependencyPackageFields :: ByteString -> Either Text [ByteString]
+providerDependencyPackageFields wire = do
+    package <- Dependency.runtimeDependencyPackageFromWire wire :: Either Text (Dependency.RuntimeDependencyPackage () ())
+    requireProviderPackage package
+    pure [Dependency.runtimeDependencyPackageWire package]
+
+providerDependencyPackageFromFields :: [ByteString] -> Either Text ByteString
+providerDependencyPackageFromFields fields = case fields of
+    [wire] -> do
+        package <- Dependency.runtimeDependencyPackageFromWire wire :: Either Text (Dependency.RuntimeDependencyPackage () ())
+        requireProviderPackage package
+        pure (Dependency.runtimeDependencyPackageWire package)
+    _ -> Left "provider dependency package field count differs"
+
+providerDependencyProbeRequestFields :: ByteString -> Text -> Either Text [ByteString]
+providerDependencyProbeRequestFields packageWire nonce = do
+    package <- Dependency.runtimeDependencyPackageFromWire packageWire :: Either Text (Dependency.RuntimeDependencyPackage () ())
+    requireProviderPackage package
+    request <- Dependency.runtimeDependencyProbeRequest package nonce
+    pure [request]
+
+providerDependencyProbeRequestFromFields :: ByteString -> [ByteString] -> Either Text Text
+providerDependencyProbeRequestFromFields packageWire fields = do
+    package <- Dependency.runtimeDependencyPackageFromWire packageWire :: Either Text (Dependency.RuntimeDependencyPackage () ())
+    requireProviderPackage package
+    case fields of
+        [request] -> Dependency.withRuntimeDependencyProbeRequest package request id
+        _ -> Left "provider dependency probe request field count differs"
+
+providerDependencyProbeResponseFields :: ByteString -> Text -> Word64 -> Either Text [ByteString]
+providerDependencyProbeResponseFields packageWire nonce generation = do
+    package <- Dependency.runtimeDependencyPackageFromWire packageWire :: Either Text (Dependency.RuntimeDependencyPackage () ())
+    requireProviderPackage package
+    pure [Dependency.renderRuntimeDependencyProbeResponse package nonce generation]
+
+providerDependencyProbeRefusalFields :: ByteString -> Text -> Text -> Either Text [ByteString]
+providerDependencyProbeRefusalFields packageWire nonce reason = do
+    package <- Dependency.runtimeDependencyPackageFromWire packageWire :: Either Text (Dependency.RuntimeDependencyPackage () ())
+    requireProviderPackage package
+    response <- Dependency.renderRuntimeDependencyProbeRefusal package nonce reason
+    pure [response]
+
+providerDependencyProbeResponseFromFields :: ByteString -> Text -> [ByteString] -> Either Text (Either Text Word64)
+providerDependencyProbeResponseFromFields packageWire nonce fields = do
+    package <- Dependency.runtimeDependencyPackageFromWire packageWire :: Either Text (Dependency.RuntimeDependencyPackage () ())
+    requireProviderPackage package
+    case fields of
+        [response] -> Dependency.verifyRuntimeDependencyProbeOutcome package nonce response
+        _ -> Left "provider dependency probe response field count differs"
+
+{- | Admit one provider probe request against every coordinate journaled by
+the owning frame.  The package and nonce remain data; only the lexical
+continuation supplied by the live owner can perform a probe.
+-}
+withAuthenticatedProviderDependencyProbeRequest ::
+    ByteString ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    [ByteString] ->
+    (Text -> result) ->
+    Either Text result
+withAuthenticatedProviderDependencyProbeRequest packageWire plan scope resource frame origin generation journal receipt route now fields use = do
+    package <- Dependency.runtimeDependencyPackageFromWire packageWire :: Either Text (Dependency.RuntimeDependencyPackage () ())
+    requireProviderPackage package
+    request <- case fields of
+        [single] -> Right single
+        _ -> Left "provider dependency probe request field count differs"
+    _ <- Dependency.withProviderRuntimeDependencyPackage
+        plan scope resource frame origin generation journal receipt route now package id
+    Dependency.withRuntimeDependencyProbeRequest package request use
+
+{- | Bracket one caller-free provider reprobe kernel around its lexical live
+probe. Installation in a Process channel is separate: the continuation sees
+only a bounded data request handler, never the probe or backend authority.
+-}
+withProviderDependencyReprobeKernel ::
+    ByteString -> Text -> Text -> Text -> Text -> Text -> Word64 -> Text -> Text -> Text -> Word64 ->
+    IO (Either Text Word64) ->
+    (([ByteString] -> IO (Either Text [ByteString])) -> IO result) ->
+    IO result
+withProviderDependencyReprobeKernel packageWire plan scope resource frame origin generation journal receipt route now probe use = do
+    consumed <- newMVar Set.empty
+    use (answer consumed)
+  where
+    answer consumed fields =
+        case withAuthenticatedProviderDependencyProbeRequest
+            packageWire plan scope resource frame origin generation journal receipt route now fields id of
+            Left failure -> pure (Left failure)
+            Right nonce -> do
+                admitted <- modifyMVar consumed $ \nonces ->
+                    if Set.member nonce nonces
+                        then pure (nonces, Left "provider dependency probe nonce was replayed")
+                        else
+                            if Set.size nonces >= providerProbeRequestLimit
+                                then pure (nonces, Left "provider dependency probe request limit was reached")
+                                else pure (Set.insert nonce nonces, Right ())
+                case admitted of
+                    Left reason -> pure (providerDependencyProbeRefusalFields packageWire nonce reason)
+                    Right () -> do
+                        observed <- timeout providerProbeMicros probe
+                        case observed of
+                            Nothing -> pure (providerDependencyProbeRefusalFields packageWire nonce "provider dependency probe timed out")
+                            Just (Left reason) -> pure (providerDependencyProbeRefusalFields packageWire nonce reason)
+                            Just (Right actual)
+                                | actual == generation -> pure (providerDependencyProbeResponseFields packageWire nonce actual)
+                                | otherwise -> pure (providerDependencyProbeRefusalFields packageWire nonce "provider dependency generation changed")
+
+providerProbeRequestLimit :: Int
+providerProbeRequestLimit = 64
+
+providerProbeMicros :: Int
+providerProbeMicros = 100000
+
+requireProviderPackage :: Dependency.RuntimeDependencyPackage scope planId -> Either Text ()
+requireProviderPackage package =
+    if Dependency.runtimeDependencyPackageDomain package == "provider"
+        then Right ()
+        else Left "provider dependency package domain mismatch"
+
 recoveryRequestFields ::
     RecoveryProjectionBinding
         scope
@@ -2133,7 +2395,7 @@ signRootedPayloadBindingKernel kernel =
                                         ( Ed25519.sign
                                             (brokerSecret broker)
                                             (brokerPublic broker)
-                                            (rootedPayloadSignedMaterial
+                                            ( rootedPayloadSignedMaterial
                                                 (rootBrokerVerificationKey broker)
                                                 unsigned
                                             )
@@ -2160,13 +2422,16 @@ validateRootedConfigSigning broker offer childConfig = do
         payloadDigest = childConfigDigest payload
         configDigest = childConfigDigest childConfig
     _ <- brokerRelay broker binding
-    requireRooted (handoffPayloadKind binding == NarrowedProjectConfig)
+    requireRooted
+        (handoffPayloadKind binding == NarrowedProjectConfig)
         "recovery signing requires canonical RecoveryChildPackage admission"
     requireRooted (not (ByteString.null payload)) "the complete payload is empty"
     requireRooted (not (ByteString.null childConfig)) "the child config is empty"
-    requireRooted (payload == childConfig)
+    requireRooted
+        (payload == childConfig)
         "a config payload and its child config are not the same exact bytes"
-    requireRooted (handoffChildConfigDigest binding == payloadDigest)
+    requireRooted
+        (handoffChildConfigDigest binding == payloadDigest)
         "the immediate edge does not bind the complete payload digest"
     pure (renderHandoffBinding binding, payloadDigest, configDigest)
 
@@ -2197,14 +2462,17 @@ withVerifiedRootedPayloadBinding verified raw use = do
     if claimedPayloadDigest /= payloadDigest
         then Left (HandoffPayloadDigestMismatch claimedPayloadDigest payloadDigest)
         else pure ()
-    requireRooted (not (ByteString.null (verifiedHandoffPayload verified)))
+    requireRooted
+        (not (ByteString.null (verifiedHandoffPayload verified)))
         "the complete payload is empty"
     case handoffPayloadKind binding of
         NarrowedProjectConfig ->
-            requireRooted (claimedConfigDigest == claimedPayloadDigest)
+            requireRooted
+                (claimedConfigDigest == claimedPayloadDigest)
                 "a config payload has different payload and child-config digests"
         RecoveryAdapterWire ->
-            requireRooted (claimedConfigDigest /= claimedPayloadDigest)
+            requireRooted
+                (claimedConfigDigest /= claimedPayloadDigest)
                 "a recovery payload has conflated payload and child-config digests"
     verifyRootedPayloadSignature (verifiedProjectKey verified) rooted
     pure (use rooted)
@@ -2223,7 +2491,8 @@ verifyRootedPayloadSignature key@(ProjectVerificationKey public) rooted =
                     key
                     (Rooted.renderRootedPayloadUnsignedKernel rooted)
                 )
-                signature -> Right ()
+                signature ->
+                Right ()
             | otherwise -> Left HandoffRootedSignatureInvalid
 
 rootedPayloadSignedMaterial :: ProjectVerificationKey -> ByteString -> ByteString
@@ -2280,7 +2549,7 @@ signRecoveryChildPackageBindingKernel kernel =
                                         ( Ed25519.sign
                                             (brokerSecret broker)
                                             (brokerPublic broker)
-                                            (rootedPayloadSignedMaterial
+                                            ( rootedPayloadSignedMaterial
                                                 (rootBrokerVerificationKey broker)
                                                 unsigned
                                             )
@@ -2308,13 +2577,17 @@ validateRecoveryChildPackageSigning broker offer package =
             payloadDigest = childConfigDigest packageBytes
             configDigest = childConfigDigest childConfig
         _ <- brokerRelay broker binding
-        requireRooted (handoffPayloadKind binding == RecoveryAdapterWire)
+        requireRooted
+            (handoffPayloadKind binding == RecoveryAdapterWire)
             "a recovery child package requires a recovery-adapter-wire edge"
-        requireRooted (offerPayload offer == packageBytes)
+        requireRooted
+            (offerPayload offer == packageBytes)
             "the recovery offer does not carry the exact canonical package"
-        requireRooted (handoffChildConfigDigest binding == payloadDigest)
+        requireRooted
+            (handoffChildConfigDigest binding == payloadDigest)
             "the immediate edge does not bind the complete recovery package"
-        requireRooted (payloadDigest /= configDigest)
+        requireRooted
+            (payloadDigest /= configDigest)
             "a recovery package has conflated package and child-config digests"
         pure (renderHandoffBinding binding, payloadDigest, configDigest)
 
@@ -2337,12 +2610,14 @@ withVerifiedRecoveryChildPackage verified suppliedRooted use = do
             id
     let binding = verifiedHandoffBinding verified
         packageBytes = verifiedHandoffPayload verified
-    requireRooted (handoffPayloadKind binding == RecoveryAdapterWire)
+    requireRooted
+        (handoffPayloadKind binding == RecoveryAdapterWire)
         "the authenticated payload is not a recovery child package"
     package <-
         recoveryPackageFailure
             (Recovery.recoveryChildPackageFromWireKernel packageBytes)
-    requireRooted (renderRecoveryChildPackage package == packageBytes)
+    requireRooted
+        (renderRecoveryChildPackage package == packageBytes)
         "the recovery package is not the exact authenticated payload"
     requireRooted
         (Rooted.rootedPayloadBindingEdgeKernel rooted == renderHandoffBinding binding)
@@ -2480,7 +2755,8 @@ verifyRootedLifecycleResponseSignature (ProjectVerificationKey public) exactRequ
                     exactRequest
                     (Rooted.renderRootedLifecycleUnsignedResponseKernel response)
                 )
-                signature -> Right ()
+                signature ->
+                Right ()
             | otherwise -> Left HandoffRootedLifecycleSignatureInvalid
 
 rootedLifecycleResponseSignedMaterial ::
@@ -2959,18 +3235,19 @@ registerRecoverableAdmittedHandoffEdgeKernel kernel =
             Left (HandoffWireTooLarge (fromIntegral (ByteString.length identity)) maxWireBytes)
         | otherwise = Right identity
       where
-        identity = ByteString.concat
-            [ frameWire "hostbootstrap/recovery-open-map"
-            , frameWire (ByteString.pack (word64BigEndian 1))
-            , frameWire (TextEncoding.encodeUtf8 (brokerProjectName broker))
-            , frameWire (TextEncoding.encodeUtf8 (brokerScopeTag broker))
-            , frameWire (TextEncoding.encodeUtf8 (brokerStoreIdentity broker))
-            , frameWire (ByteString.pack (word64BigEndian (brokerEpochValue broker)))
-            , frameWire (TextEncoding.encodeUtf8 (brokerVerbName broker))
-            , frameWire (TextEncoding.encodeUtf8 (verificationKeyDigest (rootBrokerVerificationKey broker)))
-            , frameWire (renderHandoffBindingInput input)
-            , frameWire adapter
-            ]
+        identity =
+            ByteString.concat
+                [ frameWire "hostbootstrap/recovery-open-map"
+                , frameWire (ByteString.pack (word64BigEndian 1))
+                , frameWire (TextEncoding.encodeUtf8 (brokerProjectName broker))
+                , frameWire (TextEncoding.encodeUtf8 (brokerScopeTag broker))
+                , frameWire (TextEncoding.encodeUtf8 (brokerStoreIdentity broker))
+                , frameWire (ByteString.pack (word64BigEndian (brokerEpochValue broker)))
+                , frameWire (TextEncoding.encodeUtf8 (brokerVerbName broker))
+                , frameWire (TextEncoding.encodeUtf8 (verificationKeyDigest (rootBrokerVerificationKey broker)))
+                , frameWire (renderHandoffBindingInput input)
+                , frameWire adapter
+                ]
         mismatch = Left . HandoffBindingMismatch
 
     select session key broker input identity = do
@@ -3002,13 +3279,14 @@ registerRecoverableAdmittedHandoffEdgeKernel kernel =
                             decode broker input identity (protectedRecordBytes record)
                     _ -> mapConflict
 
-    recoveryRecord identity relay token = ByteString.concat
-        [ frameWire "hostbootstrap/recovery-open-record"
-        , frameWire (ByteString.pack (word64BigEndian 1))
-        , frameWire identity
-        , frameWire (renderHandoffBinding (relayBinding relay))
-        , frameWire (handoffTokenBytes token)
-        ]
+    recoveryRecord identity relay token =
+        ByteString.concat
+            [ frameWire "hostbootstrap/recovery-open-record"
+            , frameWire (ByteString.pack (word64BigEndian 1))
+            , frameWire identity
+            , frameWire (renderHandoffBinding (relayBinding relay))
+            , frameWire (handoffTokenBytes token)
+            ]
 
     decode broker input identity raw = do
         (domain, afterDomain) <- takeFrame raw
@@ -3035,7 +3313,8 @@ registerRecoverableAdmittedHandoffEdgeKernel kernel =
                 Left failure -> pure (Left (HandoffStoreFailure failure))
                 Right (Just record)
                     | protectedRecordBytes record == plannedEdgeRecord binding
-                    , recordVersionWord (protectedRecordVersion record) == 1 -> pure (Right ())
+                    , recordVersionWord (protectedRecordVersion record) == 1 ->
+                        pure (Right ())
                     | "granted:" `ByteString.isPrefixOf` protectedRecordBytes record ->
                         pure (Left HandoffTokenConsumed)
                     | otherwise -> pure tokenConflict
@@ -3065,7 +3344,8 @@ registerRecoverableAdmittedHandoffEdgeKernel kernel =
             Left failure -> Left (HandoffStoreFailure failure)
             Right (Just record)
                 | recordVersionWord (protectedRecordVersion record) == 1
-                , protectedRecordBytes record == bytes -> Right ()
+                , protectedRecordBytes record == bytes ->
+                    Right ()
             _ -> conflict
 
     readToken session key binding conflict = do
@@ -3074,7 +3354,8 @@ registerRecoverableAdmittedHandoffEdgeKernel kernel =
             Left failure -> Left (HandoffStoreFailure failure)
             Right (Just record)
                 | recordVersionWord (protectedRecordVersion record) == 1
-                , protectedRecordBytes record == plannedEdgeRecord binding -> Right ()
+                , protectedRecordBytes record == plannedEdgeRecord binding ->
+                    Right ()
                 | "granted:" `ByteString.isPrefixOf` protectedRecordBytes record -> Left HandoffTokenConsumed
             _ -> conflict
 

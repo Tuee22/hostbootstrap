@@ -52,14 +52,14 @@ its row here.
 | 12 | [Step algebra and the project plan](phase-12-step-algebra-and-project-plan.md) | Done | linux-cpu | — |
 | 13 | [Authenticated handoff and child admission](phase-13-authenticated-handoff-and-child-admission.md) | Done | linux-cpu | — |
 | 14 | [Ownership clauses and reservations](phase-14-ownership-clauses-and-reservations.md) | Done | linux-cpu | — |
-| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Active | linux-cpu | the declared native Linux/x86_64 KVM/Incus baseline acceptance run; every implementation sprint through 15.36 is statically closed |
-| 16 | [Cluster lifecycle, budgets, and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Active | linux-cpu | 16.47–16.49 the Colima ownership driver, the live gate as a harness case, and the enumeration narrowing |
-| 17 | [Recursive lifecycle command](phase-17-recursive-lifecycle-command.md) | Active | linux-cpu | 17.41–17.51 forward/reverse adoption, cleanup, unwind, gate |
-| 18 | [Recovery and migration](phase-18-recovery-and-migration.md) | Active | linux-cpu | 18.4–18.19 resource records, migration recovery, recovered closure, interruption fixtures |
-| 19 | [Test harness and run ownership](phase-19-test-harness-and-run-ownership.md) | Active | linux-cpu | 19.5 Harness scope-capsule producer; 19.6 live harness acceptance |
-| 20 | [`test` and `context` commands](phase-20-test-and-context-commands.md) | Active | linux-cpu | 20.4 live verb-sequence acceptance |
-| 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Active | linux-cpu | 21.2 blob-leaf arguments; reopened 21.3 role authority/transition/recovery audit; one crossing renderer (§ LL); focused suites; fresh gate |
-| 22 | [Service runtime](phase-22-service-runtime.md) | Active | linux-cpu | 22.2/22.3 registry adoption, activation installation, and `service run` interpretation |
+| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Done | linux-cpu | — |
+| 16 | [Cluster lifecycle, budgets, and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Done | linux-cpu | — |
+| 17 | [Recursive lifecycle command](phase-17-recursive-lifecycle-command.md) | Done | linux-cpu | — |
+| 18 | [Recovery and migration](phase-18-recovery-and-migration.md) | Done | linux-cpu | — |
+| 19 | [Test harness and run ownership](phase-19-test-harness-and-run-ownership.md) | Done | linux-cpu | — |
+| 20 | [`test` and `context` commands](phase-20-test-and-context-commands.md) | Done | linux-cpu | — |
+| 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Done | linux-cpu | — |
+| 22 | [Service runtime](phase-22-service-runtime.md) | Done | linux-cpu | — |
 | 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
 | 24 | [The worked demo](phase-24-worked-demo.md) | Active | linux-cpu | 24.3 readback; 24.4–24.7 exact plan/resources/slices; 24.8–24.18 provider recovery/adopters/transport; 24.19–24.23 cluster config/backend/recovery/adopter; 24.24–24.27 workload/reverse; 24.28 projector; 24.29 image; 24.30 live acceptance; 24.31 guest bootstrap and guest alias |
 | 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Active | **apple-silicon** | 25.3 acceptance re-run |
@@ -70,7 +70,9 @@ its row here.
 
 ## The current frontier
 
-The lowest-numbered open phase is **15**. § KK's invocation half is closed — the
+The lowest-numbered open phase is **24**, the worked demo. The service-runtime phase is closed with an
+activation-only, measured, effect-indexed `service run`; Phase 24 now owns adoption by the concrete demo,
+its workload packaging, readiness, and live acceptance. § KK's invocation half is closed — the
 [host-tools-and-substrate-detection phase](phase-3-host-tools-and-substrate-detection.md) carries one
 quoter, one process runner, one closed command vocabulary, and one interpreter for it — and the
 [ensure-reconcilers phase](phase-8-ensure-reconcilers.md) closed the guest bootstrap vocabulary and § LL's
@@ -81,7 +83,7 @@ every platform row is now compiled on every gate host and stubbed to a total ref
 apply, the package description decides no module by host, and `CoverageManifest` declares each
 host-conditional family's size so a case that vanished is a failed count rather than a smaller total.
 
-That the frontier is 15 rather than 3 is the result of settling **who owns which half of § K**. The
+That the frontier advanced beyond 3 is the result of settling **who owns which half of § K**. The
 `HostTool` boundary — that the set is closed, that entry is by construction, that resolution is absolute
 — is the host-tools phase's, and it is built. *Which* tools are in the set is a description of what the
 binary drives, so it is settled by the phases that drive them; the enumeration narrows when the last
@@ -250,10 +252,11 @@ reindexes, the recovered finalized specification each root plan's own index now 
 catalog manifest the root entry now persists and strictly re-reads, the storeless forward package an
 admitted descent entry authorizes, and the catalog-produced recovery package the private relay now opens,
 signs, and transmits, and the installed recursive handoff runtime every frame now derives its trust and arm
-from, the root-owned frame session an `OpenFrame` attaches to, the prepared node grant that follows every exact durable unknown row, the exactly-once settlement its observation returns to, the terminal receipt that ends it, the live root endpoint that answers the opening, and the storeless executor that place in the conversation belongs to, and the sanitized process route that carries the whole exchange over a child's standard input and output, and the descriptor isolation that keeps those bytes the receiver's own, and the bracketed POSIX owner that holds one child, its group, and its descriptors for exactly one edge. Sprint 17.41 is current. The remaining Phase 17 sprints add
-forward and reverse adoption, cluster cleanup,
-failed-Up unwind, and the host-static real-process gate. Current nested command entry therefore remains
-fail-closed.
+from, the root-owned frame session an `OpenFrame` attaches to, the prepared node grant that follows every exact durable unknown row, the exactly-once settlement its observation returns to, the terminal receipt that ends it, the live root endpoint that answers the opening, and the storeless executor that place in the conversation belongs to, and the sanitized process route that carries the whole exchange over a child's standard input and output, and the descriptor isolation that keeps those bytes the receiver's own, and the bracketed POSIX owner that holds one child, its group, and its descriptors for exactly one edge. The forward and reverse receivers, root coordinator, semantic completion/recovery, exact cluster cleanup,
+and retained reverse terminalization/rearm are also complete; prepared reverse descent now derives its exact
+sanitized process route without losing nominal lineage, and the rooted reverse service now retains and settles
+one prepared child forest through canonical receipt, while root command authority is now nominally distinct
+from every nested descent parent. The proof-complete real-process gate is closed.
 
 Sprint 17.37 has built what that opening produces. A `FrameExecutor` is deliberately the poorest value in the
 recursive lifecycle: it holds a place in a conversation — the admitted canonical path, the root's opaque

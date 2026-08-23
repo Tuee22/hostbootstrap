@@ -318,14 +318,18 @@ observeInstance ::
     IO (Either ProviderOwnershipFault ProviderObservation)
 observeInstance cfg owned = do
     listed <- classifyProviderListing name <$> interpret cfg (listInstanceCommand name)
-    identified <- classifyProviderIdentity <$> configValue cfg name providerIdentityConfigKey
-    claimed <- classifyProviderConfigValue <$> configValue cfg name providerOwnerConfigKey
-    pure $ reported $ do
-        listing <- listed
-        identity <- identified
-        claim <- claimed
-        origin <- providerObservedOrigin listing identity
-        Right (ProviderObservation listing origin claim)
+    case listed of
+        Left fault -> pure (Left (ProviderOwnershipReport fault))
+        Right Nothing ->
+            pure (Right (ProviderObservation Nothing OriginAbsent ProviderConfigUnset))
+        Right (Just listing) -> do
+            identified <- classifyProviderIdentity <$> configValue cfg name providerIdentityConfigKey
+            claimed <- classifyProviderConfigValue <$> configValue cfg name providerOwnerConfigKey
+            pure $ reported $ do
+                identity <- identified
+                claim <- claimed
+                origin <- providerObservedOrigin (Just listing) identity
+                Right (ProviderObservation (Just listing) origin claim)
   where
     name = ownedInstanceName owned
 

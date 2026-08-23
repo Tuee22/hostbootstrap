@@ -62,6 +62,7 @@ module HostBootstrap.Effect.Run
     , RunBounds (..)
     , BoundedRun (..)
     , runBoundedGrouped
+    , runBoundedGroupedWithInput
     )
 where
 
@@ -78,12 +79,12 @@ import Control.Exception
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteStringChar
 import System.Exit (ExitCode)
-import System.IO (Handle, hClose)
+import System.IO (Handle, hClose, hFlush)
 #if !defined(mingw32_HOST_OS)
 import System.Posix.Signals (Signal, nullSignal, sigKILL, sigTERM, signalProcessGroup)
 #endif
 import System.Process
-    ( CreateProcess (create_group, cwd, env, std_err, std_in, std_out)
+    ( CreateProcess (close_fds, create_group, cwd, env, std_err, std_in, std_out)
     , Pid
     , ProcessHandle
     , StdStream (CreatePipe)
@@ -200,18 +201,27 @@ teardown is @SIGTERM@, then the grace period, then @SIGKILL@; on Windows, where
 there is no group signal, it is 'terminateProcess' followed by a bounded wait.
 -}
 runBoundedGrouped :: RunBounds -> RunNamespace -> FilePath -> [String] -> IO BoundedRun
-runBoundedGrouped bounds namespace executable arguments = do
-    attempted <- trySynchronous (groupedProcess bounds namespace executable arguments)
+runBoundedGrouped bounds namespace executable arguments =
+    runBoundedGroupedWithInput bounds namespace executable arguments ByteString.empty
+
+-- | The bounded group runner with a request written to the leader's standard
+-- input while the pipe remains open. A shipped command supervisor consumes
+-- the framed request, then treats EOF as proof that its owning launcher died.
+runBoundedGroupedWithInput :: RunBounds -> RunNamespace -> FilePath -> [String] -> ByteString.ByteString -> IO BoundedRun
+runBoundedGroupedWithInput bounds namespace executable arguments request = do
+    attempted <- trySynchronous (groupedProcess bounds namespace executable arguments request)
     pure (either (BoundedFailed . show) id attempted)
 
-groupedProcess :: RunBounds -> RunNamespace -> FilePath -> [String] -> IO BoundedRun
-groupedProcess bounds namespace executable arguments =
+groupedProcess :: RunBounds -> RunNamespace -> FilePath -> [String] -> ByteString.ByteString -> IO BoundedRun
+groupedProcess bounds namespace executable arguments request =
     withCreateProcess processSpec $ \input output errors process -> do
         processGroup <- getPid process
         let tearDown = terminateProcessGroup (boundTerminationGraceMicros bounds) processGroup process
             runProcess =
                 case (input, output, errors) of
                     (Just inputHandle, Just outputHandle, Just errorHandle) -> do
+                        ByteString.hPut inputHandle request
+                        hFlush inputHandle
                         events <- newChan
                         _ <- forkIO (readPipe ceiling' outputHandle >>= writeChan events . PipeEvent StandardOutput)
                         _ <- forkIO (readPipe ceiling' errorHandle >>= writeChan events . PipeEvent StandardError)
@@ -264,6 +274,7 @@ groupedProcess bounds namespace executable arguments =
     processSpec =
         processCommand
             { create_group = True
+            , close_fds = True
             , cwd = processWorkingDirectory
             , env = Just (runEnvironment namespace)
             , std_in = CreatePipe

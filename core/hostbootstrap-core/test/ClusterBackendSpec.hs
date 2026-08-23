@@ -27,10 +27,11 @@ module ClusterBackendSpec (tests) where
 import ClusterReconcileSpec (
     withClusterFixtureM,
     withHarnessClusterFixtureM,
+    withNvkindClusterFixtureM,
     withPlannedClusterFixture,
  )
 import Control.Monad (forM_)
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, isSuffixOf)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified FakeCluster
@@ -38,7 +39,7 @@ import HostBootstrap.Cluster.Backend
 import HostBootstrap.Cluster.Reconcile
 import HostBootstrap.Effect.Run (CapturedRun (..))
 import HostBootstrap.HostConfig (HostConfig (..))
-import HostBootstrap.HostTool (AbsExe, HostTool (Docker, Kind, Kubectl), mkAbsExe)
+import HostBootstrap.HostTool (AbsExe, HostTool (Docker, Helm, Kind, Kubectl, Nvkind), mkAbsExe)
 import HostBootstrap.Reconcile
 import HostBootstrap.Substrate (Arch (Amd64), Substrate (..), SubstrateName (LinuxCpu))
 import HostBootstrap.DocValidator (findRepoRoot)
@@ -106,20 +107,42 @@ refusesListing label observed = case observed of
 admissionCases :: [TestTree]
 admissionCases =
     [ testCase "a configuration missing one cluster tool mints no capability" $
-        forM_ [Kind, Docker, Kubectl] $ \omitted -> do
+        forM_ [Kind, Docker, Kubectl, Helm] $ \omitted -> do
             self <- getExecutablePath
-            discovered <- discoverStrongClusterBackend (hostConfigWithout self omitted)
-            case discovered of
-                Left (Unsupported _) -> pure ()
-                other ->
-                    assertFailure
-                        ("a missing tool must mint no backend, got " <> show (() <$ other))
+            outcome <- withClusterFixtureM $ \prepared -> do
+                discovered <- discoverPrepared (hostConfigWithout self omitted) prepared
+                pure (Right (() <$ discovered))
+            case outcome of
+                Right (Left (Unsupported _)) -> pure ()
+                other -> assertFailure ("a missing tool must mint no backend, got " <> show other)
     , testCase "a configuration carrying all three is admitted with no probe" $ do
         self <- getExecutablePath
-        discovered <- discoverStrongClusterBackend (clusterHostConfig self)
-        case discovered of
-            Right _ -> pure ()
-            other -> assertFailure ("expected an admitted backend, got " <> show (() <$ other))
+        outcome <- withClusterFixtureM $ \prepared -> do
+            discovered <- discoverPrepared (clusterHostConfig self) prepared
+            pure (Right (() <$ discovered))
+        case outcome of
+            Right (Right ()) -> pure ()
+            other -> assertFailure ("expected an admitted backend, got " <> show other)
+    , testCase "nvkind discovery requires nvkind and does not fall back to Kind" $ do
+        self <- getExecutablePath
+        outcome <- withNvkindClusterFixtureM $ \prepared -> do
+            let withoutKind = (clusterHostConfig self){hcToolPaths = Map.delete Kind (hcToolPaths (clusterHostConfig self))}
+                withoutNvkind = (clusterHostConfig self){hcToolPaths = Map.delete Nvkind (hcToolPaths (clusterHostConfig self))}
+            admitted <- discoverPrepared withoutKind prepared
+            refused <- discoverPrepared withoutNvkind prepared
+            pure (Right (either (const False) (const True) admitted, either isUnsupported (const False) refused))
+        outcome @?= Right (True, True)
+    , testCase "a discovered Kind backend refuses an nvkind package before a command" $ do
+        self <- getExecutablePath
+        outcome <- withClusterFixtureM $ \kindPrepared -> do
+            backend <- requireBackend (clusterHostConfig self) kindPrepared
+            nested <- withNvkindClusterFixtureM $ \nvkindPrepared -> do
+                observed <- runClusterStatusCall backend nvkindPrepared
+                pure (Right observed)
+            pure (Right nested)
+        case outcome of
+            Right (Right (ClusterStatusProbeFailed reason)) -> assertBool "the mismatch does not name the driver" ("driver differs" `Text.isInfixOf` reason)
+            other -> assertFailure ("expected a pre-command driver mismatch, got " <> show other)
     , testCase "the exact package projects absolute backend paths" $ do
         outcome <-
             withClusterFixtureM $ \prepared ->
@@ -130,12 +153,17 @@ admissionCases =
                         )
                     )
         outcome @?= Right True
-    , testCase "a Harness package declares no driver configuration at all" $ do
+    , testCase "a Harness package retains its isolated driver configuration" $ do
         outcome <-
             withHarnessClusterFixtureM
                 (\prepared -> pure (Right (preparedClusterConfigPath prepared)))
-        outcome @?= Right Nothing
+        case outcome of
+            Right (Just path) -> assertBool "Harness config is not the exact driver path" ("cluster/kind/config.yaml" `isSuffixOf` path)
+            other -> assertFailure ("expected an isolated Harness config path, got " ++ show other)
     ]
+  where
+    isUnsupported (Unsupported _) = True
+    isUnsupported _ = False
 
 hostConfigWithout :: FilePath -> HostTool -> HostConfig
 hostConfigWithout self omitted =
@@ -147,19 +175,35 @@ clusterHostConfig self =
     HostConfig
         { hcSubstrate = Substrate LinuxCpu Amd64
         , hcToolPaths =
-            Map.fromList [(Kind, fixtureExe self), (Docker, fixtureExe self), (Kubectl, fixtureExe self)]
+            Map.fromList [(Kind, fixtureExe self), (Docker, fixtureExe self), (Kubectl, fixtureExe self), (Helm, fixtureExe self), (Nvkind, fixtureExe self)]
         }
 
 fixtureExe :: FilePath -> AbsExe
 fixtureExe = either error id . mkAbsExe
+
+discoverPrepared ::
+    HostConfig ->
+    PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
+    IO (Either ReconcileError StrongClusterBackend)
+discoverPrepared cfg prepared =
+    withPreparedPlanOwnedClusterConfig prepared (discoverStrongClusterBackend cfg)
+
+requireBackend ::
+    HostConfig ->
+    PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
+    IO StrongClusterBackend
+requireBackend cfg prepared = do
+    discovered <- discoverPrepared cfg prepared
+    either (assertFailure . show) pure discovered
 
 -- The join, driven for real -------------------------------------------------------
 
 joinCases :: [TestTree]
 joinCases =
     [ testCase "a fresh reconcile creates the plan's own cluster and binds its nodes" $ do
-        outcome <- withBackend $ \backend root ->
+        outcome <- withBackend $ \cfg root ->
             withClusterFixtureM $ \prepared -> do
+                backend <- requireBackend cfg prepared
                 declare root prepared
                 observed <- runClusterReconcileCall backend prepared
                 mutations <- FakeCluster.recordedClusterMutations root
@@ -178,8 +222,9 @@ joinCases =
                 listedOwnCluster @?= True
             other -> assertFailure ("expected a created cluster, got " <> show other)
     , testCase "the identity bound is the one the runtime answered for the control plane" $ do
-        outcome <- withBackend $ \backend root ->
+        outcome <- withBackend $ \cfg root ->
             withClusterFixtureM $ \prepared -> do
+                backend <- requireBackend cfg prepared
                 declare root prepared
                 observed <- runClusterReconcileCall backend prepared
                 let controlPlane = take 1 (preparedClusterNodeNames prepared)
@@ -189,15 +234,17 @@ joinCases =
             Right (ClusterResultCreated identity, [expected]) -> identity @?= expected
             other -> assertFailure ("expected the control plane's own identity, got " <> show other)
     , testCase "the durable record lives under the plan's own state directory" $ do
-        outcome <- withBackend $ \backend root ->
+        outcome <- withBackend $ \cfg root ->
             withClusterFixtureM $ \prepared -> do
+                backend <- requireBackend cfg prepared
                 declare root prepared
                 _ <- runClusterReconcileCall backend prepared
                 Right . length <$> recordsUnder (preparedClusterStateDirectory prepared)
         outcome @?= Right (1 :: Int)
     , testCase "the credential the driver wrote lands inside that state directory" $ do
-        outcome <- withBackend $ \backend root ->
+        outcome <- withBackend $ \cfg root ->
             withClusterFixtureM $ \prepared -> do
+                backend <- requireBackend cfg prepared
                 declare root prepared
                 _ <- runClusterReconcileCall backend prepared
                 written <- FakeCluster.recordedKubeconfigPaths root
@@ -209,8 +256,9 @@ joinCases =
                     )
         outcome @?= Right (True, True)
     , testCase "an exact repeat is healthy and creates nothing more" $ do
-        outcome <- withBackend $ \backend root ->
+        outcome <- withBackend $ \cfg root ->
             withClusterFixtureM $ \prepared -> do
+                backend <- requireBackend cfg prepared
                 declare root prepared
                 _ <- runClusterReconcileCall backend prepared
                 observed <- runClusterReconcileCall backend prepared
@@ -220,8 +268,9 @@ joinCases =
             Right (ClusterResultHealthy _, mutations) -> mutations @?= ["create"]
             other -> assertFailure ("expected a healthy cluster, got " <> show other)
     , testCase "an owned cluster whose containers stopped is unhealthy, never recreated" $ do
-        outcome <- withBackend $ \backend root ->
+        outcome <- withBackend $ \cfg root ->
             withClusterFixtureM $ \prepared -> do
+                backend <- requireBackend cfg prepared
                 declare root prepared
                 _ <- runClusterReconcileCall backend prepared
                 stopEveryNode root
@@ -232,8 +281,9 @@ joinCases =
             Right (ClusterResultUnhealthy _, mutations) -> mutations @?= ["create"]
             other -> assertFailure ("expected an unhealthy cluster, got " <> show other)
     , testCase "a cluster no record of this project's claims is foreign and is not touched" $ do
-        outcome <- withBackend $ \backend root ->
+        outcome <- withBackend $ \cfg root ->
             withClusterFixtureM $ \prepared -> do
+                backend <- requireBackend cfg prepared
                 declare root prepared
                 FakeCluster.writeClusters root [preparedClusterName prepared]
                 FakeCluster.writeNodes
@@ -252,8 +302,9 @@ joinCases =
                 mutations @?= []
             other -> assertFailure ("expected a foreign cluster, got " <> show other)
     , testCase "the read-only status path asks the driver and decides from the bytes" $ do
-        outcome <- withBackend $ \backend root ->
+        outcome <- withBackend $ \cfg root ->
             withClusterFixtureM $ \prepared -> do
+                backend <- requireBackend cfg prepared
                 declare root prepared
                 absent <- runClusterStatusCall backend prepared
                 _ <- runClusterReconcileCall backend prepared
@@ -292,15 +343,13 @@ stopEveryNode root = do
     FakeCluster.writeNodes root [(name, node{FakeCluster.nodeRunning = False}) | (name, node) <- held]
 
 -- | An admitted backend whose three tools are this suite's own executable.
-withBackend :: (StrongClusterBackend -> FilePath -> IO result) -> IO result
+withBackend :: (HostConfig -> FilePath -> IO result) -> IO result
 withBackend consume =
     withSystemTempDirectory "hostbootstrap-cluster-backend" $ \temporary -> do
         root <- canonicalizePath temporary
         _ <- FakeCluster.newClusterFixture root []
         self <- getExecutablePath
-        discovered <- discoverStrongClusterBackend (clusterHostConfig self)
-        backend <- either (assertFailure . show) pure discovered
-        FakeCluster.withFakeClusterClient root (consume backend root)
+        FakeCluster.withFakeClusterClient root (consume (clusterHostConfig self) root)
 
 -- No program written in another language --------------------------------------------
 
@@ -326,21 +375,14 @@ sourceCases =
             assertBool
                 (name <> " is named in the cluster backend")
                 (not (name `isInfixOf` source))
-    , testCase "the private component the injected executor lived in is gone" $ do
+    , testCase "the hidden backend component retains capability data and no injected executor" $ do
         root <- repositoryRoot
-        present <-
-            doesFileExist
-                ( root
-                    </> "core"
-                    </> "hostbootstrap-core"
-                    </> "internal"
-                    </> "cluster-backend"
-                    </> "HostBootstrap"
-                    </> "Cluster"
-                    </> "Backend"
-                    </> "Internal.hs"
-                )
-        assertBool "the retired private cluster-backend component is still in the tree" (not present)
+        let internalPath = root </> "core" </> "hostbootstrap-core" </> "internal" </> "cluster-backend" </> "HostBootstrap" </> "Cluster" </> "Backend" </> "Internal.hs"
+        present <- doesFileExist internalPath
+        assertBool "the plan-owned hidden backend component is absent" present
+        internalSource <- readFile' internalPath
+        forM_ forbiddenNames $ \name ->
+            assertBool (name <> " is named in the hidden capability component") (not (name `isInfixOf` internalSource))
     , testCase "the backend still reaches the described commands and the clause-holding driver" $ do
         source <- backendSource
         forM_ reachedNames $ \name ->

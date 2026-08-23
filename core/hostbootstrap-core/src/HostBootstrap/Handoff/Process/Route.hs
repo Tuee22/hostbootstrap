@@ -37,13 +37,15 @@ Nothing here spawns anything. The route is the description a process owner
 later obeys, and this module names no process, descriptor, handle, or
 protected store.
 -}
-module HostBootstrap.Handoff.Process.Route
-    ( LifecycleProcessRoute
-    , withForwardLifecycleProcessRouteKernel
-    , withRecoveryLifecycleProcessRouteKernel
-    , withLifecycleProcessRouteLaunchKernel
-    , withLifecycleChildOpeningKernel
-    )
+module HostBootstrap.Handoff.Process.Route (
+    LifecycleProcessRoute,
+    withForwardLifecycleProcessRouteKernel,
+    withNestedForwardLifecycleProcessRouteKernel,
+    withRecoveryLifecycleProcessRouteKernel,
+    withRecoveryLifecycleProcessRouteForKernel,
+    withLifecycleProcessRouteLaunchKernel,
+    withLifecycleChildOpeningKernel,
+)
 where
 
 import Data.ByteString (ByteString)
@@ -52,41 +54,43 @@ import Data.Char (isSpace)
 import Data.Maybe (isNothing)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import HostBootstrap.Authority (ProjectVerb, projectVerbName)
+import HostBootstrap.Authority (ProjectVerb)
 import HostBootstrap.Config.Vocab (Mount, readOnly, source, target)
-import HostBootstrap.Handoff
-    ( HandoffBindingInput
-    , ProjectVerificationKey
-    , RootedLifecycleResponse
-    , handoffErrorMessage
-    , requestedChildFrame
-    , requestedParentFrame
-    , requestedPhase
-    , withVerifiedRootedLifecycleResponse
-    )
+import HostBootstrap.Handoff (
+    HandoffBindingInput,
+    ProjectVerificationKey,
+    RootedLifecycleResponse,
+    handoffErrorMessage,
+    requestedChildFrame,
+    requestedParentFrame,
+    requestedPhase,
+    withVerifiedRootedLifecycleResponse,
+ )
 import HostBootstrap.Handoff.Recovery (RecoveryChildPackage, withRecoveryChildPackageKernel)
-import HostBootstrap.Handoff.Rooted
-    ( renderRootedLifecycleRequestKernel
-    , rootedOpenFrameRequestKernel
-    , withRootedLifecycleResponseKernel
-    )
-import HostBootstrap.Handoff.Runtime
-    ( RecursiveHandoffRuntime
-    , withNestedArmRecursiveHandoffRuntimeKernel
-    )
-import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima, Wsl))
-import HostBootstrap.Lift.Context
-    ( ContainerLift (clConfigDelivery, clExtraArgs, clImage, clMounts, clRemoveAfter)
-    , IncusVM (vmName)
-    , LiftContext (LiftContext)
-    , LiftLayer (ViaContainer, ViaLimaVM, ViaVM, ViaWsl2VM)
-    , LimaVM (limaName)
-    , Wsl2VM (wsl2Distro)
-    )
-import HostBootstrap.ProjectPlan.Handoff.Internal
-    ( CatalogForwardHandoff
-    , withCatalogForwardProcessInputsKernel
-    )
+import HostBootstrap.Handoff.Rooted (
+    renderRootedLifecycleRequestKernel,
+    rootedOpenFrameRequestKernel,
+    withRootedLifecycleResponseKernel,
+ )
+import HostBootstrap.Handoff.Runtime (
+    RecursiveHandoffRuntime,
+    withNestedArmRecursiveHandoffRuntimeKernel,
+ )
+import HostBootstrap.HostTool (HostTool)
+import HostBootstrap.Lift (LiftDispatch (DispatchTool), foldLeaf, lifecycleProcessLeaf)
+import HostBootstrap.Lift.Context (
+    ContainerLift (clConfigDelivery, clExtraArgs, clImage, clMounts, clPlacement, clRemoveAfter),
+    ContainerPlacement (DirectHostContainer, ProviderGuestContainer),
+    IncusVM (vmName),
+    LiftContext (LiftContext),
+    LiftLayer (ViaContainer, ViaLimaVM, ViaVM, ViaWsl2VM),
+    LimaVM (limaName),
+    Wsl2VM (wsl2Distro),
+ )
+import HostBootstrap.ProjectPlan.Handoff.Internal (
+    CatalogForwardHandoff,
+    withCatalogForwardProcessInputsKernel,
+ )
 
 {- | One sanitized child invocation and the exchange it may carry.
 
@@ -152,6 +156,31 @@ withForwardLifecycleProcessRouteKernel ::
 {-# OPAQUE withForwardLifecycleProcessRouteKernel #-}
 withForwardLifecycleProcessRouteKernel package verb targetBinary use =
     withCatalogForwardProcessInputsKernel package $ \route input _payload ->
+        case derive verb "execute" (withoutConfigDelivery route) input targetBinary of
+            Left failure -> pure (Left failure)
+            Right (parent, child, tool, argv, interactive) ->
+                use (LifecycleProcessRoute verb parent child tool argv interactive)
+
+{- | Derive the same forward route inside an authenticated child projection.
+
+The private child caller obtains both arguments together from
+@withImmediateTargetKernel@; this seam exists because the root-only catalog
+package cannot cross into a storeless process.  The ordinary execute-phase and
+single-layer sanitization remain identical to the root derivation.
+-}
+withNestedForwardLifecycleProcessRouteKernel ::
+    RecursiveHandoffRuntime scope brokerGeneration verb ->
+    LiftContext ->
+    HandoffBindingInput ->
+    ProjectVerb verb ->
+    Text ->
+    ( forall rootPlanId catalogId parent child.
+      LifecycleProcessRoute scope rootPlanId brokerGeneration catalogId parent child verb ->
+      IO (Either Text ())
+    ) ->
+    IO (Either Text ())
+withNestedForwardLifecycleProcessRouteKernel runtime route input verb targetBinary use =
+    runtime `seq`
         case derive verb "execute" route input targetBinary of
             Left failure -> pure (Left failure)
             Right (parent, child, tool, argv, interactive) ->
@@ -192,7 +221,41 @@ withRecoveryLifecycleProcessRouteKernel package route input verb targetBinary us
             require
                 "the recovery package carries no recovery adapter"
                 (not (ByteString.null adapter))
-        derive verb "teardown" route input targetBinary
+        derive verb "teardown" (withoutConfigDelivery route) input targetBinary
+
+{- | Select the route's nominal lineage from witness-only proxy arguments.
+The proxies carry no authority or runtime value; they prevent an otherwise
+rank-polymorphic recovery route from losing the prepared caller's indices.
+-}
+withRecoveryLifecycleProcessRouteForKernel ::
+    proxyScope scope ->
+    proxyBroker brokerGeneration ->
+    RecoveryChildPackage ->
+    LiftContext ->
+    HandoffBindingInput ->
+    ProjectVerb verb ->
+    Text ->
+    ( forall rootPlanId catalogId parent child.
+      LifecycleProcessRoute scope rootPlanId brokerGeneration catalogId parent child verb ->
+      IO (Either Text ())
+    ) ->
+    IO (Either Text ())
+withRecoveryLifecycleProcessRouteForKernel _ _ package route input verb targetBinary use =
+    case admitted of
+        Left failure -> pure (Left failure)
+        Right (parent, child, tool, argv, interactive) ->
+            use (LifecycleProcessRoute verb parent child tool argv interactive)
+  where
+    admitted = do
+        withRecoveryChildPackageKernel package $ \childConfig adapter -> do
+            require "the recovery package carries no child configuration" (not (ByteString.null childConfig))
+            require "the recovery package carries no recovery adapter" (not (ByteString.null adapter))
+        derive verb "teardown" (withoutConfigDelivery route) input targetBinary
+
+withoutConfigDelivery :: LiftContext -> LiftContext
+withoutConfigDelivery (LiftContext [ViaContainer container]) =
+    LiftContext [ViaContainer container{clConfigDelivery = Nothing}]
+withoutConfigDelivery route = route
 
 {- | Seal one route from an already admitted edge and its plan-owned lift.
 
@@ -214,7 +277,7 @@ derive verb phase route input targetBinary = do
     require
         ("the admitted edge is not a " <> phase <> "-phase descent")
         (requestedPhase input == phase)
-    (tool, argv, interactive) <- sanitizedLaunch route targetBinary (subcommand verb)
+    (tool, argv, interactive) <- sanitizedLaunch route child targetBinary (subcommand verb)
     pure (parent, child, tool, argv, interactive)
   where
     parent = requestedParentFrame input
@@ -222,12 +285,12 @@ derive verb phase route input targetBinary = do
 
 {- | The only command a process route ever places in a child.
 
-It is the invocation's own closed verb under the project command, rendered
-here rather than accepted, so there is no argument through which a caller
-reaches the child's argument vector.
+The marker carries no verb or coordinate.  Those facts arrive only in the
+authenticated Offer on the private channel, so command-line text cannot
+compete with the root's signed account of the exchange.
 -}
 subcommand :: ProjectVerb verb -> [Text]
-subcommand verb = ["project", projectVerbName verb]
+subcommand _verb = ["--hostbootstrap-lifecycle-child"]
 
 {- | Render exactly one argv shape for the single plan-owned lift layer.
 
@@ -246,8 +309,8 @@ overrides that would detach the child, allocate a terminal, reattach standard
 input, replace the entrypoint, move the working directory, or forward a signal
 have no path into the rendered vector.
 -}
-sanitizedLaunch :: LiftContext -> Text -> [Text] -> Either Text (HostTool, [Text], Bool)
-sanitizedLaunch (LiftContext [ViaContainer container]) targetBinary inner = do
+sanitizedLaunch :: LiftContext -> Text -> Text -> [Text] -> Either Text (HostTool, [Text], Bool)
+sanitizedLaunch (LiftContext [ViaContainer container]) child targetBinary inner = do
     require "a container layer needs no target binary path" (Text.null targetBinary)
     require
         "the admitted container layer delivers a configuration on standard input"
@@ -258,23 +321,46 @@ sanitizedLaunch (LiftContext [ViaContainer container]) targetBinary inner = do
     require
         "the admitted container layer outlives its own exchange"
         (clRemoveAfter container)
-    image <- sanitizedArgument "the admitted container image" (Text.pack (clImage container))
-    mounts <- traverse sanitizedMount (clMounts container)
-    pure (Docker, ["run", "--rm", "-i", "-w", "/"] <> concat mounts <> [image] <> inner, True)
-sanitizedLaunch (LiftContext [ViaVM vm]) targetBinary inner = do
-    binary <- sanitizedPath "the admitted target binary" targetBinary
-    name <- sanitizedArgument "the admitted Incus instance" (Text.pack (vmName vm))
-    pure (Incus, ["exec", name, "--cwd", "/", "-T", "--", binary] <> inner, False)
-sanitizedLaunch (LiftContext [ViaLimaVM vm]) targetBinary inner = do
-    binary <- sanitizedPath "the admitted target binary" targetBinary
-    name <- sanitizedArgument "the admitted Lima instance" (Text.pack (limaName vm))
-    pure (Lima, ["shell", "--workdir", "/", name, "--", "sudo", "-n", "-H", binary] <> inner, False)
-sanitizedLaunch (LiftContext [ViaWsl2VM vm]) targetBinary inner = do
-    binary <- sanitizedPath "the admitted target binary" targetBinary
-    name <- sanitizedArgument "the admitted WSL distribution" (Text.pack (wsl2Distro vm))
-    pure (Wsl, ["-d", name, "--cd", "/", "--", "sudo", "-n", "-H", binary] <> inner, False)
-sanitizedLaunch _ _ _ =
+    frame <- sanitizedArgument "the admitted child frame" child
+    _ <- sanitizedArgument "the admitted container image" (Text.pack (clImage container))
+    _ <- traverse sanitizedMount (clMounts container)
+    let placementArgs = case clPlacement container of
+            ProviderGuestContainer -> []
+            DirectHostContainer -> ["-e", "HOSTBOOTSTRAP_DIRECT_CONTAINER=linux-gpu"]
+        admitted =
+            container
+                { clExtraArgs =
+                    [ "-i"
+                    , "--network=host"
+                    , "-e"
+                    , "HOSTBOOTSTRAP_CURRENT_FRAME=" <> Text.unpack frame
+                    , "-e"
+                    , "HOSTBOOTSTRAP_REGISTRY_AUTH"
+                    ]
+                        ++ placementArgs
+                        ++ ["-w", "/"]
+                }
+    folded (LiftContext [ViaContainer admitted]) "" inner True
+sanitizedLaunch route@(LiftContext [ViaVM vm]) _child targetBinary inner = do
+    _ <- sanitizedPath "the admitted target binary" targetBinary
+    _ <- sanitizedArgument "the admitted Incus instance" (Text.pack (vmName vm))
+    folded route targetBinary inner False
+sanitizedLaunch route@(LiftContext [ViaLimaVM vm]) _child targetBinary inner = do
+    _ <- sanitizedPath "the admitted target binary" targetBinary
+    _ <- sanitizedArgument "the admitted Lima instance" (Text.pack (limaName vm))
+    folded route targetBinary inner False
+sanitizedLaunch route@(LiftContext [ViaWsl2VM vm]) _child targetBinary inner = do
+    _ <- sanitizedPath "the admitted target binary" targetBinary
+    _ <- sanitizedArgument "the admitted WSL distribution" (Text.pack (wsl2Distro vm))
+    folded route targetBinary inner False
+sanitizedLaunch _ _ _ _ =
     Left (routeFailure "a process route carries exactly one plan-owned lift layer")
+
+folded :: LiftContext -> Text -> [Text] -> Bool -> Either Text (HostTool, [Text], Bool)
+folded route binary inner interactive =
+    case foldLeaf route (lifecycleProcessLeaf (Text.unpack binary) (map Text.unpack inner)) of
+        DispatchTool tool argv -> Right (tool, map Text.pack argv, interactive)
+        _ -> Left (routeFailure "a process route must cross exactly one frame")
 
 {- | Admit one bind mount as two arguments, or refuse it.
 
@@ -310,7 +396,7 @@ sanitizedArgument label value = do
     require (label <> " names a rejected override") (value `notElem` rejectedOverrides)
     pure value
 
-{- | The overrides a sanitized route never renders and never accepts. -}
+-- | The overrides a sanitized route never renders and never accepts.
 rejectedOverrides :: [Text]
 rejectedOverrides =
     [ "--"
@@ -407,8 +493,7 @@ withLifecycleChildOpeningKernel runtime key nonce carry use =
     beforeOpened =
         Left (routeFailure "only a verified Opened response opens a lifecycle child frame")
 
-
-{- | Turn signed bytes into a response only through the installed key. -}
+-- | Turn signed bytes into a response only through the installed key.
 verifiedResponse ::
     ProjectVerificationKey ->
     ByteString ->

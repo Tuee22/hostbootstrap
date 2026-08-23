@@ -148,6 +148,11 @@ binary's own path — the latter being how the binary reaches itself at another 
 self-invocation the lift fold produces rather than a verb an operator types (see
 [hostbootstrap core library](hostbootstrap_core_library.md)).
 
+`HostToolSpec` pins the enumeration by exact equality with the complete delegated-tool list. Operations
+the binary implements itself are absent from that list, as are tools used only inside a provider guest;
+the latter cross the provider boundary through one already-resolved host command and remain part of the
+guest's local capability vocabulary.
+
 `HostBootstrap.Effect.Interpreter` is the one interpreter. `resolveLaunch` is pure and total: it turns a
 described command into the executable and argument vector the host launches, and it is where the single
 outer-host reframing lives — on Windows a WSL command is launched through PowerShell, built with the one

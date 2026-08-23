@@ -8,11 +8,14 @@ module ChainSpec (interpretExactSteps, tests) where
 
 import Control.Exception (throwIO)
 import qualified Control.Exception as Exception
+import Data.Bits (shiftL, shiftR, (.|.))
 import Data.ByteString (ByteString)
+import qualified Data.ByteString as ByteString
 import Data.Char (isAlphaNum)
 import Data.Foldable (toList)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TIO
 import Data.Word (Word64)
 import qualified Fixture
@@ -20,8 +23,8 @@ import HostBootstrap.Authority (
     InstalledProjectIdentity,
     installedProjectName,
  )
-import HostBootstrap.Chain
 import qualified HostBootstrap.CLI as CLI
+import HostBootstrap.Chain
 import HostBootstrap.Config.Class (
     AssemblyRequest (..),
     ConfigAssembly,
@@ -31,9 +34,9 @@ import qualified HostBootstrap.Config.Schema as Schema
 import qualified HostBootstrap.Config.Vocab as V
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.DocValidator (findRepoRoot)
+import qualified HostBootstrap.Harness as Harness
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.HostTool (HostTool (Docker, Incus))
-import qualified HostBootstrap.Harness as Harness
 import HostBootstrap.Incus (IncusVM (..))
 import HostBootstrap.Lifecycle.Execution (
     StepExecution,
@@ -56,17 +59,15 @@ import HostBootstrap.Lifecycle.Session (
     sessionErrorMessage,
     verifyAllSessionsClosed,
  )
-import HostBootstrap.Protected (
-    ProtectedError,
-    ProtectedRecord (protectedRecordBytes),
-    ProtectedSession,
-    ProtectedStore,
-    listProtectedRecords,
-    openProtectedStore,
-    protectedStoreRoot,
-    readProtectedRecord,
-    recordKeyText,
-    withProtectedEntry,
+import HostBootstrap.Lift (
+    ContainerLift (..),
+    ContainerPlacement (ProviderGuestContainer),
+    LiftDispatch (DispatchTool),
+    SelfRef,
+    inContainer,
+    inVM,
+    localContext,
+    mkSelfRef,
  )
 import HostBootstrap.ProjectPlan (
     ProjectPlan,
@@ -79,33 +80,45 @@ import HostBootstrap.ProjectRoot (
     canonicalProjectRootPath,
     withCanonicalProjectRoot,
  )
+import HostBootstrap.Protected (
+    Expectation (ExpectAbsent),
+    ProtectedError,
+    ProtectedRecord (protectedRecordBytes),
+    ProtectedSession,
+    ProtectedStore,
+    compareAndSwapProtectedRecord,
+    listProtectedRecords,
+    mkRecordKey,
+    openProtectedStore,
+    protectedStoreRoot,
+    readProtectedRecord,
+    recordKeyText,
+    withProtectedEntry,
+ )
 import HostBootstrap.Reconcile (
     BackendReconcileObservation (BackendCreated),
     FailureDetail (FailureDetail),
     PlannedResourceKind (ClusterResourceKind),
     ReconcileError (Conflict, Failure, SafetyRefusal, Unsupported),
     RecoveryDisposition (DoNotRetry),
-    carryManagedResource,
+    carryManagedResourcePhaseSettlement,
+    carryManagedResourceSettlement,
+    carryReleasedResourceSettlement,
     completeReconcile,
+    planMarkReady,
     plannedNodeOperation,
     resourceHandleGeneration,
     resourceHandleKey,
     resourceHandleObservationVersion,
+    resourceRecordKey,
+    verifyPhaseTransition,
     withCarriedManagedResource,
     withNodeObservedResource,
     withNodeResourceOfKind,
+    withPhaseAdvance,
     withPreparedOperation,
     withReconcileResult,
     zeroDependencyPreconditions,
- )
-import HostBootstrap.Lift (
-    ContainerLift (..),
-    LiftDispatch (DispatchTool),
-    SelfRef,
-    inContainer,
-    inVM,
-    localContext,
-    mkSelfRef,
  )
 import HostBootstrap.Step
 import System.Directory (doesFileExist, getCurrentDirectory, removeFile)
@@ -142,9 +155,10 @@ vmFrame = StepFrame{frameId = "vm-orchestrator-1", frameLabel = "VM"}
 ctrFrame :: StepFrame
 ctrFrame = StepFrame{frameId = "vm-project-container-2", frameLabel = "container"}
 
--- | The one-frame exact fixture used by effectful interpreter cases.
--- Keeping these nodes at the root preserves their local dependency prefixes;
--- the pure multi-frame cases above separately exercise topology descent.
+{- | The one-frame exact fixture used by effectful interpreter cases.
+Keeping these nodes at the root preserves their local dependency prefixes;
+the pure multi-frame cases above separately exercise topology descent.
+-}
 executionFrame :: StepFrame
 executionFrame = metal
 
@@ -170,7 +184,7 @@ acceleratorPlan :: StepPlan
 acceleratorPlan =
     expectPlan $
         demoSteps
-        ++ [postHandoffStep "start-accelerator-daemon" "start the host accelerator daemon" metal noop]
+            ++ [postHandoffStep "start-accelerator-daemon" "start the host accelerator daemon" metal noop]
 
 self :: SelfRef
 self = mkSelfRef "/proc/self/exe" "/usr/local/bin/hostbootstrap-demo"
@@ -185,6 +199,7 @@ container :: ContainerLift
 container =
     ContainerLift
         { clImage = "demo:local"
+        , clPlacement = ProviderGuestContainer
         , clMounts = [sockMount]
         , clExtraArgs = ["--network=host"]
         , clRemoveAfter = True
@@ -382,12 +397,12 @@ admissionCases =
                 , "settled <- settleRootedPlanCatalog store catalog"
                 , "authorizeRootProject rootAuthority verb verified bound binding lease plan journal executeCursor lifecycleContext"
                 , "use ( RootUpLifecycleEntry rootAuthority verb plan lifecycleContext journal executeCursor authority catalog )"
-                , "runRootProjectUpLifecycleEntry cfg self (RootUpLifecycleEntry _rootAuthority _verb plan lifecycleContext _journal cursor authority _catalog)"
+                , "runRootProjectUpLifecycleEntry cfg self scope loadSigningKey runFailedLocal entry@(RootUpLifecycleEntry rootAuthority verb plan lifecycleContext journal cursor authority catalog)"
                 , "withTeardownLifecycleCursor cursor"
                 ]
             requiredFacade =
                 [ "module HostBootstrap.Command ( coreCommands, coreCommandNames, allReconcilers, LifecycleEntry, lifecycleEntryFrameName, lifecycleEntryVerbName, )"
-                , "withRootProjectUpLifecycleEntry exactSpec rootAuthority Authority.ProjectUp verified bound binding lease plan lifecycleContext (runRootProjectUpLifecycleEntry cfg self)"
+                , "withRootProjectUpLifecycleEntry exactSpec rootAuthority Authority.ProjectUp verified bound binding lease plan lifecycleContext (runRootProjectUpLifecycleEntry cfg self handoffScope loadSigningKey runFailedLocal)"
                 ]
         mapM_
             (\fragment -> assertBool ("missing fixed Entry route: " ++ T.unpack fragment) (T.isInfixOf fragment normalizedEntry))
@@ -439,7 +454,8 @@ descriptorCases =
 {- | The interpreter turns each node's observation into that node's own outcome
 (§ W). A node that did not reach its target state stops the chain and is named
 with the kind of outcome it was, so a conflict, an unsupported backend, and a
-refusal are told apart rather than reduced to one failure. -}
+refusal are told apart rather than reduced to one failure.
+-}
 observationCases :: [TestTree]
 observationCases =
     [ testCase "a node that reached its target state lets the chain continue" $ do
@@ -462,7 +478,8 @@ observationCases =
 
 These are the properties the unit-level prepare tests cannot show, because they
 are about *when* the record is written relative to the effect and *whether* the
-store is locked while the effect runs. -}
+store is locked while the effect runs.
+-}
 transactionCases :: [TestTree]
 transactionCases =
     [ testCase "the unknown phase is durable before the effect, and the entry is free while it runs" $
@@ -489,6 +506,97 @@ transactionCases =
             outcome @?= Right ()
             settled <- withProtectedEntry store readOperationPhases
             either (assertFailure . show) (@?= ["Committed"]) settled
+    , testCase "owned settlement is durable before its matching commit" $
+        withChainStore $ \store project -> do
+            outcome <-
+                runFrom
+                    store
+                    project
+                    [ deployKindStep
+                        "settle cluster"
+                        executionFrame
+                        (\execution -> carryClusterHandle execution >> pure StepChanged)
+                    ]
+            outcome @?= Right ()
+            keys <- protectedKeyImage store
+            length (filter ("resource." `T.isPrefixOf`) keys) @?= 1
+    , testCase "retry after a persisted member converges before journal commit" $
+        withChainStore $ \store project -> do
+            outcome <-
+                runFrom
+                    store
+                    project
+                    [ deployKindStep
+                        "resume cluster settlement"
+                        executionFrame
+                        ( \execution -> do
+                            carryClusterHandle execution
+                            prewriteCarriedSettlement store execution
+                            pure StepChanged
+                        )
+                    ]
+            outcome @?= Right ()
+            settled <- withProtectedEntry store readOperationPhases
+            either (assertFailure . show) (@?= ["Committed"]) settled
+    , testCase "a conflicting stable member refuses the journal commit" $
+        withChainStore $ \store project -> do
+            outcome <-
+                runFrom
+                    store
+                    project
+                    [ deployKindStep
+                        "conflicting cluster settlement"
+                        executionFrame
+                        ( \execution -> do
+                            carryClusterHandle execution
+                            prewriteSettlementBytes store execution "conflicting-member"
+                            pure StepChanged
+                        )
+                    ]
+            assertLeft "a conflicting resource member was accepted" outcome
+            phases <- withProtectedEntry store readOperationPhases
+            either (assertFailure . show) (@?= ["EffectOutcomeUnknown"]) phases
+    , testCase "release keeps the stable member and advances it to a tombstone" $
+        withChainStore $ \store project -> do
+            outcome <-
+                runFrom
+                    store
+                    project
+                    [ deployKindStep
+                        "release cluster"
+                        executionFrame
+                        ( \execution -> do
+                            carryReleasedClusterHandle execution
+                            prewriteOwnedClusterRecord store execution
+                            pure StepChanged
+                        )
+                    ]
+            outcome @?= Right ()
+            fields <- readOnlyResourceFields store
+            fields !! 7 @?= "8"
+            fields !! 8 @?= "released"
+            fields !! 10 @?= "released"
+    , testCase "phase settlement retains receipt identity and advances version" $
+        withChainStore $ \store project -> do
+            outcome <-
+                runFrom
+                    store
+                    project
+                    [ deployKindStep
+                        "ready cluster"
+                        executionFrame
+                        ( \execution -> do
+                            carryReadyClusterHandle execution
+                            prewriteOwnedClusterRecord store execution
+                            pure StepChanged
+                        )
+                    ]
+            outcome @?= Right ()
+            fields <- readOnlyResourceFields store
+            fields !! 6 @?= "core:deploy-kind:cluster:create"
+            fields !! 7 @?= "8"
+            fields !! 8 @?= "ready"
+            fields !! 10 @?= "owned"
     , testCase "a node that did not reach it settles terminally, not as unknown" $
         withChainStore $ \store project -> do
             outcome <-
@@ -548,7 +656,8 @@ transactionCases =
 A relating resource's key is not any node's own, so before this no node could
 prepare one. The plan is where a node claims the relation, and the interpreter is
 what turns that claim into a registered operation, an open gate the node's action
-can take, and a settlement that happens with the node. -}
+can take, and a settlement that happens with the node.
+-}
 projectionCases :: [TestTree]
 projectionCases =
     [ testCase "an action takes the gate for an operation its node projects" $ do
@@ -601,9 +710,13 @@ projectionCases =
                             _ <- stepExecutionTakeProjectedGate execution aliasProjectionKey
                             pure StepChanged
                         )
-                , exposePortStep "an unrelated later node" executionFrame (\execution -> do
-                    modifyIORef' seen (++ [stepExecutionProjectedOperations execution])
-                    pure StepChanged)
+                , exposePortStep
+                    "an unrelated later node"
+                    executionFrame
+                    ( \execution -> do
+                        modifyIORef' seen (++ [stepExecutionProjectedOperations execution])
+                        pure StepChanged
+                    )
                 ]
         outcome @?= Right ()
         readIORef seen >>= (@?= [[aliasProjectionKey], []])
@@ -837,7 +950,8 @@ carrierCases =
 
 {- | Acquire this node's own cluster resource through the real prepared path and
 carry it. The gate is the node's own, opened by the interpreter, so this is the
-production route rather than a fixture handle. -}
+production route rather than a fixture handle.
+-}
 carryClusterHandle :: StepExecution scope planId -> IO ()
 carryClusterHandle execution = do
     gate <- stepExecutionPreparedGate execution
@@ -862,10 +976,187 @@ carryClusterHandle execution = do
                                         completeReconcile observed prepared preconditions (BackendCreated 5)
                                     withReconcileResult
                                         reconciled
-                                        (\managed _ _ -> Right (carryManagedResource execution managed))
+                                        ( \managed receipt _ ->
+                                            Right $ do
+                                                carried <-
+                                                    carryManagedResourceSettlement
+                                                        execution
+                                                        managed
+                                                        receipt
+                                                        "provisioned"
+                                                        "cluster-adapter-1"
+                                                either (assertFailure . show) pure carried
+                                        )
                                         (\_ _ -> Left (unexpectedForeign))
     unexpectedForeign =
         Failure (FailureDetail "acquire cluster" "unexpected foreign cluster" DoNotRetry)
+
+carryReleasedClusterHandle :: StepExecution scope planId -> IO ()
+carryReleasedClusterHandle execution = do
+    gate <- stepExecutionPreparedGate execution
+    case gate of
+        Nothing -> assertFailure "the interpreter opened no release fixture gate"
+        Just opened -> case acquire opened of
+            Left err -> assertFailure ("acquiring the release fixture failed: " ++ show err)
+            Right carry -> carry
+  where
+    acquire opened =
+        joinReconcile $
+            withNodeResourceOfKind execution ClusterResourceKind "core:deploy-kind" $ \planned ->
+                joinReconcile $
+                    withNodeObservedResource execution planned 5 7 $ \observed -> do
+                        descriptor <- plannedNodeOperation execution planned observed "cluster:create"
+                        preconditionSet <- zeroDependencyPreconditions descriptor
+                        joinReconcile $
+                            withPreparedOperation descriptor preconditionSet opened $
+                                \prepared preconditions -> do
+                                    reconciled <-
+                                        completeReconcile observed prepared preconditions (BackendCreated 5)
+                                    withReconcileResult
+                                        reconciled
+                                        ( \managed receipt _ ->
+                                            Right $ do
+                                                carried <-
+                                                    carryReleasedResourceSettlement
+                                                        execution
+                                                        managed
+                                                        receipt
+                                                        "provisioned"
+                                                        "released"
+                                                        "cluster-adapter-1"
+                                                either (assertFailure . show) pure carried
+                                        )
+                                        (\_ _ -> Left unexpectedForeign)
+    unexpectedForeign =
+        Failure (FailureDetail "release cluster" "unexpected foreign cluster" DoNotRetry)
+
+carryReadyClusterHandle :: StepExecution scope planId -> IO ()
+carryReadyClusterHandle execution = do
+    gate <- stepExecutionPreparedGate execution
+    case gate of
+        Nothing -> assertFailure "the interpreter opened no phase fixture gate"
+        Just opened -> case acquire opened of
+            Left err -> assertFailure ("acquiring the phase fixture failed: " ++ show err)
+            Right carry -> carry
+  where
+    acquire opened =
+        joinReconcile $
+            withNodeResourceOfKind execution ClusterResourceKind "core:deploy-kind" $ \planned ->
+                joinReconcile $
+                    withNodeObservedResource execution planned 5 7 $ \observed -> do
+                        descriptor <- plannedNodeOperation execution planned observed "cluster:create"
+                        preconditionSet <- zeroDependencyPreconditions descriptor
+                        joinReconcile $
+                            withPreparedOperation descriptor preconditionSet opened $
+                                \prepared preconditions -> do
+                                    reconciled <-
+                                        completeReconcile observed prepared preconditions (BackendCreated 5)
+                                    withReconcileResult
+                                        reconciled
+                                        ( \managed receipt _ -> do
+                                            transition <- planMarkReady managed
+                                            advance <- verifyPhaseTransition managed receipt transition 5
+                                            pure $
+                                                withPhaseAdvance advance $ \ready readyReceipt _ -> do
+                                                    carried <-
+                                                        carryManagedResourcePhaseSettlement
+                                                            execution
+                                                            ready
+                                                            readyReceipt
+                                                            "provisioned"
+                                                            "ready"
+                                                            "cluster-adapter-1"
+                                                    either (assertFailure . show) pure carried
+                                        )
+                                        (\_ _ -> Left unexpectedForeign)
+    unexpectedForeign =
+        Failure (FailureDetail "ready cluster" "unexpected foreign cluster" DoNotRetry)
+
+{- | Materialise the carried member as though the process died after the
+resource write and before the operation acknowledgement.  Re-entry through
+the ordinary Chain path must accept only the identical bytes.
+-}
+prewriteCarriedSettlement :: ProtectedStore -> StepExecution scope planId -> IO ()
+prewriteCarriedSettlement store execution =
+    prewriteSettlementBytes store execution $
+        resourceBundleBytes
+            (stepExecutionPlanDigest execution)
+            (stepExecutionFrame execution)
+            (stepExecutionOperationKey execution)
+            5
+            "core:deploy-kind:cluster:create"
+            7
+            "provisioned"
+            "cluster-adapter-1"
+            "owned"
+
+prewriteOwnedClusterRecord :: ProtectedStore -> StepExecution scope planId -> IO ()
+prewriteOwnedClusterRecord store execution =
+    prewriteSettlementBytes store execution $
+        resourceBundleBytes
+            (stepExecutionPlanDigest execution)
+            (stepExecutionFrame execution)
+            (stepExecutionOperationKey execution)
+            5
+            "core:deploy-kind:cluster:create"
+            7
+            "provisioned"
+            "cluster-adapter-1"
+            "owned"
+
+prewriteSettlementBytes :: ProtectedStore -> StepExecution scope planId -> ByteString -> IO ()
+prewriteSettlementBytes store execution bytes = do
+    let raw =
+            either (error . show) id $
+                resourceRecordKey (stepExecutionPlanDigest execution) (stepExecutionFrame execution) (stepExecutionOperationKey execution)
+    key <- either (assertFailure . show) pure (mkRecordKey raw)
+    written <- withProtectedEntry store (\session -> compareAndSwapProtectedRecord session key ExpectAbsent bytes)
+    either (assertFailure . show) (const (pure ())) written
+
+resourceBundleBytes :: T.Text -> T.Text -> T.Text -> Word64 -> T.Text -> Word64 -> T.Text -> T.Text -> ByteString -> ByteString
+resourceBundleBytes plan frame resource generation operation version phase adapter disposition =
+    ByteString.concat . map framed $
+        [ "hostbootstrap/resource-record-bundle"
+        , "1"
+        , TextEncoding.encodeUtf8 plan
+        , TextEncoding.encodeUtf8 frame
+        , TextEncoding.encodeUtf8 resource
+        , number generation
+        , TextEncoding.encodeUtf8 operation
+        , number version
+        , TextEncoding.encodeUtf8 phase
+        , TextEncoding.encodeUtf8 adapter
+        , disposition
+        ]
+  where
+    number = TextEncoding.encodeUtf8 . T.pack . show
+    framed value = ByteString.pack [fromIntegral (shiftR (fromIntegral (ByteString.length value) :: Word64) shift) | shift <- [56, 48 .. 0]] <> value
+
+readOnlyResourceFields :: ProtectedStore -> IO [ByteString]
+readOnlyResourceFields store = do
+    result <- withProtectedEntry store $ \session -> do
+        listed <- listProtectedRecords session
+        case listed of
+            Left failure -> pure (Left failure)
+            Right keys -> case filter (T.isPrefixOf "resource." . recordKeyText) keys of
+                [key] -> do
+                    observed <- readProtectedRecord session key
+                    pure $ case observed of
+                        Left failure -> Left failure
+                        Right Nothing -> error "listed resource record disappeared"
+                        Right (Just record) -> Right (resourceFrames (protectedRecordBytes record))
+                _ -> error "expected exactly one resource record"
+    either (assertFailure . show) pure result
+
+resourceFrames :: ByteString -> [ByteString]
+resourceFrames raw
+    | ByteString.null raw = []
+    | ByteString.length raw < 8 = error "truncated resource frame"
+    | otherwise = field : resourceFrames trailing
+  where
+    (prefix, body) = ByteString.splitAt 8 raw
+    size = ByteString.foldl' (\value byte -> shiftL value 8 .|. fromIntegral byte) 0 prefix :: Word64
+    (field, trailing) = ByteString.splitAt (fromIntegral size) body
 
 summarizeError :: ReconcileError -> T.Text
 summarizeError err = case err of
@@ -923,7 +1214,8 @@ readOperationPhases s = do
 
 The transaction coordinator stamps every target as
 @hbtx-target-v1\t\<sequence\>\n\<payload\>@, so the phase is the first
-tab-separated field of the payload that follows that newline. -}
+tab-separated field of the payload that follows that newline.
+-}
 recordedPhase :: ByteString -> T.Text
 recordedPhase raw = case decodeFields raw of
     (_magic : stamped : _) -> T.drop 1 (T.dropWhile (/= '\n') stamped)
@@ -964,8 +1256,9 @@ runFrom store project steps = do
                     (chainProjectSpec authorityRoot steps)
     pure (either (Left . show) Right attempted)
 
--- | A current-frame node that records that it ran and reports @observation@.
--- Each carries its own project identity, so two can share a plan.
+{- | A current-frame node that records that it ran and reports @observation@.
+Each carries its own project identity, so two can share a plan.
+-}
 countingStep :: String -> IORef Int -> StepObservation -> Step
 countingStep name ran observation =
     projectStep
@@ -985,7 +1278,8 @@ runInnermostWith steps =
 The sibling config names the same canonical root as the store observed by the
 callbacks.  The command itself opens that store and constructs the opaque
 LifecycleEntry; this fixture never imports its hidden implementation module or
-aligns any phantom index by hand. -}
+aligns any phantom index by hand.
+-}
 withChainStore ::
     (forall projectId. ProtectedStore -> InstalledProjectIdentity projectId -> IO result) ->
     IO result
@@ -1055,7 +1349,7 @@ chainAssemble ::
 chainAssemble root request = case request of
     ProductionAssembly args ->
         pureConfigAssembly (Fixture.projectInit "chain-fixture" args)
-    HarnessAssembly _authority _testConfig _variant ->
+    HarnessAssembly _authority _root _testConfig _variant ->
         pureConfigAssembly
             ( Fixture.defaultProjectConfig
                 "chain-fixture"
@@ -1110,7 +1404,8 @@ observing sink execution = do
 
 {- | Interpret the exact one-frame plan through the public root entry.  The
 digest comes from the StepExecution minted for that same admitted entry, not a
-second independently opened plan. -}
+second independently opened plan.
+-}
 runInnermost :: [IORef [ObservedExecution] -> Step] -> IO (T.Text, [ObservedExecution])
 runInnermost build = do
     sink <- newIORef []
@@ -1240,6 +1535,33 @@ sourceShapeCases =
         assertBool
             "the public Chain names the raw plan-independent StepObservation"
             ("StepObservation" `notElem` chainIdentifiers)
+    , testCase "authenticated child admission seeds only the shared canonical provider registry" $ do
+        child <- publicModuleSource ("Command" </> "Child.hs")
+        process <- publicModuleSource ("Handoff" </> "Process.hs")
+        let normalizedChild = T.unwords (T.words child)
+            normalizedProcess = T.unwords (T.words process)
+        mapM_
+            (\fragment -> assertBool ("missing authenticated provider admission: " <> T.unpack fragment) (T.isInfixOf fragment normalizedChild))
+            [ "withProviderDependencyClientKernel edge"
+            , "seedProviderDependencyCarrierKernel carrier admittedPackage"
+            , "withCarriedProviderDependencyFromCarrierKernel host link processRoute"
+            ]
+        mapM_
+            (\fragment -> assertBool ("missing Process-owned provider carriage: " <> T.unpack fragment) (T.isInfixOf fragment normalizedProcess))
+            [ "providerDependencyProbeRequestFromFields packageWire fields"
+            , "withProviderDependencyReprobeEndpointKernel link packageWire endpoint"
+            , "withForwardLifecycleChildProcess config installed"
+            , "registerStepRuntimeDependencyPackage runtime package"
+            , "replaceStepRuntimeDependencyService runtime package"
+            , "stepRuntimeDependencyPackages runtime"
+            ]
+        mapM_
+            (\forbidden -> assertBool ("child admission mints a forbidden witness: " <> T.unpack forbidden) (not (T.isInfixOf forbidden normalizedChild)))
+            [ "RunningProviderDependency"
+            , "ManagedProviderHandle"
+            , "ManagedProviderShareHandle"
+            , "ClusterReadiness"
+            ]
     ]
 
 chainSource :: IO T.Text

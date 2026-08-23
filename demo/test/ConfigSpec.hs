@@ -13,11 +13,25 @@ core test suite, retargeted onto the real demo config.
 module ConfigSpec (tests) where
 
 import Control.Exception (SomeException, try)
-import qualified Data.Text as T
-import qualified Dhall
+import Data.Either (isLeft)
 import qualified Data.List.NonEmpty as NE
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TextEncoding
+import qualified Dhall
 import HostBootstrap.Config.Class (InitArgs (..), TestCfg (projectTestMatrix))
 import qualified HostBootstrap.Config.Class as Config
+import HostBootstrap.Context (
+    BinaryContext (..),
+    Capability (..),
+    CommandClass (..),
+    ContextFrame (..),
+    ContextKind (..),
+    ProviderKind (..),
+    ResourceEnvelope (..),
+    TopologyFrame (..),
+    commandAllowed,
+ )
+import HostBootstrap.Handoff (childConfigDigest)
 import HostBootstrap.Harness (
     CaseId,
     CaseSelector,
@@ -35,17 +49,6 @@ import HostBootstrap.Harness (
     testMatrixVariantIds,
     variantDraftValue,
  )
-import HostBootstrap.Context (
-    BinaryContext (..),
-    Capability (..),
-    CommandClass (..),
-    ContextFrame (..),
-    ContextKind (..),
-    ProviderKind (..),
-    ResourceEnvelope (..),
-    TopologyFrame (..),
-    commandAllowed,
- )
 import HostBootstrapDemo.Config (
     AcceleratorServiceConfig (..),
     DeployConfig (..),
@@ -57,14 +60,15 @@ import HostBootstrapDemo.Config (
     TestVariantConfig (..),
     TimeoutSeconds,
     WebServiceConfig (..),
+    canonicalDemoConfigProjection,
     configuredServiceVariant,
     decodeProjectConfigText,
     decodeTestConfigText,
     defaultTestConfig,
+    demoDefaultAcceleratorServiceConfig,
     demoDefaultDeployConfig,
     demoDefaultDockerfile,
     demoDefaultMessage,
-    demoDefaultAcceleratorServiceConfig,
     demoDefaultResources,
     demoDefaultWebServiceConfig,
     demoInit,
@@ -105,6 +109,18 @@ tests =
         [ testCase "rendered project config decodes back to the same value" $ do
             decoded <- decodeProjectConfigText (renderProjectConfig hostCfg)
             decoded @?= hostCfg
+        , testCase "plan config projection requires the exact canonical digest" $ do
+            let digest = childConfigDigest (TextEncoding.encodeUtf8 (renderProjectConfig hostCfg <> "\n"))
+            (projectedResources, projectedReplicas, projectedPublic, projectedAccelerator, projectedRoot) <-
+                either assertFailure pure (canonicalDemoConfigProjection digest hostCfg)
+            projectedResources @?= resources hostCfg
+            projectedReplicas @?= 1
+            projectedPublic @?= publicPort (webServiceConfig hostCfg)
+            projectedAccelerator @?= acceleratorPort (webServiceConfig hostCfg)
+            projectedRoot @?= "/workspace/demo/.data"
+            assertBool
+                "a digest-mismatched config projection was accepted"
+                (isLeft (canonicalDemoConfigProjection "sha256:wrong" hostCfg))
         , testCase "rendered config hoists each vocabulary union into a single let" $ do
             let rendered = renderProjectConfig hostCfg
             T.count "let ContextKind =" rendered @?= 1
@@ -235,10 +251,12 @@ tests =
                 customAcceleratorConfig = validAcceleratorServiceConfig 20
                 webHost =
                     hostCfg
-                        {webServiceConfig = customWebConfig}
+                        { webServiceConfig = customWebConfig
+                        }
                 acceleratorHost =
                     hostCfg
-                        {acceleratorServiceConfig = customAcceleratorConfig}
+                        { acceleratorServiceConfig = customAcceleratorConfig
+                        }
             webVm <- expectRight (deriveProjectConfigForKind VMOrchestrator webHost "/vm/demo")
             webChild <- expectRight (deriveProjectConfigForKind ClusterService webVm "/srv/demo")
             webChild.webServiceConfig @?= validWebServiceConfig 9090 9091
@@ -403,7 +421,8 @@ expectDecoded :: (Show failure) => Either failure a -> IO a
 expectDecoded = either (assertFailure . show) pure
 
 {- | The demo's five compiled cases. Written out here rather than imported so the
-projection under test is compared against the declared set an operator reads. -}
+projection under test is compared against the declared set an operator reads.
+-}
 demoCaseIds :: [CaseId]
 demoCaseIds =
     map

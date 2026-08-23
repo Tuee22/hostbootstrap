@@ -326,6 +326,13 @@ The Apple Silicon, Linux, and Windows reconciler inventory above is implemented 
 Windows VM-provider reconciler `ensure-wsl2` is implemented; current hardware/lifecycle closure belongs
 in the development plan. The closed registry contains no `ensure-tart` member.
 
+Direct Colima remains a plan-owned adapter rather than a context-free reconciler. Its public prepared-wall
+path now uses one native protected-entry acquisition, cleanup, and routed-Docker driver over the shared
+ownership seam and closed durable-stage vocabulary. External commands run through the installed binary's
+bounded parent-death transaction in the isolated Colima/Docker namespace. The native ownership driver and
+resolver are owned by the
+[cluster-lifecycle phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
+
 The accelerator build-stack reconcilers are implemented. Current static and hardware closure, including
 native Linux `nvkind` and accelerator lifecycle validation, is owned by
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md).

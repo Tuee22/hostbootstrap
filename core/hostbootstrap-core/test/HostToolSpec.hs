@@ -56,11 +56,9 @@ enumCases =
     [ testCase "every tool has a non-empty bare name without a slash" $
         assertBool "names are bare commands" $
             all (\t -> let n = toolCommandName t in not (null n) && '/' `notElem` n) allHostTools
-    , testCase "the closed set covers the documented tools" $
-        assertBool "every documented HostTool constructor is in the closed set" $
-            all
-                (`elem` allHostTools)
-                [ Docker
+    , testCase "the closed set is exactly the tools the binary delegates to" $
+        allHostTools
+            @?= [ Docker
                 , Colima
                 , Lima
                 , Brew
@@ -88,9 +86,6 @@ enumCases =
                 , Sudo
                 , XcodeSelect
                 , Incus
-                , Python3
-                , Flock
-                , Lockf
                 , Df
                 , Kill
                 , Ps

@@ -2,80 +2,87 @@
 
 module Main (main) where
 
+import qualified ActivationSpec
 import qualified AuthoritySpec
+import qualified BudgetSpec
+import qualified BuildAuthoritySpec
+import qualified CLISpec
+import qualified ChainSpec
+import qualified ClusterBackendSpec
+import qualified ClusterCommandSpec
+import qualified ClusterOwnershipSpec
+import qualified ClusterReconcileSpec
+import qualified ClusterWorkloadSpec
+import qualified ClusterReportSpec
+import qualified ClusterResumeSpec
+import qualified ColimaSpec
+import qualified CompileFailSpec
+import qualified ContextSpec
+import qualified CordonSpec
+import Data.List (isPrefixOf)
+import qualified DataRootSpec
+import qualified DetachedSpec
+import qualified DhallGenSpec
+import qualified DocValidatorSpec
+import qualified EffectSpec
+import qualified EnsureSpec
+import qualified FakeCluster
+import qualified FakeProvider
+import GHC.IO.Encoding (setLocaleEncoding, utf8)
+import qualified GeneratedConfigSpec
+import qualified GuestBootstrapSpec
 import qualified HandoffSpec
+import qualified HarnessSpec
+import HostBootstrap.Ensure.Colima.Backend.Runner (runShippedCommandEntry, shippedCommandEntryArguments)
+import HostBootstrap.Handoff.Transaction (classifyFrameChild, frameInterpreter, runFrameChildEntry)
+import HostBootstrap.Ownership.Shipped (interpretShippedOwnership)
+import HostBootstrap.Substrate.Provider (RawProviderOutcome (RawProviderFailure))
+import qualified HostToolSpec
+import qualified IncusSpec
+import qualified LifecycleSpec
+import qualified LifecycleDependencySpec
+import qualified LiftContextSpec
+import qualified LiftSpec
+import qualified LimaSpec
 import qualified OwnershipObjectSpec
 import qualified OwnershipPosixSpec
 import qualified OwnershipShippedSpec
 import qualified OwnershipSpec
 import qualified OwnershipWindowsSpec
-import qualified SessionSpec
-import qualified BuildAuthoritySpec
-import qualified ActivationSpec
-import qualified CLISpec
-import qualified BudgetSpec
-import qualified ChainSpec
-import qualified ColimaSpec
-import qualified CompileFailSpec
-import qualified ContextSpec
-import qualified CordonSpec
-import qualified DetachedSpec
-import qualified DhallGenSpec
-import qualified FakeProvider
-import qualified EffectSpec
-import qualified DocValidatorSpec
-import qualified EnsureSpec
-import qualified GuestBootstrapSpec
-import qualified HarnessSpec
-import qualified HostToolSpec
-import qualified IncusSpec
-import qualified LifecycleSpec
-import qualified LiftContextSpec
-import qualified LiftSpec
-import qualified LimaSpec
 import qualified PortabilitySpec
-import qualified ProjectRootSpec
 import qualified ProjectPlanSpec
-import qualified ClusterBackendSpec
-import qualified ClusterCommandSpec
-import qualified ClusterReportSpec
-import qualified ClusterResumeSpec
-import qualified ClusterOwnershipSpec
-import qualified FakeCluster
-import qualified DataRootSpec
-import qualified GeneratedConfigSpec
-import qualified ClusterReconcileSpec
-import qualified ProviderSpec
+import qualified ProjectRootSpec
 import qualified ProviderAliasSpec
 import qualified ProviderBackendSpec
-import qualified ProviderReconcileSpec
 import qualified ProviderCommandSpec
+import qualified ProviderReconcileSpec
 import qualified ProviderReportSpec
 import qualified ProviderResumeSpec
+import qualified ProviderSpec
 import qualified ReadinessSpec
 import qualified ReconcileSpec
+import qualified RecoveryInterruptionSpec
+import qualified RecoverySpec
+import qualified RecursiveLifecycleSpec
 import qualified RegistryPlanSpec
 import qualified RegistrySpec
+import qualified ResourceRecordSpec
 import qualified RoleLifecycleSpec
-import qualified ServiceProgramSpec
-import qualified TeardownSpec
 import qualified SchemaSpec
+import qualified ServiceProgramSpec
+import qualified SessionSpec
 import qualified SpecIndexSpec
 import qualified StepSpec
 import qualified SubstrateSpec
-import Data.List (isPrefixOf)
-import GHC.IO.Encoding (setLocaleEncoding, utf8)
-import HostBootstrap.Handoff.Transaction (classifyFrameChild, frameInterpreter, runFrameChildEntry)
-import HostBootstrap.Ownership.Shipped (interpretShippedOwnership)
-import HostBootstrap.Substrate.Provider (RawProviderOutcome (RawProviderFailure))
 import System.Environment (getArgs, lookupEnv)
+import qualified TeardownSpec
 #if !defined(mingw32_HOST_OS)
 import System.Posix.Files (setFileCreationMask)
 #endif
+import qualified CoverageManifest
 import Test.Tasty (defaultMain, localOption, testGroup)
 import Test.Tasty.Runners (NumThreads (..))
 import qualified Wsl2Spec
-import qualified CoverageManifest
 import qualified WslGlobalWallConfigBytesSpec
 import qualified WslGlobalWallHostSpec
 import qualified WslGlobalWallSpec
@@ -131,15 +138,21 @@ main = do
     fakeCluster <- lookupEnv FakeCluster.fakeClusterVariable
     case args of
         _
-            | Just providerRoot <- fakeProvider
-            , not (null args) ->
-                FakeProvider.runFakeProviderClient fakeProviderGuest providerRoot args
-        _
             | Just clusterRoot <- fakeCluster
             , not (null args) ->
                 FakeCluster.runFakeClusterClient clusterRoot args
+        _
+            | Just providerRoot <- fakeProvider
+            , not (null args) ->
+                FakeProvider.runFakeProviderClient fakeProviderGuest providerRoot args
         ["--hostbootstrap-schema-fixture", fixture] ->
             CLISpec.runSchemaFixture fixture
+        ["--hostbootstrap-recursive-lifecycle-child"] ->
+            RecursiveLifecycleSpec.runLifecycleChild
+        ["--hostbootstrap-recursive-lifecycle-root", verb] ->
+            RecursiveLifecycleSpec.runLifecycleRoot verb
+        ["--hostbootstrap-destroy-interruption-probe", readyPath] ->
+            RecursiveLifecycleSpec.runDestroyInterruptionProbe readyPath
         -- A separate process attempting the protected store's exclusive entry,
         -- so cross-process exclusion is proved with the production primitive.
         ["--hostbootstrap-protected-entry-probe", storeRoot] ->
@@ -169,11 +182,18 @@ main = do
         -- in-process exception still runs every finalizer.
         ["--hostbootstrap-harness-abandon-probe", stateRoot, readyPath] ->
             HarnessSpec.runHarnessAbandonProbe stateRoot readyPath
+        ["--hostbootstrap-recovery-interruption-probe", stateRoot, readyPath, boundary] ->
+            HarnessSpec.runRecoveryInterruptionProbe stateRoot readyPath boundary
+        ["--hostbootstrap-recovery-interruption-successor", stateRoot, resultPath, boundary] ->
+            HarnessSpec.runRecoveryInterruptionSuccessor stateRoot resultPath boundary
         -- A real child launched through the sealed detached-launch boundary, so
         -- the invocation shape is observed by a process rather than asserted of
         -- a record field (§ HH).
         ("--hostbootstrap-detached-child-probe" : mode) ->
             DetachedSpec.runDetachedChildProbe mode
+        ["--hostbootstrap-colima-shipped-owner-probe", directory, pidPath, python] ->
+            ColimaSpec.runShippedOwnerProbe directory pidPath python
+        _ | args == shippedCommandEntryArguments -> runShippedCommandEntry
         -- The far side of a frame crossing, entered through the production
         -- classifier and running the production child body. Nothing about the
         -- branch is a fixture: the argument vector is the one the lift fold
@@ -235,6 +255,7 @@ main = do
                     , ProviderReportSpec.tests
                     , ProviderResumeSpec.tests
                     , ClusterReconcileSpec.tests
+                    , ClusterWorkloadSpec.tests
                     , ClusterCommandSpec.tests
                     , ClusterReportSpec.tests
                     , ClusterResumeSpec.tests
@@ -246,6 +267,7 @@ main = do
                     , ProjectPlanSpec.tests
                     , ContextSpec.tests
                     , LifecycleSpec.tests
+                    , LifecycleDependencySpec.tests
                     , HarnessSpec.tests
                     , IncusSpec.tests
                     , LimaSpec.tests
@@ -259,6 +281,10 @@ main = do
                     , StepSpec.tests
                     , ChainSpec.tests
                     , ReadinessSpec.tests
+                    , ResourceRecordSpec.tests
+                    , RecoverySpec.tests
+                    , RecoveryInterruptionSpec.tests
+                    , RecursiveLifecycleSpec.tests
                     , ReconcileSpec.tests
                     , RegistrySpec.tests
                     , RegistryPlanSpec.tests

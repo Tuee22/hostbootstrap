@@ -5,15 +5,16 @@
 provider-neutral budget settlement kernel and the generic provider lifecycle.
 
 This module is deliberately not exposed by the library.  It is the only place
-that can inspect an 'AcquireBackendResult', mint the provider-start completion
+that can inspect a native Colima settlement observation, mint the provider-start completion
 capability, or project the exact prepared journal pair for budget settlement.
 -}
 module HostBootstrap.Ensure.Colima.Settlement.Internal
-  ( withColimaWallSettlement,
+  ( ColimaWallSettlementObservation (..),
+    withColimaWallSettlement,
   )
 where
 
-import qualified Data.Text as Text
+import Data.Word (Word64)
 import HostBootstrap.Cluster.Budget
   ( ColimaProvider,
     PreparedProviderWallCall,
@@ -24,9 +25,6 @@ import HostBootstrap.Cluster.Budget
   )
 import HostBootstrap.Cluster.Budget.Internal
   ( withProviderWallSettlementPermitFromObservation,
-  )
-import HostBootstrap.Ensure.Colima.Backend.Internal
-  ( AcquireBackendResult (..),
   )
 import HostBootstrap.Reconcile
   ( ChangeView,
@@ -48,6 +46,11 @@ import HostBootstrap.Reconcile.ProviderStart.Internal
     ProviderStartProjectionAuthority (..),
   )
 
+data ColimaWallSettlementObservation
+  = ColimaWallSettlementApplied Word64
+  | ColimaWallSettlementAlreadyExact Word64
+  deriving (Eq, Show)
+
 withColimaWallSettlement ::
   PreparedProviderWallCall
     scope
@@ -68,7 +71,7 @@ withColimaWallSettlement ::
     callDigest
     attempt
     journalVersion ->
-  AcquireBackendResult ->
+  ColimaWallSettlementObservation ->
   ( forall wallEpoch.
     ProviderWallAuthority scope planId ColimaProvider wallSpecId wallEpoch fence ->
     ResourceHandle scope planId providerResourceId ProviderResource Managed Running ->
@@ -80,14 +83,10 @@ withColimaWallSettlement ::
   Either ReconcileError result
 withColimaWallSettlement prepared start backendResult consume =
   case backendResult of
-    AcquireApplied _owner _nonce _machine _context epoch _lock _record _docker _colima _disk _chain ->
+    ColimaWallSettlementApplied epoch ->
       settle (WallApplied epoch) ProviderStartBackendCreated
-    AcquireExact _owner _nonce _machine _context epoch _lock _record _docker _colima _disk _chain ->
+    ColimaWallSettlementAlreadyExact epoch ->
       settle (WallAlreadyExact epoch) ProviderStartBackendRepaired
-    AcquireForeign _ -> nonOwning "foreign"
-    AcquireConflict _ -> nonOwning "conflict"
-    AcquireUnsupported _ -> nonOwning "unsupported"
-    AcquireFailed _ -> nonOwning "failure"
   where
     settle observation startResult =
       withPreparedProviderStartParts
@@ -137,13 +136,4 @@ withColimaWallSettlement prepared start backendResult consume =
                 )
             settledWall <- permitted
             settledWall
-        )
-    nonOwning branch =
-      Left
-        ( Failure
-            ( FailureDetail
-                "settle provider wall"
-                ("the closed Colima backend returned a non-owning " <> Text.pack branch <> " result")
-                DoNotRetry
-            )
         )

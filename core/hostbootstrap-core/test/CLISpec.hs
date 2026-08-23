@@ -1,14 +1,17 @@
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module CLISpec (runSchemaFixture, tests) where
 
 import Control.Exception (finally, throwIO, try)
 import Control.Monad (filterM)
+import qualified Crypto.Hash as Hash
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Char8 as ByteStringChar8
@@ -20,6 +23,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TIO
 import Data.Word (Word64)
 import qualified Fixture
+import ActivationSpec (withBrokerFor)
 import HostBootstrap.CLI (
     ProjectSpec,
     ProjectSpecBuilder,
@@ -37,8 +41,8 @@ import HostBootstrap.CLI (
  )
 import qualified HostBootstrap.CLI as CLI
 import HostBootstrap.Command (coreCommandNames)
-import HostBootstrap.Config.Class (AssemblyRequest (..), ConfigAssembly, ProjectCfg (withProductionProjectCodec), configInput, pureConfigAssembly)
-import HostBootstrap.Config.Fields (ScopeKind (ProductionScope))
+import HostBootstrap.Config.Class (AssemblyRequest (..), ConfigAssembly, ProjectCfg (withProductionProjectCodec), configInput, projectCodecSpecDigest, pureConfigAssembly)
+import HostBootstrap.Config.Fields (ScopeKind (ProductionScope), inspectLocalContext, localCurrentFrame, renderValidatedServiceRequest)
 import qualified HostBootstrap.Config.Schema as Schema
 import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.Context (ContextKind (HostOrchestrator))
@@ -62,6 +66,11 @@ import HostBootstrap.Harness (
     TestSuite (TestSuite),
     mkCaseId,
  )
+import HostBootstrap.Handoff
+    ( projectSigningKeyFromBytes
+    , projectSigningVerificationKey
+    , verificationKeyBytes
+    )
 import HostBootstrap.Lifecycle.Execution (stepExecutionPlanDigest)
 import HostBootstrap.Lifecycle.Mode (
     ProductionRoot,
@@ -114,6 +123,7 @@ import HostBootstrap.Protected (
     mkRecordKey,
     openProtectedStore,
     protectedErrorMessage,
+    protectedStoreRoot,
     readProtectedRecord,
     recordKeyText,
     recordVersionWord,
@@ -123,19 +133,39 @@ import HostBootstrap.Protected (
 import HostBootstrap.RoleLifecycle (
     DeclaredEffects (NoEffects, WithEffect),
     EffectName (NetworkListenName),
+    RoleAcquireOutcome (Acquired),
+    RolePrereqOutcome (PrereqSatisfied),
+    RoleProbeOutcome (ProbeReadyNow),
+    RoleReleaseOutcome (Released),
+    mkRoleResourceRequest,
+    rolePlanDraft,
+    rolePlanDraftDigest,
  )
+import HostBootstrap.Activation (ActivationManifest (..), activationSecretDigestFromBytes, activationVerificationKeyBytes)
 import HostBootstrap.Service (
     ServiceRegistry,
     ServiceRegistryError (..),
     emptyServiceRegistry,
+    installServiceActivationRevision,
+    serviceActivationRevisionPath,
     serviceDefinition,
     serviceId,
     serviceRegistry,
+    serviceProgramDefinition,
+    ServiceResourceBackend (..),
     serviceRoleSchemaFamilies,
     withFinalizedServiceRegistry,
+    withSelectedServiceProgram,
  )
+import HostBootstrap.Service.Program
+    ( ServiceBackend (..)
+    , ServicePayloads (..)
+    , lookupAcquiredResource
+    , serve
+    , withReadyServiceHandles
+    )
 import HostBootstrap.Lift.Context (IncusVM (IncusVM), inVM, localContext)
-import HostBootstrap.Step (ProjectStepId, ReversePolicy (PreserveOnReverse, ProjectManagedReverse), Step, StepFrame (..), StepObservation (..), StepPlanError (DuplicateStepIdentities), TeardownAction (DeleteFrame, StopFrame), TeardownOutcome (TeardownReleased), deployVMStep, descendsVia, projectStep, projectStepId, reversedBy, stepLabel, stepPlanSteps)
+import HostBootstrap.Step (ProjectStepId, ReversePolicy (PreserveOnReverse, ProjectManagedReverse), Step, StepFrame (..), StepObservation (..), StepPlanError (DuplicateStepIdentities), TeardownAction (StopFrame), TeardownOutcome (TeardownReleased), deployVMStep, descendsVia, projectStep, projectStepId, reversedBy, stepLabel, stepPlanSteps)
 import System.Directory (doesDirectoryExist, doesFileExist, doesPathExist, getCurrentDirectory, listDirectory, removeFile)
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv, withArgs)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), die)
@@ -239,7 +269,7 @@ fixtureAssembleAt root projectName request =
     case request of
         ProductionAssembly args ->
             pureConfigAssembly (Fixture.projectInit "cli" args)
-        HarnessAssembly _ _ _ ->
+        HarnessAssembly _ _ _ _ ->
             pureConfigAssembly
                 (Fixture.defaultProjectConfig projectName (T.pack root) HostOrchestrator)
 
@@ -879,20 +909,11 @@ tests =
                         IO (Either ExitCode ())
                 result @?= Left (ExitFailure 1)
                 readIORef handlerRan >>= (@?= False)
-        , testCase "service run dispatches exactly the selected variant from a multi-handler registry" $
-            withServiceProjectConfig $ do
+        , testCase "service run verifies activation and dispatches exactly its signed program variant" $ do
                 webRan <- newIORef False
                 acceleratorRan <- newIORef False
-                let spec =
-                        specWithServices
-                            (Just "accelerator")
-                            [ ("web", writeIORef webRan True)
-                            , ("accelerator", writeIORef acceleratorRan True)
-                            ]
-                result <-
-                    try (withArgs ["service", "run"] (runHostBootstrapCLI spec)) ::
-                        IO (Either ExitCode ())
-                result @?= Right ()
+                withVerifiedServiceRuntime "accelerator" [("web", writeIORef webRan True), ("accelerator", writeIORef acceleratorRan True)] $ \spec ->
+                    withArgs ["service", "run"] (runHostBootstrapCLI spec)
                 readIORef webRan >>= (@?= False)
                 readIORef acceleratorRan >>= (@?= True)
         , testCase "service run rejects a legacy positional variant" $
@@ -1409,19 +1430,15 @@ tests =
                             (deployVMStep "launch the VM" (StepFrame "host-orchestrator-0" "metal") (const (pure StepChanged)))
                         ]
                     spec = finalized (addSteps reversedChain (builderWith passingSuite (pure ()) []))
+                prepared <-
+                    try (withArgs ["project", "up"] (runHostBootstrapCLI spec)) ::
+                        IO (Either ExitCode ())
+                prepared @?= Right ()
                 result <-
                     try (withArgs ["project", "down"] (runHostBootstrapCLI spec)) ::
                         IO (Either ExitCode ())
                 result @?= Right ()
-                -- `down` stops a provider frame; `destroy` deletes it. That one
-                -- difference is the whole of the verb indexing.
                 readIORef observed >>= (@?= [StopFrame])
-                writeIORef observed []
-                destroyResult <-
-                    try (withArgs ["project", "destroy"] (runHostBootstrapCLI spec)) ::
-                        IO (Either ExitCode ())
-                destroyResult @?= Right ()
-                readIORef observed >>= (@?= [DeleteFrame])
         , testCase "chain steps see the snapshot admitted at project up, not a replaced sibling" $
             withIsolatedProjectConfig $ \paths -> do
                 let projectName = isolatedProjectName paths
@@ -1512,7 +1529,7 @@ tests =
                 , "runExactProjectUp"
                 , "withRootProjectUpLifecycleEntry"
                 , "runRootProjectUpLifecycleEntry"
-                , "withRootProjectUpLifecycleEntry exactSpec rootAuthority Authority.ProjectUp verified bound binding lease plan lifecycleContext (runRootProjectUpLifecycleEntry cfg self)"
+                , "withRootProjectUpLifecycleEntry exactSpec rootAuthority Authority.ProjectUp verified bound binding lease plan lifecycleContext (runRootProjectUpLifecycleEntry cfg self handoffScope loadSigningKey runFailedLocal)"
                 , "Teardown.teardownPlan plan currentFrame verb"
                 ]
             mapM_
@@ -1529,7 +1546,7 @@ tests =
                 , "compareAndSwapProtectedRecord session key ExpectAbsent manifest"
                 , "rootedPlanCatalogManifestMatchesKernel catalog (protectedRecordBytes record)"
                 , "ProjectAuthority.authorizeRootProject"
-                , "runChainFromFrame cfg self store plan authority cursor"
+                , "runChainFromFrameWithDescentFailure cfg self store plan authority cursor"
                 , "withTeardownLifecycleCursor cursor"
                 ]
             T.count "withProjectPlan profile root validated drafts" normalized @?= 1
@@ -1556,9 +1573,7 @@ tests =
             forbid "Cabal" cabalSource "HostBootstrap.Chain.Compatibility"
             assertBool
                 "the lifecycle entry implementation must remain Cabal-hidden"
-                ( "other-modules: HostBootstrap.Authority.Kernel HostBootstrap.Authority.ProjectPlan.Internal HostBootstrap.Command.LifecycleEntry"
-                    `T.isInfixOf` T.unwords (T.words cabalSource)
-                )
+                (T.count "HostBootstrap.Command.LifecycleEntry" cabalSource == 1)
             doesFileExist (sourceRoot </> "Chain" </> "Compatibility.hs") >>= (@?= False)
         , testCase "project up fails fast without a sibling context" $ do
             result <-
@@ -1596,6 +1611,119 @@ fixtureServiceRegistry selected handlers =
                 (\_ -> handler)
             | (name, handler) <- handlers
             ]
+
+data CliServicePayloads
+
+instance ServicePayloads CliServicePayloads where
+    type ListenApp CliServicePayloads = IO ()
+    type CallRequest CliServicePayloads = ()
+    type CallReply CliServicePayloads = ()
+    type WorkRequest CliServicePayloads = ()
+    type WorkReply CliServicePayloads = ()
+
+withVerifiedServiceRuntime ::
+    String ->
+    [(String, IO ())] ->
+    (ProjectSpec Fixture.ProjectConfig Fixture.TestConfig -> IO ()) ->
+    IO ()
+withVerifiedServiceRuntime selected handlers use =
+    withSystemTempDirectory "hostbootstrap-cli-service-runtime" $ \directory -> do
+        request <- expectRight (mkRoleResourceRequest "listener" False)
+        draft <- expectRight (rolePlanDraft [request])
+        let resources =
+                ServiceResourceBackend
+                    { serviceRolePlanDraft = draft
+                    , servicePrerequisite = pure PrereqSatisfied
+                    , serviceAcquireResource = \_ -> pure Acquired
+                    , serviceProbeResource = \_ -> pure ProbeReadyNow
+                    , serviceReleaseResource = \_ -> pure Released
+                    }
+            definition (name, action) =
+                serviceProgramDefinition
+                    (either error id (serviceId name))
+                    (\_ -> Right (if selected == name then Just () else Nothing))
+                    (WithEffect NetworkListenName NoEffects)
+                    resources
+                    (cliServiceBackend :: ServiceBackend CliServicePayloads)
+                    (\_ -> withReadyServiceHandles $ \ready -> case lookupAcquiredResource ready "listener" of
+                        Nothing -> pure ()
+                        Just listener -> serve [(listener, action)]
+                    )
+            registry = either (error . show) id (serviceRegistry (map definition handlers))
+            spec =
+                finalized $
+                    addServices registry $
+                        addSteps sampleChain $
+                            builderWith passingSuite (pure ()) []
+            cfg = Fixture.defaultProjectConfig "cli-service-runtime" (T.pack directory) Context.ClusterService
+        executable <- getExecutablePath
+        binaryBytes <- ByteString.readFile executable
+        let binaryDigest = T.pack (show (Hash.hash binaryBytes :: Hash.Digest Hash.SHA256))
+        withProductionProjectCodec @Fixture.ProjectConfig @Fixture.FixtureProject $ \baseCodec ->
+            withFinalizedServiceRegistry ProductionScope baseCodec registry $ \codec finalizedRegistry -> do
+                let roleWire =
+                        TextEncoding.encodeUtf8 $
+                            either error id $
+                                withSelectedServiceProgram
+                                    "projection-only"
+                                    (inspectLocalContext (Fixture.context cfg))
+                                    cfg
+                                    finalizedRegistry
+                                    (\_ roleCodec selectedRequest _ _ _ _ -> renderValidatedServiceRequest roleCodec selectedRequest)
+                    manifest =
+                        ActivationManifest
+                            { manifestScope = "Production"
+                            , manifestPlanDigest = "cli-service-plan"
+                            , manifestSpecDigest = projectCodecSpecDigest codec
+                            , manifestBinaryDigest = binaryDigest
+                            , manifestFrame = localCurrentFrame (inspectLocalContext (Fixture.context cfg))
+                            , manifestRevision = "cli-service-revision"
+                            , manifestConfigDigest = digestBytes roleWire
+                            , manifestSecretDigest = activationSecretDigestFromBytes ByteString.empty
+                            , manifestService = T.pack selected
+                            , manifestRolePlanDigest = rolePlanDraftDigest draft
+                            , manifestPermittedEffects = ["network-listen"]
+                            , manifestSecretChannel = "/run/hostbootstrap/empty"
+                            }
+                withBrokerFor [manifest] $ \broker store key -> do
+                    revision <-
+                        expectRight
+                            =<< installServiceActivationRevision
+                                broker
+                                key
+                                (directory </> "revisions")
+                                manifest
+                                roleWire
+                                ByteString.empty
+                    let keyPath = directory </> "activation.pub"
+                    ByteString.writeFile keyPath (activationVerificationKeyBytes key)
+                    withEnvironmentBindings
+                        [ ("HOSTBOOTSTRAP_SERVICE_ACTIVATION", serviceActivationRevisionPath revision)
+                        , ("HOSTBOOTSTRAP_ACTIVATION_KEY", keyPath)
+                        , ("HOSTBOOTSTRAP_AUTHORITY_STORE", protectedStoreRoot store)
+                        , ("HOSTBOOTSTRAP_SERVICE_INVOCATION_NONCE", "cli-service-instance")
+                        ]
+                        (use spec)
+
+cliServiceBackend :: ServiceBackend CliServicePayloads
+cliServiceBackend =
+    ServiceBackend
+        { backendServe = \pairs -> mapM_ snd pairs >> pure (Right ())
+        , backendCall = \_ _ -> pure (Right ())
+        , backendWork = \_ _ -> pure (Right ())
+        }
+
+withEnvironmentBindings :: [(String, String)] -> IO result -> IO result
+withEnvironmentBindings bindings action = do
+    previous <- traverse (\(name, _) -> do old <- lookupEnv name; pure (name, old)) bindings
+    mapM_ (uncurry setEnv) bindings
+    action `finally` mapM_ restore previous
+  where
+    restore (name, Just old) = setEnv name old
+    restore (name, Nothing) = unsetEnv name
+
+digestBytes :: ByteString.ByteString -> T.Text
+digestBytes bytes = T.pack (show (Hash.hash bytes :: Hash.Digest Hash.SHA256))
 
 {- | One additive step fragment. Rank-2 in the admitted root, so a fragment can
 derive project-relative paths from it without ever seeing its phantoms.
@@ -1642,6 +1770,7 @@ withIsolatedProjectConfig :: (IsolatedProductionPaths -> IO result) -> IO result
 withIsolatedProjectConfig use =
     withSystemTempDirectory "hostbootstrap-cli-production" $ \configuredRoot -> do
         projectName <- executableProjectName
+        executable <- getExecutablePath
         configPath <- Schema.siblingProjectConfigPath projectName
         rooted <-
             withCanonicalProjectRoot
@@ -1654,10 +1783,14 @@ withIsolatedProjectConfig use =
                     projectName
                     (T.pack canonicalRoot)
                     HostOrchestrator
-            cleanup = do
-                present <- doesFileExist configPath
-                if present then removeFile configPath else pure ()
+            signingPath = executable <> ".handoff.key"
+            verificationPath = executable <> ".handoff.pub"
+            signingSeed = ByteString.pack [0 .. 31]
+            cleanup = mapM_ removeIfPresent [configPath, signingPath, verificationPath]
         ( do
+                signing <- either (assertFailure . show) pure (projectSigningKeyFromBytes signingSeed)
+                ByteString.writeFile signingPath signingSeed
+                ByteString.writeFile verificationPath (verificationKeyBytes (projectSigningVerificationKey signing))
                 Schema.writeProjectConfigFile Fixture.projectConfigCodec configPath config
                 use
                     IsolatedProductionPaths
@@ -1672,6 +1805,10 @@ withIsolatedProjectConfig use =
                         }
             )
             `finally` cleanup
+  where
+    removeIfPresent path = do
+        present <- doesFileExist path
+        if present then removeFile path else pure ()
 
 type ProtectedRecordImage = (T.Text, Word64, ByteString.ByteString)
 

@@ -785,15 +785,13 @@ withRealHostTools use =
     root <- canonicalizePath temporary
     let admissible = root </> "data"
     createDirectory admissible
-    python <- Fixture.newFakeTool root "python3" ""
     docker <- Fixture.newFakeTool root "docker" ""
     incus <- Fixture.newFakeTool root "incus" ""
     use
       testHostConfig
         { hcToolPaths =
             Map.fromList
-              [ (Python3, fixtureExe python),
-                (Docker, fixtureExe docker),
+              [ (Docker, fixtureExe docker),
                 (Incus, fixtureExe incus)
               ]
         }

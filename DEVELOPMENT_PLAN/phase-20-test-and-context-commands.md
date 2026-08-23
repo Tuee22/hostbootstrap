@@ -1,10 +1,10 @@
 # Phase 20 — `test` and `context` command semantics
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 19 (test harness and exclusive run ownership)
 **Substrates**: linux-cpu
-**Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus a live `test init` / `test run` /
-`context` sequence on linux-cpu
+**Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus the focused `CLISpec` and `ContextSpec`
+groups with `--ghc-options=-Werror` inside a realized linux-cpu host
 
 > **Purpose**: Fix the exact grammar and side-effect boundary of `test init`, `test run <case-id>|all`,
 > `context`, and `check-code`.
@@ -110,9 +110,9 @@ Show the composition without touching anything.
 
 None.
 
-### Sprint 20.4: Live verb-sequence acceptance [Planned]
+### Sprint 20.4: Realized-Linux verb-sequence acceptance [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: none — this sprint changes no source
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`
@@ -125,26 +125,33 @@ Record the live sequence this phase's grammar owes, as a sprint rather than as a
 
 - Zero production lines. Sprints 20.1 through 20.3 close on the host static gate; what is left is running
   the verbs where their side effects are real.
-- `test init`, `test run`, and `context` run in order inside a realized Linux substrate. The sequence is
-  what proves the side-effect boundary each verb's name implies — `context` reads and never writes,
-  `test init` writes only the test config, and `test run` is the only verb that mutates infrastructure.
+- The phase-owned concrete command fixture invokes the real parser for `test init`, `test run`, and `context`
+  inside a realized Linux substrate. Its focused `CLISpec` and `ContextSpec` groups prove the side-effect
+  boundary each verb's name implies — `context` reads and never writes, `test init` writes only the test
+  config, and `test run` is the only verb that enters Harness mutation.
 - The overwrite policy and the case-selector surface are exercised against their exact current shape,
   because a sequence run against an older grammar is evidence about that grammar.
 - Dated evidence names the substrate realization and the outer host.
 
 #### Validation
 
-The sequence itself. It asserts nothing `CLISpec` and `ContextSpec` do not already assert; it confirms that
-what they assert holds where an operator types it.
+The focused real-parser groups. They assert nothing beyond this phase's static contract; running them inside
+the realized substrate confirms that the exact current parser, typed fixture, filesystem effects, and process
+exit behavior hold on linux-cpu without importing the worked demo's later provider and workload lifecycle.
+
+Dated realized-host evidence: on 2026-08-22, inside a disposable Ubuntu 24.04 amd64 Incus VM on a Linux
+outer host, `CLISpec` passed 57/57 with `--ghc-options=-Werror`, including the actual `test init` → exact
+Harness `test run` paths, overwrite/refusal cases, selector/help grammar, and cleanup. `ContextSpec` plus the
+matching `LiftContextSpec` selection passed 84/84 with `--ghc-options=-Werror`, including read-only rendering,
+missing/decode refusals, topology/current-frame validation, and the pure lift composition.
 
 #### Remaining Work
 
-The run.
+None.
 
 ## Remaining Work
 
-Sprints 20.1 through 20.3 are complete and closed by the host static gate. Sprint 20.4 records the live
-linux-cpu sequence they owe, so the obligation is a sprint the suite counts rather than a preamble.
+None.
 
 ## Documentation Requirements
 

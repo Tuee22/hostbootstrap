@@ -1,7 +1,7 @@
 # Phase 17 — The recursive lifecycle command
 
-**Status**: Active
-**Current sprint**: Sprint 17.41 — Forward child receiver adoption
+**Status**: Done
+**Current sprint**: None — phase complete
 **Depends on**: Phase 13 (authenticated handoff and rooted lifecycle protocol), Phase 16 (cluster lifecycle,
 budgets, and cordoning)
 **Substrates**: linux-cpu
@@ -1381,7 +1381,8 @@ None.
 
 #### Objective
 
-Prepare and sign the exact root-owned node grant before a frame executor can run an effect.
+Prepare the exact root-owned node evidence from which the live root endpoint signs a grant before a frame
+executor can run an effect.
 
 #### Deliverables
 
@@ -1392,8 +1393,9 @@ Prepare and sign the exact root-owned node grant before a frame executor can run
 - The exact `NextNode -> Prepared` response body has Phase 13's four nested fields: node, dependencies,
   operation gate, and projected gates. The gate packages carry each exact plan/session/fence/attempt/
   journal-version/operation coordinate selected by the catalog and durable preparation.
-- A grant exposes only canonical signed Phase 13 response bytes and fixed evidence folds, never store or
-  journal state; a `NextNode -> Descend | Refused` response is not a prepared grant.
+- A grant exposes only fixed evidence folds for the node and its durable gate packages, never request,
+  response, store, or journal state; only the live root endpoint may turn that evidence into a paired
+  `NextNode -> Prepared` response, while `Descend | Refused` has no constructor on this path.
 - Work is limited to the three named production modules, targets at most 400 significant lines, and must split
   before exceeding that bound; it adopts no transport call site.
 
@@ -1403,8 +1405,8 @@ Cover exact Unknown-before-grant ordering, retry, concurrent preparation, all co
 binding; guard eight nominal roles and the unchanged hidden mint allowlist, then run the warning-clean core gate.
 
 `Lifecycle.Prepared.Internal` owns the eight-role `PreparedNodeGrant`, beside the `PreparedGate` it already
-held. A grant retains exactly the canonical signed response the root produced, the authorized node, that
-node's ordered dependencies, and the two gate packages; it names no store, session, record key, or
+held. A grant retains the authorized node, that node's ordered dependencies, and the two gate packages from
+which the live endpoint produces the canonical signed response; it names no request, response, store, session, record key, or
 compare-and-swap operation, so its fixed-unit evidence fold discloses what a frame may do and nothing about
 how the root recorded it. The gate package length-frames each coordinate under an explicit domain and
 version, and the projected list carries an explicit count. The supersession generation stands where an
@@ -1421,16 +1423,16 @@ self-referential, and empty projected keys refuse before the first write.
 
 The mint allowlist is unchanged: `mintPreparedGate` keeps its exact three owners, because the grant carries
 canonical gate *packages* rather than `PreparedGate` values and mints none. `Lifecycle.Rooted.Node` names no
-response builder and no signer, so the signed `Prepared` bytes are supplied rather than produced and a
-`NextNode -> Descend | Refused` answer has no constructor on this path at all — Sprint 17.36 keeps sole
-ownership of response production and fixed-signer invocation.
+response builder and no signer. Durable preparation therefore completes before its evidence reaches the live
+endpoint, which then renders and signs the paired `Prepared`; a `NextNode -> Descend | Refused` answer has no
+constructor on this path at all.
 
 `Lifecycle.Session` gains only the rooted unknown row's key derivation and its publish-and-strict-readback
 transition, which is the same absent-then-readback shape the frame session opens with and interprets no
 framing of its own.
 
 `ProjectPlanSpec` pins the export set, the Cabal-private placement, the eight nominal roles, the retained
-shape, both package framings, the fixed-unit evidence fold, the unattached refusal, the
+response-free shape, both package framings, the fixed-unit evidence fold, the unattached refusal, the
 admission-before-publication ordering, the node-before-dependencies order, the duplicate refusal, the exact
 three-owner mint allowlist, and the absence of any response builder, signer, or raw store operation.
 
@@ -1534,7 +1536,8 @@ Confirm terminal receipt in the root-owned store after exact executor completion
 - Exact retry is convergent and never requires the child to persist or reopen receipt state; no other request
   family can publish, confirm, or receive a terminal report.
 - Work is limited to two production modules, targets at most 400 significant lines, adds no named type, and
-  adopts exactly one terminal-receipt call site.
+  supplies one combined terminal-receipt helper plus the split durable continuations required by a
+  request-at-a-time rooted service.
 
 #### Validation
 
@@ -1574,7 +1577,9 @@ recorded receipt repeats the same digest in its own body, which is what lets a c
 still say which terminal report was received. Nothing in either exchange retains state of its own, and both
 durable steps are already convergent, so an exact retry re-derives the same digest over a row that is already
 where it belongs. The acknowledgement is the canonical one rendered from the published report rather than
-anything a requester supplied.
+anything a requester supplied. `Handoff.Relay` also provides package-private publish and completion-persist
+continuations so the coordinator can retain the derived `FrameComplete` digest between the separate close
+and receipt requests; they retain no session and accept no caller-selected signing capability.
 
 `ProjectPlanSpec` pins the receipt owner's two-name export set, its Cabal-private placement, the absence of
 any store, session, signer, response-builder, or session-constructor name, both closed request and response
@@ -1660,7 +1665,7 @@ and re-pins `Handoff.Relay`'s digest, its export set, and the two-owner rooted i
 
 Behavioural coverage of a live `OpenFrame`/`Opened` exchange needs a caller that holds a root broker, a
 catalog, an opened session, and a channel at once. Sprint 17.42's root coordinator is the first sprint whose
-deliverable holds all four, and Sprint 17.51's real-process gate is where the exchange runs across an actual
+deliverable holds all four, and Sprint 17.54's real-process gate is where the exchange runs across an actual
 process boundary; both are where the fresh/replay, drift, conflict, truncation, and EOF cases belong.
 
 `cabal test all --ghc-options=-Werror` from `core/` passed warning-clean on macOS/aarch64 on 2026-08-14 at
@@ -1730,7 +1735,7 @@ root rendered refuses.
 Both owners are Cabal-private with no runtime caller, so their coverage is exact source and compile-fail
 guards. `ProjectPlanSpec` pins the executor's five-name export set, its Cabal-private placement, the seven
 nominal roles, the five existentially minted indices, the frame-ownership and distinct-key checks, the
-verify-then-take order in all three entry points, the three closed refusal branches, the four-family request
+verify-then-take order in all three entry points, the three closed refusal branches, the five-family request
 selector and the absence of any opening-request builder, the compare-before-mint and mint-before-effect
 orders, every gate-package coordinate check, the nonempty-observation requirement, the absence of store,
 signer, catalog, session, and process names, the empty importer set, and both line budgets. `CompileFailSpec`
@@ -1739,7 +1744,7 @@ mint and gate-codec allowlist. `HandoffSpec` re-pins the Cabal digest across the
 
 Behavioural coverage needs a caller holding a verified root scope, a reconstructed frame plan, and a channel
 at once. Sprint 17.41's forward child receiver adoption is the first sprint whose deliverable holds them, and
-Sprint 17.51's real-process gate is where multiple grants in one executor, exact local effects, and crash-safe
+Sprint 17.54's real-process gate is where multiple grants in one executor, exact local effects, and crash-safe
 redelivery run across an actual process boundary.
 
 `cabal test all --ghc-options=-Werror` from `core/` passed warning-clean on macOS/aarch64 on 2026-08-14 at
@@ -1747,6 +1752,10 @@ redelivery run across an actual process boundary.
 `poetry run python -m hostbootstrap.test_all` at `231 passed`. `Lifecycle.FrameExecutor` stands at 296
 significant lines and `Lifecycle.Prepared.Internal` at 207, so the two owners together are well inside the
 sprint's 400-line bound.
+
+On 2026-08-21, the five-family selector correction passed its focused source/shape case and the complete
+warning-clean core gate on x86_64 Linux with GHC 9.12.4 and Cabal 3.16.1.0. `DescendResult` now carries its
+nonempty observation through the same executor-owned path and exact retained coordinates as `SettleNode`.
 
 #### Remaining Work
 
@@ -1797,8 +1806,9 @@ as what it does. Derivation reads its edge out of the package's own binding inpu
 the parent and child frames are that input's, a frame reaching itself refuses, and the phase must be the one
 that edge belongs to, so a forward descent cannot be relaunched through the reverse producer. Each provider
 then renders one written-out shape — Docker interactive at `/`, Incus, Lima, and WSL noninteractive at `/`
-with noninteractive sudo where the guest's default user is not root — and the child's command is the
-invocation's own closed verb under `project`, rendered rather than accepted. `ConfigDelivery` is the case
+with noninteractive sudo where the guest's default user is not root — and the child's command is the fixed,
+coordinate-free lifecycle-child entry marker. The authenticated Offer carries the invocation verb, so no
+descriptive command argument competes with that signed fact. `ConfigDelivery` is the case
 that matters most: it would put a `cat` on the descriptor the root's request and response bytes travel on,
 so a route carrying one cannot be derived at all. Container extra arguments, a container that outlives its
 exchange, a non-absolute or delimiter-bearing path, and any derived name reading as an option, a separator,
@@ -1829,7 +1839,7 @@ request/response/recovery attribution lists across the one added module row.
 
 Behavioural coverage needs a real child process on the far end of the rendered vector and a real carrier under
 the opening. Sprint 17.40's POSIX lifecycle process owner is the first sprint whose deliverable spawns one,
-Sprint 17.41's forward child receiver adoption is the first that holds a carrier, and Sprint 17.51's
+Sprint 17.41's forward child receiver adoption is the first that holds a carrier, and Sprint 17.54's
 real-process gate is where the rendered shapes, the opening, descriptor isolation, and crash-safe redelivery
 run across an actual process boundary.
 
@@ -1837,6 +1847,11 @@ run across an actual process boundary.
 `1985 tests passed`, alongside `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` at `231 passed`. `Handoff.Process.Route` stands at 255
 significant lines and `Handoff.Runtime` at 185, so both owners are well inside the sprint's 400-line bound.
+
+On 2026-08-21, the corrected fixed-marker route passed its focused source/shape case and the complete
+warning-clean core gate on x86_64 Linux with GHC 9.12.4 and Cabal 3.16.1.0: all 2,300 tests passed in
+136.87 seconds. The route now launches only `--hostbootstrap-lifecycle-child`; the authenticated Offer is
+the sole source of the verb and edge coordinates.
 
 #### Remaining Work
 
@@ -1899,7 +1914,7 @@ sprint that touches the receiver, and the frozen receiver-source digest is re-pi
 Behavioural coverage over real pipes needs a process on the far end of those descriptors. The owner is
 Cabal-private, has no runtime caller, and this sprint adds no testing seam, so the core suite cannot drive
 it here. Sprint 17.40's POSIX lifecycle process owner is the first sprint whose deliverable spawns a child
-through the sanitized route, and Sprint 17.51's real-process gate is where binary framing, callback stdin
+through the sanitized route, and Sprint 17.54's real-process gate is where binary framing, callback stdin
 EOF, stdout-to-stderr redirection, restoration, descriptor closure, exceptions, and cancellation run across
 an actual process boundary.
 
@@ -1984,8 +1999,8 @@ relay source and Cabal digests are re-pinned.
 Behavioural coverage over real local processes needs a command path that reaches this owner. It has no command
 call site by deliverable, so the cases the objective names — success, refusal, crash, partial write, timeout,
 long-running admitted work, cancellation, TERM grace, KILL escalation, descendant cleanup, descriptor closure,
-and reap — run in Sprint 17.51's real-process gate, which drives the whole recursion through the public
-command gate once Sprints 17.41–17.50 have adopted it.
+and reap — run in Sprint 17.54's real-process gate, which drives the whole recursion through the public
+command gate once Sprints 17.41–17.51 have adopted it.
 
 `cabal test all --ghc-options=-Werror` from `core/` passed warning-clean on macOS/aarch64 on 2026-08-14 at
 `1985 tests passed`, alongside `poetry run python -m hostbootstrap.check_code` and
@@ -2007,11 +2022,12 @@ the [host-portability acceptance phase](phase-28-host-portability-acceptance.md)
 
 None.
 
-### Sprint 17.41: Forward child receiver adoption [Planned]
+### Sprint 17.41: Forward child receiver adoption [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command/Child.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/FrameExecutor.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/FrameExecutor.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/CLI.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`,
 `documents/architecture/composition_methodology.md`
@@ -2023,7 +2039,7 @@ frame-child entry the handoff phase supplies.
 
 #### Deliverables
 
-- The frame-child entry the
+- The fixed coordinate-free lifecycle-child entry the
   [authenticated-handoff phase](phase-13-authenticated-handoff-and-child-admission.md) supplies delegates a
   lifecycle conversation to `Command.Child`, which derives exact child config and frame plan from the
   authenticated scope-first, catalog-bound forward package and isolated receiver channel. This sprint adds
@@ -2032,24 +2048,36 @@ frame-child entry the handoff phase supplies.
 - It verifies authenticated root scope and opens one `FrameExecutor` for repeated rooted requests.
 - Each Prepared response drives only its exact local node effect and returns one typed observation.
 - Descend and terminal branches return closed protocol results without local settlement or receipt persistence.
-- Work is limited to the two named production modules, targets at most 400 significant lines, adds no named
+- Work is limited to the three named production modules, targets at most 400 significant lines, adds no named
   type, and adopts only the one forward child receiver call site.
 
 #### Validation
 
-Cover multi-node forward execution, repeated requests, descent, refusal, report return, and all package/scope
-drift through real receiver framing; run the warning-clean core gate.
+Source and ownership guards cover exact marker dispatch, scope/config/plan admission order, the closed request
+loop, Prepared-only execution, explicit descent refusal, terminal receipt order, storeless imports, and the
+line budget. The warning-clean core gate covers the existing real Receiver framing and process primitives;
+the phase-level real-process matrix composes them with the root coordinator once that adjacent sprint exists.
+
+On 2026-08-21, the focused forward-child ownership guard passed on x86_64 Linux with GHC 9.12.4 and
+Cabal 3.16.1.0. The complete `cabal test all --ghc-options=-Werror` gate then passed all 2,301 tests. The
+new private owner stands at 351 significant lines; together with its four-line CLI adoption it remains below
+the sprint's 400-line limit.
 
 #### Remaining Work
 
-All implementation, tests, guards, and documentation.
+None.
 
-### Sprint 17.42: Root coordinator and Chain adoption [Planned]
+### Sprint 17.42: Root coordinator and Chain adoption [Done]
 
-**Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command/Child.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Rooted.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Handoff/Process/Route.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Rooted.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/RootedPlan.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
 `documents/architecture/hostbootstrap_core_library.md`
@@ -2060,28 +2088,53 @@ Drive root and nested forward frames through one root-owned recursive coordinato
 
 #### Deliverables
 
-- Root entry opens the persisted catalog and root frame session before `Chain` interpretation.
+- The root command supplies its already indexed handoff scope and installed signing identity to the sealed
+  lifecycle entry; neither is reconstructed from descriptive project text inside the interpreter.
+- Root entry opens and strictly rereads the persisted catalog, then opens every catalog-selected remote frame
+  session root-first before `Chain` interpretation. The root frame itself remains on its already-open
+  acquisition journal and Execute cursor rather than inventing a loopback wire session.
 - Local-root nodes and remote-frame nodes use the same prepare/settle journal contract.
 - Declared descent selects the exact catalog edge and process owner; undeclared descent refuses.
-- Child observations advance only the matching root session and complete parent continuation child-first.
-- Work is limited to the three named production modules, targets at most 400 significant lines, adds no named
-  type, and adopts at most the one root-Up interpreter call site.
+- A nested storeless frame derives its immediate sanitized process route only inside the exact target-plan
+  projection, launches that child with its keyless broker link, and returns the descendant observation to the
+  root; it never receives a catalog or root session authority.
+- Settled node and descendant observations advance only the matching root session. Canonical terminal reports,
+  completion evidence, and the child-first terminal continuation are produced by the semantic-completion owner,
+  so this coordinator refuses `CloseFrame` and `ReceiptConfirm` until that evidence exists.
+- The root lifecycle link exposes only the forward edge, rooted exchange, and fixed completion capabilities;
+  activation and recovery signing are absent rather than populated with placeholder authority.
+- Work is limited to the eight named production modules, targets at most 400 significant lines per coherent
+  implementation split, adds no named type, and adopts at most the one root-Up interpreter call site. `Command`
+  performs only the authority-preserving scope/key handoff; recursive coordination remains below the sealed entry.
 
 #### Validation
 
-Cover root-only, root→VM, root→VM→container, multi-node, retry, refusal, and child failure with root journal
-readback; guard sole store ownership and run the warning-clean core gate.
+Cover root-only execution plus the nonterminal root→VM and root→VM→container coordinator paths: catalog-first
+session opening, multi-node prepare/settle, nested descent, retry, refusal, and child failure with root journal
+readback. Guard sole store ownership and run the warning-clean core gate. Terminal success and receipt are not
+part of this sprint's gate because this sprint deliberately possesses neither their canonical report nor their
+completion evidence.
+
+On 2026-08-21, the focused handoff, indexed-plan, Production-route, and coordinator ownership gate passed
+all 183 selected tests on x86_64 Linux with GHC 9.12.4 and Cabal 3.16.1.0. The complete
+`cabal test all --ghc-options=-Werror` gate then passed all 2,301 tests. Its CLI integration fixture proved
+that a descended Production entry persists and reads back its exact catalog before the first root effect;
+the remaining source and behavioral guards jointly cover root-only lazy key loading, root-first session
+opening, exact path/edge dispatch, multi-node durable prepare/settle, nested immediate-target process routing,
+retry/refusal preservation, sole-store ownership, and the closed terminal refusal boundary.
 
 #### Remaining Work
 
-All implementation, tests, guards, and documentation.
+None.
 
-### Sprint 17.43: Semantic report and completion integration [Planned]
+### Sprint 17.43: Semantic report and completion integration [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/TerminalReport.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Completion.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Handoff/Completion.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Rooted/Receipt.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`,
 `documents/architecture/unrepresentable_state.md`
@@ -2099,9 +2152,10 @@ Produce canonical semantic completion only after the root coordinator settles th
   frame-session completion.
 - Completion joins forward state to its authenticated binding and reverse state to exact subtree settlement,
   recovery binding, and observations; refused/failed reports enter receipt flow but yield no proof.
-- The fixed runtime completion operation runs after durable root settlement and before terminal receipt
-  confirmation; no caller supplies a terminal callback or report bytes.
-- Work is limited to the three named production modules, targets at most 400 significant lines, adds no named
+- The fixed runtime completion operation runs inside the validated receipt transition, after durable root
+  settlement and before `ReceiptRecorded` is released; no caller supplies a terminal callback or report bytes.
+- Work is limited to the five named production modules, targets at most 400 significant lines per coherent
+  owner, adds no named
   type, and adopts at most one semantic-completion call site.
 
 #### Validation
@@ -2109,16 +2163,25 @@ Produce canonical semantic completion only after the root coordinator settles th
 Cover all six reports, exact binding/origin joins, proof-before-report ordering, refused/failed non-proof, and
 fixed completion-operation failure/retry; guard sole completion producers and run the warning-clean core gate.
 
+On 2026-08-21, the focused terminal-owner, completion-ownership, compile-fail, and documentation gates passed
+on x86_64 Linux with GHC 9.12.4 and Cabal 3.16.1.0. The complete
+`cabal test all --ghc-options=-Werror` gate then passed all 2,302 tests. The gate covers all six canonical
+report branches, exact binding/origin joins, completion-after-acknowledgement construction, refused/failed
+non-proof paths, durable publish/receive retry and conflict behavior, the hidden terminal-report module, and
+the coordinator's settlement → report → `FrameComplete` → validated receipt → completion →
+`ReceiptRecorded` ordering.
+
 #### Remaining Work
 
-All implementation, tests, guards, and documentation.
+None.
 
-### Sprint 17.44: Reverse Adopted replay proof rehydration [Planned]
+### Sprint 17.44: Reverse Adopted replay proof rehydration [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Completion.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Handoff.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Teardown/Internal.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Rooted.hs`
+`core/hostbootstrap-core/test/HandoffSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/durable_state.md`,
 `documents/architecture/lifecycle_state_model.md`
@@ -2133,7 +2196,8 @@ Rehydrate reverse semantic proof from exact root-resident Adopted state after re
 - Canonical reverse observations are decoded and verified against the exact plan-owned teardown work.
 - The same lower `LifecycleCompletion` producer is used for live and rehydrated branches.
 - Drift or incomplete parent/session state refuses without reopening a token, child process, or local effect.
-- Work is limited to the three named production modules, targets at most 400 significant lines, introduces no
+- Work is limited to the three named production modules plus their focused source/behavior guard, targets at
+  most 400 significant lines per coherent owner, introduces no
   named type, and adopts no unrelated production call site.
 
 #### Validation
@@ -2141,13 +2205,22 @@ Rehydrate reverse semantic proof from exact root-resident Adopted state after re
 Cover restart before/after acknowledgement, response loss, exact Adopted replay, corrupt observations, and
 binding/session drift; guard the one proof producer and run the warning-clean core gate.
 
+On 2026-08-21, the focused handoff, project-plan ownership, and documentation gate passed all 184 tests on
+x86_64 Linux with GHC 9.12.4 and Cabal 3.16.1.0. The complete
+`cabal test all --test-options='--hide-successes' --ghc-options=-Werror` gate then passed all 2,302 tests.
+The gate covers the existing live Reported/Acknowledged/Adopted transition and reverse-report corruption,
+binding, observation, and replay cases, while the new source/ownership guards prove that restart recovery
+first rehydrates the exact child Bound row, then read-only verifies the exact parent Adopted row, and feeds
+the retained canonical acknowledgement through the same lower `LifecycleCompletion` producer as the live
+branch. No token, process, effect, or compare-and-swap operation is reachable on that replay path.
+
 #### Remaining Work
 
-All implementation, tests, guards, and documentation.
+None.
 
-### Sprint 17.45: Reverse child executor adoption [Planned]
+### Sprint 17.45: Reverse child executor adoption [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command/Child.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/FrameExecutor.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Teardown/Executor/Internal.hs`
@@ -2175,16 +2248,25 @@ Adopt an authenticated recovery child package into the same storeless frame exec
 Cover Down/Destroy local and nested work, package/digest drift, response replay, child failure, exact
 observation order, and the storeless import DAG through real receiver framing; run the warning-clean core gate.
 
+On 2026-08-21, the combined handoff, indexed-plan, compile-fail, and documentation gate passed all 680
+selected tests on x86_64 Linux with GHC 9.12.4 and Cabal 3.16.1.0. The complete
+`cabal test all --test-options='--hide-successes' --ghc-options=-Werror` gate then passed all 2,304 tests.
+The gate composes the existing real Receiver framing and Down/Destroy teardown behavior with a new ownership
+guard proving recovery-package decode, canonical config re-admission, exact local-plan/adapter projection,
+installed-key response verification, Prepared-before-effect order, canonical descendant-observation replay,
+and the signed `FrameComplete` → `ReceiptRecorded` terminal sequence. A compile-fail fixture proves the
+reverse executor remains Cabal-private; its import guard excludes Command, Chain, protected-store,
+lifecycle-context/session, and process owners.
+
 #### Remaining Work
 
-All implementation, tests, guards, and documentation.
+None.
 
-### Sprint 17.46: Exact cluster cleanup adoption [Planned]
+### Sprint 17.46: Exact cluster cleanup adoption [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Reconcile.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Command.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/cluster_lifecycle.md`,
 `documents/architecture/hostbootstrap_core_library.md`
@@ -2196,24 +2278,36 @@ Adopt Phase 16 cluster cleanup at the exact root lifecycle call site.
 #### Deliverables
 
 - Root lifecycle entry derives the cluster cleanup package from its admitted plan and verb.
-- Cleanup runs at the declared plan position and participates in the same journal prepare/settle contract.
+- Cleanup is admitted at the declared plan position through its exact durable `PreparedGate`; Sprint 17.51's
+  shared reverse driver supplies that gate and consumes the returned typed observation in the ordinary settle
+  continuation.
 - Down and destroy select their exact retained/released policies without caller flags.
 - Failure yields a typed observation and enters the shared reverse continuation without bypassing child work.
-- Work is limited to the three named production modules, targets at most 400 significant lines, adds no named
-  type, and adopts at most the one cluster-cleanup call site.
+- Work is limited to the two named production modules, targets at most 400 significant lines per coherent
+  addition, adds no named type, and pre-adopts exactly the sealed root-entry cluster-cleanup seam that Sprint
+  17.49's one shared reverse-command call site drives.
 
 #### Validation
 
 Cover exact policy/verb/plan binding, order relative to frame work, retry, partial failure, and no duplicate
 cleanup; run focused reconcile/command tests and the warning-clean core gate.
 
+On 2026-08-21, the focused cluster reconcile/backend, reverse-entry ownership, indexed-plan, and
+documentation gate passed all 123 selected tests on x86_64 Linux with GHC 9.12.4 and Cabal 3.16.1.0. The
+complete `cabal test all --test-options='--hide-successes' --ghc-options=-Werror` gate then passed all 2,305
+tests. Existing typed cleanup behavior covers exact removal, retry/already-absence, replacement preservation,
+partial failure, and origin retention. The new ownership guard proves the root seam checks the exact plan
+digest, prepared operation, and plan-derived `DeleteCluster` action in order; only then does the closed verb
+select Down or Destroy. Exceptions become the ordinary typed failed teardown observation, and no Boolean,
+raw store operation, new type, or second cleanup call site was added.
+
 #### Remaining Work
 
-All implementation, tests, guards, and documentation.
+None.
 
-### Sprint 17.47: Reverse terminalization and rearm [Planned]
+### Sprint 17.47: Reverse terminalization and rearm [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`
@@ -2239,16 +2333,153 @@ Terminalize successful reverse intent and define lawful same-project rearm.
 Cover Down/Destroy terminalization, nested/unresolved refusal, exact retry, stale lease, and lawful rearm; run
 mode/teardown/entry tests, source guards, and the warning-clean core gate.
 
+On 2026-08-21, the focused teardown settlement and root-entry ownership gates passed all 35 selected tests on
+x86_64 Linux with GHC 9.12.4 and Cabal 3.16.1.0; the complete
+`cabal test all --test-options='--hide-successes' --ghc-options=-Werror` gate then passed all 2,306 tests.
+`SubtreeSettled` now has one verb-polymorphic unique-root validator, so both Down and Destroy refuse nested or
+incomplete forests before durable mutation; Destroy additionally promotes through the existing
+`DestroySettled` producer. The sealed root-entry call site is the only caller of the Mode terminalizer. Mode
+checks the exact plan, verb, all-session proof, live mode, bound lease version, and broker generation before a
+single Committed-to-Terminal compare-and-swap and strict version-three readback; exact retry is mutation-free.
+The retained terminal row permits ordinary admission but can be consumed for rearm only after the next
+successful-Up source lease, protected snapshot, journal, cursor, and closed sessions are revalidated with a
+strictly newer broker generation. No named type or second terminalization call site was added.
+
 #### Remaining Work
 
-All implementation, tests, guards, and documentation.
+None.
 
-### Sprint 17.48: Shared authenticated reverse driver [Planned]
+### Sprint 17.48: Prepared reverse process route [Done]
 
-**Status**: Planned
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Teardown/Internal.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Handoff/Process/Route.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Handoff/Process.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/composition_methodology.md`,
+`documents/architecture/hostbootstrap_core_library.md`
+
+#### Objective
+
+Bind one prepared reverse descent to its exact sanitized child-process route.
+
+#### Deliverables
+
+- Canonical package decoding remains inside the private teardown owner and exposes no raw package bytes.
+- Witness-only route selection preserves the prepared descent's nominal scope and broker generation.
+- Process ownership derives and launches the route in one lexical continuation with no caller argv/tool seam.
+- Work is limited to the three named production modules, targets at most 400 significant lines, adds no named
+  type, and adopts exactly one prepared reverse-process composition seam.
+
+#### Validation
+
+Cover canonical package recovery, nominal route retention, route sanitization, platform refusal, and process
+cleanup; run the warning-clean core gate.
+
+On 2026-08-21, the prepared reverse process ownership guard passed its selected case, `HandoffSpec` passed all
+107 cases, the indexed-plan gate passed all 79 cases, and `DocValidatorSpec` passed both cases on x86_64 Linux
+with GHC 9.12.4 and Cabal 3.16.1.0. The complete
+`cabal test all --test-options='--hide-successes' --ghc-options=-Werror` gate then passed all 2,307 tests. The
+route accepts only empty proxy witnesses for scope and broker
+selection, reuses the existing closed recovery derivation, and is launched only by the bracketed process owner
+from the opaque prepared descent. No named type, raw package projection, caller-selected argv/tool,
+protected-store access, or process constructor was added.
+
+#### Remaining Work
+
+None.
+
+### Sprint 17.49: Rooted reverse service foundation [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Teardown/Internal.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/composition_methodology.md`,
+`documents/architecture/hostbootstrap_core_library.md`
+
+#### Objective
+
+Build the root-owned service and canonical terminal join used by one authenticated reverse process.
+
+#### Deliverables
+
+- The service enters only through the sealed reverse root lifecycle entry and persisted rooted catalog.
+- One retained prepared descent owns its exact Offer, rooted frame session, incremental teardown forest, and
+  canonical child terminal origin.
+- Rooted next, settle, descend-result, close, and receipt requests advance only the retained reverse work.
+- The child terminal join accepts only the exact canonical completed report and returns only its verified
+  subtree settlement to the retained parent continuation.
+- Work is limited to the three named production modules, targets at most 400 significant lines, adds no named
+  type, and adopts no command call site.
+
+#### Validation
+
+Cover rooted reverse request order, exact Offer retention, report verification, retry/refusal, and terminal
+state; run the warning-clean core gate.
+
+Validated on 2026-08-21 on x86_64 Linux with GHC 9.12.4 and Cabal 3.16.1.0. The focused handoff suite passed
+all 36 cases and the indexed-plan suite passed all 85 cases. The complete
+`cabal test all --test-options='--hide-successes' --ghc-options=-Werror` gate passed all 2,307 tests. Source
+ownership guards cover exact Offer retention, the prepared forest/origin eliminators, root-owned pre-descent,
+local and descent settlement, canonical close, and receipt-bound subtree delivery. The reverse-only link
+closes config/activation capabilities; the service retains no raw store key, signing key, package bytes, or
+caller-selected plan coordinate, and the rooted transport freeze now covers only its owned sections rather
+than the whole shared Relay module.
+
+#### Remaining Work
+
+None.
+
+### Sprint 17.50: Root-authorized nested reverse descent [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Teardown/Internal.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/composition_methodology.md`,
+`documents/architecture/hostbootstrap_core_library.md`
+
+#### Objective
+
+Authorize every nested descent from the root command without equating its root frame with the descent parent.
+
+#### Deliverables
+
+- `ReverseDescent` retains the root lifecycle context/cursor/authority under an existential root-frame index
+  distinct from its public descent-parent index; both remain nominal and neither can be coerced.
+- Preparation accepts any `DescentWork` in the retained root plan, then exact-selects its parent/child edge from
+  the recursive catalog before producing a package or durable row.
+- Root command reauthorization and cursor validation still precede every nested Prepared/Bound transition.
+- Immediate and deeper descent use the same producer; no child command authority, raw frame text, or second
+  root plan is manufactured.
+- Work is limited to the two named production modules, targets at most 400 significant lines, adds no named
+  type, and adopts no command call site.
+
+#### Validation
+
+Cover immediate and deeper parent frames, cross-plan/frame/catalog refusal, retry/rehydration, constructor
+hiding, and nominal root/parent separation; run the warning-clean core gate.
+
+Validated on 2026-08-21 on x86_64 Linux with GHC 9.12.4 and Cabal 3.16.1.0. The focused indexed-plan suite
+passed all 85 cases, and the complete
+`cabal test all --test-options='--hide-successes' --ghc-options=-Werror` gate passed all 2,307 tests. The
+constructor and producer signatures mechanically distinguish existential `rootFrame` from public
+`parentFrame`; guards reject the former equality checks, retain nominal roles and constructor hiding, and
+prove that only the catalog-selected parent/child edge can reach preparation. No catalog row, child command
+authority, raw frame selector, named type, or public export was added.
+
+#### Remaining Work
+
+None.
+
+### Sprint 17.51: Shared authenticated reverse driver [Done]
+
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Process.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Teardown/Internal.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
 `documents/architecture/hostbootstrap_core_library.md`
@@ -2271,13 +2502,23 @@ Drive Down and Destroy through one root-coordinated child-first interpreter.
 Cover root-only and multi-level Down/Destroy, ordering, retry/restart, refusal/failure, process cleanup, and
 terminal state; run the warning-clean core gate.
 
+On 2026-08-21, the focused project-plan, handoff, and Production reverse-command selection passed all 120
+selected tests on x86_64 Linux with GHC 9.12.4 and Cabal 3.16.1.0. The complete
+`cabal test all --test-options='--hide-successes' --ghc-options=-Werror` gate then passed all 2,307 tests.
+The single Production Down/Destroy call site now obtains only a sealed target entry and its lease-retaining
+terminal continuation. Every descent prepares the exact catalog edge, opens its rooted session, installs the
+restricted reverse admissions and service, launches the derived process route, and returns only the
+receipt-retained and durably adopted `SubtreeSettled` proof. Root terminalization separately verifies every
+session closed for the retained plan digest before consuming that proof; mismatched admissions, absent
+settlement, process failure, or terminal refusal cannot advance the parent forest.
+
 #### Remaining Work
 
-All implementation, tests, guards, and documentation.
+None.
 
-### Sprint 17.49: Failed-Up cleanup authority [Planned]
+### Sprint 17.52: Failed-Up cleanup authority [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority/FailedUp/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Rooted.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`
@@ -2307,16 +2548,33 @@ Authorize cleanup of only the effects made reachable by one exact failed Up with
 Cover root/VM/container failure authority, partial settlement, exact retry, every cross-coordinate refusal,
 constructor hiding, nominal roles, and inability to substitute Destroy authority; run the warning-clean gate.
 
+On 2026-08-21, the focused indexed-plan authority and representation suite passed all 86 tests on x86_64
+Linux with GHC 9.12.4 and Cabal 3.16.1.0. The complete
+`cabal test all --test-options='--hide-successes' --ghc-options=-Werror` gate then passed all 2,308 tests.
+The hidden four-index authority is produced only from a sealed root Up entry, its existential catalog, and an
+attached root-issued `refused` session. Project, broker generation, catalog identity, and root plan digest are
+rejoined; reached and unresolved operation sequences are duplicate-free and subset-related; exact retry
+compares every retained failure/reachability coordinate. Its only work fold yields the frozen unresolved
+sequence, while source and export guards prove it imports no Mode/store mutation, names no Destroy authority,
+has nominal roles, and remains absent from every public facade.
+
 #### Remaining Work
 
-All implementation, tests, guards, and documentation.
+None.
 
-### Sprint 17.50: Failed-Up unwind adoption [Planned]
+### Sprint 17.53: Failed-Up unwind adoption [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command/Child.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Handoff/TerminalReport.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Handoff.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Handoff/Receiver.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Teardown/Internal.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Teardown/Executor/Internal.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
 `documents/architecture/lifecycle_state_model.md`
@@ -2333,7 +2591,7 @@ Route failed forward work through the shared child-first machinery under its nar
 - Retry resumes exact rooted cleanup state and never reruns settled work or widens the reachable operation set.
 - Original forward-failure and unwind reports remain separately authenticated canonical terminal records;
   neither raw text nor one report may stand in for the other.
-- Work is limited to the three named production modules, targets at most 400 significant lines, adds no named
+- Work is limited to the named production modules, targets at most 400 significant lines, adds no named
   type, and adopts only the one failed-Up unwind call site.
 
 #### Validation
@@ -2341,13 +2599,42 @@ Route failed forward work through the shared child-first machinery under its nar
 Cover root/VM/container failure, partial settlement, retry/restart, cleanup failure, scope/catalog drift, and
 exact dual terminal reporting; run the warning-clean core gate.
 
+#### Validation
+
+The sprint was re-cut on 2026-08-21 when the typed failure prefix exposed necessary owners omitted from
+the original file list: `Teardown` must construct a cleanup projection that retains `VerbUp` while selecting
+only reached operations, the storeless recovery child must consume that projection, and the lower terminal
+report owner must canonically encode the failed forward settlement. The Chain now has a
+no-new-type failure-returning interpreter that records the exact ordered operation prefix
+only after each durable Prepared gate is published; the forward coordinator preserves the tuple across its
+fixed `Either Text` broker continuation and the existing public interpreter still erases it to descriptive
+failure. `failedUpTeardownPlanKernel` retains `VerbUp`, refuses duplicate/foreign operation sets, and selects
+destroy-strength cleanup actions only for that exact reached prefix, so it cannot promote to Destroy
+settlement. The child now stops after the first durably settled failed observation, requests early frame
+closure, authenticates and receipts a canonical `forward/failed` terminal report, then returns the original
+failure separately; malformed or trailing observation frames are refused before settlement. Failed reports
+now retain the canonical ordered settled-observation rows, and the coordinator freezes those child rows with
+the root Chain prefix before joining the receipt-recorded session, exact report, exact Offer binding, catalog,
+and root authority. The hidden authority verifies that every report operation belongs to that frozen prefix.
+The live failure call site now drives the joined forest through the durable shared Prepared/Bound rooted
+recovery service; the authenticated recovery receiver admits the narrow Up/teardown adapter while the command
+cursor remains at Execute, and the child reconstructs only the ordered operation projection carried by that
+adapter. Root-local failure now publishes its own canonical failed-forward record before deriving the same
+narrow authority, successful cleanup publishes a distinct canonical reverse-completed record, and cleanup
+failure publishes a reverse-failed record without replacing the retained original forward error. Canonical
+failed-forward observations are covered by the lifecycle codec suite; the source/representation gates cover
+the authority, no-Destroy call path, Up/teardown adapter, and shared process/executor adoption. The complete
+host-static core suite passed all 2,309 tests on x86_64 Linux with GHC 9.12.4, and the library/executable build
+passed with `-Werror`. Sprint 17.54 owns the already-declared real-process root/VM/container, crash-redelivery,
+retry, cleanup-failure, and exact dual-report proof matrix.
+
 #### Remaining Work
 
-All implementation, tests, guards, and documentation.
+None.
 
-### Sprint 17.51: Proof-complete host-static real-process gate [Planned]
+### Sprint 17.54: Proof-complete host-static real-process gate [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/test/RecursiveLifecycleSpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
 `core/hostbootstrap-core/test/fixtures/recursive-lifecycle/`
@@ -2374,6 +2661,11 @@ Close the recursive command with static proofs and real local process-boundary b
 Run `cabal test all --ghc-options=-Werror` from `core/`. The named recursive-lifecycle group must execute real
 local process fixtures on linux-cpu; record dated counts and source/compile-fail evidence after the gate passes.
 
+On 2026-08-21, the five-case `RecursiveLifecycleSpec` group passed on x86_64 Linux through the public command
+gate and real root/VM/container child processes, covering forward Up, child-first Down and Destroy, failed-Up
+propagation and reached cleanup, and the proof-matrix guard. The complete warning-clean core suite passed at
+2,314 tests, while the Python code check and all 231 Python tests also passed.
+
 #### Objective boundary
 
 Consuming root `DestroySettled` as `ProjectClosureEvidence SettledDestroyClose` also requires the bound run
@@ -2383,11 +2675,11 @@ one and nothing beyond it.
 
 #### Remaining Work
 
-All fixtures, adversarial cases, proof guards, documentation reconciliation, and the exact host-static gate.
+None.
 
 ## Remaining Work
 
-The root entry admits, persists, and strictly re-reads the
+None. The root entry admits, persists, and strictly re-reads the
 recursive catalog under the live global lease; Sprint 17.29 has added the one rank-2 edge fold that selects an
 admitted descent by exact parent and child frame, the storeless `CatalogForwardHandoff` that edge authorizes,
 and the projecting forward-child fixture that gives multi-level admission its behavioural coverage through the
@@ -2406,16 +2698,19 @@ storeless frame executor that answer builds. Sprint 17.38 derives the sanitized 
 the exchange over a child's standard input and output at all, Sprint 17.39 gives the dedicated receiver
 private protocol descriptors before any callback can touch those streams, and Sprint 17.40 holds one real
 child, its group, and its descriptors for exactly one edge — bounding the launch, the termination grace, and
-the frames a peer owes immediately, and leaving the admitted effect's own wait alone. Sprint 17.41 is current.
-Sprints 17.41–17.45 add forward/reverse receiver adoption and semantic completion. Sprints
-17.46–17.50 adopt cluster cleanup, terminalization, shared reverse execution, and failed-Up cleanup/unwind.
-Sprint 17.51 closes the host-static real-process gate. Live worked-demo confirmation remains Phase 24 work.
+the frames a peer owes immediately, and leaving the admitted effect's own wait alone. Sprint 17.41 installs
+the forward receiver, Sprint 17.42 installs the root coordinator and Chain descent adoption, Sprint 17.43
+integrates semantic completion, and Sprint 17.44 rehydrates exact reverse proof after restart or response
+loss. Sprint 17.45 adds reverse receiver adoption, Sprint 17.46 binds exact cluster cleanup, and Sprint 17.47
+terminalizes and rearms the durable reverse root, and Sprint 17.48 binds prepared descent to its process route.
+The failed-Up cleanup authority participates in the shared unwind, and the proof-complete host-static
+real-process gate is closed. Live worked-demo confirmation remains Phase 24 work.
 
 Two of this phase's own guards are stated for one outer host and hold on every supported one (§ JJ):
 Sprint 17.20's `LifecycleEntry` importer allow-list takes the separator-neutral repo-relative path
 helper, and Sprint 17.40's `ImportHandoffProcess.hs` fixture takes the platform-conditional expectation
 its POSIX-conditional owner requires. Both follow the harness foundation the
-[Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md) owns. Sprint 17.51's gate drives
+[Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md) owns. Sprint 17.54's gate drives
 real local child processes through that POSIX-conditional owner, so it runs on a POSIX outer host or a
 realized Linux substrate; the sprints between close on the host static gate.
 

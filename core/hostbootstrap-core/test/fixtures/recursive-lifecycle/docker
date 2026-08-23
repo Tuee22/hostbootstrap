@@ -1,0 +1,2 @@
+#!/bin/sh
+exec "$HOSTBOOTSTRAP_RECURSIVE_FIXTURE_EXE" --hostbootstrap-recursive-lifecycle-child

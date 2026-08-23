@@ -142,7 +142,8 @@ launchInstanceCommand ::
 launchInstanceCommand instanceName image sizing ownerTag =
     hostCommand
         Incus
-        [ "launch"
+        [ "--quiet"
+        , "launch"
         , image
         , instanceName
         , "--vm"

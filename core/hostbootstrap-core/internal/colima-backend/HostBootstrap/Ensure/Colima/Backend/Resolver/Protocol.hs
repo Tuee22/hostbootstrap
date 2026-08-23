@@ -1,12 +1,13 @@
 module HostBootstrap.Ensure.Colima.Backend.Resolver.Protocol
   ( TrustedToolIdentity (..),
-    TrustedDirectoryBinding,
+    TrustedDirectoryBinding (..),
     ResolvedTool (..),
     TrustedResolverProtocol (..),
     trustedPythonCandidate,
     systemHelperDirectories,
     renderSearchPath,
     trustedDirectoryBindingsFingerprint,
+    renderTrustedResolverProtocol,
     parseTrustedResolverOutput,
     parseTrustedResolverOutputForFixtureRoot,
   )
@@ -64,6 +65,19 @@ data TrustedResolverProtocol
       [TrustedDirectoryBinding]
   | ProtocolUnsupported String
   deriving (Eq, Show)
+
+renderTrustedResolverProtocol :: TrustedResolverProtocol -> String
+renderTrustedResolverProtocol protocol = intercalate "\t" (fields protocol) ++ "\n"
+  where
+    fields (ProtocolUnsupported reason) = ["UNSUPPORTED", reason]
+    fields (ProtocolMissingColima python brew helper bindings) =
+      ["MISSING_COLIMA"] ++ tool python ++ tool brew ++ [helper, renderBindings bindings]
+    fields (ProtocolReady python colima docker lima helper bindings) =
+      ["READY"] ++ concatMap tool [python, colima, docker, lima] ++ [helper, renderBindings bindings]
+    tool (ResolvedTool path (TrustedToolIdentity device inode)) = [path, show device, show inode]
+    renderBindings = intercalate ";" . map binding
+    binding (TrustedDirectoryBinding path (TrustedToolIdentity device inode)) =
+      intercalate "," [path, show device, show inode]
 
 trustedPythonCandidate :: FilePath
 trustedPythonCandidate = "/usr/bin/python3"

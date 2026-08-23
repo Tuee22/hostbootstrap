@@ -52,8 +52,10 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import Data.Char (isHexDigit)
+import qualified Crypto.Hash as Hash
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64, Word8)
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
@@ -458,7 +460,9 @@ targetMatchesPlan plan target =
              in case targetRole target of
                     ProjectTarget -> key == "project." <> digest
                     SessionTarget -> ("session." <> digest <> ".") `Text.isPrefixOf` key
-                    OperationTarget -> ("op." <> digest <> ".") `Text.isPrefixOf` key
+                    OperationTarget ->
+                        ("op." <> Text.pack (show (Hash.hash (TextEncoding.encodeUtf8 plan) :: Hash.Digest Hash.SHA256)) <> ".")
+                            `Text.isPrefixOf` key
 
 -- Encoding -----------------------------------------------------------------------
 

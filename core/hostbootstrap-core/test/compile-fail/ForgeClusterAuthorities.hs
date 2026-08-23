@@ -9,6 +9,8 @@ import HostBootstrap.Substrate.Provider.Backend (RunningProviderDependency)
 
 badPlanOwnedCluster = PlanOwnedCluster
 
+badPlanOwnedClusterConfig = PlanOwnedClusterConfig
+
 badPreparedClusterReconcile = PreparedClusterReconcile
 
 badClusterReconcileSettlement = ClusterReconcileSettlement

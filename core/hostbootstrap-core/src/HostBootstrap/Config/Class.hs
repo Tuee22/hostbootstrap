@@ -156,6 +156,7 @@ data AssemblyRequest projectId tcfg variant scope where
         AssemblyRequest projectId tcfg variant (Production projectId)
     HarnessAssembly ::
         HarnessAuthority projectId runId ->
+        FilePath ->
         tcfg ->
         VariantDraft variant ->
         AssemblyRequest projectId tcfg variant (Harness projectId runId)

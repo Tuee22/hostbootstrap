@@ -32,9 +32,12 @@ therefore produces no rooted @Refused@ at all; that form is post-open only.
 module HostBootstrap.Lifecycle.Rooted
     ( RootedFrameSession
     , withRootOpenedFrameSessionKernel
+    , withRootOpenedDirectFrameSessionKernel
     , withAttachedRootedFrameSessionKernel
     , withRootedFrameOpeningKernel
     , withRootedFrameSessionKernel
+    , withAdvancedRootedFrameSessionKernel
+    , withFailedRootedFrameSessionKernel
     )
 where
 
@@ -51,8 +54,10 @@ import HostBootstrap.Authority (ProjectVerb, projectVerbName)
 import HostBootstrap.Handoff (childConfigDigest, frameWire, maxWireBytes)
 import HostBootstrap.Handoff.Rooted
     ( rootedLifecycleRequestFromWireKernel
+    , rootedLifecycleResponseFromWireKernel
     , rootedOpenedResponseUnsignedKernel
     , withRootedLifecycleRequestKernel
+    , withRootedLifecycleResponseKernel
     )
 import HostBootstrap.Handoff.Runtime
     ( RecursiveHandoffRuntime
@@ -150,6 +155,38 @@ withRootOpenedFrameSessionKernel ::
     IO (Either Text ())
 {-# OPAQUE withRootOpenedFrameSessionKernel #-}
 withRootOpenedFrameSessionKernel runtime catalog store verb rootPlanDigest requestedFrame use =
+    withRootOpenedFrameSessionPathKernel False runtime catalog store verb rootPlanDigest requestedFrame use
+
+-- | Open a session for a reverse child launched directly by the root owner.
+withRootOpenedDirectFrameSessionKernel ::
+    RecursiveHandoffRuntime scope brokerGeneration verb ->
+    RootedPlanCatalog scope rootPlanId brokerGeneration catalogId ->
+    ProtectedStore ->
+    ProjectVerb verb ->
+    Text ->
+    Text ->
+    ( forall frame sessionId.
+      RootedFrameSession scope rootPlanId brokerGeneration catalogId frame sessionId verb ->
+      IO (Either Text ())
+    ) ->
+    IO (Either Text ())
+withRootOpenedDirectFrameSessionKernel runtime catalog store verb rootPlanDigest requestedFrame use =
+    withRootOpenedFrameSessionPathKernel True runtime catalog store verb rootPlanDigest requestedFrame use
+
+withRootOpenedFrameSessionPathKernel ::
+    Bool ->
+    RecursiveHandoffRuntime scope brokerGeneration verb ->
+    RootedPlanCatalog scope rootPlanId brokerGeneration catalogId ->
+    ProtectedStore ->
+    ProjectVerb verb ->
+    Text ->
+    Text ->
+    ( forall frame sessionId.
+      RootedFrameSession scope rootPlanId brokerGeneration catalogId frame sessionId verb ->
+      IO (Either Text ())
+    ) ->
+    IO (Either Text ())
+withRootOpenedFrameSessionPathKernel direct runtime catalog store verb rootPlanDigest requestedFrame use =
     withRecursiveHandoffRuntimeKernel runtime $ \atRoot _project _tag _store generation runtimeVerb _keyDigest frame ->
         case admit atRoot generation runtimeVerb frame of
             Left failure -> pure (Left failure)
@@ -196,7 +233,9 @@ withRootOpenedFrameSessionKernel runtime catalog store verb rootPlanDigest reque
     frame two edges name, and a chain that walks more levels than the catalog
     holds all refuse: a caller can name a frame and be told the one path that
     frame has, and can neither order nor extend it. -}
-    canonicalRequesterPath = climb (length edges) requestedFrame []
+    canonicalRequesterPath
+        | direct = Right [requestedFrame]
+        | otherwise = climb (length edges) requestedFrame []
       where
         edges =
             withRootedPlanCatalogEntriesKernel
@@ -474,6 +513,81 @@ withRootedFrameSessionKernel session use = case session of
             use True (projectVerbName verb) lineage catalogIdentity frame path token stage ordinal (Just predecessor)
     AttachedRootedFrameSession AttachedRootedFrameSession{} _ _ _ _ ->
         pure (Left (rootedFailure "a rooted frame session cannot nest two attachments"))
+
+{- | Eliminate only an attached Up session whose last root-issued successor is
+the closed refusal stage or a durably acknowledged terminal receipt. The
+continuation receives descriptive coordinates;
+it receives no session constructor, store, request, or mutation capability.
+-}
+withFailedRootedFrameSessionKernel ::
+    RootedFrameSession scope rootPlanId brokerGeneration catalogId frame sessionId verb ->
+    (Text -> Text -> Text -> [Text] -> Text -> Word64 -> result) ->
+    Either Text result
+withFailedRootedFrameSessionKernel session use =
+    case session of
+        AttachedRootedFrameSession
+            (OpenedRootedFrameSession verb lineage catalog frame path token stage ordinal _ _ _)
+            _ _ _ _
+                | projectVerbName verb /= "up" -> refused "the failed session is not an Up session"
+                | stage `notElem` ["refused", "receipt-recorded"] -> refused "the failed session has not reached a closed failure stage"
+                | otherwise -> Right (use lineage catalog frame path token ordinal)
+        OpenedRootedFrameSession{} -> refused "the failed session was never attached"
+        AttachedRootedFrameSession AttachedRootedFrameSession{} _ _ _ _ ->
+            refused "a rooted frame session cannot nest two attachments"
+  where
+    refused = Left . rootedFailure
+
+{- | Advance the in-memory conversation only from one exact paired response.
+
+Durable node/terminal owners publish their rows before calling this kernel.
+The successor therefore carries no mutation capability: it merely retains the
+stage, ordinal, and predecessor digest the root's own canonical response chose.
+-}
+withAdvancedRootedFrameSessionKernel ::
+    RootedFrameSession scope rootPlanId brokerGeneration catalogId frame sessionId verb ->
+    ByteString ->
+    ByteString ->
+    ( RootedFrameSession scope rootPlanId brokerGeneration catalogId frame sessionId verb ->
+      IO (Either Text ())
+    ) ->
+    IO (Either Text ())
+withAdvancedRootedFrameSessionKernel session request signedResponse use =
+    case session of
+        OpenedRootedFrameSession{} ->
+            pure (Left (rootedFailure "an unattached frame session cannot advance"))
+        AttachedRootedFrameSession (OpenedRootedFrameSession verb lineage catalog frame path token _ ordinal key version openedBytes) nonce _ attachedVersion attachedBytes ->
+            case advanced path token ordinal of
+                Left failure -> pure (Left failure)
+                Right (stage, successor) ->
+                    use
+                        ( AttachedRootedFrameSession
+                            (OpenedRootedFrameSession verb lineage catalog frame path token stage successor key version openedBytes)
+                            nonce
+                            (childConfigDigest signedResponse)
+                            attachedVersion
+                            attachedBytes
+                        )
+        AttachedRootedFrameSession AttachedRootedFrameSession{} _ _ _ _ ->
+            pure (Left (rootedFailure "a rooted frame session cannot nest two attachments"))
+  where
+    advanced path token ordinal = do
+        response <- either (Left . rootedFailure) Right (rootedLifecycleResponseFromWireKernel signedResponse)
+        (digest, responsePath, responseSession, stage, successor) <-
+            withRootedLifecycleResponseKernel
+                response
+                (\_ _ _ _ _ _ -> outside)
+                (\d p s st o _ _ _ _ _ _ -> Right (d, p, s, st, o))
+                (\d p s st o _ _ _ -> Right (d, p, s, st, o))
+                (\d p s st o _ _ _ -> Right (d, p, s, st, o))
+                (\d p s st o _ _ _ -> Right (d, p, s, st, o))
+                (\d p s st o _ _ _ -> Right (d, p, s, st, o))
+                (\d p s st o _ _ _ -> Right (d, p, s, st, o))
+        require "the response answers another request" (digest == childConfigDigest request)
+        require "the response echoes another requester path" (responsePath == path)
+        require "the response echoes another session" (responseSession == token)
+        require "the response does not advance the ordinal" (successor > ordinal)
+        pure (stage, successor)
+    outside = Left (rootedFailure "an Opened response cannot advance an attached frame session")
 
 rootedFrameSessionDomain :: Text
 rootedFrameSessionDomain = "hostbootstrap/rooted-frame-session"

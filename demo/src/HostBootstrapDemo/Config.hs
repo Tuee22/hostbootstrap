@@ -62,6 +62,7 @@ module HostBootstrapDemo.Config (
     decodeProjectConfigFile,
     projectConfigSchemaText,
     renderProjectConfigSummary,
+    canonicalDemoConfigProjection,
     renderTestConfig,
     decodeTestConfigText,
     decodeTestConfigFile,
@@ -98,12 +99,13 @@ import Data.Either (fromRight)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TextEncoding
 import Dhall (FromDhall (autoWith), ToDhall)
 import qualified Dhall
 import Dhall.Marshal.Decode (Decoder (Decoder, expected, extract), extractError, fromMonadic, toMonadic)
 import GHC.Generics (Generic)
 import HostBootstrap.Cluster.Cordon (parseQuantity)
-import HostBootstrap.Cluster.Lifecycle (ClusterProfile (Production, TestCase))
+import HostBootstrap.Cluster.Lifecycle (ClusterProfile (Production, TestCase), profileDataPath)
 import HostBootstrap.Config.Class (
     AssemblyRequest (..),
     ConfigAssembly,
@@ -127,6 +129,7 @@ import HostBootstrap.Dhall.Gen (
     renderValue,
     requireCodecWitness,
  )
+import HostBootstrap.Handoff (childConfigDigest)
 import HostBootstrap.Harness (
     CaseId,
     TestMatrix,
@@ -349,8 +352,9 @@ This field carries a run's config-level identity: production assembly writes
 and 'clusterProfileOf' turns it into the core's 'ClusterProfile'. Because it is
 an ordinary field of the config the parent streams to each child frame, the
 container frame resolves the same profile the host frame did rather than
-re-deciding. Consumers still derive that profile independently from config;
-the exact retained plan does not yet supply their profile/root arguments.
+re-deciding. The demo's digest-checked exact-plan projection joins this
+descriptive profile/root input to the retained plan slices before lifecycle
+consumer adoption.
 -}
 data RunProfile
     = ProductionRun
@@ -423,6 +427,36 @@ vocabulary unions into top-level @let@ bindings.
 -}
 renderProjectConfig :: ProjectConfig scope -> Text
 renderProjectConfig = renderHoistedValue projectConfigCodec Context.vocabUnions
+
+{- | Project only the demo fields consumed by cluster/workload planning, after
+proving that this value re-renders to the exact configuration digest retained
+by the admitted plan.  The tuple deliberately introduces no second config
+contract: its members remain the project's existing refined values.
+-}
+canonicalDemoConfigProjection ::
+    Text ->
+    ProjectConfig scope ->
+    Either String (Resources, Natural, Port, Port, FilePath)
+canonicalDemoConfigProjection retainedDigest cfg
+    | observedDigest /= retainedDigest =
+        Left
+            ( "demo plan slices: canonical config digest mismatch; retained "
+                ++ T.unpack retainedDigest
+                ++ ", rendered "
+                ++ T.unpack observedDigest
+            )
+    | otherwise =
+        Right
+            ( resources cfg
+            , haReplicasNat (haReplicas (deploy cfg))
+            , publicPort (webServiceConfig cfg)
+            , acceleratorPort (webServiceConfig cfg)
+            , profileDataPath (clusterProfileOf cfg) (T.unpack (Context.sourceRoot (context cfg)))
+            )
+  where
+    observedDigest =
+        childConfigDigest
+            (TextEncoding.encodeUtf8 (renderProjectConfig cfg <> "\n"))
 
 -- | The one admitted decoder/encoder pair for the project-local config.
 projectConfigCodec :: CodecWitness (ProjectConfig scope)
@@ -752,25 +786,25 @@ demoAssemble request =
     case request of
         ProductionAssembly args ->
             either failConfigAssembly pureConfigAssembly (demoInit args)
-        HarnessAssembly authority tc draft ->
+        HarnessAssembly authority root tc draft ->
             -- The run's own identity becomes the config's profile, so its
             -- cluster, removable state, and ports derive from the run rather
             -- than from production (the worked-demo phase).
             either
                 failConfigAssembly
                 (pureConfigAssembly . withRunProfile (HarnessRun (harnessRunName authority)))
-                (configFor tc (variantDraftValue draft))
+                (configFor root tc (variantDraftValue draft))
   where
     withRunProfile profile cfg = cfg{runProfile = profile}
-    configFor :: TestConfig -> Text -> Either String (ProjectConfig scope)
-    configFor tc msg =
+    configFor :: FilePath -> TestConfig -> Text -> Either String (ProjectConfig scope)
+    configFor root tc msg =
         demoInitWithMessage
             msg
             Config.InitArgs
                 { Config.role = Context.HostOrchestrator
                 , Config.alsoRoles = []
                 , Config.output = Nothing
-                , Config.sourceRoot = Just "."
+                , Config.sourceRoot = Just root
                 , Config.mCpu = Just tc.testResources.cpu
                 , Config.memory = Just (quantityText tc.testResources.memory)
                 , Config.storage = Just (quantityText tc.testResources.storage)

@@ -64,7 +64,8 @@ mutationTests :: [TestTree]
 mutationTests =
     [ testCase "the launch carries the declared sizing and this run's owner tag" $
         commandArguments (launchInstanceCommand "demo-vm" "images:debian/13" sizing "9f3c")
-            @?= [ "launch"
+            @?= [ "--quiet"
+                , "launch"
                 , "images:debian/13"
                 , "demo-vm"
                 , "--vm"

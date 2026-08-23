@@ -255,8 +255,9 @@ reconstructed by a child process.
 Self-reference remains only for plan-declared recursive child-frame transitions. The Handoff facade now
 implements the root-signed `AuthenticatedRootScope (Harness projectId runId)` primitive and verifies its
 canonical wire with the independently installed project key before introducing a fresh run phantom. The
-Harness lifecycle has not yet adopted that producer. The existing unchanged four-field Offer/Relay/Receiver
-transport does carry and scope-first verify a capsule once its root producer supplies one: root links mint it
+Harness lifecycle supplies that producer from the exact installed project identity and live
+`HarnessAuthority projectId runId` retained by its ownership bracket. The unchanged four-field
+Offer/Relay/Receiver transport carries and scope-first verifies the resulting capsule: root links mint it
 and nested links copy only the exact canonical bytes. In the target cross-process extension, the Harness root
 signs it from the exact live generative evidence before received payload bytes can introduce that phantom,
 then mints a one-time token bound
@@ -285,8 +286,8 @@ coordinates, runs the selected local work, and returns bounded observations. The
 journal, cursor, settlement, and receipt transition. No raw projection or public producer exists. The child
 never reuses its parent's exact-byte identity or receives root/Harness-root/signing/store authority. The
 [authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
-owns the implemented generic authenticated root-scope primitive and the still-open scope-first receiver;
-this Harness phase supplies the future live generative producer evidence. Recursive process adoption remains
+owns the implemented generic authenticated root-scope primitive and scope-first receiver; this Harness phase
+supplies the live generative producer evidence at the single command call site. Recursive process adoption remains
 with the
 [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
 
@@ -381,8 +382,8 @@ persisted receipts, recreating the old normal config, or granting `ProjectUp` au
 The current self-reference lift is used only by plan-declared child descent and streams the
 context-adjusted full config record. The standalone authenticated root-scope and recovery-package primitives,
 their Offer/Relay/Receiver adoption, and the bounded keyless rooted request/response route are implemented.
-The generic Harness scope-capsule producer and the storeless executor remain incomplete. Complete
-cross-process recursive scope therefore remains open even though the Harness root lifecycle itself is direct.
+The generic Harness scope-capsule producer is adopted at the direct Harness root lifecycle's single command
+call site. The storeless executor remains incomplete, so complete cross-process recursive scope remains open.
 No child authority-store rehydration is part of the target.
 The full child protocol is specified in
 [lifecycle state model](lifecycle_state_model.md#cross-process-authority-handoff).
@@ -472,6 +473,23 @@ private lifecycle component's absence from the public library. A source guard re
 
 Phase status and live-run closure belong in
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md), not this workflow page.
+
+Abandoned-run nested recovery now enters through the authenticated recovery-wire boundary. The root derives
+each projection from snapshot-recovered parent/child frames and places the complete resource-set digest in the
+canonical adapter wire. The receiver admits only an independently verified, one-use Down/Destroy teardown
+handoff with the same project, store, broker generation, plan, edge, payload, and phase; child frames never
+receive the signing key or ordinary config handoff.
+
+If an abandoned bound run has resource records, the sweep rehydrates the complete snapshot-owned set and
+executes frames child-first through the installed closed recovery executor. Released tombstones cause no
+backend call. Each successful owned release is recorded before the parent proceeds; any refusal retains the
+old lease, mode, snapshot, and records for retry. Reclamation and final close occur only after the complete
+forest has settled as Destroy and the protected session enumeration proves every session Closed.
+
+The Production command follows the same ownership discipline as the Harness path: its composite root owns the
+mode and unbound lease, exact plan construction persists and verifies the canonical snapshot before binding,
+and recursive execution retains the resulting root/lease/snapshot/binding tuple. Only a true pre-effect
+refusal can take the short close; anything after binding remains available to the recovered Production route.
 
 ## Related
 

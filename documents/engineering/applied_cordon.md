@@ -287,16 +287,18 @@ storage quota, and existing Incus sizing is not reconciled.
 
 Capacity reads, the shared parser, and CPU/memory arg builders are implemented. Provider disk walls are
 initial-create behavior for Lima/Incus/WSL2. Direct Colima's exact root/data wall, indexed live Docker route,
-identity-conditional cleanup, and the [cluster-lifecycle, budgets, and cordoning
-phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) focused/full validation are closed.
+and identity-conditional cleanup are implemented. Its private backend has one pure durable-stage vocabulary
+and total adjacent-transition decision; adoption by the effectful driver and the shared ownership seam remains
+active in the [cluster-lifecycle, budgets, and cordoning
+phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
 Production recursive adoption remains with the [recursive-lifecycle-command
 phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md), and demo adoption remains with the
 [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md). Bare Linux has no runtime storage cordon, and
 direct Linux GPU outer effects are uncapped. Existing
 resource sizing is not uniformly compared or reconciled. The prepared Incus/Direct lifecycle boundary
 does not strengthen those wall claims: its four-clause ownership protocol protects provider identity and
-mutation, while exact existing-wall reconciliation remains downstream. Its static gate is closed, while its
-native Linux/x86_64 KVM/Incus gate remains open in the
+mutation, while exact existing-wall reconciliation remains downstream. Its static gate and native
+Linux/x86_64 KVM/Incus gate are closed in the
 [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md).
 WSL2's production global-wall backend has
 current Windows evidence for its ownership adapter and the live restore-then-shutdown wall-release

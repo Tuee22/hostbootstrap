@@ -117,6 +117,9 @@ module HostBootstrap.RoleLifecycle (
     placementPermittedEffects,
     placementLeaseRequirement,
     withRuntimeRolePlan,
+    withRuntimeRolePlanForRequest,
+    resumeRuntimeRolePlanOpen,
+    resumeRuntimeRolePlanOpenForRequest,
 
     -- * What a project supplies to the engine
     RoleEngine (..),
@@ -140,13 +143,16 @@ module HostBootstrap.RoleLifecycle (
     roleLifecycleErrorMessage,
 ) where
 
-import Control.Exception.Safe (SomeException, displayException, mask, try)
+import Control.Exception (evaluate)
+import qualified Control.Exception as Exception
+import Control.Exception.Safe (SomeException, displayException, mask)
 import qualified Crypto.Hash as Hash
 import qualified Data.ByteArray as ByteArray
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import Data.Kind (Constraint)
 import Data.List (group, sort)
+import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -155,15 +161,23 @@ import HostBootstrap.Activation (
     VerifiedRuntimeRoleActivation,
     activationErrorMessage,
     activationFrame,
+    activationConfigDigest,
     activationInstance,
     activationPermittedEffects,
     activationPlanDigest,
     activationRevision,
     activationRolePlanDigest,
     activationService,
+    activationSpecDigest,
     instanceIdentityText,
     validateActivationStoreOrigin,
  )
+import HostBootstrap.Config.Fields.Internal
+    ( FrameworkValidation (frameworkLocalContext, frameworkSpecDigest)
+    , LocalContextView (localContextKind, localCurrentFrame)
+    , ValidatedServiceRequest (ValidatedServiceRequest)
+    )
+import qualified HostBootstrap.Context as Context
 import HostBootstrap.Handoff (frameWire)
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
@@ -175,6 +189,7 @@ import HostBootstrap.Protected (
     mkRecordKey,
     protectedErrorMessage,
     protectedRecordBytes,
+    protectedRecordVersion,
     protectedStoreIdentity,
     readProtectedRecord,
     sessionStoreIdentity,
@@ -211,10 +226,12 @@ data ExitPhase
 Its constructor is not exported and it has no public eliminator, so project code
 cannot fabricate a cursor, retain one past its phase, or serve before Ready.
 -}
-newtype RoleCursor scope planId frame instanceId phase = RoleCursor RolePhase
+data RoleCursor scope planId frame instanceId phase = RoleCursor RolePhase (IORef Bool)
+
+type role RoleCursor nominal nominal nominal nominal nominal
 
 instance Show (RoleCursor scope planId frame instanceId phase) where
-    show (RoleCursor phase) = "RoleCursor " <> show phase
+    show (RoleCursor phase _) = "RoleCursor " <> show phase
 
 -- ---------------------------------------------------------------------------
 -- The project-owned draft
@@ -427,6 +444,8 @@ fixes what a handler may do, and the signature is what validates that choice.
 data EffectAuthorization scope specDigest planId frame revision instanceId service (effects :: [RoleEffect])
     = EffectAuthorization Text [RoleEffect] LeaseRequirement
 
+type role EffectAuthorization nominal nominal nominal nominal nominal nominal nominal nominal
+
 -- | The effects this authorization admits, in the row's own order.
 authorizedEffects ::
     EffectAuthorization scope specDigest planId frame revision instanceId service effects ->
@@ -505,19 +524,18 @@ reservedRoleAdmissionKey (ReservedRoleAdmission key _) = key
 
 {- | The total classification of one admission attempt.
 
-A predecessor record for the same instance is never silently overwritten: an
-existing record is recovery-required state.  'RoleAdmissionUnknown' reports a
-protected-store operation that returned without enough evidence to classify the
-reservation; it does not rehydrate a reservation.  Likewise, an asynchronous
-interruption can escape after the durable write, and a later attempt reports the
-existing row rather than reopening it.  The
-[composition-and-network-algebra phase](../../../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md)
-owns the crash/lost-acknowledgement resume protocol.  A session from a different protected store is
+A predecessor record is never overwritten.  A matching Reserved row rehydrates
+the same CAS-bound reservation, a matching Consumed row reports
+'RoleAdmissionOpenUnknown' for 'resumeRuntimeRolePlanOpen', and any contradictory
+row is recovery-required state.  'RoleAdmissionUnknown' means the store did not
+provide enough evidence to classify the reservation.  A session from a different protected store is
 deterministically 'RoleAdmissionRefused' before any durable operation is
 attempted.
 -}
 data RoleAdmissionOutcome scope planDigest frame revision instanceId
     = RoleAdmissionReserved (ReservedRoleAdmission scope planDigest frame revision instanceId)
+    | -- | the matching admission was already consumed; reopen its exact plan
+      RoleAdmissionOpenUnknown Text
     | -- | the admission key, then the predecessor record's own text
       RoleAdmissionRecoveryRequired Text Text
     | -- | a deterministic precondition refusal; no durable operation ran
@@ -536,8 +554,8 @@ invocation nonce) therefore gets its own admission while a duplicated
 activation does not.  The reserved value records the verified role-plan digest,
 so a future resumption owned by the
 [composition-and-network-algebra phase](../../../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md)
-cannot silently change the plan the admission was taken for.  This function
-itself never reopens an existing reservation.
+cannot silently change the plan the admission was taken for.  Matching durable
+Reserved and Consumed states are the only lost-acknowledgement reopen edges.
 -}
 withRoleLifecycleAdmission ::
     ProtectedSession session ->
@@ -555,11 +573,14 @@ withRoleLifecycleAdmission session activation (VerifiedRolePlanDraft _ digest) =
                     case observed of
                         Left failure -> pure (RoleAdmissionUnknown (protectedErrorMessage failure))
                         Right (Just record) ->
-                            pure
-                                ( RoleAdmissionRecoveryRequired
-                                    rawKey
-                                    (TextEncoding.decodeUtf8Lenient (protectedRecordBytes record))
-                                )
+                            let persisted = TextEncoding.decodeUtf8Lenient (protectedRecordBytes record)
+                             in pure $ case persisted of
+                                    value
+                                        | value == "reserved " <> digest ->
+                                            RoleAdmissionReserved
+                                                (ReservedRoleAdmission rawKey (ExpectVersion (protectedRecordVersion record)))
+                                        | value == "consumed " <> digest -> RoleAdmissionOpenUnknown rawKey
+                                        | otherwise -> RoleAdmissionRecoveryRequired rawKey persisted
                         Right Nothing -> do
                             written <-
                                 compareAndSwapProtectedRecord
@@ -620,6 +641,8 @@ recompute the parent's plan digest.
 data RolePlan scope specDigest planId configId secretDigest frame revision instanceId
     = RolePlan Text Text Text [RoleResourceRequest] ProtectedStoreIdentity
 
+type role RolePlan nominal nominal nominal nominal nominal nominal nominal nominal
+
 rolePlanFrame :: RolePlan scope specDigest planId configId secretDigest frame revision instanceId -> Text
 rolePlanFrame (RolePlan frame _ _ _ _) = frame
 
@@ -646,6 +669,8 @@ the broker signed.  It states "my @rolePlanDigest@ was signed under that
 data RolePlanDigestBinding scope specDigest planDigest rolePlanDigest planId
     = RolePlanDigestBinding Text Text
 
+type role RolePlanDigestBinding nominal nominal nominal nominal nominal
+
 rolePlanDigestBindingPlanDigest ::
     RolePlanDigestBinding scope specDigest planDigest rolePlanDigest planId -> Text
 rolePlanDigestBindingPlanDigest (RolePlanDigestBinding value _) = value
@@ -660,6 +685,8 @@ derived from it.
 -}
 data VerifiedServicePlacement scope specDigest planId frame revision instanceId service permittedEffects
     = VerifiedServicePlacement Text [RoleEffect] LeaseRequirement
+
+type role VerifiedServicePlacement nominal nominal nominal nominal nominal nominal nominal nominal
 
 placementService ::
     VerifiedServicePlacement scope specDigest planId frame revision instanceId service permittedEffects ->
@@ -685,11 +712,8 @@ sees 'RoleAdmissionAlreadyConsumed'.  The plan, binding, placement, and the sole
 cannot choose the plan identity, keep the cursor, or reserve a second one.  The
 activation's retained protected-store origin is checked before the
 compare-and-swap, so a valid reservation from one store cannot consume a
-same-shaped row in another.  If the reservation is consumed and the continuation
-or its acknowledgement is then lost, a retry refuses as already consumed; this
-API deliberately does not rehydrate the plan.  The
-[composition-and-network-algebra phase](../../../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md)
-owns that resume protocol.
+same-shaped row in another.  If cursor delivery is lost after the durable
+consume, 'resumeRuntimeRolePlanOpen' reconstructs only this same lineage.
 -}
 withRuntimeRolePlan ::
     ProtectedSession session ->
@@ -732,7 +756,8 @@ withRuntimeRolePlan
                                 Left ProtectedVersionMismatch{} ->
                                     pure (Left (RoleAdmissionAlreadyConsumed rawKey))
                                 Left failure -> pure (Left (RoleAdmissionStoreFailure failure))
-                                Right _ ->
+                                Right _ -> do
+                                    cursorUse <- newIORef False
                                     Right
                                         <$> use
                                             ( RolePlan
@@ -748,7 +773,183 @@ withRuntimeRolePlan
                                                 effects
                                                 (leaseRequirementOf effects)
                                             )
-                                            (RoleCursor Prereq)
+                                            (RoleCursor Prereq cursorUse)
+
+{- | Consume a reservation while retaining the exact config, secret, and
+service indices carried by the decoded activation-bound request.
+
+The older 'withRuntimeRolePlan' remains the low-level lifecycle primitive used
+by phase-machine tests.  The service runtime uses this stricter adopter: it
+first compares the request's measured config digest, sealed specification
+digest, and selected service with the signed activation, then mints the plan
+and placement at the request's own indices.  Consequently the effect
+authorization produced from that placement can interpret only the program
+built from this same request.
+-}
+withRuntimeRolePlanForRequest ::
+    ProtectedSession session ->
+    VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId ->
+    VerifiedRolePlanDraft scope planDigest frame revision instanceId rolePlanDigest ->
+    ReservedRoleAdmission scope planDigest frame revision instanceId ->
+    Text ->
+    ValidatedServiceRequest specDigest configId secretDigest fields service ->
+    ( forall planId permittedEffects.
+      RolePlan scope specDigest planId configId secretDigest frame revision instanceId ->
+      RolePlanDigestBinding scope specDigest planDigest rolePlanDigest planId ->
+      VerifiedServicePlacement scope specDigest planId frame revision instanceId service permittedEffects ->
+      RoleCursor scope planId frame instanceId PrereqPhase ->
+      IO result
+    ) ->
+    IO (Either RoleLifecycleError result)
+withRuntimeRolePlanForRequest
+    session
+    activation
+    (VerifiedRolePlanDraft requests digest)
+    (ReservedRoleAdmission rawKey expectation)
+    selectedService
+    (ValidatedServiceRequest validation configDigest _params)
+    use
+        | configDigest /= activationConfigDigest activation =
+            pure (Left (RoleActivationRequestMismatch "the decoded role wire does not have the activation's config digest"))
+        | frameworkSpecDigest validation /= activationSpecDigest activation =
+            pure (Left (RoleActivationRequestMismatch "the decoded role wire does not have the activation's specification digest"))
+        | selectedService /= activationService activation =
+            pure (Left (RoleActivationRequestMismatch "the decoded role definition is not the service selected by the activation"))
+        | localCurrentFrame (frameworkLocalContext validation) /= activationFrame activation =
+            pure (Left (RoleActivationRequestMismatch "the decoded role wire does not name the activation's frame"))
+        | localContextKind (frameworkLocalContext validation) `notElem` [Context.ClusterService, Context.Daemon] =
+            pure (Left (RoleActivationRequestMismatch "the decoded role wire is not a service-leaf context"))
+        | otherwise =
+            case validateActivationStoreOrigin session activation of
+                Left failure ->
+                    pure (Left (RoleAdmissionStoreOriginMismatch (Text.pack (activationErrorMessage failure))))
+                Right () ->
+                    case parsePermittedEffects (activationPermittedEffects activation) of
+                        Left failure -> pure (Left failure)
+                        Right effects -> case mkRecordKey rawKey of
+                            Left failure -> pure (Left (RoleAdmissionStoreFailure failure))
+                            Right key -> do
+                                consumed <-
+                                    compareAndSwapProtectedRecord
+                                        session
+                                        key
+                                        expectation
+                                        (TextEncoding.encodeUtf8 ("consumed " <> digest))
+                                case consumed of
+                                    Left ProtectedVersionMismatch{} ->
+                                        pure (Left (RoleAdmissionAlreadyConsumed rawKey))
+                                    Left failure -> pure (Left (RoleAdmissionStoreFailure failure))
+                                    Right _ -> do
+                                        cursorUse <- newIORef False
+                                        Right
+                                            <$> use
+                                                ( RolePlan
+                                                    (activationFrame activation)
+                                                    (activationRevision activation)
+                                                    (instanceIdentityText (activationInstance activation))
+                                                    requests
+                                                    (sessionStoreIdentity session)
+                                                )
+                                                (RolePlanDigestBinding (activationPlanDigest activation) digest)
+                                                ( VerifiedServicePlacement
+                                                    selectedService
+                                                    effects
+                                                    (leaseRequirementOf effects)
+                                                )
+                                                (RoleCursor Prereq cursorUse)
+
+{- | Reopen only the exact plan whose durable Reserved→Consumed transition is
+already visible.  This is the lost-acknowledgement edge: it allocates no new
+admission key and reuses the activation/draft identities that name the row.
+-}
+resumeRuntimeRolePlanOpen ::
+    ProtectedSession session ->
+    VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId ->
+    VerifiedRolePlanDraft scope planDigest frame revision instanceId rolePlanDigest ->
+    ( forall planId configId secretDigest service permittedEffects.
+      RolePlan scope specDigest planId configId secretDigest frame revision instanceId ->
+      RolePlanDigestBinding scope specDigest planDigest rolePlanDigest planId ->
+      VerifiedServicePlacement scope specDigest planId frame revision instanceId service permittedEffects ->
+      RoleCursor scope planId frame instanceId PrereqPhase ->
+      IO result
+    ) ->
+    IO (Either RoleLifecycleError result)
+resumeRuntimeRolePlanOpen session activation (VerifiedRolePlanDraft requests digest) use =
+    case validateActivationStoreOrigin session activation of
+        Left failure -> pure (Left (RoleAdmissionStoreOriginMismatch (Text.pack (activationErrorMessage failure))))
+        Right () -> case parsePermittedEffects (activationPermittedEffects activation) of
+            Left failure -> pure (Left failure)
+            Right effects -> case mkRecordKey (roleAdmissionKey activation) of
+                Left failure -> pure (Left (RoleAdmissionStoreFailure failure))
+                Right key -> do
+                    observed <- readProtectedRecord session key
+                    case observed of
+                        Left failure -> pure (Left (RoleAdmissionStoreFailure failure))
+                        Right (Just record)
+                            | TextEncoding.decodeUtf8Lenient (protectedRecordBytes record) == "consumed " <> digest -> do
+                                cursorUse <- newIORef False
+                                Right <$> use
+                                    (RolePlan (activationFrame activation) (activationRevision activation) (instanceIdentityText (activationInstance activation)) requests (sessionStoreIdentity session))
+                                    (RolePlanDigestBinding (activationPlanDigest activation) digest)
+                                    (VerifiedServicePlacement (activationService activation) effects (leaseRequirementOf effects))
+                                    (RoleCursor Prereq cursorUse)
+                        _ -> pure (Left (RoleAdmissionAlreadyConsumed (roleAdmissionKey activation)))
+
+{- | Request-indexed counterpart of 'resumeRuntimeRolePlanOpen'.  It reopens
+only the matching Consumed row and retains the already-decoded request's
+config, secret, specification, and service indices. -}
+resumeRuntimeRolePlanOpenForRequest ::
+    ProtectedSession session ->
+    VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId ->
+    VerifiedRolePlanDraft scope planDigest frame revision instanceId rolePlanDigest ->
+    Text ->
+    ValidatedServiceRequest specDigest configId secretDigest fields service ->
+    ( forall planId permittedEffects.
+      RolePlan scope specDigest planId configId secretDigest frame revision instanceId ->
+      RolePlanDigestBinding scope specDigest planDigest rolePlanDigest planId ->
+      VerifiedServicePlacement scope specDigest planId frame revision instanceId service permittedEffects ->
+      RoleCursor scope planId frame instanceId PrereqPhase ->
+      IO result
+    ) ->
+    IO (Either RoleLifecycleError result)
+resumeRuntimeRolePlanOpenForRequest
+    session
+    activation
+    (VerifiedRolePlanDraft requests digest)
+    selectedService
+    (ValidatedServiceRequest validation configDigest _params)
+    use
+        | configDigest /= activationConfigDigest activation =
+            pure (Left (RoleActivationRequestMismatch "the decoded role wire does not have the activation's config digest"))
+        | frameworkSpecDigest validation /= activationSpecDigest activation =
+            pure (Left (RoleActivationRequestMismatch "the decoded role wire does not have the activation's specification digest"))
+        | selectedService /= activationService activation =
+            pure (Left (RoleActivationRequestMismatch "the decoded role definition is not the service selected by the activation"))
+        | localCurrentFrame (frameworkLocalContext validation) /= activationFrame activation =
+            pure (Left (RoleActivationRequestMismatch "the decoded role wire does not name the activation's frame"))
+        | localContextKind (frameworkLocalContext validation) `notElem` [Context.ClusterService, Context.Daemon] =
+            pure (Left (RoleActivationRequestMismatch "the decoded role wire is not a service-leaf context"))
+        | otherwise =
+            case validateActivationStoreOrigin session activation of
+                Left failure -> pure (Left (RoleAdmissionStoreOriginMismatch (Text.pack (activationErrorMessage failure))))
+                Right () -> case parsePermittedEffects (activationPermittedEffects activation) of
+                    Left failure -> pure (Left failure)
+                    Right effects -> case mkRecordKey (roleAdmissionKey activation) of
+                        Left failure -> pure (Left (RoleAdmissionStoreFailure failure))
+                        Right key -> do
+                            observed <- readProtectedRecord session key
+                            case observed of
+                                Left failure -> pure (Left (RoleAdmissionStoreFailure failure))
+                                Right (Just record)
+                                    | TextEncoding.decodeUtf8Lenient (protectedRecordBytes record) == "consumed " <> digest -> do
+                                        cursorUse <- newIORef False
+                                        Right
+                                            <$> use
+                                                (RolePlan (activationFrame activation) (activationRevision activation) (instanceIdentityText (activationInstance activation)) requests (sessionStoreIdentity session))
+                                                (RolePlanDigestBinding (activationPlanDigest activation) digest)
+                                                (VerifiedServicePlacement selectedService effects (leaseRequirementOf effects))
+                                                (RoleCursor Prereq cursorUse)
+                                _ -> pure (Left (RoleAdmissionAlreadyConsumed (roleAdmissionKey activation)))
 
 -- ---------------------------------------------------------------------------
 -- Retained resources
@@ -775,6 +976,8 @@ rollback set".
 -}
 data VerifiedNoRoleResources scope planId frame instanceId
     = VerifiedNoRoleResources
+
+type role VerifiedNoRoleResources nominal nominal nominal nominal
 
 {- | The identities Serve may use.  Read-only, populated only from resources
 Acquire created and Ready probed, so there is no serve-time bind/spawn hatch.
@@ -833,6 +1036,12 @@ data RoleEngine = RoleEngine
     , engineRelease :: RoleResourceRequest -> IO RoleReleaseOutcome
     }
 
+-- For an acquisition whose acknowledgement was lost, @engineRelease@ is the
+-- backend's total idempotent reprobe-and-release operation: 'Released' proves
+-- the identity is now absent/released, while 'ReleaseFailed' keeps it in the
+-- report's unknown set for durable recovery.  There is intentionally no
+-- promise that the generic engine can infer existence from a readiness probe.
+
 -- ---------------------------------------------------------------------------
 -- The report
 
@@ -853,7 +1062,10 @@ data RoleExitReport = RoleExitReport
 roleExitReportOk :: RoleExitReport -> Bool
 roleExitReportOk report =
     case exitReason report of
-        Just _ -> False
+        Just reason
+            | "shutdown: " `Text.isPrefixOf` reason ->
+                null (exitDrainFailures report) && null (exitUnknownResources report)
+            | otherwise -> False
         Nothing -> null (exitDrainFailures report) && null (exitUnknownResources report)
 
 renderRoleExitReport :: RoleExitReport -> String
@@ -909,14 +1121,25 @@ runRoleLifecycle ::
     RoleCursor scope planId frame instanceId PrereqPhase ->
     RoleEngine ->
     IO RoleExitReport
-runRoleLifecycle store plan placement _cursor engine
-    | protectedStoreIdentity store /= rolePlanStoreOrigin plan =
+runRoleLifecycle store plan placement (RoleCursor _ cursorUse) engine = do
+    alreadyUsed <- atomicModifyIORef' cursorUse (\used -> (True, used))
+    if alreadyUsed
+        then
+            pure
+                ( exitWithNoRoleResources
+                    (noRoleResources plan)
+                    "the role lifecycle admission cursor was already consumed"
+                )
+        else runFresh
+  where
+    runFresh
+      | protectedStoreIdentity store /= rolePlanStoreOrigin plan =
         pure
             ( exitWithNoRoleResources
                 (noRoleResources plan)
                 "the role plan belongs to a different protected store"
             )
-    | otherwise =
+      | otherwise =
         case placementLeaseRequirement placement of
             NoExclusiveEffects -> drive
             RequiresGenerationLease -> do
@@ -935,7 +1158,6 @@ runRoleLifecycle store plan placement _cursor engine
                                 <> rolePlanFrame plan
                             )
                     Right (Just report) -> report
-  where
     leaseName =
         Text.filter legalKeyCharacter
             ("role-lease." <> placementService placement <> "." <> rolePlanFrame plan)
@@ -1009,14 +1231,14 @@ runRoleLifecycle store plan placement _cursor engine
     -- Drain attempts every independent release regardless of individual failures,
     -- then aggregates. It is the sole producer of Exit once anything is acquired.
     drainPhase restore turnedAt reason held = do
-        failures <- traverse release held
+        releases <- traverse release held
         pure
             RoleExitReport
                 { exitTurnedAtPhase = turnedAt
                 , exitReason = reason
-                , exitDrainFailures = concat failures
+                , exitDrainFailures = concatMap fst releases
                 , exitOwnedResources = namesWith ReceiptOwned
-                , exitUnknownResources = namesWith ReceiptUnknown
+                , exitUnknownResources = concatMap snd releases
                 }
       where
         namesWith state =
@@ -1031,12 +1253,14 @@ runRoleLifecycle store plan placement _cursor engine
                     (ReleaseFailed . exceptionText)
                     (engineRelease engine (receiptResource receipt))
             pure $ case outcome of
-                Released -> []
+                Released -> ([], [])
                 ReleaseFailed detail ->
-                    [roleResourceName (receiptResource receipt) <> ": " <> detail]
+                    ( [roleResourceName (receiptResource receipt) <> ": " <> detail]
+                    , [roleResourceName (receiptResource receipt) | receiptState receipt == ReceiptUnknown]
+                    )
 
     guarded restore toFailure action = do
-        outcome <- try (unRestore restore action)
+        outcome <- Exception.try (unRestore restore action >>= evaluate)
         pure $ case outcome of
             Right value -> value
             Left failure -> toFailure failure
@@ -1072,6 +1296,7 @@ data RoleLifecycleError
     | RoleEffectUnsupported Text
     | -- | the service, then the declared effect its signed ceiling does not permit
       RoleEffectNotPermitted Text Text
+    | RoleActivationRequestMismatch Text
     | RoleAdmissionAlreadyConsumed Text
     | RoleAdmissionStoreOriginMismatch Text
     | RoleAdmissionStoreFailure ProtectedError
@@ -1094,6 +1319,8 @@ roleLifecycleErrorMessage failure = case failure of
             <> " declares the effect "
             <> Text.unpack effect
             <> ", which its signed ceiling does not permit"
+    RoleActivationRequestMismatch detail ->
+        "role lifecycle: activation/request mismatch: " <> Text.unpack detail
     RoleAdmissionAlreadyConsumed key ->
         "role lifecycle: lifecycle admission " <> Text.unpack key <> " is already consumed"
     RoleAdmissionStoreOriginMismatch detail -> "role lifecycle: " <> Text.unpack detail

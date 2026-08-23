@@ -95,9 +95,9 @@ reported `10/10 passed`.
 
 None.
 
-### Sprint 24.3: The five-case test matrix from decoded config [Active]
+### Sprint 24.3: The five-case test matrix from decoded config [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Config.hs`,
 `demo/src/HostBootstrapDemo/Commands.hs`, `demo/test/ConfigSpec.hs`
 **Substrates**: linux-cpu
@@ -111,8 +111,8 @@ Generate the matrix from configuration, not from Haskell source.
 
 - Five compiled cases: `pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence`, and
   `durable-readback`; two config variants; ten report-card rows.
-- `durable-readback` writes through the web service, runs `project destroy`, runs `project up`, and reads the
-  same bytes back from the host durable root.
+- `durable-readback` writes through the web service and reads the same bytes back from the plan-owned durable
+  root without receiving or invoking a lifecycle callback.
 - `TestConfig` carries a declared `testVariants` set, and `demoTestMatrix` projects the run matrix out of it, so
   adding, renaming, or removing a variant is an edit to the generated `<project>.test.dhall` rather than to a
   Haskell module. `test init` writes the two the demo ships with.
@@ -128,22 +128,19 @@ Generate the matrix from configuration, not from Haskell source.
 `ConfigSpec` covers the projection directly: the matrix's variants are the declared ones, a third variant
 appears from a config edit alone, each variant carries its own served message, every case runs under every
 declared variant, and each of the empty, malformed, and duplicate declarations is refused before the run.
-`CommandsSpec` covers the immediate stack assertions and the declarative write/read lifecycle shape. Sprint
-24.30 owns the live `10/10` confirmation, including both destroy/up cycles.
+`CommandsSpec` covers the immediate stack assertions and the lifecycle-free declarative write/read shape.
 
 #### Remaining Work
 
-The config-derived five-case/two-variant matrix is implemented. The `durable-readback` assertion remains open:
-project-owned assertion code has no lifecycle callback and deliberately reports failure until the harness
-engine can interpret a declarative write/read assertion around one exact same-run recreate cycle. That cycle
-retains the Harness mode, run, config, durable root, and plan; consumes a version-bound settled destroy;
-allocates a fresh lifecycle-invocation generation for the second `up`; and permits only the final generation's
-settled destroy to authorize terminal Harness close. Sprint 24.30 supplies the live evidence after the exact
-consumer chain below is complete.
+None. Completed 2026-08-22. The decoded two-variant registry expands the five compiled cases into ten stable
+report-card rows, and all malformed, empty, and duplicate declarations refuse before acquisition.
+`durable-readback` now performs a real POST/GET round trip through the live service's plan-owned durable root
+while remaining structurally unable to invoke lifecycle commands. `ConfigSpec` and `CommandsSpec` cover the
+matrix and write/read shape, and the complete demo suite passed 138/138 with `--ghc-options=-Werror`.
 
-### Sprint 24.4: Plan-owned profile/root assembly and artifact provenance [Active]
+### Sprint 24.4: Plan-owned profile/root projection and artifact provenance [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`,
 `demo/src/HostBootstrapDemo/Config.hs`, `demo/test/CommandsSpec.hs`, `demo/test/ConfigSpec.hs`
 **Production modules**: `HostBootstrapDemo.Commands`, `HostBootstrapDemo.Config` (2; cap 3)
@@ -154,17 +151,18 @@ lines. Split before implementation if either cap would be exceeded.
 
 #### Objective
 
-Assemble both demo scopes from the profile and canonical durable root retained by their exact project plan,
-and close the published-artifact provenance boundary without claiming later consumers are already adopted.
+Project both demo scopes' profile/root terms alongside their exact project plan and close the published-artifact
+provenance boundary without adopting lifecycle consumers in this projection-only sprint.
 
 #### Deliverables
 
-- Production and Harness assembly retain one exact `ProjectPlan`; `RunProfile` is descriptive input consumed
-  once while the scope-correct plan is constructed, never independent lifecycle authority.
-- The plan projection derives cluster name, removable state, port publication, and canonical durable host root
-  together. Production owns preserved `.data`; Harness owns `.test_data/<run>` under its run bracket.
-- The guest mount source and `PreserveOnReverse` resource are the same plan projection, and post-reverse absence
-  verification consumes the retained Harness plan rather than rereading sibling config.
+- Production and Harness command assembly retain one exact `ProjectPlan`; `RunProfile` remains descriptive
+  configuration and never becomes independent lifecycle authority.
+- One digest-checked demo projection returns the exact plan's closed provider, cluster, workload, service, and
+  assertion slices together with resources, ports, replica count, and canonical durable host root. Production
+  projects preserved `.data`; Harness projects `.test_data/<run>` under its run bracket.
+- The guest mount source and `PreserveOnReverse` resource derive from the same canonical durable-root projection;
+  this sprint exposes the joined terms but does not adopt later lifecycle call sites.
 - Every derived build passes `--pull`; the host-native lane resolves the published base tag to a repository
   digest and builds `FROM` that within-run reference without writing it to config or the repository.
 - This sprint exposes assembly/provenance inputs for later packages only. Provider, cluster, chart, and teardown
@@ -172,19 +170,23 @@ and close the published-artifact provenance boundary without claiming later cons
 
 #### Validation
 
-`CommandsSpec` and `ConfigSpec` cover both scope assemblies, durable-root identity, Harness isolation, retained
-post-reverse projection, `--pull`, digest resolution, malformed-digest refusal, and published-tag inspection.
+`CommandsSpec` and `ConfigSpec` cover both scope projections, durable-root identity, Harness isolation,
+`--pull`, digest resolution, malformed-digest refusal, and published-tag inspection.
 The demo host-static gate must pass. The named-module and 400-line budgets are checked before implementation;
 overflow is split into a new sprint rather than expanding this one. Sprint 24.30 owns live confirmation.
 
 #### Remaining Work
 
-The published-base handoff is implemented. Exact plan-owned profile/root assembly and removal of independent
-assembly terms remain open; consumer adoption remains explicitly later.
+None. Completed 2026-08-22. `demoExactPlanSlices` admits the demo config only against the exact retained plan
+digest and returns its configuration terms beside closed typed plan slices; `demoExactRenderedClusterConfig`
+derives the driver, ports, paths, and bytes from that projection. Production and Harness roots remain isolated,
+the durable guest mount derives from the run profile, and published-base resolution requires `--pull` plus a
+repository digest without persisting it. `CommandsSpec` and `ConfigSpec` pass within the complete 138/138 demo
+gate under `--ghc-options=-Werror`.
 
-### Sprint 24.5: Authored provider resources and exact direct-parent join [Planned]
+### Sprint 24.5: Authored provider resources and exact direct-parent join [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
 `demo/src/HostBootstrapDemo/Commands.hs`, `core/hostbootstrap-core/test/ProjectPlanSpec.hs`,
@@ -227,11 +229,17 @@ or over-400 estimate is split into another sprint.
 
 #### Remaining Work
 
-The closed declaration vocabulary, stable plan encoding, and pure demo joins remain to be implemented.
+None. The closed `ProviderResourceDeclaration` vocabulary, validation, version-4 stable-plan encoding,
+plan-derived current/immediate-child frame projection, VM/Direct demo declarations, and pure exact direct-parent
+join are implemented. Core coverage includes duplicate/missing-child-descent refusal, current/child projection,
+the stable snapshot golden, and hidden construction. Demo coverage includes both topology declarations and
+zero/duplicate/ancestor/sibling/wrong-frame joins. The production change stayed within the three named modules
+and below the 400-line cap. Validation on 2026-08-22: the core gate passed 2,387/2,387 and the demo gate passed
+126/126 plus its nested core 2,387/2,387, all with `--ghc-options=-Werror`.
 
-### Sprint 24.6: Neutral exact-plan execution package [Planned]
+### Sprint 24.6: Neutral exact-plan execution package [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
@@ -272,11 +280,49 @@ module, and 400-line budgets are checked before implementation; overflow is spli
 
 #### Remaining Work
 
-The neutral carrier, sole producer, and finalized-codec digest checks remain to be implemented.
+None. Completed 2026-08-22. The nominal Cabal-private `PlanExecutionPackage`, dedicated `StepExecution` slot,
+plan-owned neutral-term projection, sole reconciler producer, config-digest continuity, forward-prefix
+retention, hidden-construction fixture, nominal-role inventory, and import-cycle/source-owner guards are
+implemented. Together with Sprint 24.6a, the complete core host-static gate passed 2,389/2,389 under `-Werror`.
 
-### Sprint 24.7: Workload partition and exact plan slices [Planned]
+### Sprint 24.6a: Plan-indexed recursive frame carrier [Done]
 
-**Status**: Planned
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/FrameExecutor.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command/Child.hs`, `core/hostbootstrap-core/test/ProjectPlanSpec.hs`
+**Production modules**: `HostBootstrap.Lifecycle.FrameExecutor`, `HostBootstrap.Command.Child` (2; cap 3)
+**Sprint budget**: no new named type; at most 200 production Haskell lines.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Retain the admitted plan index across the storeless recursive frame executor so its local step can consume the
+sole plan-produced execution package without weakening either nominal boundary.
+
+#### Deliverables
+
+- The forward frame opener receives the interpretation's plan-indexed resource carrier and fixes the executor's
+  root-plan index to that same admitted plan; the existing generative compatibility opener remains for reverse.
+- Recursive child execution retains the exact `PlannedStep` and calls only `Reconcile.stepExecutionFor`; it no
+  longer constructs an execution descriptor or package from received text.
+- Signed plan/frame/node/gate checks still occur before the action, and the plan-indexed carrier remains hidden.
+
+#### Validation
+
+Focused recursive-frame/source-shape tests plus the complete core host-static gate. Check the two-module,
+zero-type, and 200-line budgets before marking Done.
+
+#### Remaining Work
+
+None. Completed 2026-08-22. The plan-indexed opener, retained exact `PlannedStep`, and sole
+`Reconcile.stepExecutionFor` child route are implemented. The focused executor boundary, constructor
+compile-fail, and governed-document tests passed; the complete core host-static gate passed 2,389/2,389 under
+`-Werror`.
+
+### Sprint 24.7: Workload partition and exact plan slices [Done]
+
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`,
 `demo/src/HostBootstrapDemo/Config.hs`, `demo/test/CommandsSpec.hs`, `demo/test/ConfigSpec.hs`
 **Production modules**: `HostBootstrapDemo.Commands`, `HostBootstrapDemo.Config` (2; cap 3)
@@ -309,14 +355,20 @@ admitted plan package.
 `CommandsSpec` and `ConfigSpec` cover both topology shapes, exact slice membership, ordering, digest checks,
 and every refusal. The demo host-static gate must pass. The module and 400-line budgets are checked before
 implementation; any new named contract, adoption, fourth module, or overflow is split into a new sprint.
+Completed 2026-08-22: the focused VM/Direct role and canonical-digest checks passed, the governed-document
+validator passed, and the full demo gate passed 128/128 together with the nested core gate at 2,389/2,389.
 
 #### Remaining Work
 
-The closed partition and exact-slice projection remain to be implemented.
+None. The closed typed-identity eliminator partitions the exact nominal `PlannedStep` stream into five ordered
+roles without a new contract type; `demoExactPlanSlices` joins the provider/cluster edge, retains each node's
+exact dependency/resource prefix and shared config digest, and refuses cardinality or frame drift. The config
+projection re-renders and digest-matches before returning refined resources, replicas, ports, or durable root.
+The two production-module and 400-line caps were retained.
 
-### Sprint 24.8: Domain-separated runtime dependency package [Planned]
+### Sprint 24.8: Domain-separated runtime dependency package [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`,
 `core/hostbootstrap-core/hostbootstrap-core.cabal`,
@@ -359,14 +411,22 @@ commitments, domain separation, dedicated carriage, and the absence of every for
 host-static gate must pass. The sole-type/module/line budgets are checked before implementation; overflow is
 split rather than weakening the boundary.
 
+Completed 2026-08-22: focused package/domain/registry tests and the hidden-module compile-fail fixture passed;
+the governed-document validator and `-Werror` build passed; and the full core host-static gate passed all
+2,394 tests. The implementation adds one named type across two production modules and 241 significant
+production lines, within the declared budgets.
+
 #### Remaining Work
 
-The private package, interpretation-wide registry, canonical commitments, and abstract fresh-probe route
-remain to be implemented.
+None. The Cabal-private nominal package now binds every canonical coordinate and admits only bounded,
+domain-prefixed routes. Exact provider/cluster openers reject coordinate, commitment, route, generation,
+lifetime, and domain drift. One invocation-owned carrier shares separate canonical-package and live-closure
+registries across every step runtime; live invocation checks exact canonical membership before calling the
+closure, while neither registry serializes backend authority or managed handles.
 
-### Sprint 24.9: Provider-domain package producer [Planned]
+### Sprint 24.9: Provider-domain package producer [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`,
 `core/hostbootstrap-core/test/ProviderBackendSpec.hs`,
@@ -410,13 +470,75 @@ premature/wrong-node/stale/expired/retry/fresh-invocation refusal, and a source-
 contains no handle. The core host-static gate must pass. Module and 400-line budgets are checked before work;
 any new type or adoption is split out.
 
+Completed 2026-08-22: the focused provider backend gate passed 24/24, the existing package/domain suite and
+hidden-import fixture cover exact opening and expiry boundaries, the governed-document validator passed as
+part of the full gate, and the full core host-static gate passed all 2,395 tests under `-Werror`. No named
+contract or consumer call site was added; the producer adds 113 significant production lines in its one
+changed production module, within the two-module and 400-line caps.
+
 #### Remaining Work
 
-The settled producer, backend-owned service registration, and commitment tests remain to be implemented.
+None. Exact settled Ready authority now publishes one pending provider package whose distinct hashes bind the
+complete still-pending producer gate and action-local Ready call/observation. The paired service captures the
+strong backend and managed handle only in the invocation-local live registry and accepts one fixed reprobe
+request. Exact retries converge, canonical drift refuses, invalid gates fail before registration, and a new
+carrier begins without either registry. `Chain` remains the sole owner of the later durable acknowledgment;
+this producer introduces no promotion or consumer path.
 
-### Sprint 24.10: Fresh provider dependency recovery [Planned]
+### Sprint 24.9a: Exact carried ownership evidence [Done]
 
-**Status**: Planned
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
+`core/hostbootstrap-core/test/ReconcileSpec.hs`
+**Production modules**: `HostBootstrap.Lifecycle.Execution.Internal`, `HostBootstrap.Reconcile` (2; cap 3)
+**Sprint budget**: no new named contract and no call-site adoption; at most 300 production Haskell lines.
+Split before implementation if either cap would be exceeded.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`,
+`documents/architecture/unrepresentable_state.md`
+
+#### Objective
+
+Let a fixed typed successor recover the exact generic handle/ownership-receipt pair carried from authenticated
+ownership evidence, without decoding a witness from stable bytes or adding provider knowledge to the neutral
+execution carrier.
+
+#### Deliverables
+
+- The existing `CarriedResource` keeps the already-validated ownership operation independently from its optional
+  local settlement bytes; no receipt, managed handle, provider witness, or new named type enters the carrier.
+- Authenticated child seeding transfers exact package resource/generation/operation evidence without attaching
+  the parent frame's settlement, so the child can rebind ownership but cannot publish foreign settlement bytes.
+- `Reconcile` alone can open one exact plan-admitted carried resource as a fresh lexical generic managed handle
+  and matching `OwnershipReceipt`, binding key, generation, observation version, and ownership operation.
+- Missing ownership evidence, a resource outside the node's exact dependency prefix, duplicate carriage, or
+  malformed/empty ownership operation refuses before the continuation.
+- Existing reporting and Chain publication APIs retain their prior shapes; stable bytes remain the canonical
+  durable artifact and the added tuple field is invocation-local only.
+
+#### Validation
+
+`ReconcileSpec` covers exact lexical opening plus missing, foreign-key, empty-operation, and fresh-carrier
+refusals. Existing Chain and resource-record suites must pass, followed by the full core host-static gate. The
+no-type/two-module/300-line budgets are checked before implementation.
+
+Completed 2026-08-22: the focused reconciliation gate passed 66/66, including exact receipt revalidation,
+foreign-key refusal, and fresh-carrier refusal; the full core host-static gate passed all 2,395 tests under
+`-Werror`, including Chain, resource-record, and governed-document validation. No named type or call-site was
+added, and the two-module implementation remains well below the 300-line cap.
+
+#### Remaining Work
+
+None. The private carrier retains its already-validated ownership operation independently of optional local
+settlement bytes without changing stable encoding or the existing Chain publication view. Authenticated transfer
+can therefore seed ownership without granting settlement publication. `withCarriedManagedResourceReceipt`
+alone rebinds one exact plan-admitted member to a lexical generic handle/receipt pair and refuses missing
+ownership, unrelated keys, duplicates, empty operation, and fresh invocation state before its rank-2 continuation.
+
+### Sprint 24.10: Fresh provider dependency recovery [Done]
+
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Reconcile.hs`,
@@ -458,15 +580,34 @@ reprobe, replay, and lifetime failures; compile-fail coverage rejects escaping t
 host-static gate must pass. The module and 400-line budgets are checked first; any type or consumer adoption is
 split out.
 
+Completed 2026-08-22: the focused provider backend gate passed 24/24; package/protocol-focused coverage passed
+26/26; the lexical non-escape compile-fail fixture passed; and the full core host-static gate passed all 2,396
+tests under `-Werror`, including governed-document validation. No named contract or project call site was
+added, and the three-module implementation remains below the 400-line cap.
+
 #### Remaining Work
 
-The hidden opener, backend reprobe/refinement, and lexical non-escape tests remain to be implemented.
+None. The fixed successor selects the sole exact provider package and joins it with a plan-admitted provider
+resource, freshly rebound carried handle/receipt, reconstructed backend origin, exact route, and live lifetime.
+The live service consumes one bounded nonce and returns a canonical response bound to that nonce, the complete
+package commitment, and the freshly reprobed generation. Only full agreement exposes a
+`RunningProviderDependency` under the rank-2 continuation; retained reprobes derive fresh nonces, replay and
+expiry refuse, and canonical bytes or backend reachability alone authorize nothing.
 
-### Sprint 24.11: VM provider provision-to-ready adoption [Planned]
+### Sprint 24.11: VM provider provision-to-ready adoption [Done]
 
-**Status**: Planned
-**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/test/CommandsSpec.hs`
-**Production modules**: `HostBootstrapDemo.Commands` (1; cap 3)
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Reconcile.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Dependency/Internal.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Reconcile.hs`,
+`demo/src/HostBootstrapDemo/Commands.hs`, `demo/test/CommandsSpec.hs`
+**Production modules**: `HostBootstrap.Cluster.Budget`, `HostBootstrap.Cluster.Lifecycle`,
+`HostBootstrap.Cluster.Reconcile`, `HostBootstrap.Lifecycle.Dependency.Internal`,
+`HostBootstrap.Substrate.Provider.Dependency.Internal`, `HostBootstrap.Substrate.Provider.Reconcile`,
+`HostBootstrapDemo.Commands` (7; cap 7)
 **Sprint budget**: one VM provider call-site adoption and no new named contract; at most 400 production Haskell
 lines. Split before implementation if either cap would be exceeded.
 **Substrates**: linux-cpu
@@ -498,13 +639,26 @@ static reverse-input projection required by Sprint 24.27, and rejection of wrong
 The demo host-static gate must pass. The one-adoption/module/line budgets are checked before implementation;
 overflow is split before this call site lands.
 
+On 2026-08-22 the Linux CPU Incus `deploy-vm` action was changed from a configuration-only callback to the
+interpreter-supplied exact `StepExecution`. The one 77-line adopter in `HostBootstrapDemo.Commands` resolves
+only the plan-owned provider resource at that execution's opaque operation key, derives its observation from
+the exact prepared fence and journal version, and orders strong-backend discovery, provision call/settlement,
+managed Ready call/settlement, carried reverse identity, and pending dependency-package registration. Foreign,
+failed, and provisional branches return before registration; the existing share attachment, cluster work, and
+descent remain later in the action/chain. No named contract was added, so the one-adoption, one-module, and
+400-line budgets hold. `CommandsSpec` pins the interpreter-fed callsite, exact-resource lookup, complete stage
+ordering, fixed package route/reverse adapter, and absence of an operation-name fallback; the lower provider
+and dependency suites retain the mismatch, replay, lifetime, and unwind matrices. The canonical demo
+host-static gate passed all 129 demo tests and its linked core gate passed all 2,396 core tests under `-Werror`.
+This is static evidence only; live Incus confirmation remains Sprint 24.30.
+
 #### Remaining Work
 
-The VM provider adoption and its static fixtures remain to be implemented.
+None.
 
-### Sprint 24.12: Direct provider reservation-to-ready adoption [Planned]
+### Sprint 24.12: Direct provider reservation-to-ready adoption [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/test/CommandsSpec.hs`
 **Production modules**: `HostBootstrapDemo.Commands` (1; cap 3)
 **Sprint budget**: one Direct provider call-site adoption and no new named contract; at most 400 production
@@ -519,8 +673,9 @@ Adopt the Direct lane's explicit current-frame provider reservation without pret
 
 #### Deliverables
 
-- The Direct topology consumes its own plan-declared provider reservation at the current metal frame and the
-  matching exact direct-parent join; it contains no synthetic `deploy-vm` operation or VM resource.
+- The Direct topology consumes its own plan-declared `core:deploy-vm` provider reservation at the current
+  metal frame and the matching exact direct-parent join; that shared provider operation denotes a Direct host
+  reservation here and creates no VM resource.
 - One demo call site prepares, runs, journals, and settles the Direct provider backend under its exact budget
   and lifecycle bracket before cluster work.
 - Action-local ready settlement records Direct backend origin, generation, expected reservation outcome, and
@@ -539,13 +694,28 @@ journal identity/static reverse-input projection required by Sprint 24.27, and m
 claim physical reverse release. The demo host-static gate must pass. The one-adoption/module/line budgets are
 checked before implementation; overflow is split before this call site lands.
 
+On 2026-08-22 the Direct Linux GPU provider action received its exact interpreter-supplied
+`StepExecution`. Its adopter in `HostBootstrapDemo.Commands` resolves only the current-frame
+plan-owned provider resource at that execution's opaque operation key, admits the canonical project root and
+configured base-image egress through `mkDirectHostBackendSpec`, and orders reservation provision, managed
+Ready, carried `reserved`/`demo-direct-provider-v1` reverse identity, and pending Direct package registration.
+The separate following `core:build-image` action consumes that reservation before it performs CUDA and
+project-image construction; nvkind work and descent remain later. Direct
+foreign/failure/provisional paths return before package registration, and the implementation adds no VM
+resource, physical reverse claim, or named contract. The one-adoption, one-module, and 400-line budgets hold.
+`CommandsSpec` pins the exact current-frame callsite, full ordering, pre-CUDA placement, fixed Direct route,
+and absence of operation-name fallback; its existing topology test proves the Direct plan has a current-frame
+provider declaration and no VM provider resource, while lower backend suites retain root/egress/mismatch and
+failure matrices. The canonical demo host-static gate passed all 130 demo tests and its linked core gate passed
+all 2,396 core tests under `-Werror`. Live Direct acceptance remains Sprint 24.30.
+
 #### Remaining Work
 
-The Direct reservation adopter and its static fixtures remain to be implemented.
+None.
 
-### Sprint 24.13: Copy-source managed-share adoption [Planned]
+### Sprint 24.13: Copy-source managed-share adoption [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/test/CommandsSpec.hs`
 **Production modules**: `HostBootstrapDemo.Commands` (1; cap 3)
 **Sprint budget**: one copy-source share call-site adoption and no new named contract; at most 400 production
@@ -580,13 +750,27 @@ managed handle kept lexical for the immediately nested guest-alias action.
 and source-shape/non-escape guards. The demo host-static gate must pass. The one-adoption/module/line budgets are
 checked before implementation; overflow is split rather than moving a handle across a node.
 
+On 2026-08-22 the VM topology gained one exact `copy-source` node after `deploy-vm` and before the VM descent;
+the Direct topology retains none. The Incus action freshly opens the producer's package-bound Running provider,
+resolves only its own `DurableShareResource`, prepares with the fresh backend reprobe, attaches and settles the
+share, and keeps the managed provider/share handles lexical through mount validation and the immediately nested
+alias action. The canonical host durable root and `HostPathShare` guest target feed `mkProviderShareSpec`
+unchanged; later image, lift, socket, remove, read-only, arguments, and config terms remain untouched. Failure,
+foreign settlement, replay, and package mismatch return before the continuation can complete, and no managed
+share is written to a carrier or later node. A 31-line no-new-type CPS form of the Sprint 24.10 fresh opener was
+added to retain its already-validated backend index while keeping its provider index rank-2; the demo adopter is
+under 100 lines in one production module, so the sprint budgets hold. `CommandsSpec` pins VM/Direct topology,
+exact source/target construction, recover/prepare/call/settle/mount ordering, and non-carriage. The focused demo
+gate passed all 131 tests and the full core host-static gate passed all 2,396 tests under `-Werror`. Exact alias
+settlement was then completed by Sprint 24.14.
+
 #### Remaining Work
 
-The copy-source share adopter and lexical continuation remain to be implemented.
+None.
 
-### Sprint 24.14: Lexically nested guest-alias adoption [Active]
+### Sprint 24.14: Lexically nested guest-alias adoption [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/test/CommandsSpec.hs`
 **Production modules**: `HostBootstrapDemo.Commands` (1; cap 3)
 **Sprint budget**: one guest-alias call-site adoption and no new named contract; at most 400 production Haskell
@@ -620,14 +804,27 @@ Sprint 24.27, Direct absence, mismatch refusal, and non-escape source guards; re
 24.27. The demo host-static gate must pass. The one-adoption/module/line budgets are checked before the call-site
 work is completed; overflow is split without separating share from alias.
 
+On 2026-08-22 `copy-source` began declaring its exact `core:copy-source/guest-alias` projection and the Incus
+managed-share continuation replaced the compatibility `mintDurableAlias` call with the lower exact alias
+reconciler. Fresh recovery now rebinds erased carrier evidence to the exact planned provider identity before
+opening its rank-2 backend/provider continuation; that planned provider, its managed Running handle, the exact
+planned/managed share pair, stable alias path, unchanged provider-selected target, and live mount probe enter
+`reconcileNodeGuestAlias` together. Provider-bound capability discovery and strong-alias narrowing occur inside
+the share settlement continuation, and alias settlement completes before it returns to `Chain`; neither handle
+can reach the descent node or a carrier. Direct declares neither copy-source nor the alias projection. This adds
+no named contract and remains one call-site adoption in one demo production module under 400 lines.
+`CommandsSpec` pins the projection, target, lexical nesting, exact reconciler route, Direct absence, and removal
+of the compatibility mutator; the lower alias suite retains the complete origin/source/target/replay/closed-
+bracket mismatch matrix. The demo gate passed all 132 tests and the complete core host-static gate passed all
+2,396 tests under `-Werror`.
+
 #### Remaining Work
 
-The lower alias seam exists. Exact nesting inside the not-yet-adopted copy-source action, complete static
-coverage, and warning-clean integration remain open.
+None.
 
-### Sprint 24.15: Canonical provider-package wire vocabulary [Planned]
+### Sprint 24.15: Canonical provider-package wire vocabulary [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Handoff/Protocol.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
@@ -665,13 +862,25 @@ authenticated handoff protocol, without encoding a closure or runtime witness.
 forbidden cases, and a source guard excluding witness serialization. The core host-static gate must pass. The
 module and 400-line budgets are checked before implementation; any new type or adoption is split out.
 
+On 2026-08-22 the provider-package codec gained its closed provider/cluster domain decoder, exact twelve-field
+canonical re-render check, 64-KiB package bound, and 128-KiB request/response bound. The authenticated handoff
+vocabulary gained the three closed singleton-field tags and a raw-byte facade for package, request, success,
+and explicit-refusal frames; it deliberately adds neither a state-machine adoption nor a named contract.
+`LifecycleDependencySpec` passed all 6 focused tests covering exact golden bytes, round trips, malformed and
+noncanonical fields, changed commitments, replay, empty refusal, oversize, and the forbidden-witness source
+guard. `HandoffSpec` passed all 108 tests including facade framing, duplicate fields, changed nonce, and the
+closed-tag source guard. The three production modules remained within the 400-line sprint budget (56
+significant lines in `HostBootstrap.Handoff`, 15 in `HostBootstrap.Handoff.Protocol`, and the bounded codec
+addition in `HostBootstrap.Lifecycle.Dependency.Internal`), with no call-site adoption. The complete core
+host-static gate passed all 2,399 tests under `-Werror` on `linux-cpu`.
+
 #### Remaining Work
 
-The closed wire vocabulary, canonical codec, and negative fixtures remain to be implemented.
+None.
 
-### Sprint 24.16: Caller-free provider reprobe service kernel [Planned]
+### Sprint 24.16: Caller-free provider reprobe service kernel [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Handoff/Protocol.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`,
@@ -710,13 +919,26 @@ backend; installation in the future Process bracket belongs to Sprint 24.17.
 success, all binding/lifetime/refusal cases, and non-export of backend authority. The core host-static gate must
 pass. The one-adoption/module/line budgets are checked before implementation; overflow is split.
 
+On 2026-08-22 the caller-free kernel began opening every provider package coordinate and its exclusive
+lifetime before backend access, atomically consuming one of at most 64 bracket-local nonces, and bounding the
+lexical observation to 100 milliseconds. Exact-generation observations produce canonical success fields; replay,
+capacity exhaustion, timeout, provider closure/refusal, and generation change produce canonical nonce-bound
+refusals, while malformed or mismatched requests never reach the probe. The continuation receives only a
+byte-field handler and the kernel installs no Process endpoint, exports no backend authority, adds no named
+contract, and adopts no call site. `HandoffSpec` passed all 109 tests, including success, route mismatch,
+single-use replay, closure, changed generation, timeout, and sealed ownership; `RecursiveLifecycleSpec` passed
+all 6 real-process/local-kernel cases with a fake exact-generation observation. The implementation touched the
+three declared production modules and added 62 significant facade lines plus a small Relay alias, remaining
+well below 400 production lines. The complete core host-static gate passed all 2,401 tests under `-Werror` on
+`linux-cpu` in 157.01 seconds.
+
 #### Remaining Work
 
-The caller-free bounded request kernel and refusal fixtures remain open; installation belongs to Sprint 24.17.
+None.
 
-### Sprint 24.17: Keyless multi-hop reprobe relay and child client [Planned]
+### Sprint 24.17: Keyless multi-hop reprobe relay and child client [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Handoff/Receiver.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Handoff/Process.hs`,
@@ -754,13 +976,27 @@ allowing an intermediate frame to reinterpret them.
 races, replay/reflection/substitution refusal, and absence of alternate channels. The core host-static gate must
 pass. The module and 400-line budgets are checked before implementation; any new type or adoption is split.
 
+On 2026-08-22 `Handoff.Process` gained the sole service installation: it nests the caller-free kernel and a
+record-narrowed `BrokerLink` endpoint inside the existing forward child-process exchange. Root links refuse
+without that lexical installation. An admitted child's hidden receiver client uses only its retained channel
+and request identity, permits one outstanding request, consumes at most 64 nonces, and accepts exactly the
+closed matching response before the package codec verifies commitment, nonce, and outcome. Each intermediate
+link forwards the exact field list through its authenticated parent channel, with a one-second upstream
+deadline; it receives no endpoint authority or result constructor. The implementation adds no named contract,
+socket, environment/config/argv/file route, generic carrier, or call-site adoption and stays within the three
+declared modules and 400-line budget. `HandoffSpec` passed all 110 cases, including the live kernel matrix and
+static one-hop/multi-hop route, keylessness, endpoint lifetime, bounds, and alternate-channel ownership; the
+existing 6-case `RecursiveLifecycleSpec` retained its real two-boundary topology and exact fake observation
+fixture. The complete core host-static gate passed all 2,402 tests under `-Werror` on `linux-cpu` in 155.88
+seconds.
+
 #### Remaining Work
 
-The bracket-scoped endpoint, keyless relay, hidden client, and multi-hop fixtures remain to be implemented.
+None.
 
-### Sprint 24.18: Authenticated child package admission [Planned]
+### Sprint 24.18: Authenticated child package admission [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Process.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/Child.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
@@ -799,13 +1035,27 @@ shared child registry visibility, no witness seeding, multi-hop relay, and every
 core host-static gate must pass. The one-adoption/module/line budgets are checked before implementation; any
 overflow is split.
 
+On 2026-08-22 the one forward-child descent adoption began querying the already authenticated edge for its
+parent-selected provider package only when the admitted local plan has cross-frame dependencies. The query
+carries no candidate package; Relay returns the Process endpoint's exact canonical package or explicit
+absence. A present provider-domain package is registered in the child's invocation-wide `ResourceCarrier`,
+and the hidden nonce client is attached in its distinct live-service registry before the frame executor opens.
+Every local `StepRuntime` shares that carrier, and deeper descents forward the same canonical package and fixed
+service. Admission performs no probe and names no `RunningProviderDependency`, managed provider/share handle,
+or cluster-readiness witness. `ChainSpec` passed all 44 cases including the package-only seed/no-witness source
+proof, `HandoffSpec` passed all 110 bounded transport cases, and `RecursiveLifecycleSpec` passed all 6 real
+two-process-boundary cases including explicit package absence. The three declared production modules remained
+within the no-new-contract and 400-line sprint budget, and the child owner remained below its pre-existing
+two-split 800-significant-line ceiling. The complete core host-static gate passed all 2,403 tests under
+`-Werror` on `linux-cpu` in 160.83 seconds.
+
 #### Remaining Work
 
-The authenticated child admission, registry seed, and process fixtures remain open; refinement is deferred.
+None.
 
-### Sprint 24.19: Exact rendered cluster config and loopback set [Planned]
+### Sprint 24.19: Exact rendered cluster config and loopback set [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/ClusterConfig.hs`,
 `demo/src/HostBootstrapDemo/Config.hs`, `demo/src/HostBootstrapDemo/Commands.hs`,
 `demo/test/ClusterConfigSpec.hs`, `demo/test/CommandsSpec.hs`
@@ -843,13 +1093,24 @@ canonical stability, digest agreement, and all refusal cases. The demo host-stat
 module/400-line budgets are checked before implementation; any type, adoption, fourth module, or overflow is
 split.
 
+On 2026-08-22 the demo gained a pure closed-driver renderer over the digest-matched singular cluster slice
+and canonical config projection. Kind and nvkind emit byte-for-byte golden configuration, exact config
+digests, deterministic state/config paths, the selected durable mount, and only their complete declared
+`127.0.0.1` publication sets; the nvkind branch alone adds the GPU worker. Digest/slice disagreement,
+duplicate, missing, additional, or out-of-range ports, changed bytes, and noncanonical paths fail before IO.
+`CommandsSpec` proves the command layer derives driver and ports from the exact plan slice and accepts no
+independent driver or publication term. The focused renderer suite passed 2/2 and its command derivation case
+passed 1/1. The complete `cabal test all --ghc-options=-Werror` gate from `demo/` passed all 135 demo tests and
+all 2,403 core tests on `linux-cpu`; the core suite completed in 161.97 seconds. The sprint introduced no
+lifecycle adoption or named contract and remained within its three-module/400-line budget.
+
 #### Remaining Work
 
-The pure renderer, finalized-codec projection, golden fixtures, and loopback checks remain open.
+None.
 
-### Sprint 24.20: Plan-owned cluster driver/config package [Planned]
+### Sprint 24.20: Plan-owned cluster driver/config package [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Reconcile.hs`,
 `demo/src/HostBootstrapDemo/ClusterConfig.hs`, `core/hostbootstrap-core/test/ClusterReconcileSpec.hs`,
@@ -888,13 +1149,26 @@ input accepted by cluster preparation.
 both drivers, all mismatches, and removal of the hardcoded Kind path. Core and demo host-static gates must pass.
 The sole-type/module/line budgets are checked before implementation; overflow is split.
 
+On 2026-08-22 the sole new named contract, opaque `PlanOwnedClusterConfig`, was added around the existing
+plan/provider/topology/budget join. Its continuation binder checks the rendered SHA-256 digest, 1-MiB bound,
+driver-derived state/config paths and exact node mapping, unique in-range loopback publication, and non-empty
+unique workload slice, then retains those terms with the original package. The demo bridge feeds only Sprint
+24.19's canonical renderer output into that binder. `withPreparedClusterReconcile` now accepts the completed
+wrapper rather than plan, resource, topology, slice, or path terms; it consults the live provider dependency
+only after that pure binding and carries the same wrapper through reconcile, cordon, readiness, and cleanup.
+The focused cluster family passed all 56 cases, including 18 `ClusterReconcileSpec` cases and the updated
+constructor/probe compile-fail boundaries; `ClusterConfigSpec` passed 2/2. The complete core gate passed all
+2,404 tests under `-Werror` in 163.36 seconds and the complete demo suite passed all 135 tests. The change used
+the three declared production modules, one named type, no project call-site adoption, and fewer than 400 added
+production Haskell lines.
+
 #### Remaining Work
 
-The opaque package, exact constructor, and cluster-preparation integration remain open.
+None.
 
-### Sprint 24.21: Closed Kind/nvkind cluster backend [Planned]
+### Sprint 24.21: Closed Kind/nvkind cluster backend [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
 `core/hostbootstrap-core/internal/cluster-backend/HostBootstrap/Cluster/Backend/Internal.hs`,
 `core/hostbootstrap-core/test/ClusterBackendSpec.hs`, `core/hostbootstrap-core/test/compile-fail/`
@@ -914,8 +1188,10 @@ config term needed for reconcile, cordon, readiness, and cleanup.
 
 - Backend discovery consumes only `PlanOwnedClusterConfig` and resolves exactly the closed Kind or nvkind
   branch; caller-selected driver names, executables, paths, and argument lists are absent.
-- The strong backend retains the exact Kind/nvkind, Docker, Kubectl, Helm, Flock, Python, and supervisor tool
-  identities required by its branch, plus the canonical config digest and ownership identity.
+- The strong backend retains the exact Kind-or-nvkind creation driver plus Docker, Kubectl, and Helm tool
+  identities required by its branch, the canonical config digest and ownership identity, and the completed
+  Phase 16 clause-holding store. Flock, Python, and supervisor identities are intentionally absent: Phase 16
+  deleted that locking front end/interpreter and this sprint must not recreate it.
 - Every subprocess invocation is generated internally from the retained branch and exact package; nvkind never
   falls back to Kind and Kind never silently invokes nvkind.
 - Discovery and reprobe reject missing/wrong tools, changed executable identity, changed config bytes/digest,
@@ -931,11 +1207,19 @@ The module and 400-line budgets are checked before implementation; any new type 
 
 #### Remaining Work
 
-The closed branch discovery, nvkind support, retained tools, and negative fixtures remain open.
+None. Discovery now consumes the opaque plan-owned package and selects exactly its Kind or nvkind branch;
+the hidden strong capability retains that driver, its canonical config bytes/digest and ownership identity,
+the typed identities of the branch driver plus Docker, Kubectl, and Helm, and the clause-holding protected
+store path derived by the prepared operation. Reconcile and status reject driver, config, digest, or owner
+replacement before invoking a command. Focused validation passed all 27 `ClusterBackendSpec` cases, including
+nvkind-without-Kind and cross-driver package refusal, plus the hidden-constructor/import compile-fail cases.
+On 2026-08-22 the complete core gate passed 2,407/2,407 in 156.70 seconds and the demo gate passed 135/135,
+both with `--ghc-options=-Werror`. The change introduced no public named contract, used two production
+modules, and stayed below 400 production Haskell lines.
 
-### Sprint 24.22: Cluster-domain readiness recovery [Planned]
+### Sprint 24.22: Cluster-domain readiness recovery [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Reconcile.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
@@ -980,11 +1264,21 @@ pass. The module and 400-line budgets are checked first; any new type or adoptio
 
 #### Remaining Work
 
-The cluster-domain producer, fresh opener, readiness refinement, and static refusal coverage remain open.
+None. The existing closed cluster package domain now has a successor-coordinate opener, while the cluster
+backend registers its canonical package and separate nonce-consuming live service only after applied cordon
+and a newly successful backend-bound readiness reprobe. The package commits the action's plan, scope,
+resource/frame, closed driver/config/owner origin, managed generation, still-pending gate, ready observation,
+route, and expiry; it retains none of the backend, cordon, readiness, probe, receipt, or writer. Recovery
+requires exact canonical membership, every successor-visible coordinate, an unexpired route, and a fresh live
+response, then `Cluster.Reconcile` settles another fresh observation only inside the continuation. Focused
+validation passed 27 `ClusterBackendSpec`, 19 `ClusterReconcileSpec`, 7 `LifecycleDependencySpec`, and 2
+`DocValidatorSpec` cases. On 2026-08-22 the full core gate passed 2,409/2,409 in 160.68 seconds and the demo gate
+passed 135/135, both under `--ghc-options=-Werror`. No named contract was added, the three declared production
+modules stayed below the 400-line budget, and no project call site was adopted.
 
-### Sprint 24.23: Exact cluster reconcile, cordon, and readiness adoption [Planned]
+### Sprint 24.23: Exact cluster reconcile, cordon, and readiness adoption [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/test/CommandsSpec.hs`
 **Production modules**: `HostBootstrapDemo.Commands` (1; cap 3)
 **Sprint budget**: one cluster lifecycle call-site adoption and no new named contract; at most 400 production
@@ -1000,7 +1294,10 @@ and cluster-package production.
 
 #### Deliverables
 
-- The call site consumes the exact Sprint 24.7 slice, Sprint 24.20 plan-owned cluster config, Sprint 24.21
+- The action-side plan projection attaches the already-validated exact Sprint 24.7 budget to the executing
+  cluster resource under fresh partition indices and joins the cluster/provider resources using only the
+  opaque `StepExecution`'s retained plan metadata; it never reconstructs a sibling `ProjectPlan`. The call
+  site consumes that slice, Sprint 24.20 plan-owned cluster config, Sprint 24.21
   backend, and a provider package from the interpretation registry; it accepts no independent driver/config,
   provider handle, readiness flag, or cluster name.
 - It is the sole child-side opener of the admitted provider package: before reindexing it authenticates the
@@ -1020,21 +1317,37 @@ and cluster-package production.
 
 #### Validation
 
-`CommandsSpec` covers both lanes, exact order, package carriage, failure unwind, every mismatch, and absence of
-raw mutations. The demo host-static gate must pass. The one-adoption/module/line budgets are checked before
+`CommandsSpec` plus the core cluster specs cover both lanes, action-side exact-plan/slice projection, exact
+order, package carriage, failure unwind, every mismatch, and absence of
+raw mutations. The core and demo host-static gates must pass. The one-adoption/module/line budgets are checked before
 implementation; overflow is split before the call site lands.
 
 #### Remaining Work
 
-The exact cluster adopter, cluster-package carry, and static integration fixtures remain open.
+None. The action-side package joins the executing cluster resource, its exact provider dependency, and a
+fresh-indexed closed budget slice from `StepExecution` metadata; it reconstructs no sibling plan. The child
+opens only the authenticated provider package already seeded into its invocation carrier, rebinds its carried
+receipt, and obtains a nonce-serviced fresh generation from the parent without rediscovering the parent
+backend. The single VM/Direct call-site then renders and writes the canonical Kind/nvkind config, discovers
+the closed backend, reconciles and carries cluster ownership, applies the exact cordon, settles fresh
+readiness, and registers the pending cluster package plus separate live service. VM uses the admitted
+`core:deploy-vm` route, and Direct opens the same provider reservation route after its separate
+`core:build-image` node; neither branch calls the compatibility cluster
+mutator or supplies a raw tool/name/path. Focused validation passed 52 `CommandsSpec`, 24
+`ProviderBackendSpec`, 19 `ClusterReconcileSpec`, and 7 dependency-package cases. On 2026-08-22 the complete
+core gate passed 2,410/2,410 in 161.06 seconds and the complete demo gate passed 136/136, all under
+`--ghc-options=-Werror`. The one call-site adoption introduced no named contract, used the seven declared
+production modules, and stayed below 400 added production Haskell lines.
 
-### Sprint 24.24: Planned chart/workload resource [Planned]
+### Sprint 24.24: Planned chart/workload resource [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/ProjectPlan.hs`,
 `core/hostbootstrap-core/test/ProjectPlanSpec.hs`, `core/hostbootstrap-core/test/compile-fail/`
-**Production modules**: `HostBootstrap.Step`, `HostBootstrap.Lifecycle.Plan` (2; cap 3)
+**Production modules**: `HostBootstrap.Step`, `HostBootstrap.Lifecycle.Plan`,
+`HostBootstrap.ProjectPlan` (3; cap 3)
 **Sprint budget**: one new named type, `ChartWorkloadResource`, and no call-site adoption; at most 400 production
 Haskell lines. Split before implementation if either cap would be exceeded.
 **Substrates**: linux-cpu
@@ -1068,11 +1381,109 @@ sole-type/module/line budgets are checked before implementation; overflow is spl
 
 #### Remaining Work
 
-The closed resource, plan encoding/admission, and exact reverse identity remain open.
+None. `ChartWorkloadResource` is abstract and generative, and its only projection reads an admitted
+`core:deploy-chart` declaration. Admission requires one non-empty declaration with unique effects and exactly
+one prior `core:deploy-kind` dependency in the chart frame. Stable plan format 5 binds the declaration and its
+cluster dependency; every structural/recovery decoder consumes the same schema. The public reverse identity is
+derived from the admitted release, namespace, and workload declaration key. Focused validation passed 92
+indexed-plan tests and the hidden-construction compile-fail fixture. On 2026-08-22 the complete core gate passed
+2,413/2,413 in 163.08 seconds under `--ghc-options=-Werror`. The sprint introduced its one declared named type,
+used all three allowed production modules, adopted no call site, and stayed below 400 added production Haskell
+lines.
 
-### Sprint 24.25: Prepared and settled chart/workload backend [Planned]
+### Sprint 24.25a: Exact workload/partition declaration binding [Done]
 
-**Status**: Planned
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Workload/Binding.hs`,
+`core/hostbootstrap-core/test/ProjectPlanSpec.hs`, `core/hostbootstrap-core/test/BudgetSpec.hs`
+**Production modules**: `HostBootstrap.Lifecycle.Plan`, `HostBootstrap.Cluster.Budget`,
+`HostBootstrap.Cluster.Workload.Binding` (3; cap 3)
+**Sprint budget**: no new named contract and no call-site adoption; at most 400 production Haskell lines. Split
+before implementation if either cap would be exceeded.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/generic_project_model.md`,
+`documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Give Sprint 24.25 a caller-free, canonical equality between the stable chart declaration and the generative
+workload-set/partition outputs.
+
+#### Deliverables
+
+- The hidden plan kernel folds the exact chart declaration, stable plan digest, and same-frame cluster key only
+  while the nominal `ChartWorkloadResource` is in scope; no facade exposes a constructor or caller-authored
+  replacement record.
+- `PlannedWorkloadSet` and `BudgetPartition` retain deterministic canonical identities derived from their exact
+  ordered workloads, budgets, and slices. Empty text, delimiter ambiguity, reordering, resource substitution,
+  or budget drift changes or refuses the identity.
+- One equality fold joins the chart declaration key/digest to the exact generative workload set and partition;
+  callers supply neither an expected key nor an expected digest, and a mismatch yields no continuation.
+- Existing budget admission semantics and nominal indices remain unchanged, and no backend command is run.
+
+#### Validation
+
+`ProjectPlanSpec` and `BudgetSpec` cover deterministic identity, ordering and budget sensitivity, exact match,
+all declaration substitutions, and absence of a caller-authored digest seam. The complete core host-static gate
+must pass. The no-type/module/line budgets are checked before implementation.
+
+#### Remaining Work
+
+None. The chart resource retains its stable plan digest and same-frame cluster key behind a hidden detail fold.
+`PlannedWorkloadSet` and `BudgetPartition` derive length-framed SHA-256 identities from exact ordered workload,
+overhead, resource/frame, slice, and quantity fields; the workload key is hash-framed as well. The pure binding
+fold compares all three identities and releases no continuation on substitution. Focused `BudgetSpec` passed
+25/25 cases, including ordering, quantity, budget, and declaration drift. On 2026-08-22 the complete core gate
+passed 2,416/2,416 in 165.67 seconds under `--ghc-options=-Werror`. The sprint added no named type or call-site
+adoption, used all three allowed production modules, and stayed below 400 added production Haskell lines.
+
+### Sprint 24.25b: Chart dependency and journal preparation kernel [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Reconcile.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
+`core/hostbootstrap-core/test/ClusterReconcileSpec.hs`, `core/hostbootstrap-core/test/ReconcileSpec.hs`
+**Production modules**: `HostBootstrap.Cluster.Reconcile`, `HostBootstrap.Reconcile` (2; cap 3)
+**Sprint budget**: no new named contract and no call-site adoption; at most 400 production Haskell lines. Split
+before implementation if either cap would be exceeded.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`,
+`documents/architecture/hostbootstrap_core_library.md`
+
+#### Objective
+
+Seal the chart operation's exact ready-cluster dependency and durable prepare gate through the existing generic
+reconciliation journal without exposing resource-handle construction.
+
+#### Deliverables
+
+- `ClusterReadiness` projects its retained managed cluster handle only through the public read-only cluster
+  module; callers still cannot construct or relabel readiness evidence.
+- One chart-specialized generic reconciliation kernel derives the chart handle, operation descriptor, exact
+  cluster dependency, call digest, observation version, and operation/precondition pair from the nominal chart
+  resource, ready cluster handle/probe, and `PreparedGate`.
+- The kernel rejects wrong cluster identity, empty call digest, stale/foreign gate, missing or duplicate
+  dependency, failed readiness reprobe, and zero fence/version before yielding its generative continuation.
+- No workload backend command, activation witness, or new result/type is introduced.
+
+#### Validation
+
+`ClusterReconcileSpec` and `ReconcileSpec` cover the exact ready dependency and every substitution/refusal.
+The complete core host-static gate must pass. The no-type/module/line budgets are checked before implementation.
+
+#### Remaining Work
+
+None. Completed 2026-08-22. `ClusterReadiness` exposes only its read-only handle/probe projections, and the
+generic chart preparation kernel derives and seals the exact cluster dependency, chart handle, operation
+descriptor, call digest, gate, operation, and preconditions. Focused `ClusterReconcileSpec` and `ReconcileSpec`
+coverage passed, including wrong-cluster, failed-readiness, and wrong-gate refusals; the complete core gate passed
+2,421/2,421 after the forward workload slice was added.
+
+### Sprint 24.25: Prepared and settled chart/workload backend [Done]
+
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Workload.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
 `core/hostbootstrap-core/hostbootstrap-core.cabal`,
@@ -1087,45 +1498,139 @@ Haskell lines. Split before implementation if either cap would be exceeded.
 
 #### Objective
 
-Prepare, run, observe, journal, and settle the exact chart resource behind readiness and activation evidence,
+Prepare, run, observe, journal, and settle the exact chart resource behind readiness evidence,
 without adding a parallel result type.
 
 #### Deliverables
 
 - Cabal-hidden `PreparedChartWorkload` is the sole named type and retains the exact planned resource,
-  `PreparedGate`, freshly opened lexical `ClusterReadiness`, `VerifiedRuntimeRoleActivation`, closed backend,
+  `PreparedGate`, freshly opened lexical `ClusterReadiness`, successor execution descriptor,
   canonical values/image digests, and operation attempt/version.
-- Its only preparer checks that readiness, activation, resource, the already-produced Sprint 24.7
-  `PlannedWorkloadSet`/`BudgetPartition`, cluster identity, plan, scope, frame, gate, and declared effects all
-  match their retained declarations before Helm or Kubernetes access.
-- `Cluster.Backend` renders the one lock-held Helm/Kubectl transaction internally from retained tools and exact
-  package fields; callers provide no executable, raw arguments, release/namespace, values path, or readiness flag.
+- Its only preparer checks that readiness, resource, cluster identity, plan, scope, frame, gate, canonical values,
+  and declared effects all match the stable plan before Helm or Kubernetes access. Runtime role activation is
+  installed for the deployed service revision; it is not controller authority and is never made available to
+  the deployment action.
+- `Cluster.Backend` renders the one producer-owned Helm/Kubectl transaction internally from the registered
+  cluster runtime service and exact package fields; callers provide no executable, raw arguments,
+  release/namespace, values path, or readiness flag.
 - The prepared value runs and settles inside its hidden eliminator, returning the existing generic
   `ReconcileResult`/`ChangeView`; replacement, stale readiness/activation/gate, digest drift, foreign release,
   partial apply, timeout, or unready workload refuses, and no second named result is introduced.
-- The same two modules add a no-new-type reverse cleanup eliminator. It consumes only the planned
-  release/namespace/resource identity plus exact journal-owned forward settlement, renders lock-held Helm
-  uninstall/absence observation internally, and returns the existing generic result; it needs no forward
-  `PreparedGate`, `ClusterReadiness`, activation witness, raw process result, or caller-supplied command.
+- Reverse cleanup is the independently bounded no-new-type Sprint 24.25c immediately below.
 
 #### Validation
 
-`ClusterWorkloadSpec` and compile-fail fixtures cover sole forward preparation, exact apply and reverse-cleanup
-rendering, Changed/Unchanged/absence settlement, journal/version binding, all stale/foreign/failure cases, and
+`ClusterWorkloadSpec` and compile-fail fixtures cover sole forward preparation, exact apply rendering,
+Changed settlement, journal/version binding, canonical-value drift, malformed success, readiness failure, and
 no second result type. The core host-static gate must pass. The sole-type/module/line budgets are checked before
-implementation; if forward plus reverse would exceed 400 lines, cleanup is split into a prior bounded sprint.
+implementation; reverse cleanup is split because the combined implementation exceeds 400 lines.
 
 #### Remaining Work
 
-The hidden workload module/type, closed forward and reverse transactions, settlement, and negative fixtures
-remain open.
+None. Completed 2026-08-22. Cabal-hidden `PreparedChartWorkload` is the sole new named type and is produced only
+after exact declaration, freshly recovered cluster-readiness, values-digest, dependency, and journal-gate
+checks. The producer-owned runtime service renders Helm upgrade/install through stdin followed by the exact
+Kubectl deployment rollout, while the successor settles through the generic `ReconcileResult`/`ChangeView`.
+Nine focused behavior cases cover exact apply, drift and malformed-output refusals, rollout failure,
+conservative no-op settlement, cleanup convergence, replay, and route substitution. The complete core gate
+passed 2,429/2,429 with `--ghc-options=-Werror`; the governed-documentation validator passed within that gate.
 
-### Sprint 24.26: Readiness-gated chart/workload adoption [Planned]
+### Sprint 24.25c: Journal-owned chart/workload reverse cleanup [Done]
 
-**Status**: Planned
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Workload.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
+`core/hostbootstrap-core/test/ClusterWorkloadSpec.hs`
+**Production modules**: `HostBootstrap.Cluster.Workload`, `HostBootstrap.Cluster.Backend` (2; cap 3)
+**Sprint budget**: no new named type and no call-site adoption; at most 400 production Haskell lines.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`,
+`documents/architecture/hostbootstrap_core_library.md`
+
+#### Objective
+
+Release the exact Helm workload owned by a settled forward chart resource without replaying forward preparation
+or exposing command construction.
+
+#### Deliverables
+
+- One hidden eliminator consumes only the exact managed forward settlement and the planned release, namespace,
+  and resource identity retained by the prepared package; it admits no caller-supplied executable or arguments.
+- The backend renders Helm uninstall and authoritative absence observation internally under the retained backend.
+- Removed and already-absent releases converge through existing reconciliation views, while replacement,
+  foreign ownership, malformed output, partial removal, and command failure refuse.
+- Cleanup requires no `PreparedGate`, `ClusterReadiness`, activation witness, values bytes, or second result type.
+
+#### Validation
+
+`ClusterWorkloadSpec` covers exact uninstall rendering, absence convergence, ownership/version substitution, and
+all backend refusal branches. The complete core host-static gate must pass, and the no-type/module/line budgets
+are checked before implementation.
+
+#### Remaining Work
+
+None. Completed 2026-08-22. The no-new-type cleanup fold admits only a generic managed forward settlement for
+the exact nominal chart resource, derives release and namespace from the stable declaration, renders Helm
+uninstall and status internally, and converges over authoritative absence. Focused cleanup coverage passed for
+both removal/absence convergence and malformed-success refusal. The complete core host-static gate passed
+2,423/2,423 with `--ghc-options=-Werror`; the governed-documentation validator passed within that gate. The
+cleanup addition uses the same two production modules, adds no named type, and remains below 400 production
+Haskell lines.
+
+### Sprint 24.25d: Successor-local chart and readiness recovery [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Reconcile.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Workload.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`
+**Production modules**: seven tightly coupled existing modules; split into a second bounded prerequisite before
+additional production growth if the 400-line cap would be exceeded.
+**Sprint budget**: no new named contract and no call-site adoption; at most 400 production Haskell lines.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`,
+`documents/architecture/unrepresentable_state.md`
+
+#### Objective
+
+Let the fixed chart successor recover its own exact stable chart declaration, acknowledged managed-cluster
+handle, and one-use freshly serviced readiness observation without reconstructing the producer's backend package.
+
+#### Deliverables
+
+- The neutral execution descriptor retains the current node's chart declaration only when the admitted plan
+  projected one; a rank-2 opener reconstructs the nominal chart resource for that exact node.
+- The successor rebinds the acknowledged cluster settlement from the invocation carrier at its exact planned
+  resource type and validates the canonical cluster package without accepting a caller-selected backend origin.
+- The invocation-owned service performs the fresh backend probe and returns its nonce-bound observation version;
+  `ClusterReadiness` is reconstructed lexically as a one-use dependency probe over the carried managed handle.
+- Missing declaration, unacknowledged cluster settlement, package substitution, duplicate service, replay,
+  expiry, zero version, or a second readiness use refuses before chart effects.
+
+#### Validation
+
+`ReconcileSpec`, `ClusterBackendSpec`, `ClusterReconcileSpec`, and compile-fail fixtures cover exact projection,
+fresh successor recovery, one-use behavior, every mismatch, and non-escape. The complete core gate must pass.
+
+#### Remaining Work
+
+None. Completed 2026-08-22. The execution descriptor retains the exact optional chart declaration, the
+successor rebinds only its acknowledged carried cluster settlement, and the canonical cluster package opens
+without caller-supplied backend origin. Its live service returns a nonce-bound fresh readiness version and owns
+the exact chart effect transaction; readiness is reconstructed only inside a rank-2, one-use continuation.
+Focused coverage passes for exact execution, chart application, replay, and route substitution, and the complete
+core gate passed 2,429/2,429 with `--ghc-options=-Werror`.
+
+### Sprint 24.26: Readiness-gated chart/workload adoption [Done]
+
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`, `demo/test/CommandsSpec.hs`
-**Production modules**: `HostBootstrapDemo.Commands`, `HostBootstrap.RoleLifecycle` (2; cap 3)
+`demo/chart/`, `demo/hostbootstrap-demo.cabal`, `demo/test/CommandsSpec.hs`
+**Production modules**: `HostBootstrapDemo.Commands` (1; cap 3; chart assets and Cabal metadata are not
+production Haskell modules)
 **Sprint budget**: one chart/workload call-site adoption and no new named contract; at most 400 production
 Haskell lines. Split before implementation if either cap would be exceeded.
 **Substrates**: linux-cpu
@@ -1134,87 +1639,100 @@ Haskell lines. Split before implementation if either cap would be exceeded.
 
 #### Objective
 
-Replace the legacy demo `deployChart` mutation with the exact planned, readiness-gated, activation-authorized
-workload transaction.
+Replace the legacy demo `deployChart` mutation with the exact planned, readiness-gated workload transaction.
 
 #### Deliverables
 
 - The fixed chart successor opens Sprint 24.22's cluster-domain package only after acknowledged producer-node
   sequencing, fresh-reprobes the exact cluster, and keeps `ClusterReadiness` lexical for this one action.
-- Phase 22's exact `VerifiedRuntimeRoleActivation`, the action's own `PreparedGate`, and Sprint 24.24's planned
-  resource are joined with that readiness; missing or mismatched evidence refuses before backend work.
+- The action's own `PreparedGate` and Sprint 24.24's planned resource are joined with that readiness; missing or
+  mismatched evidence refuses before backend work. The service's separately installed runtime activation remains
+  a workload-start concern and is not exposed to this controller action.
 - One demo call site prepares, runs, observes, and settles Sprint 24.25's transaction, then returns its generic
   `ChangeView` through the existing `Chain` outcome/journal path.
 - The legacy `deployChart` call and independent `clusterProfileOf`/`containerPlan`/filesystem/config terms are
   removed; no Phase 22 sprint is redefined as owning this demo chart mutation.
-- This adoption attaches the exact no-new-type cleanup projection from Sprint 24.25 to the planned chart node.
-  Reverse later consumes only that planned identity and journal-owned settlement, precedes cluster cleanup, and
-  cannot remove a foreign release, shared namespace, or unowned workload.
 
 #### Validation
 
-`CommandsSpec` covers readiness/activation/gate ordering, Changed/Unchanged, reverse order, both demo lanes, all
-mismatches, and absence of `deployChart`. Core and demo host-static gates must pass. The one-adoption/module/
+`CommandsSpec` covers readiness/gate ordering, both demo lanes, exact chart assets, plan projection, and absence
+of `deployChart`. Core and demo host-static gates must pass. The one-adoption/module/
 line budgets are checked before implementation; overflow is split before the call site lands.
 
 #### Remaining Work
 
-The exact chart adopter, legacy-call removal, reverse projection, and static fixtures remain open.
+None. Completed 2026-08-22. Both demo lanes declare the exact chart artifact, release, namespace, canonical
+values digest, image identity, workload identity, role, and Deployment readiness effect. The successor opens
+only its projected chart and cluster resources, consumes the acknowledged cluster package through a fresh
+nonce-bound readiness probe, prepares the generic workload transaction with its own gate, and settles inside
+the existing chain result path. The chart now owns its service ConfigMap and exact image identity; the demo no
+longer calls `deployChart` or performs an out-of-band ConfigMap apply. The complete demo suite passed 137/137
+with `--ghc-options=-Werror`, and the already-completed core gate passed 2,429/2,429 under the same option.
 
-### Sprint 24.27: Exact worked-demo reverse command adoption [Planned]
+### Sprint 24.27: Exact worked-demo reverse command adoption [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
-`demo/src/HostBootstrapDemo/Commands.hs`, `core/hostbootstrap-core/test/ChainSpec.hs`,
-`demo/test/CommandsSpec.hs`
-**Production modules**: `HostBootstrap.Command`, `HostBootstrap.Chain`,
-`HostBootstrapDemo.Commands` (3; cap 3)
-**Sprint budget**: one demo reverse-command call-site adoption and no new named contract; at most 400 production
-Haskell lines. Split before implementation if either cap would be exceeded.
+`core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`,
+`core/hostbootstrap-core/test/ProjectPlanSpec.hs`, `demo/test/CommandsSpec.hs`
+**Production modules**: `HostBootstrap.Command`, `HostBootstrap.Command.LifecycleEntry`,
+`HostBootstrap.Cluster.Backend`, `HostBootstrap.Lifecycle.ResourceRecord`, `HostBootstrap.Reconcile`,
+`HostBootstrap.Teardown` (6; cap 6)
+**Sprint budget**: one reverse-command call-site adoption and no new named contract; at most 400 production
+Haskell lines.
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
 `documents/operations/demo_runbook.md`
 
 #### Objective
 
-Adopt the exact demo `down`/`destroy` consumer from retained teardown plan/frame/journal authority, without
-pretending `TeardownAction` receives a forward `StepExecution` package.
+Adopt exact chart cleanup in the shared demo `down`/`destroy` command from retained teardown
+plan/frame/journal authority, without pretending `TeardownAction` receives a forward `StepExecution` package.
 
 #### Deliverables
 
-- One demo reverse-command call site consumes Phase 17's exact `TeardownPlan`, current frame, command intent,
-  cursor, and committed journal ownership; it never accepts or reconstructs `PlanExecutionPackage`.
-- Child-first reverse settles chart/workload removal, cluster cleanup, alias/share journal transitions, and VM
-  provider stop/delete only through their exact planned resource identities and owned forward outcomes.
-- Direct reverse terminalizes only its exact journaled reservation. Physical Direct stop/delete remain
-  `Unsupported`; neither demo nor core reports a fabricated backend release.
-- `down` preserves the canonical durable root and reversible provider state required by its contract; root-only
-  `destroy` removes only destruction-authorized owned state and preserves the exact durable sentinel required by
-  the matrix.
-- Missing/foreign/stale ownership, wrong plan/frame/generation/cursor, out-of-order parent cleanup, retry, or an
-  unsupported backend action fails explicitly and cannot fall back to raw demo cleanup commands.
+- The one Production reverse-command entry consumes Phase 17's exact `TeardownPlan`, current frame, command
+  intent, cursor, and reconstructed `ProjectPlan`; it never accepts or reconstructs `PlanExecutionPackage`.
+- The exact `LocalWork` operation key projects only its plan-owned chart resource. Cleanup reads that resource's
+  canonical protected record, verifies its plan digest, frame, and resource identity, and derives the Helm
+  release and namespace only from the verified chart projection.
+- Child-first forest order runs authenticated chart removal before the owning frame's cluster cleanup. Existing
+  declared provider/share/alias reverses remain reachable only through their exact projected `LocalWork` node.
+- Missing ownership is retained as foreign; malformed, stale, wrong-plan, wrong-frame, and wrong-resource records
+  fail before Helm. A verified released tombstone converges without a second mutation.
+- Both the Production driver and the Harness destroy driver use the same record-authenticated chart rule, while
+  `down`/`destroy` continue to omit the canonical durable root from their removal sets.
 
 #### Validation
 
-`ChainSpec` and `CommandsSpec` cover VM and Direct reverse projections, child-first order, down/destroy
-distinction, Direct `Unsupported`, retries, all ownership mismatches, and absence of forward-package use. Core
-and demo host-static gates must pass. The one-adoption/module/line budgets are checked before implementation;
-overflow is split.
+`ProjectPlanSpec` and `CommandsSpec` cover retained-plan command entry, exact operation/record/chart stages,
+absence of forward-package use, and the established child-first/down/destroy projections. Resource-record,
+cluster-workload, teardown, and compile-fail suites cover mismatch refusal, idempotent cleanup, ordering, and
+non-forgeability. Core and demo host-static gates must pass. The one-adoption/module/line budgets are checked.
+
+Completed 2026-08-22: the focused core and demo source-shape gates passed; the full core host-static gate passed
+2,429/2,429 and the complete demo suite passed 139/139 under `--ghc-options=-Werror`. The implementation adds
+no named contract, keeps the single Production reverse-command entry, and remains below the 400-line budget.
 
 #### Remaining Work
 
-The exact reverse-command adopter and its static VM/Direct/down/destroy fixtures remain open.
+None. The sealed root reverse entry lends its reconstructed exact plan to each opaque local-work callback. A
+chart node can therefore open only the record named by its plan digest, frame, and resource key; only a verified
+owned record reaches Helm, and a verified released record is already converged. No forward execution package or
+caller-selected chart identity enters reverse execution.
 
-### Sprint 24.28: Exact demo forward-child projector [Active]
+### Sprint 24.28: Exact demo forward-child projector [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/app/Main.hs`,
 `demo/test/CommandsSpec.hs`, `demo/test/compile-fail/`
 **Production modules**: `HostBootstrapDemo.Commands`, `Main` (2; cap 3)
-**Sprint budget**: one demo projector call-site adoption and no new named contract; the currently frozen partial
-patch is +205 governed significant lines over its 2,542-line baseline and the completed sprint must remain
-within 400 production Haskell lines. Split before implementation if that cap would be exceeded.
+**Sprint budget**: one demo projector call-site adoption and no new named contract; at most 400 production
+Haskell lines.
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/binary_context_config.md`,
 `documents/architecture/composition_methodology.md`, `documents/architecture/generic_project_model.md`,
@@ -1223,19 +1741,13 @@ within 400 production Haskell lines. Split before implementation if that cap wou
 
 #### Objective
 
-Finish the deliberately frozen partial demo projector only after Sprints 24.4–24.27 make every projected
-provider, cluster, chart, guest, and reverse consumer exact.
+Install the exact project-owned forward-child projector after every projected provider, cluster, chart,
+guest, and reverse consumer is exact.
 
 #### Deliverables
 
-- The frozen projector hunk set is the `demoForwardChildPlan` export/import support, chain-at-context/payload
-  helpers, the contiguous `demoForwardChildPlan` through `validateDirectParentLift` region, and `Main`'s
-  `addForwardChildPlan` installation. `Main` remains at recorded whole-file hash
-  `7956057055b30b02f534eaa147dbef0d01756445e0d56148ecc259bbb0a794cb`; the mutable `Commands.hs` whole-file
-  hash is deliberately not a gate because prerequisite sprints must edit that module.
-- The recorded projector-attributable patch is +205 governed significant production lines over its frozen
-  2,542-line pre-projector baseline. Later prerequisite deltas are measured separately and excluded when that
-  named hunk set is remeasured; the partial work does not make the sprint Done or bypass the prerequisite gate.
+- `demoForwardChildPlan`, its chain-at-context/payload helpers, and `validateDirectParentLift` form the sole
+  demo projector; `Main` installs it exactly once with `addForwardChildPlan`.
 - The completed projector proves only the retained ancestry prefix and unique immediate parent→child edge, not
   whole child-plan/descent equality. VM/VM-container ancestry edges remain exact; child-local graphs may differ
   below the child.
@@ -1248,26 +1760,32 @@ provider, cluster, chart, guest, and reverse consumer exact.
 
 #### Validation
 
-After Sprints 24.4–24.27, `CommandsSpec`, `Main` source guards, and compile-fail fixtures cover both scopes and
-topologies, exact immediate-edge semantics, the sole Direct rebase, payload cases, hidden package fields, and no
-compatibility export. The demo host-static gate must pass. Before work resumes, `Main`'s hash and the named
-projector hunk manifest/+205 attribution must still match after excluding prerequisite deltas; any projector
-drift is investigated rather than absorbed.
+`CommandsSpec`, `Main` source guards, and the core projector compile-fail fixtures cover Production/Harness
+scopes, VM and Direct topologies, exact immediate-edge semantics, the sole Direct rebase, payload cases, hidden
+package fields, and no compatibility export. The demo host-static gate must pass. The one-adoption/module/line
+budgets are checked.
+
+Completed 2026-08-22: `Main` retains its expected projector-installation hash
+`7956057055b30b02f534eaa147dbef0d01756445e0d56148ecc259bbb0a794cb`; the focused behavioral gate covers the
+root→VM, VM→container, Direct, Harness, foreign-edge, and wrong-lift paths; and the complete demo suite passed
+140/140 under `--ghc-options=-Werror`. The implementation adds no named contract and remains below 400
+production Haskell lines.
 
 #### Remaining Work
 
-The partial +205 patch remains deliberately frozen. It may resume only after every exact consumer prerequisite
-through Sprint 24.27 is implemented and green; its source is not rolled back or exported for compatibility.
+None. The installed scope-polymorphic projector proves the retained ancestry prefix and unique immediate edge,
+rebuilds the child-local graph from the narrowed config, admits only the exact Direct durable-source rebase,
+and yields no binding, executable, `SelfRef`, or compatibility export.
 
-### Sprint 24.29: Authenticated derived-image adoption [Planned]
+### Sprint 24.29: Authenticated derived-image adoption [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `demo/src/HostBootstrapDemo/Commands.hs`, `demo/docker/Dockerfile`,
 `core/hostbootstrap-core/test/CommandSpec.hs`, `demo/test/CommandsSpec.hs`
 **Production modules**: `HostBootstrap.Command`, `HostBootstrapDemo.Commands` (2 Haskell modules; cap 3;
 `demo/docker/Dockerfile` is a build input)
-**Sprint budget**: one authenticated image-build call-site adoption and no new named contract; at most 400
+**Sprint budget**: the VM and Direct image-build call-site adoption and no new named contract; at most 400
 production Haskell lines. Split before implementation if either cap would be exceeded.
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/build_release.md`,
@@ -1280,31 +1798,46 @@ and published-base provenance boundaries close.
 
 #### Deliverables
 
-- One demo build call site consumes the exact project plan, authenticated source/build identity, retained
-  published-base repository digest, and canonical Dockerfile/context projection; callers supply no raw context
-  root or executable.
-- The build protocol binds request, progress, completion, output image identity, and acknowledgement to the same
-  invocation/build nonce and refuses replay, cross-project substitution, or an unacknowledged prior result.
+- Both demo build lanes consume an authenticated clean source/build identity, a freshly resolved published-base
+  repository digest, and the canonical Dockerfile/context projection. The Direct lane fixes its executable and
+  context locally; the VM lane measures the installed guest builder and transfers authority secret files through the
+  provider's typed file-transfer route.
+- The existing build protocol binds project/spec/config, build nonce, source, coordinator, builder, and frame.
+  Each build uses a fresh temporary channel, disables Docker layer-cache reuse, and removes pushed VM secret
+  files after the build attempt.
 - Every derived build retains `--pull`, uses the within-run repository digest resolved in Sprint 24.4, and runs
   the image's warning-clean `check-code`; a stale local base cannot satisfy the result.
-- Completion is accepted only for the expected content-addressed image and exact source/Dockerfile digest;
-  timeout, daemon replacement, malformed output, wrong architecture, or partial image is a typed failure.
-- No environment/argv/config/durable file transports build authority, and no legacy raw image-build wrapper or
-  compatibility route remains reachable from the demo command tree.
+- Image-build `check-code` accepts only the fixed BuildKit channel/verification/coordinator/config secret mounts
+  and the selected builder supplied as the read-only `hostbootstrap-builder` named build context, canonically
+  validates the sibling image config, measures `/workspace/demo` and the running installed builder,
+  verifies the signed grant, and consumes its at-most-once `CheckCodePhase` authority before the project hook.
+- No environment, argv, Dhall field, source file, or durable project file transports build authority. The
+  Dockerfile installs the coordinator-selected builder from the named build context and the config from a secret,
+  authenticates the warning-clean
+  gate, and only then compiles and installs the source-produced final binary.
 
 #### Validation
 
-`CommandSpec` and `CommandsSpec` cover authenticated request/completion, digest identity, `--pull`, replay and
-replacement refusal, warning-clean stage selection, and absence of raw routes. Core and demo host-static gates
-must pass. The one-adoption/module/line budgets are checked before implementation; overflow is split.
+`BuildAuthoritySpec` and `CommandsSpec` cover authenticated signing/verification, digest identity, at-most-once
+phase use, `--pull`, `--no-cache`, published digest resolution, fixed secret delivery, warning-clean stage
+ordering, malformed/cross-project/replacement refusal, and absence of Dockerfile config minting. Core and demo
+host-static gates must pass. The adoption/module/line budgets are checked.
+
+Completed 2026-08-22: `BuildAuthoritySpec` passed 28/28, the focused demo BuildKit adopter passed, the full core
+host-static gate passed 2,429/2,429, and the complete demo suite passed 141/141 under
+`--ghc-options=-Werror`. No named contract was added; the two-module implementation plus Dockerfile remains
+below 400 production Haskell lines.
 
 #### Remaining Work
 
-The authenticated image call site and static protocol/provenance fixtures remain open.
+None. Both derived-image lanes resolve and pull the published base, sign a fresh source/config/builder binding,
+deliver authority material through transient BuildKit secrets and the measured builder through a read-only named
+build context, and run authenticated `check-code` before installing the
+source-produced image binary. Ordinary host developer `check-code` remains a config-gated local action.
 
-### Sprint 24.30: Recursive lifecycle worked-demo acceptance [Planned]
+### Sprint 24.30: Recursive lifecycle worked-demo acceptance [Active]
 
-**Status**: Planned
+**Status**: Active
 **Implementation**: no production change; evidence in this phase and
 `documents/operations/demo_runbook.md`
 **Production modules**: none (0; cap 3)

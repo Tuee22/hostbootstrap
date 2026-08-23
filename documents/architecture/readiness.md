@@ -13,7 +13,7 @@
 Readiness constructors are private. Polling is total and bounded, and authoritative evidence is indexed
 by a generative lifecycle plan, exact planned resource family and identity, dependency, generation,
 phase, and observation version. The provider boundary now owns closed raw discovery and exact prepared
-Incus/Direct readiness; its static gate is closed and its native Linux/x86_64 KVM/Incus gate remains open.
+Incus/Direct readiness; its static gate and native Linux/x86_64 KVM/Incus gate are closed.
 Other live effects still
 consume deliberately non-authorizing compatibility observations; the dependent interpreter phases must
 migrate those effects before readiness gates every mutation.

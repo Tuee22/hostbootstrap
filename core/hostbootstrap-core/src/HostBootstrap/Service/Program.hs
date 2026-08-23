@@ -66,6 +66,7 @@ module HostBootstrap.Service.Program (
 
     -- * The program
     ServiceProgram,
+    withReadyServiceHandles,
     serve,
     call,
     readDurable,
@@ -80,6 +81,7 @@ module HostBootstrap.Service.Program (
     EffectFailure (..),
     serviceProgramErrorMessage,
     interpretServiceProgram,
+    interpretServiceProgramWithReady,
 ) where
 
 import Data.ByteString (ByteString)
@@ -229,6 +231,9 @@ data ServiceProgram payload service (effects :: [RoleEffect]) a where
         ServiceProgram payload service effects a ->
         (a -> ServiceProgram payload service effects b) ->
         ServiceProgram payload service effects b
+    WithReady ::
+        (ReadyServiceHandles service -> ServiceProgram payload service effects a) ->
+        ServiceProgram payload service effects a
     Serve ::
         (HasEffect 'NetworkListen effects) =>
         [(AcquiredResource service, ListenApp payload)] ->
@@ -265,6 +270,17 @@ instance: an @IO@ escape hatch would make every guarantee above vacuous.
 -}
 instance Monad (ServiceProgram payload service effects) where
     (>>=) = Then
+
+{- | Continue with the exact handle set produced by Acquire and Ready.
+
+The callback is pure and remains inside the closed program.  A handler still
+receives only its 'RoleParams'; it cannot run IO or mint a handle, while the
+interpreter can supply the engine-owned set at Serve.
+-}
+withReadyServiceHandles ::
+    (ReadyServiceHandles service -> ServiceProgram payload service effects a) ->
+    ServiceProgram payload service effects a
+withReadyServiceHandles = WithReady
 
 {- | Run applications on acquired listeners, as one lifetime.
 
@@ -373,13 +389,38 @@ interpretServiceProgram ::
     IO (Either ServiceProgramError a)
 interpretServiceProgram _authorization backend = go
   where
-    go :: ServiceProgram payload service effects b -> IO (Either ServiceProgramError b)
+    go = interpretServiceProgramWithReadyKernel (readyServiceHandles []) backend
+
+{- | Interpret a handler program with the exact Ready-phase handle set.
+
+This is the service-runtime entry.  The compatibility eliminator above supplies
+an empty set for already-closed programs that embed their acquired handles.
+-}
+interpretServiceProgramWithReady ::
+    forall scope specDigest planId frame revision instanceId service effects payload a.
+    EffectAuthorization scope specDigest planId frame revision instanceId service effects ->
+    ReadyServiceHandles service ->
+    ServiceBackend payload ->
+    ServiceProgram payload service effects a ->
+    IO (Either ServiceProgramError a)
+interpretServiceProgramWithReady _authorization = interpretServiceProgramWithReadyKernel
+
+interpretServiceProgramWithReadyKernel ::
+    forall service payload effects a.
+    ReadyServiceHandles service ->
+    ServiceBackend payload ->
+    ServiceProgram payload service effects a ->
+    IO (Either ServiceProgramError a)
+interpretServiceProgramWithReadyKernel ready backend = go
+  where
+    go :: forall b. ServiceProgram payload service effects b -> IO (Either ServiceProgramError b)
     go (Done value) = pure (Right value)
     go (Then program next) = do
         stepped <- go program
         case stepped of
             Left failure -> pure (Left failure)
             Right value -> go (next value)
+    go (WithReady next) = go (next ready)
     go (Serve pairs) =
         report (roleEffectName NetworkListen)
             <$> backendServe backend [(acquiredResourceName handle, app) | (handle, app) <- pairs]

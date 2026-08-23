@@ -22,6 +22,7 @@ module HostBootstrap.ProjectPlan
     , MinioResource
     , RegistryResource
     , ClusterResource
+    , ChartWorkloadResource
     , PlannedResourceKind (..)
     , PlannedEdge
     , DerivedTopology
@@ -49,6 +50,10 @@ module HostBootstrap.ProjectPlan
     , plannedEdgeTargetKey
     , plannedEdgeDependencyKey
     , withPlannedResourceOfKind
+    , withChartWorkloadResource
+    , chartWorkloadResourceKey
+    , chartWorkloadResourceFrame
+    , chartWorkloadReverseIdentity
     , withPlannedEdge
     , withProviderGuestAliasProjection
     , withPlannedStepResourceOfKind
@@ -83,7 +88,8 @@ import HostBootstrap.Config.Schema
     )
 import HostBootstrap.Lifecycle.Execution (StepExecution)
 import HostBootstrap.Lifecycle.Plan
-    ( ClusterResource
+    ( ChartWorkloadResource
+    , ClusterResource
     , DerivedTopology
     , DockerResource
     , DurableAliasResource
@@ -100,6 +106,9 @@ import HostBootstrap.Lifecycle.Plan
     , RegistryResource
     , StablePlanSnapshot
     , forwardKernel
+    , chartWorkloadResourceFrameKernel
+    , chartWorkloadResourceKeyKernel
+    , chartWorkloadReverseIdentityKernel
     , planDraftsFromValidatedStepPlanKernel
     , plannedStepDependencyOperationsKernel
     , plannedStepFrameIdKernel
@@ -133,6 +142,7 @@ import HostBootstrap.Lifecycle.Plan
     , withPlannedStepResourceOfKindKernel
     , withProjectPlannedEdgeKernel
     , withProjectPlannedResourceOfKindKernel
+    , withProjectChartWorkloadResourceKernel
     , withProjectProviderGuestAliasProjectionKernel
     )
 import HostBootstrap.HostConfig (HostConfig)
@@ -317,6 +327,22 @@ withPlannedResourceOfKind ::
     ) ->
     Either PlanError result
 withPlannedResourceOfKind = withProjectPlannedResourceOfKindKernel
+
+withChartWorkloadResource ::
+    ProjectPlan scope specDigest planId configId cfg ->
+    OperationKey ->
+    (forall resourceId frame. ChartWorkloadResource scope planId resourceId frame -> result) ->
+    Either PlanError result
+withChartWorkloadResource = withProjectChartWorkloadResourceKernel
+
+chartWorkloadResourceKey :: ChartWorkloadResource scope planId resourceId frame -> Text
+chartWorkloadResourceKey = chartWorkloadResourceKeyKernel
+
+chartWorkloadResourceFrame :: ChartWorkloadResource scope planId resourceId frame -> Text
+chartWorkloadResourceFrame = chartWorkloadResourceFrameKernel
+
+chartWorkloadReverseIdentity :: ChartWorkloadResource scope planId resourceId frame -> (Text, Text, Text)
+chartWorkloadReverseIdentity = chartWorkloadReverseIdentityKernel
 
 -- | Prove the exact dependency relation between two resources of this plan.
 withPlannedEdge ::

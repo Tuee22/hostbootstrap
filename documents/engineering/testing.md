@@ -42,6 +42,11 @@ of thing, and none substitutes for another.
 | Container `check-code` | `<project> check-code` in the derived image | inside the built container | the formatter (`fourmolu`) and linter (`hlint`), which are installed in the base image only | behaviour; it is a build-time guardrail |
 | Live demo gate | `hostbootstrap run -- test init` then `test run all` | a disposable host with real Docker, provider, and cluster state | end-to-end lifecycle over real infrastructure | anything on a host it did not run on |
 
+The independent cluster-phase live gate is the bare binary's `hostbootstrap test run cluster-live` case.
+It is a `linux-cpu` substrate gate rather than the demo gate: one Harness-owned Kind plan creates the
+run-scoped cluster, the assertion performs only read-only Kubernetes observation, and the exact reverse
+proves labelled-node absence plus survival of the run's durable sentinel.
+
 The host static gate is not the complete quality gate: `fourmolu` and `hlint` live only in the container
 `check-code`. See [code-check doctrine](code_check_doctrine.md).
 
@@ -182,6 +187,19 @@ Production and Harness enter the lower Chain only through the Cabal-private fixe
 the [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) owns
 the root-coordinated extension across child frames.
 
+Phase 19's realized-linux acceptance is deliberately narrower than the live demo gate: on 2026-08-22 a
+disposable Ubuntu 24.04 amd64 Incus VM ran the deterministic recovery-interruption group (5/5) and the
+complete warnings-as-errors core gate (2366/2366 in 151.83 seconds). Those runs exercise the Harness
+ownership, process, interruption, exact-plan, and report-engine rows available by Phase 19. The
+provider/cluster/workload lifecycle, exact recursive demo
+reverse adopter, and same-run durable recreate remain the worked-demo phase's own live acceptance; making
+the earlier harness phase wait for them would invert the development-plan order.
+
+The Phase 20 command-surface acceptance ran the phase-owned concrete parser fixture in that same realized
+Linux VM: `CLISpec` passed 57/57 and the `ContextSpec`/`LiftContextSpec` selection passed 84/84, both with
+warnings as errors. These are live filesystem/process invocations of the real generic command machinery,
+not a provider demo substitute; the long provider/cluster sequence remains the worked-demo acceptance.
+
 The lifecycle constructor is not a consumer surface. `HostBootstrap.Harness.Lifecycle.Internal` lives in
 the private `harness-lifecycle-internal` Cabal component. The main library uses it at the command boundary,
 and `HarnessSpec` depends on the same private component for controlled ordering/failure fixtures;
@@ -258,6 +276,22 @@ claim than an injected exception would support — it is a larger one, because t
 needs no cooperation from the code under test, and there is no branch in production that only a gate takes.
 `HostBootstrap.Lifecycle.Session.Testing` exposes the vocabulary that state is written in and mints no
 authority: a compile-fail fixture proves a descriptor cannot become a transaction permit.
+
+The separate top-level `recovery-interruption` group proves the process boundary around that state model. Its
+producer subprocesses reach five real durable boundaries, publish a managed ready sentinel, and then block
+until the parent hard-kills them. A separately exec'd successor reopens the same protected store. The matrix is:
+
+| Boundary | Successor proof |
+|---|---|
+| owned-resource settlement | the recovered backend is called child-first exactly once, its release is recorded, and a second successor performs no duplicate effect |
+| migration freeze | the incomplete pre-activation revision closes and admits the successor |
+| migration commit | the completed revision retains its exact missing-candidate refusal rather than being guessed closed |
+| root Destroy settlement | the public recursive lifecycle has released its terminal lease/mode, a fresh Up rearms the retained terminal intent under a newer broker, and a later Destroy succeeds |
+| persisted `Closing` | the successor observes the exact closing epoch and cannot mint a new open permit |
+
+These probes are test-executable entry modes only. Production lifecycle modules still contain no crash point,
+fault token, or test-only branch. Sentinels, results, and backend-call traces live only under the fixture's
+managed temporary directory and use no `.log` files.
 
 ### Authority-kernel evidence
 

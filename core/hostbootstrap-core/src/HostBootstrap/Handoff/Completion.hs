@@ -32,7 +32,7 @@ import HostBootstrap.Teardown
     )
 import HostBootstrap.Teardown.Internal
     ( ReverseDescent
-    , withRehydratedBoundReverseDescentKernel
+    , withRehydratedAdoptedReverseDescentKernel
     , withVerifiedBoundReverseDescentObservationsKernel
     , withVerifiedBoundReverseDescentReportKernel
     )
@@ -77,10 +77,16 @@ withAcknowledgedForwardLifecycleCompletionKernel offer report persist use =
         requireBinding expected binding $
             acknowledge report persist $ \ack ->
                 use (ForwardLifecycleCompletion report ack)
-    refused binding _ _ _ _ =
-        requireBinding expected binding (acknowledge report persist (const (pure (Right ()))))
-    failed = refused
+    refused binding _ _ detail _ =
+        requireBinding expected binding (acknowledgeWithoutProof "refused" detail)
+    failed binding _ _ detail _ =
+        requireBinding expected binding (acknowledgeWithoutProof "failed" detail)
     wrong _ _ _ _ _ = pure (Left "lifecycle completion: a forward offer refuses a reverse report")
+    acknowledgeWithoutProof status detail = do
+        acknowledged <- acknowledge report persist (const (pure (Right ())))
+        pure $ case acknowledged of
+            Left failure -> Left failure
+            Right () -> Left ("lifecycle completion: the forward child " <> status <> ": " <> detail)
 
 {- | Validate and acknowledge one canonical reverse report against live Bound
 state. Completed reports alone invoke the retained observation verifier and
@@ -99,6 +105,20 @@ withAcknowledgedBoundReverseLifecycleCompletionKernel ::
     IO (Either Text ())
 {-# OPAQUE withAcknowledgedBoundReverseLifecycleCompletionKernel #-}
 withAcknowledgedBoundReverseLifecycleCompletionKernel bound report persist use =
+    withBoundReverseLifecycleCompletionKernel bound report (acknowledge report persist) use
+
+withBoundReverseLifecycleCompletionKernel ::
+    ReverseDescent (Handoff.HandoffOffer scope brokerGeneration)
+        scope planId parentFrame childFrame brokerGeneration verb descentId ->
+    ByteString ->
+    ((ByteString -> IO (Either Text ())) -> IO (Either Text ())) ->
+    ( LifecycleCompletion
+        (SubtreeSettled scope planId childFrame verb)
+        scope brokerGeneration verb ->
+      IO (Either Text ())
+    ) ->
+    IO (Either Text ())
+withBoundReverseLifecycleCompletionKernel bound report acknowledgeReport use =
     case Handoff.eliminateLifecycleReport report wrong wrong wrong completed refused failed of
         Left failure -> pure (Left (handoffFailure failure))
         Right action -> action
@@ -109,22 +129,21 @@ withAcknowledgedBoundReverseLifecycleCompletionKernel bound report persist use =
             Right rows ->
                 withVerifiedBoundReverseDescentObservationsKernel
                     bound binding verb rows $ \settled ->
-                        acknowledge report persist $ \ack ->
+                        acknowledgeReport $ \ack ->
                             use (ReverseLifecycleCompletion report ack settled)
     refused binding _ _ _ verb =
         withVerifiedBoundReverseDescentReportKernel bound binding verb $
-            acknowledge report persist (const (pure (Right ())))
+            acknowledgeReport (const (pure (Right ())))
     failed = refused
     wrong _ _ _ _ _ = pure (Left "lifecycle completion: a reverse descent refuses a forward report")
 
-{- | Rehydrate observation-only Bound state without reopening a token or map,
-then enter the same common reverse acknowledgement path.
+{- | Rehydrate exact Bound and parent Adopted state without reopening a token
+or map, then enter the same common reverse acknowledgement path.
 -}
 withRehydratedAcknowledgedReverseLifecycleCompletionKernel ::
     ReverseDescent ()
         scope planId parentFrame childFrame brokerGeneration verb descentId ->
     ByteString ->
-    (ByteString -> ByteString -> IO (Either Text ())) ->
     ( LifecycleCompletion
         (SubtreeSettled scope planId childFrame verb)
         scope brokerGeneration verb ->
@@ -139,11 +158,15 @@ withRehydratedAcknowledgedReverseLifecycleCompletionKernel ::
             (Either Text ())
         )
 {-# OPAQUE withRehydratedAcknowledgedReverseLifecycleCompletionKernel #-}
-withRehydratedAcknowledgedReverseLifecycleCompletionKernel prepared report persist use =
-    withRehydratedBoundReverseDescentKernel
+withRehydratedAcknowledgedReverseLifecycleCompletionKernel prepared report use =
+    withRehydratedAdoptedReverseDescentKernel
         recoverySigningKernel
         prepared
-        (\bound -> withAcknowledgedBoundReverseLifecycleCompletionKernel bound report persist use)
+        report
+        (\bound acknowledgement ->
+            withBoundReverseLifecycleCompletionKernel
+                bound report (\continue -> continue acknowledgement) use
+        )
 
 {- | Eliminate semantic completion without exposing its retained wire identity. -}
 withLifecycleCompletionKernel ::

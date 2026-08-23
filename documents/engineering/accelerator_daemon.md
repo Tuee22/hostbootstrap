@@ -260,6 +260,13 @@ preservation, and a bounded 30-minute pristine-install/build/connect readiness g
 Exact static-gate defects, test totals, live substrate evidence, and closure owners belong in
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
+The core service entry is now activation-only. A launcher must install one immutable revision, provision its
+public key separately, and pass their absolute paths plus the matching protected-store root. Kubernetes supplies
+pod UID/restart count; a host launcher supplies a fresh invocation nonce. The current demo launch/chart still
+needs to adopt those coordinates and convert its concrete handlers to `serviceProgramDefinition`; that concrete
+readiness and packaging work remains in the worked-demo phase rather than weakening `service run` back to a
+full-config or raw-`IO` compatibility path.
+
 ### The host-resident launch, and why it has a boundary
 
 The host-resident placement did not start. Its launch closed the child's standard input, output, and

@@ -50,42 +50,78 @@ library harness-lifecycle-internal
   build-depends:
       base >=4.18 && <5
 
+library ownership-internal
+  import: warnings
+  visibility: private
+  hs-source-dirs: internal/ownership
+  exposed-modules:
+      HostBootstrap.Protected
+      HostBootstrap.Ownership.Object
+      HostBootstrap.Ownership.Manifest
+      HostBootstrap.Ownership.Clause
+      HostBootstrap.Ownership.Primitive
+      HostBootstrap.Ownership.Posix
+      HostBootstrap.Ownership.Windows
+      HostBootstrap.Ownership.Row
+  other-modules:
+      HostBootstrap.Ownership.Internal
+  build-depends:
+      base >=4.18 && <5
+    , bytestring
+    , crypton
+    , directory
+    , filepath
+    , memory
+    , safe-exceptions
+    , text
+  if !os(windows)
+    build-depends:
+        unix
+  if os(windows)
+    build-depends:
+        Win32
+
 library colima-backend-internal
   import: warnings
   visibility: private
   hs-source-dirs: internal/colima-backend
   exposed-modules:
-      HostBootstrap.Ensure.Colima.Backend.Internal
       HostBootstrap.Ensure.Colima.Backend.Resolver
       HostBootstrap.Ensure.Colima.Backend.Resolver.Install
       HostBootstrap.Ensure.Colima.Backend.Resolver.Testing
+      HostBootstrap.Ensure.Colima.Backend.Runner
+      HostBootstrap.Ensure.Colima.Backend.Routing
+      HostBootstrap.Ensure.Colima.Backend.Stage
   other-modules:
-      HostBootstrap.Ensure.Colima.Backend.Program.Acquire
-      HostBootstrap.Ensure.Colima.Backend.Program.Cleanup
-      HostBootstrap.Ensure.Colima.Backend.Program.Common
-      HostBootstrap.Ensure.Colima.Backend.Program.Context
-      HostBootstrap.Ensure.Colima.Backend.Program.Filesystem
-      HostBootstrap.Ensure.Colima.Backend.Program.LiveDocker
-      HostBootstrap.Ensure.Colima.Backend.Program.Namespace
-      HostBootstrap.Ensure.Colima.Backend.Program.Supervisor
       HostBootstrap.Ensure.Colima.Backend.Resolver.Authority
-      HostBootstrap.Ensure.Colima.Backend.Resolver.Program
+      HostBootstrap.Ensure.Colima.Backend.Resolver.Native
       HostBootstrap.Ensure.Colima.Backend.Resolver.Override
       HostBootstrap.Ensure.Colima.Backend.Resolver.Protocol
-      HostBootstrap.Ensure.Colima.Backend.Runner
   build-depends:
       base >=4.18 && <5
     , bytestring
     , filepath
     , hostbootstrap-core:effect-internal
+    , hostbootstrap-core:ownership-internal
     , process
   if !os(windows)
     build-depends:
         unix
 
+library lifecycle-dependency-internal
+  import: warnings
+  visibility: private
+  hs-source-dirs: src
+  exposed-modules:
+      HostBootstrap.Lifecycle.Dependency.Internal
+  build-depends:
+      base >=4.18 && <5
+    , bytestring
+    , text
+
 library
   import: warnings
-  hs-source-dirs: src
+  hs-source-dirs: src, internal/cluster-backend
   exposed-modules:
       HostBootstrap.CLI
       HostBootstrap.Command
@@ -111,7 +147,6 @@ library
       HostBootstrap.Lifecycle.Prepared
       HostBootstrap.Lifecycle.Session
       HostBootstrap.Lifecycle.Session.Testing
-      HostBootstrap.Protected
       HostBootstrap.ProjectScope
       HostBootstrap.Readiness
       HostBootstrap.Reconcile
@@ -129,6 +164,9 @@ library
       HostBootstrap.Ensure.AppleMetal
       HostBootstrap.Ensure.Docker
       HostBootstrap.Ensure.Colima
+      HostBootstrap.Ensure.Colima.Command
+      HostBootstrap.Ensure.Colima.Report
+      HostBootstrap.Ensure.Colima.Ownership
       HostBootstrap.Ensure.Cuda
       HostBootstrap.Ensure.CudaWin
       HostBootstrap.Ensure.Homebrew
@@ -167,6 +205,7 @@ library
       HostBootstrap.Cluster.Cordon.Foundation
       HostBootstrap.Cluster.Cordon
       HostBootstrap.Cluster.Budget
+      HostBootstrap.Cluster.Workload.Binding
       HostBootstrap.Cluster.Reconcile
       HostBootstrap.Cluster.Command
       HostBootstrap.Cluster.Report
@@ -176,23 +215,22 @@ library
       HostBootstrap.Harness
       HostBootstrap.Harness.DataRoot
       HostBootstrap.Harness.GeneratedConfig
-      HostBootstrap.Ownership.Object
-      HostBootstrap.Ownership.Clause
-      HostBootstrap.Ownership.Primitive
-      HostBootstrap.Ownership.Posix
-      HostBootstrap.Ownership.Windows
-      HostBootstrap.Ownership.Row
       HostBootstrap.Ownership.Shipped
       HostBootstrap.Harness.Ownership
       HostBootstrap.Service
       HostBootstrap.Service.Program
       HostBootstrap.DocValidator
   other-modules:
+      HostBootstrap.CLI.Bare
       HostBootstrap.Authority.Kernel
+      HostBootstrap.Authority.FailedUp.Internal
+      HostBootstrap.Cluster.Backend.Internal
       HostBootstrap.Authority.ProjectPlan.Internal
+      HostBootstrap.Command.Child
       HostBootstrap.Command.LifecycleEntry
       HostBootstrap.Cluster.Budget.Internal
       HostBootstrap.Cluster.Observation.Internal
+      HostBootstrap.Cluster.Workload
       HostBootstrap.Ensure.Colima.Settlement.Internal
       HostBootstrap.Config.Authority.Internal
       HostBootstrap.Config.Class.Internal
@@ -200,7 +238,6 @@ library
       HostBootstrap.Config.Install.Native
       HostBootstrap.Config.Schema.Internal
       HostBootstrap.Harness.Ownership.Internal
-      HostBootstrap.Ownership.Internal
       HostBootstrap.Handoff.Completion
       HostBootstrap.Handoff.Internal
       HostBootstrap.Handoff.Lifecycle
@@ -213,6 +250,8 @@ library
       HostBootstrap.Handoff.Recovery
       HostBootstrap.Handoff.Rooted
       HostBootstrap.Handoff.Runtime
+      HostBootstrap.Handoff.TerminalReport
+      HostBootstrap.Lifecycle.Dependency.Internal
       HostBootstrap.Lifecycle.Execution.Internal
       HostBootstrap.Lifecycle.FrameExecutor
       HostBootstrap.Lifecycle.Context.Internal
@@ -228,11 +267,14 @@ library
       HostBootstrap.ProjectPlan.Handoff.Internal
       HostBootstrap.ProjectPlan.Projection.Internal
       HostBootstrap.Reconcile.ProviderStart.Internal
+      HostBootstrap.Lifecycle.ResourceRecord
+      HostBootstrap.Lifecycle.Recovery
       HostBootstrap.Service.Internal
       HostBootstrap.Substrate.Provider.Internal
       HostBootstrap.Substrate.Provider.Dependency.Internal
       HostBootstrap.Substrate.Provider.Observation.Internal
       HostBootstrap.Teardown.Internal
+      HostBootstrap.Teardown.Executor.Internal
   build-depends:
       aeson
     , base >=4.18 && <5
@@ -245,11 +287,20 @@ library
     , hostbootstrap-core:effect-internal
     , hostbootstrap-core:harness-lifecycle-internal
     , hostbootstrap-core:colima-backend-internal
+    , hostbootstrap-core:ownership-internal
     , memory
     , optparse-applicative
     , process
     , safe-exceptions
     , text
+  reexported-modules:
+      HostBootstrap.Protected
+    , HostBootstrap.Ownership.Object
+    , HostBootstrap.Ownership.Clause
+    , HostBootstrap.Ownership.Primitive
+    , HostBootstrap.Ownership.Posix
+    , HostBootstrap.Ownership.Windows
+    , HostBootstrap.Ownership.Row
   -- Every module is built on every host, so a platform row is a refusal a
   -- caller can read rather than a module that is not there, and the case that
   -- covers it asserts that refusal instead of disappearing (§ JJ). Only the
@@ -294,6 +345,10 @@ test-suite hostbootstrap-core-test
       ActivationSpec
       BudgetSpec
       ReadinessSpec
+      ResourceRecordSpec
+      RecoverySpec
+      RecoveryInterruptionSpec
+      RecursiveLifecycleSpec
       ReconcileSpec
       CLISpec
       CompileFailSpec
@@ -315,6 +370,7 @@ test-suite hostbootstrap-core-test
       ProviderReportSpec
       ProviderResumeSpec
       ClusterReconcileSpec
+      ClusterWorkloadSpec
       ClusterCommandSpec
       ClusterReportSpec
       ClusterResumeSpec
@@ -327,6 +383,7 @@ test-suite hostbootstrap-core-test
       ProjectPlanSpec
       ContextSpec
       LifecycleSpec
+      LifecycleDependencySpec
       HarnessSpec
       IncusSpec
       LimaSpec
@@ -357,8 +414,10 @@ test-suite hostbootstrap-core-test
     , filepath
     , hostbootstrap-core
     , hostbootstrap-core:harness-lifecycle-internal
+    , hostbootstrap-core:lifecycle-dependency-internal
     , hostbootstrap-core:colima-backend-internal
     , hostbootstrap-core:effect-internal
+    , hostbootstrap-core:ownership-internal
     , optparse-applicative
     , process
     , tasty

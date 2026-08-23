@@ -52,11 +52,10 @@ where
 import Control.Exception (IOException, try)
 #endif
 import qualified Crypto.Hash as Hash
-import qualified Data.Aeson as Aeson
 import Data.Bifunctor (first)
 import qualified Data.ByteString as ByteString.Strict
-import qualified Data.ByteString.Char8 as ByteString
 import Data.Char (isAlphaNum, isAsciiLower, isDigit, toLower)
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text.Encoding
 import Data.Word (Word64)
@@ -77,22 +76,24 @@ import HostBootstrap.Cluster.Budget
     providerWallCallArgs,
     providerWallCallFence,
   )
-import HostBootstrap.Ensure.Colima.Settlement.Internal (withColimaWallSettlement)
-import HostBootstrap.Ensure.Colima.Backend.Internal
-  ( AcquireBackendRequest (..),
-    AcquireBackendResult (..),
-    BackendDirectoryChain (..),
-    BackendIdentity,
-    BackendNamespace (..),
-    CleanupBackendRequest (..),
-    CleanupBackendResult (..),
-    LiveDockerBackendRequest (..),
-    LiveDockerBackendResult (..),
-    runAcquireBackend,
-    runBoundedTool,
-    runCleanupBackend,
-    runLiveDockerBackend,
+import HostBootstrap.Ensure.Colima.Settlement.Internal (ColimaWallSettlementObservation (..), withColimaWallSettlement)
+import HostBootstrap.Ensure.Colima.Ownership
+  ( ColimaArtifactObservation (..),
+    ColimaManagedObservation (..),
+    ColimaManagedOutcome (..),
+    ColimaProfileMutationFault (..),
+    ColimaStartedObservation (..),
+    acquireManagedColimaProfileWith,
+    cleanupManagedColimaProfileWith,
+    runManagedColimaDockerWith,
   )
+import HostBootstrap.Ensure.Colima.Report (ColimaInstance (..), parseColimaInstances)
+import HostBootstrap.Ensure.Colima.Backend.Runner (BackendNamespace (..), BoundedToolResult (..), runBoundedTool, runShippedCommand)
+import HostBootstrap.Effect.Interpreter (resolveLaunch)
+import HostBootstrap.Effect.Run (CapturedRun (..))
+import HostBootstrap.Effect.Vocabulary (HostCommand)
+import HostBootstrap.HostConfig (HostConfig (..))
+import HostBootstrap.HostTool (HostTool (Colima, Docker, Lima), mkAbsExe)
 import HostBootstrap.Ensure.Colima.Backend.Resolver
   ( TrustedAppleBrew,
     TrustedAppleToolchain,
@@ -103,7 +104,6 @@ import HostBootstrap.Ensure.Colima.Backend.Resolver
     resolveTrustedAppleToolchain,
     trustedAppleBrewHelperPath,
     trustedAppleBrewPath,
-    trustedAppleBrewPythonPath,
     trustedAppleColimaPath,
     trustedAppleDockerPath,
     trustedAppleHelperPath,
@@ -165,8 +165,9 @@ import HostBootstrap.Reconcile
     zeroDependencyPreconditions,
   )
 import HostBootstrap.Substrate (detect, isAppleSilicon)
+import System.Directory (createDirectoryIfMissing)
 import System.Exit (ExitCode (..))
-import System.FilePath (isAbsolute, takeFileName, (</>))
+import System.FilePath (isAbsolute, takeDirectory, (</>))
 #if !defined(mingw32_HOST_OS)
 import System.Posix.User (getEffectiveUserID, getUserEntryForID, homeDirectory)
 #endif
@@ -266,35 +267,6 @@ validProfileName (initial : rest) =
     validInitial char = isAsciiLower char || isDigit char
     validRest char = validInitial char || char `elem` ("._-" :: String)
 
-data ColimaInstance = ColimaInstance
-  { ciName :: String,
-    ciStatus :: String,
-    ciCpus :: Integer,
-    ciMemoryBytes :: Integer,
-    ciDiskBytes :: Integer,
-    ciRuntime :: String
-  }
-  deriving (Eq, Show)
-
-instance Aeson.FromJSON ColimaInstance where
-  parseJSON =
-    Aeson.withObject "ColimaInstance" $ \object ->
-      ColimaInstance
-        <$> object Aeson..: "name"
-        <*> object Aeson..: "status"
-        <*> object Aeson..: "cpus"
-        <*> object Aeson..: "memory"
-        <*> object Aeson..: "disk"
-        <*> object Aeson..: "runtime"
-
--- | Colima emits one JSON object per line, not a surrounding JSON array.
-parseColimaInstances :: String -> Either String [ColimaInstance]
-parseColimaInstances output =
-  traverse parseLine (filter (not . null) (lines output))
-  where
-    parseLine line =
-      Aeson.eitherDecodeStrict' (ByteString.pack line)
-
 data ColimaWallDecision
   = CreateColimaWall
   | StartStoppedColimaWall
@@ -316,26 +288,15 @@ data ColimaOwnedObservation = ColimaOwnedObservation
   { ownedToolchain :: TrustedAppleToolchain,
     ownedNamespaceKey :: String,
     ownedNamespace :: BackendNamespace,
-    ownedPythonPath :: FilePath,
-    ownedColimaPath :: FilePath,
-    ownedDockerPath :: FilePath,
-    ownedLimaPath :: FilePath,
-    ownedLockPath :: FilePath,
     ownedStateRoot :: FilePath,
     ownedRecordPath :: FilePath,
     ownedOwner :: String,
-    ownedNonce :: String,
+    ownedLineage :: String,
     ownedMachineId :: String,
     ownedContextDigest :: String,
-    ownedLockIdentity :: BackendIdentity,
-    ownedRecordIdentity :: BackendIdentity,
-    ownedDockerIdentity :: BackendIdentity,
-    ownedColimaIdentity :: BackendIdentity,
-    ownedDiskIdentity :: BackendIdentity,
-    ownedDirectoryChain :: BackendDirectoryChain,
     ownedExpectedWall :: ExpectedColimaWall,
     ownedInvocationDigest :: String,
-    ownedBackendResult :: AcquireBackendResult
+    ownedSettlementObservation :: ColimaWallSettlementObservation
   }
   deriving (Eq, Show)
 
@@ -867,46 +828,60 @@ runPreparedColimaWallCall call = do
               recordPath = preparedColimaRecordPath call
               namespace = ownershipNamespace backend
               owner = bindColimaOwner (preparedColimaOwner call) backend
-              lockPath = colimaLockPath backend call
-          result <-
-            runAcquireBackend
-              AcquireBackendRequest
-                { acquirePythonPath = ownershipPythonPath backend,
-                  acquireColimaPath = ownershipColimaPath backend,
-                  acquireDockerPath = ownershipDockerPath backend,
-                  acquireLimaPath = ownershipLimaPath backend,
-                  acquireProfileName = profileName,
-                  acquireLockPath = lockPath,
-                  acquireStateRoot = stateRoot,
-                  acquireRecordPath = recordPath,
-                  acquireNamespace = namespace,
-                  acquireExpectedOwner = owner,
-                  acquireInvocationDigest = preparedColimaInvocation call,
-                  acquireExpectedCpu = expectedCpus expected,
-                  acquireExpectedMemory = expectedMemoryBytes expected,
-                  acquireExpectedDisk = expectedDiskBytes expected,
-                  acquireExpectedRootDisk = expectedRootDiskBytes expected,
-                  acquireCommandTimeoutSeconds = 120,
-                  acquireTestingCrashPoint = Nothing,
-                  acquireStartArgs = preparedColimaWallArgs call
-                }
-          postCall <- revalidateOwnershipBackend backend
-          pure $ case postCall of
-            Left err -> reconcileErrorObservation err
-            Right () ->
-              acquireObservation
-                backend
-                (preparedColimaInvocation call)
-                lockPath
-                stateRoot
-                recordPath
-                expected
-                result
+              lineage = Text.unpack (sha256Text (Text.pack (ownershipNamespaceKey backend)))
+          configured <- nativeHostConfig backend
+          case configured of
+            Left err -> pure (reconcileErrorObservation err)
+            Right config -> do
+              createDirectoryIfMissing True (takeDirectory (namespaceDockerConfig namespace))
+              result <-
+                acquireManagedColimaProfileWith (interpretNativeColima config namespace)
+                  stateRoot profileName owner lineage (preparedColimaInvocation call)
+                  (namespaceColimaHome namespace) (namespaceDockerConfig namespace)
+                  (expectedCpus expected) (expectedMemoryBytes expected) (expectedDiskBytes expected)
+                  (expectedRootDiskBytes expected) (preparedColimaWallArgs call)
+              postCall <- revalidateOwnershipBackend backend
+              pure $ case postCall of
+                Left err -> reconcileErrorObservation err
+                Right () -> acquireObservation backend owner (preparedColimaInvocation call) stateRoot recordPath expected result
 
 revalidateOwnershipBackend :: ColimaOwnershipBackend -> IO (Either ReconcileError ())
 revalidateOwnershipBackend backend = do
   unchanged <- revalidateTrustedAppleToolchain (ownershipToolchain backend)
   pure $ first (cleanupFailure "revalidate direct-Colima toolchain") unchanged
+
+nativeHostConfig :: ColimaOwnershipBackend -> IO (Either ReconcileError HostConfig)
+nativeHostConfig backend = do
+  substrate <- detect
+  pure $ do
+    host <- first (cleanupFailure "detect direct-Colima substrate") substrate
+    colima <- first (cleanupFailure "resolve direct-Colima executable") (mkAbsExe (ownershipColimaPath backend))
+    docker <- first (cleanupFailure "resolve direct-Docker executable") (mkAbsExe (ownershipDockerPath backend))
+    lima <- first (cleanupFailure "resolve direct-Lima executable") (mkAbsExe (ownershipLimaPath backend))
+    Right (HostConfig host (Map.fromList [(Colima, colima), (Docker, docker), (Lima, lima)]))
+
+nativeHostConfigForOwned :: ColimaOwnedObservation -> IO (Either ReconcileError HostConfig)
+nativeHostConfigForOwned owned =
+  nativeHostConfig
+    ColimaOwnershipBackend
+      { ownershipToolchain = ownedToolchain owned,
+        ownershipNamespaceKey = ownedNamespaceKey owned,
+        ownershipPythonPath = trustedApplePythonPath (ownedToolchain owned),
+        ownershipColimaPath = trustedAppleColimaPath (ownedToolchain owned),
+        ownershipDockerPath = trustedAppleDockerPath (ownedToolchain owned),
+        ownershipLimaPath = trustedAppleLimaPath (ownedToolchain owned),
+        ownershipNamespace = ownedNamespace owned
+      }
+
+interpretNativeColima :: HostConfig -> BackendNamespace -> HostCommand -> IO (Either String CapturedRun)
+interpretNativeColima config namespace command = case resolveLaunch config command of
+  Left refusal -> pure (Left refusal)
+  Right (executable, arguments) -> do
+    outcome <- runShippedCommand 120 namespace executable arguments
+    pure $ case outcome of
+      BoundedToolCompleted code out err -> Right (CapturedRun code out err)
+      BoundedToolTimedOut -> Left "native Colima command timed out"
+      BoundedToolFailed refusal -> Left refusal
 
 data ColimaOwnershipBackend = ColimaOwnershipBackend
   { ownershipToolchain :: TrustedAppleToolchain,
@@ -996,7 +971,6 @@ installAndRediscover home recordPath profileName namespaceKey brew = do
             runBoundedTool
               900
               (brewInstallNamespace home recordPath profileName brew)
-              (trustedAppleBrewPythonPath brew)
               (trustedAppleBrewPath brew)
               ["install", "colima"],
           trustedInstallRediscover = resolveTrustedAppleToolchain home
@@ -1101,18 +1075,6 @@ effectiveHomeDirectory = do
       homeDirectory <$> getUserEntryForID userId
 #endif
 
-colimaLockPath ::
-  ColimaOwnershipBackend ->
-  PreparedColimaWallCall scope specDigest planId configId providerResourceId providerFrame budgetId capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
-  FilePath
-colimaLockPath backend _call =
-  colimaLockPathForNamespace (ownershipNamespace backend)
-
-colimaLockPathForNamespace :: BackendNamespace -> FilePath
-colimaLockPathForNamespace namespace =
-  namespaceHomeDirectory namespace
-    </> (".hostbootstrap-colima-home-" ++ drop 2 (takeFileName (namespaceColimaHome namespace)) ++ ".lock")
-
 preparedColimaStateRoot ::
   PreparedColimaWallCall
     scope
@@ -1191,83 +1153,57 @@ bindColimaOwner ownerSeed backend =
 acquireObservation ::
   ColimaOwnershipBackend ->
   String ->
-  FilePath ->
+  String ->
   FilePath ->
   FilePath ->
   ExpectedColimaWall ->
-  AcquireBackendResult ->
+  Either ColimaProfileMutationFault ColimaManagedOutcome ->
   ColimaWallObservation
-acquireObservation backend invocationDigest lockPath stateRoot recordPath expected result =
+acquireObservation backend owner invocationDigest stateRoot recordPath expected result =
   case result of
-    AcquireApplied owner nonce machineId contextDigest epoch lockIdentity recordIdentity dockerIdentity colimaIdentity diskIdentity directoryChain ->
-      owned owner nonce machineId contextDigest lockIdentity recordIdentity dockerIdentity colimaIdentity diskIdentity directoryChain (WallApplied epoch) result
-    AcquireExact owner nonce machineId contextDigest epoch lockIdentity recordIdentity dockerIdentity colimaIdentity diskIdentity directoryChain ->
-      owned owner nonce machineId contextDigest lockIdentity recordIdentity dockerIdentity colimaIdentity diskIdentity directoryChain (WallAlreadyExact epoch) result
-    AcquireForeign epoch ->
-      ColimaUnownedWallObservation
-        ( WallRefused
-            ( ConflictDetail
-                "reconcile Colima provider wall"
-                "an absent profile or this reservation's durable origin record"
-                ("compatible unowned profile at stable machine epoch " <> Text.pack (show epoch))
-                "leave the foreign profile untouched or recover the reservation that owns it"
-            )
-        )
-    AcquireConflict reason ->
+    Right (ColimaManagedApplied observation) -> owned observation (ColimaWallSettlementApplied (startedMachineEpoch (managedStartObservation observation)))
+    Right (ColimaManagedAlreadyExact observation) -> owned observation (ColimaWallSettlementAlreadyExact (startedMachineEpoch (managedStartObservation observation)))
+    Left reason@ColimaMutationProfileConflict {} ->
       ColimaUnownedWallObservation
         ( WallRefused
             ( ConflictDetail
                 "reconcile Colima provider wall"
                 (renderExpected expected)
-                (Text.pack reason)
+                (Text.pack (show reason))
                 "leave the conflicting profile untouched and resolve its owner or sizing explicitly"
             )
         )
-    AcquireFailed stage ->
-      unownedFailure ("locked Colima backend failed during " ++ stage) ReprobeBeforeRetry
-    AcquireUnsupported reason ->
-      ColimaWallOwnershipUnsupported
-        ( UnsupportedDetail
-            "reconcile Colima provider wall"
-            ("the locked backend cannot prove " <> Text.pack reason)
+    Left reason ->
+      ColimaUnownedWallObservation
+        ( WallAcquireFailed
+            ( FailureDetail
+                "acquire Colima provider wall"
+                (Text.pack (show reason))
+                ReprobeBeforeRetry
+            )
         )
   where
-    owned owner nonce machineId contextDigest lockIdentity recordIdentity dockerIdentity colimaIdentity diskIdentity directoryChain _observation backendResult =
+    owned observation settlementObservation =
       ColimaOwnedWallObservation
         ColimaOwnedObservation
           { ownedToolchain = ownershipToolchain backend,
             ownedNamespaceKey = ownershipNamespaceKey backend,
             ownedNamespace = ownershipNamespace backend,
-            ownedPythonPath = ownershipPythonPath backend,
-            ownedColimaPath = ownershipColimaPath backend,
-            ownedDockerPath = ownershipDockerPath backend,
-            ownedLimaPath = ownershipLimaPath backend,
-            ownedLockPath = lockPath,
             ownedStateRoot = stateRoot,
             ownedRecordPath = recordPath,
             ownedOwner = owner,
-            ownedNonce = nonce,
-            ownedMachineId = machineId,
-            ownedContextDigest = contextDigest,
-            ownedLockIdentity = lockIdentity,
-            ownedRecordIdentity = recordIdentity,
-            ownedDockerIdentity = dockerIdentity,
-            ownedColimaIdentity = colimaIdentity,
-            ownedDiskIdentity = diskIdentity,
-            ownedDirectoryChain = directoryChain,
+            ownedLineage = Text.unpack (sha256Text (Text.pack (ownershipNamespaceKey backend))),
+            ownedMachineId = startedMachineIdentity (managedStartObservation observation),
+            ownedContextDigest = artifactContextDigest (managedArtifactObservation observation),
             ownedExpectedWall = expected,
             ownedInvocationDigest = invocationDigest,
-            ownedBackendResult = backendResult
+            ownedSettlementObservation = settlementObservation
           }
 
 preparedColimaInvocation ::
   PreparedColimaWallCall scope specDigest planId configId providerResourceId providerFrame budgetId capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
   String
 preparedColimaInvocation (PreparedColimaWallCall _ _ _ _ _ _ (PreparedColimaOperation digest _)) = digest
-
-unownedFailure :: String -> RecoveryDisposition -> ColimaWallObservation
-unownedFailure message recovery =
-  ColimaUnownedWallObservation (failed message recovery)
 
 -- | A settled Colima wall.  Unlike the raw observation, this value retains the
 -- exact plan, configuration, provider-resource, wall, epoch, and reservation
@@ -1332,7 +1268,6 @@ settleColimaWallCall (PreparedColimaWallCall profileName expectedNamespaceKey ex
       | ownedStateRoot owned /= stateRoot
           || ownedNamespaceKey owned /= expectedNamespaceKey
           || ownedRecordPath owned /= expectedRecordPath
-          || ownedLockPath owned /= expectedLockPathFor owned
           || namespaceDockerConfig (ownedNamespace owned) /= expectedRecordPath ++ ".docker"
           || ownedOwner owned /= expectedBoundOwnerFor owned
           || ownedInvocationDigest owned /= preparedColimaInvocationDigest preparedOperation ->
@@ -1349,7 +1284,7 @@ settleColimaWallCall (PreparedColimaWallCall profileName expectedNamespaceKey ex
             withColimaWallSettlement
               prepared
               start
-              (ownedBackendResult owned)
+              (ownedSettlementObservation owned)
               ( \authority runningHandle receipt wallChange providerChange ->
                   consume
                     ( LiveColimaWall
@@ -1364,18 +1299,16 @@ settleColimaWallCall (PreparedColimaWallCall profileName expectedNamespaceKey ex
                     )
               )
   where
-    expectedLockPathFor owned =
-      colimaLockPathForNamespace (ownedNamespace owned)
     expectedBoundOwnerFor owned =
       bindColimaOwner
         expectedOwnerSeed
         ColimaOwnershipBackend
           { ownershipToolchain = ownedToolchain owned,
             ownershipNamespaceKey = ownedNamespaceKey owned,
-            ownershipPythonPath = ownedPythonPath owned,
-            ownershipColimaPath = ownedColimaPath owned,
-            ownershipDockerPath = ownedDockerPath owned,
-            ownershipLimaPath = ownedLimaPath owned,
+            ownershipPythonPath = trustedApplePythonPath (ownedToolchain owned),
+            ownershipColimaPath = trustedAppleColimaPath (ownedToolchain owned),
+            ownershipDockerPath = trustedAppleDockerPath (ownedToolchain owned),
+            ownershipLimaPath = trustedAppleLimaPath (ownedToolchain owned),
             ownershipNamespace = ownedNamespace owned
           }
     settleUnowned raw = case raw of
@@ -1442,45 +1375,18 @@ runLiveColimaDocker live args = do
   case unchanged of
     Left reason -> pure (Left ("live Docker toolchain changed: " ++ reason))
     Right () -> do
-      result <-
-        runLiveDockerBackend
-          LiveDockerBackendRequest
-            { liveDockerPythonPath = ownedPythonPath owned,
-              liveDockerColimaPath = ownedColimaPath owned,
-              liveDockerExecutablePath = ownedDockerPath owned,
-              liveDockerLimaPath = ownedLimaPath owned,
-              liveDockerProfileName = profileName,
-              liveDockerLockPath = ownedLockPath owned,
-              liveDockerStateRoot = ownedStateRoot owned,
-              liveDockerRecordPath = ownedRecordPath owned,
-              liveDockerNamespace = ownedNamespace owned,
-              liveDockerExpectedOwner = ownedOwner owned,
-              liveDockerInvocationDigest = ownedInvocationDigest owned,
-              liveDockerNonce = ownedNonce owned,
-              liveDockerExpectedMachineId = ownedMachineId owned,
-              liveDockerExpectedContextDigest = ownedContextDigest owned,
-              liveDockerExpectedCpu = expectedCpus (ownedExpectedWall owned),
-              liveDockerExpectedMemory = expectedMemoryBytes (ownedExpectedWall owned),
-              liveDockerExpectedDisk = expectedDiskBytes (ownedExpectedWall owned),
-              liveDockerExpectedRootDisk = expectedRootDiskBytes (ownedExpectedWall owned),
-              liveDockerExpectedLockIdentity = ownedLockIdentity owned,
-              liveDockerExpectedRecordIdentity = ownedRecordIdentity owned,
-              liveDockerExpectedDockerIdentity = ownedDockerIdentity owned,
-              liveDockerExpectedColimaIdentity = ownedColimaIdentity owned,
-              liveDockerExpectedDiskIdentity = ownedDiskIdentity owned,
-              liveDockerExpectedDirectoryChain = ownedDirectoryChain owned,
-              liveDockerCommandTimeoutSeconds = 120,
-              liveDockerExpectedEpoch = liveColimaWallEpoch live,
-              liveDockerArgs = args
-            }
+      configured <- nativeHostConfigForOwned owned
+      result <- case configured of
+        Left err -> pure (Left (show err))
+        Right config -> fmap (first show) $
+          runManagedColimaDockerWith (interpretNativeColima config (ownedNamespace owned))
+            (ownedStateRoot owned) profileName (ownedOwner owned) (ownedLineage owned)
+            (ownedInvocationDigest owned) (namespaceColimaHome (ownedNamespace owned))
+            (namespaceDockerConfig (ownedNamespace owned)) args
       postCall <- revalidateTrustedAppleToolchain (ownedToolchain owned)
       pure $ case postCall of
         Left reason -> Left ("live Docker toolchain changed after execution: " ++ reason)
-        Right () -> case result of
-          LiveDockerCompleted exitCode out errOut -> Right (exitCode, out, errOut)
-          LiveDockerConflict reason -> Left ("live Docker ownership conflict: " ++ reason)
-          LiveDockerUnsupported reason -> Left ("live Docker ownership proof unsupported: " ++ reason)
-          LiveDockerFailed reason -> Left ("live Docker backend failed: " ++ reason)
+        Right () -> fmap (\captured -> (capturedExit captured, capturedStdout captured, capturedStderr captured)) result
 
 -- | Conditional cleanup authority exists only for a live wall whose exact
 -- plan/fence origin record was established before the profile's first write.
@@ -1642,19 +1548,13 @@ colimaCleanupCallDigest (ColimaCleanupAuthority profileName owned epoch handle r
                     [ "direct-colima-force-destroy-v1",
                       Text.pack profileName,
                       Text.pack (ownedOwner owned),
-                      Text.pack (ownedNonce owned),
+                      Text.pack (ownedLineage owned),
                       Text.pack (ownedMachineId owned),
                       Text.pack (ownedContextDigest owned),
                       Text.pack (show epoch),
                       Text.pack (show (resourceHandleGeneration handle)),
                       ownershipReceiptOperationKey receipt,
-                      Text.pack (show fenceValue),
-                      Text.pack (show (ownedLockIdentity owned)),
-                      Text.pack (show (ownedRecordIdentity owned)),
-                      Text.pack (show (ownedDockerIdentity owned)),
-                      Text.pack (show (ownedColimaIdentity owned)),
-                      Text.pack (show (ownedDiskIdentity owned)),
-                      Text.pack (show (ownedDirectoryChain owned))
+                      Text.pack (show fenceValue)
                     ]
                 )
             )
@@ -1674,7 +1574,7 @@ runColimaCleanup ::
         (PhaseAdvance scope planId providerResourceId ProviderResource Destroyed)
     )
 runColimaCleanup
-  (PreparedColimaCleanupCall (ColimaCleanupAuthority profileName owned expectedEpoch handle _receipt _fenceValue) _gate preparedTransition cleanupInvocation) = do
+  (PreparedColimaCleanupCall (ColimaCleanupAuthority profileName owned _expectedEpoch handle _receipt _fenceValue) _gate preparedTransition cleanupInvocation) = do
       backendResult <- discoverDirectColimaBackendAt (ownedRecordPath owned) profileName (ownedNamespaceKey owned)
       case backendResult of
         Left err -> pure (Left err)
@@ -1691,83 +1591,45 @@ runColimaCleanup
                     )
                 )
           | otherwise -> do
-              result <-
-                runCleanupBackend
-                  CleanupBackendRequest
-                    { cleanupPythonPath = ownershipPythonPath backend,
-                      cleanupColimaPath = ownershipColimaPath backend,
-                      cleanupDockerPath = ownershipDockerPath backend,
-                      cleanupLimaPath = ownershipLimaPath backend,
-                      cleanupProfileName = profileName,
-                      cleanupLockPath = ownedLockPath owned,
-                      cleanupStateRoot = ownedStateRoot owned,
-                      cleanupRecordPath = ownedRecordPath owned,
-                      cleanupNamespace = ownedNamespace owned,
-                      cleanupExpectedOwner = ownedOwner owned,
-                      cleanupAcquireInvocationDigest = ownedInvocationDigest owned,
-                      cleanupInvocationDigest = cleanupInvocation,
-                      cleanupNonce = ownedNonce owned,
-                      cleanupExpectedMachineId = ownedMachineId owned,
-                      cleanupExpectedContextDigest = ownedContextDigest owned,
-                      cleanupExpectedCpu = expectedCpus (ownedExpectedWall owned),
-                      cleanupExpectedMemory = expectedMemoryBytes (ownedExpectedWall owned),
-                      cleanupExpectedDisk = expectedDiskBytes (ownedExpectedWall owned),
-                      cleanupExpectedRootDisk = expectedRootDiskBytes (ownedExpectedWall owned),
-                      cleanupExpectedLockIdentity = ownedLockIdentity owned,
-                      cleanupExpectedRecordIdentity = ownedRecordIdentity owned,
-                      cleanupExpectedDockerIdentity = ownedDockerIdentity owned,
-                      cleanupExpectedColimaIdentity = ownedColimaIdentity owned,
-                      cleanupExpectedDiskIdentity = ownedDiskIdentity owned,
-                      cleanupExpectedDirectoryChain = ownedDirectoryChain owned,
-                      cleanupCommandTimeoutSeconds = 120,
-                      cleanupExpectedEpoch = expectedEpoch,
-                      cleanupTestingCrashPoint = Nothing
-                    }
+              configured <- nativeHostConfig backend
+              result <- case configured of
+                Left err -> pure (Left err)
+                Right config -> do
+                  let namespace = ownedNamespace owned
+                      diskPath = namespaceColimaHome namespace </> "_lima" </> "_disks" </> ("colima-" ++ profileName) </> "datadisk"
+                  fmap (first cleanupMutationError) $
+                    cleanupManagedColimaProfileWith (interpretNativeColima config namespace)
+                      (ownedStateRoot owned) profileName (ownedOwner owned) (ownedLineage owned)
+                      (ownedInvocationDigest owned) cleanupInvocation (namespaceColimaHome namespace)
+                      (namespaceDockerConfig namespace) diskPath
               postCall <- revalidateOwnershipBackend backend
               pure $ do
                 case postCall of
                   Left err -> Left err
                   Right () -> Right ()
-                cleanupResult expectedEpoch result
+                result
                 completePreparedPhaseTransition preparedTransition (resourceHandleGeneration handle)
+
+cleanupMutationError :: ColimaProfileMutationFault -> ReconcileError
+cleanupMutationError fault@ColimaMutationProfileConflict {} = cleanupConflict fault
+cleanupMutationError fault@ColimaMutationOwnershipRefused {} = cleanupConflict fault
+cleanupMutationError fault = cleanupFailure "run native Colima cleanup" (show fault)
+
+cleanupConflict :: ColimaProfileMutationFault -> ReconcileError
+cleanupConflict fault =
+  Conflict
+    ( ConflictDetail
+        "release Colima profile"
+        "the retained native Managed lineage and cleanup invocation"
+        (Text.pack (show fault))
+        "leave mismatched ownership state untouched and resume its original cleanup invocation"
+    )
 
 backendMatchesOwned :: ColimaOwnershipBackend -> ColimaOwnedObservation -> Bool
 backendMatchesOwned backend owned =
   ownershipToolchain backend == ownedToolchain owned
     && ownershipNamespaceKey backend == ownedNamespaceKey owned
-    && ownershipPythonPath backend == ownedPythonPath owned
-    && ownershipColimaPath backend == ownedColimaPath owned
-    && ownershipDockerPath backend == ownedDockerPath owned
-    && ownershipLimaPath backend == ownedLimaPath owned
     && ownershipNamespace backend == ownedNamespace owned
-
-cleanupResult :: Word64 -> CleanupBackendResult -> Either ReconcileError ()
-cleanupResult expectedEpoch result =
-  case result of
-    CleanupDeleted -> Right ()
-    CleanupReleased -> Right ()
-    CleanupConflict reason ->
-      Left
-        ( Conflict
-            ( ConflictDetail
-                "release Colima profile"
-                ( "the exact nonce-bearing origin record and stable machine epoch "
-                    <> Text.pack (show expectedEpoch)
-                )
-                (Text.pack reason)
-                "leave the replacement or mismatched ownership state untouched and reacquire authority from its current owner"
-            )
-        )
-    CleanupUnsupported reason ->
-      Left
-        ( Unsupported
-            ( UnsupportedDetail
-                "release Colima profile"
-                ("the locked backend cannot prove " <> Text.pack reason)
-            )
-        )
-    CleanupFailed stage ->
-      Left (cleanupFailure "run locked Colima cleanup" ("backend failed during " ++ stage))
 
 cleanupFailure :: Text.Text -> String -> ReconcileError
 cleanupFailure operation message =

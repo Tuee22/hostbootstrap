@@ -33,6 +33,10 @@ data RunningProviderDependency scope planId providerId where
     ManagedProviderHandle scope planId backendId providerId Running ->
     IO (Either ReconcileError Word64) ->
     RunningProviderDependency scope planId providerId
+  RecoveredRunningProviderDependency ::
+    ResourceHandle scope planId providerId ProviderResource Managed Running ->
+    IO (Either ReconcileError Word64) ->
+    RunningProviderDependency scope planId providerId
 
 type role RunningProviderDependency nominal nominal nominal
 
@@ -40,8 +44,10 @@ runningProviderDependencyHandle ::
   RunningProviderDependency scope planId providerId ->
   ResourceHandle scope planId providerId ProviderResource Managed Running
 runningProviderDependencyHandle (RunningProviderDependency (ManagedProviderHandle _ handle _) _) = handle
+runningProviderDependencyHandle (RecoveredRunningProviderDependency handle _) = handle
 
 runningProviderDependencyReprobe ::
   RunningProviderDependency scope planId providerId ->
   IO (Either ReconcileError Word64)
 runningProviderDependencyReprobe (RunningProviderDependency _ reprobe) = reprobe
+runningProviderDependencyReprobe (RecoveredRunningProviderDependency _ reprobe) = reprobe

@@ -295,6 +295,15 @@ CPU/memory requests/limits. See [resource budgeting](resource_budgeting.md).
 
 ## Validation
 
+The recursive reverse command admits the core-managed cluster action through the same durable preparation
+boundary as every other frame node. `Cluster.Reconcile.runExactClusterCleanupKernel` requires the exact
+admitted plan digest, the prepared operation key, and a `LocalWork` whose plan-derived action is
+`DeleteCluster`. The sealed root lifecycle entry is the only caller that can disclose the matching plan and
+closed verb: Down selects the retained/down cleanup operation and Destroy selects deletion, with no Boolean
+or textual policy input. An exception becomes the ordinary typed failed teardown observation, so the shared
+reverse driver can settle or continue siblings without a second cluster-specific control path. The driver
+adoption itself is owned by recursive-lifecycle Sprint 17.48.
+
 From the repository root, the exact
 [cluster-lifecycle-and-cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
 gate is:

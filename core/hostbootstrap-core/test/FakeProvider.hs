@@ -255,12 +255,12 @@ serveProviderCommand guest root role behaviour argv = case argv of
                 Just held -> putStrLn (instanceRunState held)
     ["config", "get", name, key] ->
         instanceNamed root name >>= \case
-            Nothing -> pure ()
+            Nothing -> refuseProviderCommand ("Failed to fetch instance " <> show name <> ": Instance not found")
             Just held
                 | key == providerIdentityConfigKey -> putStrLn (instanceIdentity held)
                 | key == providerOwnerConfigKey -> putStrLn (instanceOwnerClaim held)
                 | otherwise -> pure ()
-    ("launch" : _image : name : options) -> do
+    ("--quiet" : "launch" : _image : name : options) -> do
         instances <- readInstances root
         writeInstances root ((name, launchedInstance name options) : filter ((/= name) . fst) instances)
         recordMutation root "launch"

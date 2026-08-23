@@ -54,6 +54,18 @@ module HostBootstrap.Step (
     projectsOperation,
     stepProjectedOperations,
 
+    -- * Plan-authored provider resources
+    ProviderResourceDeclaration,
+    providerResourceAtCurrentFrame,
+    providerResourceAtImmediateChild,
+    declaresProviderResource,
+    stepProviderResourceDeclarations,
+    providerResourceDeclarationTargetsChild,
+
+    -- * Plan-authored chart workload declaration
+    declaresChartWorkloadResource,
+    stepChartWorkloadResourceDeclarations,
+
     -- * Opaque steps
     Step,
     StepAction,
@@ -388,7 +400,52 @@ data Step = Step
     -- ^ The operations this step projects out of its own. Retained as declared
     -- so 'mkStepPlan' can reject one that does not live under this step's own
     -- operation key, or one two steps claim.
+    , internalProviderResourceDeclarations :: [ProviderResourceDeclaration]
+    , internalChartWorkloadResourceDeclarations :: [(Text, Text, Text, Text, Text, Text, Text, Text, [Text])]
     }
+
+{- | A closed provider-resource declaration attached to its authoring
+operation. It targets only that operation's current frame or its unique
+immediate child; callers supply neither frame text nor a resource key.
+-}
+data ProviderResourceDeclaration
+    = ProviderResourceAtCurrentFrame
+    | ProviderResourceAtImmediateChild
+    deriving (Eq, Show)
+
+providerResourceAtCurrentFrame :: ProviderResourceDeclaration
+providerResourceAtCurrentFrame = ProviderResourceAtCurrentFrame
+
+providerResourceAtImmediateChild :: ProviderResourceDeclaration
+providerResourceAtImmediateChild = ProviderResourceAtImmediateChild
+
+declaresProviderResource :: ProviderResourceDeclaration -> Step -> Step
+declaresProviderResource declaration step =
+    step
+        { internalProviderResourceDeclarations =
+            internalProviderResourceDeclarations step ++ [declaration]
+        }
+
+stepProviderResourceDeclarations :: Step -> [ProviderResourceDeclaration]
+stepProviderResourceDeclarations = internalProviderResourceDeclarations
+
+providerResourceDeclarationTargetsChild :: ProviderResourceDeclaration -> Bool
+providerResourceDeclarationTargetsChild declaration =
+    case declaration of
+        ProviderResourceAtCurrentFrame -> False
+        ProviderResourceAtImmediateChild -> True
+
+declaresChartWorkloadResource ::
+    Text -> Text -> Text -> Text -> Text -> Text -> Text -> Text -> [Text] -> Step -> Step
+declaresChartWorkloadResource artifactDigest release namespace valuesDigest imageIdentity workloadKey workloadDigest serviceRole effects step =
+    step
+        { internalChartWorkloadResourceDeclarations =
+            internalChartWorkloadResourceDeclarations step
+                ++ [(artifactDigest, release, namespace, valuesDigest, imageIdentity, workloadKey, workloadDigest, serviceRole, effects)]
+        }
+
+stepChartWorkloadResourceDeclarations :: Step -> [(Text, Text, Text, Text, Text, Text, Text, Text, [Text])]
+stepChartWorkloadResourceDeclarations = internalChartWorkloadResourceDeclarations
 
 stepLabel :: Step -> String
 stepLabel = internalStepLabel
@@ -614,6 +671,8 @@ data StepPlanError
       ProjectionOutsideStep StepIdentity String
     | -- | a projected operation claimed twice, or already a node's own
       DuplicateProjectedOperation String
+    | DuplicateProviderResourceDeclaration StepIdentity Int
+    | ProviderResourceChildWithoutUniqueDescent StepIdentity
     deriving (Eq, Show)
 
 {- | Validate the exact declared sequence. Normal steps must form contiguous
@@ -650,6 +709,8 @@ mkStepPlan steps
     | Just failure <- reverseFailure =
         Left failure
     | Just failure <- projectionFailure =
+        Left failure
+    | Just failure <- providerDeclarationFailure =
         Left failure
     | otherwise = Right (StepPlan steps)
   where
@@ -737,6 +798,25 @@ mkStepPlan steps
                    , let claimed = length [() | (_, _, candidate) <- declaredProjections, candidate == key]
                    ]
             )
+    providerDeclarationFailure =
+        firstJust
+            [ case declarations of
+                [] -> Nothing
+                [ProviderResourceAtCurrentFrame] -> Nothing
+                [ProviderResourceAtImmediateChild]
+                    | frameDescentCount (frameId (stepFrame step)) == 1 -> Nothing
+                    | otherwise -> Just (ProviderResourceChildWithoutUniqueDescent (stepIdentity step))
+                _ -> Just (DuplicateProviderResourceDeclaration (stepIdentity step) (length declarations))
+            | step <- steps
+            , let declarations = stepProviderResourceDeclarations step
+            ]
+    frameDescentCount fid =
+        length
+            [ context
+            | candidate <- normalSteps
+            , frameId (stepFrame candidate) == fid
+            , context <- stepDescents candidate
+            ]
     {- Consume each dependency key the projection names, left to right and in
     plan order, then the declaring node's own key, then require a non-empty
     suffix. Operation keys are unique and a segment is only consumed when the
@@ -867,6 +947,8 @@ coreStep identity reversePolicy label frame action =
         []
         []
         []
+        []
+        []
 
 deployVMStep :: String -> StepFrame -> StepAction -> Step
 deployVMStep = coreStep DeployVMId ProjectManagedReverse
@@ -914,6 +996,8 @@ projectStep identity reversePolicy label frame action =
         initialStepImplementationRevision
         initialStepReverseAdapterRevision
         action
+        []
+        []
         []
         []
         []

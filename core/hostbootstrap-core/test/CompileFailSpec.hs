@@ -29,6 +29,8 @@ compileFailCases ::
     [TestTree]
 compileFailCases rejects rejectsWith =
     [ rejects "RawStep.hs"
+    , rejects "ImportLifecycleDependencyInternal.hs"
+    , rejects "EscapeFreshRunningProviderDependency.hs"
     , rejectsWith
         "ForgeValidatedConfig.hs"
         ["Illegal term-level use of the type constructor 'ValidatedConfig'"]
@@ -142,6 +144,9 @@ compileFailCases rejects rejectsWith =
         "ImportLifecycleFrameExecutor.hs"
         ["Could not load module 'HostBootstrap.Lifecycle.FrameExecutor'. it is a hidden module"]
     , rejectsWith
+        "ImportTeardownExecutorInternal.hs"
+        ["Could not load module 'HostBootstrap.Teardown.Executor.Internal'. it is a hidden module"]
+    , rejectsWith
         "ImportHandoffProcessRoute.hs"
         ["Could not load module 'HostBootstrap.Handoff.Process.Route'. it is a hidden module"]
     , -- The lifecycle process owner is a platform row, and a row is built on
@@ -198,6 +203,21 @@ compileFailCases rejects rejectsWith =
         , "it does not export any children"
         , "called 'FinalizedProjectSpec'"
         , "Module 'HostBootstrap.ProjectPlan.Construct' does not export 'withFinalizedForwardChildProjectionKernel'"
+        ]
+    , rejectsWith
+        "ForgeProviderResourceDeclaration.hs"
+        [ "it does not export any children"
+        , "called 'ProviderResourceDeclaration'"
+        ]
+    , rejectsWith
+        "ForgeChartWorkloadResource.hs"
+        [ "it does not export any children"
+        , "called 'ChartWorkloadResource'"
+        ]
+    , rejectsWith
+        "ForgePlanExecutionPackage.hs"
+        [ "Module 'HostBootstrap.Lifecycle.Execution' does not export 'PlanExecutionPackage'"
+        , "Module 'HostBootstrap.Lifecycle.Execution' does not export 'mintPlanExecutionPackage'"
         ]
     , rejectsWith
         "EscapeProjectPlanIdentity.hs"
@@ -911,8 +931,8 @@ compileFailCases rejects rejectsWith =
         "ImportColimaSettlementInternal.hs"
         ["Could not load module 'HostBootstrap.Ensure.Colima.Settlement.Internal'. it is a hidden module"]
     , rejectsWith
-        "ImportColimaBackendInternal.hs"
-        ["Could not load module 'HostBootstrap.Ensure.Colima.Backend.Internal'. It is a member of the hidden package 'hostbootstrap-core-0.1.0.0:colima-backend-internal'"]
+        "ImportColimaBackendRunner.hs"
+        ["Could not load module 'HostBootstrap.Ensure.Colima.Backend.Runner'. It is a member of the hidden package 'hostbootstrap-core-0.1.0.0:colima-backend-internal'"]
     , rejectsWith
         "ImportColimaResolverOverride.hs"
         ["Could not load module 'HostBootstrap.Ensure.Colima.Backend.Resolver.Override'. it is a hidden module in the package 'hostbootstrap-core-0.1.0.0:colima-backend-internal'"]
@@ -928,6 +948,9 @@ compileFailCases rejects rejectsWith =
     , rejectsWith
         "ForgePreparedProviderStart.hs"
         ["Illegal term-level use of the type constructor 'PreparedProviderStart'"]
+    , rejectsWith
+        "ForgePreparedChartWorkload.hs"
+        ["Illegal term-level use of the type constructor 'PreparedChartWorkload'"]
     , rejectsWith
         "CoercePreparedProviderStartRoles.hs"
         [ "Couldn't match type 'PlanA' with 'PlanB' arising from a use of 'coerce'"
@@ -1035,6 +1058,7 @@ compileFailCases rejects rejectsWith =
     , rejectsWith
         "ForgeClusterAuthorities.hs"
         [ "Illegal term-level use of the type constructor 'PlanOwnedCluster'"
+        , "Illegal term-level use of the type constructor 'PlanOwnedClusterConfig'"
         , "Illegal term-level use of the type constructor 'PreparedClusterReconcile'"
         , "Illegal term-level use of the type constructor 'ClusterReconcileSettlement'"
         , "Illegal term-level use of the type constructor 'ClusterReconcileCallResult'"
@@ -1069,7 +1093,7 @@ compileFailCases rejects rejectsWith =
         ["Could not load module 'HostBootstrap.Cluster.Observation.Internal'. it is a hidden module"]
     , rejectsWith
         "ImportClusterBackendInternal.hs"
-        ["Could not load module 'HostBootstrap.Cluster.Backend.Internal'"]
+        ["it is a hidden module in the package 'hostbootstrap-core-0.1.0.0'"]
     , rejectsWith
         "OpenClusterBackendExecutor.hs"
         [ "Module 'HostBootstrap.Cluster.Backend' does not export 'ClusterCommandResult(..)'"
@@ -1085,6 +1109,39 @@ compileFailCases rejects rejectsWith =
         , "Couldn't match type 'CapabilityPlanA' with 'CapabilityPlanB' arising from a use of 'coerce'"
         ]
     , rejects "RawReconcile.hs"
+    , rejectsWith
+        "ForgeVerifiedResourceRecordBundle.hs"
+        ["Illegal term-level use of the type constructor 'VerifiedResourceRecordBundle'"]
+    , rejectsWith
+        "ForgeVerifiedResourceRecordSet.hs"
+        ["Illegal term-level use of the type constructor 'VerifiedResourceRecordSet'"]
+    , rejectsWith
+        "CrossSnapshotResourceRecordSet.hs"
+        ["Couldn't match type 'secondPlanDigest' with 'firstPlanDigest'"]
+    , rejectsWith
+        "ForgeRehydratedResourceSet.hs"
+        ["Illegal term-level use of the type constructor 'RehydratedResourceSet'"]
+    , rejectsWith
+        "RawReceiptAsRehydratedReceipt.hs"
+        ["Couldn't match expected type: RehydratedOwnershipReceipt"]
+    , rejectsWith
+        "CoerceRehydratedResourceSetBroker.hs"
+        ["Couldn't match type 'firstBroker' with 'secondBroker' arising from a use of 'coerce'"]
+    , rejectsWith
+        "EmptyProspectiveMigrationDrafts.hs"
+        ["with actual type: [a0]"]
+    , rejectsWith
+        "CrossConfigProspectiveMigration.hs"
+        ["Couldn't match type 'secondConfigId' with 'firstConfigId'"]
+    , rejectsWith
+        "ForgeCompletedMigrationRecoveryProfile.hs"
+        ["Illegal term-level use of the type constructor 'CompletedMigrationRecoveryProfile'"]
+    , rejectsWith
+        "ForgeRecoveredProjectFrame.hs"
+        ["Illegal term-level use of the type constructor 'RecoveredProjectFrame'"]
+    , rejectsWith
+        "ResourceRecordTombstoneAsReceipt.hs"
+        ["Couldn't match expected type 'OwnershipReceipt scope planId id resource' with actual type '()'"]
     , rejectsWith
         "ForgeProviderCapability.hs"
         ["Illegal term-level use of the type constructor 'ProviderCapability'"]
@@ -1605,6 +1662,9 @@ compileFailCases rejects rejectsWith =
         "ImportHandoffCompletion.hs"
         ["Could not load module 'HostBootstrap.Handoff.Completion'. it is a hidden module"]
     , rejectsWith
+        "ImportHandoffTerminalReport.hs"
+        ["Could not load module 'HostBootstrap.Handoff.TerminalReport'. it is a hidden module"]
+    , rejectsWith
         "ImportHandoffLifecycle.hs"
         ["Could not load module 'HostBootstrap.Handoff.Lifecycle'. it is a hidden module"]
     , rejectsWith
@@ -2035,6 +2095,43 @@ compileFailCases rejects rejectsWith =
         , "Illegal term-level use of the type constructor 'VerifiedNoRoleResources'"
         , "Illegal term-level use of the type constructor 'ReadyRoleHandles'"
         , "Illegal term-level use of the type constructor 'RolePlanDigestBinding'"
+        ]
+    , rejectsWith
+        "CoerceRoleLifecycleAuthorityRoles.hs"
+        [ "cursorScope = coerce"
+        , "cursorPlan = coerce"
+        , "cursorFrame = coerce"
+        , "cursorInstance = coerce"
+        , "cursorPhase = coerce"
+        , "planScope = coerce"
+        , "planSpec = coerce"
+        , "planIdentity = coerce"
+        , "planConfig = coerce"
+        , "planSecret = coerce"
+        , "planFrame = coerce"
+        , "planRevision = coerce"
+        , "planInstance = coerce"
+        , "bindingScope = coerce"
+        , "bindingSpec = coerce"
+        , "bindingPlanDigest = coerce"
+        , "bindingRoleDigest = coerce"
+        , "bindingPlan = coerce"
+        , "placementScope = coerce"
+        , "placementSpec = coerce"
+        , "placementPlan = coerce"
+        , "placementFrame = coerce"
+        , "placementRevision = coerce"
+        , "placementInstance = coerce"
+        , "placementService = coerce"
+        , "placementEffects = coerce"
+        , "authorizationScope = coerce"
+        , "authorizationSpec = coerce"
+        , "authorizationPlan = coerce"
+        , "authorizationFrame = coerce"
+        , "authorizationRevision = coerce"
+        , "authorizationInstance = coerce"
+        , "authorizationService = coerce"
+        , "authorizationEffects = coerce"
         ]
     , rejectsWith
         "ForgeTeardownForest.hs"

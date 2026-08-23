@@ -1,7 +1,10 @@
 {-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeApplications #-}
 
 {- | The broker-signed runtime role activation.
 
@@ -10,13 +13,14 @@ UID with an incremented container restart count, or a host daemon with a fresh
 invocation nonce. Manifests are genuinely signed, so a refusal here is the
 protocol refusing, not a broken signature.
 -}
-module ActivationSpec (tests) where
+module ActivationSpec (tests, withBrokerFor) where
 
 import Crypto.Error (CryptoFailable (CryptoFailed, CryptoPassed))
+import qualified Crypto.Hash as Hash
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import Data.ByteArray (convert)
 import qualified Data.ByteString as ByteString
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -24,10 +28,49 @@ import HostBootstrap.Activation
 import qualified HostBootstrap.Authority as Authority
 import HostBootstrap.Handoff (frameWire)
 import HostBootstrap.Lifecycle.Mode (productionRootAuthority, withProductionRoot)
+import HostBootstrap.Config.Class (ProjectCfg (cfgContext), projectCodecSpecDigest, withProductionProjectCodec)
+import HostBootstrap.Config.Fields (ScopeKind (ProductionScope), inspectLocalContext, localCurrentFrame, renderValidatedServiceRequest)
 import HostBootstrap.Protected (
     ProtectedStore,
     openProtectedStore,
  )
+import HostBootstrap.Service
+    ( ServiceActivationError (..)
+    , installServiceActivationRevision
+    , runInstalledServiceProgram
+    , serviceId
+    , serviceProgramDefinition
+    , ServiceResourceBackend (..)
+    , singletonServiceRegistry
+    , serviceActivationErrorMessage
+    , serviceActivationRevisionPath
+    , withInstalledServiceActivation
+    , withFinalizedServiceRegistry
+    , withSelectedServiceProgram
+    )
+import HostBootstrap.Service.Program
+    ( ServiceBackend (..)
+    , ServicePayloads (..)
+    , lookupAcquiredResource
+    , serve
+    , withReadyServiceHandles
+    )
+import HostBootstrap.RoleLifecycle
+    ( DeclaredEffects (NoEffects, WithEffect)
+    , EffectName (NetworkListenName)
+    , RoleAcquireOutcome (Acquired)
+    , RolePrereqOutcome (PrereqSatisfied)
+    , RoleProbeOutcome (ProbeReadyNow)
+    , RoleReleaseOutcome (Released)
+    , mkRoleResourceRequest
+    , roleExitReportOk
+    , rolePlanDraft
+    , rolePlanDraftDigest
+    )
+import qualified Fixture
+import qualified Dhall
+import qualified HostBootstrap.Context as Context
+import System.Directory (createDirectory, createDirectoryIfMissing, removeFile)
 import System.Environment (getExecutablePath)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -40,6 +83,7 @@ tests =
         "ActivationSpec"
         [ testGroup "the manifest" manifestTests
         , testGroup "verification" verificationTests
+        , testGroup "installed revision" installedRevisionTests
         ]
 
 -- ---------------------------------------------------------------------------
@@ -377,6 +421,212 @@ ignoreActivation ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId ->
     IO ()
 ignoreActivation _ = pure ()
+
+-- ---------------------------------------------------------------------------
+-- Installed revision
+
+installedRevisionTests :: [TestTree]
+installedRevisionTests =
+    [ testCase "an exact immutable revision installs, retries, and reopens" $
+        withInstallFixture $ \broker store key root manifest -> do
+            first <- expectInstall =<< installServiceActivationRevision broker key root manifest installedRoleWire baseSecretBundle
+            second <- expectInstall =<< installServiceActivationRevision broker key root manifest installedRoleWire baseSecretBundle
+            serviceActivationRevisionPath second @?= serviceActivationRevisionPath first
+            reopened <-
+                withInstalledServiceActivation store key first "binary-1" (KubernetesInstance "pod-uid-1" 0) $ \activation roleWire secretBundle -> do
+                    activationService activation @?= "accelerator"
+                    roleWire @?= installedRoleWire
+                    secretBundle @?= baseSecretBundle
+            _ <- expectInstall reopened
+            pure ()
+    , testCase "role-wire and private-bundle digest mismatches refuse before publication" $
+        withInstallFixture $ \broker _ key root manifest -> do
+            badRole <- installServiceActivationRevision broker key root manifest "different-role" baseSecretBundle
+            expectInstallInvalid "config digest" badRole
+            badSecret <- installServiceActivationRevision broker key root manifest installedRoleWire alternateSecretBundle
+            expectInstallInvalid "secret digest" badSecret
+    , testCase "a conflicting installed member is never overwritten" $
+        withInstallFixture $ \broker _ key root manifest -> do
+            revision <- expectInstall =<< installServiceActivationRevision broker key root manifest installedRoleWire baseSecretBundle
+            ByteString.writeFile (serviceActivationRevisionPath revision </> "role.dhall") "foreign"
+            retried <- installServiceActivationRevision broker key root manifest installedRoleWire baseSecretBundle
+            case retried of
+                Left (ServiceActivationConflict path) -> path @?= serviceActivationRevisionPath revision
+                other -> assertFailure ("expected an immutable conflict, got " <> show other)
+    , testCase "an incomplete staging revision resumes only from exact members" $
+        withInstallFixture $ \broker _ key root manifest -> do
+            let revisionName = Text.unpack (digestBytes (renderActivationManifest manifest))
+                staging = root </> ("installing-" <> revisionName)
+            createDirectoryIfMissing True root
+            createDirectory staging
+            ByteString.writeFile (staging </> "expected.manifest") (renderActivationManifest manifest)
+            revision <- expectInstall =<< installServiceActivationRevision broker key root manifest installedRoleWire baseSecretBundle
+            serviceActivationRevisionPath revision @?= root </> revisionName
+    , testCase "runtime measurement failures refuse without exposing secret bytes" $
+        withInstallFixture $ \broker store key root manifest -> do
+            revision <- expectInstall =<< installServiceActivationRevision broker key root manifest installedRoleWire baseSecretBundle
+            refused <-
+                withInstalledServiceActivation store key revision "wrong-binary" (KubernetesInstance "pod-uid-1" 0) $ \_ _ _ ->
+                    assertFailure "a mismatched binary reached the service"
+            case refused of
+                Left failure -> do
+                    let diagnostic = serviceActivationErrorMessage failure
+                    assertBool "the diagnostic names the binary mismatch" ("binary" `Text.isInfixOf` Text.pack diagnostic)
+                    assertBool "the diagnostic does not expose the bundle" (not (ByteString.isInfixOf baseSecretBundle (TextEncoding.encodeUtf8 (Text.pack diagnostic))))
+                Right _ -> assertFailure "expected activation refusal"
+    , testCase "a missing installed member refuses closed" $
+        withInstallFixture $ \broker store key root manifest -> do
+            revision <- expectInstall =<< installServiceActivationRevision broker key root manifest installedRoleWire baseSecretBundle
+            removeFile (serviceActivationRevisionPath revision </> "activation.sig")
+            refused <- withInstalledServiceActivation store key revision "binary-1" (KubernetesInstance "pod-uid-1" 0) (\_ _ _ -> pure ())
+            case refused of
+                Left (ServiceActivationIO _) -> pure ()
+                other -> assertFailure ("expected an installed-member refusal, got " <> show other)
+    , testCase "a signed narrowed role enters Acquire, Ready, Serve, Drain, and Exit" $
+        withSystemTempDirectory "hostbootstrap-service-runtime" $ \directory -> do
+            events <- newIORef ([] :: [Text])
+            request <- either (assertFailure . show) pure (mkRoleResourceRequest "listener" False)
+            draft <- either (assertFailure . show) pure (rolePlanDraft [request])
+            identity <- either assertFailure pure (serviceId "web")
+            let resources =
+                    ServiceResourceBackend
+                        { serviceRolePlanDraft = draft
+                        , servicePrerequisite = record events "prereq" >> pure PrereqSatisfied
+                        , serviceAcquireResource = \_ -> record events "acquire" >> pure Acquired
+                        , serviceProbeResource = \_ -> record events "probe" >> pure ProbeReadyNow
+                        , serviceReleaseResource = \_ -> record events "release" >> pure Released
+                        }
+                backend :: ServiceBackend RuntimePayloads
+                backend =
+                    ServiceBackend
+                        { backendServe = \_ -> record events "serve" >> pure (Right ())
+                        , backendCall = \_ _ -> pure (Right ())
+                        , backendWork = \_ _ -> pure (Right ())
+                        }
+                definition =
+                    serviceProgramDefinition
+                        identity
+                        (\_ -> Right (Just ()))
+                        (WithEffect NetworkListenName NoEffects)
+                        resources
+                        backend
+                        (\_ -> withReadyServiceHandles $ \ready -> case lookupAcquiredResource ready "listener" of
+                            Nothing -> pure ()
+                            Just listener -> serve [(listener, ())]
+                        )
+                cfg = Fixture.defaultProjectConfig "activation-runtime" (Text.pack directory) Context.ClusterService
+            withProductionProjectCodec @Fixture.ProjectConfig @Fixture.FixtureProject $ \baseCodec ->
+                withFinalizedServiceRegistry ProductionScope baseCodec (singletonServiceRegistry definition) $ \codec registry -> do
+                    let wireText =
+                            either error id $
+                                withSelectedServiceProgram
+                                    "projection-digest"
+                                    (inspectLocalContext (cfgContext cfg))
+                                    cfg
+                                    registry
+                                    (\_ roleCodec selected _ _ _ _ -> renderValidatedServiceRequest roleCodec selected)
+                        roleWire = TextEncoding.encodeUtf8 wireText
+                        manifest =
+                            ActivationManifest
+                                { manifestScope = "Production"
+                                , manifestPlanDigest = "plan-runtime"
+                                , manifestSpecDigest = projectCodecSpecDigest codec
+                                , manifestBinaryDigest = "binary-runtime"
+                                , manifestFrame = localCurrentFrame (inspectLocalContext (cfgContext cfg))
+                                , manifestRevision = "revision-runtime"
+                                , manifestConfigDigest = digestBytes roleWire
+                                , manifestSecretDigest = activationSecretDigestFromBytes ByteString.empty
+                                , manifestService = "web"
+                                , manifestRolePlanDigest = rolePlanDraftDigest draft
+                                , manifestPermittedEffects = ["network-listen"]
+                                , manifestSecretChannel = "/run/hostbootstrap/empty"
+                                }
+                    withBrokerFor [manifest] $ \broker store key -> do
+                        revision <-
+                            expectInstall
+                                =<< installServiceActivationRevision
+                                    broker
+                                    key
+                                    (directory </> "revisions")
+                                    manifest
+                                    roleWire
+                                    ByteString.empty
+                        outcome <-
+                            runInstalledServiceProgram
+                                store
+                                key
+                                revision
+                                "binary-runtime"
+                                (HostServiceInstance "runtime-1")
+                                Dhall.defaultInputSettings
+                                registry
+                        report <- expectInstall outcome
+                        assertBool "the lifecycle exits cleanly" (roleExitReportOk report)
+                        readIORef events >>= (@?= ["prereq", "acquire", "probe", "serve", "release"])
+                        reopened <-
+                            runInstalledServiceProgram
+                                store
+                                key
+                                revision
+                                "binary-runtime"
+                                (HostServiceInstance "runtime-1")
+                                Dhall.defaultInputSettings
+                                registry
+                        reopenedReport <- expectInstall reopened
+                        assertBool "the consumed plan reopens at its exact request indices" (roleExitReportOk reopenedReport)
+                        readIORef events
+                            >>= (@?= ["prereq", "acquire", "probe", "serve", "release", "prereq", "acquire", "probe", "serve", "release"])
+    ]
+
+data RuntimePayloads
+
+instance ServicePayloads RuntimePayloads where
+    type ListenApp RuntimePayloads = ()
+    type CallRequest RuntimePayloads = ()
+    type CallReply RuntimePayloads = ()
+    type WorkRequest RuntimePayloads = ()
+    type WorkReply RuntimePayloads = ()
+
+record :: IORef [Text] -> Text -> IO ()
+record events event = modifyIORef' events (++ [event])
+
+installedRoleWire :: ByteString.ByteString
+installedRoleWire = "{ service = \"accelerator\" }"
+
+digestBytes :: ByteString.ByteString -> Text
+digestBytes bytes = Text.pack (show (Hash.hash bytes :: Hash.Digest Hash.SHA256))
+
+withInstallFixture ::
+    ( forall scope brokerGeneration verb.
+      ActivationBroker scope brokerGeneration verb ->
+      ProtectedStore ->
+      ActivationVerificationKey ->
+      FilePath ->
+      ActivationManifest ->
+      IO ()
+    ) ->
+    IO ()
+withInstallFixture use =
+    withSystemTempDirectory "hostbootstrap-installed-activation" $ \directory ->
+        let manifest =
+                baseManifest
+                    { manifestConfigDigest = digestBytes installedRoleWire
+                    , manifestSecretDigest = activationSecretDigestFromBytes baseSecretBundle
+                    }
+         in withBrokerFor [manifest] $ \broker store key ->
+                use broker store key (directory </> "revisions") manifest
+
+expectInstall :: (Show failure) => Either failure value -> IO value
+expectInstall outcome = case outcome of
+    Left failure -> assertFailure (show failure)
+    Right value -> pure value
+
+expectInstallInvalid :: Text -> Either ServiceActivationError value -> IO ()
+expectInstallInvalid expected outcome = case outcome of
+    Left (ServiceActivationInvalid detail) ->
+        assertBool "the refusal names the mismatched digest" (expected `Text.isInfixOf` detail)
+    Left other -> assertFailure ("expected an installer refusal, got " <> show other)
+    Right _ -> assertFailure "expected an installer refusal, got success"
 
 -- | A real root invocation, a real activation broker, and its installed key.
 withBroker ::

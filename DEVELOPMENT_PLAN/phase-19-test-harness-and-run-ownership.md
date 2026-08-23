@@ -1,11 +1,11 @@
 # Phase 19 — Test harness and exclusive run ownership
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 18 (recovery and migration)
 **Substrates**: linux-cpu
-**Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus on linux-cpu
+**Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus on a realized linux-cpu host
 `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern recovery-interruption'`
-from `core/` and `hostbootstrap run -- test run all`
+from `core/`
 
 > **Purpose**: Make a test run an exclusively owned transaction whose failures are isolated per variant and
 > whose cleanup cannot delete foreign or concurrently replaced state.
@@ -191,9 +191,9 @@ not, and that `observationDetail`'s own rendering of each observation classifies
 
 None.
 
-### Sprint 19.5: Harness root-scope capsule production [Planned]
+### Sprint 19.5: Harness root-scope capsule production [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`
 **Substrates**: linux-cpu
@@ -228,22 +228,28 @@ cross-scope and mismatched-live-broker refusal, signature tampering, rank-2 scop
 caller-supplied scope or key route. The capsule tests assert that store/generation/verb/edge coordinates remain
 outside this scope-only value; the host-static full suite closes the sprint.
 
+Dated host-static evidence: on 2026-08-22 (linux-cpu, GHC 9.12.4), `HarnessSpec` passed 44/44,
+`HandoffSpec` passed 107/107, and all 506 public compile-fail boundaries passed. After the governed
+documentation was reconciled, `cabal test all --ghc-options=-Werror
+--test-options='--hide-successes' --test-show-details=direct` from `core/` passed all 2364 tests in
+148.12 seconds.
+
 #### Remaining Work
 
-Implement the call-site adoption after the authenticated-handoff phase exposes the generic capsule producer
-and scope-first receiver.
+None.
 
-### Sprint 19.6: Live harness acceptance [Planned]
+### Sprint 19.6: Realized-Linux harness acceptance [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: none — this sprint changes no source
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`
 
 #### Objective
 
-Record the two linux-cpu confirmations this phase's construction owes, as a sprint rather than as a
-footnote nothing counts.
+Record the realized-linux confirmation this phase's construction owes, as a sprint rather than as a
+footnote nothing counts, without making an earlier phase depend on the worked demo's later provider,
+workload, reverse-adopter, or same-run recreate work.
 
 #### Deliverables
 
@@ -253,8 +259,10 @@ footnote nothing counts.
   `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror
   --test-options='--pattern recovery-interruption'` from `core/`. That group is deterministic subprocess
   and sentinel fixtures, so it needs a Linux substrate and no provider, cluster, or Docker state.
-- `hostbootstrap run -- test run all` runs against live harness infrastructure. That one does bring up real
-  provider and cluster state, so it runs on a disposable host.
+- The complete core gate reruns on the same realized substrate, covering the exact Harness plan consumer,
+  ownership bracket, process competitors, interruption fixtures, report engine, and governed-document validator.
+- Provider, cluster, workload, exact reverse-adopter, and same-run destroy/up/readback acceptance remain the
+  worked-demo phase's own Sprints 24.3, 24.27, and 24.30. This sprint does not make Phase 19 wait on Phase 24.
 - Dated evidence records both results together, naming the substrate realization and the outer host.
 
 #### Validation
@@ -262,15 +270,19 @@ footnote nothing counts.
 The two runs. This sprint asserts nothing the suites do not already assert; it confirms that what they
 assert holds where the phase says it holds.
 
+Dated realized-host evidence: on 2026-08-22, inside a disposable Ubuntu 24.04 amd64 Incus VM on a Linux
+outer host, the deterministic `recovery-interruption` group passed 5/5. On the same linux-cpu realization,
+the complete `cabal test all --ghc-options=-Werror` core gate passed all 2366 tests in 151.83 seconds,
+including the exact Harness consumer, POSIX ownership/process rows, public compile-fail boundaries, and both
+governed-documentation checks.
+
 #### Remaining Work
 
-Both runs.
+None.
 
 ## Remaining Work
 
-Sprint 19.5 supplies the Harness root-scope capsule producer and closes on the host static gate. Sprint
-19.6 records the two linux-cpu confirmations the completed sprints owe, so the obligation is a sprint
-the suite counts rather than a note at the end of the phase.
+None.
 
 ## Documentation Requirements
 

@@ -31,9 +31,9 @@ Long-lived children are storeless
 `FrameExecutor`s: the root prepares exact own/projected gates and signs bounded responses; the child
 exact-compares its local `ExecutionNode`, reifies the same-CAS gate through a hidden allow-listed mint,
 performs the local effect, and returns an observation for root settlement. The broader lifecycle model is
-not yet enforced end to end: recursive process adoption,
-reverse command authorization and traversal, recovery interpretation, and ownership consumers remain
-assigned to their owning sprints and phases. The ownership clauses those effects must hold are defined in
+not yet enforced end to end: recovery interpretation and ownership consumers remain assigned to their
+owning sprints and phases, while recursive process adoption and reverse command authorization/traversal are
+implemented by the rooted coordinator. The ownership clauses those effects must hold are defined in
 [ownership_invariant](ownership_invariant.md).
 
 ## Navigation and split decision
@@ -82,6 +82,34 @@ interpreters do not yet enforce the complete model end to end:
   state is refused without entering the root continuation. Malformed lease bytes are likewise refused;
   the bound and malformed refusal paths preserve the lease and snapshot records, including their exact
   versions and bytes.
+- `VerifiedResourceRecordBundle scope planId id resource` is the sole verified view of one canonical durable
+  resource member. Verification joins the indexed lifecycle plan and planned resource to length-framed plan,
+  frame, resource, generation, ownership-operation, record-version, phase, adapter-revision, and disposition
+  fields and refuses every substitution or noncanonical encoding. Its eliminator mints the existing indexed
+  `OwnershipReceipt` only for `owned`; `released` reaches a disjoint tombstone continuation carrying the
+  verified coordinates and canonical bytes, so released state cannot be treated as ownership evidence.
+- Reconciliation now places the exact canonical member, its stable frame/resource/receipt binding, and any
+  expected predecessor bytes in the interpretation-local `ResourceCarrier`. The root `Chain` persists that
+  member while holding the protected entry and only then acknowledges the matching operation journal. Fresh
+  owned or adopted settlement requires an absent member; an exact post-write/pre-commit retry converges;
+  repair uses the same owned path; and phase or release settlement compare-and-swaps only byte-identical
+  predecessor state at the immediately succeeding record version. Release writes a retained `released`
+  tombstone rather than deleting the stable member. A conflicting member, missing predecessor, wrong receipt,
+  or managed carrier lacking settlement bytes refuses while the operation remains recoverable.
+- `VerifiedResourceRecordSet scope planDigest` is minted only by joining a verified snapshot to its exact
+  bound snapshot bytes, decoding membership through the supported canonical snapshot version, and rereading
+  every protected resource member under the matching plan-key prefix. The fold requires a duplicate-free
+  equality between declared and stored `(frame, operation)` members and independently rechecks each member's
+  canonical key, plan binding, disposition, and bytes. Missing, extra, malformed, unknown-version, wrong-plan,
+  and wrong-key input refuses; callers cannot supply a list. Its eliminator exposes only the SHA-256 digest of
+  the sorted canonical bundle bytes, so protected enumeration and creation order do not affect the evidence.
+- Rehydration consumes that exact set while the same protected-store identity is exclusively entered and binds
+  the result to one positive `BrokerEpoch`. It reparses and byte-compares every canonical bundle before yielding
+  the all-or-nothing `RehydratedResourceSet`; a different store, malformed member, or zero/stale broker refuses
+  the whole operation. Its rank-2 fold has disjoint result arms: owned members alone supply opaque rebound
+  `RehydratedResourceHandle` plus `RehydratedOwnershipReceipt`, while released members alone supply an opaque
+  `RehydratedReleasedTombstone`. All three evidence types and the set have hidden constructors and nominal
+  broker roles, so persisted receipt bytes and evidence from another broker cannot recreate recovery authority.
 - `withProductionLifecycleProfile` and `withHarnessLifecycleProfile` require matching root scope,
   active mode, and unbound lease evidence; the Harness route additionally requires the exact
   `HarnessAuthority` and `RunId`. Each compare-and-swaps a durable profile slot from available to
@@ -252,6 +280,13 @@ interpreters do not yet enforce the complete model end to end:
   current frame, routes, canonical config bytes, digests, and projected node keys behind rank-2 folds. These
   foundations remain fail-closed and make no integrated child
   process or recursive command claim.
+- Reverse semantic replay is read-only and exact. It first reauthorizes the retained root command, validates
+  the current teardown cursor, and rereads the canonical version-two Bound descent. The same hidden recovery
+  capability then derives the parent lifecycle key from that Bound binding and requires the exact canonical
+  version-three Adopted row for the supplied report and its canonical acknowledgement. Only after both reads
+  close are observations decoded and checked against plan-owned teardown work, and the common reverse
+  completion constructor runs. Missing Acknowledged/Adopted state, corrupt observations, binding/store drift,
+  or a stale cursor refuses without a CAS, token-map open, child process, or local effect.
 - One owner now holds a real child for exactly as long as its edge lasts. It spawns only a sanitized
   `LifecycleProcessRoute` — never a caller-chosen argv, image, or executable — at the absolute path the
   installed configuration resolves its host tool to, into a new process group with standard input and output
@@ -295,10 +330,10 @@ interpreters do not yet enforce the complete model end to end:
 - The root-owned `PreparedNodeGrant` is built on top of that session. Only an attached session prepares, and
   the producer publishes and strictly reads back every exact durable unknown row — the node's own operation
   first, then each projected operation in the catalog's order — before the grant exists; a row that returns
-  anything but the exact bytes rendered for it stops the whole preparation. The grant retains the canonical
-  signed response, the node, its ordered dependencies, and the two gate packages, and names no store,
-  session, record key, or compare-and-swap operation. It carries gate packages rather than `PreparedGate`
-  values, so it mints nothing, and only a `NextNode -> Prepared` answer has a constructor on that path.
+  anything but the exact bytes rendered for it stops the whole preparation. The grant retains the node, its
+  ordered dependencies, and the two gate packages, and names no request, response, store, session, record key,
+  or compare-and-swap operation. The live endpoint receives that evidence only after publication, renders and
+  signs the paired `Prepared`, and no `Descend` or `Refused` constructor exists on the preparation path.
 - Root settlement is exactly once. It checks every echoed coordinate against the session first — requester
   path, session token, ordinal, nonce, and the predecessor the session recorded when it attached — and only
   `SettleNode` and `DescendResult` settle, against a supplied signed response that must belong to the paired
@@ -308,7 +343,7 @@ interpreters do not yet enforce the complete model end to end:
   lineage, catalog identity, frame, node, and ordinal, so an exact retry converges on the record already
   present, a different observation under the same coordinates refuses without effect, and one node settled at
   two ordinals addresses two rows. No child gate or local execution authority is created there.
-- The target runtime opens each
+- The forward coordinator opens each
   root-owned `RootedFrameSession` under the global lease and snapshot with no predecessor. A four-field
   `OpenFrame` supplies only its fixed domain/version/discriminator and nonce; its sealed external relay envelope
   is the sole root-nearest-to-leaf requester ancestry and attaches to that already-open session. Failure before
@@ -317,16 +352,19 @@ interpreters do not yet enforce the complete model end to end:
   no digest of itself. After the complete signed response is available, both sides derive its digest as the
   first predecessor for the next request. Only then can a `FrameExecutor` exist. The root publishes
   durable Unknown before issuing a signed `PreparedNodeGrant` and settles only the matching observation. Root
-  receipt confirmation orders Published → signed `FrameComplete` → `ReceiptConfirm` → Received → signed
-  `ReceiptRecorded`; rooted `Refused` is post-open only. That ordering is enforced by the storeless terminal
+  receipt confirmation orders Published → signed `FrameComplete` → `ReceiptConfirm` → semantic completion
+  and Received → signed `ReceiptRecorded`; rooted `Refused` is post-open only. The coordinator retains the
+  exact admitted offer for the matching session, constructs the canonical terminal origin only after every
+  local node and declared descent has settled, and delegates report rendering to the storeless
+  `Handoff.TerminalReport` owner. That ordering is enforced by the storeless terminal
   owner: a `CloseFrame` is the only request that reaches a terminal report and a `ReceiptConfirm` the only one
   that confirms it, each answered inside its own paired `FrameComplete | Refused` or
   `ReceiptRecorded | Refused` family. The close validates requester path, session token, ordinal, nonce, and the
   session's recorded predecessor, requires the carried report to eliminate canonically and name the session's
   own verb, and publishes and strictly reads that report back before the complete signed-response digest
   exists. The confirmation carries that digest as its predecessor, and only an exact match advances Published
-  to Received; a recorded receipt repeats the same digest in its own body, so a child persists and reopens no
-  receipt state and an exact retry converges.
+  to Received through the fixed forward-completion kernel; a recorded receipt repeats the same digest in its
+  own body, so a child persists and reopens no receipt state and an exact retry converges.
 - The exact reconstructed external requester path, root/catalog lineage, and nonce identify the open
   attachment/replay. Root-issued canonical path, opaque session and stage tokens, nonzero ordinal, fresh nonce,
   digest of the complete prior canonical signed response, and root signature protect post-open exchanges
@@ -392,8 +430,14 @@ interpreters do not yet enforce the complete model end to end:
   matching cluster resource and retained slice, and accepts only an opaque `Running`
   provider dependency whose strong backend retains and reruns the real provider probe during operation
   preconditions. No compatibility lifecycle plan, caller profile/root/envelope, dependency snapshot, or
-  caller-built probe reaches either preparation boundary. Cluster preparation binds the plan-derived config
-  bytes and exact budget into its call digest. Settlement keeps the prepared journal generation unchanged and
+  caller-built probe reaches either preparation boundary. The base join now precedes a second opaque
+  `PlanOwnedClusterConfig` binder. That wrapper retains the closed Kind/nvkind driver, canonical bytes and
+  digest, deterministic config/state paths, exact loopback ports, driver-derived node mapping, workload slice,
+  and the original `PlanOwnedCluster`; changed bytes/digest/path, duplicate or out-of-range publication,
+  changed mapping, and empty/duplicate workload input refuse before backend discovery. Cluster preparation
+  accepts only this completed wrapper plus the opaque `Running` provider dependency and prepared gate. It no
+  longer chooses Kind, resolves a second config path, or rereads a caller-selected file, and it binds the
+  retained config digest and exact budget into its call digest. Settlement keeps the prepared journal generation unchanged and
   retains the backend-reported control-plane container ID separately in opaque managed authority; cordon,
   readiness, and cleanup re-observe that identity and refuse a same-named replacement. Raw observations remain
   plan-independent. The private backend executor is reachable in production only through typed
@@ -401,7 +445,7 @@ interpreters do not yet enforce the complete model end to end:
   results. The durable ownership protocol keeps one no-follow, parent-fsynced state/lock namespace and
   self-binds every
   canonical `prepared`, `executing`, and `managed` record to its own inode. `executing` durably binds the
-  exact config snapshot inode/digest and private kubeconfig inode before Kind. Recovery rejects any copied
+  exact config snapshot inode/digest and private kubeconfig inode before the selected closed driver. Recovery rejects any copied
   record, snapshot identity/digest mismatch, foreign stage, or incomplete transition before mutation or
   adoption. The managed record retains the complete node-name-to-container-ID map, so cordon mutates
   immutable IDs and readiness/cleanup re-observe every declared node. An origin-verified healthy identity
@@ -4676,7 +4720,7 @@ cancelIncompletePlanMigrationForTeardown
   persisted-snapshot/unbound-lease stage that may be resumed or refused from exact record versions; it
   yields no completed evidence package and authorizes no backend effect.
 - The public `StablePlanSnapshot` is only the non-authorizing byte projection of that private indexed
-  companion. Its version-3 canonical bytes begin with the exact canonical root encoded as a bounded,
+  companion. Its version-5 canonical bytes begin with the exact canonical root encoded as a bounded,
   length-framed stream of big-endian 32-bit `Char` code points, followed by the non-secret frame/resource graph, stable resource and
   operation keys, child-first teardown order/policies, plan-lineage, finalized-spec, and revision
   digests, plus the config/code/schema/snapshot-interpreter digests that produced it. It contains neither
@@ -4694,6 +4738,26 @@ cancelIncompletePlanMigrationForTeardown
   or the current binary's newly inferred topology. An unknown snapshot version or incompatible
   code/schema/interpreter digest requires a supported, audited migration or returns
   `RequireOperatorResolution` without mutating resources.
+- A chart workload exists first as the opaque, nominal `ChartWorkloadResource` projected from one admitted
+  `core:deploy-chart` declaration. Format 5 binds its artifact, release, namespace, values, image,
+  workload/partition declaration, service role, exact effects, and the existing same-frame cluster dependency.
+  Admission rejects absent or multiple declarations, empty or duplicate effects, a non-chart author, and any
+  missing or non-local cluster parent before a prepared gate or backend effect can exist. Reverse identity is
+  therefore the retained release, namespace, and workload key rather than a caller choice or live Helm query.
+- Forward execution crosses one additional opaque boundary: Cabal-hidden `PreparedChartWorkload` is minted only
+  when the chart declaration, freshly reprobed managed cluster, canonical values digest, and durable prepare gate
+  all agree. Runtime activation belongs to the service revision being deployed and is not controller authority.
+  The backend renders the
+  fixed Helm upgrade/install and Kubectl rollout commands from those retained fields and settles through the
+  generic `ReconcileResult`; there is no chart-specific result vocabulary.
+- Reverse chart cleanup begins from that generic managed settlement and the stable chart declaration. It renders
+  Helm uninstall plus an authoritative status/absence observation internally, converges over an already-absent
+  release, and accepts no forward gate, readiness/activation witness, executable, or raw argument vector.
+- `PlannedWorkloadSet` and `BudgetPartition` retain canonical, order-sensitive identities derived at their
+  generative construction boundaries. Their exact binding fold joins those identities to the chart declaration
+  and same-plan cluster resource without creating authority or accepting expected identity text from a caller.
+  Workload order, replica/resource quantities, partition overhead, slice order, resource/frame identity, and
+  slice quantities are all digest material; any substitution refuses before workload preparation.
 - `PlanLineageDigest` identifies the protected project/ownership namespace; `SpecDigest` identifies the
   exact finalized non-secret runtime specification that produced the plan; `PlanDigest` identifies one
   exact plan revision under that specification; and each `ConfigDigest` identifies exact root or
@@ -4733,6 +4797,27 @@ cancelIncompletePlanMigrationForTeardown
   capable of opening a session or authorizing an effect. The candidate therefore exists before any
   freeze, and its stable `newPlanDigest` is not inferred after authority has been revoked.
 
+  The implemented construction join also takes the matching scope-correct `ProjectCodec` and
+  `VerifiedConfigWire`: their shared specification/configuration indices prevent cross-wire assembly, while
+  the draft fold rechecks root, specification, and configuration digests. The candidate digest is derived from
+  the resulting canonical snapshot rather than accepted as text. Its protected prospective record is a strict
+  versioned binary frame containing spec, plan, config digest, and exact canonical bytes under a SHA-256-derived
+  stable record key. The continuation runs only after authoritative decode, canonical re-admission, byte-for-byte
+  comparison, and digest-binding comparison. Exact retry converges; a conflicting existing record, empty draft
+  at the type boundary, config/draft mismatch, or same-plan result refuses without recording a migration kind or
+  freezing the old lease.
+
+  Completed recovery does not infer the candidate from current configuration. It rereads the completed
+  revision kind, new-bound lease, and stable-keyed prospective record under one protected entry, verifies the
+  lease's exact new spec/plan pair, and mints a hidden, nominal `CompletedMigrationRecoveryProfile` carrying
+  that project/store origin and canonical candidate. `withCompletedMigrationPlan` reopens that same profile
+  and record, then admits scope-correct codec/wire/config and non-empty drafts through the fixed-digest plan
+  kernel. Only an exact spec, config digest, plan digest, implementation/reverse revisions, root, and canonical
+  byte match yields the migration-local `ProjectPlan` and `PlanDigestBinding`. Changed config or drafts,
+  malformed/unknown/missing candidate bytes, stable-key or origin substitution, and a changed recovery opening
+  refuse without altering the already committed lease or mode. Configless teardown recovery shares the same
+  stable candidate/profile admission but receives no configful plan binding.
+
   `withPlanMigration` is the only consumer of that exact candidate package and retained old-bound lease
   lineage. It first verifies
   topology/identity/policy compatibility and persists/fsyncs the candidate snapshot under a fresh
@@ -4745,8 +4830,15 @@ cancelIncompletePlanMigrationForTeardown
 
   After that durable snapshot exists, the gate derives—not from a caller-supplied set—and verifies the
   complete exact `VerifiedResourceRecordSet` for the active old revision and proves that all required
-  old-revision operations are settled. Its single freeze compare-and-swap records the same
-  `stableMigrationKey` and exact `(newSpecDigest, newPlanDigest)`, then changes the active-old
+  old-revision operations are settled. The sole `ProjectUpMigrationProfile` retains the verified canonical
+  old snapshot, including its protected-store identity and exact bytes; `withPlanMigration` decodes resource
+  membership from that retained value, enumerates the protected resource namespace, and rejects missing,
+  duplicate, extra, wrong-key, wrong-plan, or malformed members before touching the revision kind or lease.
+  It then runs the common fence/manifest/interpreter/Closed-session admission chain and discards the resulting
+  old-revision admission. Thus every prepared operation has either settled or been included in the authoritative
+  fence, and the independently enumerated session set has been observed Closed under the protected project
+  entry. Its single freeze compare-and-swap records the same `stableMigrationKey`, the SHA-256 digest of that
+  exact record set, and exact `(newSpecDigest, newPlanDigest)`, then changes the active-old
   revision from permit-open to migration-frozen, revokes current-broker session admission, drains or
   authoritatively fences every issued prepared operation, and fixes the exact journal/record-set version. Session
   opening and operation prepare both compare-and-swap that same permit-open revision/admission and
@@ -4762,6 +4854,17 @@ cancelIncompletePlanMigrationForTeardown
   values or select only a convenient subset. The same exclusive broker generation remains old-bound;
   there is no second binding of a reusable `UnboundRunLease`. No candidate, verified prospective
   snapshot, frozen session, or staged resource grants operation-effect authority before activation.
+  Retrying a frozen transition succeeds only when its stable key and record-set digest are byte-identical;
+  a changed set cannot converge on an already-frozen lease.
+
+  The lineage commit uses a distinct durable `migrated-bound` lease frame rather than erasing migration
+  provenance into an ordinary bound row. Its single lease compare-and-swap carries the stable key, exact-set
+  digest, old spec/plan, and new spec/plan together. Before that CAS, `commitMigrationActivation` rereads the
+  prospective record, canonical old snapshot, complete resource namespace, and incomplete/completed revision
+  classification; any candidate or set change refuses while the old frozen lineage remains intact. The local
+  `PlanMigrationBarrier` carries the same set digest. A death after the CAS is therefore durably classifiable
+  from the lease alone, and retry repairs the secondary completed-revision observation without proposing a new
+  candidate or briefly recreating an ordinary new binding.
 
   Because broker generations and local migration capabilities are not serialized,
   `withIncompletePlanMigration` is the pre-final-CAS restart path. A fresh root invocation first verifies
@@ -4778,6 +4881,14 @@ cancelIncompletePlanMigrationForTeardown
   staged bundle, unresolved old operation, or manifest mismatch yields conflict/operator resolution
   rather than migration authority.
 
+  The implemented configful frozen branch, `withRecoveredMigrationPlanSnapshot`, performs those durable
+  checks under the protected project entry: it rereads `IncompleteMigration`, the full frozen lease tuple,
+  the stable-keyed prospective bytes, the canonical old snapshot, and the complete old resource namespace.
+  The recomputed set digest must equal the digest captured at freeze, and the supplied wire/config/drafts must
+  reproduce the prospective bytes exactly. Its rank-2 continuation receives only a fresh local candidate plan
+  and digest binding—no journal, session admission, or prepared-operation authority. Any missing, malformed,
+  edited, wrong-key, wrong-set, or wrong-scope evidence leaves the freeze untouched.
+
   A delayed `ProjectDown` or `ProjectDestroy` need not possess the new config needed to resume an
   incomplete migration.
   While the old revision is still active,
@@ -4790,6 +4901,11 @@ and produce the journal/rehydrated-resource/Open-state/permit/admission bundle, 
 snapshot-driven old-revision teardown can continue. If the
   active revision is already new, cancellation refuses and the completed-migration recovery path is
   required. Cancellation can neither delete resource records nor roll the lineage backward.
+
+  The implemented cancellation compare-and-swap accepts only typed `ProjectDown` or `ProjectDestroy` and the
+  exact broker epoch. It replaces only the byte-identical frozen tuple with the old `(spec, plan)` binding and
+  then restores `NormalRevision`. A retry that observes that exact old binding repairs/converges the revision
+  record; it never binds the candidate or exposes forward preparation authority.
 
   `bindLiveMigrationPlanSnapshot` is the normal in-process binding gate while the lease remains
   old-bound. It does not rebuild the plan after freeze: it consumes the already-constructed candidate
@@ -4835,6 +4951,16 @@ snapshot-driven old-revision teardown can continue. If the
   `CurrentBrokerSessionAdmission`; new-revision operation
   prepare/session opening requires those rehydrated values, that admission, the active-revision proof,
   and the barrier.
+
+  Concretely, the implemented configful gate takes the candidate `ProjectPlan`, its same-index
+  `PlanDigestBinding`, and a broker-bound `RehydratedResourceSet` in addition to the barrier,
+  migrated-bound lease, and exact `BrokerEpoch`. It compares the candidate canonical digest, binding digest,
+  lease digest, broker epoch, and rehydrated-set digest before running the old-revision settlement chain.
+  Only after every independently enumerated old session is Closed and every old permit is settled or fenced
+  does it run the new revision's fence/manifest/interpreter admission. Completed configless recovery receives
+  the same rehydrated set from `withCompletedMigrationRecovery` and enters the shared configless kernel;
+  configful recovery adds the local plan/binding checks before that same postcondition. No continuation
+  exposing session or preparation authority exists between commit and these checks.
 
   A crash before the active-revision compare-and-swap resumes the staged incomplete set through
   `withIncompletePlanMigration` under a fresh broker generation but the same protected stable migration
@@ -5600,9 +5726,161 @@ The target is not complete until all of these gates pass:
     terminal empty sessions. Only their exact-version proofs can mint closure evidence; unresolved
     partial ownership cannot close, and Production or another run cannot construct the Harness close
     plan.
+26. Production reverse-root terminalization is root-owned and evidence-complete. A sealed root Down entry
+    must present the exact root `SubtreeSettled` value and `VerifiedAllSessionsClosed`; Destroy must also
+    promote that subtree through `verifyDestroySettled`. Nested frames, incomplete or failed observations,
+    mismatched plan digests, stale lease versions, and missing destroy evidence refuse before mutation. The
+    durable Committed row advances once to a retained Terminal row by compare-and-swap and strict readback;
+    exact retry converges on version three. For Destroy, the terminalizer carries the unique-root
+    `DestroySettled`, Destroy-only close root, and matching `ProjectClosureEvidence SettledDestroyClose` into
+    that same exclusive protected-store entry; only after terminal readback does it close the exact bound lease
+    and release Production mode. Down carries no closure package and therefore cannot release. Terminal no
+    longer blocks a later Up. The next reverse admission
+    can consume it only after a fresh successful-Up lease/snapshot/journal/cursor package is live and its broker
+    generation is newer, then republishes Pending through the absent-only transition. Pending and Committed
+    continue to block all ordinary lifecycle admission.
+27. Failed-Up cleanup authority is not Destroy authority. The hidden four-index
+    `FailedUpUnwindAuthority` is minted only by folding a sealed root Up entry together with its exact catalog
+    and either a receipt-recorded rooted failed-forward report or the canonical root-local failed report from
+    that broker. Project, broker generation, catalog identity, root plan digest, exact report binding, and the
+    report's operation rows must all rejoin. The reached operation sequence is
+    duplicate-free; its frozen unresolved sequence is duplicate-free and a subset of it. Cleanup can fold only
+    that unresolved sequence, and retry must reproduce the failure frame/path/session/ordinal plus both frozen
+    sequences and report bytes. The authority imports neither Production Mode nor protected-store mutation and cannot name or
+    construct `VerbDestroy`/`RootInvocationAuthority ... VerbDestroy`.
+    Chain records a failure prefix only after each operation's durable Prepared gate exists. Its cleanup
+    projection retains `VerbUp` as the nominal command while selecting destroy-strength reverse actions only
+    for that duplicate-free, plan-exact prefix; consequently the resulting subtree cannot enter
+    `verifyDestroySettled` or close Production as Destroy. The live command drives that forest through the
+    existing durable rooted recovery process with an authenticated Up/teardown adapter, publishes a distinct
+    canonical reverse completion or failure report, and leaves the original forward failure unchanged.
 
 Unit tests for argv builders or pure partitions support these gates but cannot replace the required live
 destroy/up/readback and native-substrate runs.
+
+Snapshot-derived recovery frames are now the configless teardown representation. The strict canonical-plan
+decoder recovers each frame in chain order together with its closed-table reverse adapter and revision. An
+opaque nominal `RecoveredProjectFrame` retains the exact complete `RehydratedResourceSet`; its eliminator can
+yield only the owned handle/receipt pair or the released tombstone belonging to that frame. No config value,
+raw receipt bytes, frame text, or adapter name can construct that proof.
+
+Completed migration recovery reads the prospective snapshot named by the stable migration key and the
+superseded snapshot named by the durable run. Candidate recovery frames may be placed over the superseded
+resource set only after both canonical snapshots prove identical resource coordinates and the set proves its
+superseded plan digest. The configless harness performs this reconstruction before entering migrated
+activation, so edited or absent config cannot select topology, adapters, or resource membership.
+
+For a nested recovered edge, only the root broker can create its recovery projection. The constructor checks
+the recovered child's exact parent and the shared complete-set digest, then canonically encodes that digest
+with the child frame and closed adapter revision. The existing authenticated recovery-wire verifier binds
+those bytes to project, store, broker generation, plan, edge, verb, and teardown phase before the child
+receiver can dispatch. Nested parents receive the opaque projection and verified handoff, never a signing key
+or a config handoff.
+
+Abandoned Harness runs with acquired resources now reopen the snapshot's exact complete resource set at the
+retained broker and drive its recovered forest child-first. A released tombstone is already terminal and
+never reaches a backend; a successful owned release is durably changed to the canonical released record by
+compare-and-swap before its parent can settle. Backend refusal stops the fold and preserves every ownership
+root needed by an exact retry. Only the opaque complete-forest result joined to an independently enumerated
+all-sessions-Closed proof can produce recovered settled-Destroy closure and enter the persisted Harness close
+protocol.
+
+Production command ownership is retained as one composite package. A fresh command opens one Production root,
+constructs one plan below its lifecycle profile, persists and verifies that exact canonical snapshot, and only
+then exposes the bound lease/snapshot/binding package to recursive execution. Recovery reads the existing
+bound snapshot and reconstructs the local plan beneath the same generative admission. Scope, spec, plan,
+broker, root, mode, lease, snapshot, and current-frame evidence remain joined until the command settles; a
+post-bind failure retains that package for recovery rather than using the pre-effect close.
+
+## Neutral execution packages
+
+Each forward node receives a Cabal-private, nominal `PlanExecutionPackage` in a dedicated `StepExecution`
+slot. The package contains only canonical plan/config identity, profile generation, project/root, node/frame,
+operation, ordered resource prefix, and projected keys; it contains no project plan, callback, backend witness,
+or mutable carried resource. The plan kernel emits neutral terms and `Reconcile.stepExecutionFor` is the sole
+package producer. Storeless recursive forward execution retains the admitted plan index in its frame carrier,
+so it uses that same producer instead of rebuilding an execution descriptor from response text. Reverse work
+receives no `StepExecution`.
+
+## Runtime dependency commitments
+
+The Cabal-private `RuntimeDependencyPackage scope planId` is a backend-neutral canonical recovery commitment,
+not a managed dependency. Its two hidden constructors form the closed provider/cluster domain, and both bind
+the exact plan and scope commitments, resource, frame, backend origin and generation, journal and receipt
+commitments, a domain-prefixed client route bounded to 512 UTF-8 bytes, and an exclusive expiry tick. Rendering
+is versioned and byte-length-framed. The matching domain opener rechecks every coordinate and lifetime before
+it releases only the retained route; there is no public constructor, decoder, or opener.
+
+Each interpretation's existing plan-indexed `ResourceCarrier` owns three separate private tuple fields: carried
+managed-resource descriptions, canonical dependency packages, and live-service tuples. Every per-node
+`StepRuntime` shares that one carrier, so the registries are invocation-wide without becoming per-step state.
+A live tuple may retain a closure, but it is keyed by the package route and complete canonical commitment and
+can be installed or invoked only while the exact package is present in the separate canonical registry. The
+package itself contains no closure, backend, managed provider/share handle, running dependency, readiness,
+generic handle, gate, or receipt authority. A fresh carrier starts with all three fields empty.
+
+The package also has one private canonical wire decoder used only at the authenticated handoff boundary. It
+accepts the exact provider or cluster domain, twelve canonical fields, positive canonical generation and
+exclusive-expiry integers, bounded text coordinates and route, and an exact byte-for-byte re-render; package
+input is capped at 64 KiB. Provider handoff projection accepts only the provider domain. Its closed handoff
+frames contain exactly one package, request, or response field: a request binds the complete package bytes to
+one bounded nonce, while a response binds those same values to either a positive observed generation or a
+bounded non-empty refusal. Probe input is capped at 128 KiB, and changed packages, replayed nonces,
+noncanonical/trailing fields, empty refusals, or expired package openings cannot yield dependency evidence.
+This is wire vocabulary only: no lifecycle state machine adopts the frames, and no closure, backend authority,
+managed handle, readiness witness, receipt, journal writer, or reusable secret crosses the boundary.
+
+The live owner may bracket that vocabulary with the caller-free provider reprobe kernel. Its lexical probe is
+not returned: the bracket continuation receives only a handler from canonical request fields to canonical
+response fields. Admission rechecks every package coordinate and the exclusive lifetime before atomically
+consuming a nonce; the bracket remembers at most 64 nonces, and a fixed 100-millisecond deadline bounds each local
+observation. Only the exact admitted generation becomes a success response. Replay, exhaustion, timeout,
+closed/refusing provider state, or a changed generation becomes an explicit nonce-bound refusal, while a
+malformed or mismatched request reaches no probe. The handler creates no lifecycle witness and has no Process
+installation or relay adoption by itself.
+
+The provider backend is the first package producer. Only after an exact prepared Ready call settles to the
+same backend-indexed `Running` handle may it register a provider package. The package hashes the producer's
+complete still-pending `PreparedGate` coordinates separately from the Ready call digest and settled
+observation version, and takes plan, frame, resource, origin, and generation from the exact execution,
+prepared binding, and managed successor rather than from route text. Registration occurs before the action
+returns and therefore before `Chain` acknowledges the producer row; it does not claim a second Ready journal
+transition. Exact retries converge, while a changed expiry or other canonical field under the same provider
+resource key refuses. The paired live service accepts only the fixed fresh-readiness request and closes over
+the strong backend and managed handle in the live registry. A fresh invocation has a fresh carrier and thus
+inherits neither package nor service.
+
+The cluster backend uses the same separated carrier for the cluster domain. An already-settled applied cordon
+and opaque readiness witness must first survive a fresh strong-backend reprobe; only then can the action's
+still-pending gate, plan/frame/resource, closed driver/config/owner origin, managed generation, and ready
+observation be committed to a canonical package. The separately installed service captures the strong backend
+and applied cordon, consumes each nonce once, and returns only a package-bound fresh observation version.
+Opening requires the sole exact canonical package, the same visible coordinates and unexpired route, and that
+live response; `Cluster.Reconcile` then settles another fresh observation and exposes `ClusterReadiness` only
+to the opener's continuation. No readiness witness, cordon capability, backend, raw probe, receipt, or journal
+writer is serialized or retained in the canonical registry.
+
+The same carrier keeps the already-checked ownership operation independently from a managed resource's optional
+canonical settlement bytes. It is private invocation-local evidence, not a receipt or handle and not part of
+stable encoding. A locally settled member contains both ownership and publishable settlement; an authenticated
+dependency handoff seeds only its exact package resource, generation, and operation, so a child may rebind the
+ownership evidence but cannot publish the parent frame's settlement. `Reconcile` alone can rebind that member
+inside a rank-2 continuation to one fresh generic managed handle and a matching `OwnershipReceipt`. The opener
+first requires the resource to be the current node's own resource or an exact ordered dependency, then requires
+one carrier member with non-empty ownership operation. Key, generation, and observation version come from it;
+the receipt repeats its key/generation and retained operation and is validated against the rebound handle.
+Missing ownership evidence, an unrelated key, or a fresh invocation refuses before the continuation.
+
+Provider dependency recovery joins these two invocation-local channels. The fixed successor selects the sole
+provider package for an exact plan-admitted provider key, rebinds that key's carried handle/receipt, reconstructs
+the backend origin from the exact backend binding, and opens the package only if plan, scope, resource, frame,
+origin, generation, route, and unexpired lifetime all agree. It then sends a canonical length-framed request
+binding the complete package commitment and a bounded nonce to the live service. The service consumes that
+nonce once, freshly reprobes the captured strong backend/managed handle, and returns a canonical response
+binding the same commitment, nonce, and observed generation. Recovery verifies all three, revalidates ownership,
+and exposes `RunningProviderDependency` only under a rank-2 continuation. Its retained reprobe repeats the same
+protocol with derived fresh nonces. Canonical decoding without carried ownership, or backend reachability
+without the exact package, cannot produce the dependency.
 
 ## Related
 

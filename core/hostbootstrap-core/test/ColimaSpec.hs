@@ -2,28 +2,18 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
-module ColimaSpec (tests) where
+module ColimaSpec (tests, runShippedOwnerProbe) where
 
-import Control.Concurrent
-  ( MVar,
-    forkIO,
-    killThread,
-    newEmptyMVar,
-    putMVar,
-    takeMVar,
-    threadDelay,
-    tryReadMVar,
-  )
-import Control.Exception (SomeAsyncException, SomeException, fromException, try)
-#if !defined(mingw32_HOST_OS)
-import Control.Exception (IOException, bracket)
-#endif
+import Control.Concurrent (threadDelay)
 import Control.Monad (unless)
 import Data.Bifunctor (first)
-import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf, nub)
+import qualified Data.ByteString as ByteString
+import Data.List (isInfixOf, isPrefixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Maybe (isJust)
+import qualified Data.Map.Strict as Map
+import Data.IORef (atomicModifyIORef', newIORef)
 import qualified Data.Text as Text
 import Data.Word (Word64)
 import qualified Fixture
@@ -32,15 +22,58 @@ import HostBootstrap.Cluster.Cordon (mkResourceBudget)
 import HostBootstrap.Config.Vocab (Production)
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Ensure.Colima
-import HostBootstrap.Ensure.Colima.Backend.Internal
+import HostBootstrap.Ensure.Colima.Backend.Stage
+import HostBootstrap.Ensure.Colima.Backend.Runner (BackendNamespace (..), BoundedToolResult (..), runShippedCommand)
 import HostBootstrap.Ensure.Colima.Backend.Resolver.Testing
-import HostBootstrap.Lifecycle.Prepared (
-  PreparedGate,
-  preparedGateAttempt,
-  preparedGateFence,
-  preparedGateJournalVersion,
-  preparedGateSession,
- )
+import HostBootstrap.Ensure.Colima.Command
+import HostBootstrap.Ensure.Colima.Report
+  ( ColimaReportFault (..),
+    LimaDisk (..),
+    classifyColimaListing,
+    classifyDockerContextListing,
+    classifyDockerContextInspect,
+    classifyLimaDiskListing,
+    classifyMachineIdentity,
+    dockerContextFingerprint,
+  )
+import HostBootstrap.Ensure.Colima.Ownership
+  ( ColimaNativeObservationFault (ColimaNativeCommandUnavailable),
+    ColimaArtifactObservation (..),
+    ColimaManagedObservation (..),
+    ColimaManagedOutcome (..),
+    ColimaProfileMutationFault (..),
+    ColimaStartedObservation (..),
+    acquireColimaDirectory,
+    acquireManagedColimaProfileWith,
+    bindColimaCreationIdentities,
+    cleanupManagedColimaProfileWith,
+    observeColimaArtifactsWith,
+    runManagedColimaDockerWith,
+    colimaHomeKey,
+    colimaDiskKey,
+    colimaProfileKey,
+    colimaManifestKey,
+    ensureColimaDirectory,
+    observeColimaProfiles,
+    prepareColimaNamespaces,
+    publishPreparedColimaManifest,
+    readColimaStage,
+    releaseColimaDirectory,
+    startPreparedColimaProfile,
+    startPreparedColimaProfileWith,
+    settleManagedColimaProfile,
+    writeColimaStage,
+    withColimaOwnershipEntry,
+  )
+import HostBootstrap.HostConfig (HostConfig (..))
+import HostBootstrap.DocValidator (findRepoRoot)
+import HostBootstrap.Effect.Run (CapturedRun (..))
+import HostBootstrap.Effect.Vocabulary
+  ( EffectTarget (ToolTarget),
+    HostCommand (commandArguments, commandTarget),
+  )
+import HostBootstrap.HostTool (HostTool (Colima, Docker, Lima))
+import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 import HostBootstrap.Lift (localContext)
 import HostBootstrap.ProjectPlan
   ( ClusterResource,
@@ -56,19 +89,20 @@ import HostBootstrap.ProjectPlan
     topology,
     withPlannedResourceOfKind,
   )
-import HostBootstrap.Reconcile
-  ( ChangeView (..),
-    ChangedKind (..),
-    Destroyed,
-    PhaseAdvance,
-    ReconcileError (..),
-    ownershipReceiptOperationKey,
-    resourceHandleGeneration,
-    resourceHandleObservationVersion,
-    withObservedProjectResource,
-    withPhaseAdvance,
+import HostBootstrap.Reconcile (withObservedProjectResource)
+import HostBootstrap.Protected
+  ( Expectation (ExpectAbsent),
+    readProtectedRecord,
   )
-import PrepareFixture (gateForValues, withSuccessorGate)
+import HostBootstrap.Ownership.Object (mkKernelObjectIdentity)
+import HostBootstrap.Ownership.Manifest
+  ( mkOwnershipManifest,
+    mutableManifestEntry,
+    ownershipManifestDigest,
+    parseOwnershipManifest,
+    renderOwnershipManifest,
+  )
+import PrepareFixture (withSuccessorGate)
 import HostBootstrap.Step
   ( StepFrame (StepFrame),
     StepObservation (StepChanged),
@@ -78,19 +112,16 @@ import HostBootstrap.Step
     descendsVia,
     mkStepPlan,
   )
+import HostBootstrap.Substrate (Arch (Amd64), Substrate (..), SubstrateName (LinuxCpu))
 import System.Directory
   ( Permissions (executable),
-#if !defined(mingw32_HOST_OS)
-    copyFile,
-    createDirectory,
-#endif
     createDirectoryIfMissing,
     createFileLink,
     doesDirectoryExist,
     doesFileExist,
     findExecutable,
+    getCurrentDirectory,
     getPermissions,
-    listDirectory,
 #if !defined(mingw32_HOST_OS)
     removePathForcibly,
 #endif
@@ -99,15 +130,14 @@ import System.Directory
     setPermissions,
   )
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
-import System.FilePath (searchPathSeparator, takeDirectory, (</>))
+import System.Environment (getExecutablePath)
+import System.FilePath (takeDirectory, (</>))
 import System.Info (os)
 import System.IO.Temp (withSystemTempDirectory)
 #if !defined(mingw32_HOST_OS)
-import Numeric (showHex)
 import System.Posix.Files (setFileMode)
-import System.Posix.Process (getProcessID)
 #endif
-import System.Process (readProcessWithExitCode)
+import System.Process (createProcess, proc, readProcessWithExitCode, terminateProcess, waitForProcess)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -118,16 +148,9 @@ gib = 1024 ^ (3 :: Integer)
 profileName :: String
 profileName = "h-012345"
 
-namespaceKey :: String
-namespaceKey = "0123456789abcdef0123456789abcdef"
-
 ownerToken :: String
 ownerToken =
   "v2-68-70-72-66-63-64-1-65-74-75-76"
-
-otherOwnerToken :: String
-otherOwnerToken =
-  "v2-68-70-73-66-63-64-1-65-74-75-76"
 
 acquireInvocation :: String
 acquireInvocation = replicate 64 'a'
@@ -167,7 +190,365 @@ tests :: TestTree
 tests =
   testGroup
     "ColimaSpec"
-    [ testCase "the public exact consumer derives a fixed opaque provider profile" $ do
+    [ testCase "the direct driver describes every tool effect without running it" $ do
+        let view command = (commandTarget command, commandArguments command)
+        map view
+          [ listColimaProfilesCommand,
+            startColimaProfileCommand canonicalStartArgs,
+            deleteColimaProfileCommand profileName,
+            readColimaMachineIdCommand profileName,
+            listLimaDisksCommand,
+            inspectDockerContextCommand ("colima-" ++ profileName),
+            listDockerContextsCommand,
+            removeDockerContextCommand ("colima-" ++ profileName)
+          ]
+          @?= [ (ToolTarget Colima, ["list", "--json"]),
+                (ToolTarget Colima, canonicalStartArgs),
+                (ToolTarget Colima, ["delete", "--profile", profileName, "--force", "--data"]),
+                (ToolTarget Colima, ["ssh", "--profile", profileName, "--", "cat", "/etc/machine-id"]),
+                (ToolTarget Lima, ["disk", "list", "--json"]),
+                (ToolTarget Docker, ["context", "inspect", "colima-" ++ profileName]),
+                (ToolTarget Docker, ["context", "ls", "--format", "{{json .}}"]),
+                (ToolTarget Docker, ["context", "rm", "--force", "colima-" ++ profileName])
+              ]
+        fmap view (routedDockerCommand profileName ["ps", "--all"])
+          @?= Right (ToolTarget Docker, ["--context", "colima-" ++ profileName, "ps", "--all"])
+        routedDockerCommand profileName ["ps", "--context", "foreign"]
+          @?= Left "Docker command may not override the owned Colima route"
+        let listing = CapturedRun ExitSuccess "{\"name\":\"h-a\",\"status\":\"Running\",\"cpus\":8,\"memory\":17179869184,\"disk\":85899345920,\"runtime\":\"docker\"}\n" ""
+        fmap (map ciName) (classifyColimaListing listing) @?= Right ["h-a"]
+        classifyColimaListing listing {capturedStdout = capturedStdout listing ++ "\n"}
+          @?= Left ColimaReportFraming
+        classifyColimaListing listing {capturedStderr = "warning"}
+          @?= Left ColimaToolStderr
+        fmap fst (classifyMachineIdentity (CapturedRun ExitSuccess (replicate 32 'a' ++ "\n") ""))
+          @?= Right (replicate 32 'a')
+        classifyMachineIdentity (CapturedRun ExitSuccess (replicate 32 'A' ++ "\n") "")
+          @?= Left ColimaReportShape
+        fmap (map limaDiskName) (classifyLimaDiskListing (CapturedRun ExitSuccess "{\"name\":\"colima-h-a\",\"dir\":\"/owned/disk\",\"instance\":\"colima-h-a\",\"instanceDir\":\"/owned/instance\",\"format\":\"raw\",\"mountPoint\":\"\",\"size\":80}\n" ""))
+          @?= Right ["colima-h-a"]
+        classifyDockerContextListing (CapturedRun ExitSuccess "{\"Name\":\"colima-h-a\"}\n{\"Name\":\"colima-h-a\"}\n" "")
+          @?= Left ColimaReportDuplicate
+        let inspectA = classifyDockerContextInspect (CapturedRun ExitSuccess "[{\"Name\":\"colima-h-a\",\"Endpoints\":{\"docker\":{\"Host\":\"unix:///owned.sock\"}}}]\n" "")
+            inspectB = classifyDockerContextInspect (CapturedRun ExitSuccess "[ { \"Endpoints\" : { \"docker\" : { \"Host\" : \"unix:///owned.sock\" } }, \"Name\" : \"colima-h-a\" } ]" "")
+        case (mkKernelObjectIdentity 1 2, inspectA, inspectB) of
+          (Right identity, Right valueA, Right valueB) -> dockerContextFingerprint identity valueA @?= dockerContextFingerprint identity valueB
+          other -> assertFailure ("expected canonical Docker context evidence, got " ++ show other)
+        case (mkKernelObjectIdentity 1 2, mkKernelObjectIdentity 3 4) of
+          (Right firstIdentity, Right secondIdentity) -> do
+            let firstEntry = mutableManifestEntry "profile/colima.yaml" firstIdentity 0o600
+                secondEntry = mutableManifestEntry "_lima/profile/diffdisk" secondIdentity 0o600
+                manifest = sequence [firstEntry, secondEntry] >>= mkOwnershipManifest
+                reordered = sequence [secondEntry, firstEntry] >>= mkOwnershipManifest
+            fmap ownershipManifestDigest manifest @?= fmap ownershipManifestDigest reordered
+            fmap (parseOwnershipManifest . renderOwnershipManifest) manifest @?= fmap Right manifest
+            case mutableManifestEntry "../foreign" firstIdentity 0o600 >>= \value -> mkOwnershipManifest [value] of
+              Left _ -> pure ()
+              Right _ -> assertFailure "a traversal path entered the shared ownership manifest"
+          other -> assertFailure ("expected shared manifest identities, got " ++ show other)
+        withSystemTempDirectory "hostbootstrap-colima-authority" $ \root -> do
+          case mkColimaStageRecord ColimaReserved ownerToken (replicate 64 'c') acquireInvocation of
+            Left failure -> assertFailure failure
+            Right stageRecord -> do
+              owned <-
+                withColimaOwnershipEntry root profileName $ \session keys ->
+                  Right <$> do
+                    written <- writeColimaStage session keys ExpectAbsent stageRecord
+                    case written of
+                      Left failure -> pure (Left failure)
+                      Right _ -> fmap (fmap (fmap (colimaStageRecordStage . snd))) (readColimaStage session keys)
+              owned @?= Right (Right (Just ColimaReserved))
+          let home = root </> "owned-home"
+          acquired <-
+            withColimaOwnershipEntry root profileName $ \session keys ->
+              Right <$> acquireColimaDirectory session (colimaHomeKey keys) home
+          case acquired of
+            Right (Right _) -> do
+              doesDirectoryExist home >>= (@?= True)
+              reentered <-
+                withColimaOwnershipEntry root profileName $ \session keys ->
+                  Right <$> ensureColimaDirectory session (colimaHomeKey keys) home
+              case reentered of
+                Right (Right _) -> pure ()
+                other -> assertFailure ("expected exact shared-clause re-entry, got " ++ show other)
+              released <-
+                withColimaOwnershipEntry root profileName $ \session keys ->
+                  Right <$> releaseColimaDirectory session (colimaHomeKey keys) home
+              released @?= Right (Right ())
+              doesDirectoryExist home >>= (@?= False)
+            other -> assertFailure ("expected shared-clause directory acquisition, got " ++ show other)
+        refused <- withColimaOwnershipEntry "/unused" "default" (\_ _ -> pure (Right ()))
+        refused @?= Left "invalid direct-Colima profile"
+        withSystemTempDirectory "hostbootstrap-colima-observe" $ \root -> do
+          observed <-
+            observeColimaProfiles
+              HostConfig {hcSubstrate = Substrate LinuxCpu Amd64, hcToolPaths = Map.empty}
+              root
+              profileName
+          case observed of
+            Left (ColimaNativeCommandUnavailable _) -> pure ()
+            other -> assertFailure ("expected a typed unresolved-command refusal, got " ++ show other)
+        withSystemTempDirectory "hostbootstrap-colima-prepare" $ \root -> do
+          let home = root </> "isolated-home"
+              context = root </> "docker-config"
+              instanceDirectory = home </> "_lima" </> ("colima-" ++ profileName)
+              diskDirectory = home </> "_lima" </> "_disks" </> ("colima-" ++ profileName)
+              diskPath = diskDirectory </> "datadisk"
+              prepare = prepareColimaNamespaces root profileName ownerToken (replicate 64 'c') acquireInvocation home context
+          prepare >>= (@?= Right ())
+          prepare >>= (@?= Right ())
+          doesDirectoryExist home >>= (@?= True)
+          doesDirectoryExist context >>= (@?= True)
+          stage <-
+            withColimaOwnershipEntry root profileName $ \session keys ->
+              Right <$> readColimaStage session keys
+          fmap (fmap (fmap (colimaStageRecordStage . snd))) stage @?= Right (Right (Just ColimaPrepared))
+          mutation <-
+            startPreparedColimaProfile
+              HostConfig {hcSubstrate = Substrate LinuxCpu Amd64, hcToolPaths = Map.empty}
+              root
+              profileName
+              ownerToken
+              (replicate 64 'c')
+              acquireInvocation
+              home
+              context
+              diskPath
+              8
+              (16 * gib)
+              (80 * gib)
+              canonicalStartArgs
+          case mutation of
+            Left (ColimaMutationCommandUnavailable _) -> pure ()
+            other -> assertFailure ("expected native start to retain Prepared on unavailable command, got " ++ show other)
+          scripted <-
+            newIORef
+              [ Right (CapturedRun ExitSuccess "" ""),
+                Right (CapturedRun ExitSuccess "started\n" ""),
+                Right (CapturedRun ExitSuccess ("{\"name\":\"" ++ profileName ++ "\",\"status\":\"Running\",\"cpus\":8,\"memory\":" ++ show (16 * gib) ++ ",\"disk\":" ++ show (80 * gib) ++ ",\"runtime\":\"docker\"}\n") ""),
+                Right (CapturedRun ExitSuccess (replicate 32 'd' ++ "\n") "")
+              ]
+          let interpret _ =
+                atomicModifyIORef' scripted $ \outcomes -> case outcomes of
+                  outcome : remaining -> (remaining, outcome)
+                  [] -> ([], Left "unexpected command")
+          started <-
+            startPreparedColimaProfileWith
+              interpret
+              root
+              profileName
+              ownerToken
+              (replicate 64 'c')
+              acquireInvocation
+              home
+              context
+              diskPath
+              8
+              (16 * gib)
+              (80 * gib)
+              canonicalStartArgs
+          startedObservation <- case started of
+            Right observation -> do
+              startedMachineIdentity observation @?= replicate 32 'd'
+              pure observation
+            other -> assertFailure ("expected value-driven native start settlement, got " ++ show other)
+          createDirectoryIfMissing True diskDirectory
+          writeFile diskPath "owned disk"
+          artifactScript <- newIORef (0 :: Int)
+          let artifactInterpret command = do
+                step <- atomicModifyIORef' artifactScript (\current -> (current + 1, current))
+                case (step, commandArguments command) of
+                  (0, ["disk", "list", "--json"]) ->
+                    pure (Right (CapturedRun ExitSuccess ("{\"name\":\"colima-" ++ profileName ++ "\",\"dir\":\"" ++ diskDirectory ++ "\",\"instance\":\"colima-" ++ profileName ++ "\",\"instanceDir\":\"" ++ instanceDirectory ++ "\",\"format\":\"raw\",\"mountPoint\":\"\",\"size\":" ++ show (80 * gib) ++ "}\n") ""))
+                  (1, ["context", "inspect", _]) -> pure (Right (CapturedRun ExitSuccess ("[{\"Name\":\"colima-" ++ profileName ++ "\",\"Endpoints\":{\"docker\":{\"Host\":\"unix:///owned.sock\"}}}]\n") ""))
+                  _ -> pure (Left "unexpected artifact observation command")
+          artifacts <-
+            observeColimaArtifactsWith artifactInterpret root profileName ownerToken (replicate 64 'c') acquireInvocation home context (80 * gib)
+          observedArtifacts <- case artifacts of
+            Right observed -> do
+              artifactDiskPath observed @?= diskPath
+              pure observed
+            other -> assertFailure ("expected authoritative artifact observation, got " ++ show other)
+          publishPreparedColimaManifest root profileName ownerToken (replicate 64 'c') acquireInvocation (artifactOwnershipManifest observedArtifacts)
+            >>= (@?= Right ())
+          bound <-
+            bindColimaCreationIdentities
+              root
+              profileName
+              ownerToken
+              (replicate 64 'c')
+              acquireInvocation
+              (replicate 32 'd')
+              diskPath
+          case bound of
+            Right _ -> pure ()
+            other -> assertFailure ("expected shared profile/disk identity binding, got " ++ show other)
+          settled <-
+            settleManagedColimaProfile
+              root
+              profileName
+              ownerToken
+              (replicate 64 'c')
+              acquireInvocation
+              (startedMachineIdentity startedObservation)
+              (startedMachineEpoch startedObservation)
+              (replicate 64 'e')
+              8
+              (16 * gib)
+              (80 * gib)
+              (20 * gib)
+              home
+              context
+          settled @?= Right ()
+          origins <-
+            withColimaOwnershipEntry root profileName $ \session keys -> do
+              profileOrigin <- readProtectedRecord session (colimaProfileKey keys)
+              diskOrigin <- readProtectedRecord session (colimaDiskKey keys)
+              pure ((,) <$> profileOrigin <*> diskOrigin)
+          fmap (\(profileOrigin, diskOrigin) -> (isJust profileOrigin, isJust diskOrigin)) origins
+            @?= Right (True, True)
+          stageAfterSettlement <-
+            withColimaOwnershipEntry root profileName $ \session keys ->
+              Right <$> readColimaStage session keys
+          fmap (fmap (fmap (colimaStageRecordStage . snd))) stageAfterSettlement @?= Right (Right (Just ColimaManaged))
+          let driftPath = context </> "foreign.json"
+          writeFile driftPath "{}\n"
+          drifted <-
+            runManagedColimaDockerWith (\_ -> pure (Left "a drifted manifest must run no command")) root profileName ownerToken (replicate 64 'c') acquireInvocation home context ["ps"]
+          case drifted of
+            Left (ColimaMutationOwnershipRefused _) -> pure ()
+            other -> assertFailure ("expected manifest drift refusal before Docker, got " ++ show other)
+          removeFile driftPath
+          dockerScript <- newIORef (0 :: Int)
+          let runningListing = "{\"name\":\"" ++ profileName ++ "\",\"status\":\"Running\",\"cpus\":8,\"memory\":" ++ show (16 * gib) ++ ",\"disk\":" ++ show (80 * gib) ++ ",\"runtime\":\"docker\"}\n"
+              dockerInterpret command = do
+                step <- atomicModifyIORef' dockerScript (\current -> (current + 1, current))
+                case (step, commandArguments command) of
+                  (0, ["list", "--json"]) -> pure (Right (CapturedRun ExitSuccess runningListing ""))
+                  (1, ["ssh", "--profile", _, "--", "cat", "/etc/machine-id"]) -> pure (Right (CapturedRun ExitSuccess (replicate 32 'd' ++ "\n") ""))
+                  (2, ["--context", contextName, "ps", "--all"])
+                    | contextName == "colima-" ++ profileName -> pure (Right (CapturedRun ExitSuccess "container-row\n" ""))
+                  (3, ["list", "--json"]) -> pure (Right (CapturedRun ExitSuccess runningListing ""))
+                  (4, ["ssh", "--profile", _, "--", "cat", "/etc/machine-id"]) -> pure (Right (CapturedRun ExitSuccess (replicate 32 'd' ++ "\n") ""))
+                  _ -> pure (Left "unexpected Docker transaction command")
+          dockerRun <-
+            runManagedColimaDockerWith dockerInterpret root profileName ownerToken (replicate 64 'c') acquireInvocation home context ["ps", "--all"]
+          fmap capturedStdout dockerRun @?= Right "container-row\n"
+          changedScript <- newIORef (0 :: Int)
+          let changedInterpret command = do
+                step <- atomicModifyIORef' changedScript (\current -> (current + 1, current))
+                case (step, commandArguments command) of
+                  (0, ["list", "--json"]) -> pure (Right (CapturedRun ExitSuccess runningListing ""))
+                  (1, ["ssh", "--profile", _, "--", "cat", "/etc/machine-id"]) -> pure (Right (CapturedRun ExitSuccess (replicate 32 'd' ++ "\n") ""))
+                  (2, ["--context", _, "version"]) -> pure (Right (CapturedRun ExitSuccess "version\n" ""))
+                  (3, ["list", "--json"]) -> pure (Right (CapturedRun ExitSuccess runningListing ""))
+                  (4, ["ssh", "--profile", _, "--", "cat", "/etc/machine-id"]) -> pure (Right (CapturedRun ExitSuccess (replicate 32 'f' ++ "\n") ""))
+                  _ -> pure (Left "unexpected replacement command")
+          replaced <-
+            runManagedColimaDockerWith changedInterpret root profileName ownerToken (replicate 64 'c') acquireInvocation home context ["version"]
+          case replaced of
+            Left (ColimaMutationProfileConflict "Docker profile identity changed") -> pure ()
+            other -> assertFailure ("expected post-command identity refusal, got " ++ show other)
+          cleanupScript <- newIORef (0 :: Int)
+          let cleanupInterpret command = do
+                step <- atomicModifyIORef' cleanupScript (\current -> (current + 1, current))
+                case (step, commandArguments command) of
+                  (0, ["list", "--json"]) -> pure (Right (CapturedRun ExitSuccess runningListing ""))
+                  (1, ["ssh", "--profile", _, "--", "cat", "/etc/machine-id"]) -> pure (Right (CapturedRun ExitSuccess (replicate 32 'd' ++ "\n") ""))
+                  (2, ["delete", "--profile", _, "--force", "--data"]) -> do
+                    removePathForcibly (home </> "_lima")
+                    pure (Right (CapturedRun ExitSuccess "deleted\n" ""))
+                  (3, ["list", "--json"]) -> pure (Right (CapturedRun ExitSuccess "" ""))
+                  (4, ["context", "rm", "--force", _]) -> pure (Right (CapturedRun ExitSuccess "" ""))
+                  _ -> pure (Left "unexpected cleanup command")
+          cleaned <-
+            cleanupManagedColimaProfileWith
+              cleanupInterpret root profileName ownerToken (replicate 64 'c') acquireInvocation cleanupInvocation home context diskPath
+          cleaned @?= Right ()
+          doesDirectoryExist home >>= (@?= False)
+          doesDirectoryExist context >>= (@?= False)
+          cleanupState <-
+            withColimaOwnershipEntry root profileName $ \session keys -> do
+              profileOrigin <- readProtectedRecord session (colimaProfileKey keys)
+              diskOrigin <- readProtectedRecord session (colimaDiskKey keys)
+              finalStage <- readColimaStage session keys
+              pure (Right (profileOrigin, diskOrigin, finalStage))
+          fmap (\(profileOrigin, diskOrigin, finalStage) -> (fmap isJust profileOrigin, fmap isJust diskOrigin, fmap (fmap (colimaStageRecordStage . snd)) finalStage)) cleanupState
+            @?= Right (Right False, Right False, Right (Just ColimaReleased))
+        withSystemTempDirectory "hostbootstrap-colima-one-entry" $ \root -> do
+          let home = root </> "isolated-home"
+              context = root </> "docker-config"
+              instanceDirectory = home </> "_lima" </> ("colima-" ++ profileName)
+              diskDirectory = home </> "_lima" </> "_disks" </> ("colima-" ++ profileName)
+              diskPath = diskDirectory </> "datadisk"
+              runningListing = "{\"name\":\"" ++ profileName ++ "\",\"status\":\"Running\",\"cpus\":8,\"memory\":" ++ show (16 * gib) ++ ",\"disk\":" ++ show (80 * gib) ++ ",\"runtime\":\"docker\"}\n"
+          oneEntryScript <- newIORef (0 :: Int)
+          let oneEntryInterpret command = do
+                step <- atomicModifyIORef' oneEntryScript (\current -> (current + 1, current))
+                case (step, commandArguments command) of
+                  (0, ["list", "--json"]) -> pure (Right (CapturedRun ExitSuccess "" ""))
+                  (1, "start" : _) -> do
+                    createDirectoryIfMissing True diskDirectory
+                    createDirectoryIfMissing True instanceDirectory
+                    writeFile diskPath "owned disk"
+                    writeFile (context </> "meta.json") "{}\n"
+                    pure (Right (CapturedRun ExitSuccess "started\n" ""))
+                  (2, ["list", "--json"]) -> pure (Right (CapturedRun ExitSuccess runningListing ""))
+                  (3, ["ssh", "--profile", _, "--", "cat", "/etc/machine-id"]) -> pure (Right (CapturedRun ExitSuccess (replicate 32 'd' ++ "\n") ""))
+                  (4, ["disk", "list", "--json"]) -> pure (Right (CapturedRun ExitSuccess ("{\"name\":\"colima-" ++ profileName ++ "\",\"dir\":\"" ++ diskDirectory ++ "\",\"instance\":\"colima-" ++ profileName ++ "\",\"instanceDir\":\"" ++ instanceDirectory ++ "\",\"format\":\"raw\",\"mountPoint\":\"\",\"size\":" ++ show (80 * gib) ++ "}\n") ""))
+                  (5, ["context", "inspect", _]) -> pure (Right (CapturedRun ExitSuccess ("[{\"Name\":\"colima-" ++ profileName ++ "\"}]\n") ""))
+                  (6, ["list", "--json"]) -> pure (Right (CapturedRun ExitSuccess runningListing ""))
+                  (7, ["ssh", "--profile", _, "--", "cat", "/etc/machine-id"]) -> pure (Right (CapturedRun ExitSuccess (replicate 32 'd' ++ "\n") ""))
+                  (8, ["disk", "list", "--json"]) -> pure (Right (CapturedRun ExitSuccess ("{\"name\":\"colima-" ++ profileName ++ "\",\"dir\":\"" ++ diskDirectory ++ "\",\"instance\":\"colima-" ++ profileName ++ "\",\"instanceDir\":\"" ++ instanceDirectory ++ "\",\"format\":\"raw\",\"mountPoint\":\"\",\"size\":" ++ show (80 * gib) ++ "}\n") ""))
+                  (9, ["context", "inspect", _]) -> pure (Right (CapturedRun ExitSuccess ("[{\"Name\":\"colima-" ++ profileName ++ "\"}]\n") ""))
+                  _ -> pure (Left "unexpected one-entry acquisition command")
+          acquired <-
+            acquireManagedColimaProfileWith oneEntryInterpret root profileName ownerToken (replicate 64 'c') acquireInvocation home context 8 (16 * gib) (80 * gib) (20 * gib) canonicalStartArgs
+          case acquired of
+            Right (ColimaManagedApplied managedObservation) -> startedMachineIdentity (managedStartObservation managedObservation) @?= replicate 32 'd'
+            other -> assertFailure ("expected one-entry native Managed acquisition, got " ++ show other)
+          repeated <-
+            acquireManagedColimaProfileWith oneEntryInterpret root profileName ownerToken (replicate 64 'c') acquireInvocation home context 8 (16 * gib) (80 * gib) (20 * gib) canonicalStartArgs
+          case repeated of
+            Right (ColimaManagedAlreadyExact managedObservation) -> startedMachineIdentity (managedStartObservation managedObservation) @?= replicate 32 'd'
+            other -> assertFailure ("expected exact one-entry native acquisition, got " ++ show other)
+          retained <-
+            withColimaOwnershipEntry root profileName $ \session keys -> do
+              stage <- readColimaStage session keys
+              manifest <- readProtectedRecord session (colimaManifestKey keys)
+              pure (Right (stage, manifest))
+          fmap (\(stage, manifest) -> (fmap (fmap (colimaStageRecordStage . snd)) stage, fmap isJust manifest)) retained
+            @?= Right (Right (Just ColimaManaged), Right True)
+        colimaCommandTools @?= [Colima, Docker, Lima],
+      testCase "the shipped command transaction kills its group on hard parent death" $
+        onOwnershipHost $ withSystemTempDirectory "hostbootstrap-colima-shipped-death" $ \directory -> do
+          python <- requireExecutable "python3" =<< findExecutable "python3"
+          self <- getExecutablePath
+          let pidPath = directory </> "child.pid"
+          (_, _, _, ownerProcess) <-
+            createProcess (proc self ["--hostbootstrap-colima-shipped-owner-probe", directory, pidPath, python])
+          waitForPath pidPath
+          childPid <- strictReadFile pidPath
+          terminateProcess ownerProcess
+          _ <- waitForProcess ownerProcess
+          waitForPidGone python childPid,
+      testCase "the Colima backend admits only native shipped effects" $ do
+        current <- getCurrentDirectory
+        root <- findRepoRoot current >>= maybe (assertFailure "could not find repository root") pure
+        let backend = root </> "core" </> "hostbootstrap-core" </> "internal" </> "colima-backend" </> "HostBootstrap" </> "Ensure" </> "Colima" </> "Backend"
+        doesDirectoryExist (backend </> "Program") >>= (@?= False)
+        doesFileExist (backend </> "Resolver" </> "Program.hs") >>= (@?= False)
+        doesFileExist (backend </> "Internal.hs") >>= (@?= False)
+        source <- strictReadFile (root </> "core" </> "hostbootstrap-core" </> "test" </> "ColimaSpec.hs")
+        mapM_
+          (\forbidden -> assertBool ("removed Colima stand-in returned: " ++ forbidden) (not (forbidden `isInfixOf` source)))
+          [ "fake" ++ "Colima" ++ "Program",
+            "fake" ++ "Docker" ++ "Program",
+            "fake" ++ "Lima" ++ "Program",
+            "Acquire" ++ "Backend" ++ "CrashPoint",
+            "Cleanup" ++ "Backend" ++ "CrashPoint"
+          ],
+      testCase "the public exact consumer derives a fixed opaque provider profile" $ do
         result <-
           withPreparedTestCall $ \expectedProject call ->
             (Text.unpack expectedProject, preparedColimaProfileName call)
@@ -180,118 +561,9 @@ tests =
         assertBool
           "default must never become project authority"
           (not (validColimaProjectProfileName "default")),
-      testCase "the public adapter settles acquisition, routed Docker, and journaled force-destroy cleanup" $
-        onOwnershipHost $ withShortResolverHarness $ \resolver effectiveHome markerRoot -> do
-          initialExecution <- executeResolverFixtureAt resolver effectiveHome
-          (_resolverOutput, resolverProtocol) <- requireReadyResolver resolver initialExecution
-          let layout = resolverHarnessLayout resolver
-              (pythonDevice, pythonInode) = resolverPythonIdentity resolverProtocol
-              executeFresh = resolverExecutionFixture <$> executeResolverFixtureAt resolver effectiveHome
-          bracketed <-
-            withTrustedResolverFixture
-              (resolverFixtureRoot layout)
-              effectiveHome
-              pythonDevice
-              pythonInode
-              executeFresh
-              ( do
-                  prepared <-
-                    withPreparedPublicTestCallM $ \plan provider cluster acquireGate nextAcquireGate _expectedProject call -> do
-                      firstObservation <- runPreparedColimaWallCall call
-                      let planDigest = stablePlanSnapshotDigest (renderSnapshot plan)
-                          operation = plannedResourceKey provider
-                          fence = preparedGateFence acquireGate
-                      case
-                          settleColimaWallCall call firstObservation $ \firstLive -> do
-                            liveColimaWallChange firstLive @?= Changed Created
-                            liveColimaProviderChange firstLive @?= Changed Created
-                            routed <- runLiveColimaDocker firstLive ["info"]
-                            routed @?= Right (ExitSuccess, "docker-ok\n", "")
-                            secondObservation <- runPreparedColimaWallCall call
-                            case
-                                settleColimaWallCall call secondObservation $ \secondLive -> do
-                                  liveColimaWallChange secondLive @?= Unchanged
-                                  liveColimaProviderChange secondLive @?= Changed Repaired
-                                  writeFile (markerRoot </> "mismatch") ""
-                                  conflictedObservation <- runPreparedColimaWallCall call
-                                  case settleColimaWallCall call conflictedObservation (const ()) of
-                                    Left Conflict {} -> pure ()
-                                    Left other -> assertFailure ("unowned conflict settled unexpectedly: " ++ show other)
-                                    Right () -> assertFailure "unowned conflict minted live wall authority"
-                                  removeFile (markerRoot </> "mismatch")
-                                  writeFile (markerRoot </> "list-exit") ""
-                                  failedObservation <- runPreparedColimaWallCall call
-                                  case settleColimaWallCall call failedObservation (const ()) of
-                                    Left Failure {} -> pure ()
-                                    Left other -> assertFailure ("unowned failure settled unexpectedly: " ++ show other)
-                                    Right () -> assertFailure "unowned failure minted live wall authority"
-                                  removeFile (markerRoot </> "list-exit")
-                                  case withColimaCleanupAuthority secondLive id of
-                                    Nothing -> assertFailure "settled public Colima wall lacked cleanup authority"
-                                    Just cleanupAuthority -> do
-                                      wrongFenceGate <- gateForValues planDigest operation "wrong-fence-cleanup-session" (fence + 1) 2
-                                      wrongFence <- prepareColimaCleanupCall plan provider wrongFenceGate cleanupAuthority
-                                      case wrongFence of
-                                        Left Conflict {} -> pure ()
-                                        Left other -> assertFailure ("wrong-fence cleanup preparation failed unexpectedly: " ++ show other)
-                                        Right _ -> assertFailure "wrong-fence cleanup preparation minted a mutation call"
-                                      cleanupGate <- gateForValues planDigest operation "cleanup-session" fence 2
-                                      preparedCleanup <-
-                                        prepareColimaCleanupCall plan provider cleanupGate cleanupAuthority
-                                          >>= either (assertFailure . ("prepare public Colima cleanup: " ++) . show) pure
-                                      writeFile (markerRoot </> "fail-delete") ""
-                                      failedCleanup <- runColimaCleanup preparedCleanup
-                                      case failedCleanup of
-                                        Left Failure {} -> pure ()
-                                        Left other -> assertFailure ("expected public cleanup failure, got " ++ show other)
-                                        Right _ -> assertFailure "expected structured public cleanup failure, got typed completion"
-                                      removeFile (markerRoot </> "fail-delete")
-                                      changedGate <- gateForValues planDigest operation "other-cleanup-session" fence 3
-                                      changedCleanup <-
-                                        prepareColimaCleanupCall plan provider changedGate cleanupAuthority
-                                          >>= either (assertFailure . ("prepare changed public cleanup: " ++) . show) pure
-                                      changedResult <- runColimaCleanup changedCleanup
-                                      case changedResult of
-                                        Left Conflict {} -> pure ()
-                                        Left other -> assertFailure ("changed cleanup invocation failed unexpectedly: " ++ show other)
-                                        Right _ -> assertFailure "changed cleanup invocation adopted retained releasing state"
-                                      completed <-
-                                        runColimaCleanup preparedCleanup
-                                          >>= either (assertFailure . ("complete public cleanup: " ++) . show) pure
-                                      assertDestroyedProvider operation completed
-                                      replayed <-
-                                        runColimaCleanup preparedCleanup
-                                          >>= either (assertFailure . ("replay public cleanup: " ++) . show) pure
-                                      assertDestroyedProvider operation replayed
-                                      staleGate <- nextAcquireGate
-                                      assertBool
-                                        "the stale call must belong to a distinct session"
-                                        (preparedGateSession staleGate /= preparedGateSession acquireGate)
-                                      assertBool
-                                        "the stale call must belong to a distinct attempt"
-                                        (preparedGateAttempt staleGate /= preparedGateAttempt acquireGate)
-                                      assertBool
-                                        "the stale call must belong to a successor journal version"
-                                        (preparedGateJournalVersion staleGate /= preparedGateJournalVersion acquireGate)
-                                      staleReplay <-
-                                        withPreparedTestCallForGate plan provider cluster staleGate $ \staleCall ->
-                                          case settleColimaWallCall staleCall firstObservation (const ()) of
-                                            Left Failure {} -> pure ()
-                                            Left other -> assertFailure ("stale acquire observation failed unexpectedly: " ++ show other)
-                                            Right () -> assertFailure "stale acquire observation settled a different invocation"
-                                      either assertFailure pure staleReplay
-                              of
-                                Left failure -> assertFailure ("exact public Colima settlement failed: " ++ show failure)
-                                Right action -> action
-                        of
-                          Left failure -> assertFailure ("initial public Colima settlement failed: " ++ show failure)
-                          Right action -> action
-                  either assertFailure pure prepared
-              )
-          either (assertFailure . ("private resolver bracket refused public flow: " ++)) pure bracketed,
       testGroup
         "trusted resolver"
-        [ testCase "the fixture program and strict facade settle one closed ready toolchain" $
+        [ testCase "the native fixture observer and strict facade settle one closed ready toolchain" $
             onOwnershipHost $ withResolverHarness "ready" $ \harness -> do
               execution <- executeResolverFixture harness
               (output, protocol) <- requireReadyResolver harness execution
@@ -511,6 +783,63 @@ tests =
               settle pythonDevice pythonInode (ResolverExecutionCompleted (ExitFailure 7) output "") @?= ResolverSettlementUnsupported "resolver-exit-failure"
               settle (pythonDevice + 1) pythonInode (ResolverExecutionCompleted ExitSuccess output "") @?= ResolverSettlementUnsupported "resolver-python-identity"
         ],
+      testCase "the durable Colima stage graph admits only idempotence and one successor" $ do
+        let stages = [minBound .. maxBound] :: [ColimaStage]
+        mapM_ (\stage -> parseColimaStage (renderColimaStage stage) @?= Right stage) stages
+        mapM_ (\stage -> advanceColimaStage stage stage @?= Right stage) stages
+        mapM_
+          (\(current, successor) -> advanceColimaStage current successor @?= Right successor)
+          (zip stages (drop 1 stages))
+        advanceColimaStage ColimaReserved ColimaPrepared @?= Left "stage-transition"
+        advanceColimaStage ColimaManaged ColimaPrepared @?= Left "stage-transition"
+        advanceColimaStage ColimaReleased ColimaReserved @?= Left "stage-transition"
+        let decisions =
+              [ (AcquireColima, ColimaReserved, ColimaNamespaceAbsent, AdvanceColimaStage ColimaHomeStaged),
+                (AcquireColima, ColimaHomeStaged, ColimaHomeStageExact, AdvanceColimaStage ColimaHomeReady),
+                (AcquireColima, ColimaHomeReady, ColimaHomeExact, AdvanceColimaStage ColimaContextStaged),
+                (AcquireColima, ColimaContextStaged, ColimaContextStageExact, AdvanceColimaStage ColimaPrepared),
+                (AcquireColima, ColimaPrepared, ColimaProfileAbsent, StartColimaProfile),
+                (AcquireColima, ColimaPrepared, ColimaProfileExact, AdvanceColimaStage ColimaManaged),
+                (AcquireColima, ColimaManaged, ColimaProfileExact, KeepColimaStage),
+                (ReleaseColima, ColimaManaged, ColimaProfileExact, AdvanceColimaStage ColimaReleasing),
+                (ReleaseColima, ColimaReleasing, ColimaProfileExact, DeleteColimaProfile),
+                (ReleaseColima, ColimaReleasing, ColimaProfileAbsent, AdvanceColimaStage ColimaContextReleased),
+                (ReleaseColima, ColimaContextReleased, ColimaProfileAbsent, AdvanceColimaStage ColimaReleased),
+                (ReleaseColima, ColimaReleased, ColimaReleasedNamespaceExact, ReleaseColimaNamespace),
+                (ReleaseColima, ColimaReleased, ColimaNamespaceAbsent, KeepColimaStage)
+              ]
+        mapM_
+          (\(intent, stage, observation, decision) -> decideColimaStage intent stage observation @?= Right decision)
+          decisions
+        let admitted = [(intent, stage, observation) | (intent, stage, observation, _) <- decisions]
+            allInputs =
+              [ (intent, stage, observation)
+                | intent <- [AcquireColima, ReleaseColima],
+                  stage <- stages,
+                  observation <- [minBound .. maxBound]
+              ]
+        mapM_
+          (\input@(intent, stage, observation) ->
+              unless (input `elem` admitted) (decideColimaStage intent stage observation @?= Left "stage-observation"))
+          allInputs
+        let stageRecord = mkColimaStageRecord ColimaPrepared ownerToken (replicate 64 'c') acquireInvocation
+        fmap (parseColimaStageRecord . renderColimaStageRecord) stageRecord @?= fmap Right stageRecord
+        fmap colimaStageRecordStage stageRecord @?= Right ColimaPrepared
+        (stageRecord >>= parseColimaStageRecord . ByteString.init . renderColimaStageRecord)
+          @?= Left "stage-record"
+        let evidence = mkColimaManagedEvidence (replicate 32 'd') 42 (replicate 64 'e') (replicate 64 'f') (replicate 64 'a') 8 (16 * gib) (80 * gib) (20 * gib)
+            managed = stageRecord >>= \record -> evidence >>= settleColimaStageRecord record
+        fmap (parseColimaStageRecord . renderColimaStageRecord) managed @?= fmap Right managed
+        fmap colimaStageRecordStage managed @?= Right ColimaManaged
+        let releasing = managed >>= (`beginColimaReleaseRecord` cleanupInvocation)
+        fmap (parseColimaStageRecord . renderColimaStageRecord) releasing @?= fmap Right releasing
+        fmap colimaStageRecordStage releasing
+          @?= Right ColimaReleasing
+        fmap colimaStageRecordStage (releasing >>= (`advanceSettledColimaStageRecord` ColimaContextReleased))
+          @?= Right ColimaContextReleased
+        mkColimaStageRecord ColimaManaged ownerToken (replicate 64 'c') acquireInvocation
+          @?= Left "stage-evidence"
+        parseColimaStage "unknown" @?= Left "record-state",
       testCase "raw Colima JSONL remains plan-independent observation data" $
         parseColimaInstances
           ( unlines
@@ -553,543 +882,11 @@ tests =
                 ]
         case result of
           Right (Right (RefuseColimaWall _)) -> pure ()
-          other -> assertFailure ("expected refusal, got " ++ show other),
-      testCase "initial acquisition atomically publishes one nonce-bearing managed record" $
-        onOwnershipHost $ withBackendHarness "atomic-create" $ \harness -> do
-          acquireStartArgs (acquireRequest harness) @?= canonicalStartArgs
-          receipt <- acquireReceipt harness
-          receiptOwner receipt @?= ownerToken
-          length (receiptNonce receipt) @?= 64
-          contents <- strictReadFile (backendRecordPath harness)
-          recordField "state" contents @?= Just "managed"
-          recordField "owner" contents @?= Just (receiptOwner receipt)
-          recordField "nonce" contents @?= Just (receiptNonce receipt)
-          recordField "machine" contents @?= Just (receiptMachine receipt)
-          recordField "epoch" contents @?= Just (show (receiptEpoch receipt))
-          stages <- stageEntries harness
-          length stages @?= 1
-          assertBool "the only retained stage is the reserved lineage anchor" (any (isInfixOf ".reserved.") stages),
-      testCase "a crash after isolated-home creation resumes only the exact nonce-bound stage" $
-        onOwnershipHost $ withBackendHarness "home-stage-crash" $ \harness -> do
-          crashed <-
-            runAcquireBackend
-              (acquireRequest harness)
-                { acquireTestingCrashPoint = Just CrashAfterHomeStageCreation
-                }
-          crashed @?= AcquireFailed "backend-process"
-          contents <- strictReadFile (backendRecordPath harness)
-          recordField "state" contents @?= Just "reserved"
-          nonce <- requireRecordNonce contents
-          let stagedHome = namespaceColimaHome (backendNamespace harness) ++ ".init." ++ nonce ++ ".stage"
-          staged <- doesDirectoryExist stagedHome
-          assertBool "the exact home stage survived the killed backend" staged
-          recovered <- runAcquireBackend (acquireRequest harness)
-          assertBool "the same invocation recovered the self-bound home stage" (ownedAcquire recovered)
-          events <- backendEvents harness
-          length (filter (isPrefixOf "start ") events) @?= 1,
-      testCase "a crash after Docker-config creation resumes only the exact empty context stage" $
-        onOwnershipHost $ withBackendHarness "context-stage-crash" $ \harness -> do
-          crashed <-
-            runAcquireBackend
-              (acquireRequest harness)
-                { acquireTestingCrashPoint = Just CrashAfterContextStageCreation
-                }
-          crashed @?= AcquireFailed "backend-process"
-          contents <- strictReadFile (backendRecordPath harness)
-          recordField "state" contents @?= Just "home-ready"
-          nonce <- requireRecordNonce contents
-          let contextStage = backendRecordPath harness ++ ".docker." ++ nonce ++ ".stage"
-          staged <- doesDirectoryExist contextStage
-          assertBool "the exact empty context stage survived the killed backend" staged
-          recovered <- runAcquireBackend (acquireRequest harness)
-          assertBool "the same invocation recovered the empty context stage" (ownedAcquire recovered)
-          events <- backendEvents harness
-          length (filter (isPrefixOf "start ") events) @?= 1,
-      testCase "an exact rerun retains the same owner, nonce, and epoch without restarting" $
-        onOwnershipHost $ withBackendHarness "exact-rerun" $ \harness -> do
-          receipt <- acquireReceipt harness
-          second <- runAcquireBackend (acquireRequest harness)
-          case second of
-            AcquireExact owner nonce machine context epoch lock record docker colima disk chain ->
-              BackendReceipt owner nonce machine context epoch lock record docker colima disk chain @?= receipt
-            other -> assertFailure ("expected an exact backend receipt, got " ++ show other)
-          events <- backendEvents harness
-          length (filter (isPrefixOf "start ") events) @?= 1
-          assertBool "the first receipt was populated" (receiptNonce receipt /= ""),
-      testCase "two acquirers share one profile lock and perform only one start" $
-        onOwnershipHost $ withBackendHarness "acquire-exclusion" $ \harness -> do
-          firstCompletion <- newEmptyMVar
-          secondCompletion <- newEmptyMVar
-          _ <- forkIO $ runAcquireBackend (acquireRequest harness) >>= putMVar firstCompletion
-          _ <- forkIO $ runAcquireBackend (acquireRequest harness) >>= putMVar secondCompletion
-          firstResult <- takeMVarWithin "first acquisition" firstCompletion
-          secondResult <- takeMVarWithin "second acquisition" secondCompletion
-          assertBool "both serialized acquisitions returned owned authority" (ownedAcquire firstResult && ownedAcquire secondResult)
-          events <- backendEvents harness
-          length (filter (isPrefixOf "start ") events) @?= 1,
-      testCase "hard backend death retains the profile flock until its descendant group is gone" $
-        onOwnershipHost $ withBackendHarness "hard-death-lock" $ \harness -> do
-          writeMarker harness "block-start" ""
-          firstCompletion <- newEmptyMVar
-          _ <-
-            forkIO $
-              runAcquireBackend
-                (acquireRequest harness)
-                  { acquireTestingCrashPoint = Just CrashWhileStartRunning
-                  }
-                >>= putMVar firstCompletion
-          waitForMarker harness "start-descendant-pid"
-          descendantPid <- readPidFile harness "start-descendant-pid"
-          waitForMarker harness "backend-killed"
-          removeMarker harness "block-start"
-          secondCompletion <- newEmptyMVar
-          _ <- forkIO $ runAcquireBackend (acquireRequest harness) >>= putMVar secondCompletion
-          threadDelay 25000
-          enteredBeforeQuiescence <- isJust <$> tryReadMVar secondCompletion
-          assertBool "a competing owner stayed outside while the old descendant held the inherited flock" (not enteredBeforeQuiescence)
-          waitForPidGone (backendPythonPath harness) descendantPid
-          firstResult <- takeMVarWithin "hard-dead acquisition" firstCompletion
-          firstResult @?= AcquireFailed "backend-process"
-          secondResult <- takeMVarWithin "post-death acquisition" secondCompletion
-          assertBool "the serialized replacement acquired only after child-group quiescence" (ownedAcquire secondResult),
-      testCase "a pre-existing unbound provider namespace is refused before mutation" $
-        onOwnershipHost $ withBackendHarness "foreign-profile" $ \harness -> do
-          let home = namespaceColimaHome (backendNamespace harness)
-          createDirectoryIfMissing True (home </> "cache")
-          createDirectoryIfMissing True (home </> "tmp")
-          createDirectoryIfMissing True (home </> "_lima")
-          result <- runAcquireBackend (acquireRequest harness)
-          result @?= AcquireConflict "namespace-present"
-          recordPresent <- doesFileExist (backendRecordPath harness)
-          assertBool "unbound namespace creates no record" (not recordPresent)
-          events <- backendEvents harness
-          assertBool "unbound namespace was not started" (null (filter (isPrefixOf "start ") events)),
-      testCase "a record bound to another exact owner is rejected" $
-        onOwnershipHost $ withBackendHarness "owner-mismatch" $ \harness -> do
-          _ <- acquireReceipt harness
-          before <- backendEvents harness
-          result <-
-            runAcquireBackend
-              (acquireRequest harness)
-                { acquireExpectedOwner = otherOwnerToken
-                }
-          case result of
-            AcquireConflict _ -> pure ()
-            other -> assertFailure ("expected changed-owner conflict, got " ++ show other)
-          after <- backendEvents harness
-          after @?= before,
-      testCase "a failed start leaves a canonical prepared record and retries the same nonce" $
-        onOwnershipHost $ withBackendHarness "failed-start" $ \harness -> do
-          writeMarker harness "fail-start" ""
-          firstResult <- runAcquireBackend (acquireRequest harness)
-          firstResult @?= AcquireFailed "start"
-          prepared <- strictReadFile (backendRecordPath harness)
-          nonce <- requireRecordNonce prepared
-          recordField "state" prepared @?= Just "prepared"
-          recordField "owner" prepared @?= Just ownerToken
-          removeMarker harness "fail-start"
-          recovered <- acquireReceipt harness
-          receiptOwner recovered @?= ownerToken
-          receiptNonce recovered @?= nonce,
-      testCase "a crash after start remains outcome-unknown without a managed stage" $
-        onOwnershipHost $ withBackendHarness "crash-recovery" $ \harness -> do
-          firstResult <-
-            runAcquireBackend
-              (acquireRequest harness)
-                { acquireTestingCrashPoint = Just CrashAfterStartBeforeSettlement
-                }
-          firstResult @?= AcquireFailed "backend-process"
-          prepared <- strictReadFile (backendRecordPath harness)
-          nonce <- requireRecordNonce prepared
-          profilePresent <- markerPresent harness "present"
-          assertBool "the unknown start outcome really created the profile" profilePresent
-          secondResult <- runAcquireBackend (acquireRequest harness)
-          secondResult @?= AcquireConflict "prepared-profile-present"
-          retained <- strictReadFile (backendRecordPath harness)
-          recordField "state" retained @?= Just "prepared"
-          recordField "nonce" retained @?= Just nonce,
-      testCase "a changed invocation cannot adopt an unknown start outcome" $
-        onOwnershipHost $ withBackendHarness "crash-replay" $ \harness -> do
-          firstResult <-
-            runAcquireBackend
-              (acquireRequest harness)
-                { acquireTestingCrashPoint = Just CrashAfterStartBeforeSettlement
-                }
-          firstResult @?= AcquireFailed "backend-process"
-          before <- backendEvents harness
-          secondResult <-
-            runAcquireBackend
-              (acquireRequest harness)
-                { acquireInvocationDigest = replicate 64 'c'
-                }
-          case secondResult of
-            AcquireConflict _ -> pure ()
-            other -> assertFailure ("expected changed-invocation conflict, got " ++ show other)
-          after <- backendEvents harness
-          after @?= before,
-      testCase "a symlinked origin record fails no-follow validation before mutation" $
-        onOwnershipHost $ withBackendHarness "record-symlink" $ \harness -> do
-          ensureOriginDirectory harness
-          let target = backendDirectory harness </> "foreign-origin"
-          writeFile target "foreign-origin\n"
-          createFileLink target (backendRecordPath harness)
-          result <- runAcquireBackend (acquireRequest harness)
-          result @?= AcquireConflict "record-open"
-          targetContents <- strictReadFile target
-          targetContents @?= "foreign-origin\n"
-          present <- markerPresent harness "present"
-          assertBool "record symlink was refused before start" (not present),
-      testCase "a symlinked lock cannot redirect profile exclusion" $
-        onOwnershipHost $ withBackendHarness "lock-symlink" $ \harness -> do
-          let target = backendDirectory harness </> "foreign-lock"
-          writeFile target "foreign-lock\n"
-          createFileLink target (backendLockPath harness)
-          result <- runAcquireBackend (acquireRequest harness)
-          case result of
-            AcquireConflict _ -> pure ()
-            other -> assertFailure ("expected symlink-lock conflict, got " ++ show other)
-          targetContents <- strictReadFile target
-          targetContents @?= "foreign-lock\n"
-          present <- markerPresent harness "present"
-          assertBool "lock symlink was refused before start" (not present),
-      testCase "a foreign stage-shaped file is retained and blocks recovery" $
-        onOwnershipHost $ withBackendHarness "foreign-stage" $ \harness -> do
-          ensureOriginDirectory harness
-          let nonce = replicate 64 'b'
-              stage = backendRecordPath harness ++ ".prepared." ++ nonce ++ ".stage"
-          writeFile stage "foreign-stage"
-          setMode600 harness stage
-          result <- runAcquireBackend (acquireRequest harness)
-          result @?= AcquireConflict "stage-content"
-          stagePresent <- doesFileExist stage
-          assertBool "foreign stage evidence was not erased" stagePresent
-          present <- markerPresent harness "present"
-          assertBool "foreign stage blocked mutation" (not present),
-      testCase "cleanup validates owner, nonce, and epoch under the same lock and removes the record" $
-        onOwnershipHost $ withBackendHarness "cleanup" $ \harness -> do
-          receipt <- acquireReceipt harness
-          cleanup <- runCleanupBackend (cleanupRequest harness receipt)
-          cleanup @?= CleanupDeleted
-          profilePresent <- markerPresent harness "present"
-          recordPresent <- doesFileExist (backendRecordPath harness)
-          assertBool "cleanup deleted the profile" (not profilePresent)
-          assertBool "cleanup durably removed the record" (not recordPresent)
-          events <- backendEvents harness
-          assertBool "destroy semantics explicitly remove persistent data" (any (isInfixOf "delete --profile" ) events && any (isSuffixOf "--force --data") events),
-      testCase "cleanup accepts Colima removing its exact context and releases socket/symlink state" $
-        onOwnershipHost $ withBackendHarness "cleanup-context" $ \harness -> do
-          writeMarker harness "runtime-specials" ""
-          writeMarker harness "delete-removes-context" ""
-          receipt <- acquireReceipt harness
-          cleanup <- runCleanupBackend (cleanupRequest harness receipt)
-          cleanup @?= CleanupDeleted
-          homePresent <- doesDirectoryExist (namespaceColimaHome (backendNamespace harness))
-          dockerPresent <- doesDirectoryExist (namespaceDockerConfig (backendNamespace harness))
-          assertBool "exact Colima namespace was removed" (not homePresent)
-          assertBool "exact Docker namespace was removed" (not dockerPresent),
-      testCase "released-marker publication recovers the exact anchor and permits a later invocation" $
-        onOwnershipHost $ withBackendHarness "released-marker-crash" $ \harness -> do
-          receipt <- acquireReceipt harness
-          crashed <-
-            runCleanupBackend
-              (cleanupRequest harness receipt)
-                { cleanupTestingCrashPoint = Just CrashAfterReleasedMarkerPublication
-                }
-          crashed @?= CleanupFailed "backend-process"
-          canonicalPresent <- doesFileExist (backendRecordPath harness)
-          markerPresentAfterCrash <- doesFileExist (backendRecordPath harness ++ ".released")
-          assertBool "released publication removed the canonical record" (not canonicalPresent)
-          assertBool "the exact released marker survived the crash" markerPresentAfterCrash
-          stagesAfterCrash <- stageEntries harness
-          assertBool "the reserved lineage anchor survives until recovery" (any (isInfixOf ".reserved.") stagesAfterCrash)
-          replayed <- runCleanupBackend (cleanupRequest harness receipt)
-          replayed @?= CleanupReleased
-          stagesAfterReplay <- stageEntries harness
-          assertBool "released replay conditionally removed the exact anchor" (not (any (isInfixOf ".reserved.") stagesAfterReplay))
-          reacquired <-
-            runAcquireBackend
-              (acquireRequest harness)
-                { acquireInvocationDigest = replicate 64 'c'
-                }
-          assertBool "a new invocation reused the synchronization-only lock after exact release" (ownedAcquire reacquired),
-      testCase "a same-name machine replacement is refused before delete" $
-        onOwnershipHost $ withBackendHarness "machine-replacement" $ \harness -> do
-          receipt <- acquireReceipt harness
-          writeMarker harness "machine" "fedcba9876543210fedcba9876543210\n"
-          cleanup <- runCleanupBackend (cleanupRequest harness receipt)
-          case cleanup of
-            CleanupConflict reason ->
-              assertBool "the conflict names identity" (isPrefixOf "identity-" reason)
-            other -> assertFailure ("expected identity conflict, got " ++ show other)
-          events <- backendEvents harness
-          assertBool "replacement refusal never called delete" (null (filter (isPrefixOf "delete ") events))
-          present <- markerPresent harness "present"
-          assertBool "replacement remains present" present,
-      testCase "a failed delete retains releasing evidence and retries safely" $
-        onOwnershipHost $ withBackendHarness "failed-delete" $ \harness -> do
-          receipt <- acquireReceipt harness
-          writeMarker harness "fail-delete" ""
-          cleanup <- runCleanupBackend (cleanupRequest harness receipt)
-          cleanup @?= CleanupFailed "delete"
-          profilePresent <- markerPresent harness "present"
-          recordPresent <- doesFileExist (backendRecordPath harness)
-          assertBool "failed delete retains profile" profilePresent
-          assertBool "failed delete retains record" recordPresent
-          record <- strictReadFile (backendRecordPath harness)
-          recordField "state" record @?= Just "releasing"
-          removeMarker harness "fail-delete"
-          retried <- runCleanupBackend (cleanupRequest harness receipt)
-          retried @?= CleanupDeleted,
-      testCase "a different teardown invocation cannot adopt an interrupted delete" $
-        onOwnershipHost $ withBackendHarness "cleanup-replay" $ \harness -> do
-          receipt <- acquireReceipt harness
-          writeMarker harness "fail-delete" ""
-          firstResult <- runCleanupBackend (cleanupRequest harness receipt)
-          firstResult @?= CleanupFailed "delete"
-          removeMarker harness "fail-delete"
-          replayed <-
-            runCleanupBackend
-              (cleanupRequest harness receipt)
-                { cleanupInvocationDigest = replicate 64 'd'
-                }
-          replayed @?= CleanupConflict "teardown-invocation"
-          present <- markerPresent harness "present"
-          assertBool "changed cleanup invocation left the profile intact" present,
-      testCase "a byte-identical data disk on a replacement inode cannot authorize delete" $
-        onOwnershipHost $ withBackendHarness "disk-replacement" $ \harness -> do
-          receipt <- acquireReceipt harness
-          replaceSparseFile
-            harness
-            (namespaceLimaHome (backendNamespace harness) </> "_disks" </> ("colima-" ++ profileName) </> "datadisk")
-            (80 * gib)
-          cleanup <- runCleanupBackend (cleanupRequest harness receipt)
-          cleanup @?= CleanupConflict "disk-identity"
-          events <- backendEvents harness
-          assertBool "disk replacement refusal called no delete" (null (filter (isPrefixOf "delete ") events)),
-      testCase "cleanup never recreates a missing state subtree" $
-        onOwnershipHost $ withBackendHarness "state-missing" $ \harness -> do
-          receipt <- acquireReceipt harness
-          let state = backendStateRoot harness </> ".hostbootstrap"
-              moved = backendStateRoot harness </> ".hostbootstrap-moved"
-          renameDirectory state moved
-          cleanup <- runCleanupBackend (cleanupRequest harness receipt)
-          cleanup @?= CleanupConflict "state-directory"
-          recreated <- doesDirectoryExist state
-          assertBool "cleanup did not recreate the missing state directory" (not recreated)
-          events <- backendEvents harness
-          assertBool "missing state failed before delete" (null (filter (isPrefixOf "delete ") events)),
-      testCase "cleanup never unlinks a record path replaced during delete" $
-        onOwnershipHost $ withBackendHarness "record-replacement" $ \harness -> do
-          receipt <- acquireReceipt harness
-          writeMarker harness "swap-record-on-delete" (backendRecordPath harness)
-          cleanup <- runCleanupBackend (cleanupRequest harness receipt)
-          case cleanup of
-            CleanupConflict _ -> pure ()
-            other -> assertFailure ("expected retained-descriptor conflict, got " ++ show other)
-          replacement <- strictReadFile (backendRecordPath harness)
-          replacement @?= "foreign-record\n",
-      testCase "acquisition cannot enter while cleanup owns the same descriptor lock" $
-        onOwnershipHost $ withBackendHarness "lock-exclusion" $ \harness -> do
-          firstReceipt <- acquireReceipt harness
-          writeMarker harness "block-delete" ""
-          cleanupResult <- newEmptyMVar
-          _ <- forkIO $ runCleanupBackend (cleanupRequest harness firstReceipt) >>= putMVar cleanupResult
-          waitForMarker harness "delete-entered"
-          acquireResult <- newEmptyMVar
-          _ <- forkIO $ runAcquireBackend (acquireRequest harness) >>= putMVar acquireResult
-          threadDelay 200000
-          enteredEarly <- maybe False (const True) <$> tryReadMVar acquireResult
-          assertBool "acquisition stayed outside the cleanup bracket" (not enteredEarly)
-          writeMarker harness "allow-delete" ""
-          cleanup <- takeMVarWithin "cleanup" cleanupResult
-          cleanup @?= CleanupDeleted
-          reacquired <- takeMVarWithin "acquisition" acquireResult
-          reacquired @?= AcquireConflict "invocation-released",
-      testCase "every Colima subprocess is bounded and timeout failure retains ownership evidence" $
-        onOwnershipHost $ withBackendHarness "timeouts" $ \harness -> do
-          writeMarker harness "hang-list" ""
-          acquire <- runAcquireBackend (acquireRequest harness) {acquireCommandTimeoutSeconds = 1}
-          acquire @?= AcquireFailed "timeout-list"
-          removeMarker harness "hang-list"
-          receipt <- acquireReceipt harness
-          writeMarker harness "block-delete" ""
-          cleanup <-
-            runCleanupBackend
-              (cleanupRequest harness receipt)
-                { cleanupCommandTimeoutSeconds = 1
-                }
-          cleanup @?= CleanupFailed "timeout-delete"
-          profilePresent <- markerPresent harness "present"
-          recordPresent <- doesFileExist (backendRecordPath harness)
-          assertBool "timed-out delete retains profile" profilePresent
-          assertBool "timed-out delete retains record" recordPresent,
-      testCase "an owned stopped profile cannot be re-adopted without stable identity" $
-        onOwnershipHost $ withBackendHarness "stopped-owned" $ \harness -> do
-          _ <- acquireReceipt harness
-          writeMarker harness "status" "Stopped"
-          result <- runAcquireBackend (acquireRequest harness)
-          result @?= AcquireUnsupported "stable-identity"
-          events <- backendEvents harness
-          length (filter (isPrefixOf "start ") events) @?= 1,
-      testCase "malformed provider output fails closed as data" $
-        onOwnershipHost $ withBackendHarness "malformed-list" $ \harness -> do
-          writeMarker harness "malformed-list" ""
-          result <- runAcquireBackend (acquireRequest harness)
-          result @?= AcquireFailed "list-decode",
-      testCase "failed, blank, and duplicate total profile observations refuse mutation" $
-        onOwnershipHost $ do
-          let check marker expected =
-                withBackendHarness ("strict-" ++ marker) $ \harness -> do
-                  writeMarker harness marker ""
-                  result <- runAcquireBackend (acquireRequest harness)
-                  result @?= expected
-                  events <- backendEvents harness
-                  assertBool "strict observation failed before start" (null (filter (isPrefixOf "start ") events))
-          check "list-exit" (AcquireFailed "list")
-          check "blank-list" (AcquireFailed "list-framing")
-          check "duplicate-list" (AcquireConflict "list-duplicate"),
-      testCase "failed and blank Lima disk observations refuse mutation" $
-        onOwnershipHost $ do
-          let check marker expected =
-                withBackendHarness ("strict-" ++ marker) $ \harness -> do
-                  writeMarker harness marker ""
-                  result <- runAcquireBackend (acquireRequest harness)
-                  result @?= expected
-                  events <- backendEvents harness
-                  assertBool "strict disk observation failed before start" (null (filter (isPrefixOf "start ") events))
-          check "disk-list-exit" (AcquireFailed "disk-list")
-          check "blank-disk-list" (AcquireFailed "disk-list-framing"),
-      testCase "a hidden profile artifact appearing after prepare blocks retry" $
-        onOwnershipHost $ withBackendHarness "hidden-profile" $ \harness -> do
-          writeMarker harness "fail-start" ""
-          firstResult <- runAcquireBackend (acquireRequest harness)
-          firstResult @?= AcquireFailed "start"
-          createDirectoryIfMissing True (namespaceColimaHome (backendNamespace harness) </> profileName)
-          removeMarker harness "fail-start"
-          secondResult <- runAcquireBackend (acquireRequest harness)
-          secondResult @?= AcquireConflict "residual-profile-data"
-          events <- backendEvents harness
-          length (filter (isPrefixOf "start ") events) @?= 1,
-      testCase "live Docker uses the retained route and rejects all caller route/config mutations" $
-        onOwnershipHost $ withBackendHarness "live-docker" $ \harness -> do
-          receipt <- acquireReceipt harness
-          completed <- runLiveDockerBackend (liveDockerRequest harness receipt ["info"])
-          completed @?= LiveDockerCompleted ExitSuccess "docker-ok\n" ""
-          let rejects =
-                [ ["info", "--context=foreign"],
-                  ["info", "--host=tcp://foreign"],
-                  ["info", "--config=/foreign"],
-                  ["info", "--tls=false"],
-                  ["info", "--tlsverify=false"],
-                  ["context", "rm", "colima-" ++ profileName]
-                ]
-          mapM_
-            ( \arguments -> do
-                refused <- runLiveDockerBackend (liveDockerRequest harness receipt arguments)
-                case refused of
-                  LiveDockerConflict _ -> pure ()
-                  other -> assertFailure ("expected routed Docker refusal, got " ++ show other)
-            )
-            rejects
-          mutated <- markerPresent harness "context-mutated"
-          assertBool "rejected Docker commands had no effect" (not mutated),
-      testCase "the bounded runner quiesces descendants after a successful leader exit" $
-        onOwnershipHost $ withBackendHarness "runner-leader-exit" $ \harness -> do
-          prepareRunnerNamespace harness
-          let pidPath = backendDirectory harness </> "runner-descendant-pid"
-          result <-
-            runBoundedTool
-              3
-              (backendNamespace harness)
-              (backendPythonPath harness)
-              (backendPythonPath harness)
-              ["-c", descendantProgram True, pidPath]
-          result @?= BoundedToolCompleted ExitSuccess "" ""
-          pid <- readPidFile harness "runner-descendant-pid"
-          waitForPidGone (backendPythonPath harness) pid,
-      testCase "the bounded runner kills a descendant that retains both pipes" $
-        onOwnershipHost $ withBackendHarness "runner-retained-pipes" $ \harness -> do
-          prepareRunnerNamespace harness
-          let pidPath = backendDirectory harness </> "runner-descendant-pid"
-          result <-
-            runBoundedTool
-              1
-              (backendNamespace harness)
-              (backendPythonPath harness)
-              (backendPythonPath harness)
-              ["-c", descendantProgram False, pidPath]
-          result @?= BoundedToolTimedOut
-          pid <- readPidFile harness "runner-descendant-pid"
-          waitForPidGone (backendPythonPath harness) pid,
-      testCase "the bounded runner preserves async cancellation after killing its process group" $
-        onOwnershipHost $ withBackendHarness "runner-async" $ \harness -> do
-          prepareRunnerNamespace harness
-          let pidPath = backendDirectory harness </> "runner-leader-pid"
-              program =
-                "import os,signal,sys,time; "
-                  ++ "open(sys.argv[1],'w').write(str(os.getpid())); "
-                  ++ "signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(30)"
-          completed <- newEmptyMVar
-          worker <-
-            forkIO $ do
-              attempted <-
-                try
-                  ( runBoundedTool
-                      30
-                      (backendNamespace harness)
-                      (backendPythonPath harness)
-                      (backendPythonPath harness)
-                      ["-c", program, pidPath]
-                  ) :: IO (Either SomeException BoundedToolResult)
-              putMVar completed attempted
-          waitForMarker harness "runner-leader-pid"
-          pid <- readPidFile harness "runner-leader-pid"
-          killThread worker
-          attempted <- takeMVarWithin "runner cancellation" completed
-          case attempted of
-            Left err ->
-              assertBool
-                "runner propagated the asynchronous exception"
-                (isJust (fromException err :: Maybe SomeAsyncException))
-            Right other -> assertFailure ("runner swallowed cancellation as " ++ show other)
-          waitForPidGone (backendPythonPath harness) pid,
-      testCase "the bounded runner caps captured output and kills the producer" $
-        onOwnershipHost $ withBackendHarness "runner-output-limit" $ \harness -> do
-          prepareRunnerNamespace harness
-          result <-
-            runBoundedTool
-              1
-              (backendNamespace harness)
-              (backendPythonPath harness)
-              (backendPythonPath harness)
-              ["-c", "import sys; sys.stdout.write('x'*(17*1024*1024)); sys.stdout.flush()"]
-          result @?= BoundedToolFailed "output-limit",
-      testCase "owner grammar, timeout bounds, and process exceptions fail structurally" $
-        onOwnershipHost $ withBackendHarness "closed-errors" $ \harness -> do
-          invalidOwner <-
-            runAcquireBackend
-              (acquireRequest harness)
-                { acquireExpectedOwner = "not-an-owner"
-                }
-          invalidOwner @?= AcquireUnsupported "owner-token"
-          invalidTimeout <-
-            runAcquireBackend
-              (acquireRequest harness)
-                { acquireCommandTimeoutSeconds = 121
-                }
-          invalidTimeout @?= AcquireUnsupported "command-timeout"
-          processFailure <-
-            runAcquireBackend
-              (acquireRequest harness)
-                { acquirePythonPath = backendDirectory harness </> "missing-python"
-                }
-          processFailure @?= AcquireFailed "backend-exception"
+          other -> assertFailure ("expected refusal, got " ++ show other)
     ]
 
 data ResolverHarness = ResolverHarness
   { resolverHarnessLayout :: ResolverFixtureLayout,
-    resolverHarnessProgram :: String,
-    resolverHarnessPython :: FilePath,
     resolverHarnessNamespace :: BackendNamespace
   }
 
@@ -1100,7 +897,6 @@ withResolverHarness label action =
 
 setupResolverHarness :: FilePath -> IO ResolverHarness
 setupResolverHarness root = do
-  python <- requireExecutable "python3" =<< findExecutable "python3"
   let layout = resolverFixtureLayout root
       ambient = root </> "ambient"
       namespace =
@@ -1145,107 +941,15 @@ setupResolverHarness root = do
   createFileLink (resolverFixtureColimaTarget layout) (resolverFixtureColimaAlias layout)
   createFileLink (resolverFixtureDockerTarget layout) (resolverFixtureDockerAlias layout)
   createFileLink (resolverFixtureLimaTarget layout) (resolverFixtureLimaAlias layout)
-  program <- either assertFailure pure (resolverFixtureProgram root)
   pure
     ResolverHarness
       { resolverHarnessLayout = layout,
-        resolverHarnessProgram = program,
-        resolverHarnessPython = python,
         resolverHarnessNamespace = namespace
       }
 
-withShortResolverHarness :: (ResolverHarness -> FilePath -> FilePath -> IO a) -> IO a
-#if defined(mingw32_HOST_OS)
-withShortResolverHarness _ = fail "the direct-Colima resolver fixture requires a Unix host"
-#else
-withShortResolverHarness action =
-  bracket createShortFixtureRoot removePathForcibly $ \root -> do
-    harness <- setupResolverHarness root
-    let effectiveHome = root </> "u"
-    createDirectory effectiveHome
-    setFileMode effectiveHome 0o700
-    program <- either assertFailure pure (resolverFixtureProgramForHomeRoot root root)
-    let configured = harness {resolverHarnessProgram = program}
-    markerRoot <- preparePublicFlowTools configured
-    action configured effectiveHome markerRoot
-
-createShortFixtureRoot :: IO FilePath
-createShortFixtureRoot = do
-  process <- fromIntegral <$> getProcessID
-  let base = if os == "darwin" then "/private/tmp" else "/tmp"
-      candidates =
-        [ base </> ("h" ++ fixedHex ((process + attempt) `mod` 0x10000))
-          | attempt <- [0 .. 255 :: Integer]
-        ]
-  createFirst candidates
-  where
-    fixedHex value =
-      let rendered = showHex value ""
-       in replicate (4 - length rendered) '0' ++ rendered
-    createFirst [] = fail "could not allocate a short direct-Colima fixture root"
-    createFirst (candidate : remaining) = do
-      created <- try (createDirectory candidate) :: IO (Either IOException ())
-      case created of
-        Left _ -> createFirst remaining
-        Right () -> setFileMode candidate 0o700 >> pure candidate
-#endif
-
-#if !defined(mingw32_HOST_OS)
-preparePublicFlowTools :: ResolverHarness -> IO FilePath
-preparePublicFlowTools harness = do
-  let layout = resolverHarnessLayout harness
-      markerRoot = resolverFixtureRoot layout </> "markers"
-      python = resolverFixturePython layout
-      sharedColima = markerRoot </> "fake-colima.py"
-      sharedDocker = markerRoot </> "fake-docker.py"
-      sharedLima = markerRoot </> "fake-lima.py"
-  createDirectory markerRoot
-  copyFile (resolverHarnessPython harness) python
-  makeExecutable python
-  writeFile sharedColima fakeColimaProgram
-  writeFile sharedDocker fakeDockerProgram
-  writeFile sharedLima fakeLimaProgram
-  mapM_
-    ( \(target, script) -> do
-        writeFile target (pythonToolWrapper python script)
-        makeExecutable target
-    )
-    [ (resolverFixtureColimaTarget layout, sharedColima),
-      (resolverFixtureDockerTarget layout, sharedDocker),
-      (resolverFixtureLimaTarget layout, sharedLima)
-    ]
-  pure markerRoot
-
-pythonToolWrapper :: FilePath -> FilePath -> String
-pythonToolWrapper python script =
-  unlines
-    [ "#!" ++ python,
-      "import os,sys",
-      "os.execv(" ++ show python ++ ",[" ++ show python ++ "," ++ show script ++ "]+sys.argv[1:])"
-    ]
-#endif
-
-resolverExecutionFixture :: BoundedToolResult -> ResolverExecutionFixture
-resolverExecutionFixture result = case result of
-  BoundedToolCompleted exitCode output errors -> ResolverExecutionCompleted exitCode output errors
-  BoundedToolTimedOut -> ResolverExecutionTimedOut
-  BoundedToolFailed reason -> ResolverExecutionFailed reason
-
-assertDestroyedProvider ::
-  Text.Text ->
-  PhaseAdvance scope planId providerResourceId ProviderResource Destroyed ->
-  IO ()
-assertDestroyedProvider expectedOperation advance =
-  withPhaseAdvance advance $ \handle receipt _verified -> do
-    resourceHandleGeneration handle @?= 17
-    resourceHandleObservationVersion handle @?= 8
-    assertBool
-      "the force-destroy receipt remains rooted in the exact provider operation"
-      ((expectedOperation <> ":") `Text.isPrefixOf` ownershipReceiptOperationKey receipt)
-
 writeResolverTool :: FilePath -> IO ()
 writeResolverTool path = do
-  writeFile path "#!/bin/sh\nexit 0\n"
+  writeFile path "resolver-candidate\n"
   makeExecutable path
 
 executeResolverFixture :: ResolverHarness -> IO BoundedToolResult
@@ -1253,18 +957,12 @@ executeResolverFixture harness =
   executeResolverFixtureAt harness (resolverFixtureHome (resolverHarnessLayout harness))
 
 executeResolverFixtureAt :: ResolverHarness -> FilePath -> IO BoundedToolResult
-executeResolverFixtureAt harness effectiveHome =
-  runBoundedTool
-    5
-    (resolverHarnessNamespace harness)
-    (resolverHarnessPython harness)
-    (resolverHarnessPython harness)
-    [ "-I",
-      "-S",
-      "-c",
-      resolverHarnessProgram harness,
-      effectiveHome
-    ]
+executeResolverFixtureAt harness effectiveHome = do
+  execution <- executeNativeResolverFixture (resolverFixtureRoot (resolverHarnessLayout harness)) effectiveHome
+  pure $ case execution of
+    ResolverExecutionCompleted code out err -> BoundedToolCompleted code out err
+    ResolverExecutionTimedOut -> BoundedToolTimedOut
+    ResolverExecutionFailed refusal -> BoundedToolFailed refusal
 
 requireReadyResolver :: ResolverHarness -> BoundedToolResult -> IO (String, ResolverProtocolView)
 requireReadyResolver harness execution =
@@ -1314,266 +1012,17 @@ isReadyProtocol ResolverProtocolReadyView {} = True
 isReadyProtocol _ = False
 
 chmodPath :: ResolverHarness -> FilePath -> String -> IO ()
-chmodPath harness path mode = do
-  (exitCode, _out, errOut) <-
-    readProcessWithExitCode
-      (resolverHarnessPython harness)
-      ["-c", "import os,sys; os.chmod(sys.argv[1],int(sys.argv[2],8))", path, mode]
-      ""
-  case exitCode of
-    ExitSuccess -> pure ()
-    _ -> assertFailure ("fixture chmod failed: " ++ errOut)
-
-data BackendHarness = BackendHarness
-  { backendDirectory :: FilePath,
-    backendPythonPath :: FilePath,
-    backendColimaPath :: FilePath,
-    backendDockerPath :: FilePath,
-    backendLimaPath :: FilePath,
-    backendLockPath :: FilePath,
-    backendStateRoot :: FilePath,
-    backendRecordPath :: FilePath
-  }
-
-data BackendReceipt = BackendReceipt
-  { receiptOwner :: String,
-    receiptNonce :: String,
-    receiptMachine :: String,
-    receiptContext :: String,
-    receiptEpoch :: Word64,
-    receiptLock :: BackendIdentity,
-    receiptRecord :: BackendIdentity,
-    receiptDocker :: BackendIdentity,
-    receiptColima :: BackendIdentity,
-    receiptDisk :: BackendIdentity,
-    receiptChain :: BackendDirectoryChain
-  }
-  deriving (Eq, Show)
-
-withBackendHarness :: String -> (BackendHarness -> IO a) -> IO a
-withBackendHarness label action =
-  withSystemTempDirectory ("hostbootstrap-colima-" ++ label) $ \directory ->
-    setupBackendHarness directory >>= action
-
-setupBackendHarness :: FilePath -> IO BackendHarness
-setupBackendHarness directory = do
-  python <- requireExecutable "python3" =<< findExecutable "python3"
-  let colima = directory </> "fake-colima"
-      docker = directory </> "docker"
-      lima = directory </> "limactl"
-      stateRoot = directory </> "plan-root"
-      record = stateRoot </> ".hostbootstrap" </> "colima" </> "provider.origin"
-      lock = directory </> "profile.lock"
-  writeFile colima fakeColimaProgram
-  writeFile docker fakeDockerProgram
-  writeFile lima fakeLimaProgram
-  makeExecutable colima
-  makeExecutable docker
-  makeExecutable lima
-  createDirectoryIfMissing True stateRoot
-  pure
-    BackendHarness
-      { backendDirectory = directory,
-        backendPythonPath = python,
-        backendColimaPath = colima,
-        backendDockerPath = docker,
-        backendLimaPath = lima,
-        backendLockPath = lock,
-        backendStateRoot = stateRoot,
-        backendRecordPath = record
-      }
+#if defined(mingw32_HOST_OS)
+chmodPath _ _ _ = assertFailure "resolver chmod is unavailable on Windows"
+#else
+chmodPath _ path "0777" = setFileMode path 0o777
+chmodPath _ _ mode = assertFailure ("unsupported fixture chmod mode: " ++ mode)
+#endif
 
 makeExecutable :: FilePath -> IO ()
 makeExecutable path = do
   permissions <- getPermissions path
   setPermissions path permissions {executable = True}
-
-backendNamespace :: BackendHarness -> BackendNamespace
-backendNamespace harness =
-  BackendNamespace
-    { namespaceHomeDirectory = backendDirectory harness,
-      namespaceColimaHome = backendDirectory harness </> (".h" ++ namespaceKey),
-      namespaceLimaHome = backendDirectory harness </> (".h" ++ namespaceKey) </> "_lima",
-      namespaceColimaCacheHome = backendDirectory harness </> (".h" ++ namespaceKey) </> "cache",
-      namespaceTemporaryDirectory = backendDirectory harness </> (".h" ++ namespaceKey) </> "tmp",
-      namespaceDockerConfig = backendRecordPath harness ++ ".docker",
-      namespaceWorkingDirectory = backendDirectory harness,
-      namespaceExecutablePath =
-        intercalate
-          [searchPathSeparator]
-          (nub [backendDirectory harness, takeDirectory (backendPythonPath harness)])
-    }
-
-acquireRequest :: BackendHarness -> AcquireBackendRequest
-acquireRequest harness =
-  AcquireBackendRequest
-    { acquirePythonPath = backendPythonPath harness,
-      acquireColimaPath = backendColimaPath harness,
-      acquireDockerPath = backendDockerPath harness,
-      acquireLimaPath = backendLimaPath harness,
-      acquireProfileName = profileName,
-      acquireLockPath = backendLockPath harness,
-      acquireStateRoot = backendStateRoot harness,
-      acquireRecordPath = backendRecordPath harness,
-      acquireNamespace = backendNamespace harness,
-      acquireExpectedOwner = ownerToken,
-      acquireInvocationDigest = acquireInvocation,
-      acquireExpectedCpu = 8,
-      acquireExpectedMemory = 16 * gib,
-      acquireExpectedDisk = 80 * gib,
-      acquireExpectedRootDisk = 20 * gib,
-      acquireCommandTimeoutSeconds = 2,
-      acquireTestingCrashPoint = Nothing,
-      acquireStartArgs = canonicalStartArgs
-    }
-
-cleanupRequest :: BackendHarness -> BackendReceipt -> CleanupBackendRequest
-cleanupRequest harness receipt =
-  CleanupBackendRequest
-    { cleanupPythonPath = backendPythonPath harness,
-      cleanupColimaPath = backendColimaPath harness,
-      cleanupDockerPath = backendDockerPath harness,
-      cleanupLimaPath = backendLimaPath harness,
-      cleanupProfileName = profileName,
-      cleanupLockPath = backendLockPath harness,
-      cleanupStateRoot = backendStateRoot harness,
-      cleanupRecordPath = backendRecordPath harness,
-      cleanupNamespace = backendNamespace harness,
-      cleanupExpectedOwner = receiptOwner receipt,
-      cleanupAcquireInvocationDigest = acquireInvocation,
-      cleanupInvocationDigest = cleanupInvocation,
-      cleanupNonce = receiptNonce receipt,
-      cleanupExpectedMachineId = receiptMachine receipt,
-      cleanupExpectedContextDigest = receiptContext receipt,
-      cleanupExpectedCpu = 8,
-      cleanupExpectedMemory = 16 * gib,
-      cleanupExpectedDisk = 80 * gib,
-      cleanupExpectedRootDisk = 20 * gib,
-      cleanupExpectedLockIdentity = receiptLock receipt,
-      cleanupExpectedRecordIdentity = receiptRecord receipt,
-      cleanupExpectedDockerIdentity = receiptDocker receipt,
-      cleanupExpectedColimaIdentity = receiptColima receipt,
-      cleanupExpectedDiskIdentity = receiptDisk receipt,
-      cleanupExpectedDirectoryChain = receiptChain receipt,
-      cleanupCommandTimeoutSeconds = 2,
-      cleanupExpectedEpoch = receiptEpoch receipt,
-      cleanupTestingCrashPoint = Nothing
-    }
-
-liveDockerRequest :: BackendHarness -> BackendReceipt -> [String] -> LiveDockerBackendRequest
-liveDockerRequest harness receipt arguments =
-  LiveDockerBackendRequest
-    { liveDockerPythonPath = backendPythonPath harness,
-      liveDockerColimaPath = backendColimaPath harness,
-      liveDockerExecutablePath = backendDockerPath harness,
-      liveDockerLimaPath = backendLimaPath harness,
-      liveDockerProfileName = profileName,
-      liveDockerLockPath = backendLockPath harness,
-      liveDockerStateRoot = backendStateRoot harness,
-      liveDockerRecordPath = backendRecordPath harness,
-      liveDockerNamespace = backendNamespace harness,
-      liveDockerExpectedOwner = receiptOwner receipt,
-      liveDockerInvocationDigest = acquireInvocation,
-      liveDockerNonce = receiptNonce receipt,
-      liveDockerExpectedMachineId = receiptMachine receipt,
-      liveDockerExpectedContextDigest = receiptContext receipt,
-      liveDockerExpectedCpu = 8,
-      liveDockerExpectedMemory = 16 * gib,
-      liveDockerExpectedDisk = 80 * gib,
-      liveDockerExpectedRootDisk = 20 * gib,
-      liveDockerExpectedLockIdentity = receiptLock receipt,
-      liveDockerExpectedRecordIdentity = receiptRecord receipt,
-      liveDockerExpectedDockerIdentity = receiptDocker receipt,
-      liveDockerExpectedColimaIdentity = receiptColima receipt,
-      liveDockerExpectedDiskIdentity = receiptDisk receipt,
-      liveDockerExpectedDirectoryChain = receiptChain receipt,
-      liveDockerCommandTimeoutSeconds = 2,
-      liveDockerExpectedEpoch = receiptEpoch receipt,
-      liveDockerArgs = arguments
-    }
-
-acquireReceipt :: BackendHarness -> IO BackendReceipt
-acquireReceipt harness = do
-  result <- runAcquireBackend (acquireRequest harness)
-  case result of
-    AcquireApplied owner nonce machine context epoch lock record docker colima disk chain ->
-      pure (BackendReceipt owner nonce machine context epoch lock record docker colima disk chain)
-    AcquireExact owner nonce machine context epoch lock record docker colima disk chain ->
-      pure (BackendReceipt owner nonce machine context epoch lock record docker colima disk chain)
-    other -> assertFailure ("expected a managed acquisition receipt, got " ++ show other)
-
-ownedAcquire :: AcquireBackendResult -> Bool
-ownedAcquire result = case result of
-  AcquireApplied {} -> True
-  AcquireExact {} -> True
-  _ -> False
-
-recordField :: String -> String -> Maybe String
-recordField name contents =
-  case [drop (length prefix) line | line <- lines contents, prefix `isPrefixOf` line] of
-    [value] -> Just value
-    _ -> Nothing
-  where
-    prefix = name ++ " "
-
-requireRecordNonce :: String -> IO String
-requireRecordNonce contents =
-  case recordField "nonce" contents of
-    Just nonce | length nonce == 64 -> pure nonce
-    other -> assertFailure ("expected one canonical nonce, got " ++ show other)
-
-ensureOriginDirectory :: BackendHarness -> IO ()
-ensureOriginDirectory =
-  createDirectoryIfMissing True . takeDirectory . backendRecordPath
-
-stageEntries :: BackendHarness -> IO [FilePath]
-stageEntries harness = do
-  entries <- listDirectory (takeDirectory (backendRecordPath harness))
-  pure (filter (isSuffixOf ".stage") entries)
-
-setMode600 :: BackendHarness -> FilePath -> IO ()
-setMode600 harness path = do
-  (exitCode, _out, errOut) <-
-    readProcessWithExitCode
-      (backendPythonPath harness)
-      ["-c", "import os,sys; os.chmod(sys.argv[1],0o600)", path]
-      ""
-  case exitCode of
-    ExitSuccess -> pure ()
-    _ -> assertFailure ("chmod failed: " ++ errOut)
-
-writeMarker :: BackendHarness -> FilePath -> String -> IO ()
-writeMarker harness name = writeFile (backendDirectory harness </> name)
-
-removeMarker :: BackendHarness -> FilePath -> IO ()
-removeMarker harness name = do
-  let path = backendDirectory harness </> name
-  present <- doesFileExist path
-  if present then removeFile path else pure ()
-
-markerPresent :: BackendHarness -> FilePath -> IO Bool
-markerPresent harness name = doesFileExist (backendDirectory harness </> name)
-
-backendEvents :: BackendHarness -> IO [String]
-backendEvents harness = do
-  let path = backendDirectory harness </> "events"
-  present <- doesFileExist path
-  if present then lines <$> strictReadFile path else pure []
-
-replaceSparseFile :: BackendHarness -> FilePath -> Integer -> IO ()
-replaceSparseFile harness path size = do
-  (exitCode, _out, errOut) <-
-    readProcessWithExitCode
-      (backendPythonPath harness)
-      [ "-c",
-        "import os,sys; path=sys.argv[1]; replacement=path+'.replacement'; stream=open(replacement,'wb'); stream.truncate(int(sys.argv[2])); stream.close(); os.replace(replacement,path)",
-        path,
-        show size
-      ]
-      ""
-  case exitCode of
-    ExitSuccess -> pure ()
-    _ -> assertFailure ("sparse replacement failed: " ++ errOut)
 
 exactInstance :: String -> String -> ColimaInstance
 exactInstance profile status =
@@ -1586,55 +1035,6 @@ strictReadFile :: FilePath -> IO String
 strictReadFile path = do
   contents <- readFile path
   seq (length contents) (pure contents)
-
-waitForMarker :: BackendHarness -> FilePath -> IO ()
-waitForMarker harness name = do
-  let path = backendDirectory harness </> name
-  result <- timeout 5000000 loop
-  case result of
-    Just () -> pure ()
-    Nothing -> assertFailure ("timed out waiting for " ++ path)
-  where
-    loop = do
-      present <- markerPresent harness name
-      if present then pure () else threadDelay 10000 >> loop
-
-prepareRunnerNamespace :: BackendHarness -> IO ()
-prepareRunnerNamespace harness =
-  mapM_
-    (createDirectoryIfMissing True)
-    [ namespaceColimaHome namespace,
-      namespaceLimaHome namespace,
-      namespaceColimaCacheHome namespace,
-      namespaceTemporaryDirectory namespace,
-      namespaceDockerConfig namespace
-    ]
-  where
-    namespace = backendNamespace harness
-
-descendantProgram :: Bool -> String
-descendantProgram closePipes =
-  unlines
-    [ "import os,signal,sys,time",
-      "child=os.fork()",
-      "if child == 0:",
-      "    signal.signal(signal.SIGTERM,signal.SIG_IGN)",
-      if closePipes
-        then "    target=os.open(os.devnull,os.O_WRONLY); os.dup2(target,1); os.dup2(target,2); os.close(target)"
-        else "    pass",
-      "    with open(sys.argv[1],'w') as stream: stream.write(str(os.getpid()))",
-      "    time.sleep(30)",
-      "    os._exit(0)",
-      "os._exit(0)"
-    ]
-
-readPidFile :: BackendHarness -> FilePath -> IO String
-readPidFile harness name = do
-  waitForMarker harness name
-  value <- strictReadFile (backendDirectory harness </> name)
-  case reads value :: [(Integer, String)] of
-    [(pid, "")] | pid > 0 -> pure (show pid)
-    _ -> assertFailure ("invalid runner pid fixture: " ++ show value)
 
 waitForPidGone :: FilePath -> String -> IO ()
 waitForPidGone python pid = do
@@ -1656,159 +1056,41 @@ waitForPidGone python pid = do
         ExitSuccess -> threadDelay 10000 >> loop
         _ -> pure ()
 
-takeMVarWithin :: String -> MVar a -> IO a
-takeMVarWithin label variable = do
-  result <- timeout 10000000 (takeMVar variable)
-  case result of
-    Just value -> pure value
-    Nothing -> assertFailure ("timed out waiting for Colima " ++ label)
+waitForPath :: FilePath -> IO ()
+waitForPath target = do
+  observed <- timeout 5000000 loop
+  case observed of
+    Just () -> pure ()
+    Nothing -> assertFailure ("timed out waiting for " ++ target)
+  where
+    loop = do
+      present <- doesFileExist target
+      if present then pure () else threadDelay 10000 >> loop
+
+runShippedOwnerProbe :: FilePath -> FilePath -> FilePath -> IO ()
+runShippedOwnerProbe directory pidPath python = do
+  let namespace =
+        BackendNamespace
+          { namespaceHomeDirectory = directory,
+            namespaceColimaHome = directory,
+            namespaceLimaHome = directory,
+            namespaceColimaCacheHome = directory,
+            namespaceTemporaryDirectory = directory,
+            namespaceDockerConfig = directory,
+            namespaceWorkingDirectory = directory,
+            namespaceExecutablePath = "/usr/bin:/bin"
+          }
+      program =
+        "import os,signal,sys,time\n"
+          ++ "with open(sys.argv[1],'w') as stream: stream.write(str(os.getpid()))\n"
+          ++ "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+          ++ "time.sleep(30)\n"
+  _ <- runShippedCommand 60 namespace python ["-c", program, pidPath]
+  pure ()
 
 requireExecutable :: String -> Maybe FilePath -> IO FilePath
 requireExecutable _label (Just path) = pure path
 requireExecutable label Nothing = assertFailure ("missing test executable: " ++ label)
-
-fakeColimaProgram :: String
-fakeColimaProgram =
-  unlines
-    [ "#!/usr/bin/env python3",
-      "import json,os,shutil,signal,socket,sys,time",
-      "root=os.path.dirname(os.path.realpath(__file__))",
-      "def path(name): return os.path.join(root,name)",
-      "def exists(name): return os.path.exists(path(name))",
-      "def touch(name,value=''):",
-      "    with open(path(name),'w') as stream: stream.write(value)",
-      "def remove(name):",
-      "    try: os.unlink(path(name))",
-      "    except FileNotFoundError: pass",
-      "args=sys.argv[1:]",
-      "with open(path('events'),'a') as stream: stream.write(' '.join(args)+'\\n')",
-      "if args[:2] == ['list','--json']:",
-      "    if exists('hang-list'): time.sleep(5)",
-      "    if exists('list-exit'): raise SystemExit(23)",
-      "    if exists('blank-list'): print(); raise SystemExit(0)",
-      "    if exists('malformed-list'): print('{not-json}'); raise SystemExit(0)",
-      "    if exists('noninteger-list'):",
-      "        print(json.dumps({'name':'" ++ profileName ++ "','status':'Running','cpus':True,'memory':17179869184,'disk':85899345920,'runtime':'docker'})); raise SystemExit(0)",
-      "    if exists('duplicate-list') and not exists('present'):",
-      "        value={'name':'" ++ profileName ++ "','status':'Running','cpus':8,'memory':17179869184,'disk':85899345920,'runtime':'docker'}; print(json.dumps(value)); print(json.dumps(value)); raise SystemExit(0)",
-      "    if exists('present'):",
-      "        status=open(path('status')).read().strip() if exists('status') else 'Running'",
-      "        cpus=4 if exists('mismatch') else 8",
-      "        name=open(path('profile')).read().strip() if exists('profile') else '" ++ profileName ++ "'",
-      "        value={'name':name,'status':status,'cpus':cpus,'memory':17179869184,'disk':85899345920,'runtime':'docker'}",
-      "        print(json.dumps(value))",
-      "        if exists('duplicate-list'): print(json.dumps(value))",
-      "    raise SystemExit(0)",
-      "if args and args[0] == 'start':",
-      "    if exists('fail-start'): raise SystemExit(17)",
-      "    if exists('block-start'):",
-      "        child=os.fork()",
-      "        if child == 0:",
-      "            signal.signal(signal.SIGTERM,signal.SIG_IGN); touch('start-descendant-pid',str(os.getpid())); time.sleep(30); os._exit(0)",
-      "        signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(30)",
-      "    profile=args[args.index('--profile')+1]",
-      "    cpu=int(args[args.index('--cpus')+1]); memory=int(args[args.index('--memory')+1]); data=int(args[args.index('--disk')+1]); root_disk=int(args[args.index('--root-disk')+1])",
-      "    touch('present'); touch('status','Running'); touch('profile',profile)",
-      "    if not exists('machine'): touch('machine','0123456789abcdef0123456789abcdef\\n')",
-      "    home=os.environ['COLIMA_HOME']; disk_name='colima-'+profile; instance=os.path.join(os.environ['LIMA_HOME'],disk_name); disk_dir=os.path.join(os.environ['LIMA_HOME'],'_disks',disk_name); profile_dir=os.path.join(home,profile); store_dir=os.path.join(home,'_store')",
-      "    for directory in (profile_dir,instance,disk_dir,store_dir): os.makedirs(directory,mode=0o700,exist_ok=True)",
-      "    config_text='cpu: %d\\nmemory: %d\\ndisk: %d\\nrootDisk: %d\\n' % (cpu,memory,data,root_disk)",
-      "    for target,value in ((os.path.join(profile_dir,'colima.yaml'),config_text),(os.path.join(instance,'colima.yaml'),config_text),(os.path.join(instance,'lima.yaml'),'memory: %dGiB\\ndisk: %dGiB\\n' % (memory,root_disk)),(os.path.join(store_dir,disk_name+'.json'),'{}\\n')):",
-      "        with open(target,'w') as stream: stream.write(value)",
-      "    with open(os.path.join(instance,'diffdisk'),'wb') as stream: stream.truncate(root_disk*1024**3)",
-      "    try: os.symlink('diffdisk',os.path.join(instance,'disk'))",
-      "    except FileExistsError: pass",
-      "    with open(os.path.join(disk_dir,'datadisk'),'wb') as stream: stream.truncate(data*1024**3)",
-      "    try: os.symlink(instance,os.path.join(disk_dir,'in_use_by'))",
-      "    except FileExistsError: pass",
-      "    if exists('runtime-specials'):",
-      "        previous=os.getcwd(); os.chdir(instance)",
-      "        try: special=socket.socket(socket.AF_UNIX); special.bind('ha.sock'); special.close()",
-      "        finally: os.chdir(previous)",
-      "    config=os.environ['DOCKER_CONFIG']; os.makedirs(config,exist_ok=True)",
-      "    context_path=os.path.join(config,'context-owned')",
-      "    if not os.path.exists(context_path):",
-      "        with open(context_path,'w') as stream: stream.write('colima-'+profile+'\\n')",
-      "    raise SystemExit(0)",
-      "if args and args[0] == 'ssh':",
-      "    if not exists('present') or (exists('status') and open(path('status')).read().strip().lower() != 'running'): raise SystemExit(18)",
-      "    if exists('machine-stderr'): sys.stderr.write('identity warning\\n')",
-      "    sys.stdout.write(open(path('machine')).read()); raise SystemExit(0)",
-      "if args and args[0] == 'delete':",
-      "    if exists('fail-delete'): raise SystemExit(19)",
-      "    if exists('block-delete'):",
-      "        touch('delete-entered')",
-      "        deadline=time.time()+5",
-      "        while not exists('allow-delete') and time.time() < deadline: time.sleep(0.01)",
-      "        if not exists('allow-delete'): raise SystemExit(20)",
-      "    if exists('swap-record-on-delete'):",
-      "        record=open(path('swap-record-on-delete')).read()",
-      "        replacement=record+'.foreign'",
-      "        with open(replacement,'w') as stream: stream.write('foreign-record\\n')",
-      "        os.chmod(replacement,0o600); os.replace(replacement,record)",
-      "    profile=args[args.index('--profile')+1]; disk_name='colima-'+profile; home=os.environ['COLIMA_HOME']",
-      "    if '--data' not in args: raise SystemExit(24)",
-      "    for directory in (os.path.join(home,profile),os.path.join(os.environ['LIMA_HOME'],disk_name),os.path.join(os.environ['LIMA_HOME'],'_disks',disk_name)): shutil.rmtree(directory,ignore_errors=True)",
-      "    try: os.unlink(os.path.join(home,'_store',disk_name+'.json'))",
-      "    except FileNotFoundError: pass",
-      "    if exists('delete-removes-context'):",
-      "        try: os.unlink(os.path.join(os.environ['DOCKER_CONFIG'],'context-owned'))",
-      "        except FileNotFoundError: pass",
-      "    remove('present'); remove('status'); raise SystemExit(0)",
-      "raise SystemExit(21)"
-    ]
-
-fakeLimaProgram :: String
-fakeLimaProgram =
-  unlines
-    [ "#!/usr/bin/env python3",
-      "import json,os,sys",
-      "root=os.path.dirname(os.path.realpath(__file__))",
-      "def exists(name): return os.path.exists(os.path.join(root,name))",
-      "args=sys.argv[1:]",
-      "if args != ['disk','list','--json']: raise SystemExit(41)",
-      "if exists('disk-list-exit'): raise SystemExit(42)",
-      "if exists('blank-disk-list'): print(); raise SystemExit(0)",
-      "profile=open(os.path.join(root,'profile')).read().strip() if exists('profile') else '" ++ profileName ++ "'",
-      "name='colima-'+profile; directory=os.path.join(os.environ['LIMA_HOME'],'_disks',name); instance=os.path.join(os.environ['LIMA_HOME'],name)",
-      "if os.path.isdir(directory):",
-      "    value={'name':name,'size':os.stat(os.path.join(directory,'datadisk')).st_size,'format':'raw','dir':directory,'instance':name,'instanceDir':instance,'mountPoint':'/mnt/lima-'+name}",
-      "    print(json.dumps(value))",
-      "    if exists('duplicate-disk-list'): print(json.dumps(value))",
-      "raise SystemExit(0)"
-    ]
-
-fakeDockerProgram :: String
-fakeDockerProgram =
-  unlines
-    [ "#!/usr/bin/env python3",
-      "import json,os,sys",
-      "root=os.path.dirname(os.path.realpath(__file__))",
-      "def path(name): return os.path.join(root,name)",
-      "args=sys.argv[1:]",
-      "context_path=os.path.join(os.environ['DOCKER_CONFIG'],'context-owned')",
-      "with open(path('docker-events'),'a') as stream: stream.write(' '.join(args)+'\\n')",
-      "if args[:2] == ['context','inspect']:",
-      "    if os.path.exists(path('fail-context')): raise SystemExit(31)",
-      "    if not os.path.exists(context_path): raise SystemExit(1)",
-      "    if open(context_path).read().strip() != args[2]: raise SystemExit(1)",
-      "    print(json.dumps([{'Name':args[2],'Endpoints':{'docker':{'Host':'unix:///owned.sock'}}}],sort_keys=True,separators=(',',':')))",
-      "    raise SystemExit(0)",
-      "if args[:2] == ['context','ls']:",
-      "    print(json.dumps({'Name':'default'}))",
-      "    if os.path.exists(context_path): print(json.dumps({'Name':open(context_path).read().strip()}))",
-      "    raise SystemExit(0)",
-      "if args[:3] == ['context','rm','--force']:",
-      "    try: os.unlink(context_path)",
-      "    except FileNotFoundError: pass",
-      "    raise SystemExit(0)",
-      "if args and args[0] == 'context':",
-      "    with open(path('context-mutated'),'w') as stream: stream.write('mutated\\n')",
-      "    raise SystemExit(0)",
-      "if args[:2] == ['--context','colima-" ++ profileName ++ "'] or (len(args) >= 2 and args[0] == '--context'):",
-      "    sys.stdout.write('docker-ok\\n'); raise SystemExit(0)",
-      "raise SystemExit(32)"
-    ]
 
 withPreparedPublicTestCallM ::
   ( forall

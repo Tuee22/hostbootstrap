@@ -1,15 +1,11 @@
 apiVersion: apps/v1
-kind: StatefulSet
+kind: Deployment
 metadata:
   name: {{ .Release.Name }}-web
   labels:
     app: {{ .Release.Name }}-web
 spec:
-  serviceName: {{ .Release.Name }}-web
   replicas: {{ .Values.haReplicas }}
-  podManagementPolicy: OrderedReady
-  updateStrategy:
-    type: RollingUpdate
   selector:
     matchLabels:
       app: {{ .Release.Name }}-web
@@ -30,7 +26,7 @@ spec:
             type: DirectoryOrCreate
       containers:
         - name: web
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ .Values.image.identity | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           # The project container's ENTRYPOINT is the demo binary; `service run`
           # runs the demo's `web` service variant — the warp/wai webservice — on

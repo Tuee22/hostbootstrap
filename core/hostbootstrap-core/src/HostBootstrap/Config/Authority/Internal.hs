@@ -9,6 +9,7 @@ module HostBootstrap.Config.Authority.Internal (
     HarnessAuthority,
     HarnessConfigAuthority,
     mintHarnessAuthority,
+    mintAuthenticatedHarnessConfigAuthority,
     harnessConfigAuthority,
     harnessRunName,
     harnessConfigRunName,
@@ -25,6 +26,12 @@ newtype HarnessConfigAuthority projectId runId = HarnessConfigAuthority Text
 -- | Mint authority while constructing the matching typed lifecycle root.
 mintHarnessAuthority :: Text -> HarnessAuthority projectId runId
 mintHarnessAuthority = HarnessAuthority
+
+{- | Mint the narrow authority after another package-private boundary has
+authenticated the exact Harness scope capsule.
+-}
+mintAuthenticatedHarnessConfigAuthority :: Text -> HarnessConfigAuthority projectId runId
+mintAuthenticatedHarnessConfigAuthority = HarnessConfigAuthority
 
 -- | Narrow root authority to config-assembly authority.
 harnessConfigAuthority ::

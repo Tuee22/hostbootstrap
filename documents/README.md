@@ -134,7 +134,7 @@ defers to it rather than re-deriving it. The command surface is summarized in
   pod-set fit, and the open bare-Linux storage wall.
 - [engineering/incus.md](engineering/incus.md) — the opaque provider descriptor's Incus path, its
   prepared four-clause VM/share backend, closed raw discovery, VM/share/exec lifecycle, and sizing limits;
-  its static gate is closed and its native Linux/x86_64 KVM/Incus gate remains open.
+  its static gate and native Linux/x86_64 KVM/Incus gate are closed.
 - [engineering/lima.md](engineering/lima.md) — the Lima VM provider used by the worked demo on Apple
   Silicon for a real pristine Linux VM, with the same deploy/stop/destroy VM lifecycle steps.
 - [engineering/wsl2.md](engineering/wsl2.md) — the Windows WSL2 host-provider VM, the peer of

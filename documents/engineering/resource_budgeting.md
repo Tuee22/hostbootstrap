@@ -332,6 +332,13 @@ set; the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) own
 [applied_cordon](applied_cordon.md) and
 [development_plan_standards.md § O](../../DEVELOPMENT_PLAN/development_plan_standards.md).
 
+## Provider identity before budget admission
+
+Provider budgeting starts from the provider resource authored by the exact plan, not from a conventional
+`deploy-vm` key or the executing frame. VM topology targets the unique descended VM frame; the Direct lane
+authors a separate reservation at the metal frame. The demo's pure direct-parent join must resolve exactly one
+such provider at the cluster frame's immediate parent before a later budget package can reserve capacity.
+
 ## Cordoning per Substrate
 
 The target admitted `EffectiveBudget` is enforced across every plan effect so a project's workload

@@ -1,6 +1,6 @@
 # Phase 22 — Service runtime
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 20 (`test` and `context` command semantics), Phase 21 (composition and network algebra)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus a live `service run` on linux-cpu
@@ -44,9 +44,9 @@ Three verbs, closed at this layer.
 
 None.
 
-### Sprint 22.2: Typed service selection and the immutable handler payload [Active]
+### Sprint 22.2: Typed service selection and the immutable handler payload [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`
@@ -136,27 +136,28 @@ effect name. `CompileFailSpec`'s `UndeclaredServiceEffect.hs` is the load-bearin
 
 #### Remaining Work
 
-Adoption, and it is now one item rather than three.
+None.
 
-`serviceDefinition` **does** take a declared row. It is a `DeclaredEffects effects` — the term-level twin of
-the type-level list, so what a definition declares and what its type says cannot disagree — and it is carried
-through finalization, `withSelectedServiceRequest`, and `selectServiceAction`, so the row a variant fixed is
-observable at selection. `service run` prints the row it would authorize, which makes the declaration visible
-before the authorization that will consume it exists. The demo declares two genuinely different rows: the web
-role listens and reaches the durable root, the accelerator listens and runs a worker, and neither is the union.
+#### Implementation Record
 
-What is left is the part that cannot land before activation installation does. Handlers still return `IO ()` and no
-call site builds a `ServiceBackend`, because `interpretServiceProgram` demands an `EffectAuthorization`, whose
-only producer needs a `VerifiedServicePlacement`, which needs a `VerifiedRuntimeRoleActivation` — and nothing
-installs a signed activation yet. Changing the handler's return type before `service run` can obtain a
-placement would leave the registry producing programs nothing can interpret, so it lands together with Sprint
-22.3's activation installer and `service run` interpreter.
+The core program has `withReadyServiceHandles` and
+`interpretServiceProgramWithReady`: the former keeps the exact Ready-phase set inside the closed DSL, so a
+handler can remain a function of only `RoleParams`; the latter is the sole service-runtime eliminator that
+supplies that engine-owned set. `ServiceProgramSpec` pins this path against a real signed placement. Registry
+definitions have `serviceProgramDefinition`: its immutable role draft, resource backend, payload-specific
+`ServiceBackend`, typed declared row, handler, and role codec survive finalization in one existential package.
+`withDecodedServiceProgram` selects the service named by the signed activation from the narrowed installed wire,
+not from the full sibling project config. `withRuntimeRolePlanForRequest` retains that decoded request's exact
+config/secret/service indices through placement authorization, so the interpreter cannot cross-pair a
+same-shaped program. The compatibility legacy definition is categorically rejected by this production path;
+the worked demo owns migration of its concrete definitions.
 
-### Sprint 22.3: Role-machine adoption at `service run` [Active]
+### Sprint 22.3: Role-machine adoption at `service run` [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`
+`core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`
 
@@ -171,7 +172,7 @@ Enter the service through the activation package rather than beside it.
 - `service run` measures its own binary, its mounted role wire, and its private bundle digests plus its instance
   identity, verifies the activation against the independently installed Activation key, and enters the phase machine.
 - A verification failure refuses to start rather than starting unverified.
-- This sprint changes only the two declared core modules. It does not edit `HostBootstrapDemo.Commands` or own
+- This sprint changes only the three declared core modules. It does not edit `HostBootstrapDemo.Commands` or own
   Helm/chart mutation; the worked-demo phase joins these activation semantics to exact cluster readiness.
 
 #### Validation
@@ -192,7 +193,7 @@ This sprint owns activation installation and service execution. The closed readi
 call is the [worked-demo phase](phase-24-worked-demo.md)'s, and it can only exist once the exact cluster
 consumer can supply a `ClusterReadiness`.
 
-#### Remaining Work
+#### Implementation Record
 
 The activation consumer uses the root-coordinated route without lending signing or durable authority to a
 child:
@@ -215,26 +216,49 @@ child:
   against the independently installed Activation key, so adopting arbitrary bytes yields a grant that fails
   verification rather than one that authorizes anything.
 
-The remaining work is the **activation and `service run` adoption** that consumes it: signing one manifest per
-pod-template revision, installing the immutable digest-addressed config, secret, and manifest objects, and
-`service run` measuring its own binary, mounted role wire, and bundle digests before entering the phase
-machine. It lands together with Sprint 22.2's registry adoption; until then
-`serviceDefinition` keeps its `IO ()` handler, because changing the registry's shape before there is anything
-that can run a program would break `service run` for no gain.
+The immutable activation installer and opener are now implemented in `HostBootstrap.Service`.
+`installServiceActivationRevision` validates the role-wire and private-bundle digests before signing, publishes
+the canonical manifest twice beside its signature and independently provisioned public key, writes every member
+through a flushed temporary, and atomically renames the complete digest-addressed revision. Exact retry and exact
+partial-staging completion are admitted; a contradictory member is never overwritten.
+`withInstalledServiceActivation` re-reads those installed bytes, recomputes the revision identity and both
+payload measurements, and yields the role wire and private bundle only inside the callback of
+`verifyRuntimeRoleActivation`. `ActivationSpec` now pins successful reopen, exact retry, digest refusal,
+partial-staging resume, immutable conflict, missing-member refusal, measured-binary refusal, and secret-safe
+diagnostics (34 focused tests under `-Werror`).
+
+The production adopter is implemented. `service run` accepts only absolute platform-installed coordinates for
+the immutable revision, independently installed Activation public key, and protected authority store. It hashes
+its own executable, derives either the pod-UID/restart-count or host-invocation instance, verifies and decodes the
+narrowed installed role wire, reserves or exactly reopens its one-use plan, authorizes the definition's declared
+effect row against the signed ceiling, and runs the selected program only in Serve with Ready's exact handles.
+It never loads the sibling full project config. A refusal at any join exits before Serve.
+
+`ActivationSpec` has 35 focused cases, including a genuinely signed narrowed-role execution through
+Prereq → Acquire → Ready → Serve → Drain → Exit and exact consumed-plan reopen. `CLISpec` runs the actual
+`service run` command on linux-cpu against a measured test executable and proves that the signed accelerator
+variant runs while the unselected web variant does not. The exact phase gate passed on 2026-08-22.
 
 There is still one lane that never needed the relay: the host-resident accelerator daemon is launched by a
 post-handoff step in the metal frame, where the root authority is already in scope. Adopting the engine there
 first remains possible but is the Apple/Windows placement only, so it stays a deliberate choice rather than an
 obvious one.
 
+#### Remaining Work
+
+None.
+
 ## Remaining Work
 
-Sprints 22.2 and 22.3 land together, because neither half stands alone: handlers still return `IO ()`
-and no call site builds a `ServiceBackend`, since `interpretServiceProgram` demands an
-`EffectAuthorization` whose only producer needs a `VerifiedServicePlacement`, which needs a
-`VerifiedRuntimeRoleActivation` — and nothing installs a signed activation yet. Sprint 22.3 installs it
-and interprets `service run`; Sprint 22.2's registry adoption and handler return type follow in the same
-change.
+None.
+
+## Validation Record
+
+- 2026-08-22, linux-cpu: `ActivationSpec` passed all 35 focused cases under `-Werror`.
+- 2026-08-22, linux-cpu: the live `CLISpec` `service run` case verified the measured executable and signed
+  activation, traversed the role engine, ran only the signed accelerator program, and exited cleanly.
+- 2026-08-22, linux-cpu: `cabal test all --ghc-options=-Werror` passed all 2,383 tests in 148.19 seconds,
+  including compile-fail boundaries and `DocValidatorSpec`.
 
 ## Documentation Requirements
 

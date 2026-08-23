@@ -32,10 +32,30 @@ import Data.List (sort)
 import qualified Fixture
 import HostBootstrap.Authority
 import HostBootstrap.Lifecycle.Closure
-import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
+import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec), ProjectCodec)
+import HostBootstrap.Config.Schema (ValidatedConfig, VerifiedConfigWire, validatedConfigValue, withValidatedConfig)
 import HostBootstrap.Config.Vocab (Production)
+import qualified HostBootstrap.Context as Context
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Lifecycle.Mode
+import HostBootstrap.ProjectPlan
+    ( PlanDraft
+    , PlannedResourceKind (ClusterResourceKind)
+    , ProjectPlan
+    , forward
+    , planDraftsFromValidatedBuilder
+    , plannedResourceFrame
+    , plannedResourceKey
+    , plannedStepOperationKey
+    , renderSnapshot
+    , stablePlanSnapshotDigest
+    , stablePlanSnapshotRoot
+    , withPlannedResourceOfKind
+    )
+import HostBootstrap.ProjectPlan.Snapshot (withPersistedPlanSnapshot)
+import HostBootstrap.ProjectRoot (canonicalProjectRootPath, withCanonicalProjectRoot)
+import Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as NonEmpty
 import HostBootstrap.Lifecycle.Session (
     ProjectJournalState (ClosedProject, ClosingProject),
     SessionError (SessionProjectClosing, SessionStillOpen),
@@ -54,7 +74,11 @@ import HostBootstrap.Reconcile (
     canonicalPlanSnapshotBytes,
     canonicalPlanSnapshotDigest,
     canonicalPlanSnapshotSpecDigest,
+    lifecyclePlanDigest,
+    lifecyclePlanFromProjectPlan,
     lifecyclePlanSnapshot,
+    renderResourceRecordBundle,
+    resourceRecordKey,
     withLifecyclePlanForConfig,
  )
 import HostBootstrap.Lift (localContext)
@@ -63,9 +87,13 @@ import HostBootstrap.Step (
     StepObservation (StepChanged),
     StepPlan,
     contextInitStep,
+    deployKindStep,
     deployVMStep,
     descendsVia,
+    implementedAt,
+    mkStepImplementationRevision,
     mkStepPlan,
+    operationKeyText,
  )
 import System.Directory (
     doesDirectoryExist,
@@ -2281,56 +2309,153 @@ migrationCases =
                                 Right () ->
                                     assertFailure "the second binding must not be fresh"
                 outcome @?= Right ()
-    , testCase "a migration onto the same plan digest is refused" $
-        withMigrationProfile $ \project _ _bound profile session -> do
-            outcome <-
-                withProspectiveMigrationPlan
-                    session
-                    project
-                    profile
-                    "spec-1"
-                    "plan-1"
-                    (\_ -> pure (Right ()))
-            case outcome of
-                Left (ModeSnapshotMismatch expected observed) -> do
-                    expected @?= "plan-1"
-                    observed @?= "plan-1"
-                    pure (Right ())
-                other -> assertFailure ("expected a same-digest refusal, got " <> show other)
+    , testCase "a migration onto the exact same canonical plan is refused before freeze" $
+        Fixture.withFixtureProjectPlanRoot alternateTestStepPlan $ \store project root oldPlan -> do
+            opened <- withPersistedPlanSnapshot
+                (productionRootAuthority root)
+                (productionRootUnboundLease root)
+                oldPlan
+                (\verified _boundPlan _binding bound _recovery ->
+                    case withProjectUpMigrationProfile (productionRootAuthority root) (productionRootModeLease root) bound verified of
+                        Left failure -> pure (Left failure)
+                        Right profile -> withProtectedEntry' store $ \session ->
+                            withSystemTempDirectory "hostbootstrap-same-migration" $ \directory -> do
+                                rooted <- withCanonicalProjectRoot (directory </> "candidate.dhall") "." $ \candidateRoot ->
+                                    withProductionProjectCodec @Fixture.ProjectConfig $ \codec -> do
+                                        let value = Fixture.defaultProjectConfig (installedProjectName project) (Text.pack (canonicalProjectRootPath candidateRoot)) Context.HostOrchestrator
+                                        validated <- withValidatedConfig codec value $ \wire config -> do
+                                            drafts <- either (fail . show) pure $
+                                                planDraftsFromValidatedBuilder candidateRoot config (\_ _ -> Right alternateTestStepPlan)
+                                            result <- withProspectiveMigrationPlan session project profile bound codec wire config drafts $ \_plan _digest _candidate -> pure (Right ())
+                                            pure $ case result of
+                                                Left (ModeSnapshotMismatch expected observed) | expected == observed -> Right ()
+                                                other -> Left (ModeInvalidIdentity (Text.pack ("expected same-plan refusal, got " <> show other)))
+                                        either (fail . show) pure validated
+                                either (fail . show) pure rooted
+                )
+            either (assertFailure . show) (const (pure ())) opened
+    , testCase "the candidate digest is derived from exact plan bytes" $
+        withMigrationProfile $ \project _ bound profile session codec wire config drafts ->
+            withProspectiveMigrationPlan session project profile bound codec wire config drafts $ \plan _binding candidate -> do
+                prospectiveSnapshotPlanDigest candidate @?= stablePlanSnapshotDigest (renderSnapshot plan)
+                assertBool "candidate bytes were not retained" (not (ByteString.null (prospectiveSnapshotCanonicalBytes candidate)))
+                pure (Right ())
     , testCase "a candidate is persisted, read back, and authorizes nothing" $
-        withMigrationProfile $ \project _ _bound profile session ->
-            withProspectiveMigrationPlan session project profile "spec-2" "plan-2" $ \candidate -> do
-                prospectiveSnapshotSpecDigest candidate @?= "spec-2"
-                prospectiveSnapshotPlanDigest candidate @?= "plan-2"
+        withMigrationProfile $ \project _ bound profile session codec wire config drafts ->
+            withProspectiveMigrationPlan session project profile bound codec wire config drafts $ \_plan _binding candidate -> do
+                assertBool "candidate spec digest is empty" (not (Text.null (prospectiveSnapshotSpecDigest candidate)))
                 -- The stable key names the run and both revisions, so a retry
                 -- converges on it rather than proposing a second migration.
                 stableMigrationKeyText (prospectiveSnapshotKey candidate)
-                    @?= "production.plan-1.plan-2"
+                    @?= "production." <> migrationProfileOldPlanDigest profile <> "." <> prospectiveSnapshotPlanDigest candidate
                 pure (Right ())
+    , testCase "a conflicting candidate read-back refuses before freeze" $
+        withMigrationProfile $ \project _ bound profile session codec wire config drafts -> do
+            first <- withProspectiveMigrationPlan session project profile bound codec wire config drafts $ \_plan _binding _candidate -> pure (Right ())
+            _ <- expectRight first
+            keys <- expectRight =<< listProtectedRecords session
+            key <- case filter (Text.isPrefixOf "prospective." . recordKeyText) keys of
+                [found] -> pure found
+                _ -> assertFailure "the prospective candidate key was not unique"
+            observed <- expectRight =<< readProtectedRecord session key
+            record <- maybe (assertFailure "the prospective record disappeared") pure observed
+            _ <- expectRight =<< compareAndSwapProtectedRecord session key (ExpectVersion (protectedRecordVersion record)) "conflicting-candidate"
+            retried <- withProspectiveMigrationPlan session project profile bound codec wire config drafts $ \_plan _binding _candidate -> pure (Right ())
+            case retried of
+                Left (ModeSnapshotMismatch _ _) -> pure ()
+                other -> assertFailure ("expected conflicting candidate refusal, got " <> show other)
+            readRecordedRevisionKind session project bound >>= (@?= NormalRevision)
+            pure (Right ())
+    , testCase "a config and draft digest mismatch refuses before persistence" $
+        withMigrationProfile $ \project _ bound profile session codec _wire config drafts -> do
+            let changed = (validatedConfigValue config){Fixture.dockerfile = "changed.Dockerfile"}
+            attempted <- withValidatedConfig codec changed $ \changedWire changedConfig ->
+                withProspectiveMigrationPlan session project profile bound codec changedWire changedConfig drafts $ \_plan _binding _candidate -> pure (Right ())
+            outcome <- either (fail . show) pure attempted
+            case outcome of
+                Left (ModeInvalidIdentity _) -> pure ()
+                other -> assertFailure ("expected config/draft refusal, got " <> show other)
+            readRecordedRevisionKind session project bound >>= (@?= NormalRevision)
+            pure (Right ())
     , testCase "freezing stops the old revision from being bindable" $
-        withMigrationProfile $ \project _ bound profile session ->
-            withProspectiveMigrationPlan session project profile "spec-2" "plan-2" $ \candidate -> do
+        withMigrationProfile $ \project _ bound profile session codec wire config drafts ->
+            withProspectiveMigrationPlan session project profile bound codec wire config drafts $ \_plan _binding candidate -> do
                 frozen <- expectRight =<< withPlanMigration session project profile candidate
-                stableMigrationKeyText (frozenMigrationKey frozen) @?= "production.plan-1.plan-2"
+                retried <- expectRight =<< withPlanMigration session project profile candidate
+                let stableKey = "production." <> migrationProfileOldPlanDigest profile <> "." <> prospectiveSnapshotPlanDigest candidate
+                stableMigrationKeyText (frozenMigrationKey frozen) @?= stableKey
+                assertBool "the frozen exact-set digest is not SHA-256" (Text.length (frozenMigrationRecordSetDigest frozen) == 64)
+                frozenMigrationRecordSetDigest retried @?= frozenMigrationRecordSetDigest frozen
+                rebuilt <- withRecoveredMigrationPlanSnapshot session project frozen codec wire config drafts $ \plan _binding -> do
+                    stablePlanSnapshotDigest (renderSnapshot plan) @?= prospectiveSnapshotPlanDigest candidate
+                    pure (Right ())
+                _ <- expectRight rebuilt
                 -- The recorded kind says the barrier was not crossed.
                 kind <- readRecordedRevisionKind session project bound
-                kind @?= IncompleteMigration "production.plan-1.plan-2"
+                kind @?= IncompleteMigration stableKey
                 pure (Right ())
     , testCase "the activation compare-and-swap switches the lineage and records it" $
-        withMigrationProfile $ \project epoch _oldBound profile session ->
-            withProspectiveMigrationPlan session project profile "spec-2" "plan-2" $ \candidate -> do
+        withMigrationProfile $ \project epoch oldBound profile session codec wire config drafts ->
+            withProspectiveMigrationPlan session project profile oldBound codec wire config drafts $ \_plan _binding candidate -> do
                 frozen <- expectRight =<< withPlanMigration session project profile candidate
                 (bound, barrier) <-
                     expectRight =<< commitMigrationActivation session project frozen epoch
-                boundRunLeasePlanDigest bound @?= "plan-2"
-                migrationBarrierOldPlanDigest barrier @?= "plan-1"
-                migrationBarrierNewPlanDigest barrier @?= "plan-2"
+                boundRunLeasePlanDigest bound @?= prospectiveSnapshotPlanDigest candidate
+                migrationBarrierOldPlanDigest barrier @?= migrationProfileOldPlanDigest profile
+                migrationBarrierNewPlanDigest barrier @?= prospectiveSnapshotPlanDigest candidate
+                migrationBarrierRecordSetDigest barrier @?= frozenMigrationRecordSetDigest frozen
                 kind <- readRecordedRevisionKind session project bound
-                kind @?= CompletedMigration "production.plan-1.plan-2"
+                kind @?= CompletedMigration ("production." <> migrationProfileOldPlanDigest profile <> "." <> prospectiveSnapshotPlanDigest candidate)
+                pure (Right ())
+    , testCase "down cancellation restores only the old-bound lineage and converges" $
+        withMigrationProfile $ \project epoch oldBound profile session codec wire config drafts ->
+            withProspectiveMigrationPlan session project profile oldBound codec wire config drafts $ \_plan _binding candidate -> do
+                frozen <- expectRight =<< withPlanMigration session project profile candidate
+                restored <- expectRight =<< cancelIncompletePlanMigrationForTeardown ProjectDown epoch session project frozen
+                boundRunLeasePlanDigest restored @?= migrationProfileOldPlanDigest profile
+                retried <- expectRight =<< cancelIncompletePlanMigrationForTeardown ProjectDestroy epoch session project frozen
+                boundRunLeasePlanDigest retried @?= migrationProfileOldPlanDigest profile
+                readRecordedRevisionKind session project restored >>= (@?= NormalRevision)
+                pure (Right ())
+    , testCase "commit refuses a candidate changed after freeze and retains the old lineage" $
+        withMigrationProfile $ \project epoch oldBound profile session codec wire config drafts ->
+            withProspectiveMigrationPlan session project profile oldBound codec wire config drafts $ \_plan _binding candidate -> do
+                frozen <- expectRight =<< withPlanMigration session project profile candidate
+                keys <- expectRight =<< listProtectedRecords session
+                candidateKey <- case filter (Text.isPrefixOf "prospective." . recordKeyText) keys of
+                    [found] -> pure found
+                    _ -> assertFailure "the frozen prospective candidate was not unique"
+                record <- maybe (assertFailure "the frozen candidate disappeared") pure
+                    =<< (expectRight =<< readProtectedRecord session candidateKey)
+                _ <- expectRight =<< compareAndSwapProtectedRecord session candidateKey
+                    (ExpectVersion (protectedRecordVersion record)) "changed-after-freeze"
+                committed <- commitMigrationActivation session project frozen epoch
+                case committed of
+                    Left (ModeMalformedRecord _) -> pure ()
+                    other -> assertFailure ("changed frozen candidate committed: " <> show other)
+                readRecordedRevisionKind session project oldBound
+                    >>= (@?= IncompleteMigration (stableMigrationKeyText (frozenMigrationKey frozen)))
+                pure (Right ())
+    , testCase "commit refuses a resource set changed after freeze" $
+        withMigrationProfile $ \project epoch oldBound profile session codec wire config drafts ->
+            withProspectiveMigrationPlan session project profile oldBound codec wire config drafts $ \_plan _binding candidate -> do
+                frozen <- expectRight =<< withPlanMigration session project profile candidate
+                keys <- expectRight =<< listProtectedRecords session
+                resourceKey <- case filter (Text.isPrefixOf "resource." . recordKeyText) keys of
+                    [found] -> pure found
+                    _ -> assertFailure "the frozen resource set was not a singleton"
+                record <- maybe (assertFailure "the frozen resource disappeared") pure
+                    =<< (expectRight =<< readProtectedRecord session resourceKey)
+                _ <- expectRight =<< compareAndSwapProtectedRecord session resourceKey
+                    (ExpectVersion (protectedRecordVersion record)) "changed-after-freeze"
+                committed <- commitMigrationActivation session project frozen epoch
+                case committed of
+                    Left (ModeMalformedRecord _) -> pure ()
+                    other -> assertFailure ("changed frozen set committed: " <> show other)
                 pure (Right ())
     , testCase "activation is idempotent, so a crash after the swap converges" $
-        withMigrationProfile $ \project epoch _bound profile session ->
-            withProspectiveMigrationPlan session project profile "spec-2" "plan-2" $ \candidate -> do
+        withMigrationProfile $ \project epoch oldBound profile session codec wire config drafts ->
+            withProspectiveMigrationPlan session project profile oldBound codec wire config drafts $ \_plan _binding candidate -> do
                 frozen <- expectRight =<< withPlanMigration session project profile candidate
                 (_, first) <-
                     expectRight =<< commitMigrationActivation session project frozen epoch
@@ -2341,37 +2466,86 @@ migrationCases =
                 migrationBarrierNewPlanDigest first @?= migrationBarrierNewPlanDigest second
                 pure (Right ())
     , testCase "activating the plan admits the new revision's broker" $
-        withMigrationProfile $ \project epoch _oldBound profile session ->
-            withProspectiveMigrationPlan session project profile "spec-2" "plan-2" $ \candidate -> do
+        withMigrationProfile $ \project epoch oldBound profile session codec wire config drafts ->
+            withProspectiveMigrationPlan session project profile oldBound codec wire config drafts $ \candidatePlan candidateBinding candidate -> do
                 frozen <- expectRight =<< withPlanMigration session project profile candidate
                 (bound, barrier) <-
                     expectRight =<< commitMigrationActivation session project frozen epoch
-                admission <- expectRight =<< activateMigratedPlan session barrier bound epoch
-                admissionPlanDigest admission @?= "plan-2"
+                admission <- expectRight =<< withFrozenMigrationResourceSet session frozen epoch (activateMigratedPlan session barrier bound epoch candidatePlan candidateBinding)
+                admissionPlanDigest admission @?= prospectiveSnapshotPlanDigest candidate
                 pure (Right ())
     , testCase "completed-migration recovery loads the candidate from the durable key" $
-        withMigrationProfile $ \project epoch _oldBound profile session ->
-            withProspectiveMigrationPlan session project profile "spec-2" "plan-2" $ \candidate -> do
+        withMigrationProfile $ \project epoch oldBound profile session codec wire config drafts ->
+            withProspectiveMigrationPlan session project profile oldBound codec wire config drafts $ \_plan _binding candidate -> do
                 frozen <- expectRight =<< withPlanMigration session project profile candidate
                 (bound, _) <-
                     expectRight =<< commitMigrationActivation session project frozen epoch
                 recovered <-
-                    withCompletedMigrationRecovery session project bound $ \barrier -> do
+                    withCompletedMigrationRecovery session project bound $ \recoveryProfile barrier recoveredSnapshot oldSnapshot recoveredSet -> do
                         -- Both digests came from the stable key and the lease
                         -- record; no config was consulted.
-                        migrationBarrierOldPlanDigest barrier @?= "plan-1"
-                        migrationBarrierNewPlanDigest barrier @?= "plan-2"
-                        fmap (fmap (const ())) (activateMigratedPlan session barrier bound epoch)
+                        migrationBarrierOldPlanDigest barrier @?= migrationProfileOldPlanDigest profile
+                        migrationBarrierNewPlanDigest barrier @?= prospectiveSnapshotPlanDigest candidate
+                        planSnapshotPlanDigest recoveredSnapshot @?= prospectiveSnapshotPlanDigest candidate
+                        case withMigratedRecoveredProjectFrames recoveredSnapshot oldSnapshot recoveredSet (\_ count -> count + (1 :: Int)) 0 of
+                            Left failure -> assertFailure (show failure)
+                            Right count -> count @?= 1
+                        rebuilt <- withCompletedMigrationPlan session project recoveryProfile bound codec wire config drafts $ \rebuiltBarrier rebuiltPlan rebuiltBinding -> do
+                            migrationBarrierNewPlanDigest rebuiltBarrier @?= prospectiveSnapshotPlanDigest candidate
+                            stablePlanSnapshotDigest (renderSnapshot rebuiltPlan) @?= prospectiveSnapshotPlanDigest candidate
+                            fmap (fmap (const ())) (activateMigratedPlan session rebuiltBarrier bound epoch rebuiltPlan rebuiltBinding recoveredSet)
+                        pure rebuilt
                 recovered @?= Right ()
                 pure (Right ())
+    , testCase "completed-plan reconstruction refuses changed inputs and missing candidate state" $
+        withMigrationProfile $ \project epoch oldBound profile session codec wire config drafts ->
+            withProspectiveMigrationPlan session project profile oldBound codec wire config drafts $ \candidatePlan _binding candidate -> do
+                frozen <- expectRight =<< withPlanMigration session project profile candidate
+                (bound, _) <- expectRight =<< commitMigrationActivation session project frozen epoch
+                withCompletedMigrationRecovery session project bound $ \recoveryProfile _barrier _recoveredSnapshot _oldSnapshot _recoveredSet -> do
+                    let changed = (validatedConfigValue config){Fixture.dockerfile = "changed-after-commit.Dockerfile"}
+                    changedAttempt <- withValidatedConfig codec changed $ \changedWire changedConfig ->
+                        withCompletedMigrationPlan session project recoveryProfile bound codec changedWire changedConfig drafts $ \_ _ _ -> pure (Right ())
+                    changedResult <- either (fail . show) pure changedAttempt
+                    case changedResult of
+                        Left _ -> pure ()
+                        other -> assertFailure ("changed config reconstructed the completed plan: " <> show other)
+                    withSystemTempDirectory "hostbootstrap-changed-migration-draft" $ \directory -> do
+                        rooted <- withCanonicalProjectRoot (directory </> "candidate.dhall") (stablePlanSnapshotRoot (renderSnapshot candidatePlan)) $ \candidateRoot -> do
+                            changedDrafts <- either (fail . show) pure $
+                                planDraftsFromValidatedBuilder candidateRoot config (\_ _ -> Right testStepPlan)
+                            changedDraftResult <- withCompletedMigrationPlan session project recoveryProfile bound codec wire config changedDrafts $ \_ _ _ -> pure (Right ())
+                            case changedDraftResult of
+                                Left (ModeInvalidIdentity _) -> pure (Right ())
+                                other -> pure (Left (ModeInvalidIdentity (Text.pack ("changed draft reconstructed completed plan: " <> show other))))
+                        either (fail . show) pure rooted >>= expectRight
+                    keys <- expectRight =<< listProtectedRecords session
+                    candidateKey <- case filter (Text.isPrefixOf "prospective." . recordKeyText) keys of
+                        [found] -> pure found
+                        _ -> assertFailure "the completed candidate key was not unique"
+                    observed <- expectRight =<< readProtectedRecord session candidateKey
+                    record <- maybe (assertFailure "the completed candidate disappeared") pure observed
+                    _ <- expectRight =<< compareAndSwapProtectedRecord session candidateKey (ExpectVersion (protectedRecordVersion record)) "unknown-candidate-version"
+                    malformed <- withCompletedMigrationPlan session project recoveryProfile bound codec wire config drafts $ \_ _ _ -> pure (Right ())
+                    case malformed of
+                        Left (ModeMalformedRecord _) -> pure ()
+                        other -> assertFailure ("malformed candidate was accepted: " <> show other)
+                    malformedRecord <- maybe (assertFailure "the malformed candidate disappeared") pure =<< (expectRight =<< readProtectedRecord session candidateKey)
+                    _ <- expectRight =<< compareAndDeleteProtectedRecord session candidateKey (ExpectVersion (protectedRecordVersion malformedRecord))
+                    missing <- withCompletedMigrationPlan session project recoveryProfile bound codec wire config drafts $ \_ _ _ -> pure (Right ())
+                    case missing of
+                        Left (ModeSnapshotMissing _) -> pure ()
+                        other -> assertFailure ("missing candidate was accepted: " <> show other)
+                    boundRunLeasePlanDigest bound @?= prospectiveSnapshotPlanDigest candidate
+                    pure (Right ())
     , testCase "a run with no completed migration has nothing to recover" $
-        withMigrationProfile $ \project _ bound _profile session -> do
+        withMigrationProfile $ \project _ bound _profile session _codec _wire _config _drafts -> do
             outcome <-
                 withCompletedMigrationRecovery
                     session
                     project
                     bound
-                    (\_ -> pure (Right ()))
+                    (\_ _ _ _ _ -> pure (Right ()))
             case outcome of
                 Left (ModeWrongRecoveryScope expected observed) -> do
                     expected @?= "completed-migration"
@@ -2381,7 +2555,7 @@ migrationCases =
     ]
 
 withMigrationProfile ::
-    ( forall projectId brokerGeneration oldSpecDigest oldPlanDigest session.
+    ( forall projectId brokerGeneration oldSpecDigest oldPlanDigest session newSpecDigest configDigest configId.
       InstalledProjectIdentity projectId ->
       BrokerEpoch brokerGeneration ->
       BoundRunLease
@@ -2395,38 +2569,72 @@ withMigrationProfile ::
         oldPlanDigest
         brokerGeneration ->
       ProtectedSession session ->
+      ProjectCodec (Production projectId) newSpecDigest Fixture.ProjectConfig ->
+      VerifiedConfigWire (Production projectId) configDigest configId ->
+      ValidatedConfig (Production projectId) newSpecDigest configId (Fixture.ProjectConfig (Production projectId)) ->
+      NonEmpty (PlanDraft (Production projectId) newSpecDigest (Fixture.ProjectConfig (Production projectId))) ->
       IO (Either ModeError ())
     ) ->
     IO ()
 withMigrationProfile use =
-    withStore $ \store ->
-        Fixture.withFixtureInstalledProject $ \project -> do
-            outcome <-
-                withProductionRoot store project ProjectUp $ \root ->
-                    withBoundSnapshot root $ \snapshot -> do
-                        bound <-
-                            expectRight
-                                =<< bindRunLease
-                                    (productionRootUnboundLease root)
-                                    snapshot
-                                    pure
-                        case
-                            withProjectUpMigrationProfile
-                                (productionRootAuthority root)
-                                (productionRootModeLease root)
-                                bound
-                                snapshot
-                            of
-                            Left failure -> pure (Left failure)
-                            Right profile ->
-                                withProtectedEntry' store $ \session ->
-                                    use
-                                        project
-                                        (rootAuthorityEpoch (productionRootAuthority root))
-                                        bound
-                                        profile
-                                        session
-            outcome @?= Right ()
+    Fixture.withFixtureProjectPlanRoot migrationOldStepPlan $ \store project root oldPlan -> do
+        outcome <-
+            withPersistedPlanSnapshot
+                (productionRootAuthority root)
+                (productionRootUnboundLease root)
+                oldPlan
+                (\snapshot _boundPlan _binding bound _recovery -> do
+                    writeMigrationResourceRecords store oldPlan
+                    case withProjectUpMigrationProfile (productionRootAuthority root) (productionRootModeLease root) bound snapshot of
+                        Left failure -> pure (Left failure)
+                        Right profile ->
+                            withProtectedEntry' store $ \session ->
+                                withSystemTempDirectory "hostbootstrap-migration-candidate" $ \directory -> do
+                                    rooted <- withCanonicalProjectRoot (directory </> "candidate.dhall") "." $ \candidateRoot ->
+                                        withProductionProjectCodec @Fixture.ProjectConfig $ \codec -> do
+                                            let value = Fixture.defaultProjectConfig (installedProjectName project) (Text.pack (canonicalProjectRootPath candidateRoot)) Context.HostOrchestrator
+                                            validated <- withValidatedConfig codec value $ \wire config -> do
+                                                drafts <- either (fail . show) pure $
+                                                    planDraftsFromValidatedBuilder candidateRoot config (\_ _ -> Right migrationCandidateStepPlan)
+                                                use project (rootAuthorityEpoch (productionRootAuthority root)) bound profile session codec wire config drafts
+                                            either fail pure validated
+                                    either (fail . show) pure rooted
+                )
+        either (assertFailure . show) (either (assertFailure . show) pure) outcome
+
+migrationOldStepPlan :: StepPlan
+migrationOldStepPlan =
+    either (error . show) id $
+        mkStepPlan [deployKindStep "cluster" (StepFrame "host" "Host") (const (pure StepChanged))]
+
+migrationCandidateStepPlan :: StepPlan
+migrationCandidateStepPlan =
+    either (error . show) id $
+        mkStepPlan
+            [ implementedAt
+                (either error id (mkStepImplementationRevision 2))
+                (deployKindStep "cluster" (StepFrame "host" "Host") (const (pure StepChanged)))
+            ]
+
+writeMigrationResourceRecords ::
+    ProtectedStore ->
+    ProjectPlan scope specDigest planId configId cfg ->
+    IO ()
+writeMigrationResourceRecords store plan = case NonEmpty.toList (forward plan) of
+    [node] ->
+        either (assertFailure . show) id $
+            withPlannedResourceOfKind plan ClusterResourceKind (plannedStepOperationKey node) $ \planned -> do
+                let lifecycle = lifecyclePlanFromProjectPlan plan
+                    operation = Text.pack (operationKeyText (plannedStepOperationKey node))
+                bytes <- either (assertFailure . show) pure $
+                    renderResourceRecordBundle lifecycle planned 1 operation 1 "running" "adapter-v1" True
+                rawKey <- either (assertFailure . show) pure $
+                    resourceRecordKey (lifecyclePlanDigest lifecycle) (plannedResourceFrame planned) (plannedResourceKey planned)
+                key <- either (assertFailure . show) pure (mkRecordKey rawKey)
+                written <- withProtectedEntry store $ \session ->
+                    compareAndSwapProtectedRecord session key ExpectAbsent bytes
+                either (assertFailure . show) (const (pure ())) written
+    _ -> assertFailure "the migration old-plan fixture is not a singleton"
 
 -- | The recorded migration side of the barrier, read back off the durable record.
 readRecordedRevisionKind ::

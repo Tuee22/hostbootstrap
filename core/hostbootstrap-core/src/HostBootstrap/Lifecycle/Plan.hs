@@ -32,6 +32,12 @@ module HostBootstrap.Lifecycle.Plan
     , MinioResource
     , RegistryResource
     , ClusterResource
+    , ChartWorkloadResource
+    , withProjectChartWorkloadResourceKernel
+    , chartWorkloadResourceKeyKernel
+    , chartWorkloadResourceFrameKernel
+    , chartWorkloadReverseIdentityKernel
+    , withChartWorkloadResourceDetailsKernel
     , PlannedResourceKind (..)
     , PlannedEdge
     , DerivedTopology (..)
@@ -46,6 +52,8 @@ module HostBootstrap.Lifecycle.Plan
     , withProjectedProjectPlanKernel
     , withChildProjectPlanKernel
     , withRecoveredProjectPlanKernel
+    , withProspectiveProjectPlanKernel
+    , withCompletedMigrationProjectPlanKernel
     , forwardKernel
     , plannedStepLabelKernel
     , plannedStepFrameIdKernel
@@ -90,6 +98,8 @@ module HostBootstrap.Lifecycle.Plan
     , projectPlanStepPlanKernel
     , projectPlanCanonicalSnapshotKernel
     , projectPlanIndexedSnapshotKernel
+    , projectPlanExecutionTermsKernel
+    , withExecutionChartWorkloadResourceKernel
     , indexedPlanSnapshotCanonicalKernel
     , mintPlanDigestBindingKernel
     , planDigestBindingDigestKernel
@@ -112,6 +122,8 @@ module HostBootstrap.Lifecycle.Plan
     , canonicalPlanSnapshotConfigDigest
     , canonicalPlanSnapshotBytes
     , canonicalPlanSnapshotDigest
+    , canonicalPlanResourceMembersKernel
+    , canonicalPlanRecoveryFramesKernel
     , StepImplementationId
     , stepImplementationId
     , ReverseAdapterId
@@ -129,6 +141,7 @@ import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.Char (chr, ord)
 import Data.List (find)
+import qualified Data.List as List
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Kind (Type)
@@ -159,8 +172,10 @@ import HostBootstrap.ProjectRoot
 import HostBootstrap.Step
     ( CoreStepId (..)
     , OperationKey
+    , ProviderResourceDeclaration
     , ReversePolicy (..)
     , Step
+    , StepFrame
     , StepIdentity (..)
     , StepImplementationRevision
     , StepObservation
@@ -181,6 +196,9 @@ import HostBootstrap.Step
     , stepLabel
     , stepOperationKey
     , stepProjectedOperations
+    , stepProviderResourceDeclarations
+    , stepChartWorkloadResourceDeclarations
+    , providerResourceDeclarationTargetsChild
     , runStep
     , mkStepPlan
     , stepPlanSteps
@@ -207,6 +225,28 @@ data PlanDraft scope specDigest config = PlanDraft
     }
 
 type role PlanDraft nominal nominal nominal
+
+data ChartWorkloadResource scope planId resourceId frame = ChartWorkloadResource
+    Text Text Text Text Text Text Text Text [Text] Text Text Text Text
+
+type role ChartWorkloadResource nominal nominal nominal nominal
+
+chartWorkloadResourceKeyKernel :: ChartWorkloadResource scope planId resourceId frame -> Text
+chartWorkloadResourceKeyKernel (ChartWorkloadResource _ _ _ _ _ _ _ _ _ key _ _ _) = key
+
+chartWorkloadResourceFrameKernel :: ChartWorkloadResource scope planId resourceId frame -> Text
+chartWorkloadResourceFrameKernel (ChartWorkloadResource _ _ _ _ _ _ _ _ _ _ frame _ _) = frame
+
+chartWorkloadReverseIdentityKernel :: ChartWorkloadResource scope planId resourceId frame -> (Text, Text, Text)
+chartWorkloadReverseIdentityKernel (ChartWorkloadResource _ release namespace _ _ workloadKey _ _ _ _ _ _ _) = (release, namespace, workloadKey)
+
+withChartWorkloadResourceDetailsKernel ::
+    ChartWorkloadResource scope planId resourceId frame ->
+    (Text -> Text -> Text -> Text -> Text -> Text -> Text -> Text -> [Text] -> Text -> Text -> result) ->
+    result
+withChartWorkloadResourceDetailsKernel
+    (ChartWorkloadResource artifact release namespace values image workloadKey workloadDigest role effects _ _ planDigest clusterKey)
+    consume = consume artifact release namespace values image workloadKey workloadDigest role effects planDigest clusterKey
 
 {- | The sole admitted project graph.
 
@@ -378,6 +418,56 @@ projectPlanStepPlanKernel ::
     StepPlan
 projectPlanStepPlanKernel (ProjectPlan _ _ _ _ _ _ plan _ _) = plan
 
+{- | Project only canonical, backend-neutral execution terms from one exact
+plan and one of its opaque forward nodes. Construction of the execution package
+itself belongs solely to the reconciler, keeping this kernel independent of
+the execution representation.
+-}
+projectPlanExecutionTermsKernel ::
+    ProjectPlan scope specDigest planId configId cfg ->
+    PlannedStep scope planId configId (cfg scope) ->
+    ( (Text, Text, Text, Text)
+    , (Text, Word64, Text, FilePath)
+    , (Text, Text, [(Text, Text)], [Text], Maybe (Text, Text, Text, Text, Text, Text, Text, Text, [Text], Text))
+    )
+projectPlanExecutionTermsKernel plan plannedStep =
+    ( ( validatedConfigSpecDigest (projectPlanValidatedConfigKernel plan)
+      , canonicalPlanSnapshotDigest snapshot
+      , canonicalPlanSnapshotConfigDigest snapshot
+      , Text.pack (show (stepIdentity step))
+      )
+    , ( projectPlanProfileNameKernel plan
+      , projectPlanProfileEpochKernel plan
+      , projectPlanProfileProjectNameKernel plan
+      , canonicalPlanSnapshotRoot snapshot
+      )
+    , ( Text.pack (operationKeyText (stepOperationKey step))
+      , Text.pack (frameId (stepFrame step))
+      , [(Text.pack (operationKeyText key), frame) | (key, frame) <- dependencies]
+      , map (Text.pack . operationKeyText) (stepProjectedOperations step)
+      , chartDeclaration
+      )
+    )
+  where
+    snapshot = projectPlanCanonicalSnapshotKernel plan
+    PlannedStep _ step dependencies = plannedStep
+    chartDeclaration =
+        either (const Nothing) Just $
+            withProjectChartWorkloadResourceKernel plan (stepOperationKey step) $ \chart ->
+                withChartWorkloadResourceDetailsKernel chart $ \artifact release namespace values image workloadKey workloadDigest role effects _planDigest clusterKey ->
+                    (artifact, release, namespace, values, image, workloadKey, workloadDigest, role, effects, clusterKey)
+
+withExecutionChartWorkloadResourceKernel ::
+    Text -> Text -> Text ->
+    Maybe (Text, Text, Text, Text, Text, Text, Text, Text, [Text], Text) ->
+    (forall resourceId frame. ChartWorkloadResource scope planId resourceId frame -> result) ->
+    Either PlanError result
+withExecutionChartWorkloadResourceKernel planDigest operation frame declaration consume =
+    case declaration of
+        Nothing -> Left (PlanResourceOperationMissing operation)
+        Just (artifact, release, namespace, values, image, workloadKey, workloadDigest, role, effects, clusterKey) ->
+            Right (consume (ChartWorkloadResource artifact release namespace values image workloadKey workloadDigest role effects operation frame planDigest clusterKey))
+
 -- | Package-private access used by the transitional reconciliation consumer.
 projectPlanCanonicalSnapshotKernel ::
     ProjectPlan scope specDigest planId configId cfg ->
@@ -541,6 +631,173 @@ admitPersistedCanonicalPlanSnapshotKernel specDigest planDigest maybeConfig mayb
         | condition = Right ()
         | otherwise = Left failure
 
+{- | Decode the exact durable resource key space from a structurally admitted
+snapshot.  A reverse-managed step contributes its own operation and every
+projected relation contributes a member in the declaring frame.  The decoder
+uses the snapshot's versioned grammar rather than caller-supplied lists.
+-}
+canonicalPlanResourceMembersKernel :: CanonicalPlanSnapshot -> Either Text [(Text, Text)]
+canonicalPlanResourceMembersKernel snapshot = do
+    remainder0 <-
+        maybe (Left "the canonical plan header is malformed") Right $
+            ByteString.stripPrefix canonicalPlanMagic (canonicalPlanSnapshotBytes snapshot)
+    (formatVersion, remainder1) <-
+        maybe (Left "the canonical plan version is malformed") Right (takeWord64BE remainder0)
+    requireCanonical
+        (formatVersion == canonicalPlanSnapshotFormatVersion)
+        "the canonical plan version is unsupported"
+    remainderAfterRoot <- consumeCanonicalTag "root" remainder1
+    (_rootBytes, remainder2) <-
+        maybe (Left "the canonical project root is malformed") Right (takeLengthFrame remainderAfterRoot)
+    remainder3 <- consumeCanonicalTaggedText "spec-digest" remainder2
+    remainder4 <- consumeCanonicalTaggedText "config-digest" remainder3
+    remainder5 <- consumeCanonicalTag "steps" remainder4
+    (count, stepBytes) <- takeCanonicalWord "steps count" remainder5
+    (members, trailing) <- decodeMembers count stepBytes
+    requireCanonical (ByteString.null trailing) "the canonical plan has trailing bytes"
+    let sorted = List.sort members
+    requireCanonical
+        (length sorted == length (List.nub sorted))
+        "the canonical resource member set contains a duplicate"
+    Right sorted
+  where
+    decodeMembers 0 input = Right ([], input)
+    decodeMembers remaining input = do
+        (current, trailing) <- decodeStepMembers input
+        (rest, final) <- decodeMembers (remaining - 1) trailing
+        Right (current <> rest, final)
+
+-- | Decode the non-secret frame and reverse-adapter coordinates needed by
+-- configless recovery. The same strict canonical grammar and trailing-byte
+-- check as resource membership applies.
+canonicalPlanRecoveryFramesKernel :: CanonicalPlanSnapshot -> Either Text [(Text, Text, Word64)]
+canonicalPlanRecoveryFramesKernel snapshot = do
+    remainder0 <- maybe (Left "the canonical plan header is malformed") Right $
+        ByteString.stripPrefix canonicalPlanMagic (canonicalPlanSnapshotBytes snapshot)
+    (formatVersion, remainder1) <- maybe (Left "the canonical plan version is malformed") Right (takeWord64BE remainder0)
+    requireCanonical (formatVersion == canonicalPlanSnapshotFormatVersion) "the canonical plan version is unsupported"
+    remainderAfterRoot <- consumeCanonicalTag "root" remainder1
+    (_rootBytes, remainder2) <- maybe (Left "the canonical project root is malformed") Right (takeLengthFrame remainderAfterRoot)
+    remainder3 <- consumeCanonicalTaggedText "spec-digest" remainder2
+    remainder4 <- consumeCanonicalTaggedText "config-digest" remainder3
+    remainder5 <- consumeCanonicalTag "steps" remainder4
+    (count, stepBytes) <- takeCanonicalWord "steps count" remainder5
+    (frames, trailing) <- go count stepBytes
+    requireCanonical (ByteString.null trailing) "the canonical plan has trailing bytes"
+    Right frames
+  where
+    go 0 input = Right ([], input)
+    go remaining input = do
+        (frame, trailing) <- decodeRecoveryFrame input
+        (rest, final) <- go (remaining - 1) trailing
+        Right (frame : rest, final)
+
+decodeRecoveryFrame :: ByteString -> Either Text ((Text, Text, Word64), ByteString)
+decodeRecoveryFrame input = do
+    remainder0 <- consumeCanonicalRecordHeader "step" 13 input
+    (_ordinal, remainder1) <- consumeCanonicalTaggedWord "ordinal" remainder0
+    remainder2 <- consumeCanonicalTag "identity" remainder1 >>= consumeCanonicalStepIdentity
+    remainder3 <- consumeCanonicalTag "implementation" remainder2 >>= consumeCanonicalImplementation
+    remainder4 <- consumeCanonicalTaggedText "operation" remainder3
+    remainder5 <- consumeCanonicalTextList "projected-operations" remainder4
+    remainder5a <- consumeCanonicalProviderResources remainder5
+    remainder5b <- consumeCanonicalList "chart-workloads" consumeCanonicalChartWorkload remainder5a
+    remainder6 <- consumeCanonicalTaggedText "label" remainder5b
+    (frame, remainder7) <- takeCanonicalFrame remainder6
+    remainder8 <- consumeCanonicalList "dependencies" consumeCanonicalDependencyIdentity remainder7
+    remainder9 <- consumeCanonicalTag "reverse-policy" remainder8 >>= consumeCanonicalReversePolicy
+    remainder10 <- consumeCanonicalTag "reverse-adapter" remainder9
+    ((kind, revision), remainder11) <- takeCanonicalRecoveryAdapter remainder10
+    trailing <- consumeCanonicalList "descents" consumeCanonicalLiftContext remainder11
+    Right ((frame, kind, revision), trailing)
+
+takeCanonicalRecoveryAdapter :: ByteString -> Either Text ((Text, Word64), ByteString)
+takeCanonicalRecoveryAdapter input = do
+    (kind, remainder0) <- takeCanonicalText "reverse adapter" input
+    (fieldCount, remainder1) <- takeCanonicalWord "reverse adapter field count" remainder0
+    requireCanonical (fieldCount == 2) "the canonical reverse adapter field count is malformed"
+    remainder2 <- consumeCanonicalTag "implementation" remainder1
+    remainder3 <- case kind of
+        "preserve" -> consumeCanonicalAbsent "reverse adapter implementation" remainder2
+        "core-managed" -> consumeCanonicalPresent "reverse adapter implementation" consumeCanonicalImplementation remainder2
+        "project-managed" -> consumeCanonicalPresent "reverse adapter implementation" consumeCanonicalImplementation remainder2
+        "step-declared" -> consumeCanonicalPresent "reverse adapter implementation" consumeCanonicalImplementation remainder2
+        _ -> Left "the canonical reverse adapter is malformed"
+    (revision, trailing) <- consumeCanonicalTaggedWord "revision" remainder3
+    requireCanonical (revision > 0) "the canonical reverse adapter revision is malformed"
+    Right ((kind, revision), trailing)
+
+decodeStepMembers :: ByteString -> Either Text ([(Text, Text)], ByteString)
+decodeStepMembers input = do
+    remainder0 <- consumeCanonicalRecordHeader "step" 13 input
+    (_ordinal, remainder1) <- consumeCanonicalTaggedWord "ordinal" remainder0
+    remainder2 <- consumeCanonicalTag "identity" remainder1 >>= consumeCanonicalStepIdentity
+    remainder3 <- consumeCanonicalTag "implementation" remainder2 >>= consumeCanonicalImplementation
+    (operation, remainder4) <- takeCanonicalTaggedText "operation" remainder3
+    (projected, remainder5) <- takeCanonicalTextList "projected-operations" remainder4
+    remainder5a <- consumeCanonicalProviderResources remainder5
+    remainder5b <- consumeCanonicalList "chart-workloads" consumeCanonicalChartWorkload remainder5a
+    remainder6 <- consumeCanonicalTaggedText "label" remainder5b
+    (frame, remainder7) <- takeCanonicalFrame remainder6
+    remainder8 <- consumeCanonicalList "dependencies" consumeCanonicalDependencyIdentity remainder7
+    remainder9 <- consumeCanonicalTag "reverse-policy" remainder8
+    (reverseKind, remainder10) <- takeCanonicalText "reverse policy" remainder9
+    remainder11 <- consumeCanonicalEmptyText "reverse policy" remainder10
+    remainder12 <- consumeCanonicalTag "reverse-adapter" remainder11 >>= consumeCanonicalReverseAdapter
+    trailing <- consumeCanonicalList "descents" consumeCanonicalLiftContext remainder12
+    let own = [(frame, operation) | reverseKind /= "preserve"]
+    Right (own <> map (\operationKey -> (frame, operationKey)) projected, trailing)
+
+takeCanonicalTaggedText :: Text -> ByteString -> Either Text (Text, ByteString)
+takeCanonicalTaggedText tag input =
+    consumeCanonicalTag tag input >>= takeCanonicalText (tag <> " value")
+
+takeCanonicalTextList :: Text -> ByteString -> Either Text ([Text], ByteString)
+takeCanonicalTextList tag input = do
+    remainder <- consumeCanonicalTag tag input
+    (count, items) <- takeCanonicalWord (tag <> " count") remainder
+    go count items
+  where
+    go 0 trailing = Right ([], trailing)
+    go remaining bytes = do
+        (value, trailing) <- takeCanonicalText (tag <> " item") bytes
+        (rest, final) <- go (remaining - 1) trailing
+        Right (value : rest, final)
+
+consumeCanonicalProviderResources :: ByteString -> Either Text ByteString
+consumeCanonicalProviderResources input = do
+    remainder <- consumeCanonicalTag "provider-resources" input
+    (count, items) <- takeCanonicalWord "provider-resources count" remainder
+    go count items
+  where
+    go 0 trailing = Right trailing
+    go remaining bytes = do
+        (value, trailing) <- takeCanonicalText "provider-resources item" bytes
+        requireCanonical
+            (value == "current-frame" || value == "immediate-child")
+            "the provider-resource target is malformed"
+        go (remaining - 1) trailing
+
+consumeCanonicalChartWorkload :: ByteString -> Either Text ByteString
+consumeCanonicalChartWorkload input = do
+    remainder0 <- consumeCanonicalRecordHeader "chart-workload" 9 input
+    remainder1 <- consumeCanonicalTaggedText "artifact-digest" remainder0
+    remainder2 <- consumeCanonicalTaggedText "release" remainder1
+    remainder3 <- consumeCanonicalTaggedText "namespace" remainder2
+    remainder4 <- consumeCanonicalTaggedText "values-digest" remainder3
+    remainder5 <- consumeCanonicalTaggedText "image-identity" remainder4
+    remainder6 <- consumeCanonicalTaggedText "workload-key" remainder5
+    remainder7 <- consumeCanonicalTaggedText "workload-digest" remainder6
+    remainder8 <- consumeCanonicalTaggedText "service-role" remainder7
+    consumeCanonicalTextList "effects" remainder8
+
+takeCanonicalFrame :: ByteString -> Either Text (Text, ByteString)
+takeCanonicalFrame input = do
+    remainder0 <- consumeCanonicalRecordHeader "frame" 2 input
+    (frame, remainder1) <- takeCanonicalTaggedText "id" remainder0
+    remainder2 <- consumeCanonicalTaggedText "label" remainder1
+    Right (frame, remainder2)
+
 {- | Consume exactly the structural grammar emitted by 'encodeStep'.
 
 The decoder deliberately returns no reconstructed step.  Its only result is
@@ -550,14 +807,16 @@ semantic graph evidence from durable data.
 -}
 consumeCanonicalStep :: ByteString -> Either Text ByteString
 consumeCanonicalStep input = do
-    remainder0 <- consumeCanonicalRecordHeader "step" 11 input
+    remainder0 <- consumeCanonicalRecordHeader "step" 13 input
     (ordinal, remainder1) <- consumeCanonicalTaggedWord "ordinal" remainder0
     requireCanonical (ordinal > 0) "the canonical step ordinal is malformed"
     remainder2 <- consumeCanonicalTag "identity" remainder1 >>= consumeCanonicalStepIdentity
     remainder3 <- consumeCanonicalTag "implementation" remainder2 >>= consumeCanonicalImplementation
     remainder4 <- consumeCanonicalTaggedText "operation" remainder3
     remainder5 <- consumeCanonicalTextList "projected-operations" remainder4
-    remainder6 <- consumeCanonicalTaggedText "label" remainder5
+    remainder5a <- consumeCanonicalProviderResources remainder5
+    remainder5b <- consumeCanonicalList "chart-workloads" consumeCanonicalChartWorkload remainder5a
+    remainder6 <- consumeCanonicalTaggedText "label" remainder5b
     remainder7 <- consumeCanonicalFrame remainder6
     remainder8 <-
         consumeCanonicalList
@@ -941,6 +1200,58 @@ withProjectPlanKernel profileName profileEpoch projectName storeIdentity root co
             drafts
     Right (use admitted)
 
+-- | Build a migration-local plan from the root retained by its opaque drafts.
+-- The returned digest binding is local to the same generative plan identity;
+-- neither value is durable authority until Mode has persisted and read back
+-- the canonical snapshot.
+withProspectiveProjectPlanKernel ::
+    Text ->
+    Word64 ->
+    Text ->
+    Text ->
+    ValidatedConfig scope specDigest configId (cfg scope) ->
+    NonEmpty (PlanDraft scope specDigest (cfg scope)) ->
+    ( forall planDigest planId.
+      ProjectPlan scope specDigest planId configId cfg ->
+      PlanDigestBinding scope specDigest planDigest planId ->
+      CanonicalPlanSnapshot ->
+      result
+    ) ->
+    Either PlanError result
+withProspectiveProjectPlanKernel profileName profileEpoch projectName storeIdentity config drafts use = do
+    admitted <-
+        admitProjectPlanAtRootKernel
+            profileName
+            profileEpoch
+            projectName
+            storeIdentity
+            (internalDraftRoot (NonEmpty.head drafts))
+            config
+            drafts
+    let snapshot = projectPlanCanonicalSnapshotKernel admitted
+    pure (use admitted (mintPlanDigestBindingKernel (projectPlanIndexedSnapshotKernel admitted) (canonicalPlanSnapshotDigest snapshot)) snapshot)
+
+-- | Reconstruct a completed migration under its persisted plan-digest index.
+-- Every canonical field is compared before the fixed digest binding is minted.
+withCompletedMigrationProjectPlanKernel ::
+    Text -> Word64 -> Text -> Text -> Text -> Text -> ByteString ->
+    ValidatedConfig scope specDigest configId (cfg scope) ->
+    NonEmpty (PlanDraft scope specDigest (cfg scope)) ->
+    (ProjectPlan scope specDigest planId configId cfg -> PlanDigestBinding scope specDigest planDigest planId -> result) ->
+    Either PlanError result
+withCompletedMigrationProjectPlanKernel profileName profileEpoch projectName storeIdentity expectedPlan expectedConfig expectedBytes config drafts use = do
+    admitted <- admitProjectPlanAtRootKernel profileName profileEpoch projectName storeIdentity (internalDraftRoot (NonEmpty.head drafts)) config drafts
+    let snapshot = projectPlanCanonicalSnapshotKernel admitted
+    requireEvidence "plan digest" expectedPlan (canonicalPlanSnapshotDigest snapshot)
+    requireEvidence "configuration digest" expectedConfig (canonicalPlanSnapshotConfigDigest snapshot)
+    if canonicalPlanSnapshotBytes snapshot /= expectedBytes
+        then Left (PlanHandoffEvidenceMismatch "canonical snapshot bytes" "persisted bytes" "different bytes")
+        else pure (use admitted (mintPlanDigestBindingKernel (projectPlanIndexedSnapshotKernel admitted) expectedPlan))
+  where
+    requireEvidence label expected observed
+        | expected == observed = Right ()
+        | otherwise = Left (PlanHandoffEvidenceMismatch label expected observed)
+
 -- | Admit an independently projected plan at a canonical POSIX descriptor.
 withProjectedProjectPlanKernel ::
     ProjectPlan scope specDigest parentPlanId parentConfigId cfg ->
@@ -1094,6 +1405,7 @@ admitProjectPlanAtRootKernel profileName profileEpoch projectName storeIdentity 
         case mkStepPlan (map internalDraftStep (NonEmpty.toList drafts)) of
             Left failure -> Left (InvalidProjectPlan failure)
             Right admitted -> Right admitted
+    validateChartWorkloadDeclarations plan
     let admittedTopology = topologyFromAdmittedPlan plan
         snapshot =
             canonicalPlanSnapshot
@@ -1139,8 +1451,76 @@ admitProjectPlanAtRootKernel profileName profileEpoch projectName storeIdentity 
                                     ( PlanDraftConfigurationMismatch
                                         expectedConfigDigest
                                         (internalDraftConfigDigest draft)
-                                    )
+                                )
                             Nothing -> Right ()
+
+validateChartWorkloadDeclarations :: StepPlan -> Either PlanError ()
+validateChartWorkloadDeclarations plan = mapM_ validate (stepPlanSteps plan)
+  where
+    validate step = case stepChartWorkloadResourceDeclarations step of
+        [] -> Right ()
+        [declaration]
+            | stepIdentity step /= CoreStepIdentity DeployChartId ->
+                binding "chart operation" "core:deploy-chart" (Text.pack (operationKeyText (stepOperationKey step)))
+            | otherwise -> do
+                validateFields declaration
+                let clusters =
+                        [ dependency
+                        | dependencyIdentity <- stepDependencies plan step
+                        , Just dependency <- [find ((== dependencyIdentity) . stepIdentity) (stepPlanSteps plan)]
+                        , stepIdentity dependency == CoreStepIdentity DeployKindId
+                        , frameId (stepFrame dependency) == frameId (stepFrame step)
+                        ]
+                case clusters of
+                    [_] -> Right ()
+                    [] -> binding "chart cluster parent" "one same-frame cluster dependency" "none"
+                    _ -> binding "chart cluster parent" "one same-frame cluster dependency" "duplicate"
+        declarations -> binding "chart workload declaration count" "one" (Text.pack (show (length declarations)))
+    validateFields (artifact, release, namespace, valuesDigest, imageIdentity, workloadKey, workloadDigest, serviceRole, effects) = do
+        mapM_ (\(label, value) -> if Text.null value then binding label "non-empty" "empty" else Right ())
+            [ ("chart artifact digest", artifact), ("chart release", release), ("chart namespace", namespace)
+            , ("chart values digest", valuesDigest), ("chart image identity", imageIdentity)
+            , ("chart workload declaration key", workloadKey), ("chart workload declaration digest", workloadDigest)
+            , ("chart service role", serviceRole)
+            ]
+        if null effects || length effects /= length (List.nub effects) || any Text.null effects
+            then binding "chart effects" "a non-empty unique set" "empty or duplicate"
+            else Right ()
+    binding field expected observed = Left (PlanResourceBindingMismatch field expected observed)
+
+withProjectChartWorkloadResourceKernel ::
+    ProjectPlan scope specDigest planId configId cfg ->
+    OperationKey ->
+    (forall resourceId frame. ChartWorkloadResource scope planId resourceId frame -> result) ->
+    Either PlanError result
+withProjectChartWorkloadResourceKernel plan operation consume = do
+    step <- maybe (Left (PlanResourceOperationMissing key)) Right (findStep graph key)
+    if stepIdentity step /= CoreStepIdentity DeployChartId
+        then Left (PlanResourceKindMismatch key "chart workload")
+        else case stepChartWorkloadResourceDeclarations step of
+            [(artifact, release, namespace, valuesDigest, imageIdentity, workloadKey, workloadDigest, serviceRole, effects)] ->
+                case
+                    [ Text.pack (operationKeyText (stepOperationKey dependency))
+                    | dependencyIdentity <- stepDependencies graph step
+                    , Just dependency <- [find ((== dependencyIdentity) . stepIdentity) (stepPlanSteps graph)]
+                    , stepIdentity dependency == CoreStepIdentity DeployKindId
+                    , frameId (stepFrame dependency) == frameId (stepFrame step)
+                    ] of
+                    [clusterKey] ->
+                        pure
+                            ( consume
+                                ( ChartWorkloadResource artifact release namespace valuesDigest imageIdentity workloadKey workloadDigest serviceRole effects key
+                                    (Text.pack (frameId (stepFrame step)))
+                                    (canonicalPlanSnapshotDigest snapshot)
+                                    clusterKey
+                                )
+                            )
+                    _ -> Left (PlanResourceBindingMismatch "chart cluster parent" "one same-frame cluster dependency" "not one")
+            _ -> Left (PlanResourceBindingMismatch "chart workload declaration count" "one" "not one")
+  where
+    graph = projectPlanStepPlanKernel plan
+    snapshot = case plan of ProjectPlan _ _ _ _ _ _ _ _ (IndexedPlanSnapshot retained) -> retained
+    key = Text.pack (operationKeyText operation)
 
 {- | Project the exact admitted graph in its validated dependency order.
 
@@ -1435,20 +1815,11 @@ withGraphResourceOfKind ::
     ) ->
     Either PlanError result
 withGraphResourceOfKind digest graph resourceKind requestedKey consume
-    | requestedKey /= plannedKindKey resourceKind =
-        Left (PlanResourceKindMismatch requestedKey (plannedKindName resourceKind))
-    | otherwise =
-        case findStep graph requestedKey of
-            Nothing -> Left (PlanResourceOperationMissing requestedKey)
-            Just step ->
-                Right
-                    ( consume
-                        ( PlannedResource
-                            digest
-                            requestedKey
-                            (Text.pack (frameId (stepFrame step)))
-                        )
-                    )
+    | otherwise = case findStep graph requestedKey of
+        Nothing -> Left (PlanResourceOperationMissing requestedKey)
+        Just step -> do
+            frame <- resourceFrame graph resourceKind step
+            Right (consume (PlannedResource digest requestedKey frame))
 
 withNodeResourceOfKind ::
     Text ->
@@ -1544,6 +1915,7 @@ requireKind ::
     PlannedResource scope planId resourceId resource frame ->
     Either PlanError ()
 requireKind resourceKind resource
+    | providerKind resourceKind = Right ()
     | plannedResourceKeyKernel resource == plannedKindKey resourceKind = Right ()
     | otherwise =
         Left
@@ -1551,6 +1923,38 @@ requireKind resourceKind resource
                 (plannedResourceKeyKernel resource)
                 (plannedKindName resourceKind)
             )
+
+providerKind :: PlannedResourceKind resource -> Bool
+providerKind ProviderResourceKind = True
+providerKind _ = False
+
+resourceFrame :: StepPlan -> PlannedResourceKind resource -> Step -> Either PlanError Text
+resourceFrame graph resourceKind step
+    | not (providerKind resourceKind) =
+        if Text.pack (operationKeyText (stepOperationKey step)) == plannedKindKey resourceKind
+            then Right currentFrame
+            else Left (PlanResourceKindMismatch (Text.pack (operationKeyText (stepOperationKey step))) (plannedKindName resourceKind))
+    | otherwise =
+        case stepProviderResourceDeclarations step of
+            [declaration]
+                | providerResourceDeclarationTargetsChild declaration ->
+                    maybe
+                        (Left (PlanResourceBindingMismatch "provider target frame" "one immediate child" "none"))
+                        (Right . Text.pack . frameId)
+                        (immediateChild graph step)
+                | otherwise -> Right currentFrame
+            []
+                | Text.pack (operationKeyText (stepOperationKey step)) == plannedKindKey ProviderResourceKind ->
+                    Right currentFrame
+            _ -> Left (PlanResourceKindMismatch (Text.pack (operationKeyText (stepOperationKey step))) (plannedKindName resourceKind))
+  where
+    currentFrame = Text.pack (frameId (stepFrame step))
+
+immediateChild :: StepPlan -> Step -> Maybe StepFrame
+immediateChild graph author =
+    case dropWhile ((/= frameId (stepFrame author)) . frameId) (chainFrames graph) of
+        _current : child : _ -> Just child
+        _ -> Nothing
 
 requireProjectedAlias :: Step -> Text -> Either PlanError ()
 requireProjectedAlias step =
@@ -1739,7 +2143,7 @@ stablePlanSnapshotDigestKernel (StablePlanSnapshot snapshot) =
 -- | The current stable wire version. Changing the schema requires a new value;
 -- old bytes must never be reinterpreted under a new schema.
 canonicalPlanSnapshotFormatVersion :: Word64
-canonicalPlanSnapshotFormatVersion = 3
+canonicalPlanSnapshotFormatVersion = 5
 
 {- | Reserved non-absolute root for the current compatibility plan algebra.
 
@@ -1950,6 +2354,14 @@ encodeStep allSteps plan step =
             "projected-operations"
             (encodeText . Text.pack . operationKeyText)
             (stepProjectedOperations step)
+        , taggedList
+            "provider-resources"
+            encodeProviderResourceDeclaration
+            (stepProviderResourceDeclarations step)
+        , taggedList
+            "chart-workloads"
+            encodeChartWorkloadDeclaration
+            (stepChartWorkloadResourceDeclarations step)
         , taggedText "label" (Text.pack (stepLabel step))
         , taggedRecord
             "frame"
@@ -1971,6 +2383,28 @@ encodeStep allSteps plan step =
                 (takeWhile ((/= stepIdentity step) . stepIdentity) allSteps)
                 + 1
             )
+
+encodeProviderResourceDeclaration :: ProviderResourceDeclaration -> Builder.Builder
+encodeProviderResourceDeclaration declaration =
+    encodeText
+        ( if providerResourceDeclarationTargetsChild declaration
+            then "immediate-child"
+            else "current-frame"
+        )
+
+encodeChartWorkloadDeclaration :: (Text, Text, Text, Text, Text, Text, Text, Text, [Text]) -> Builder.Builder
+encodeChartWorkloadDeclaration (artifact, release, namespace, valuesDigest, imageIdentity, workloadKey, workloadDigest, serviceRole, effects) =
+    taggedRecord "chart-workload"
+        [ taggedText "artifact-digest" artifact
+        , taggedText "release" release
+        , taggedText "namespace" namespace
+        , taggedText "values-digest" valuesDigest
+        , taggedText "image-identity" imageIdentity
+        , taggedText "workload-key" workloadKey
+        , taggedText "workload-digest" workloadDigest
+        , taggedText "service-role" serviceRole
+        , taggedList "effects" encodeText effects
+        ]
 
 encodeDependency :: [Step] -> StepIdentity -> Builder.Builder
 encodeDependency allSteps identity =

@@ -17,10 +17,13 @@ module HostBootstrap.Chain (
     nextFrameAfter,
     handoffDispatch,
     runChainFromFrame,
+    runChainFromFrameWithDescent,
+    runChainFromFrameWithDescentFailure,
 )
 where
 
 import Control.Exception.Safe (throwIO, try)
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (intercalate, partition)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NonEmpty
@@ -44,10 +47,15 @@ import HostBootstrap.Authority (
 import HostBootstrap.Harness (SafetyRefusal (SafetyRefusal))
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Lifecycle.Execution.Internal (
+    ResourceCarrier,
+    carriedResourceKey,
+    carriedResourceSettlement,
     newResourceCarrier,
     newStepRuntime,
     openStepRuntimeGate,
+    readCarriedResources,
     setStepRuntimeOwnGate,
+    stepRuntimeCarrier,
     stepRuntimeTakenGates,
  )
 import HostBootstrap.Lifecycle.Mode (
@@ -58,17 +66,19 @@ import HostBootstrap.Lifecycle.Mode (
     lifecycleCursorVerb,
     validateCurrentLifecycleCursor,
  )
+import HostBootstrap.Lifecycle.ResourceRecord (resourceRecordKeyKernel)
 import HostBootstrap.Lifecycle.Session (
     FenceEpoch,
     IntentOrigin (NoHistory),
     OperationSession,
     ProjectPermit,
-    SessionError,
+    SessionError (..),
     acknowledgeOutcome,
     closeOperationSession,
     establishInitialFence,
     openOperationSession,
     openProjectJournal,
+    preparedGateOperation,
     recoverAbandonedSessions,
     registerOperationIntent,
     sessionErrorMessage,
@@ -83,12 +93,6 @@ import HostBootstrap.Lift (
     foldLift,
     liftStdin,
     liftSubcommandWithStdin,
- )
-import HostBootstrap.Protected (
-    ProtectedSession,
-    ProtectedStore,
-    protectedErrorMessage,
-    withProtectedEntry,
  )
 import HostBootstrap.ProjectPlan (
     DerivedTopology,
@@ -112,6 +116,17 @@ import HostBootstrap.ProjectPlan (
     topologyContainsFrame,
     topologyDescentFrom,
     topologyFrameOrder,
+ )
+import HostBootstrap.Protected (
+    Expectation (ExpectAbsent, ExpectVersion),
+    ProtectedRecord (protectedRecordBytes, protectedRecordVersion),
+    ProtectedSession,
+    ProtectedStore,
+    compareAndSwapProtectedRecord,
+    mkRecordKey,
+    protectedErrorMessage,
+    readProtectedRecord,
+    withProtectedEntry,
  )
 import HostBootstrap.Reconcile (stepExecutionFor)
 import System.Exit (ExitCode (ExitSuccess))
@@ -145,7 +160,7 @@ nextFrameAfter ::
     Maybe (Text, LiftContext)
 nextFrameAfter = topologyDescentFrom
 
-{- | The pure host dispatch for the recursive handoff. -}
+-- | The pure host dispatch for the recursive handoff.
 handoffDispatch :: SelfRef -> LiftContext -> LiftDispatch
 handoffDispatch self context = foldLift self context handoffArgv
 
@@ -181,6 +196,86 @@ runChainFromFrame ::
     LifecycleCursor scope planId frame brokerGeneration VerbUp ExecutePhase ->
     IO (Either String ())
 runChainFromFrame cfg self store plan authority cursor =
+    runChainFromFrameWithDescent cfg self store plan authority cursor legacyDescent
+  where
+    legacyDescent _carrier _parent _child descent = do
+        result <- liftSubcommandWithStdin cfg self descent handoffArgv (liftStdin descent)
+        case result of
+            Right (ExitSuccess, out, _) -> putStr out >> pure (Right ())
+            Right (_, out, err) -> putStr out >> pure (Left err)
+            Left failure -> pure (Left failure)
+
+{- | Interpret a current frame while delegating its one admitted descent.
+
+The callback receives only the exact parent/child frame names and plan-owned
+lift context already selected from this plan.  The root coordinator uses this
+seam to replace the ordinary command invocation with its authenticated process
+exchange; all local preparation and settlement remain in this interpreter.
+-}
+runChainFromFrameWithDescent ::
+    forall scope specDigest planId configId cfg frame brokerGeneration.
+    HostConfig ->
+    SelfRef ->
+    ProtectedStore ->
+    ProjectPlan scope specDigest planId configId cfg ->
+    CommandAuthority scope planId frame brokerGeneration VerbUp ExecutePhase ->
+    LifecycleCursor scope planId frame brokerGeneration VerbUp ExecutePhase ->
+    (ResourceCarrier scope planId -> Text -> Text -> LiftContext -> IO (Either String ())) ->
+    IO (Either String ())
+runChainFromFrameWithDescent cfg _self store plan authority cursor runDescent =
+    runChainFromFrameWithDescentObserved
+        cfg
+        store
+        plan
+        authority
+        cursor
+        runDescent
+        (const (pure ()))
+
+{- | Retain the exact operation prefix whose durable Prepared gates were
+published before a failed forward interpretation. The two operation lists are
+identical at this boundary: none has yet been admitted for unwind settlement.
+-}
+runChainFromFrameWithDescentFailure ::
+    forall scope specDigest planId configId cfg frame brokerGeneration.
+    HostConfig ->
+    SelfRef ->
+    ProtectedStore ->
+    ProjectPlan scope specDigest planId configId cfg ->
+    CommandAuthority scope planId frame brokerGeneration VerbUp ExecutePhase ->
+    LifecycleCursor scope planId frame brokerGeneration VerbUp ExecutePhase ->
+    (ResourceCarrier scope planId -> Text -> Text -> LiftContext -> IO (Either String ())) ->
+    IO (Either (String, [Text], [Text]) ())
+runChainFromFrameWithDescentFailure cfg _self store plan authority cursor runDescent = do
+    reachedRef <- newIORef []
+    outcome <-
+        runChainFromFrameWithDescentObserved
+            cfg
+            store
+            plan
+            authority
+            cursor
+            runDescent
+            (modifyIORef' reachedRef . appendNew)
+    case outcome of
+        Right () -> pure (Right ())
+        Left failure -> do
+            reached <- readIORef reachedRef
+            pure (Left (failure, reached, reached))
+  where
+    appendNew observed retained = retained <> filter (`notElem` retained) observed
+
+runChainFromFrameWithDescentObserved ::
+    forall scope specDigest planId configId cfg frame brokerGeneration.
+    HostConfig ->
+    ProtectedStore ->
+    ProjectPlan scope specDigest planId configId cfg ->
+    CommandAuthority scope planId frame brokerGeneration VerbUp ExecutePhase ->
+    LifecycleCursor scope planId frame brokerGeneration VerbUp ExecutePhase ->
+    (ResourceCarrier scope planId -> Text -> Text -> LiftContext -> IO (Either String ())) ->
+    ([Text] -> IO ()) ->
+    IO (Either String ())
+runChainFromFrameWithDescentObserved cfg store plan authority cursor runDescent onReached =
     case admittedCurrentFrame of
         Left failure -> pure (Left failure)
         Right currentNodes -> do
@@ -288,13 +383,14 @@ runChainFromFrame cfg self store plan authority cursor =
                 case nextFrameAfter derivedTopology current of
                     Nothing ->
                         runPostHandoff carrier session fence afterPre postHandoff
-                    Just (_childFrame, descent) ->
+                    Just (childFrame, descent) ->
                         descendInto
                             carrier
                             session
                             fence
                             afterPre
                             postHandoff
+                            childFrame
                             descent
 
     runPlanSteps _ _ _ permit [] = pure (Right permit)
@@ -352,6 +448,7 @@ runChainFromFrame cfg self store plan authority cursor =
         case prepared of
             Left failure -> pure (Left failure)
             Right (gate, afterPrepare) -> do
+                onReached (nodeOperationKeys planned)
                 attempted <- try (runPlannedStep planned execution)
                 let observation = case attempted of
                         Right observed -> observed
@@ -363,13 +460,15 @@ runChainFromFrame cfg self store plan authority cursor =
                         settleProjections
                             protected
                             session
+                            runtime
                             observation
                             taken
                             afterPrepare
                             ( \afterTaken ->
-                                acknowledgeOutcome
+                                persistThenAcknowledge
                                     protected
                                     session
+                                    runtime
                                     gate
                                     (settledPhaseFor observation)
                                     observation
@@ -404,12 +503,13 @@ runChainFromFrame cfg self store plan authority cursor =
                 openProjections protected session epoch fence runtime next rest use
             )
 
-    settleProjections _ _ _ [] permit use = use permit
-    settleProjections protected session observation (projected : rest) permit use = do
+    settleProjections _ _ _ _ [] permit use = use permit
+    settleProjections protected session runtime observation (projected : rest) permit use = do
         acknowledged <-
-            acknowledgeOutcome
+            persistThenAcknowledge
                 protected
                 session
+                runtime
                 projected
                 (settledPhaseFor observation)
                 ()
@@ -419,21 +519,55 @@ runChainFromFrame cfg self store plan authority cursor =
             Right advance ->
                 withOperationAdvance
                     advance
-                    (\() next -> settleProjections protected session observation rest next use)
+                    (\() next -> settleProjections protected session runtime observation rest next use)
 
-    descendInto carrier session fence permit postHandoff descent = do
-        result <-
-            liftSubcommandWithStdin
-                cfg
-                self
-                descent
-                handoffArgv
-                (liftStdin descent)
+    persistThenAcknowledge protected session runtime gate phase result permit = do
+        persisted <- persistCarriedSettlement protected runtime (preparedGateOperation gate)
+        case persisted of
+            Left failure -> pure (Left failure)
+            Right () -> acknowledgeOutcome protected session gate phase result permit
+
+    persistCarriedSettlement protected runtime operation = do
+        carried <- readCarriedResources (stepRuntimeCarrier runtime)
+        case filter ((== operation) . carriedResourceKey) carried of
+            [] -> pure (Right ())
+            [resource] -> case carriedResourceSettlement resource of
+                Nothing -> pure (Left (SessionPreparedGateMismatch "managed resource has no durable settlement"))
+                Just (frame, expected, bytes) -> writeStableMember protected frame operation expected bytes
+            _ -> pure (Left (SessionPreparedGateMismatch "duplicate carried resource settlement"))
+
+    writeStableMember protected frame resource expected bytes =
+        case resourceRecordKey planDigest frame resource of
+            Left failure -> pure (Left failure)
+            Right key -> do
+                observed <- readProtectedRecord protected key
+                case observed of
+                    Left failure -> pure (Left (SessionStoreFailure failure))
+                    Right Nothing -> case expected of
+                        Just _ -> pure (Left (SessionPreparedGateMismatch "missing resource settlement predecessor"))
+                        Nothing -> do
+                            written <- compareAndSwapProtectedRecord protected key ExpectAbsent bytes
+                            pure (either (Left . SessionStoreFailure) (const (Right ())) written)
+                    Right (Just record)
+                        | protectedRecordBytes record == bytes -> pure (Right ())
+                        | Just (protectedRecordBytes record) == expected -> do
+                            written <-
+                                compareAndSwapProtectedRecord
+                                    protected
+                                    key
+                                    (ExpectVersion (protectedRecordVersion record))
+                                    bytes
+                            pure (either (Left . SessionStoreFailure) (const (Right ())) written)
+                        | otherwise -> pure (Left (SessionPreparedGateMismatch "conflicting resource settlement"))
+
+    resourceRecordKey digest frame resource = do
+        raw <- either (Left . SessionPreparedGateMismatch) Right (resourceRecordKeyKernel digest frame resource)
+        either (Left . SessionStoreFailure) Right (mkRecordKey raw)
+
+    descendInto carrier session fence permit postHandoff childFrame descent = do
+        result <- runDescent carrier current childFrame descent
         case result of
-            Right (ExitSuccess, out, _) -> do
-                putStr out
-                runPostHandoff carrier session fence permit postHandoff
-            Right (_, out, err) -> putStr out >> pure (Left err)
+            Right () -> runPostHandoff carrier session fence permit postHandoff
             Left failure -> pure (Left failure)
 
     runPostHandoff carrier session fence permit postHandoff = do
@@ -470,13 +604,11 @@ currentFrameProjection ::
     Text ->
     Either String (NonEmpty (PlannedStep scope planId configId (cfg scope)))
 currentFrameProjection plan current =
-    case
-        NonEmpty.nonEmpty
-            ( filter
-                ((== current) . plannedStepFrameId)
-                (NonEmpty.toList (orderedProjection plan))
-            )
-        of
+    case NonEmpty.nonEmpty
+        ( filter
+            ((== current) . plannedStepFrameId)
+            (NonEmpty.toList (orderedProjection plan))
+        ) of
         Nothing ->
             Left
                 ( "project up: admitted frame "

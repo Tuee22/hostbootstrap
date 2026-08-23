@@ -45,6 +45,7 @@ module HostBootstrap.Handoff.Receiver (
     -- * The exchange
     withIsolatedReceivedHandoffEdge,
     withReceivedHandoffEdge,
+    withProviderDependencyClientKernel,
 
     -- * Failures
     ReceiverError (..),
@@ -63,7 +64,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import HostBootstrap.Authority (
     InstalledProjectIdentity,
-    ProjectVerb (ProjectDestroy, ProjectDown),
+    ProjectVerb (ProjectDestroy, ProjectDown, ProjectUp),
  )
 import HostBootstrap.Config.Vocab (Harness, Production)
 import HostBootstrap.Handoff (
@@ -92,6 +93,9 @@ import HostBootstrap.Handoff (
     handoffScopeTag,
     handoffVerb,
     mkRecoveryProjectionBindingFromRoute,
+    providerDependencyPackageFromFields,
+    providerDependencyProbeRequestFields,
+    providerDependencyProbeResponseFromFields,
     recoveryWireGrantFromSignature,
     renderRecoveryProjectionBinding,
     takeHandoffFrame,
@@ -113,7 +117,7 @@ import HostBootstrap.Handoff.Protocol (
     HandoffChannel,
     ProtocolError,
     ProtocolMessage,
-    ProtocolTag (AcceptedTag, ChallengeTag, CompletedTag, GrantTag, OfferTag, RefusedTag),
+    ProtocolTag (AcknowledgedTag, AcceptedTag, ChallengeTag, CompletedTag, GrantTag, OfferTag, ProviderDependencyPackageTag, ProviderDependencyProbeRequestTag, ProviderDependencyProbeResponseTag, RefusedTag),
     channelReceive,
     channelSend,
     childProtocolReceive,
@@ -131,6 +135,8 @@ import HostBootstrap.Handoff.Receiver.Internal (
     ReceivedRecoveryDescent,
     mkReceivedEdge,
     mkReceivedRecoveryDescent,
+    receivedEdgeChannel,
+    receivedEdgeRequestId,
  )
 
 -- ---------------------------------------------------------------------------
@@ -281,6 +287,80 @@ withReceivedHandoffEdge
             announceRefusal channel active failure
             pure (Left failure)
 
+{- | Open the hidden child client only for the lifetime of an authenticated
+edge. It permits one in-flight request, consumes each nonce before sending,
+and accepts one exact response carrying the edge's request identity.
+-}
+withProviderDependencyClientKernel ::
+    ReceivedEdge scope brokerGeneration ->
+    (Maybe ByteString -> (Text -> IO (Either ReceiverError (Either Text Word64))) -> IO (Either ReceiverError result)) ->
+    IO (Either ReceiverError result)
+withProviderDependencyClientKernel edge use = do
+    case protocolMessage ProviderDependencyPackageTag requestId [ByteString.empty] of
+        Left failure -> pure (Left (ReceiverProtocolFailure failure))
+        Right requestMessage -> do
+            sent <- channelSend channel requestMessage
+            case sent of
+                Left failure -> pure (Left (ReceiverProtocolFailure failure))
+                Right () -> receivePackage
+  where
+    channel = receivedEdgeChannel edge
+    requestId = receivedEdgeRequestId edge
+    receivePackage = do
+        announced <- channelReceive channel
+        case announced of
+            Left failure -> pure (Left (ReceiverProtocolFailure failure))
+            Right message
+                | protocolMessageRequestId message /= requestId ->
+                    pure (Left (ReceiverWrongEdge "the provider dependency package has another request identity"))
+                | protocolMessageTag message /= ProviderDependencyPackageTag ->
+                    pure (Left (ReceiverMalformedMessage (protocolMessageTag message) (length (protocolMessageFields message))))
+                | protocolMessageFields message == [ByteString.empty] ->
+                    use Nothing (const (pure (Left (ReceiverDeclined "no provider dependency package is admitted"))))
+                | otherwise -> case providerDependencyPackageFromFields (protocolMessageFields message) of
+                    Left failure -> pure (Left (ReceiverDeclined failure))
+                    Right packageWire -> do
+                        state <- newMVar (False, [])
+                        use (Just packageWire) (probe packageWire state)
+    probe packageWire state nonce = do
+        admitted <- modifyMVar state $ \current@(busy, consumed) ->
+            if busy
+                then pure (current, Left (ReceiverDeclined "a provider dependency request is already outstanding"))
+                else
+                    if nonce `elem` consumed
+                        then pure (current, Left (ReceiverDeclined "the provider dependency nonce was replayed"))
+                        else
+                            if length consumed >= providerClientRequestLimit
+                                then pure (current, Left (ReceiverDeclined "the provider dependency client request limit was reached"))
+                                else pure ((True, nonce : consumed), Right ())
+        case admitted of
+            Left failure -> pure (Left failure)
+            Right () -> Exception.finally (exchange packageWire nonce) (modifyMVar state (\(_, consumed) -> pure ((False, consumed), ())))
+    exchange packageWire nonce = case providerDependencyProbeRequestFields packageWire nonce of
+        Left failure -> pure (Left (ReceiverDeclined failure))
+        Right fields -> case protocolMessage ProviderDependencyProbeRequestTag requestId fields of
+            Left failure -> pure (Left (ReceiverProtocolFailure failure))
+            Right message -> do
+                sent <- channelSend channel message
+                case sent of
+                    Left failure -> pure (Left (ReceiverProtocolFailure failure))
+                    Right () -> do
+                        answer <- channelReceive channel
+                        case answer of
+                            Left failure -> pure (Left (ReceiverProtocolFailure failure))
+                            Right response
+                                | protocolMessageRequestId response /= requestId ->
+                                    pure (Left (ReceiverWrongEdge "the provider dependency response has another request identity"))
+                                | protocolMessageTag response /= ProviderDependencyProbeResponseTag ->
+                                    pure (Left (ReceiverMalformedMessage (protocolMessageTag response) (length (protocolMessageFields response))))
+                                | otherwise ->
+                                    pure $ either (Left . ReceiverDeclined) Right
+                                        (providerDependencyProbeResponseFromFields packageWire nonce (protocolMessageFields response))
+
+providerClientRequestLimit :: Int
+providerClientRequestLimit = 64
+
+
 {- | Continue only after the capsule verifier has fixed the execution scope. -}
 receiveScopedHandoffEdge ::
     AuthenticatedRootScope scope ->
@@ -400,7 +480,13 @@ runTerminalAction channel state requestId active useTerminal = Exception.mask $ 
                             else do
                                 attemptedSend <-
                                     Exception.try
-                                        (runAttempt (sendMessage channel state CompletedTag requestId [report]))
+                                        ( runAttempt $ do
+                                            awaiting <- sendMessage channel state CompletedTag requestId [report]
+                                            (acknowledged, _finished) <- receiveMessage channel awaiting
+                                            if protocolMessageTag acknowledged == AcknowledgedTag
+                                                then pure ()
+                                                else failAttempt (ReceiverDeclined "the parent did not acknowledge the terminal report")
+                                        )
                                 case attemptedSend of
                                     Left (failure :: SomeException) ->
                                         pure ((False, True, False), Left failure)
@@ -529,9 +615,8 @@ classifyVerified authenticated channel requestId key evidence verified useConfig
                     classifyRecovery ProjectDown
                 ("destroy", "teardown") ->
                     classifyRecovery ProjectDestroy
-                ("up", _) ->
-                    failAttempt
-                        (ReceiverWrongEdge "a recovery adapter cannot authorize project up")
+                ("up", "teardown") ->
+                    classifyRecovery ProjectUp
                 (_, phase) ->
                     failAttempt
                         ( ReceiverWrongEdge

@@ -30,12 +30,12 @@ Clause realization (see @documents/architecture/ownership_invariant.md@):
 * clause 4 — every node re-observed as that identity before the destructive
   command, and a record forgotten only over a reported absence.
 
-__A backend is a value the declaration decides.__ Nothing is probed here: what a
-discovery once proved — that a writable state directory, a locking front end, and
-an interpreter exist — is the protected store's own to establish when a
-transaction enters it, and the tools are resolved once through the typed
-@HostConfig@ (§ K). What is admitted is only that the three tools a cluster drives
-are in that configuration, so a backend that cannot reach one of them mints no
+__A backend is a value the declaration decides.__ Nothing is probed here: the
+writable state directory and clause-holding protected store are established when
+a transaction enters it, and tools are resolved once through typed @HostConfig@
+(§ K). What is admitted is only that the selected Kind/nvkind creation driver and
+Docker, Kubectl, and Helm are in that configuration, so a backend that cannot
+reach one of them mints no
 capability rather than failing at the first effect.
 -}
 module HostBootstrap.Cluster.Backend (
@@ -49,6 +49,13 @@ module HostBootstrap.Cluster.Backend (
     runClusterStatusCall,
     classifyClusterStatus,
     runClusterReadinessCall,
+    registerClusterRuntimeDependencyPackage,
+    withFreshClusterRuntimeDependency,
+    PreparedChartWorkload,
+    withPreparedChartWorkload,
+    runChartWorkloadCall,
+    runChartWorkloadCleanupCall,
+    runVerifiedChartWorkloadCleanupCall,
 
     -- * Loopback-bound exposure
     LoopbackExposure,
@@ -65,12 +72,34 @@ module HostBootstrap.Cluster.Backend (
 where
 
 import Data.Char (isDigit)
+import qualified Data.ByteString as ByteString
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
+import Data.List (isInfixOf)
 import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
-import HostBootstrap.Cluster.Command (clusterCommandTools, listClustersCommand)
+import HostBootstrap.Cluster.Command (listClustersCommand)
+import HostBootstrap.Cluster.Backend.Internal
+    ( StrongClusterBackend
+    , mkStrongClusterBackend
+    , strongClusterHostConfig
+    , strongClusterDriver
+    , strongClusterConfigBytes
+    , strongClusterConfigDigest
+    , strongClusterOwnershipIdentity
+    , strongClusterReadinessVersion
+    )
+import HostBootstrap.Cluster.Lifecycle
+    ( ClusterDriver (KindDriver, NvkindDriver)
+    , PlanOwnedClusterConfig
+    , planOwnedClusterConfigBase
+    , planOwnedClusterConfigBytes
+    , planOwnedClusterConfigDigest
+    , planOwnedClusterConfigDriver
+    , planOwnedClusterOwnershipIdentity
+    )
 import HostBootstrap.Cluster.Cordon (ResourceBudget)
 import HostBootstrap.Cluster.Observation.Internal (
     ClusterBackendBinding (..),
@@ -87,6 +116,8 @@ import HostBootstrap.Cluster.Observation.Internal (
 import qualified HostBootstrap.Cluster.Ownership as Owned
 import HostBootstrap.Cluster.Reconcile (
     AppliedClusterCordon,
+    ClusterReadiness,
+    ClusterReadinessResultView (..),
     PreparedClusterCleanup,
     PreparedClusterCordon,
     PreparedClusterReconcile,
@@ -95,11 +126,16 @@ import HostBootstrap.Cluster.Reconcile (
     appliedClusterCordonNodeNames,
     appliedClusterCordonOwnershipIdentity,
     appliedClusterCordonStateDirectory,
+    clusterReadinessResultView,
+    managedClusterGeneration,
+    managedClusterKey,
     preparedCleanupClusterName,
     preparedCleanupNodeNames,
     preparedCleanupOwnershipIdentity,
     preparedCleanupStateDirectory,
     preparedClusterConfigDigest,
+    preparedClusterConfigBytes,
+    preparedClusterDriver,
     preparedClusterConfigPath,
     preparedClusterCordonBudget,
     preparedClusterCordonName,
@@ -110,6 +146,8 @@ import HostBootstrap.Cluster.Reconcile (
     preparedClusterNodeNames,
     preparedClusterOwnershipIdentity,
     preparedClusterStateDirectory,
+    reprobeClusterReadiness,
+    withRecoveredClusterReadiness,
  )
 import HostBootstrap.Cluster.Report (
     ClusterPresence (ClusterAbsent, ClusterPresent),
@@ -119,10 +157,53 @@ import HostBootstrap.Cluster.Report (
     safeClusterName,
  )
 import HostBootstrap.Cluster.Resume (ClusterStandingConflict (ClusterUnderNoRecord, NodeReplaced))
+import HostBootstrap.Cluster.Workload
+    ( PreparedChartWorkload
+    , settlePreparedChartWorkload
+    , settlePreparedChartWorkloadUnchanged
+    , withPreparedChartWorkload
+    , withPreparedChartWorkloadParts
+    , withSettledChartWorkloadCleanup
+    )
 import HostBootstrap.Effect.Interpreter (interpretHostCommand)
-import HostBootstrap.Effect.Run (CapturedRun)
+import HostBootstrap.Effect.Run (CapturedRun (..))
+import HostBootstrap.Effect.Vocabulary (hostCommand, withCommandStdin)
 import HostBootstrap.HostConfig (HostConfig, resolveMaybe)
-import HostBootstrap.HostTool (toolCommandName)
+import HostBootstrap.HostTool (HostTool (Docker, Helm, Kind, Kubectl, Nvkind), toolCommandName)
+import System.Exit (ExitCode (ExitSuccess))
+import HostBootstrap.Lifecycle.Dependency.Internal (
+    RuntimeDependencyPackage,
+    mkClusterRuntimeDependencyPackage,
+    renderRuntimeDependencyProbeResponse,
+    renderRuntimeDependencyChartResponse,
+    runtimeDependencyChartRequest,
+    runtimeDependencyPackageKey,
+    runtimeDependencyProbeRequest,
+    verifyRuntimeDependencyProbeResponse,
+    verifyRuntimeDependencyChartResponse,
+    withClusterRuntimeDependencySuccessor,
+    withRuntimeDependencyProbeRequest,
+    withRuntimeDependencyChartRequest,
+ )
+import HostBootstrap.Lifecycle.Execution.Internal (
+    StepExecution,
+    invokeStepRuntimeDependencyService,
+    registerStepRuntimeDependencyPackage,
+    replaceStepRuntimeDependencyService,
+    stepExecutionFrame,
+    stepExecutionPlanDigest,
+    stepExecutionRuntime,
+    stepRuntimeDependencyPackages,
+ )
+import HostBootstrap.Lifecycle.Prepared (
+    PreparedGate,
+    preparedGateAttempt,
+    preparedGateFence,
+    preparedGateJournalVersion,
+    preparedGateOperation,
+    preparedGatePlan,
+    preparedGateSession,
+ )
 import HostBootstrap.Ownership.Object (ObjectIdentity)
 import HostBootstrap.Protected (
     ProtectedSession,
@@ -132,27 +213,35 @@ import HostBootstrap.Protected (
     withProtectedEntry,
  )
 import HostBootstrap.Reconcile (
+    BackendReconcileObservation (..),
     ClusterResource,
     ConflictDetail (..),
     FailureDetail (..),
     PlannedResource,
+    VerifiedResourceRecordBundle,
+    PriorCommitProof,
+    Provisioned,
     ReconcileError (..),
     RecoveryDisposition (DoNotRetry, ReprobeBeforeRetry),
+    ReconcileResult,
     UnsupportedDetail (..),
     plannedResourceKey,
+    resourceHandleGeneration,
+    withCarriedManagedResourceOfKind,
+    withVerifiedResourceRecordBundle,
  )
 import System.FilePath (isAbsolute, (</>))
+import HostBootstrap.ProjectPlan (ChartWorkloadResource)
+import qualified HostBootstrap.ProjectPlan as ProjectPlan
 
 -- The clause-holding backend --------------------------------------------------
 
 {- | Capability for a backend that holds the four clauses for a cluster.
 
 Its constructor is not exported, so a caller cannot mint one from chosen tool
-paths. What it retains is the typed host configuration every described command
-is resolved through and the counter that versions a fresh readiness observation.
+paths. It retains the exact plan-owned driver, config bytes/digest, ownership
+identity, typed host configuration, and readiness-observation counter.
 -}
-data StrongClusterBackend = StrongClusterBackend HostConfig (IORef Word64)
-
 {- | Admit the declared backend.
 
 No probe, and no discovery of its own: the tools were resolved once into the
@@ -162,10 +251,25 @@ enters it. A tool the configuration does not carry is 'Unsupported' here rather
 than a failure at the first effect, because a backend that cannot reach its
 driver should mint no capability at all.
 -}
-discoverStrongClusterBackend :: HostConfig -> IO (Either ReconcileError StrongClusterBackend)
-discoverStrongClusterBackend cfg =
-    case filter (isNothing . resolveMaybe cfg) clusterCommandTools of
-        [] -> Right . StrongClusterBackend cfg <$> newIORef 0
+discoverStrongClusterBackend ::
+    HostConfig ->
+    PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId ->
+    IO (Either ReconcileError StrongClusterBackend)
+discoverStrongClusterBackend cfg configured =
+    case filter (isNothing . resolveMaybe cfg) requiredTools of
+        [] -> do
+            readiness <- newIORef 0
+            pure
+                ( Right
+                    ( mkStrongClusterBackend
+                        cfg
+                        driver
+                        (planOwnedClusterConfigBytes configured)
+                        (planOwnedClusterConfigDigest configured)
+                        (planOwnedClusterOwnershipIdentity (planOwnedClusterConfigBase configured))
+                        readiness
+                    )
+                )
         (missing : _) ->
             pure
                 ( Left
@@ -178,6 +282,122 @@ discoverStrongClusterBackend cfg =
                         )
                     )
                 )
+  where
+    driver = planOwnedClusterConfigDriver configured
+    requiredTools =
+        [ case driver of
+            KindDriver -> Kind
+            NvkindDriver -> Nvkind
+        , Docker
+        , Kubectl
+        , Helm
+        ]
+
+runChartWorkloadCall ::
+    Maybe (PriorCommitProof scope planId chartId (ChartWorkloadResource scope planId chartId chartFrame)) ->
+    PreparedChartWorkload scope planId chartId chartFrame clusterId clusterPhase operationKey callDigest attempt journalVersion ->
+    IO (Either ReconcileError (ReconcileResult scope planId chartId (ChartWorkloadResource scope planId chartId chartFrame) Provisioned))
+runChartWorkloadCall prior prepared =
+    withPreparedChartWorkloadParts prepared $ \execution values artifact release namespace _valuesDigest image _workloadKey _role _effects clusterKey operationCallDigest _observed _ _ ->
+        case (TextEncoding.decodeUtf8' values, deployments) of
+            (Left _, _) -> pure (failed "canonical values are not UTF-8")
+            (_, []) -> pure (failed "the admitted effects contain no deployment readiness target")
+            (_, _ : _ : _) -> pure (failed "the admitted effects contain multiple deployment readiness targets")
+            (Right valuesText, [deployment]) -> do
+                packages <- stepRuntimeDependencyPackages (stepExecutionRuntime execution)
+                case filter ((== "cluster:" <> clusterKey) . runtimeDependencyPackageKey) packages of
+                    [package] ->
+                        case runtimeDependencyChartRequest package operationCallDigest artifact release namespace image deployment valuesText of
+                            Left refusal -> pure (failed refusal)
+                            Right request -> do
+                                response <- invokeStepRuntimeDependencyService (stepExecutionRuntime execution) package request
+                                pure $ case response >>= verifyRuntimeDependencyChartResponse package operationCallDigest of
+                                    Left refusal -> failed refusal
+                                    Right "unchanged" -> maybe (settlePreparedChartWorkload prepared (BackendRepaired generation)) (settlePreparedChartWorkloadUnchanged prepared) prior
+                                    Right "created" -> settlePreparedChartWorkload prepared (BackendCreated generation)
+                                    Right "repaired" -> settlePreparedChartWorkload prepared (BackendRepaired generation)
+                                    Right _ -> failed "runtime dependency returned an impossible chart outcome"
+                    [] -> pure (failed "the exact cluster runtime dependency package is absent")
+                    _ -> pure (failed "the cluster runtime dependency registry contains duplicate resource keys")
+  where
+    deployments = [Text.drop 11 effect | effect <- preparedEffects, "deployment:" `Text.isPrefixOf` effect]
+    preparedEffects = withPreparedChartWorkloadParts prepared $ \_ _ _ _ _ _ _ _ _ effects _ _ _ _ _ -> effects
+    generation = withPreparedChartWorkloadParts prepared $ \_ _ _ _ _ _ _ _ _ _ _ _ observed _ _ -> resourceHandleGeneration observed
+    failed reason = settlePreparedChartWorkload prepared (BackendFailed reason ReprobeBeforeRetry)
+
+runChartWorkloadCleanupCall ::
+    StrongClusterBackend ->
+    ChartWorkloadResource scope planId chartId chartFrame ->
+    ReconcileResult scope planId chartId (ChartWorkloadResource scope planId chartId chartFrame) Provisioned ->
+    IO (Either ReconcileError ())
+runChartWorkloadCleanupCall backend chart settlement =
+    case withSettledChartWorkloadCleanup chart settlement (,) of
+        Left failure -> pure (Left failure)
+        Right (release, namespace) -> runChartCleanup (strongClusterHostConfig backend) release namespace
+
+runVerifiedChartWorkloadCleanupCall ::
+    HostConfig ->
+    ChartWorkloadResource scope planId chartId chartFrame ->
+    VerifiedResourceRecordBundle scope planId chartId (ChartWorkloadResource scope planId chartId chartFrame) ->
+    IO (Either ReconcileError ())
+runVerifiedChartWorkloadCleanupCall cfg chart bundle =
+    withVerifiedResourceRecordBundle
+        bundle
+        (\_receipt -> let (release, namespace, _) = ProjectPlan.chartWorkloadReverseIdentity chart in runChartCleanup cfg release namespace)
+        (\_ _ _ _ _ _ _ -> pure (Right ()))
+
+runChartCleanup :: HostConfig -> Text -> Text -> IO (Either ReconcileError ())
+runChartCleanup cfg release namespace = do
+            removed <-
+                interpretHostCommand
+                    cfg
+                    (hostCommand Helm ["uninstall", Text.unpack release, "--namespace", Text.unpack namespace, "--wait"])
+            case classifyHelmUninstall release removed of
+                Left reason -> pure (Left (cleanupFailure reason))
+                Right () -> do
+                    absent <-
+                        interpretHostCommand
+                            cfg
+                            (hostCommand Helm ["status", Text.unpack release, "--namespace", Text.unpack namespace])
+                    pure $ case absent of
+                        Right captured
+                            | capturedExit captured == ExitSuccess -> Left (cleanupFailure "Helm still reports the release after uninstall")
+                            | "not found" `isInfixOf` capturedStderr captured -> Right ()
+                            | otherwise -> Left (cleanupFailure (Text.pack (capturedStderr captured)))
+                        Left reason -> Left (cleanupFailure (Text.pack reason))
+
+cleanupFailure :: Text -> ReconcileError
+cleanupFailure reason = Failure (FailureDetail "cleanup chart workload" reason ReprobeBeforeRetry)
+
+classifyHelmUninstall :: Text -> Either String CapturedRun -> Either Text ()
+classifyHelmUninstall release result = case result of
+    Right captured
+        | capturedExit captured == ExitSuccess
+        , null (capturedStderr captured)
+        , ("release \"" <> Text.unpack release <> "\" uninstalled") `isInfixOf` capturedStdout captured -> Right ()
+        | capturedExit captured /= ExitSuccess
+        , "not found" `isInfixOf` capturedStderr captured -> Right ()
+    _ -> successfulRun result >> Left "Helm returned an unrecognized uninstall result"
+
+classifyHelm :: Text -> Either String CapturedRun -> Either Text (Maybe Bool)
+classifyHelm release result = do
+    output <- successfulRun result
+    let installed = "Release \"" <> Text.unpack release <> "\" has been installed"
+        upgraded = "Release \"" <> Text.unpack release <> "\" has been upgraded"
+    if "no changes" `isInfixOf` output
+        then Right Nothing
+        else if installed `isInfixOf` output
+            then Right (Just True)
+            else if upgraded `isInfixOf` output
+                then Right (Just False)
+                else Left "Helm returned an unrecognized successful result"
+
+successfulRun :: Either String CapturedRun -> Either Text String
+successfulRun (Left reason) = Left (Text.pack reason)
+successfulRun (Right captured)
+    | capturedExit captured /= ExitSuccess = Left (Text.pack (capturedStderr captured))
+    | not (null (capturedStderr captured)) = Left "the command wrote stderr on success"
+    | otherwise = Right (capturedStdout captured)
 
 -- The object a prepared call owns ---------------------------------------------
 
@@ -302,7 +522,8 @@ withClusterTransaction ::
       IO (Either Owned.ClusterOwnershipFault result)
     ) ->
     IO (Either ClusterCallFault result)
-withClusterTransaction (StrongClusterBackend cfg _) (ClusterCallTarget stateDirectory owned) run = do
+withClusterTransaction backend (ClusterCallTarget stateDirectory owned) run = do
+    let cfg = strongClusterHostConfig backend
     opened <- openProtectedStore stateDirectory
     case opened of
         Left failure -> pure (Left (storeFault failure))
@@ -363,7 +584,7 @@ runClusterReconcileCall ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
     IO (ClusterReconcileCallResult scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion)
 runClusterReconcileCall backend prepared =
-    ClusterReconcileCallResult <$> case reconcileTarget prepared of
+    ClusterReconcileCallResult <$> case validateReconcileBinding backend prepared >> reconcileTarget prepared of
         Left err -> pure (ClusterProbeFailed (Text.pack (show err)))
         Right target -> do
             outcome <- withClusterTransaction backend target Owned.reconcileOwnedCluster
@@ -468,8 +689,9 @@ runClusterReadinessCall ::
     StrongClusterBackend ->
     AppliedClusterCordon scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
     IO (ClusterReadinessCallResult scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase)
-runClusterReadinessCall backend@(StrongClusterBackend _ readinessVersion) applied = runFresh
+runClusterReadinessCall backend applied = runFresh
   where
+    readinessVersion = strongClusterReadinessVersion backend
     expectedIdentity = managedClusterBackendIdentity (appliedClusterCordonHandle applied)
 
     runFresh = do
@@ -510,6 +732,171 @@ nextReadinessVersion counter =
             else
                 let next = current + 1
                  in (next, Right next)
+
+{- | Register one pending cluster-domain commitment and its separately held
+fresh-readiness service. Registration is possible only after an already-settled
+cordon and readiness witness agree with a fresh backend reprobe.
+-}
+registerClusterRuntimeDependencyPackage ::
+    StrongClusterBackend ->
+    StepExecution scope planId ->
+    Text ->
+    PreparedGate ->
+    AppliedClusterCordon scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
+    ClusterReadiness scope planId clusterId phase ->
+    Text ->
+    Word64 ->
+    IO (Either ReconcileError (RuntimeDependencyPackage scope planId))
+registerClusterRuntimeDependencyPackage backend execution scopeCommitment gate applied readiness route expiry = do
+    fresh <- reprobeClusterReadiness readiness
+    case fresh of
+        Left failure -> pure (Left failure)
+        Right generation
+            | preparedGatePlan gate /= stepExecutionPlanDigest execution ->
+                pure (dependencyFailure "the producer gate names another plan")
+            | otherwise ->
+                case mkClusterRuntimeDependencyPackage
+                    (stepExecutionPlanDigest execution)
+                    scopeCommitment
+                    resource
+                    (stepExecutionFrame execution)
+                    origin
+                    (managedClusterGeneration handle)
+                    (clusterGateCommitment gate)
+                    (clusterReadyCommitment generation)
+                    route
+                    expiry of
+                    Left refusal -> pure (dependencyFailure refusal)
+                    Right package -> do
+                        registered <- registerStepRuntimeDependencyPackage runtime package
+                        case registered of
+                            Left refusal -> pure (dependencyFailure refusal)
+                            Right () -> do
+                                usedNonces <- newIORef []
+                                installed <- replaceStepRuntimeDependencyService runtime package $ \request ->
+                                    case withRuntimeDependencyProbeRequest package request id of
+                                        Left _ -> serveClusterChartRequest backend package request
+                                        Right nonce -> do
+                                            replay <- atomicModifyIORef' usedNonces $ \seen ->
+                                                if nonce `elem` seen then (seen, True) else (nonce : seen, False)
+                                            if replay
+                                                then pure (Left "cluster runtime dependency nonce has already been consumed")
+                                                else do
+                                                    observed <- runClusterReadinessCall backend applied
+                                                    pure $ case clusterReadinessResultView observed of
+                                                        ClusterReadinessResultReady version _ ->
+                                                            Right (renderRuntimeDependencyProbeResponse package nonce version)
+                                                        ClusterReadinessResultNotReady _ -> Left "cluster runtime dependency is not ready"
+                                                        ClusterReadinessResultProbeFailed reason -> Left reason
+                                pure $ either dependencyFailure (const (Right package)) installed
+  where
+    runtime = stepExecutionRuntime execution
+    handle = appliedClusterCordonHandle applied
+    resource = managedClusterKey handle
+    origin = clusterBackendOrigin backend
+    dependencyFailure reason = Left (Failure (FailureDetail "register cluster runtime dependency" reason ReprobeBeforeRetry))
+
+serveClusterChartRequest ::
+    StrongClusterBackend ->
+    RuntimeDependencyPackage scope planId ->
+    ByteString.ByteString ->
+    IO (Either Text ByteString.ByteString)
+serveClusterChartRequest backend package request =
+    case withRuntimeDependencyChartRequest package request (,,,,,,) of
+        Left refusal -> pure (Left refusal)
+        Right (call, artifact, release, namespace, image, deployment, values) -> do
+            helm <-
+                interpretHostCommand
+                    (strongClusterHostConfig backend)
+                    ( withCommandStdin
+                        (Text.unpack values)
+                        ( hostCommand Helm
+                            [ "upgrade", "--install", Text.unpack release, Text.unpack artifact
+                            , "--namespace", Text.unpack namespace, "--create-namespace=false"
+                            , "--values", "-", "--set-string", "image.identity=" <> Text.unpack image
+                            , "--atomic", "--wait"
+                            ]
+                        )
+                    )
+            case classifyHelm release helm of
+                Left reason -> pure (Left reason)
+                Right change -> do
+                    rollout <-
+                        interpretHostCommand
+                            (strongClusterHostConfig backend)
+                            (hostCommand Kubectl ["rollout", "status", "--namespace", Text.unpack namespace, "deployment/" <> Text.unpack deployment, "--timeout=5m"])
+                    pure $ do
+                        _ <- successfulRun rollout
+                        renderRuntimeDependencyChartResponse package call $ case change of
+                            Nothing -> "unchanged"
+                            Just True -> "created"
+                            Just False -> "repaired"
+
+{- | Open the exact canonical/live cluster package and reconstruct readiness
+only in the supplied continuation after a nonce-bound service observation and
+a second fresh backend observation both succeed.
+-}
+withFreshClusterRuntimeDependency ::
+    StepExecution scope planId ->
+    Text ->
+    PlannedResource scope planId clusterId ClusterResource clusterFrame ->
+    Text ->
+    Text ->
+    Word64 ->
+    Text ->
+    (forall phase. ClusterReadiness scope planId clusterId phase -> result) ->
+    IO (Either ReconcileError result)
+withFreshClusterRuntimeDependency execution scopeCommitment plannedCluster dependencyKey route now nonce consume = do
+    packages <- stepRuntimeDependencyPackages runtime
+    case filter ((== "cluster:" <> dependencyKey) . runtimeDependencyPackageKey) packages of
+        [package] -> do
+            carried <- withCarriedManagedResourceOfKind execution plannedCluster $ \handle ->
+                case withClusterRuntimeDependencySuccessor
+                    (stepExecutionPlanDigest execution)
+                    scopeCommitment
+                    dependencyKey
+                    (stepExecutionFrame execution)
+                    (resourceHandleGeneration handle)
+                    route
+                    now
+                    package
+                    id of
+                    Left refusal -> pure (dependencyFailure refusal)
+                    Right _ -> case runtimeDependencyProbeRequest package nonce of
+                        Left refusal -> pure (dependencyFailure refusal)
+                        Right request -> do
+                            response <- invokeStepRuntimeDependencyService runtime package request
+                            case response >>= verifyRuntimeDependencyProbeResponse package nonce of
+                                Left refusal -> pure (dependencyFailure refusal)
+                                Right version -> withRecoveredClusterReadiness handle version consume
+            either (pure . Left) id carried
+        [] -> pure (dependencyFailure "the exact cluster package is absent")
+        _ -> pure (dependencyFailure "the cluster package registry contains duplicate resource keys")
+  where
+    runtime = stepExecutionRuntime execution
+    dependencyFailure reason = Left (Failure (FailureDetail "recover cluster runtime dependency" reason ReprobeBeforeRetry))
+
+clusterBackendOrigin :: StrongClusterBackend -> Text
+clusterBackendOrigin backend =
+    Text.intercalate ":"
+        [ Text.pack (show (strongClusterDriver backend))
+        , strongClusterConfigDigest backend
+        , strongClusterOwnershipIdentity backend
+        ]
+
+clusterGateCommitment :: PreparedGate -> Text
+clusterGateCommitment gate =
+    Text.intercalate ":"
+        [ preparedGatePlan gate
+        , preparedGateOperation gate
+        , preparedGateSession gate
+        , Text.pack (show (preparedGateFence gate))
+        , Text.pack (show (preparedGateAttempt gate))
+        , Text.pack (show (preparedGateJournalVersion gate))
+        ]
+
+clusterReadyCommitment :: Word64 -> Text
+clusterReadyCommitment generation = "ready:" <> Text.pack (show generation)
 
 -- The four targets, each derived from its own prepared package ------------------
 
@@ -580,9 +967,25 @@ runClusterStatusCall ::
     StrongClusterBackend ->
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
     IO ClusterStatusObservation
-runClusterStatusCall (StrongClusterBackend cfg _) prepared =
-    classifyClusterStatus (preparedClusterName prepared)
-        <$> interpretHostCommand cfg listClustersCommand
+runClusterStatusCall backend prepared =
+    case validateReconcileBinding backend prepared of
+        Left err -> pure (ClusterStatusProbeFailed (Text.pack (show err)))
+        Right () ->
+            classifyClusterStatus (preparedClusterName prepared)
+                <$> interpretHostCommand (strongClusterHostConfig backend) listClustersCommand
+
+validateReconcileBinding ::
+    StrongClusterBackend ->
+    PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
+    Either ReconcileError ()
+validateReconcileBinding backend prepared
+    | strongClusterDriver backend /= preparedClusterDriver prepared = mismatch "the prepared cluster driver differs from backend discovery"
+    | strongClusterConfigBytes backend /= preparedClusterConfigBytes prepared = mismatch "the prepared canonical config bytes differ from backend discovery"
+    | Just (strongClusterConfigDigest backend) /= preparedClusterConfigDigest prepared = mismatch "the prepared config digest differs from backend discovery"
+    | strongClusterOwnershipIdentity backend /= preparedClusterOwnershipIdentity prepared = mismatch "the prepared ownership identity differs from backend discovery"
+    | otherwise = Right ()
+  where
+    mismatch reason = Left (Conflict (ConflictDetail (Text.pack (preparedClusterName prepared)) "discovered backend package" "changed prepared package" reason))
 
 {- | What the driver's listing says about one cluster, as a total function of it.
 

@@ -6,9 +6,11 @@ module BudgetSpec (tests) where
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Word (Word64)
+import Numeric.Natural (Natural)
 import qualified Fixture
 import HostBootstrap.Cluster.Budget
 import HostBootstrap.Cluster.Cordon
+import HostBootstrap.Cluster.Workload.Binding (withMatchingChartWorkloadDeclaration)
 import HostBootstrap.Config.Vocab (Production)
 import HostBootstrap.Context (ResourceEnvelope (..))
 import HostBootstrap.Lift (localContext)
@@ -25,6 +27,7 @@ import HostBootstrap.ProjectPlan
     plannedStepOperationKey,
     renderSnapshot,
     stablePlanSnapshotDigest,
+    withChartWorkloadResource,
     withPlannedResourceOfKind,
   )
 import HostBootstrap.Reconcile (
@@ -40,7 +43,9 @@ import HostBootstrap.Step
     StepObservation (StepChanged),
     StepPlan,
     deployKindStep,
+    deployChartStep,
     deployVMStep,
+    declaresChartWorkloadResource,
     descendsVia,
     mkStepPlan,
   )
@@ -86,6 +91,25 @@ tests =
       testCase "workload fit and constructive partition share the admitted budget" $ do
         result <- successfulPartition
         result @?= Right [("core:deploy-vm", "host", (6, 10 * gib, 80 * gib))],
+      testCase "workload and partition identities are deterministic and substitution-sensitive" $ do
+        first <- workloadPartitionIdentitySummary 1 6
+        repeated <- workloadPartitionIdentitySummary 1 6
+        workloadChanged <- workloadPartitionIdentitySummary 2 6
+        partitionChanged <- workloadPartitionIdentitySummary 1 5
+        first @?= repeated
+        assertBool "replica drift retained the workload/partition digest" (first /= workloadChanged)
+        assertBool "slice-budget drift retained the workload/partition digest" (first /= partitionChanged),
+      testCase "workload identity retains exact authoring order without delimiter ambiguity" $ do
+        forwardIdentity <- workloadOrderIdentitySummary False
+        reversedIdentity <- workloadOrderIdentitySummary True
+        assertBool "reordered workloads retained one canonical digest" (forwardIdentity /= reversedIdentity),
+      testCase "the stable chart declaration matches only its exact generative workload partition" $ do
+        exact <- chartBindingSummary "1e046bfc5e54f83b6e493f9d2222217011a4d58e477c31c65b6c351515b9e3a8"
+        drifted <- chartBindingSummary "sha256:another-partition"
+        exact @?= Right ("sha256:chart", "demo", "demo-system", "sha256:values", "image@sha256:digest", "api", ["deployment:demo"])
+        case drifted of
+          Left reason -> assertBool "the mismatch did not identify partition drift" ("chart declaration digest differs" `Text.isInfixOf` reason)
+          Right _ -> assertFailure "a substituted chart declaration digest matched",
       testCase "workload and slice identity are projected from the admitted plan" $ do
         result <- projectedIdentitySummary
         case result of
@@ -93,6 +117,14 @@ tests =
             workloadIdentity @?= projectedWorkloadIdentity
             sliceIdentities @?= [projectedSliceIdentity]
           other -> assertFailure ("expected projected workload and slice identities, got " ++ show other),
+      testCase "an action-local slice retains the exact planned resource and closed budget" $ do
+        budget <- either (assertFailure . show) pure (mkResourceBudget 3 (4 * gib) (20 * gib))
+        result <-
+          withBudgetProjectPlan $ \_plan _provider cluster ->
+            pure $
+              withActionResourceSlice cluster budget $ \slice ->
+                (resourceSliceName slice, resourceSliceFrame slice, budgetCpu (resourceSliceBudget slice))
+        result @?= ("core:deploy-kind", "provider", 3),
       testCase "partition rejects slices plus overhead above effective budget" $ do
         result <- overflowingPartition
         result @?= Left (PartitionOverflow "cpu" 9 8),
@@ -329,6 +361,37 @@ successfulPartition =
                             )
                           )
 
+workloadPartitionIdentitySummary :: Natural -> Natural -> IO (Either BudgetError (Text.Text, Text.Text, Text.Text))
+workloadPartitionIdentitySummary replicas sliceCpu =
+  withBudgetProjectPlan $ \plan providerResource clusterResource ->
+    pure $ do
+      workload <- mkWorkload clusterResource replicas 1 gib gib
+      overhead <- mapBudgetError (mkResourceBudget 1 gib gib)
+      sliceBudget <- mapBudgetError (mkResourceBudget sliceCpu (10 * gib) (80 * gib))
+      minimumBudget <- mapBudgetError (mkResourceBudget 1 gib gib)
+      request <- mkSliceRequest providerResource sliceBudget minimumBudget
+      joinBudget $ withValidatedBudget plan exactEnvelope $ \validated ->
+        withProviderBudgetCapability plan providerResource LimaProviderKey $ \capability ->
+          joinBudget $
+            admitProviderBudget validated capability $ \_wall effective ->
+              joinBudget $
+                withPlannedWorkloadSet plan [workload] $ \workloads -> do
+                  fit <- verifyPlannedWorkloadFit effective workloads
+                  withBudgetPartition effective fit overhead (request :| []) $ \partition _ ->
+                    ( plannedWorkloadSetDeclarationKey workloads
+                    , plannedWorkloadSetDigest workloads
+                    , workloadPartitionDigest workloads partition
+                    )
+
+workloadOrderIdentitySummary :: Bool -> IO (Either BudgetError Text.Text)
+workloadOrderIdentitySummary reversed =
+  withBudgetProjectPlan $ \plan _provider cluster ->
+    pure $ do
+      first <- mkWorkload cluster 1 1 gib gib
+      second <- mkWorkload cluster 2 1 gib gib
+      let ordered = if reversed then [second, first] else [first, second]
+      withPlannedWorkloadSet plan ordered plannedWorkloadSetDigest
+
 projectedIdentitySummary ::
   IO
     ( Either
@@ -451,6 +514,76 @@ budgetPlan =
           deployKindStep "cluster" (StepFrame "provider" "Provider") (const (pure StepChanged))
         ]
     )
+
+chartBudgetPlan :: Text.Text -> StepPlan
+chartBudgetPlan digest =
+  either
+    (error . show)
+    id
+    ( mkStepPlan
+        [ descendsVia
+            localContext
+            (deployVMStep "provider" (StepFrame "host" "Host") (const (pure StepChanged))),
+          deployKindStep "cluster" (StepFrame "provider" "Provider") (const (pure StepChanged)),
+          declaresChartWorkloadResource
+            "sha256:chart"
+            "demo"
+            "demo-system"
+            "sha256:values"
+            "image@sha256:digest"
+            "workload-set:743653e5cbea58631accf95218253ec81fa73f5111d68e219c09791116d4b395"
+            digest
+            "api"
+            ["deployment:demo"]
+            (deployChartStep "chart" (StepFrame "provider" "Provider") (const (pure StepChanged)))
+        ]
+    )
+
+chartBindingSummary :: Text.Text -> IO (Either Text.Text (Text.Text, Text.Text, Text.Text, Text.Text, Text.Text, Text.Text, [Text.Text]))
+chartBindingSummary digest =
+  Fixture.withFixtureProjectPlan (chartBudgetPlan digest) $ \plan ->
+    case NonEmpty.toList (forward plan) of
+      [providerNode, clusterNode, chartNode] ->
+        pure $
+          joinText $
+            mapLeftShow $
+              withPlannedResourceOfKind plan ProviderResourceKind (plannedStepOperationKey providerNode) $ \provider ->
+                joinText $
+                  mapLeftShow $
+                    withPlannedResourceOfKind plan ClusterResourceKind (plannedStepOperationKey clusterNode) $ \cluster ->
+                      joinText $
+                        mapLeftShow $
+                          withChartWorkloadResource plan (plannedStepOperationKey chartNode) $ \chart -> do
+                            workload <- mapLeftShow (mkWorkload cluster 1 1 gib gib)
+                            overhead <- mapLeftShow (mkResourceBudget 1 gib gib)
+                            sliceBudget <- mapLeftShow (mkResourceBudget 6 (10 * gib) (80 * gib))
+                            minimumBudget <- mapLeftShow (mkResourceBudget 1 gib gib)
+                            request <- mapLeftShow (mkSliceRequest provider sliceBudget minimumBudget)
+                            joinText $
+                              mapLeftShow $
+                                withValidatedBudget plan exactEnvelope $ \validated ->
+                                  joinText $
+                                    mapLeftShow $
+                                      withProviderBudgetCapability plan provider LimaProviderKey $ \capability ->
+                                        joinText $
+                                          mapLeftShow $
+                                            admitProviderBudget validated capability $ \_wall effective ->
+                                              joinText $
+                                                mapLeftShow $
+                                                  withPlannedWorkloadSet plan [workload] $ \workloads -> do
+                                                    fit <- mapLeftShow (verifyPlannedWorkloadFit effective workloads)
+                                                    joinText $
+                                                      mapLeftShow $
+                                                        withBudgetPartition effective fit overhead (request :| []) $ \partition _ ->
+                                                          withMatchingChartWorkloadDeclaration chart cluster workloads partition $ \artifact release namespace values image _key role effects _planDigest ->
+                                                            pure (artifact, release, namespace, values, image, role, effects)
+      _ -> pure (Left "chart binding fixture has the wrong node count")
+
+mapLeftShow :: Show failure => Either failure value -> Either Text.Text value
+mapLeftShow = either (Left . Text.pack . show) Right
+
+joinText :: Either Text.Text (Either Text.Text value) -> Either Text.Text value
+joinText = either Left id
 
 withBudgetProjectPlan ::
   ( forall projectId specDigest planId configId providerId providerFrame clusterId clusterFrame.

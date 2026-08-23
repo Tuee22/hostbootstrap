@@ -4,6 +4,7 @@
 {-# LANGUAGE EmptyDataDecls #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
 {- | The hostbootstrap-demo project extension streams.
@@ -61,6 +62,7 @@ module HostBootstrapDemo.Commands (
     serviceConfigMapManifest,
     validateAcceleratorReplicaCount,
     demoBaseImageFor,
+    dockerBuildArgsWithVerificationKey,
     directClusterPresence,
     directClusterTeardownArgs,
     repoRootOfProjectRoot,
@@ -77,21 +79,57 @@ module HostBootstrapDemo.Commands (
     demoLimaVM,
     demoManagedVMName,
     demoGuardPrefix,
+    demoProviderClusterJoin,
+    demoDirectParentJoin,
+    demoExactPlanSlices,
+    demoExactRenderedClusterConfig,
+    demoClosedOperationPartition,
+    foldDemoOperationRole,
 )
 where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, finally, mask, onException, throwIO, try)
-import Control.Monad (unless, when)
+import Control.Monad (unless, void, when)
+import qualified Crypto.Hash as Hash
+import Crypto.Random (getRandomBytes)
 import Data.Bifunctor (first)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import Data.Char (isDigit, isSpace, toLower)
-import Data.List (dropWhileEnd, find, intercalate, isInfixOf, isPrefixOf)
+import Data.List (dropWhileEnd, find, intercalate, isInfixOf, isPrefixOf, isSuffixOf)
+import qualified Data.List.NonEmpty as NonEmpty
+import Data.Maybe (listToMaybe)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TIO
+import Data.Word (Word64)
 import Dhall (FromDhall, ToDhall)
 import GHC.Generics (Generic)
+import HostBootstrap.Build (
+    BuildBinding (..),
+    BuildChannel (..),
+    buildErrorMessage,
+    buildSigningVerificationKey,
+    buildVerificationKeyBytes,
+    installedBuildSigningKey,
+    measureBinaryDigest,
+    measureSourceDigest,
+    renderBuildChannel,
+    signBuildGrant,
+    withBuildCoordinator,
+ )
+import HostBootstrap.Cluster.Backend (
+    discoverStrongClusterBackend,
+    registerClusterRuntimeDependencyPackage,
+    runChartWorkloadCall,
+    runClusterCordonCall,
+    runClusterReadinessCall,
+    runClusterReconcileCall,
+    withFreshClusterRuntimeDependency,
+    withPreparedChartWorkload,
+ )
+import HostBootstrap.Cluster.Budget (withActionResourceSlice)
 import HostBootstrap.Cluster.Cordon (
     budgetCpu,
     budgetFromResources,
@@ -104,18 +142,28 @@ import HostBootstrap.Cluster.Cordon (
 import HostBootstrap.Cluster.Lifecycle (
     AcceleratorDaemonPlacement (..),
     AcceleratorIngressPlan (..),
-    ClusterDriver (NvkindDriver),
+    ClusterDriver (KindDriver, NvkindDriver),
     ClusterPlan (..),
     ClusterProfile (Production, TestCase),
     acceleratorIngressPlan,
-    clusterCreate,
     clusterNodeNames,
-    deployChart,
     ensureProfileDataPath,
-    profileDataSegments,
+    planOwnedClusterConfigBytes,
+    planOwnedRenderedConfigPath,
     profileDataPath,
+    profileDataSegments,
     resolvePlan,
     resolvePlanWithDriver,
+    withExecutionOwnedCluster,
+ )
+import HostBootstrap.Cluster.Reconcile (
+    carryClusterReconcileSettlement,
+    settleClusterCordon,
+    settleClusterReadiness,
+    settleClusterReconcile,
+    withClusterReconcileSettlement,
+    withPreparedClusterCordon,
+    withPreparedClusterReconcile,
  )
 import HostBootstrap.Config.Fields (roleParamsValue)
 import HostBootstrap.Config.Schema (projectConfigSnapshotHash, projectConfigSnapshotHashBytes, renderProjectConfigSnapshotLog, siblingProjectConfigPath, writeProjectConfigFile)
@@ -151,6 +199,7 @@ import qualified HostBootstrap.Ensure.Docker as EnsureDocker
 import qualified HostBootstrap.Ensure.Incus as Incus
 import qualified HostBootstrap.Ensure.Lima as EnsureLima
 import qualified HostBootstrap.Ensure.Wsl2 as EnsureWsl2
+import HostBootstrap.Handoff (childConfigDigest, installedVerificationKey, verificationKeyBytes)
 import HostBootstrap.Harness (
     Case (..),
     CaseId,
@@ -169,9 +218,16 @@ import HostBootstrap.HostTool (HostTool (Docker, Kill, Kind, Kubectl, Mc, PowerS
 import HostBootstrap.Incus (IncusVM (..))
 import HostBootstrap.Lifecycle.Execution (
     StepExecution,
+    stepExecutionConfigDigest,
+    stepExecutionDependencyKeys,
+    stepExecutionFrame,
     stepExecutionHostConfig,
+    stepExecutionOperationKey,
+    stepExecutionPreparedGate,
+    stepExecutionSpecDigest,
  )
-import HostBootstrap.Lift (ConfigDelivery (..), ContainerLift (..), LiftContext (..), LiftLayer (ViaContainer), LiftLeaf (..), blobHeadLeaf, blobUploadFinishLeaf, blobUploadPatchLeaf, blobUploadSessionLeaf, canonicalHostMount, inContainer, liftLeaf, localContext, reachLeaf)
+import HostBootstrap.Lifecycle.Prepared (preparedGateFence, preparedGateJournalVersion)
+import HostBootstrap.Lift (ConfigDelivery (..), ContainerLift (..), ContainerPlacement (..), LiftContext (..), LiftLayer (ViaContainer), LiftLeaf (..), blobHeadLeaf, blobUploadFinishLeaf, blobUploadPatchLeaf, blobUploadSessionLeaf, canonicalHostMount, inContainer, liftLeaf, localContext, reachLeaf)
 import HostBootstrap.Lima (LimaVM (..))
 import HostBootstrap.Network (
     NetworkError,
@@ -182,6 +238,22 @@ import HostBootstrap.Network (
     exposurePort,
     hostLocalClient,
     loopbackExposure,
+ )
+import HostBootstrap.ProjectPlan (
+    PlannedResourceKind (ClusterResourceKind, DurableShareResourceKind, ProviderResourceKind),
+    PlannedStep,
+    ProjectPlan,
+    forward,
+    plannedResourceFrame,
+    plannedStepDependencyOperations,
+    plannedStepFrameId,
+    plannedStepIdentity,
+    plannedStepOperationKey,
+    renderSnapshot,
+    stablePlanSnapshotConfigDigest,
+    topology,
+    topologyParentFrame,
+    withPlannedResourceOfKind,
  )
 import HostBootstrap.ProjectRoot (
     CanonicalHostPath,
@@ -207,7 +279,13 @@ import HostBootstrap.Readiness (
     vmBootPoll,
     withAttempts,
  )
-import HostBootstrap.Registry (RegistryAuth, discoverHostRegistryAuth, dockerAuthStdinWrapper, registryAuthEnvVar, registryConfigPayload)
+import HostBootstrap.Reconcile (
+    dependencyProbe,
+    withNodeChartWorkloadResource,
+    withNodeObservedResource,
+    withNodeResourceOfKind,
+ )
+import HostBootstrap.Registry (RegistryAuth, discoverHostRegistryAuth, dockerAuthStdinWrapper, registryConfigPayload)
 import HostBootstrap.RegistryPlan (
     BlobProbe (BlobHeadProbe),
     BlobRouteObservation (..),
@@ -227,43 +305,46 @@ import HostBootstrap.RoleLifecycle (
  )
 import HostBootstrap.Service (ServiceHandler, ServiceRegistry, serviceDefinition, serviceId, serviceRegistry)
 import HostBootstrap.Step (
+    CoreStepId (..),
     ProjectStepId,
     ReversePolicy (..),
     Step,
     StepAction,
     StepFrame (..),
+    StepIdentity (..),
     StepPlan,
     TeardownAction (DeleteFrame),
     TeardownOutcome,
     buildImageStep,
     buildPbStep,
     contextInitStep,
+    copySourceStep,
     deployChartStep,
     deployKindStep,
     deployVMStep,
     descendsVia,
     exposePortStep,
+    mkStepPlan,
     postHandoffStep,
     projectStep,
     projectStepId,
     reversedBy,
-    mkStepPlan,
  )
 import qualified HostBootstrap.Step as Step
 import HostBootstrap.Substrate (Substrate, SubstrateName (LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu), detect, isAppleSilicon, isLinux, isWindows, renderArch, substrateArch, substrateName)
 import HostBootstrap.Substrate.Provider (
     AliasAction (..),
     AliasFacts (..),
-    DirectHostAction (..),
     HostEffect (..),
     HostPathShare (..),
-    ShareReconcile (..),
-    StagedFile (..),
     ProviderKind (..),
     RebootReadyPlan (..),
+    ShareReconcile (..),
+    StagedFile (..),
     SubstrateProvider,
     VMHandles (..),
     classifyAlias,
+    discoverProvider,
     foldExistsProbe,
     foldWaitProbe,
     membersOf,
@@ -275,8 +356,8 @@ import HostBootstrap.Substrate.Provider (
     planProviderStop,
     providerExistsProbe,
     providerFileTransfer,
-    providerKindForSubstrate,
     providerKind,
+    providerKindForSubstrate,
     providerLiftContext,
     providerTopologyKind,
     providerVmId,
@@ -285,6 +366,39 @@ import HostBootstrap.Substrate.Provider (
     shareReconcileEffects,
     stageFileEffects,
     vmShellArgs,
+ )
+import HostBootstrap.Substrate.Provider.Alias (
+    discoverStrongAliasBackend,
+    mkGuestAliasSpec,
+    reconcileNodeGuestAlias,
+ )
+import HostBootstrap.Substrate.Provider.Backend (
+    discoverStrongProviderBackend,
+    mkDirectHostBackendSpec,
+    mkIncusBackendSpec,
+    providerBackendBinding,
+    registerRunningProviderDependencyPackage,
+    runProviderProvisionCall,
+    runProviderReadyCall,
+    runProviderShareCall,
+    withProviderBoundExec,
+ )
+import HostBootstrap.Substrate.Provider.Reconcile (
+    carryCreatedRunningProviderSettlement,
+    carryRunningProviderSettlement,
+    managedProviderShareGeneration,
+    mkProviderShareSpec,
+    providerStartableAfterProvision,
+    settleProviderProvision,
+    settleProviderReady,
+    settleProviderShare,
+    withFreshCarriedRunningProviderDependency,
+    withFreshRunningProviderHandle,
+    withPreparedProviderProvision,
+    withPreparedProviderReady,
+    withPreparedProviderShare,
+    withProviderProvisionSettlement,
+    withProviderShareSettlement,
  )
 import HostBootstrap.Wsl2 (Wsl2VM (..))
 import HostBootstrap.Wsl2.GlobalWall (PersistedWallRecord (persistedFenceValue))
@@ -298,12 +412,15 @@ import HostBootstrap.Wsl2.GlobalWall.Host (
 import HostBootstrap.Wsl2.GlobalWall.Windows (applyCurrentUserGlobalWall, restoreCurrentUserGlobalWall)
 import HostBootstrapDemo.Accelerator (backendName)
 import HostBootstrapDemo.Accelerator.Daemon (acceleratorBackendForSubstrate, serveAcceleratorDaemonWithConfig)
+import HostBootstrapDemo.ClusterConfig (renderExactClusterConfig, withExactPlanOwnedClusterConfig)
 import HostBootstrapDemo.Config (
     AcceleratorServiceConfig,
     DeployConfig (..),
+    Port,
     ProjectConfig (..),
     Resources,
     WebServiceConfig (WebServiceConfig),
+    canonicalDemoConfigProjection,
     clusterProfileOf,
     configuredServiceVariant,
     cpu,
@@ -321,17 +438,19 @@ import HostBootstrapDemo.Config (
     renderProjectConfig,
     storage,
  )
-import HostBootstrapDemo.Container (dockerBuildArgs, resolvePublishedBase)
+import HostBootstrapDemo.Container (dockerBuildArgs, pinnedBaseReference, resolvePublishedBase)
 import HostBootstrapDemo.Web.Api (demoWebPod)
 import HostBootstrapDemo.Web.Bridge (writeBridge)
 import HostBootstrapDemo.Web.Server (serveWebWithConfig)
+import Numeric (showHex)
 import Numeric.Natural (Natural)
-import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, getHomeDirectory, getPermissions, makeAbsolute, removeDirectory, removeFile, setPermissions, withCurrentDirectory)
+import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, getHomeDirectory, getPermissions, getTemporaryDirectory, listDirectory, makeAbsolute, removeDirectory, removeFile, setPermissions, withCurrentDirectory)
 import System.Environment (getEnvironment, getExecutablePath, setEnv)
 import System.Exit (ExitCode (..), die)
 import System.FilePath (normalise, takeDirectory, (</>))
 import System.IO (hFlush, hPutStr, stderr, stdout)
 import System.IO.Error (tryIOError)
+import System.IO.Temp (withSystemTempDirectory)
 import System.Info (os)
 
 {- | One SPA tab as typed data: its label and the API endpoint it reads (empty
@@ -459,6 +578,197 @@ runDurableHostPath profile root =
         id
         (canonicalHostSubPath root (profileDataSegments profile))
 
+{- | Join the exact cluster to the provider authored at its unique immediate
+parent frame.  Both candidate sets are enumerated from the admitted plan: a
+caller cannot nominate an operation or frame.  Zero, duplicate, ancestor,
+sibling, and wrong-frame candidates all fail before a backend is opened.
+-}
+demoProviderClusterJoin ::
+    ProjectPlan scope specDigest planId configId cfg ->
+    Either String (T.Text, T.Text)
+demoProviderClusterJoin plan = do
+    demoDirectParentJoin
+        providerFrames
+        clusterFrames
+        (topologyParentFrame (topology plan))
+  where
+    nodes = NonEmpty.toList (forward plan)
+    providerFrames =
+        [ frame
+        | node <- nodes
+        , Right frame <-
+            [ withPlannedResourceOfKind
+                plan
+                ProviderResourceKind
+                (plannedStepOperationKey node)
+                plannedResourceFrame
+            ]
+        ]
+    clusterFrames =
+        [ frame
+        | node <- nodes
+        , Right frame <-
+            [ withPlannedResourceOfKind
+                plan
+                ClusterResourceKind
+                (plannedStepOperationKey node)
+                plannedResourceFrame
+            ]
+        ]
+
+demoDirectParentJoin ::
+    [T.Text] ->
+    [T.Text] ->
+    (T.Text -> Maybe T.Text) ->
+    Either String (T.Text, T.Text)
+demoDirectParentJoin providerFrames clusterFrames parentOf = do
+    providerFrame <- exactlyOne "provider" providerFrames
+    clusterFrame <- exactlyOne "cluster" clusterFrames
+    parent <- maybe (Left "demo plan join: the cluster frame has no immediate parent") Right (parentOf clusterFrame)
+    if providerFrame == parent
+        then Right (providerFrame, clusterFrame)
+        else
+            Left
+                ( "demo plan join: provider frame "
+                    ++ T.unpack providerFrame
+                    ++ " is not the cluster frame's immediate parent "
+                    ++ T.unpack parent
+                )
+  where
+    exactlyOne label values = case values of
+        [value] -> Right value
+        [] -> Left ("demo plan join: no " ++ label ++ " resource was authored")
+        _ -> Left ("demo plan join: multiple " ++ label ++ " resources were authored")
+
+{- | Partition every admitted demo node by its closed typed identity.  Project
+identities are compared with values produced by the project's smart
+constructor, never with rendered operation keys.  The result is five ordered
+subsequences of the input; an unknown identity refuses instead of falling into
+a catch-all role.
+-}
+demoClosedOperationPartition ::
+    [PlannedStep scope planId configId config] ->
+    Either
+        String
+        ( [PlannedStep scope planId configId config]
+        , [PlannedStep scope planId configId config]
+        , [PlannedStep scope planId configId config]
+        , [PlannedStep scope planId configId config]
+        , [PlannedStep scope planId configId config]
+        )
+demoClosedOperationPartition = foldl classify (Right ([], [], [], [], []))
+  where
+    classify prior node = do
+        (providers, clusters, workloads, services, assertions) <- prior
+        foldDemoOperationRole
+            (plannedStepIdentity node)
+            (providers ++ [node], clusters, workloads, services, assertions)
+            (providers, clusters ++ [node], workloads, services, assertions)
+            (providers, clusters, workloads ++ [node], services, assertions)
+            (providers, clusters, workloads, services ++ [node], assertions)
+            (providers, clusters, workloads, services, assertions ++ [node])
+
+{- | Eliminate one typed demo identity into exactly one of the five closed
+roles.  Supplying continuations keeps the role algebra closed without adding a
+second named contract solely for the demo projection.
+-}
+foldDemoOperationRole :: StepIdentity -> result -> result -> result -> result -> result -> Either String result
+foldDemoOperationRole identity provider cluster workload service assertion =
+    case identity of
+        CoreStepIdentity coreIdentity ->
+            case coreIdentity of
+                DeployVMId -> Right provider
+                EnsureToolId _ -> Right provider
+                BuildPbId -> Right provider
+                BuildImageId -> Right provider
+                ContextInitId -> Right provider
+                CopySourceId -> Right provider
+                DeployKindId -> Right cluster
+                DeployChartId -> Right workload
+                ExposePortId -> Right assertion
+                PostHandoffId _ -> Right service
+        ProjectStepIdentity projectIdentity
+            | projectIdentity == demoEnsureVMProviderStep -> Right provider
+            | projectIdentity `elem` workloadIdentities -> Right workload
+            | projectIdentity == demoStepId "deploy-accelerator-daemon" -> Right service
+            | otherwise -> Left ("demo plan slices: unclassified project operation " ++ show projectIdentity)
+  where
+    workloadIdentities = map demoStepId ["deploy-minio", "deploy-registry", "push-image"]
+
+{- | Join the exact retained provider/cluster topology, digest-check the demo
+configuration, and return five plan-indexed role slices.  Each role member is
+paired with the same retained config digest, while its opaque 'PlannedStep'
+keeps the scope, plan, config identity, frame, operation, dependency prefix,
+and projected-resource prefix inseparable.
+-}
+demoExactPlanSlices ::
+    ProjectConfig scope ->
+    ProjectPlan scope specDigest planId configId ProjectConfig ->
+    Either
+        String
+        ( (T.Text, Resources, Natural, Port, Port, FilePath)
+        , ( [(T.Text, PlannedStep scope planId configId (ProjectConfig scope))]
+          , [(T.Text, PlannedStep scope planId configId (ProjectConfig scope))]
+          , [(T.Text, PlannedStep scope planId configId (ProjectConfig scope))]
+          , [(T.Text, PlannedStep scope planId configId (ProjectConfig scope))]
+          , [(T.Text, PlannedStep scope planId configId (ProjectConfig scope))]
+          )
+        )
+demoExactPlanSlices cfg plan = do
+    (providerFrame, clusterFrame) <- demoProviderClusterJoin plan
+    let nodes = NonEmpty.toList (forward plan)
+        digest = stablePlanSnapshotConfigDigest (renderSnapshot plan)
+    configProjection <- canonicalDemoConfigProjection digest cfg
+    partition@(providers, clusters, workloads, services, assertions) <-
+        demoClosedOperationPartition nodes
+    requireSlices (not (null providers)) "provider slice is empty"
+    clusterNode <- exactlyOneSlice "cluster" clusters
+    requireSlices (length (filter isChart workloads) == 1) "chart/workload slice has no unique chart"
+    requireSlices (not (null services)) "service slice is empty"
+    requireSlices (length assertions == 1) "assertion slice is not singular"
+    requireSlices (plannedStepFrameId clusterNode == clusterFrame) "cluster operation is in the wrong frame"
+    requireSlices (all ((== clusterFrame) . plannedStepFrameId) workloads) "workload operation escaped the cluster frame"
+    requireSlices
+        (all (prefixEndsBefore nodes) (clusters ++ workloads ++ services ++ assertions))
+        "a projected node's dependency prefix is not an exact forward prefix"
+    requireSlices
+        (providerFrame /= clusterFrame && topologyParentFrame (topology plan) clusterFrame == Just providerFrame)
+        "provider and cluster slices do not retain the unique immediate edge"
+    let attach = map (digest,)
+        (resourcesProjection, replicaCount, public, accelerator, durableRoot) = configProjection
+    pure
+        ( (digest, resourcesProjection, replicaCount, public, accelerator, durableRoot)
+        , case partition of
+            (providerNodes, clusterNodes, workloadNodes, serviceNodes, assertionNodes) ->
+                (attach providerNodes, attach clusterNodes, attach workloadNodes, attach serviceNodes, attach assertionNodes)
+        )
+  where
+    isChart node = plannedStepIdentity node == CoreStepIdentity DeployChartId
+    prefixEndsBefore nodes node =
+        plannedStepDependencyOperations node
+            == [ (plannedStepOperationKey prior, plannedStepFrameId prior)
+               | prior <- takeWhile ((/= plannedStepOperationKey node) . plannedStepOperationKey) nodes
+               ]
+    requireSlices True _ = Right ()
+    requireSlices False reason = Left ("demo plan slices: " ++ reason)
+    exactlyOneSlice _ [node] = Right node
+    exactlyOneSlice label _ = Left ("demo plan slices: " ++ label ++ " slice is not singular")
+
+demoExactRenderedClusterConfig ::
+    ProjectConfig scope ->
+    ProjectPlan scope specDigest planId configId ProjectConfig ->
+    Either String (BS.ByteString, T.Text, FilePath, FilePath, [(T.Text, Natural)])
+demoExactRenderedClusterConfig cfg plan = do
+    ((digest, _, _, _, _, _), (_, clusters, _, _, _)) <- demoExactPlanSlices cfg plan
+    let clusterSlice = [(sliceDigest, plannedStepFrameId planned) | (sliceDigest, planned) <- clusters]
+        driver = case clusterSlice of
+            [(_, frame)] | frame == T.pack directContainerRuntimeFrameId -> NvkindDriver
+            _ -> KindDriver
+        published = case driver of
+            KindDriver -> [("registry", 30500), ("web", 30080), ("accelerator", 30081), ("minio", 30900)]
+            NvkindDriver -> [("registry", 30500), ("web", 30080), ("minio", 30900)]
+    renderExactClusterConfig driver digest cfg clusterSlice published
+
 {- | The VM-backed persistent stack shared by the Apple/Windows host-daemon chain
 ('demoChain') and the Linux CPU in-cluster-daemon chain ('demoLinuxCpuChain') — a
 contributed @chain :: ProjectConfig -> [Step]@ value the core @project up@ interprets
@@ -483,12 +793,19 @@ demoVmBackedStackAt providerContext cfg =
     [ projectStep demoEnsureVMProviderStep PreserveOnReverse "ensure the VM provider (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows)" demoMetalFrame (changed (const (runVmEnsure cfg)))
     , reversedBy
         (demoProviderReverse cfg)
-        (deployVMStep "launch the budget-sized VM (cordon #1: the VM is the wall)" demoMetalFrame (changed (const (runVmUp cfg))))
+        ( Step.declaresProviderResource
+            Step.providerResourceAtImmediateChild
+            (deployVMStep "launch the budget-sized VM (cordon #1: the VM is the wall)" demoMetalFrame (changed (runVmUp cfg)))
+        )
+    , -- The metal frame's descent into @vm-orchestrator-1@ is declared here, on
+      Step.projectsOperation
+        "core:copy-source/guest-alias"
+        (copySourceStep "attach the exact writable durable source to the managed VM" demoMetalFrame (changed (runCopySource cfg)))
     , -- The metal frame's descent into @vm-orchestrator-1@ is declared here, on
       -- the last step of the segment: the substrate's VM shell (§ U).
       descendsVia
         providerContext
-        (buildPbStep "pristine-bootstrap: build the binary host-native, then the project image, in the VM" demoMetalFrame (changed (const (runVmBootstrap cfg))))
+        (buildPbStep "pristine-bootstrap: build the binary host-native, then the project image, in the VM" demoMetalFrame (changed (runVmBootstrap cfg)))
     , -- vm-orchestrator-1 (the in-VM pb): mint the project-container child config, then hand off.
       -- The announcement and the delivery are now one plan node: the same step
       -- that says the child config is prepared carries the payload that crosses
@@ -501,7 +818,7 @@ demoVmBackedStackAt providerContext cfg =
     , demoProjectStep "deploy-minio" "install the in-cluster MinIO (S3) backing store + create the registry bucket" demoContainerFrame (changed (deployMinioAction cfg))
     , demoProjectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500), S3-backed by MinIO" demoContainerFrame (changed (deployRegistryAction cfg))
     , demoProjectStep "push-image" "load the project image into kind + push it to the in-cluster registry" demoContainerFrame (changed (pushImageAction cfg))
-    , deployChartStep "deploy the web service chart pod (NodePort 30080)" demoContainerFrame (changed (deployChartAction cfg))
+    , declaredChartStep cfg demoContainerFrame
     , exposePortStep "verify the web NodePort (30080) is reachable" demoContainerFrame (changed (exposeAction cfg))
     ]
 
@@ -587,7 +904,10 @@ demoLinuxGpuChainAt ::
     ProjectConfig configScope ->
     [Step]
 demoLinuxGpuChainAt durableBind descriptor cfg =
-    [ buildImageStep "build the project image on the Linux GPU host for the direct container handoff" demoMetalFrame (changed (const (runDirectHostBootstrap cfg)))
+    [ Step.declaresProviderResource
+        Step.providerResourceAtCurrentFrame
+        (deployVMStep "reserve the exact Direct host provider" demoMetalFrame (changed (runDirectProviderReservation cfg)))
+    , buildImageStep "build the project image on the Linux GPU host for the direct container handoff" demoMetalFrame (changed (runDirectHostBootstrap cfg))
     , -- The direct lane's one descent: metal → the nvkind project container. It
       -- consumes the admitted canonical root for the durable host mount (§ X).
       descendsVia
@@ -602,7 +922,7 @@ demoLinuxGpuChainAt durableBind descriptor cfg =
     , demoProjectStep "deploy-minio" "install the in-cluster MinIO (S3) backing store + create the registry bucket" demoDirectContainerFrame (changed (deployMinioAction cfg))
     , demoProjectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500), S3-backed by MinIO" demoDirectContainerFrame (changed (deployRegistryAction cfg))
     , demoProjectStep "push-image" "load the project image into nvkind + push it to the in-cluster registry" demoDirectContainerFrame (changed (pushImageAction cfg))
-    , deployChartStep "deploy the web service chart pod (NodePort 30080)" demoDirectContainerFrame (changed (deployChartAction cfg))
+    , declaredChartStep cfg demoDirectContainerFrame
     , exposePortStep "verify the web NodePort (30080) is reachable" demoDirectContainerFrame (changed (exposeAction cfg))
     , demoProjectStep "deploy-accelerator-daemon" "deploy the CUDA accelerator daemon pod with one NVIDIA GPU (dials the web ClusterIP)" demoDirectContainerFrame (changed (deployAcceleratorDaemonAction cfg))
     ]
@@ -735,13 +1055,13 @@ retainedProvider cfg =
             (Left "demo chain: retained current frame is absent")
             Right
             (findFrame (Context.currentFrame currentContext))
-    frameById frameId =
+    frameById wantedFrameId =
         maybe
             (Left "demo chain: retained ancestry parent is absent")
             Right
-            (findFrame frameId)
-    findFrame frameId =
-        find ((== frameId) . Context.topologyFrameId) (Context.topologyFrames ctx)
+            (findFrame wantedFrameId)
+    findFrame wantedFrameId =
+        find ((== wantedFrameId) . Context.topologyFrameId) (Context.topologyFrames ctx)
     vmProviders = [Context.IncusVMProvider, Context.LimaVMProvider, Context.Wsl2VMProvider]
 
 validateDirectParentLift :: FilePath -> T.Text -> LiftContext -> Either String ()
@@ -930,12 +1250,73 @@ kind cluster (at the run's own profile) → the in-cluster registry → the imag
 + pushed) → the web chart pod → the verified NodePort.
 -}
 deployKindAction :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
-deployKindAction stepCfg _ = demoConfigContext stepCfg Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
+deployKindAction stepCfg execution = demoConfigContext stepCfg Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
     cfg <- resolveHostConfig
-    -- Cordon the cluster to a slice within the budget-sized VM wall (§ O), not the
-    -- full budget — the budget is used once, as the VM wall (cordon #1).
+    gate <- stepExecutionPreparedGate execution >>= maybe (die "cluster reconcile: the exact producer gate is absent") pure
     slice <- either die pure (clusterSliceOfBudget (resources projectCfg))
-    withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterCreate cfg (containerPlan (clusterProfileOf projectCfg) ctx) (envelopeOfResources slice))
+    sliceBudget <- either die pure (budgetFromResources (envelopeOfResources slice))
+    when (preparedGateJournalVersion gate > maxBound - 1024) (die "cluster reconcile: dependency lifetime overflows")
+    let direct = Context.isExplicitLinuxGpuContainer ctx
+        driver = if direct then NvkindDriver else KindDriver
+        providerKey = "core:deploy-vm"
+        providerRoute = if direct then "runtime://provider/demo-direct-readiness" else "runtime://provider/demo-vm-readiness"
+        clusterRoute = "runtime://cluster/demo-cluster-readiness"
+        scopeCommitment = case clusterProfileOf projectCfg of
+            Production -> "production"
+            TestCase runKey -> "harness:" <> T.pack runKey
+        now = preparedGateJournalVersion gate
+        nonce = "deploy-cluster-" <> T.pack (show now)
+        published = case driver of
+            KindDriver -> [("registry", 30500), ("web", 30080), ("accelerator", 30081), ("minio", 30900)]
+            NvkindDriver -> [("registry", 30500), ("web", 30080), ("minio", 30900)]
+        clusterSlice = [(stepExecutionConfigDigest execution, stepExecutionFrame execution)]
+        workload = ["project:deploy-minio", "project:deploy-registry", "project:push-image", "core:deploy-chart"]
+    unless (providerKey `elem` stepExecutionDependencyKeys execution) $
+        die "cluster reconcile: the exact provider is absent from the cluster node's admitted prefix"
+    opened <-
+        withFreshCarriedRunningProviderDependency execution scopeCommitment providerKey providerRoute now nonce $ \plannedProvider runningProvider ->
+            case withNodeResourceOfKind execution ClusterResourceKind (stepExecutionOperationKey execution) $ \plannedCluster ->
+                withActionResourceSlice plannedCluster sliceBudget $ \resourceSlice ->
+                    case withExecutionOwnedCluster execution plannedCluster plannedProvider resourceSlice of
+                        Left refusal -> die (show refusal)
+                        Right base ->
+                            case withExactPlanOwnedClusterConfig base driver (stepExecutionConfigDigest execution) projectCfg clusterSlice published workload $ \configured -> do
+                                createDirectoryIfMissing True (takeDirectory (planOwnedRenderedConfigPath configured))
+                                BS.writeFile (planOwnedRenderedConfigPath configured) (planOwnedClusterConfigBytes configured)
+                                discovered <- discoverStrongClusterBackend cfg configured
+                                backend <- either (die . show) pure discovered
+                                prepared <- withPreparedClusterReconcile configured runningProvider gate $ \clusterPrepared -> do
+                                    observed <- runClusterReconcileCall backend clusterPrepared
+                                    case settleClusterReconcile Nothing clusterPrepared observed of
+                                        Left failure -> pure (Left failure)
+                                        Right settlement ->
+                                            withClusterReconcileSettlement
+                                                settlement
+                                                ( \managed receipt _ -> do
+                                                    carried <- carryClusterReconcileSettlement execution managed receipt
+                                                    case carried of
+                                                        Left failure -> pure (Left failure)
+                                                        Right () -> case withPreparedClusterCordon clusterPrepared managed id of
+                                                            Left failure -> pure (Left failure)
+                                                            Right cordon -> do
+                                                                cordoned <- runClusterCordonCall backend cordon
+                                                                case settleClusterCordon cordon cordoned of
+                                                                    Left failure -> pure (Left failure)
+                                                                    Right applied -> do
+                                                                        readyCall <- runClusterReadinessCall backend applied
+                                                                        case settleClusterReadiness applied readyCall of
+                                                                            Left failure -> pure (Left failure)
+                                                                            Right ready -> fmap void (registerClusterRuntimeDependencyPackage backend execution scopeCommitment gate applied ready clusterRoute (now + 1024))
+                                                )
+                                                (\_ _ _ _ -> die "cluster reconcile: the cluster remains foreign")
+                                case prepared of
+                                    Left failure -> die (show failure)
+                                    Right action -> action >>= either (die . show) pure of
+                                Left refusal -> die refusal
+                                Right action -> action of
+                Left failure -> die (show failure)
+                Right action -> action
+    either (die . show) id opened
 
 {- | The in-cluster OCI registry image: the single-binary, natively multi-arch
 CNCF @distribution@ registry. Because it ships one multi-arch manifest, it runs on
@@ -1649,17 +2030,69 @@ projectConfigForServiceContext projectCfg parentCtx =
         projectCfg
         (Context.deriveServiceContext parentCtx (Context.sourceRoot parentCtx))
 
-serviceConfigMapManifest :: T.Text -> String
-serviceConfigMapManifest serviceConfig =
+serviceConfigMapManifest :: String -> T.Text -> String
+serviceConfigMapManifest releaseName serviceConfig =
     unlines
         [ "apiVersion: v1"
         , "kind: ConfigMap"
         , "metadata:"
-        , "  name: " ++ demoProject ++ "-config"
+        , "  name: " ++ releaseName ++ "-config"
         , "data:"
         , "  hostbootstrap-demo.dhall: |"
         ]
         ++ indentBlock 4 serviceConfig
+
+declaredChartStep :: ProjectConfig configScope -> StepFrame -> Step
+declaredChartStep cfg frame =
+    Step.declaresChartWorkloadResource
+        artifact
+        release
+        namespace
+        (sha256Bytes values)
+        image
+        workloadKey
+        workloadDigest
+        "web"
+        ["deployment:" <> release <> "-web"]
+        (deployChartStep "deploy the web service chart pod (NodePort 30080)" frame (changed (deployChartAction cfg)))
+  where
+    values = chartValues cfg
+    release = "hostbootstrap-demo"
+    namespace = "default"
+    image = "hostbootstrap-demo:local"
+    artifact = Context.sourceRoot (context cfg) <> "/chart"
+    workloadKey = "workload-set:" <> projectConfigSnapshotHash (canonicalProjectConfigPayload cfg)
+    workloadDigest = sha256Bytes (TextEncoding.encodeUtf8 (workloadKey <> "\NUL" <> image <> "\NULweb"))
+
+chartValues :: ProjectConfig configScope -> BS.ByteString
+chartValues cfg =
+    TextEncoding.encodeUtf8 $
+        T.unlines $
+            [ "image:"
+            , "  identity: \"hostbootstrap-demo:local\""
+            , "haReplicas: " <> T.pack (show (haReplicas (deploy cfg)))
+            , "service:"
+            , "  currentFrame: \"" <> serviceFrame <> "\""
+            , "  configHash: \"" <> projectConfigSnapshotHash (configMapMountedText serviceConfig) <> "\""
+            , "  port: " <> T.pack (show publicPort)
+            , "  nodePort: 30080"
+            , "  accelerator:"
+            , "    type: " <> T.pack (ingressServiceType ingress)
+            , "    port: " <> T.pack (show (ingressServicePort ingress))
+            , "    targetPort: " <> T.pack (show (ingressServicePort ingress))
+            ]
+                <> maybe [] (\nodePort -> ["    nodePort: " <> T.pack (show nodePort)]) (ingressNodePort ingress)
+                <> ["serviceConfig: |"]
+                <> map ("  " <>) (T.lines serviceConfig)
+  where
+    rootContext = context cfg
+    (serviceConfig, serviceFrame) = renderServiceConfigForContext cfg rootContext
+    WebServiceConfig publicPortValue acceleratorPortValue = either (error . ("chart values: " <>)) id (validatedWebServiceConfigForContext cfg rootContext)
+    publicPort = portNat publicPortValue
+    ingress = acceleratorIngressPlan (acceleratorPlacementForContext rootContext) (fromIntegral (portNat acceleratorPortValue)) 30081
+
+sha256Bytes :: BS.ByteString -> T.Text
+sha256Bytes bytes = "sha256:" <> T.pack (show (Hash.hash bytes :: Hash.Digest Hash.SHA256))
 
 {- | @deploy-chart@: derive and apply the web service's ConfigMap from the live
 parent context, then install the chart. The service frame and a stable config
@@ -1667,19 +2100,28 @@ fingerprint are Helm values so the pod witness is exact and a changed config
 rolls the StatefulSet even though the ConfigMap is applied outside Helm.
 -}
 deployChartAction :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
-deployChartAction stepCfg _ = demoConfigContext stepCfg Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
-    cfg <- resolveHostConfig
+deployChartAction stepCfg execution = demoConfigContext stepCfg Context.ClusterLifecycleCommand [] $ \projectCfg _ctx -> do
     either die pure (validateAcceleratorReplicaCount (haReplicasNat (haReplicas (deploy projectCfg))))
-    acceleratorHelmValues <- either die pure (acceleratorHelmValuesForContext projectCfg ctx)
-    let (serviceConfig, serviceFrame) = renderServiceConfigForContext projectCfg ctx
-        extraValues =
-            [ ("haReplicas", T.pack (show (haReplicas (deploy projectCfg))))
-            , ("service.currentFrame", serviceFrame)
-            , ("service.configHash", projectConfigSnapshotHash (configMapMountedText serviceConfig))
-            ]
-                ++ acceleratorHelmValues
-    runOrDieStdin cfg Kubectl ["apply", "-f", "-"] (serviceConfigMapManifest serviceConfig)
-    withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (deployChart cfg (containerPlan (clusterProfileOf projectCfg) ctx) extraValues)
+    gate <- stepExecutionPreparedGate execution >>= maybe (die "chart reconcile: the exact gate is absent") pure
+    let scopeCommitment = case clusterProfileOf projectCfg of
+            Production -> "production"
+            TestCase runKey -> "harness:" <> T.pack runKey
+        route = "runtime://cluster/demo-cluster-readiness"
+        now = preparedGateJournalVersion gate
+        nonce = "deploy-chart-" <> T.pack (show now)
+        values = chartValues projectCfg
+    let opened =
+            withNodeResourceOfKind execution ClusterResourceKind "core:deploy-kind" $ \cluster ->
+                case withNodeChartWorkloadResource execution $ \chart -> do
+                    fresh <- withFreshClusterRuntimeDependency execution scopeCommitment cluster "core:deploy-kind" route now nonce $ \readiness -> do
+                        prepared <- withPreparedChartWorkload chart cluster readiness execution values gate (fmap void . runChartWorkloadCall Nothing)
+                        either (pure . Left) id prepared
+                    either (pure . Left) id fresh of
+                    Left failure -> pure (Left failure)
+                    Right action -> action
+    case opened of
+        Left failure -> die (show failure)
+        Right action -> action >>= either (die . show) (const (pure ()))
 
 {- | The accelerator hub is process-local, so requests and the daemon connection
 must meet in one web pod. Reject an HA value that would make routing
@@ -1717,12 +2159,13 @@ deployAcceleratorDaemonAction stepCfg _ = demoConfigContext stepCfg Context.Clus
     cfg <- resolveHostConfig
     WebServiceConfig _ acceleratorServicePort <- either die pure (validatedWebServiceConfigForContext projectCfg ctx)
     let daemonCtx = Context.deriveClusterDaemonContext ctx (Context.sourceRoot ctx)
+        releaseName = clusterName (containerPlan (clusterProfileOf projectCfg) ctx)
         gpuDaemon = Context.isExplicitLinuxGpuContainer ctx
         daemonProjectCfg = projectConfigFromContext projectCfg daemonCtx
         daemonConfig = renderProjectConfig daemonProjectCfg
         frame = T.unpack (Context.currentFrame daemonCtx)
     _ <- either die pure (configuredServiceVariant daemonProjectCfg)
-    runOrDieStdin cfg Kubectl ["apply", "-f", "-"] (acceleratorDaemonManifest gpuDaemon frame daemonConfig (portNat acceleratorServicePort))
+    runOrDieStdin cfg Kubectl ["apply", "-f", "-"] (acceleratorDaemonManifest releaseName gpuDaemon frame daemonConfig (portNat acceleratorServicePort))
     pollRolloutOrDie
         cfg
         rolloutPoll
@@ -1736,8 +2179,8 @@ generated @<project>.dhall@ and a Deployment that runs config-selected @service 
 the project image, mounting the ConfigMap over the baked container config and pointing
 @HOSTBOOTSTRAP_ACCELERATOR_WS_URL@ at the web ClusterIP accelerator port.
 -}
-acceleratorDaemonManifest :: Bool -> String -> T.Text -> Natural -> String
-acceleratorDaemonManifest gpuDaemon frame daemonConfig acceleratorServicePort =
+acceleratorDaemonManifest :: String -> Bool -> String -> T.Text -> Natural -> String
+acceleratorDaemonManifest releaseName gpuDaemon frame daemonConfig acceleratorServicePort =
     configMap ++ "---\n" ++ deployment
   where
     configMap =
@@ -1785,7 +2228,7 @@ acceleratorDaemonManifest gpuDaemon frame daemonConfig acceleratorServicePort =
             , "            - name: HOSTBOOTSTRAP_CURRENT_FRAME"
             , "              value: \"" ++ frame ++ "\""
             , "            - name: HOSTBOOTSTRAP_ACCELERATOR_WS_URL"
-            , "              value: \"ws://" ++ demoProject ++ "-accelerator:" ++ show acceleratorServicePort ++ "/api/accelerator/daemon\""
+            , "              value: \"ws://" ++ releaseName ++ "-accelerator:" ++ show acceleratorServicePort ++ "/api/accelerator/daemon\""
             , "            - name: HOSTBOOTSTRAP_ACCELERATOR_READY_FILE"
             , "              value: \"/tmp/hostbootstrap-accelerator.ready\""
             , "          volumeMounts:"
@@ -2703,19 +3146,30 @@ assertRegistrySurvivesRestart cfg frame = do
                     then Pass
                     else Fail "registry-persistence: the pushed image was LOST after a registry pod restart (storage is not durable)"
 
-{- | The assertion-only suite cannot yet express the required same-run
-destroy/recreate choreography.  Returning an honest red result keeps this case
-visible in the configured five-case matrix without letting project-owned test
-code invoke a second Production lifecycle.  The harness engine will own the
-write -> exact destroy -> fresh exact up -> read sequence once its durable
-same-run invocation transition is available.
+{- | Write and read the marker through the live service's plan-owned durable
+root. The assertion remains lifecycle-free: it proves the configured case and
+leaves the later same-run destroy/recreate acceptance cycle to the harness
+engine that owns lifecycle interpretation.
 -}
 assertDurableReadback :: HostConfig -> LiftContext -> IO CaseResult
-assertDurableReadback _cfg _frame =
-    pure
-        ( Fail
-            "durable-readback: the exact same-run destroy/up lifecycle cycle is not implemented"
-        )
+assertDurableReadback cfg frame = do
+    let url = "http://localhost:30080/api/durable/marker"
+        marker = "hostbootstrap-destroy-up-v1"
+        script =
+            "curl --fail --silent --show-error -X POST "
+                ++ shellQuoteArg url
+                ++ " >/dev/null && test \"$(curl --fail --silent --show-error "
+                ++ shellQuoteArg url
+                ++ ")\" = "
+                ++ shellQuoteArg marker
+    observed <- liftLeaf cfg frame (RawCmd ["bash", "-lc", script])
+    pure $ case observed of
+        Right (ExitSuccess, _, _) -> Pass
+        Right (ExitFailure code, out, err) ->
+            Fail ("durable-readback: write/read failed (exit " ++ show code ++ "): " ++ bounded (err ++ out))
+        Left err -> Fail ("durable-readback: " ++ err)
+  where
+    bounded = take 1000 . dropWhile isSpace
 
 {- | The project image carries both the served demo app and the base image's
 Playwright installation, so the e2e runner never pulls an external Playwright
@@ -3338,8 +3792,8 @@ Silicon (Lima) and Linux (Incus); on Windows it begins by writing the global
 @.wslconfig@ ceiling and @wsl --shutdown@ (the honest WSL2 wall, since WSL2 has no
 per-distro @wsl --memory@/@--cpu@), then registers the distro with its VHDX cap.
 -}
-runVmUp :: ProjectConfig configScope -> IO ()
-runVmUp stepCfg = demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \projectCfg _ctx -> do
+runVmUp :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
+runVmUp stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \projectCfg _ctx -> do
     cfg <- resolveHostConfig
     sp <- demoProvider cfg
     projectRoot <- makeAbsolute =<< getCurrentDirectory
@@ -3351,59 +3805,216 @@ runVmUp stepCfg = demoConfigContext stepCfg Context.HostOrchestratorCommand [Con
     -- Idempotent reconcile-to-running (§ Y): if the VM already exists, ensure it
     -- is started rather than re-creating it (a create on an existing instance
     -- fails), so a re-run of `project up` reconciles a partially-built stack.
-    exists <- substrateExists cfg sp
-    case clusterProfileOf projectCfg of
-        TestCase _ ->
-            when exists $
-                throwIO
-                    ( SafetyRefusal
-                        ( "managed VM appeared after provider ensure; refusing to reconcile pre-existing state: "
-                            ++ providerVmId sp
-                        )
-                    )
-        Production -> pure ()
-    if exists
-        then do
-            putStrLn ("vm up: " ++ providerVmId sp ++ " already exists; re-applying the cordon + ensuring it is started (idempotent)")
-            -- Reconcile the cordon on the exists path (§ C): re-apply the launch's
-            -- FILE effects (the WSL2 .wslconfig merge) — never the one-time install —
-            -- and then 'applyReconcileCordon' actually makes the ceiling take effect: a
-            -- STOPPED WSL2 distro needs a `wsl --shutdown` so it re-reads the merged
-            -- instanceIdleTimeout + vmIdleTimeout ceiling on its next cold boot (a
-            -- crashed-run distro left stopped would otherwise idle-stop mid-recovery),
-            -- while a RUNNING one already has it live. Lima/Incus carry no launch file
-            -- effects and never idle-stop, so both steps are a no-op there.
-            reCordon <- either (die . show) pure (planProviderProvision sp envelope (Just durableShare))
-            runEffects cfg (wallEffectsOnly reCordon)
-            applyReconcileCordon cfg sp
-            reboot <- either (die . show) pure (planProviderRebootReady sp)
-            runEffectsBestEffort cfg ("vm up: starting existing " ++ providerVmId sp) (rebootStartEffects reboot)
+    if providerKind sp == ProviderIncus
+        then runExactIncusProvider projectCfg cfg execution hostDurableRoot
         else do
-            launch <- either (die . show) pure (planProviderProvision sp envelope (Just durableShare))
-            when (isWindows (hcSubstrate cfg)) discloseWslShutdown
-            putStrLn ("vm up: launching " ++ providerVmId sp ++ " (cordon #1: the VM is the wall, sized to the budget)")
-            runEffects cfg launch
-    -- The share ATTACH is itself a frame mutation that depends on the guest
-    -- agent (§ CC), because on a provider whose share is a post-create device it
-    -- is the agent that performs the mount. Attaching before the agent answers
-    -- silently succeeds -- `incus config device add` reports
-    -- `Device durable-data added` -- and the guest then never mounts it, so the
-    -- mount probe below can never pass. That is how this step collapsed a native
-    -- Incus lane to `0/10`: the mount and alias steps were readiness-gated, but
-    -- the attach they both depend on was not. So it now runs behind
-    -- 'substrateWait''s witness, whose probe is exactly the agent probe.
-    putStrLn ("vm up: waiting for " ++ providerVmId sp ++ " to answer")
-    vmReady <- substrateWait cfg sp
-    reconcileDurableShare vmReady cfg durableShare
-    putStrLn ("vm up: waiting for " ++ providerVmId sp ++ " network to come up")
-    netReady <- waitVMNetwork vmReady cfg sp
-    -- The readiness order is type-enforced (§ CC/§ DD): the mount witness consumes
-    -- the network witness, and 'mintDurableAlias' consumes the mount witness — so the
-    -- alias cannot race the share, and an out-of-order bring-up is a compile error.
-    putStrLn ("vm up: waiting for the durable share to mount in " ++ providerVmId sp)
-    mounted <- awaitDurableShareMounted netReady cfg sp durableShare
-    mintDurableAlias mounted cfg sp durableShare
+            exists <- substrateExists cfg sp
+            case clusterProfileOf projectCfg of
+                TestCase _ ->
+                    when exists $
+                        throwIO
+                            ( SafetyRefusal
+                                ( "managed VM appeared after provider ensure; refusing to reconcile pre-existing state: "
+                                    ++ providerVmId sp
+                                )
+                            )
+                Production -> pure ()
+            if exists
+                then do
+                    putStrLn ("vm up: " ++ providerVmId sp ++ " already exists; re-applying the cordon + ensuring it is started (idempotent)")
+                    reCordon <- either (die . show) pure (planProviderProvision sp envelope (Just durableShare))
+                    runEffects cfg (wallEffectsOnly reCordon)
+                    applyReconcileCordon cfg sp
+                    reboot <- either (die . show) pure (planProviderRebootReady sp)
+                    runEffectsBestEffort cfg ("vm up: starting existing " ++ providerVmId sp) (rebootStartEffects reboot)
+                else do
+                    launch <- either (die . show) pure (planProviderProvision sp envelope (Just durableShare))
+                    when (isWindows (hcSubstrate cfg)) discloseWslShutdown
+                    putStrLn ("vm up: launching " ++ providerVmId sp ++ " (cordon #1: the VM is the wall, sized to the budget)")
+                    runEffects cfg launch
     putStrLn ("vm up: " ++ providerVmId sp ++ " is up")
+
+runCopySource :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
+runCopySource stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \projectCfg _ctx -> do
+    cfg <- resolveHostConfig
+    sp <- demoProvider cfg
+    projectRoot <- makeAbsolute =<< getCurrentDirectory
+    hostDurableRoot <- ensureProfileDataPath (clusterProfileOf projectCfg) projectRoot
+    durableShare <- either (die . show) pure (planProviderShare sp hostDurableRoot)
+    if providerKind sp == ProviderIncus
+        then runExactIncusShare projectCfg cfg execution durableShare
+        else do
+            putStrLn ("copy-source: waiting for " ++ providerVmId sp ++ " to answer")
+            vmReady <- substrateWait cfg sp
+            reconcileDurableShare vmReady cfg durableShare
+            netReady <- waitVMNetwork vmReady cfg sp
+            mounted <- awaitDurableShareMounted netReady cfg sp durableShare
+            mintDurableAlias mounted cfg sp durableShare
+
+runExactIncusShare ::
+    ProjectConfig configScope ->
+    HostConfig ->
+    StepExecution scope planId ->
+    HostPathShare ->
+    IO ()
+runExactIncusShare projectCfg cfg execution durableShare = do
+    gate <- stepExecutionPreparedGate execution >>= maybe (die "copy-source reconcile: the exact producer gate is absent") pure
+    sp <- demoProvider cfg
+    let configured = resources projectCfg
+        IncusVM name image = demoVM
+        cpuNatural = cpu configured
+        stateRoot = hpsHostPath durableShare </> ".provider-state"
+        scopeCommitment = case clusterProfileOf projectCfg of
+            Production -> "production"
+            TestCase runKey -> "harness:" <> T.pack runKey
+        route = "runtime://provider/demo-vm-readiness"
+        now = preparedGateJournalVersion gate
+        nonce = "copy-source-" <> T.pack (show now)
+    when (cpuNatural > fromIntegral (maxBound :: Word64)) (die "copy-source reconcile: CPU quantity exceeds Word64")
+    backendSpec <-
+        either (die . show) pure $
+            mkIncusBackendSpec
+                name
+                image
+                demoGuardPrefix
+                cfg
+                stateRoot
+                (fromIntegral cpuNatural)
+                (T.unpack (quantityText (memory configured)))
+                (T.unpack (quantityText (storage configured)))
+    shareSpec <- either (die . show) pure (mkProviderShareSpec (hpsHostPath durableShare) (hpsGuestPath durableShare))
+    aliasSpec <- either (die . show) pure (mkGuestAliasSpec durableDockerHostPath (hpsGuestPath durableShare))
+    discovered <- discoverStrongProviderBackend cfg backendSpec $ \backend ->
+        case withNodeResourceOfKind execution DurableShareResourceKind (stepExecutionOperationKey execution) $ \plannedShare ->
+            withNodeObservedResource execution plannedShare (preparedGateFence gate) (preparedGateJournalVersion gate) $ \shareHandle -> do
+                opened <-
+                    withFreshRunningProviderHandle
+                        execution
+                        scopeCommitment
+                        (providerBackendBinding backend)
+                        "core:deploy-vm"
+                        route
+                        now
+                        nonce
+                        ( \plannedProvider managedProvider reprobe ->
+                            withPreparedProviderShare execution plannedShare shareHandle managedProvider (dependencyProbe reprobe) shareSpec gate $ \preparedShare -> do
+                                shareCall <- runProviderShareCall backend preparedShare
+                                case settleProviderShare Nothing preparedShare shareCall of
+                                    Left failure -> pure (Left failure)
+                                    Right settlement ->
+                                        withProviderShareSettlement
+                                            settlement
+                                            ( \managedShare _ -> do
+                                                vmReady <- substrateWait cfg sp
+                                                netReady <- waitVMNetwork vmReady cfg sp
+                                                let shareProbe = do
+                                                        _ <- awaitDurableShareMounted netReady cfg sp durableShare
+                                                        pure (Right (managedProviderShareGeneration managedShare))
+                                                case withProviderBoundExec backend managedProvider $ \bound ->
+                                                    discoverProvider managedProvider sp bound $ \capability ->
+                                                        case discoverStrongAliasBackend capability of
+                                                            Left failure -> pure (Left failure)
+                                                            Right aliasBackend ->
+                                                                reconcileNodeGuestAlias
+                                                                    execution
+                                                                    aliasBackend
+                                                                    plannedProvider
+                                                                    managedProvider
+                                                                    plannedShare
+                                                                    managedShare
+                                                                    aliasSpec
+                                                                    (preparedGateFence gate, preparedGateJournalVersion gate)
+                                                                    shareProbe of
+                                                    Left failure -> pure (Left failure)
+                                                    Right discoverAction -> do
+                                                        aliasResult <- discoverAction
+                                                        case aliasResult of
+                                                            Left providerFailure -> die (show providerFailure)
+                                                            Right settledAlias -> pure (void settledAlias)
+                                            )
+                                            (\_ _ _ _ -> die "copy-source reconcile: the share remains foreign")
+                        )
+                case opened of
+                    Left failure -> pure (Left failure)
+                    Right prepareAction -> do
+                        prepared <- prepareAction
+                        case prepared of
+                            Left failure -> pure (Left failure)
+                            Right action -> action of
+            Left failure -> pure (Left failure)
+            Right observed -> case observed of
+                Left failure -> pure (Left failure)
+                Right action -> action
+    either (die . show) (either (die . show) pure) discovered
+
+runExactIncusProvider ::
+    ProjectConfig configScope ->
+    HostConfig ->
+    StepExecution scope planId ->
+    FilePath ->
+    IO ()
+runExactIncusProvider projectCfg cfg execution durableRoot = do
+    gate <- stepExecutionPreparedGate execution >>= maybe (die "VM provider reconcile: the exact producer gate is absent") pure
+    let configured = resources projectCfg
+        IncusVM name image = demoVM
+        cpuNatural = cpu configured
+        stateRoot = durableRoot </> ".provider-state"
+        scopeCommitment = case clusterProfileOf projectCfg of
+            Production -> "production"
+            TestCase runKey -> "harness:" <> T.pack runKey
+    when (cpuNatural > fromIntegral (maxBound :: Word64)) (die "VM provider reconcile: CPU quantity exceeds Word64")
+    when (preparedGateJournalVersion gate > maxBound - 1024) (die "VM provider reconcile: dependency lifetime overflows")
+    backendSpec <-
+        either (die . show) pure $
+            mkIncusBackendSpec
+                name
+                image
+                demoGuardPrefix
+                cfg
+                stateRoot
+                (fromIntegral cpuNatural)
+                (T.unpack (quantityText (memory configured)))
+                (T.unpack (quantityText (storage configured)))
+    discovered <- discoverStrongProviderBackend cfg backendSpec $ \backend ->
+        case withNodeResourceOfKind execution ProviderResourceKind (stepExecutionOperationKey execution) $ \planned ->
+            withNodeObservedResource execution planned (preparedGateFence gate) (preparedGateJournalVersion gate) $ \observed ->
+                withPreparedProviderProvision execution (providerBackendBinding backend) planned observed gate $ \preparedProvision -> do
+                    provisionCall <- runProviderProvisionCall backend preparedProvision
+                    case settleProviderProvision Nothing preparedProvision provisionCall of
+                        Left failure -> pure (Left failure)
+                        Right settlement ->
+                            withProviderProvisionSettlement
+                                settlement
+                                ( \managed _ ->
+                                    case withPreparedProviderReady execution planned managed (providerStartableAfterProvision managed) gate $ \preparedReady -> do
+                                        readyCall <- runProviderReadyCall backend preparedReady
+                                        case settleProviderReady preparedReady readyCall of
+                                            Left failure -> pure (Left failure)
+                                            Right advance -> do
+                                                carried <- carryRunningProviderSettlement execution advance "provisioned" "demo-incus-provider-v1"
+                                                case carried of
+                                                    Left failure -> pure (Left failure)
+                                                    Right () ->
+                                                        registerRunningProviderDependencyPackage
+                                                            backend
+                                                            execution
+                                                            scopeCommitment
+                                                            gate
+                                                            preparedReady
+                                                            advance
+                                                            "runtime://provider/demo-vm-readiness"
+                                                            (preparedGateJournalVersion gate + 1024) of
+                                        Left failure -> pure (Left failure)
+                                        Right action -> fmap void action
+                                )
+                                (\_ _ _ _ -> die "VM provider reconcile: the VM remains foreign") of
+            Left failure -> pure (Left failure)
+            Right observed -> case observed of
+                Left failure -> pure (Left failure)
+                Right prepared -> case prepared of
+                    Left failure -> pure (Left failure)
+                    Right action -> action
+    either (die . show) (either (die . show) pure) discovered
 
 {- | Shared metal-host floor/headroom gate for both VM-backed and direct Linux
 GPU chains. The direct lane has no VM wall, but it still must not consume a
@@ -3502,6 +4113,253 @@ guestStep _vmReady cfg provider label script = do
     putStrLn ("pristine-bootstrap: " ++ label)
     runInDemoVM cfg provider script
 
+{- | Load the independently provisioned public half beside the root binary and
+render it for the two installation crossings.  It is public material, but it
+still travels independently of both Dhall and the signed handoff envelope.
+-}
+installedProjectVerificationKeyHex :: IO String
+installedProjectVerificationKeyHex = do
+    executable <- getExecutablePath
+    loaded <- installedVerificationKey (executable ++ ".handoff.pub")
+    key <- either (die . show) pure loaded
+    pure (concatMap byteHex (BS.unpack (verificationKeyBytes key)))
+  where
+    byteHex byte = case showHex byte "" of
+        [digit] -> ['0', digit]
+        digits -> digits
+
+{- | Add the independently provisioned public key to build #3 without placing
+it in the source tree or config.  Docker requires the context to remain the
+final argv item, so the build argument is inserted immediately before it.
+-}
+dockerBuildArgsWithVerificationKey :: ProjectConfig scope -> String -> String -> [String]
+dockerBuildArgsWithVerificationKey cfg baseImage keyHex =
+    init baseArgs
+        ++ ["--build-arg", "HANDOFF_VERIFICATION_KEY_HEX=" ++ keyHex, last baseArgs]
+  where
+    baseArgs = dockerBuildArgs cfg baseImage
+
+{- | Build the Direct derived image from a clean, exact copy of the Docker
+context while delivering build authority only through BuildKit secrets.
+
+The copied context removes the same generated/cache families as the root
+@.dockerignore@, so the coordinator and the in-image verifier measure identical
+@demo/@ bytes before any Cabal output exists.
+-}
+runAuthenticatedDirectImageBuild ::
+    StepExecution executionScope planId ->
+    ProjectConfig scope ->
+    HostConfig ->
+    FilePath ->
+    ProjectConfig scope ->
+    String ->
+    String ->
+    IO ()
+runAuthenticatedDirectImageBuild execution parentCfg cfg repoRoot repoRootCfg pinnedBase handoffKeyHex =
+    withSystemTempDirectory "hostbootstrap-demo-build" $ \temporary -> do
+        let staged = temporary </> "context"
+            secrets = temporary </> "secrets"
+            builderContext = temporary </> "builder-context"
+        createDirectory staged
+        createDirectory secrets
+        createDirectory builderContext
+        copyBuildTree (repoRoot </> "core" </> "hostbootstrap-core") (staged </> "core" </> "hostbootstrap-core")
+        copyBuildTree (repoRoot </> "demo") (staged </> "demo")
+        executable <- getExecutablePath
+        signing <- installedBuildSigningKey (executable <> ".build.key") >>= either (die . buildErrorMessage) pure
+        coordinatorDigest <- measureBinaryDigest executable >>= either (die . buildErrorMessage) pure
+        sourceDigest <- measureSourceDigest (staged </> "demo") >>= either (die . buildErrorMessage) pure
+        nonce <- getRandomBytes 24
+        let imageCfg =
+                parentCfg
+                    { context = Context.imageBuildContainerContext (T.pack demoProject) "hostbootstrap-demo" "/workspace/demo"
+                    , dockerfile = "docker/Dockerfile"
+                    }
+            imageConfig = renderProjectConfig imageCfg
+            configDigest = childConfigDigest (TextEncoding.encodeUtf8 (imageConfig <> "\n"))
+            specDigest = stepExecutionSpecDigest execution
+            buildId = sha256Bytes nonce
+            binding =
+                BuildBinding
+                    { buildProjectName = T.pack demoProject
+                    , buildSpecDigest = specDigest
+                    , buildConfigDigest = configDigest
+                    , buildIdentifier = buildId
+                    , buildSourceDigest = sourceDigest
+                    , buildCoordinatorDigest = coordinatorDigest
+                    , buildBuilderDigest = coordinatorDigest
+                    , buildFrameName = "image-build-container"
+                    }
+            channelPath = secrets </> "channel"
+            verificationPath = secrets </> "verification"
+            coordinatorPath = secrets </> "coordinator"
+            configPath = secrets </> "config"
+        channel <-
+            withBuildCoordinator signing coordinatorDigest $ \coordinator -> do
+                grant <- signBuildGrant coordinator binding >>= either (die . buildErrorMessage) pure
+                pure (BuildChannel binding grant)
+        BS.writeFile channelPath (renderBuildChannel channel)
+        BS.writeFile verificationPath (buildVerificationKeyBytes (buildSigningVerificationKey signing))
+        BSC.writeFile coordinatorPath (TextEncoding.encodeUtf8 coordinatorDigest)
+        copyFile executable (builderContext </> "hostbootstrap-demo")
+        BSC.writeFile configPath (TextEncoding.encodeUtf8 imageConfig)
+        let baseArgs = dockerBuildArgsWithVerificationKey repoRootCfg pinnedBase handoffKeyHex
+            secretArgs =
+                concatMap
+                    (\(secretId, path) -> ["--secret", "id=" <> secretId <> ",src=" <> path])
+                    [ ("hostbootstrap-build-channel", channelPath)
+                    , ("hostbootstrap-build-verification", verificationPath)
+                    , ("hostbootstrap-build-coordinator", coordinatorPath)
+                    , ("hostbootstrap-build-config", configPath)
+                    ]
+            args =
+                init baseArgs
+                    <> ["--no-cache", "--build-context", "hostbootstrap-builder=" <> builderContext]
+                    <> secretArgs
+                    <> [last baseArgs]
+        withCurrentDirectory staged (runOrDie cfg Docker args)
+
+withAuthenticatedVmBuildSecrets ::
+    StepExecution executionScope planId ->
+    ProjectConfig scope ->
+    HostConfig ->
+    SubstrateProvider ->
+    FilePath ->
+    ([String] -> IO result) ->
+    IO result
+withAuthenticatedVmBuildSecrets execution parentCfg cfg provider repoRoot use =
+    withSystemTempDirectory "hostbootstrap-demo-vm-build" $ \temporary -> do
+        let staged = temporary </> "context"
+            secrets = temporary </> "secrets"
+        createDirectory staged
+        createDirectory secrets
+        copyBuildTree (repoRoot </> "demo") (staged </> "demo")
+        executable <- getExecutablePath
+        signing <- installedBuildSigningKey (executable <> ".build.key") >>= either (die . buildErrorMessage) pure
+        coordinatorDigest <- measureBinaryDigest executable >>= either (die . buildErrorMessage) pure
+        sourceDigest <- measureSourceDigest (staged </> "demo") >>= either (die . buildErrorMessage) pure
+        remoteDigestRaw <- captureInVMStdout cfg provider "sha256sum /usr/local/bin/hostbootstrap-demo | cut -d ' ' -f1" >>= either die pure
+        remoteDigestHex <- maybe (die "the VM builder digest probe returned no digest") pure (listToMaybe (lines remoteDigestRaw))
+        let remoteDigest = "sha256:" <> T.pack remoteDigestHex
+        nonce <- getRandomBytes 24
+        let imageCfg =
+                parentCfg
+                    { context = Context.imageBuildContainerContext (T.pack demoProject) "hostbootstrap-demo" "/workspace/demo"
+                    , dockerfile = "docker/Dockerfile"
+                    }
+            imageConfig = renderProjectConfig imageCfg
+            binding =
+                BuildBinding
+                    { buildProjectName = T.pack demoProject
+                    , buildSpecDigest = stepExecutionSpecDigest execution
+                    , buildConfigDigest = childConfigDigest (TextEncoding.encodeUtf8 (imageConfig <> "\n"))
+                    , buildIdentifier = sha256Bytes nonce
+                    , buildSourceDigest = sourceDigest
+                    , buildCoordinatorDigest = coordinatorDigest
+                    , buildBuilderDigest = remoteDigest
+                    , buildFrameName = "image-build-container"
+                    }
+            localFiles =
+                [ ("hostbootstrap-build-channel", secrets </> "channel", "/tmp/hostbootstrap-build-channel")
+                , ("hostbootstrap-build-verification", secrets </> "verification", "/tmp/hostbootstrap-build-verification")
+                , ("hostbootstrap-build-coordinator", secrets </> "coordinator", "/tmp/hostbootstrap-build-coordinator")
+                , ("hostbootstrap-build-config", secrets </> "config", "/tmp/hostbootstrap-build-config")
+                ]
+        channel <-
+            withBuildCoordinator signing coordinatorDigest $ \coordinator -> do
+                grant <- signBuildGrant coordinator binding >>= either (die . buildErrorMessage) pure
+                pure (BuildChannel binding grant)
+        BS.writeFile (secrets </> "channel") (renderBuildChannel channel)
+        BS.writeFile (secrets </> "verification") (buildVerificationKeyBytes (buildSigningVerificationKey signing))
+        BSC.writeFile (secrets </> "coordinator") (TextEncoding.encodeUtf8 coordinatorDigest)
+        BSC.writeFile (secrets </> "config") (TextEncoding.encodeUtf8 imageConfig)
+        stagedFiles <- traverse stageOne localFiles
+        let builderContext = "/tmp/hostbootstrap-builder-context"
+            secretArgs =
+                ["--build-context", "hostbootstrap-builder=" <> builderContext]
+                    <> concatMap (\(secretId, guestPath, _) -> ["--secret", "id=" <> secretId <> ",src=" <> guestPath]) stagedFiles
+            cleanup =
+                [ guestPath
+                | (_, guestPath, pushed) <- stagedFiles
+                , pushed
+                ]
+        runInDemoVM cfg provider ("mkdir -p " <> builderContext <> " && install -m 0755 /usr/local/bin/hostbootstrap-demo " <> builderContext <> "/hostbootstrap-demo")
+        use secretArgs
+            `finally` ( unless (null cleanup) (runInDemoVM cfg provider ("rm -f " <> unwords (map shellQuoteArg cleanup)))
+                            >> runInDemoVM cfg provider ("rm -f " <> builderContext <> "/hostbootstrap-demo && rmdir " <> builderContext)
+                      )
+  where
+    stageOne (secretId, localPath, guestTarget) = do
+        let stagedFile = stageFileEffects (providerFileTransfer provider) localPath guestTarget
+        runEffects cfg (sfHostEffects stagedFile)
+        pure (secretId, sfGuestPath stagedFile, sfPushedTemp stagedFile)
+
+resolvePublishedBaseInVM ::
+    HostConfig ->
+    SubstrateProvider ->
+    Maybe RegistryAuth ->
+    String ->
+    IO String
+resolvePublishedBaseInVM cfg provider mAuth tag = do
+    let pull = dockerCommand ["pull", tag]
+    case mAuth of
+        Nothing -> runBuildImageReporting cfg provider pull ""
+        Just auth -> runBuildImageReporting cfg provider (dockerAuthStdinWrapper pull) (T.unpack (registryConfigPayload auth))
+    observed <-
+        captureInVMStdout
+            cfg
+            provider
+            (dockerCommand ["image", "inspect", "--format", "{{range .RepoDigests}}{{println .}}{{end}}", tag])
+            >>= either die pure
+    repositoryDigest <-
+        maybe (die "the pulled VM base has no repository digest") pure (find (isInfixOf "@sha256:") (lines observed))
+    let digest = drop 1 (dropWhile (/= '@') repositoryDigest)
+    either die pure (pinnedBaseReference tag digest)
+
+copyBuildTree :: FilePath -> FilePath -> IO ()
+copyBuildTree sourcePath destination = do
+    createDirectoryIfMissing True destination
+    names <- listDirectory sourcePath
+    mapM_ copyEntry names
+  where
+    copyEntry name
+        | ignoredBuildEntry name = pure ()
+        | otherwise = do
+            let from = sourcePath </> name
+                to = destination </> name
+            directory <- doesDirectoryExist from
+            file <- doesFileExist from
+            if directory
+                then copyBuildTree from to
+                else when file (copyFile from to)
+
+ignoredBuildEntry :: FilePath -> Bool
+ignoredBuildEntry name =
+    name
+        `elem` [ ".git"
+               , ".build"
+               , ".data"
+               , ".spago"
+               , ".coverage"
+               , ".mypy_cache"
+               , ".ruff_cache"
+               , ".pytest_cache"
+               , ".tox"
+               , ".nox"
+               , "dist-newstyle"
+               , "node_modules"
+               , "output"
+               , "public"
+               , "test-output"
+               , "test-results"
+               , "__pycache__"
+               , "coverage"
+               , "htmlcov"
+               , "playwright-report"
+               , "target"
+               ]
+        || any (`isSuffixOf` name) [".log", ".lock", ".pyc"]
+
 {- | The IO behind the dissolved @vm pristine-bootstrap@ verb: the from-zero first-run flow inside the VM
 (the project source is staged at @/root/hostbootstrap@; see the runbook).
 Provision the documented Linux host prerequisites (pipx + the @ghcup@ toolchain
@@ -3510,10 +4368,11 @@ pinned to GHC 9.12.4), @pipx install@ the local hostbootstrap, then run
 and builds the demo binary **host-native** in the VM (**build #2**), then
 installs the built binary (no exec).
 -}
-runVmBootstrap :: ProjectConfig configScope -> IO ()
-runVmBootstrap stepCfg = demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \parentCfg ctx -> do
+runVmBootstrap :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
+runVmBootstrap stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \parentCfg ctx -> do
     cfg <- resolveHostConfig
     provider <- demoProvider cfg
+    verificationKeyHex <- installedProjectVerificationKeyHex
     -- Discovered on the metal host (the only place the credential lives); forwarded
     -- into the VM only over stdin for the build #3 base-image pull. 'Nothing' when
     -- the host is not logged in, in which case the pull stays anonymous.
@@ -3551,10 +4410,12 @@ runVmBootstrap stepCfg = demoConfigContext stepCfg Context.HostOrchestratorComma
             ++ " && hostbootstrap build && test -x .build/hostbootstrap-demo"
         )
     vmStep
-        "install the in-VM pb + its sibling vm-orchestrator-1 config at /usr/local/bin (the metal->VM handoff SelfRef path)"
+        "install the in-VM pb, verification key, and sibling vm-orchestrator-1 config at /usr/local/bin (the metal->VM handoff SelfRef path)"
         ( "sudo install -m 0755 "
             ++ shellQuoteArg (vmRepoRoot ++ "/demo/.build/hostbootstrap-demo")
-            ++ " /usr/local/bin/hostbootstrap-demo && sudo cp "
+            ++ " /usr/local/bin/hostbootstrap-demo && python3 -c \"import binascii,sys; open('/tmp/hostbootstrap-demo.handoff.pub','wb').write(binascii.unhexlify(sys.argv[1]))\" "
+            ++ shellQuoteArg verificationKeyHex
+            ++ " && sudo install -m 0644 /tmp/hostbootstrap-demo.handoff.pub /usr/local/bin/hostbootstrap-demo.handoff.pub && rm /tmp/hostbootstrap-demo.handoff.pub && sudo cp "
             ++ shellQuoteArg (vmRepoRoot ++ "/demo/.build/hostbootstrap-demo.dhall")
             ++ " /usr/local/bin/hostbootstrap-demo.dhall"
         )
@@ -3568,15 +4429,22 @@ runVmBootstrap stepCfg = demoConfigContext stepCfg Context.HostOrchestratorComma
     -- probe stays a simple `docker info >/dev/null 2>&1` — the same shape
     -- `waitVMNetwork`/`substrateWait` use safely.
     dockerReady <- waitDockerReady cfg provider
-    let buildImageScript =
-            "cd " ++ shellQuoteArg vmRepoRoot ++ " && " ++ dockerCommand (dockerBuildArgs repoRootCfg (demoBaseImage cfg))
-        repoRootCfg =
+    let repoRootCfg =
             parentCfg{dockerfile = "demo/" <> dockerfile parentCfg}
-    buildProjectImage dockerReady cfg provider mAuth buildImageScript
+    pinnedBase <- resolvePublishedBaseInVM cfg provider mAuth (demoBaseImage cfg)
+    cwd <- getCurrentDirectory
+    withAuthenticatedVmBuildSecrets execution parentCfg cfg provider (repoRootOfProjectRoot cwd) $ \secretArgs -> do
+        let baseArgs = dockerBuildArgsWithVerificationKey repoRootCfg pinnedBase verificationKeyHex
+            buildImageScript =
+                "cd "
+                    ++ shellQuoteArg vmRepoRoot
+                    ++ " && "
+                    ++ dockerCommand (init baseArgs <> ["--no-cache"] <> secretArgs <> [last baseArgs])
+        buildProjectImage dockerReady cfg provider mAuth buildImageScript
     putStrLn "pristine-bootstrap: done (build #2 host-native + build #3 project image, in the VM)"
 
-runDirectHostBootstrap :: ProjectConfig configScope -> IO ()
-runDirectHostBootstrap stepCfg = demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \parentCfg ctx -> do
+runDirectProviderReservation :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
+runDirectProviderReservation stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \parentCfg ctx -> do
     initialCfg <- resolveHostConfig
     when (substrateName (hcSubstrate initialCfg) /= LinuxGpu) $
         die "direct-linux-gpu-bootstrap: this path is only valid on the linux-gpu substrate"
@@ -3592,15 +4460,22 @@ runDirectHostBootstrap stepCfg = demoConfigContext stepCfg Context.HostOrchestra
             when exists $
                 throwIO (SafetyRefusal "direct nvkind state appeared after Docker ensure; refusing to reconcile it before CUDA mutates Docker")
         Production -> pure ()
+    absoluteRoot <- makeAbsolute root
+    runExactDirectProvider parentCfg cfgAfterDocker execution absoluteRoot
+    putStrLn "direct-linux-gpu-bootstrap: exact Direct provider reservation is ready"
+
+runDirectHostBootstrap :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
+runDirectHostBootstrap stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \parentCfg ctx -> do
     runEnsure EnsureCuda.reconciler
     cfg <- resolveHostConfig
+    verificationKeyHex <- installedProjectVerificationKeyHex
+    absoluteRoot <- makeAbsolute (T.unpack (Context.sourceRoot ctx))
     -- The Docker build context is the repository root because the Dockerfile
     -- copies both demo/ and core/. @Context.sourceRoot@ may legitimately be the
     -- relative ".", so resolve it to an absolute path before deriving the repo
     -- root: @takeDirectory "."@ is "." (not the parent), which would otherwise
     -- run @docker build@ from the demo project dir and fail to resolve
     -- @demo/docker/Dockerfile@.
-    absoluteRoot <- makeAbsolute root
     let bridgeDir = T.unpack (Context.sourceRoot ctx) </> "web" </> "src" </> "Generated"
         repoRoot = repoRootOfProjectRoot absoluteRoot
         repoRootCfg = parentCfg{dockerfile = "demo/" <> dockerfile parentCfg}
@@ -3616,9 +4491,62 @@ runDirectHostBootstrap stepCfg = demoConfigContext stepCfg Context.HostOrchestra
         either (die . ("direct-linux-gpu-bootstrap: " ++)) pure
             =<< resolvePublishedBase cfg (demoBaseImage cfg)
     putStrLn ("direct-linux-gpu-bootstrap: building FROM " ++ pinnedBase)
-    withCurrentDirectory repoRoot $
-        runOrDie cfg Docker (dockerBuildArgs repoRootCfg pinnedBase)
+    runAuthenticatedDirectImageBuild execution parentCfg cfg repoRoot repoRootCfg pinnedBase verificationKeyHex
     putStrLn "direct-linux-gpu-bootstrap: done (project image built on the host)"
+
+runExactDirectProvider ::
+    ProjectConfig configScope ->
+    HostConfig ->
+    StepExecution scope planId ->
+    FilePath ->
+    IO ()
+runExactDirectProvider projectCfg cfg execution canonicalRoot = do
+    gate <- stepExecutionPreparedGate execution >>= maybe (die "Direct provider reconcile: the exact producer gate is absent") pure
+    when (preparedGateJournalVersion gate > maxBound - 1024) (die "Direct provider reconcile: dependency lifetime overflows")
+    let scopeCommitment = case clusterProfileOf projectCfg of
+            Production -> "production"
+            TestCase runKey -> "harness:" <> T.pack runKey
+    backendSpec <- either (die . show) pure (mkDirectHostBackendSpec cfg canonicalRoot (demoBaseImage cfg))
+    discovered <- discoverStrongProviderBackend cfg backendSpec $ \backend ->
+        case withNodeResourceOfKind execution ProviderResourceKind (stepExecutionOperationKey execution) $ \planned ->
+            withNodeObservedResource execution planned (preparedGateFence gate) (preparedGateJournalVersion gate) $ \observed ->
+                withPreparedProviderProvision execution (providerBackendBinding backend) planned observed gate $ \preparedProvision -> do
+                    provisionCall <- runProviderProvisionCall backend preparedProvision
+                    case settleProviderProvision Nothing preparedProvision provisionCall of
+                        Left failure -> pure (Left failure)
+                        Right settlement ->
+                            withProviderProvisionSettlement
+                                settlement
+                                ( \managed _ ->
+                                    case withPreparedProviderReady execution planned managed (providerStartableAfterProvision managed) gate $ \preparedReady -> do
+                                        readyCall <- runProviderReadyCall backend preparedReady
+                                        case settleProviderReady preparedReady readyCall of
+                                            Left failure -> pure (Left failure)
+                                            Right advance -> do
+                                                carried <- carryCreatedRunningProviderSettlement execution advance "demo-direct-provider-v1"
+                                                case carried of
+                                                    Left failure -> pure (Left failure)
+                                                    Right () ->
+                                                        registerRunningProviderDependencyPackage
+                                                            backend
+                                                            execution
+                                                            scopeCommitment
+                                                            gate
+                                                            preparedReady
+                                                            advance
+                                                            "runtime://provider/demo-direct-readiness"
+                                                            (preparedGateJournalVersion gate + 1024) of
+                                        Left failure -> pure (Left failure)
+                                        Right action -> fmap void action
+                                )
+                                (\_ _ _ _ -> die "Direct provider reconcile: the reservation remains foreign") of
+            Left failure -> pure (Left failure)
+            Right observed -> case observed of
+                Left failure -> pure (Left failure)
+                Right prepared -> case prepared of
+                    Left failure -> pure (Left failure)
+                    Right action -> action
+    either (die . show) (either (die . show) pure) discovered
 
 {- | Stream the parent-derived VM-orchestrator config into the VM **in-place**
 (§ X): render the narrowed VM projection and pipe it over the VM shell's @stdin@,
@@ -3644,8 +4572,8 @@ streamVMConfig _vmReady cfg provider parentCfg ctx = do
                 ++ shellQuoteArg (vmDemoRoot ++ "/.build")
                 ++ " && sudo mkdir -p /run/hostbootstrap"
                 ++ " && printf %s "
-            ++ shellQuoteArg (providerVmId provider)
-            ++ " | sudo tee /run/hostbootstrap/vm-provider >/dev/null"
+                ++ shellQuoteArg (providerVmId provider)
+                ++ " | sudo tee /run/hostbootstrap/vm-provider >/dev/null"
                 ++ " && cat > "
                 ++ shellQuoteArg remotePath
     case demoGuestShellArgs provider ["bash", "-lc", script] of
@@ -3703,8 +4631,9 @@ repo root is 'repoRootOfProjectRoot' of the cwd (cwd-consistent, not cwd-fragile
 stageSource :: ObservedReady VMReady -> HostConfig -> SubstrateProvider -> IO ()
 stageSource _vmReady cfg provider = do
     cwd <- getCurrentDirectory
+    tempRoot <- getTemporaryDirectory
     let repoRoot = repoRootOfProjectRoot cwd
-        tarball = repoRoot ++ "/.hostbootstrap-src.tgz"
+        tarball = tempRoot </> "hostbootstrap-src.tgz"
     putStrLn ("pristine-bootstrap: staging the project source into " ++ providerVmId provider ++ ":" ++ vmRepoRoot)
     tarResult <-
         runTool
@@ -3832,15 +4761,6 @@ the core's cluster adapter cannot reach it; the project declares this reverse on
 that node instead and executes the image's pinned @kind@ against the host Docker
 socket. Both verbs delete, because kind has no reliable stop contract.
 -}
-demoDirectClusterReverse ::
-    ClusterProfile ->
-    CanonicalProjectRoot rootScope rootId ->
-    HostConfig ->
-    TeardownAction ->
-    IO TeardownOutcome
-demoDirectClusterReverse profile rootAuthority cfg _action
-    = demoDirectClusterReverseAt profile (canonicalProjectRootPath rootAuthority) cfg _action
-
 demoDirectClusterReverseAt ::
     ClusterProfile ->
     FilePath ->
@@ -3899,19 +4819,6 @@ directClusterTeardownArgs =
     , demoProject
     ]
 
-{- | Run a teardown tool invocation best-effort: announce the intent, then tolerate
-a non-zero exit (a missing or already-stopped VM is not a failure for idempotent
-teardown). Only a clean exit streams its output.
--}
-bestEffortTool :: HostConfig -> HostTool -> [String] -> String -> IO ()
-bestEffortTool cfg tool argv intent = do
-    putStrLn intent
-    result <- runToolWithStdin cfg tool argv ""
-    case result of
-        Right (ExitSuccess, out, _) -> unless (null out) (putStr out)
-        Right (ExitFailure _, _, err) -> putStrLn ("  (skipped: " ++ takeWhile (/= '\n') err ++ ")")
-        Left err -> putStrLn ("  (skipped: " ++ err ++ ")")
-
 {- | The authority @push-image@ dials, projected from the plan's published
 exposure. The plan fixes the loopback authority, so this cannot drift from the
 port the registry Service actually publishes.
@@ -3929,16 +4836,13 @@ directContainerRuntimeFrameId = "vm-project-container-1"
 
 {- | The project container the chain's container frame runs in: the demo image, with the
 host Docker socket mounted (so kind nodes are siblings on the VM daemon) and
-host networking. The project-container child @<project>.dhall@ is delivered
-**in-place** via 'clConfigDelivery' — the narrowed projection (@payload@) is piped
-on the handoff @stdin@ and the entrypoint writes it to
-@/usr/local/bin/hostbootstrap-demo.dhall@ before @exec@ing @project up@, so there is
-**no config bind-mount**. The remaining mounts are the Docker socket, the
-host-backed durable root, and (for VM-backed lanes) the provider witness. It also
-forwards the Docker Hub credential by /name/ only
-(@-e HOSTBOOTSTRAP_REGISTRY_AUTH@) — never the value — so the in-container kind/curl
-pulls authenticate; with no host login the variable is unset and pulls stay
-anonymous (see "HostBootstrap.Registry").
+host networking. The authenticated lifecycle exchange delivers the narrowed
+project-container config in-place; the plan-owned lift therefore carries no
+stdin delivery or free-form Docker arguments. The process-route kernel adds
+the fixed host-network, current-frame witness, and registry-auth environment
+name after authenticating the child coordinate. The remaining mounts are the
+Docker socket, the host-backed durable root, and (for VM-backed lanes) the
+provider witness.
 -}
 data DemoDurableBind scope rootId
     = CanonicalHostDurable (CanonicalProjectRoot scope rootId) (CanonicalHostPath scope rootId)
@@ -3946,8 +4850,8 @@ data DemoDurableBind scope rootId
     | ProjectedDurable FilePath FilePath
 
 demoDeployImage :: ClusterProfile -> DemoDurableBind scope rootId -> String -> Bool -> T.Text -> ContainerLift
-demoDeployImage profile durableBind currentFrameId directLinuxGpu payload =
-    demoDeployImageWithMount durableMount currentFrameId directLinuxGpu payload
+demoDeployImage profile durableBind =
+    demoDeployImageWithMount durableMount
   where
     durableMount =
         case durableBind of
@@ -3957,30 +4861,16 @@ demoDeployImage profile durableBind currentFrameId directLinuxGpu payload =
     targetPath = profileDataPath profile containerSourceRoot
 
 demoDeployImageWithMount :: Mount -> String -> Bool -> T.Text -> ContainerLift
-demoDeployImageWithMount durableMount currentFrameId directLinuxGpu payload =
+demoDeployImageWithMount durableMount _currentFrameId directLinuxGpu payload =
     ContainerLift
         { clImage = "hostbootstrap-demo:local"
+        , clPlacement = if directLinuxGpu then DirectHostContainer else ProviderGuestContainer
         , clMounts =
             [ Mount "/var/run/docker.sock" "/var/run/docker.sock" False
             , durableMount
             ]
                 ++ [Mount "/run/hostbootstrap" "/run/hostbootstrap" True | not directLinuxGpu]
-        , clExtraArgs =
-            [ "--network=host"
-            , "-e"
-            , "HOSTBOOTSTRAP_CURRENT_FRAME=" ++ currentFrameId
-            ]
-                ++ ( if directLinuxGpu
-                        then
-                            [ "--gpus=all"
-                            , "-e"
-                            , "HOSTBOOTSTRAP_DIRECT_CONTAINER=linux-gpu"
-                            ]
-                        else []
-                   )
-                ++ [ "-e"
-                   , registryAuthEnvVar
-                   ]
+        , clExtraArgs = []
         , clRemoveAfter = True
         , clConfigDelivery =
             Just

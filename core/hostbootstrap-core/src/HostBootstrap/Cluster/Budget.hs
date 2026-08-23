@@ -36,16 +36,21 @@ module HostBootstrap.Cluster.Budget
     workloadFrame,
     PlannedWorkloadSet,
     withPlannedWorkloadSet,
+    plannedWorkloadSetDeclarationKey,
+    plannedWorkloadSetDigest,
     VerifiedWorkloadFit,
     verifyPlannedWorkloadFit,
     SliceRequest,
     mkSliceRequest,
     BudgetPartition,
+    budgetPartitionDigest,
+    workloadPartitionDigest,
     ResourceSlice,
     SomeResourceSlice,
     withBudgetPartition,
     forResourceSlices,
     withResourceSliceFor,
+    withActionResourceSlice,
     resourceSliceName,
     resourceSliceFrame,
     resourceSliceBudget,
@@ -79,9 +84,11 @@ module HostBootstrap.Cluster.Budget
   )
 where
 
+import qualified Crypto.Hash as Hash
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import HostBootstrap.Cluster.Budget.Internal
   ( BareLinuxProvider,
     ColimaProvider,
@@ -353,7 +360,7 @@ mkWorkload resource replicas cores memoryBytes storageBytes
     frame = Text.unpack (plannedResourceFrame resource)
 
 data PlannedWorkloadSet scope planId workloadSetId =
-  PlannedWorkloadSet (NonEmpty (Workload scope planId))
+  PlannedWorkloadSet (NonEmpty (Workload scope planId)) Text.Text Text.Text
 
 type role PlannedWorkloadSet nominal nominal nominal
 
@@ -367,7 +374,9 @@ withPlannedWorkloadSet plan workloads consume =
     Nothing -> Left EmptyWorkloadSet
     Just nonEmpty -> do
       mapM_ validateFrame (NonEmpty.toList nonEmpty)
-      Right (consume (PlannedWorkloadSet nonEmpty))
+      let key = "workload-set:" <> canonicalDigest ("workload-key" : concatMap workloadIdentityFields (NonEmpty.toList nonEmpty))
+          digest = canonicalDigest ("workloads" : concatMap workloadFields (NonEmpty.toList nonEmpty))
+      Right (consume (PlannedWorkloadSet nonEmpty key digest))
   where
     derivedTopology = topology plan
     validateFrame workload
@@ -381,6 +390,22 @@ withPlannedWorkloadSet plan workloads consume =
                     ++ " is not part of the admitted plan topology"
                 )
             )
+    workloadFields workload =
+      [ Text.pack (workloadName workload)
+      , Text.pack (workloadFrame workload)
+      , Text.pack (show (workloadReplicas workload))
+      , Text.pack (show (workloadCpuPerReplica workload))
+      , Text.pack (show (workloadMemoryPerReplica workload))
+      , Text.pack (show (workloadStoragePerReplica workload))
+      ]
+    workloadIdentityFields workload =
+      [Text.pack (workloadName workload), Text.pack (workloadFrame workload)]
+
+plannedWorkloadSetDeclarationKey :: PlannedWorkloadSet scope planId workloadSetId -> Text.Text
+plannedWorkloadSetDeclarationKey (PlannedWorkloadSet _ key _) = key
+
+plannedWorkloadSetDigest :: PlannedWorkloadSet scope planId workloadSetId -> Text.Text
+plannedWorkloadSetDigest (PlannedWorkloadSet _ _ digest) = digest
 
 data VerifiedWorkloadFit scope planId budgetId provider capabilityId wallSpecId workloadSetId =
   VerifiedWorkloadFit
@@ -393,7 +418,7 @@ verifyPlannedWorkloadFit ::
   Either
     BudgetError
     (VerifiedWorkloadFit scope planId budgetId provider capabilityId wallSpecId workloadSetId)
-verifyPlannedWorkloadFit (EffectiveBudget budget) (PlannedWorkloadSet workloads) = do
+verifyPlannedWorkloadFit (EffectiveBudget budget) (PlannedWorkloadSet workloads _ _) = do
   fits "cpu" totalCpu (toInteger (budgetCpu budget))
   fits "memory" totalMemory (budgetMemoryBytes budget)
   fits "storage" totalStorage (budgetStorageBytes budget)
@@ -452,7 +477,7 @@ requestedBudget :: SliceRequest scope planId -> ResourceBudget
 requestedBudget (SliceRequest _resource budget) = budget
 
 data BudgetPartition scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId =
-  BudgetPartition
+  BudgetPartition Text.Text
 
 type role BudgetPartition nominal nominal nominal nominal nominal nominal nominal nominal
 
@@ -488,7 +513,7 @@ withBudgetPartition (EffectiveBudget effective) VerifiedWorkloadFit overhead req
   check "storage" totalStorage (budgetStorageBytes effective)
   pure
     ( consume
-        BudgetPartition
+        (BudgetPartition (canonicalDigest ("partition" : budgetFields overhead <> concatMap requestFields (NonEmpty.toList requests))))
         [ SomeResourceSlice
             ( ResourceSlice
                 resource
@@ -505,6 +530,31 @@ withBudgetPartition (EffectiveBudget effective) VerifiedWorkloadFit overhead req
     check dimension wanted allowed
       | wanted <= allowed = Right ()
       | otherwise = Left (PartitionOverflow dimension wanted allowed)
+    requestFields (SliceRequest resource budget) =
+      plannedResourceKey resource : plannedResourceFrame resource : budgetFields budget
+
+budgetPartitionDigest :: BudgetPartition scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId -> Text.Text
+budgetPartitionDigest (BudgetPartition digest) = digest
+
+workloadPartitionDigest ::
+  PlannedWorkloadSet scope planId workloadSetId ->
+  BudgetPartition scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId ->
+  Text.Text
+workloadPartitionDigest workloads partition =
+  canonicalDigest ["workload-partition", plannedWorkloadSetDigest workloads, budgetPartitionDigest partition]
+
+budgetFields :: ResourceBudget -> [Text.Text]
+budgetFields budget =
+  [ Text.pack (show (budgetCpu budget))
+  , Text.pack (show (budgetMemoryBytes budget))
+  , Text.pack (show (budgetStorageBytes budget))
+  ]
+
+canonicalDigest :: [Text.Text] -> Text.Text
+canonicalDigest fields =
+  Text.pack (show (Hash.hash (TextEncoding.encodeUtf8 framed) :: Hash.Digest Hash.SHA256))
+  where
+    framed = Text.concat [Text.pack (show (Text.length field)) <> ":" <> field | field <- fields]
 
 forResourceSlices ::
   [SomeResourceSlice scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId] ->
@@ -552,6 +602,21 @@ withResourceSliceFor planned slices consume =
     _ -> Left (InvalidSlice (name ++ ": the budget partition contains duplicate slices for this planned resource"))
   where
     name = Text.unpack (plannedResourceKey planned)
+
+{- | Attach an already-validated action-local budget to the executing planned
+resource under fresh partition indices. The caller cannot choose any identity
+index; the resource supplies key/frame and the closed 'ResourceBudget' supplies
+the quantities.
+-}
+withActionResourceSlice ::
+  PlannedResource scope planId resourceId resource frame ->
+  ResourceBudget ->
+  ( forall budgetId provider capabilityId wallSpecId workloadSetId partitionId.
+    ResourceSlice scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId frame resourceId ->
+    result
+  ) ->
+  result
+withActionResourceSlice planned budget consume = consume (ResourceSlice planned budget)
 
 resourceSliceName ::
   ResourceSlice scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId frame resourceId ->
@@ -676,7 +741,7 @@ preparePlanOwnedProviderWallCall
   (ProviderBudgetCapability capabilityResource _providerKey)
   wall@(ProviderWallSpec _wallProviderKey wallBudget)
   VerifiedWorkloadFit
-  partition@BudgetPartition
+  partition@(BudgetPartition _)
   reservation@(ProviderWallReservation _plan _operation _session _fenceValue _attempt _journalVersion)
   name = do
     requirePackage
