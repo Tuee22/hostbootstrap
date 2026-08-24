@@ -250,8 +250,8 @@ stepProbe (InstallGuestBootstrapper _ bootstrapper) =
     RawCmd ["test", "-x", bootstrapper]
 stepProbe (BuildGuestProjectBinary _ _ _ built) =
     RawCmd ["test", "-x", built]
-stepProbe (InstallGuestProjectBinary _ installed) =
-    RawCmd ["test", "-x", installed]
+stepProbe (InstallGuestProjectBinary built installed) =
+    RawCmd ["cmp", "-s", built, installed]
 
 {- | The actions that satisfy a step, in order.
 

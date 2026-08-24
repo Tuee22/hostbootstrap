@@ -44,6 +44,7 @@ module HostBootstrap.Cluster.Backend (
     discoverStrongClusterBackend,
     runClusterReconcileCall,
     runClusterCleanupCall,
+    releaseRetainedCluster,
     runClusterCordonCall,
     ClusterStatusObservation (..),
     runClusterStatusCall,
@@ -52,55 +53,85 @@ module HostBootstrap.Cluster.Backend (
     registerClusterRuntimeDependencyPackage,
     withFreshClusterRuntimeDependency,
     PreparedChartWorkload,
+    withPreparedActivatedChartWorkload,
     withPreparedChartWorkload,
     runChartWorkloadCall,
     runChartWorkloadCleanupCall,
     runVerifiedChartWorkloadCleanupCall,
 
-    -- * Loopback-bound exposure
-    LoopbackExposure,
-    mkLoopbackExposure,
-    loopbackExposureListenAddress,
-    loopbackExposureHostPort,
-    loopbackExposureNodePort,
-    PreparedLoopbackExposure,
-    withPreparedLoopbackExposure,
-    preparedLoopbackExposureMapping,
-    ObservedPortBinding (..),
-    settleLoopbackExposure,
+    -- * Runtime-owned loopback exposure
+    ExposureIntent,
+    mkExposureIntent,
+    exposureIntentService,
+    exposureIntentTargetHost,
+    exposureIntentTargetPort,
+    PreparedClusterExposure,
+    withPreparedClusterExposure,
+    ResolvedExposure,
+    withResolvedExposure,
+    resolvedExposureService,
+    resolvedExposureListenAddress,
+    resolvedExposureHostPort,
+    resolvedExposureTargetHost,
+    resolvedExposureTargetPort,
+    resolvedExposureRelayIdentity,
+    resolvedExposureClusterGeneration,
+    resolvedExposureOwnershipOperation,
+    runClusterExposureCall,
+    releaseClusterExposureCall,
+    releaseRecordedClusterExposure,
 )
 where
 
-import Data.Char (isDigit)
+import Crypto.Hash (Digest, SHA256, hash)
+import Crypto.Random (getRandomBytes)
+import Data.Aeson (Value (Array, Object, String), eitherDecodeStrict')
+import qualified Data.Aeson.Key as AesonKey
+import qualified Data.Aeson.KeyMap as AesonKeyMap
+import Data.ByteArray.Encoding (Base (Base16), convertToBase)
 import qualified Data.ByteString as ByteString
+import Data.Char (isDigit)
+import Data.Foldable (toList)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
-import Data.List (isInfixOf)
+import Data.List (intercalate, isInfixOf, sort)
 import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
+import HostBootstrap.Cluster.Backend.Internal (
+    StrongClusterBackend,
+    mkStrongClusterBackend,
+    strongClusterConfigBytes,
+    strongClusterConfigDigest,
+    strongClusterDriver,
+    strongClusterHostConfig,
+    strongClusterKubeconfigPath,
+    strongClusterOwnershipIdentity,
+    strongClusterReadinessVersion,
+ )
 import HostBootstrap.Cluster.Command (listClustersCommand)
-import HostBootstrap.Cluster.Backend.Internal
-    ( StrongClusterBackend
-    , mkStrongClusterBackend
-    , strongClusterHostConfig
-    , strongClusterDriver
-    , strongClusterConfigBytes
-    , strongClusterConfigDigest
-    , strongClusterOwnershipIdentity
-    , strongClusterReadinessVersion
-    )
-import HostBootstrap.Cluster.Lifecycle
-    ( ClusterDriver (KindDriver, NvkindDriver)
-    , PlanOwnedClusterConfig
-    , planOwnedClusterConfigBase
-    , planOwnedClusterConfigBytes
-    , planOwnedClusterConfigDigest
-    , planOwnedClusterConfigDriver
-    , planOwnedClusterOwnershipIdentity
-    )
 import HostBootstrap.Cluster.Cordon (ResourceBudget)
+import HostBootstrap.Cluster.Exposure.Internal (exposureRelayMarker)
+import HostBootstrap.Cluster.Lifecycle (
+    ClusterDriver (KindDriver, NvkindDriver),
+    ClusterPlan (clusterConfigFile, clusterDriver, clusterName, dataPath),
+    ExposureIntent,
+    PlanOwnedClusterConfig,
+    clusterKubeconfigPath,
+    clusterNodeNames,
+    clusterRuntimeStateDirectory,
+    exposureIntentService,
+    exposureIntentTargetHost,
+    exposureIntentTargetPort,
+    mkPlanExposureIntent,
+    planOwnedClusterConfigBase,
+    planOwnedClusterConfigBytes,
+    planOwnedClusterConfigDigest,
+    planOwnedClusterConfigDriver,
+    planOwnedClusterOwnershipIdentity,
+    planOwnedClusterStateDirectory,
+ )
 import HostBootstrap.Cluster.Observation.Internal (
     ClusterBackendBinding (..),
     ClusterCleanupCallResult (..),
@@ -133,15 +164,15 @@ import HostBootstrap.Cluster.Reconcile (
     preparedCleanupNodeNames,
     preparedCleanupOwnershipIdentity,
     preparedCleanupStateDirectory,
-    preparedClusterConfigDigest,
     preparedClusterConfigBytes,
-    preparedClusterDriver,
+    preparedClusterConfigDigest,
     preparedClusterConfigPath,
     preparedClusterCordonBudget,
     preparedClusterCordonName,
     preparedClusterCordonNodeNames,
     preparedClusterCordonOwnershipIdentity,
     preparedClusterCordonStateDirectory,
+    preparedClusterDriver,
     preparedClusterName,
     preparedClusterNodeNames,
     preparedClusterOwnershipIdentity,
@@ -157,33 +188,38 @@ import HostBootstrap.Cluster.Report (
     safeClusterName,
  )
 import HostBootstrap.Cluster.Resume (ClusterStandingConflict (ClusterUnderNoRecord, NodeReplaced))
-import HostBootstrap.Cluster.Workload
-    ( PreparedChartWorkload
-    , settlePreparedChartWorkload
-    , settlePreparedChartWorkloadUnchanged
-    , withPreparedChartWorkload
-    , withPreparedChartWorkloadParts
-    , withSettledChartWorkloadCleanup
-    )
+import HostBootstrap.Cluster.Workload (
+    PreparedChartWorkload,
+    settlePreparedChartWorkload,
+    settlePreparedChartWorkloadUnchanged,
+    withPreparedActivatedChartWorkload,
+    withPreparedChartWorkload,
+    withPreparedChartWorkloadParts,
+    withSettledChartWorkloadCleanup,
+ )
 import HostBootstrap.Effect.Interpreter (interpretHostCommand)
 import HostBootstrap.Effect.Run (CapturedRun (..))
-import HostBootstrap.Effect.Vocabulary (hostCommand, withCommandStdin)
+import HostBootstrap.Effect.Vocabulary (HostCommand, hostCommand, withCommandStdin)
 import HostBootstrap.HostConfig (HostConfig, resolveMaybe)
 import HostBootstrap.HostTool (HostTool (Docker, Helm, Kind, Kubectl, Nvkind), toolCommandName)
-import System.Exit (ExitCode (ExitSuccess))
 import HostBootstrap.Lifecycle.Dependency.Internal (
     RuntimeDependencyPackage,
     mkClusterRuntimeDependencyPackage,
-    renderRuntimeDependencyProbeResponse,
     renderRuntimeDependencyChartResponse,
+    renderRuntimeDependencyExposureResponse,
+    renderRuntimeDependencyProbeResponse,
     runtimeDependencyChartRequest,
+    runtimeDependencyExposureRequest,
+    runtimeDependencyPackageGeneration,
     runtimeDependencyPackageKey,
     runtimeDependencyProbeRequest,
-    verifyRuntimeDependencyProbeResponse,
     verifyRuntimeDependencyChartResponse,
+    verifyRuntimeDependencyExposureResponse,
+    verifyRuntimeDependencyProbeResponse,
     withClusterRuntimeDependencySuccessor,
-    withRuntimeDependencyProbeRequest,
     withRuntimeDependencyChartRequest,
+    withRuntimeDependencyExposureRequest,
+    withRuntimeDependencyProbeRequest,
  )
 import HostBootstrap.Lifecycle.Execution.Internal (
     StepExecution,
@@ -205,11 +241,21 @@ import HostBootstrap.Lifecycle.Prepared (
     preparedGateSession,
  )
 import HostBootstrap.Ownership.Object (ObjectIdentity)
+import HostBootstrap.ProjectPlan (ChartWorkloadResource)
+import qualified HostBootstrap.ProjectPlan as ProjectPlan
 import HostBootstrap.Protected (
+    Expectation (ExpectAbsent, ExpectVersion),
+    ProtectedError,
+    ProtectedRecord (protectedRecordBytes, protectedRecordVersion),
     ProtectedSession,
     RecordKey,
+    RecordVersion,
+    compareAndDeleteProtectedRecord,
+    compareAndSwapProtectedRecord,
+    mkRecordKey,
     openProtectedStore,
     protectedErrorMessage,
+    readProtectedRecord,
     withProtectedEntry,
  )
 import HostBootstrap.Reconcile (
@@ -218,21 +264,20 @@ import HostBootstrap.Reconcile (
     ConflictDetail (..),
     FailureDetail (..),
     PlannedResource,
-    VerifiedResourceRecordBundle,
     PriorCommitProof,
     Provisioned,
     ReconcileError (..),
-    RecoveryDisposition (DoNotRetry, ReprobeBeforeRetry),
     ReconcileResult,
+    RecoveryDisposition (DoNotRetry, ReprobeBeforeRetry),
     UnsupportedDetail (..),
-    plannedResourceKey,
+    VerifiedResourceRecordBundle,
     resourceHandleGeneration,
     withCarriedManagedResourceOfKind,
     withVerifiedResourceRecordBundle,
  )
+import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath (isAbsolute, (</>))
-import HostBootstrap.ProjectPlan (ChartWorkloadResource)
-import qualified HostBootstrap.ProjectPlan as ProjectPlan
+import Text.Read (readMaybe)
 
 -- The clause-holding backend --------------------------------------------------
 
@@ -242,6 +287,7 @@ Its constructor is not exported, so a caller cannot mint one from chosen tool
 paths. It retains the exact plan-owned driver, config bytes/digest, ownership
 identity, typed host configuration, and readiness-observation counter.
 -}
+
 {- | Admit the declared backend.
 
 No probe, and no discovery of its own: the tools were resolved once into the
@@ -267,6 +313,7 @@ discoverStrongClusterBackend cfg configured =
                         (planOwnedClusterConfigBytes configured)
                         (planOwnedClusterConfigDigest configured)
                         (planOwnedClusterOwnershipIdentity (planOwnedClusterConfigBase configured))
+                        (planOwnedClusterStateDirectory (planOwnedClusterConfigBase configured) </> "cluster.kubeconfig")
                         readiness
                     )
                 )
@@ -298,7 +345,7 @@ runChartWorkloadCall ::
     PreparedChartWorkload scope planId chartId chartFrame clusterId clusterPhase operationKey callDigest attempt journalVersion ->
     IO (Either ReconcileError (ReconcileResult scope planId chartId (ChartWorkloadResource scope planId chartId chartFrame) Provisioned))
 runChartWorkloadCall prior prepared =
-    withPreparedChartWorkloadParts prepared $ \execution values artifact release namespace _valuesDigest image _workloadKey _role _effects clusterKey operationCallDigest _observed _ _ ->
+    withPreparedChartWorkloadParts prepared $ \execution values activationRevision artifact release namespace _valuesDigest image _workloadKey _role _effects clusterKey operationCallDigest _observed _ _ ->
         case (TextEncoding.decodeUtf8' values, deployments) of
             (Left _, _) -> pure (failed "canonical values are not UTF-8")
             (_, []) -> pure (failed "the admitted effects contain no deployment readiness target")
@@ -307,7 +354,7 @@ runChartWorkloadCall prior prepared =
                 packages <- stepRuntimeDependencyPackages (stepExecutionRuntime execution)
                 case filter ((== "cluster:" <> clusterKey) . runtimeDependencyPackageKey) packages of
                     [package] ->
-                        case runtimeDependencyChartRequest package operationCallDigest artifact release namespace image deployment valuesText of
+                        case runtimeDependencyChartRequest package operationCallDigest artifact release namespace image deployment (maybe "" id activationRevision) valuesText of
                             Left refusal -> pure (failed refusal)
                             Right request -> do
                                 response <- invokeStepRuntimeDependencyService (stepExecutionRuntime execution) package request
@@ -321,8 +368,8 @@ runChartWorkloadCall prior prepared =
                     _ -> pure (failed "the cluster runtime dependency registry contains duplicate resource keys")
   where
     deployments = [Text.drop 11 effect | effect <- preparedEffects, "deployment:" `Text.isPrefixOf` effect]
-    preparedEffects = withPreparedChartWorkloadParts prepared $ \_ _ _ _ _ _ _ _ _ effects _ _ _ _ _ -> effects
-    generation = withPreparedChartWorkloadParts prepared $ \_ _ _ _ _ _ _ _ _ _ _ _ observed _ _ -> resourceHandleGeneration observed
+    preparedEffects = withPreparedChartWorkloadParts prepared $ \_ _ _ _ _ _ _ _ _ _ effects _ _ _ _ _ -> effects
+    generation = withPreparedChartWorkloadParts prepared $ \_ _ _ _ _ _ _ _ _ _ _ _ _ observed _ _ -> resourceHandleGeneration observed
     failed reason = settlePreparedChartWorkload prepared (BackendFailed reason ReprobeBeforeRetry)
 
 runChartWorkloadCleanupCall ::
@@ -333,38 +380,44 @@ runChartWorkloadCleanupCall ::
 runChartWorkloadCleanupCall backend chart settlement =
     case withSettledChartWorkloadCleanup chart settlement (,) of
         Left failure -> pure (Left failure)
-        Right (release, namespace) -> runChartCleanup (strongClusterHostConfig backend) release namespace
+        Right (release, namespace) ->
+            runChartCleanup
+                (strongClusterHostConfig backend)
+                (strongClusterKubeconfigPath backend)
+                release
+                namespace
 
 runVerifiedChartWorkloadCleanupCall ::
     HostConfig ->
+    ClusterPlan ->
     ChartWorkloadResource scope planId chartId chartFrame ->
     VerifiedResourceRecordBundle scope planId chartId (ChartWorkloadResource scope planId chartId chartFrame) ->
     IO (Either ReconcileError ())
-runVerifiedChartWorkloadCleanupCall cfg chart bundle =
+runVerifiedChartWorkloadCleanupCall cfg cluster chart bundle =
     withVerifiedResourceRecordBundle
         bundle
-        (\_receipt -> let (release, namespace, _) = ProjectPlan.chartWorkloadReverseIdentity chart in runChartCleanup cfg release namespace)
+        (\_receipt -> let (release, namespace, _) = ProjectPlan.chartWorkloadReverseIdentity chart in runChartCleanup cfg (clusterKubeconfigPath cluster) release namespace)
         (\_ _ _ _ _ _ _ -> pure (Right ()))
 
-runChartCleanup :: HostConfig -> Text -> Text -> IO (Either ReconcileError ())
-runChartCleanup cfg release namespace = do
-            removed <-
+runChartCleanup :: HostConfig -> FilePath -> Text -> Text -> IO (Either ReconcileError ())
+runChartCleanup cfg kubeconfig release namespace = do
+    removed <-
+        interpretHostCommand
+            cfg
+            (hostCommand Helm ["--kubeconfig", kubeconfig, "uninstall", Text.unpack release, "--namespace", Text.unpack namespace, "--wait"])
+    case classifyHelmUninstall release removed of
+        Left reason -> pure (Left (cleanupFailure reason))
+        Right () -> do
+            absent <-
                 interpretHostCommand
                     cfg
-                    (hostCommand Helm ["uninstall", Text.unpack release, "--namespace", Text.unpack namespace, "--wait"])
-            case classifyHelmUninstall release removed of
-                Left reason -> pure (Left (cleanupFailure reason))
-                Right () -> do
-                    absent <-
-                        interpretHostCommand
-                            cfg
-                            (hostCommand Helm ["status", Text.unpack release, "--namespace", Text.unpack namespace])
-                    pure $ case absent of
-                        Right captured
-                            | capturedExit captured == ExitSuccess -> Left (cleanupFailure "Helm still reports the release after uninstall")
-                            | "not found" `isInfixOf` capturedStderr captured -> Right ()
-                            | otherwise -> Left (cleanupFailure (Text.pack (capturedStderr captured)))
-                        Left reason -> Left (cleanupFailure (Text.pack reason))
+                    (hostCommand Helm ["--kubeconfig", kubeconfig, "status", Text.unpack release, "--namespace", Text.unpack namespace])
+            pure $ case absent of
+                Right captured
+                    | capturedExit captured == ExitSuccess -> Left (cleanupFailure "Helm still reports the release after uninstall")
+                    | "not found" `isInfixOf` capturedStderr captured -> Right ()
+                    | otherwise -> Left (cleanupFailure (Text.pack (capturedStderr captured)))
+                Left reason -> Left (cleanupFailure (Text.pack reason))
 
 cleanupFailure :: Text -> ReconcileError
 cleanupFailure reason = Failure (FailureDetail "cleanup chart workload" reason ReprobeBeforeRetry)
@@ -374,23 +427,39 @@ classifyHelmUninstall release result = case result of
     Right captured
         | capturedExit captured == ExitSuccess
         , null (capturedStderr captured)
-        , ("release \"" <> Text.unpack release <> "\" uninstalled") `isInfixOf` capturedStdout captured -> Right ()
+        , ("release \"" <> Text.unpack release <> "\" uninstalled") `isInfixOf` capturedStdout captured ->
+            Right ()
         | capturedExit captured /= ExitSuccess
-        , "not found" `isInfixOf` capturedStderr captured -> Right ()
+        , "not found" `isInfixOf` capturedStderr captured ->
+            Right ()
     _ -> successfulRun result >> Left "Helm returned an unrecognized uninstall result"
 
 classifyHelm :: Text -> Either String CapturedRun -> Either Text (Maybe Bool)
 classifyHelm release result = do
     output <- successfulRun result
-    let installed = "Release \"" <> Text.unpack release <> "\" has been installed"
+    let renderedRelease = Text.unpack release
+        outputLines = lines output
+        installed = "Release \"" <> renderedRelease <> "\" has been installed"
+        installing = "Release \"" <> renderedRelease <> "\" does not exist. Installing it now."
         upgraded = "Release \"" <> Text.unpack release <> "\" has been upgraded"
+        helmFourInstall =
+            all
+                (`elem` outputLines)
+                [ installing
+                , "NAME: " <> renderedRelease
+                , "STATUS: deployed"
+                , "REVISION: 1"
+                , "DESCRIPTION: Install complete"
+                ]
     if "no changes" `isInfixOf` output
         then Right Nothing
-        else if installed `isInfixOf` output
-            then Right (Just True)
-            else if upgraded `isInfixOf` output
-                then Right (Just False)
-                else Left "Helm returned an unrecognized successful result"
+        else
+            if installed `isInfixOf` output || helmFourInstall
+                then Right (Just True)
+                else
+                    if upgraded `isInfixOf` output
+                        then Right (Just False)
+                        else Left "Helm returned an unrecognized successful result"
 
 successfulRun :: Either String CapturedRun -> Either Text String
 successfulRun (Left reason) = Left (Text.pack reason)
@@ -617,20 +686,76 @@ runClusterCleanupCall backend prepared =
     ClusterCleanupCallResult <$> case cleanupTarget prepared of
         Left err -> pure (ClusterCleanupFailed err)
         Right target -> do
-            outcome <- withClusterTransaction backend target Owned.releaseOwnedCluster
+            outcome <- withClusterTransaction backend target releaseClusterAfterExposure
             pure $ case outcome of
-                Right Owned.ClusterReleased -> ClusterCleanupRemoved
-                Right Owned.ClusterAlreadyReleased -> ClusterCleanupRemoved
-                Right Owned.ClusterStillPresent ->
+                Right (Right Owned.ClusterReleased) -> ClusterCleanupRemoved
+                Right (Right Owned.ClusterAlreadyReleased) -> ClusterCleanupRemoved
+                Right (Right Owned.ClusterStillPresent) ->
                     cleanupRefusal
                         key
                         "the runtime still reports a node container this record bound"
                         ReprobeBeforeRetry
+                Right (Left reason) -> cleanupRefusal key reason DoNotRetry
                 Left fault -> case replacedIdentity fault of
                     Just identity -> ClusterCleanupReplaced identity
                     Nothing -> cleanupRefusal key (clusterCallFaultMessage fault) ReprobeBeforeRetry
   where
     key = Text.pack (preparedCleanupClusterName prepared)
+
+{- | Release the exact cluster described by a retained lifecycle plan.
+
+The recursive reverse command retains the canonical 'ClusterPlan' but not the
+forward action's lexical managed handle.  The ownership store beneath that
+plan's durable root is therefore the authority: its claim and bound node
+identities are re-read under one protected entry, and only those identities can
+reach the destructive driver call.
+-}
+releaseRetainedCluster :: HostConfig -> ClusterPlan -> IO (Either ReconcileError ())
+releaseRetainedCluster cfg plan =
+    case clusterNodeNames plan of
+        [] -> pure (Left (Failure (FailureDetail "release retained cluster" "the retained cluster plan declares no nodes" DoNotRetry)))
+        controlPlane : workers -> do
+            let stateDirectory = clusterRuntimeStateDirectory plan
+                owned =
+                    Owned.OwnedCluster
+                        { Owned.ownedClusterName = clusterName plan
+                        , Owned.ownedClusterControlPlane = controlPlane
+                        , Owned.ownedClusterWorkers = workers
+                        , Owned.ownedClusterConfig = clusterConfigFile plan
+                        , Owned.ownedClusterKubeconfig = clusterKubeconfigPath plan
+                        , Owned.ownedClusterOwner = "retained-record"
+                        }
+            opened <- openProtectedStore stateDirectory
+            case opened of
+                Left failure -> pure (Left (Failure (FailureDetail "release retained cluster" (protectedErrorMessage failure) ReprobeBeforeRetry)))
+                Right store -> case Owned.ownedClusterRecordKey owned of
+                    Left failure -> pure (Left (Failure (FailureDetail "release retained cluster" (protectedErrorMessage failure) DoNotRetry)))
+                    Right key -> do
+                        outcome <-
+                            withProtectedEntry store $ \session ->
+                                Right <$> Owned.releaseRetainedOwnedCluster cfg session key owned
+                        pure $ case outcome of
+                            Left failure -> Left (Failure (FailureDetail "release retained cluster" (protectedErrorMessage failure) ReprobeBeforeRetry))
+                            Right (Left fault) -> Left (Failure (FailureDetail "release retained cluster" (Owned.clusterOwnershipFaultMessage fault) ReprobeBeforeRetry))
+                            Right (Right Owned.ClusterReleased) -> Right ()
+                            Right (Right Owned.ClusterAlreadyReleased) -> Right ()
+                            Right (Right Owned.ClusterStillPresent) -> Left (Failure (FailureDetail "release retained cluster" "the runtime still reports an owned node" ReprobeBeforeRetry))
+
+releaseClusterAfterExposure ::
+    HostConfig ->
+    ProtectedSession session ->
+    RecordKey ->
+    Owned.OwnedCluster ->
+    IO (Either Owned.ClusterOwnershipFault (Either Text Owned.ClusterReleaseOutcome))
+releaseClusterAfterExposure cfg session key owned =
+    case mkRecordKey (Text.pack (Owned.ownedClusterName owned) <> ".exposure") of
+        Left failure -> pure (Left (Owned.ClusterOwnershipStore failure))
+        Right exposureKey -> do
+            exposure <- readProtectedRecord session exposureKey
+            case exposure of
+                Left failure -> pure (Left (Owned.ClusterOwnershipStore failure))
+                Right (Just _) -> pure (Right (Left "the owned exposure relay must be released before the cluster"))
+                Right Nothing -> fmap (fmap Right) (Owned.releaseOwnedCluster cfg session key owned)
 
 cleanupRefusal :: Text -> Text -> RecoveryDisposition -> ClusterCleanupObservation
 cleanupRefusal key reason disposition =
@@ -744,57 +869,92 @@ registerClusterRuntimeDependencyPackage ::
     PreparedGate ->
     AppliedClusterCordon scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
     ClusterReadiness scope planId clusterId phase ->
+    PreparedClusterExposure scope planId clusterId clusterFrame ->
     Text ->
     Word64 ->
     IO (Either ReconcileError (RuntimeDependencyPackage scope planId))
-registerClusterRuntimeDependencyPackage backend execution scopeCommitment gate applied readiness route expiry = do
-    fresh <- reprobeClusterReadiness readiness
-    case fresh of
+registerClusterRuntimeDependencyPackage backend execution scopeCommitment gate applied readiness preparedExposure route expiry = do
+    exposed <- runClusterExposureCall backend preparedExposure
+    case exposed of
         Left failure -> pure (Left failure)
-        Right generation
-            | preparedGatePlan gate /= stepExecutionPlanDigest execution ->
-                pure (dependencyFailure "the producer gate names another plan")
-            | otherwise ->
-                case mkClusterRuntimeDependencyPackage
-                    (stepExecutionPlanDigest execution)
-                    scopeCommitment
-                    resource
-                    (stepExecutionFrame execution)
-                    origin
-                    (managedClusterGeneration handle)
-                    (clusterGateCommitment gate)
-                    (clusterReadyCommitment generation)
-                    route
-                    expiry of
-                    Left refusal -> pure (dependencyFailure refusal)
-                    Right package -> do
-                        registered <- registerStepRuntimeDependencyPackage runtime package
-                        case registered of
+        Right settledExposure -> do
+            let origin = clusterBackendOrigin backend <> ":" <> exposureSetCommitment settledExposure
+            fresh <- reprobeClusterReadiness readiness
+            case fresh of
+                Left failure -> pure (Left failure)
+                Right generation
+                    | preparedGatePlan gate /= stepExecutionPlanDigest execution ->
+                        pure (dependencyFailure "the producer gate names another plan")
+                    | otherwise ->
+                        case mkClusterRuntimeDependencyPackage
+                            (stepExecutionPlanDigest execution)
+                            scopeCommitment
+                            resource
+                            (stepExecutionFrame execution)
+                            origin
+                            (managedClusterGeneration handle)
+                            (clusterGateCommitment gate)
+                            (clusterReadyCommitment generation)
+                            route
+                            expiry of
                             Left refusal -> pure (dependencyFailure refusal)
-                            Right () -> do
-                                usedNonces <- newIORef []
-                                installed <- replaceStepRuntimeDependencyService runtime package $ \request ->
-                                    case withRuntimeDependencyProbeRequest package request id of
-                                        Left _ -> serveClusterChartRequest backend package request
-                                        Right nonce -> do
-                                            replay <- atomicModifyIORef' usedNonces $ \seen ->
-                                                if nonce `elem` seen then (seen, True) else (nonce : seen, False)
-                                            if replay
-                                                then pure (Left "cluster runtime dependency nonce has already been consumed")
-                                                else do
-                                                    observed <- runClusterReadinessCall backend applied
-                                                    pure $ case clusterReadinessResultView observed of
-                                                        ClusterReadinessResultReady version _ ->
-                                                            Right (renderRuntimeDependencyProbeResponse package nonce version)
-                                                        ClusterReadinessResultNotReady _ -> Left "cluster runtime dependency is not ready"
-                                                        ClusterReadinessResultProbeFailed reason -> Left reason
-                                pure $ either dependencyFailure (const (Right package)) installed
+                            Right package -> do
+                                registered <- registerStepRuntimeDependencyPackage runtime package
+                                case registered of
+                                    Left refusal -> pure (dependencyFailure refusal)
+                                    Right () -> do
+                                        usedNonces <- newIORef []
+                                        installed <- replaceStepRuntimeDependencyService runtime package $ \request ->
+                                            case withRuntimeDependencyExposureRequest package request id of
+                                                Right nonce -> consumeNonce usedNonces nonce $ do
+                                                    observed <- runClusterExposureCall backend preparedExposure
+                                                    pure $ do
+                                                        resolved <- either (Left . Text.pack . show) Right observed
+                                                        if exposureSetCommitment resolved /= exposureSetCommitment settledExposure
+                                                            then Left "cluster runtime exposure identity or mapping changed"
+                                                            else renderRuntimeDependencyExposureResponse package nonce (map exposureResponseFields resolved)
+                                                Left _ -> case withRuntimeDependencyProbeRequest package request id of
+                                                    Left _ -> serveClusterChartRequest backend package request
+                                                    Right nonce -> consumeNonce usedNonces nonce $ do
+                                                        observed <- runClusterReadinessCall backend applied
+                                                        pure $ case clusterReadinessResultView observed of
+                                                            ClusterReadinessResultReady version _ ->
+                                                                Right (renderRuntimeDependencyProbeResponse package nonce version)
+                                                            ClusterReadinessResultNotReady _ -> Left "cluster runtime dependency is not ready"
+                                                            ClusterReadinessResultProbeFailed reason -> Left reason
+                                        pure $ either dependencyFailure (const (Right package)) installed
   where
     runtime = stepExecutionRuntime execution
     handle = appliedClusterCordonHandle applied
     resource = managedClusterKey handle
-    origin = clusterBackendOrigin backend
     dependencyFailure reason = Left (Failure (FailureDetail "register cluster runtime dependency" reason ReprobeBeforeRetry))
+
+consumeNonce :: IORef [Text] -> Text -> IO (Either Text ByteString.ByteString) -> IO (Either Text ByteString.ByteString)
+consumeNonce usedNonces nonce action = do
+    replay <- atomicModifyIORef' usedNonces $ \seen ->
+        if nonce `elem` seen then (seen, True) else (nonce : seen, False)
+    if replay
+        then pure (Left "cluster runtime dependency nonce has already been consumed")
+        else action
+
+exposureResponseFields :: ResolvedExposure scope planId clusterId service -> (Text, Text, Int, Text, Int, Text, Word64, Text)
+exposureResponseFields resolved =
+    ( resolvedExposureService resolved
+    , resolvedExposureListenAddress resolved
+    , resolvedExposureHostPort resolved
+    , resolvedExposureTargetHost resolved
+    , resolvedExposureTargetPort resolved
+    , resolvedExposureRelayIdentity resolved
+    , resolvedExposureClusterGeneration resolved
+    , resolvedExposureOwnershipOperation resolved
+    )
+
+exposureSetCommitment :: [ResolvedExposure scope planId clusterId service] -> Text
+exposureSetCommitment = digestText . Text.intercalate "\NUL" . concatMap fields
+  where
+    fields resolved =
+        let (service, address, hostPort, target, targetPort, relay, generation, operation) = exposureResponseFields resolved
+         in [service, address, Text.pack (show hostPort), target, Text.pack (show targetPort), relay, Text.pack (show generation), operation]
 
 serveClusterChartRequest ::
     StrongClusterBackend ->
@@ -802,20 +962,35 @@ serveClusterChartRequest ::
     ByteString.ByteString ->
     IO (Either Text ByteString.ByteString)
 serveClusterChartRequest backend package request =
-    case withRuntimeDependencyChartRequest package request (,,,,,,) of
+    case withRuntimeDependencyChartRequest package request (,,,,,,,) of
         Left refusal -> pure (Left refusal)
-        Right (call, artifact, release, namespace, image, deployment, values) -> do
+        Right (call, artifact, release, namespace, image, deployment, activationRevision, values) -> do
             helm <-
                 interpretHostCommand
                     (strongClusterHostConfig backend)
                     ( withCommandStdin
                         (Text.unpack values)
-                        ( hostCommand Helm
-                            [ "upgrade", "--install", Text.unpack release, Text.unpack artifact
-                            , "--namespace", Text.unpack namespace, "--create-namespace=false"
-                            , "--values", "-", "--set-string", "image.identity=" <> Text.unpack image
-                            , "--atomic", "--wait"
-                            ]
+                        ( hostCommand
+                            Helm
+                            ( [ "--kubeconfig"
+                              , strongClusterKubeconfigPath backend
+                              , "upgrade"
+                              , "--install"
+                              , Text.unpack release
+                              , Text.unpack artifact
+                              , "--namespace"
+                              , Text.unpack namespace
+                              , "--create-namespace=false"
+                              , "--values"
+                              , "-"
+                              , "--set-string"
+                              , "image.identity=" <> Text.unpack image
+                              ]
+                                <> activationArgs activationRevision
+                                <> [ "--rollback-on-failure"
+                                   , "--wait"
+                                   ]
+                            )
                         )
                     )
             case classifyHelm release helm of
@@ -824,13 +999,17 @@ serveClusterChartRequest backend package request =
                     rollout <-
                         interpretHostCommand
                             (strongClusterHostConfig backend)
-                            (hostCommand Kubectl ["rollout", "status", "--namespace", Text.unpack namespace, "deployment/" <> Text.unpack deployment, "--timeout=5m"])
+                            (hostCommand Kubectl ["--kubeconfig", strongClusterKubeconfigPath backend, "rollout", "status", "--namespace", Text.unpack namespace, "deployment/" <> Text.unpack deployment, "--timeout=5m"])
                     pure $ do
                         _ <- successfulRun rollout
                         renderRuntimeDependencyChartResponse package call $ case change of
                             Nothing -> "unchanged"
                             Just True -> "created"
                             Just False -> "repaired"
+  where
+    activationArgs revision
+        | Text.null revision = []
+        | otherwise = ["--set-string", "activation.revision=" <> Text.unpack revision]
 
 {- | Open the exact canonical/live cluster package and reconstruct readiness
 only in the supplied continuation after a nonce-bound service observation and
@@ -844,7 +1023,7 @@ withFreshClusterRuntimeDependency ::
     Text ->
     Word64 ->
     Text ->
-    (forall phase. ClusterReadiness scope planId clusterId phase -> result) ->
+    (forall phase. ClusterReadiness scope planId clusterId phase -> [ResolvedExposure scope planId clusterId ()] -> result) ->
     IO (Either ReconcileError result)
 withFreshClusterRuntimeDependency execution scopeCommitment plannedCluster dependencyKey route now nonce consume = do
     packages <- stepRuntimeDependencyPackages runtime
@@ -868,7 +1047,18 @@ withFreshClusterRuntimeDependency execution scopeCommitment plannedCluster depen
                             response <- invokeStepRuntimeDependencyService runtime package request
                             case response >>= verifyRuntimeDependencyProbeResponse package nonce of
                                 Left refusal -> pure (dependencyFailure refusal)
-                                Right version -> withRecoveredClusterReadiness handle version consume
+                                Right version -> do
+                                    let exposureNonce = nonce <> "-exposure"
+                                    case runtimeDependencyExposureRequest package exposureNonce of
+                                        Left refusal -> pure (dependencyFailure refusal)
+                                        Right exposureRequest -> do
+                                            exposureResponse <- invokeStepRuntimeDependencyService runtime package exposureRequest
+                                            case exposureResponse >>= verifyRuntimeDependencyExposureResponse package exposureNonce of
+                                                Left refusal -> pure (dependencyFailure refusal)
+                                                Right fields ->
+                                                    case traverse (resolvedExposureFromFields (runtimeDependencyPackageGeneration package)) fields of
+                                                        Left refusal -> pure (dependencyFailure refusal)
+                                                        Right resolved -> withRecoveredClusterReadiness handle version (\readiness -> consume readiness resolved)
             either (pure . Left) id carried
         [] -> pure (dependencyFailure "the exact cluster package is absent")
         _ -> pure (dependencyFailure "the cluster package registry contains duplicate resource keys")
@@ -876,9 +1066,19 @@ withFreshClusterRuntimeDependency execution scopeCommitment plannedCluster depen
     runtime = stepExecutionRuntime execution
     dependencyFailure reason = Left (Failure (FailureDetail "recover cluster runtime dependency" reason ReprobeBeforeRetry))
 
+resolvedExposureFromFields ::
+    Word64 ->
+    (Text, Text, Int, Text, Int, Text, Word64, Text) ->
+    Either Text (ResolvedExposure scope planId clusterId ())
+resolvedExposureFromFields expectedGeneration (service, address, hostPort, target, targetPort, relay, generation, operation)
+    | address /= "127.0.0.1" = Left "cluster runtime exposure is not loopback-bound"
+    | generation /= expectedGeneration = Left "cluster runtime exposure generation changed"
+    | otherwise = Right (ResolvedExposure service hostPort target targetPort relay generation operation)
+
 clusterBackendOrigin :: StrongClusterBackend -> Text
 clusterBackendOrigin backend =
-    Text.intercalate ":"
+    Text.intercalate
+        ":"
         [ Text.pack (show (strongClusterDriver backend))
         , strongClusterConfigDigest backend
         , strongClusterOwnershipIdentity backend
@@ -886,7 +1086,8 @@ clusterBackendOrigin backend =
 
 clusterGateCommitment :: PreparedGate -> Text
 clusterGateCommitment gate =
-    Text.intercalate ":"
+    Text.intercalate
+        ":"
         [ preparedGatePlan gate
         , preparedGateOperation gate
         , preparedGateSession gate
@@ -1004,114 +1205,633 @@ classifyClusterStatus name captured = case classifyClusterListing name captured 
     Right ClusterPresent -> ClusterStatusPresent
     Right ClusterAbsent -> ClusterStatusAbsent
 
--- Loopback-bound exposure -----------------------------------------------------
+-- Runtime-owned loopback exposure --------------------------------------------
 
-{- | A published cluster port. There is deliberately no way to supply a listen
-address: the mapping is always loopback, so a wildcard exposure of a
-project-local service is unrepresentable rather than merely discouraged.
--}
-data LoopbackExposure = LoopbackExposure Int Int
-    deriving (Eq, Show)
+mkExposureIntent :: Text -> Text -> Int -> Either ReconcileError ExposureIntent
+mkExposureIntent service target port =
+    case mkPlanExposureIntent service target port of
+        Left refusal -> Left (Failure (FailureDetail "validate cluster exposure intent" (Text.pack (show refusal)) DoNotRetry))
+        Right intent -> Right intent
 
-mkLoopbackExposure ::
-    -- | host port
-    Int ->
-    -- | node port inside the cluster
-    Int ->
-    Either ReconcileError LoopbackExposure
-mkLoopbackExposure hostPort nodePort
-    | not (validPort hostPort) =
-        invalid ("host port out of range: " <> Text.pack (show hostPort))
-    | not (validPort nodePort) =
-        invalid ("node port out of range: " <> Text.pack (show nodePort))
-    | otherwise = Right (LoopbackExposure hostPort nodePort)
-  where
-    validPort port = port > 0 && port < 65536
-    invalid reason =
-        Left (Failure (FailureDetail "validate cluster exposure" reason DoNotRetry))
-
--- | Always @127.0.0.1@. This is the whole point of the type.
-loopbackExposureListenAddress :: LoopbackExposure -> String
-loopbackExposureListenAddress _ = "127.0.0.1"
-
-loopbackExposureHostPort :: LoopbackExposure -> Int
-loopbackExposureHostPort (LoopbackExposure hostPort _) = hostPort
-
-loopbackExposureNodePort :: LoopbackExposure -> Int
-loopbackExposureNodePort (LoopbackExposure _ nodePort) = nodePort
-
-{- | An exposure bound to one planned cluster resource. The renderer that emits
-the driver's port mapping consumes this, so it cannot publish a port for a
-cluster that is not in the plan.
--}
-data PreparedLoopbackExposure scope planId clusterId clusterFrame
-    = PreparedLoopbackExposure Text LoopbackExposure
-
-withPreparedLoopbackExposure ::
-    PlannedResource scope planId clusterId ClusterResource clusterFrame ->
-    LoopbackExposure ->
-    (PreparedLoopbackExposure scope planId clusterId clusterFrame -> result) ->
-    Either ReconcileError result
-withPreparedLoopbackExposure planned exposure consume =
-    Right (consume (PreparedLoopbackExposure (plannedResourceKey planned) exposure))
-
--- | The exact mapping to render: listen address, host port, node port.
-preparedLoopbackExposureMapping ::
-    PreparedLoopbackExposure scope planId clusterId clusterFrame ->
-    (String, Int, Int)
-preparedLoopbackExposureMapping (PreparedLoopbackExposure _ exposure) =
-    ( loopbackExposureListenAddress exposure
-    , loopbackExposureHostPort exposure
-    , loopbackExposureNodePort exposure
-    )
-
-{- | What the runtime reports the published port is actually bound to. A
-wildcard address is the failure this operation exists to catch: it silently
-exposes a project-local service to the network.
--}
-data ObservedPortBinding = ObservedPortBinding
-    { observedBindAddress :: String
-    , observedBindPort :: String
+-- | Exact exposure work derived from one already-cordoned cluster package.
+data PreparedClusterExposure scope planId clusterId clusterFrame = PreparedClusterExposure
+    { preparedExposureKey :: Text
+    , preparedExposureClusterName :: String
+    , preparedExposureStateDirectory :: FilePath
+    , preparedExposureNodeNames :: [String]
+    , preparedExposureOwner :: Text
+    , preparedExposureClusterIdentity :: Text
+    , preparedExposureGeneration :: Word64
+    , preparedExposureImage :: Text
+    , preparedExposureIntents :: [ExposureIntent]
     }
-    deriving (Eq, Show)
 
-{- | Confirm that the live binding is the exact loopback mapping that was
-prepared. A wildcard or foreign address is a structured 'Conflict', never a
-warning, and an unparseable port is a 'Failure' rather than an assumed match.
+withPreparedClusterExposure ::
+    AppliedClusterCordon scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
+    Text ->
+    [ExposureIntent] ->
+    (PreparedClusterExposure scope planId clusterId clusterFrame -> result) ->
+    Either ReconcileError result
+withPreparedClusterExposure applied image intents consume
+    | not (immutableImage image) = invalid "relay image must be an immutable repository@sha256 or sha256 image identity"
+    | null intents = invalid "at least one service exposure is required"
+    | length intents > maxExposureCount = invalid "too many service exposures"
+    | not (distinct (map exposureIntentService intents)) = invalid "service identities must be distinct"
+    | otherwise =
+        Right
+            ( consume
+                PreparedClusterExposure
+                    { preparedExposureKey = managedClusterKey handle
+                    , preparedExposureClusterName = appliedClusterCordonName applied
+                    , preparedExposureStateDirectory = appliedClusterCordonStateDirectory applied
+                    , preparedExposureNodeNames = appliedClusterCordonNodeNames applied
+                    , preparedExposureOwner = appliedClusterCordonOwnershipIdentity applied
+                    , preparedExposureClusterIdentity = managedClusterBackendIdentity handle
+                    , preparedExposureGeneration = managedClusterGeneration handle
+                    , preparedExposureImage = image
+                    , preparedExposureIntents = intents
+                    }
+            )
+  where
+    handle = appliedClusterCordonHandle applied
+    invalid reason = Left (Failure (FailureDetail "prepare cluster exposure" reason DoNotRetry))
+
+{- | A runtime-inspected mapping.  Its constructor is private: only a successful
+exact relay inspection can mint the value.
 -}
-settleLoopbackExposure ::
-    PreparedLoopbackExposure scope planId clusterId clusterFrame ->
-    ObservedPortBinding ->
-    Either ReconcileError ()
-settleLoopbackExposure
-    (PreparedLoopbackExposure key exposure)
-    observed
-        | not (all isDigit port) || null port =
-            Left
-                ( Failure
-                    ( FailureDetail
-                        "verify cluster exposure"
-                        ("unparseable published port: " <> Text.pack port)
-                        ReprobeBeforeRetry
-                    )
-                )
-        | address /= loopbackExposureListenAddress exposure
-            || read port /= loopbackExposureHostPort exposure =
-            Left
-                ( Conflict
-                    ( ConflictDetail
-                        key
-                        ( Text.pack
-                            ( loopbackExposureListenAddress exposure
-                                <> ":"
-                                <> show (loopbackExposureHostPort exposure)
-                            )
-                        )
-                        (Text.pack (address <> ":" <> port))
-                        "the cluster port is not bound to the prepared loopback address; refusing to treat a wider binding as the declared exposure"
-                    )
-                )
-        | otherwise = Right ()
+data ResolvedExposure scope planId clusterId service
+    = ResolvedExposure
+        Text
+        Int
+        Text
+        Int
+        Text
+        Word64
+        Text
+
+withResolvedExposure ::
+    Text ->
+    [ResolvedExposure scope planId clusterId seed] ->
+    (forall service. ResolvedExposure scope planId clusterId service -> result) ->
+    Either ReconcileError result
+withResolvedExposure service resolved consume =
+    case filter ((== service) . resolvedExposureService) resolved of
+        [ResolvedExposure name hostPort target targetPort relay generation operation] ->
+            Right (consume (ResolvedExposure name hostPort target targetPort relay generation operation))
+        [] -> exposureFailure "open resolved cluster exposure" "the requested service is absent" DoNotRetry
+        _ -> exposureFailure "open resolved cluster exposure" "the requested service is duplicated" DoNotRetry
+
+resolvedExposureService :: ResolvedExposure scope planId clusterId service -> Text
+resolvedExposureService (ResolvedExposure service _ _ _ _ _ _) = service
+
+resolvedExposureListenAddress :: ResolvedExposure scope planId clusterId service -> Text
+resolvedExposureListenAddress _ = "127.0.0.1"
+
+resolvedExposureHostPort :: ResolvedExposure scope planId clusterId service -> Int
+resolvedExposureHostPort (ResolvedExposure _ port _ _ _ _ _) = port
+
+resolvedExposureTargetHost :: ResolvedExposure scope planId clusterId service -> Text
+resolvedExposureTargetHost (ResolvedExposure _ _ target _ _ _ _) = target
+
+resolvedExposureTargetPort :: ResolvedExposure scope planId clusterId service -> Int
+resolvedExposureTargetPort (ResolvedExposure _ _ _ port _ _ _) = port
+
+resolvedExposureRelayIdentity :: ResolvedExposure scope planId clusterId service -> Text
+resolvedExposureRelayIdentity (ResolvedExposure _ _ _ _ relay _ _) = relay
+
+resolvedExposureClusterGeneration :: ResolvedExposure scope planId clusterId service -> Word64
+resolvedExposureClusterGeneration (ResolvedExposure _ _ _ _ _ generation _) = generation
+
+resolvedExposureOwnershipOperation :: ResolvedExposure scope planId clusterId service -> Text
+resolvedExposureOwnershipOperation (ResolvedExposure _ _ _ _ _ _ operation) = operation
+
+data ExposureRecord
+    = ExposurePending Text Text Text
+    | ExposureManaged Text Text Text Text [(Text, Int, Int)]
+    deriving (Eq, Read, Show)
+
+data RelayObservation = RelayObservation Text Text Text Text Word64 Text Text [(Int, Text, Int)]
+
+runClusterExposureCall ::
+    StrongClusterBackend ->
+    PreparedClusterExposure scope planId clusterId clusterFrame ->
+    IO (Either ReconcileError [ResolvedExposure scope planId clusterId ()])
+runClusterExposureCall backend prepared = do
+    case exposureTarget prepared of
+        Left refusal -> pure (Left refusal)
+        Right target -> do
+            transacted <- withClusterTransaction backend target $ \cfg session _ owned -> do
+                case ownedKey owned of
+                    Left fault -> pure (Left fault)
+                    Right key -> do
+                        standing <- Owned.ownedClusterNodes cfg session key owned
+                        case standing of
+                            Left fault -> pure (Left fault)
+                            Right [] -> pure (Right (exposureConflict prepared "the cluster has no owned node identity"))
+                            Right (controlPlane : _)
+                                | identityText (third controlPlane) /= preparedExposureClusterIdentity prepared ->
+                                    pure (Right (exposureConflict prepared "the cluster identity differs from the exposure package"))
+                            Right _ -> Right <$> reconcileExposure cfg session prepared
+            pure $ case transacted of
+                Left fault -> exposureFailure "reconcile cluster exposure" (clusterCallFaultMessage fault) ReprobeBeforeRetry
+                Right result -> result
+  where
+    third (_, _, value) = value
+    ownedKey owned = case Owned.ownedClusterRecordKey owned of
+        Left failure -> Left (Owned.ClusterOwnershipStore failure)
+        Right key -> Right key
+
+releaseClusterExposureCall ::
+    StrongClusterBackend ->
+    PreparedClusterExposure scope planId clusterId clusterFrame ->
+    IO (Either ReconcileError ())
+releaseClusterExposureCall backend prepared =
+    case exposureTarget prepared of
+        Left refusal -> pure (Left refusal)
+        Right target -> do
+            transacted <- withClusterTransaction backend target $ \cfg session _ _ ->
+                Right <$> releaseExposure cfg session prepared
+            pure $ case transacted of
+                Left fault -> exposureFailure "release cluster exposure" (clusterCallFaultMessage fault) ReprobeBeforeRetry
+                Right result -> result
+
+{- | Release the exact durable exposure record before compatibility cluster
+teardown. The record, immutable relay identity, nonce-bound labels, and exact
+loopback mapping set provide the four ownership clauses; no caller supplies a
+container name or port.
+-}
+releaseRecordedClusterExposure :: HostConfig -> ClusterPlan -> IO (Either ReconcileError ())
+releaseRecordedClusterExposure cfg plan = do
+    opened <- openProtectedStore stateDirectory
+    case opened of
+        Left failure -> pure (storeExposureFailure "open recorded exposure store" failure)
+        Right store -> case mkRecordKey (Text.pack (clusterName plan) <> ".exposure") of
+            Left failure -> pure (storeExposureFailure "open recorded exposure record" failure)
+            Right key -> do
+                released <- withProtectedEntry store (\session -> Right <$> releaseRecorded session key)
+                pure $ case released of
+                    Left failure -> storeExposureFailure "lock recorded exposure" failure
+                    Right result -> result
+  where
+    driverName = case clusterDriver plan of
+        KindDriver -> "kind"
+        NvkindDriver -> "nvkind"
+    stateDirectory = dataPath plan </> "cluster" </> driverName </> "state"
+    releaseRecorded session key = do
+        observed <- readProtectedRecord session key
+        case observed of
+            Left failure -> pure (storeExposureFailure "read recorded exposure" failure)
+            Right Nothing -> pure (Right ())
+            Right (Just protected) -> case parseExposureRecord (protectedRecordBytes protected) of
+                Left reason -> pure (recordedConflict reason)
+                Right record -> do
+                    openedRelay <- openRecordedRelay cfg record
+                    case openedRelay of
+                        Left refusal -> pure (Left refusal)
+                        Right Nothing -> forget session key protected
+                        Right (Just identity) -> do
+                            removed <- successfulCommand cfg (hostCommand Docker ["container", "rm", "--force", Text.unpack identity])
+                            case removed of
+                                Left refusal -> pure (Left refusal)
+                                Right output
+                                    | output /= Text.unpack identity <> "\n" -> pure (exposureFailure "remove recorded exposure relay" "the runtime returned an unexpected removal report" ReprobeBeforeRetry)
+                                    | otherwise -> do
+                                        remaining <- listRelayByIdentity cfg identity
+                                        case remaining of
+                                            Left refusal -> pure (Left refusal)
+                                            Right True -> pure (recordedConflict "the relay identity remains after removal")
+                                            Right False -> forget session key protected
+    forget session key protected = do
+        deleted <- compareAndDeleteProtectedRecord session key (ExpectVersion (protectedRecordVersion protected))
+        pure (either (storeExposureFailure "forget recorded exposure") (const (Right ())) deleted)
+    recordedConflict reason =
+        exposureFailure "release recorded cluster exposure" (Text.pack (clusterName plan) <> ": " <> reason) DoNotRetry
+
+openRecordedRelay :: HostConfig -> ExposureRecord -> IO (Either ReconcileError (Maybe Text))
+openRecordedRelay cfg record = do
+    let (digest, nonce, name, expectedIdentity, expectedMappings) = case record of
+            ExposurePending spec operation recordedName -> (spec, operation, recordedName, Nothing, Nothing)
+            ExposureManaged spec operation recordedName identity mappings -> (spec, operation, recordedName, Just identity, Just [(listener, hostPort) | (_, listener, hostPort) <- mappings])
+    named <- listRelayByName cfg name
+    case (named, expectedIdentity) of
+        (Left refusal, _) -> pure (Left refusal)
+        (Right Nothing, Nothing) -> pure (Right Nothing)
+        (Right Nothing, Just identity) -> do
+            present <- listRelayByIdentity cfg identity
+            case present of
+                Left refusal -> pure (Left refusal)
+                Right False -> pure (Right Nothing)
+                Right True -> verify digest nonce name identity expectedMappings
+        (Right (Just identity), Nothing) -> verify digest nonce name identity expectedMappings
+        (Right (Just actual), Just expected)
+            | actual /= expected -> pure (recordedRelayConflict "another relay stands at the recorded name")
+            | otherwise -> verify digest nonce name expected expectedMappings
+  where
+    verify digest nonce name identity expectedMappings = do
+        inspected <- successfulCommand cfg (hostCommand Docker ["inspect", "--format", relayInspectionTemplate, Text.unpack identity])
+        pure $ do
+            output <- inspected
+            case lines output of
+                [actualIdentity, rawName, owner, cluster, generation, operation, spec, ports]
+                    | Text.pack actualIdentity /= identity -> recordedRelayConflict "the inspected relay identity changed"
+                    | Text.pack rawName /= "/" <> name -> recordedRelayConflict "the inspected relay name changed"
+                    | null owner || null cluster || readMaybe generation == (Nothing :: Maybe Word64) -> recordedRelayConflict "the inspected relay ownership labels are malformed"
+                    | Text.pack operation /= nonce -> recordedRelayConflict "the inspected relay operation changed"
+                    | Text.pack spec /= digest -> recordedRelayConflict "the inspected relay specification changed"
+                    | otherwise -> do
+                        mappings <- parseRecordedPortBindings (TextEncoding.encodeUtf8 (Text.pack ports))
+                        case expectedMappings of
+                            Just expected | sort expected /= sort mappings -> recordedRelayConflict "the inspected relay mapping set changed"
+                            _ -> Right (Just identity)
+                _ -> recordedRelayConflict "the runtime returned malformed relay metadata"
+    recordedRelayConflict reason = exposureFailure "release recorded cluster exposure" reason DoNotRetry
+
+parseRecordedPortBindings :: ByteString.ByteString -> Either ReconcileError [(Int, Int)]
+parseRecordedPortBindings raw = case eitherDecodeStrict' raw of
+    Right (Object ports) -> traverse parseOne (AesonKeyMap.toList ports)
+    _ -> exposureFailure "release recorded cluster exposure" "the runtime returned malformed port JSON" ReprobeBeforeRetry
+  where
+    parseOne (key, Array bindings)
+        | Just listenerText <- Text.stripSuffix "/tcp" (AesonKey.toText key)
+        , Just listener <- readMaybe (Text.unpack listenerText)
+        , [Object binding] <- toList bindings
+        , Just (String address) <- AesonKeyMap.lookup "HostIp" binding
+        , Just (String portText) <- AesonKeyMap.lookup "HostPort" binding
+        , Just hostPort <- readMaybe (Text.unpack portText)
+        , address == "127.0.0.1"
+        , validPort listener
+        , validPort hostPort =
+            Right (listener, hostPort)
+    parseOne _ = exposureFailure "release recorded cluster exposure" "the runtime returned a wildcard, duplicate, absent, or malformed relay binding" ReprobeBeforeRetry
+
+reconcileExposure ::
+    HostConfig ->
+    ProtectedSession session ->
+    PreparedClusterExposure scope planId clusterId clusterFrame ->
+    IO (Either ReconcileError [ResolvedExposure scope planId clusterId ()])
+reconcileExposure cfg session prepared = do
+    keyed <- pure (exposureRecordKey prepared)
+    case keyed of
+        Left failure -> pure (storeExposureFailure "open exposure record" failure)
+        Right key -> do
+            observed <- readProtectedRecord session key
+            case observed of
+                Left failure -> pure (storeExposureFailure "read exposure record" failure)
+                Right Nothing -> beginExposure cfg session key prepared
+                Right (Just record) -> resumeExposure cfg session key record prepared
+
+beginExposure :: HostConfig -> ProtectedSession session -> RecordKey -> PreparedClusterExposure scope planId clusterId clusterFrame -> IO (Either ReconcileError [ResolvedExposure scope planId clusterId ()])
+beginExposure cfg session key prepared = do
+    nonce <- nonceText <$> (getRandomBytes 32 :: IO ByteString.ByteString)
+    let name = relayName prepared nonce
+        pending = ExposurePending (exposureSpecDigest prepared) nonce name
+    published <- compareAndSwapProtectedRecord session key ExpectAbsent (renderExposureRecord pending)
+    case published of
+        Left failure -> pure (storeExposureFailure "publish pending exposure" failure)
+        Right version -> realizeExposure cfg session key version prepared pending
+
+resumeExposure :: HostConfig -> ProtectedSession session -> RecordKey -> ProtectedRecord -> PreparedClusterExposure scope planId clusterId clusterFrame -> IO (Either ReconcileError [ResolvedExposure scope planId clusterId ()])
+resumeExposure cfg session key protected prepared =
+    case parseExposureRecord (protectedRecordBytes protected) of
+        Left reason -> pure (exposureConflict prepared reason)
+        Right pending@(ExposurePending digest nonce name)
+            | digest /= exposureSpecDigest prepared || name /= relayName prepared nonce -> pure (exposureConflict prepared "the pending exposure record names another operation")
+            | otherwise -> realizeExposure cfg session key (protectedRecordVersion protected) prepared pending
+        Right managed@(ExposureManaged digest nonce name _ _)
+            | digest /= exposureSpecDigest prepared || name /= relayName prepared nonce -> pure (exposureConflict prepared "the managed exposure record names another operation")
+            | otherwise -> inspectManagedExposure cfg prepared managed
+
+realizeExposure :: HostConfig -> ProtectedSession session -> RecordKey -> RecordVersion -> PreparedClusterExposure scope planId clusterId clusterFrame -> ExposureRecord -> IO (Either ReconcileError [ResolvedExposure scope planId clusterId ()])
+realizeExposure cfg session key version prepared (ExposurePending _ nonce name) = do
+    listed <- listRelayByName cfg name
+    identity <- case listed of
+        Left refusal -> pure (Left refusal)
+        Right Nothing -> createRelay cfg prepared nonce name
+        Right (Just existing) -> pure (Right existing)
+    case identity of
+        Left refusal -> pure (Left refusal)
+        Right relay -> do
+            inspected <- inspectRelay cfg prepared nonce name relay
+            case inspected of
+                Left refusal -> pure (Left refusal)
+                Right observation -> do
+                    let mappings = observationRecordMappings prepared observation
+                        managed = ExposureManaged (exposureSpecDigest prepared) nonce name relay mappings
+                    settled <- compareAndSwapProtectedRecord session key (ExpectVersion version) (renderExposureRecord managed)
+                    case settled of
+                        Left failure -> pure (storeExposureFailure "bind managed exposure" failure)
+                        Right _ -> inspectManagedExposure cfg prepared managed
+realizeExposure _ _ _ _ prepared _ = pure (exposureConflict prepared "an impossible managed record reached pending realization")
+
+inspectManagedExposure :: HostConfig -> PreparedClusterExposure scope planId clusterId clusterFrame -> ExposureRecord -> IO (Either ReconcileError [ResolvedExposure scope planId clusterId ()])
+inspectManagedExposure cfg prepared (ExposureManaged _ nonce name expectedIdentity expectedMappings) = do
+    listed <- listRelayByName cfg name
+    case listed of
+        Left refusal -> pure (Left refusal)
+        Right Nothing -> pure (exposureConflict prepared "the owned exposure relay is absent")
+        Right (Just identity)
+            | identity /= expectedIdentity -> pure (exposureConflict prepared "another relay stands at the owned relay name")
+            | otherwise -> do
+                inspected <- inspectRelay cfg prepared nonce name expectedIdentity
+                pure $ do
+                    observation <- inspected
+                    if observationRecordMappings prepared observation /= expectedMappings
+                        then exposureConflict prepared "the relay mapping set differs from its durable ownership record"
+                        else resolvedSet prepared observation
+inspectManagedExposure _ prepared _ = pure (exposureConflict prepared "a pending record cannot be opened as managed exposure")
+
+releaseExposure :: HostConfig -> ProtectedSession session -> PreparedClusterExposure scope planId clusterId clusterFrame -> IO (Either ReconcileError ())
+releaseExposure cfg session prepared = case exposureRecordKey prepared of
+    Left failure -> pure (storeExposureFailure "open exposure record" failure)
+    Right key -> do
+        readBack <- readProtectedRecord session key
+        case readBack of
+            Left failure -> pure (storeExposureFailure "read exposure record" failure)
+            Right Nothing -> pure (Right ())
+            Right (Just protected) -> case parseExposureRecord (protectedRecordBytes protected) of
+                Left reason -> pure (exposureConflict prepared reason)
+                Right record -> do
+                    opened <- openRecordForRelease cfg prepared record
+                    case opened of
+                        Left refusal -> pure (Left refusal)
+                        Right Nothing -> forget key protected
+                        Right (Just identity) -> do
+                            removed <- successfulCommand cfg (hostCommand Docker ["container", "rm", "--force", Text.unpack identity])
+                            case removed of
+                                Left refusal -> pure (Left refusal)
+                                Right output
+                                    | output /= Text.unpack identity <> "\n" -> pure (exposureFailure "remove exposure relay" "the runtime returned an unexpected removal report" ReprobeBeforeRetry)
+                                    | otherwise -> do
+                                        absent <- listRelayByIdentity cfg identity
+                                        case absent of
+                                            Left refusal -> pure (Left refusal)
+                                            Right True -> pure (exposureConflict prepared "the relay identity remains after removal")
+                                            Right False -> forget key protected
+  where
+    forget key protected = do
+        deleted <- compareAndDeleteProtectedRecord session key (ExpectVersion (protectedRecordVersion protected))
+        pure (either (storeExposureFailure "forget released exposure") (const (Right ())) deleted)
+
+openRecordForRelease :: HostConfig -> PreparedClusterExposure scope planId clusterId clusterFrame -> ExposureRecord -> IO (Either ReconcileError (Maybe Text))
+openRecordForRelease cfg prepared record = case record of
+    ExposurePending digest nonce name
+        | digest /= exposureSpecDigest prepared || name /= relayName prepared nonce -> pure (exposureConflict prepared "the pending exposure record names another operation")
+        | otherwise -> do
+            listed <- listRelayByName cfg name
+            case listed of
+                Left refusal -> pure (Left refusal)
+                Right Nothing -> pure (Right Nothing)
+                Right (Just identity) -> fmap (fmap (const (Just identity))) (inspectRelay cfg prepared nonce name identity)
+    ExposureManaged digest nonce name identity mappings
+        | digest /= exposureSpecDigest prepared || name /= relayName prepared nonce -> pure (exposureConflict prepared "the managed exposure record names another operation")
+        | otherwise -> do
+            named <- listRelayByName cfg name
+            case named of
+                Left refusal -> pure (Left refusal)
+                Right (Just current)
+                    | current /= identity -> pure (exposureConflict prepared "another relay stands at the owned relay name")
+                    | otherwise -> verifyManaged
+                Right Nothing -> do
+                    present <- listRelayByIdentity cfg identity
+                    case present of
+                        Left refusal -> pure (Left refusal)
+                        Right False -> pure (Right Nothing)
+                        Right True -> verifyManaged
       where
-        address = observedBindAddress observed
-        port = observedBindPort observed
+        verifyManaged = do
+            inspected <- inspectRelay cfg prepared nonce name identity
+            pure $ do
+                observation <- inspected
+                if observationRecordMappings prepared observation == mappings
+                    then Right (Just identity)
+                    else exposureConflict prepared "the relay mappings changed before release"
+
+createRelay :: HostConfig -> PreparedClusterExposure scope planId clusterId clusterFrame -> Text -> Text -> IO (Either ReconcileError Text)
+createRelay cfg prepared nonce name = do
+    outcome <- successfulCommand cfg (hostCommand Docker arguments)
+    pure $ do
+        output <- outcome
+        identity <- exactIdentityLine "create exposure relay" output
+        Right identity
+  where
+    arguments =
+        ["container", "run", "--detach", "--name", Text.unpack name]
+            <> concatMap (\(key, value) -> ["--label", Text.unpack key <> "=" <> Text.unpack value]) (relayLabels prepared nonce)
+            <> ["--network", "kind"]
+            <> concatMap (\(_, listener, _) -> ["--publish", "127.0.0.1::" <> show listener <> "/tcp"]) (intentBindings prepared)
+            <> [Text.unpack (preparedExposureImage prepared), exposureRelayMarker]
+            <> concatMap renderIntent (intentBindings prepared)
+    renderIntent (intent, listener, _) =
+        [ Text.unpack (exposureIntentService intent)
+        , show listener
+        , Text.unpack (exposureIntentTargetHost intent)
+        , show (exposureIntentTargetPort intent)
+        ]
+
+inspectRelay :: HostConfig -> PreparedClusterExposure scope planId clusterId clusterFrame -> Text -> Text -> Text -> IO (Either ReconcileError RelayObservation)
+inspectRelay cfg prepared nonce expectedName expectedIdentity = do
+    outcome <- successfulCommand cfg (hostCommand Docker ["inspect", "--format", relayInspectionTemplate, Text.unpack expectedIdentity])
+    pure $ outcome >>= classifyRelayInspection prepared nonce expectedName expectedIdentity
+
+relayInspectionTemplate :: String
+relayInspectionTemplate = intercalate "{{\"\\n\"}}" ["{{.Id}}", "{{.Name}}", label "owner", label "cluster", label "generation", label "operation", label "spec", "{{json .NetworkSettings.Ports}}"]
+  where
+    label name = "{{index .Config.Labels \"io.hostbootstrap." <> name <> "\"}}"
+
+classifyRelayInspection :: PreparedClusterExposure scope planId clusterId clusterFrame -> Text -> Text -> Text -> String -> Either ReconcileError RelayObservation
+classifyRelayInspection prepared nonce expectedName expectedIdentity output = case lines output of
+    [identity, rawName, owner, cluster, generation, operation, spec, ports]
+        | Text.pack identity /= expectedIdentity -> exposureConflict prepared "the inspected relay identity changed"
+        | Text.pack rawName /= "/" <> expectedName -> exposureConflict prepared "the inspected relay name changed"
+        | Text.pack owner /= ownerDigest prepared -> exposureConflict prepared "the inspected relay owner changed"
+        | Text.pack cluster /= preparedExposureKey prepared -> exposureConflict prepared "the inspected relay cluster changed"
+        | readMaybe generation /= Just (preparedExposureGeneration prepared) -> exposureConflict prepared "the inspected relay generation changed"
+        | Text.pack operation /= nonce -> exposureConflict prepared "the inspected relay operation changed"
+        | Text.pack spec /= exposureSpecDigest prepared -> exposureConflict prepared "the inspected relay specification changed"
+        | otherwise -> do
+            mappings <- parsePortBindings prepared (TextEncoding.encodeUtf8 (Text.pack ports))
+            Right (RelayObservation expectedIdentity expectedName (Text.pack owner) (Text.pack cluster) (preparedExposureGeneration prepared) nonce (Text.pack spec) mappings)
+    _ -> exposureFailure "inspect exposure relay" "the runtime returned malformed relay metadata" ReprobeBeforeRetry
+
+parsePortBindings :: PreparedClusterExposure scope planId clusterId clusterFrame -> ByteString.ByteString -> Either ReconcileError [(Int, Text, Int)]
+parsePortBindings prepared raw = case eitherDecodeStrict' raw of
+    Left _ -> exposureFailure "inspect exposure relay" "the runtime returned malformed port JSON" ReprobeBeforeRetry
+    Right (Object ports)
+        | AesonKeyMap.size ports /= length expected -> exposureConflict prepared "the runtime returned a missing or additional relay mapping"
+        | otherwise -> traverse (parseOne ports) expected
+    Right _ -> exposureFailure "inspect exposure relay" "the runtime returned a non-object port mapping" ReprobeBeforeRetry
+  where
+    expected = [(listener, exposureIntentService intent) | (intent, listener, _) <- intentBindings prepared]
+    parseOne ports (listener, _) = case AesonKeyMap.lookup (AesonKey.fromString (show listener <> "/tcp")) ports of
+        Just (Array bindings)
+            | [Object binding] <- toList bindings
+            , Just (String address) <- AesonKeyMap.lookup "HostIp" binding
+            , Just (String portText) <- AesonKeyMap.lookup "HostPort" binding
+            , Just hostPort <- readMaybe (Text.unpack portText)
+            , address == "127.0.0.1"
+            , validPort hostPort ->
+                Right (listener, address, hostPort)
+        _ -> exposureConflict prepared "the runtime returned a wildcard, duplicate, absent, or malformed relay binding"
+
+listRelayByName :: HostConfig -> Text -> IO (Either ReconcileError (Maybe Text))
+listRelayByName cfg name = do
+    outcome <- successfulCommand cfg (hostCommand Docker ["container", "ls", "--all", "--quiet", "--no-trunc", "--filter", "name=^/" <> Text.unpack name <> "$"])
+    pure $ outcome >>= optionalIdentityLines "find exposure relay"
+
+listRelayByIdentity :: HostConfig -> Text -> IO (Either ReconcileError Bool)
+listRelayByIdentity cfg identity = do
+    outcome <- successfulCommand cfg (hostCommand Docker ["container", "ls", "--all", "--quiet", "--no-trunc", "--filter", "id=" <> Text.unpack identity])
+    pure $ do
+        found <- outcome >>= optionalIdentityLines "find exposure relay identity"
+        case found of
+            Nothing -> Right False
+            Just exact
+                | exact == identity -> Right True
+                | otherwise -> exposureFailure "find exposure relay identity" "the runtime returned another identity" ReprobeBeforeRetry
+
+optionalIdentityLines :: Text -> String -> Either ReconcileError (Maybe Text)
+optionalIdentityLines _ "" = Right Nothing
+optionalIdentityLines operation output = Just <$> exactIdentityLine operation output
+
+exactIdentityLine :: Text -> String -> Either ReconcileError Text
+exactIdentityLine operation output = case lines output of
+    [identity]
+        | length identity == 64 && all lowerHex identity && output == identity <> "\n" -> Right (Text.pack identity)
+    _ -> exposureFailure operation "the runtime returned a malformed or ambiguous container identity" ReprobeBeforeRetry
+
+successfulCommand :: HostConfig -> HostCommand -> IO (Either ReconcileError String)
+successfulCommand cfg command = do
+    outcome <- successfulRun <$> interpretHostCommand cfg command
+    pure (either (\reason -> exposureFailure "run exposure runtime command" reason ReprobeBeforeRetry) Right outcome)
+
+resolvedSet :: PreparedClusterExposure scope planId clusterId clusterFrame -> RelayObservation -> Either ReconcileError [ResolvedExposure scope planId clusterId ()]
+resolvedSet prepared observation@(RelayObservation relay _ _ _ generation operation _ _) =
+    traverse resolve (intentBindings prepared)
+  where
+    resolve (intent, listener, _) = case lookup listener (observationPorts observation) of
+        Just hostPort ->
+            Right
+                ( ResolvedExposure
+                    (exposureIntentService intent)
+                    hostPort
+                    (exposureIntentTargetHost intent)
+                    (exposureIntentTargetPort intent)
+                    relay
+                    generation
+                    operation
+                )
+        Nothing -> exposureConflict prepared "an inspected mapping has no matching semantic service"
+
+observationPorts :: RelayObservation -> [(Int, Int)]
+observationPorts (RelayObservation _ _ _ _ _ _ _ mappings) = [(listener, hostPort) | (listener, _, hostPort) <- mappings]
+
+observationRecordMappings :: PreparedClusterExposure scope planId clusterId clusterFrame -> RelayObservation -> [(Text, Int, Int)]
+observationRecordMappings prepared observation =
+    [ (service, listener, hostPort)
+    | (listener, service) <- [(listener, name) | (listener, name) <- expected]
+    , Just hostPort <- [lookup listener (observationPorts observation)]
+    ]
+  where
+    expected = [(listener, exposureIntentService intent) | (intent, listener, _) <- intentBindings prepared]
+
+intentBindings :: PreparedClusterExposure scope planId clusterId clusterFrame -> [(ExposureIntent, Int, Text)]
+intentBindings prepared =
+    [ (intent, exposureRelayPortBase + offset, exposureIntentService intent)
+    | (offset, intent) <- zip [0 ..] (preparedExposureIntents prepared)
+    ]
+
+exposureTarget :: PreparedClusterExposure scope planId clusterId clusterFrame -> Either ReconcileError ClusterCallTarget
+exposureTarget prepared =
+    clusterCallTarget
+        (preparedExposureClusterName prepared)
+        (preparedExposureStateDirectory prepared)
+        (preparedExposureNodeNames prepared)
+        Nothing
+        Nothing
+        (preparedExposureOwner prepared)
+
+exposureRecordKey :: PreparedClusterExposure scope planId clusterId clusterFrame -> Either ProtectedError RecordKey
+exposureRecordKey prepared = mkRecordKey (Text.pack (preparedExposureClusterName prepared) <> ".exposure")
+
+renderExposureRecord :: ExposureRecord -> ByteString.ByteString
+renderExposureRecord = TextEncoding.encodeUtf8 . Text.pack . show
+
+parseExposureRecord :: ByteString.ByteString -> Either Text ExposureRecord
+parseExposureRecord bytes = case TextEncoding.decodeUtf8' bytes of
+    Left _ -> Left "the exposure ownership record is not UTF-8"
+    Right raw -> case readMaybe (Text.unpack raw) of
+        Just record | renderExposureRecord record == bytes -> Right record
+        _ -> Left "the exposure ownership record is not canonical"
+
+exposureSpecDigest :: PreparedClusterExposure scope planId clusterId clusterFrame -> Text
+exposureSpecDigest prepared = digestText (Text.intercalate "\NUL" fields)
+  where
+    fields =
+        [ "hostbootstrap/exposure/v1"
+        , preparedExposureKey prepared
+        , Text.pack (show (preparedExposureGeneration prepared))
+        , preparedExposureClusterIdentity prepared
+        , ownerDigest prepared
+        , preparedExposureImage prepared
+        ]
+            <> concatMap intentFields (preparedExposureIntents prepared)
+    intentFields intent =
+        [ exposureIntentService intent
+        , "tcp"
+        , exposureIntentTargetHost intent
+        , Text.pack (show (exposureIntentTargetPort intent))
+        ]
+
+ownerDigest :: PreparedClusterExposure scope planId clusterId clusterFrame -> Text
+ownerDigest = digestText . preparedExposureOwner
+
+relayLabels :: PreparedClusterExposure scope planId clusterId clusterFrame -> Text -> [(Text, Text)]
+relayLabels prepared nonce =
+    [ ("io.hostbootstrap.owner", ownerDigest prepared)
+    , ("io.hostbootstrap.cluster", preparedExposureKey prepared)
+    , ("io.hostbootstrap.generation", Text.pack (show (preparedExposureGeneration prepared)))
+    , ("io.hostbootstrap.operation", nonce)
+    , ("io.hostbootstrap.spec", exposureSpecDigest prepared)
+    ]
+
+relayName :: PreparedClusterExposure scope planId clusterId clusterFrame -> Text -> Text
+relayName prepared nonce = "hostbootstrap-exposure-" <> Text.take 32 (digestText (exposureSpecDigest prepared <> nonce))
+
+nonceText :: ByteString.ByteString -> Text
+nonceText = TextEncoding.decodeUtf8 . convertToBase Base16
+
+digestText :: Text -> Text
+digestText = Text.pack . show . (hash :: ByteString.ByteString -> Digest SHA256) . TextEncoding.encodeUtf8
+
+immutableImage :: Text -> Bool
+immutableImage image = repositoryDigest || imageId
+  where
+    repositoryDigest = case Text.breakOnEnd "@sha256:" image of
+        (prefix, digest) -> not (Text.null prefix) && Text.length digest == 64 && Text.all lowerHex digest
+    imageId = case Text.stripPrefix "sha256:" image of
+        Just digest -> Text.length digest == 64 && Text.all lowerHex digest
+        Nothing -> False
+
+validPort :: Int -> Bool
+validPort port = port > 0 && port < 65536
+
+lowerHex :: Char -> Bool
+lowerHex character = isDigit character || character >= 'a' && character <= 'f'
+
+distinct :: (Eq value) => [value] -> Bool
+distinct [] = True
+distinct (value : values) = value `notElem` values && distinct values
+
+maxExposureCount, exposureRelayPortBase :: Int
+maxExposureCount = 128
+exposureRelayPortBase = 20000
+
+exposureFailure :: Text -> Text -> RecoveryDisposition -> Either ReconcileError value
+exposureFailure operation reason disposition = Left (Failure (FailureDetail operation reason disposition))
+
+exposureConflict :: PreparedClusterExposure scope planId clusterId clusterFrame -> Text -> Either ReconcileError value
+exposureConflict prepared reason =
+    Left (Conflict (ConflictDetail (preparedExposureKey prepared) (exposureSpecDigest prepared) "changed runtime exposure" reason))
+
+storeExposureFailure :: Text -> ProtectedError -> Either ReconcileError value
+storeExposureFailure operation = (\reason -> Left (Failure (FailureDetail operation reason ReprobeBeforeRetry))) . protectedErrorMessage

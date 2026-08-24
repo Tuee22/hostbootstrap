@@ -12,9 +12,9 @@ import qualified ClusterBackendSpec
 import qualified ClusterCommandSpec
 import qualified ClusterOwnershipSpec
 import qualified ClusterReconcileSpec
-import qualified ClusterWorkloadSpec
 import qualified ClusterReportSpec
 import qualified ClusterResumeSpec
+import qualified ClusterWorkloadSpec
 import qualified ColimaSpec
 import qualified CompileFailSpec
 import qualified ContextSpec
@@ -35,12 +35,14 @@ import qualified HandoffSpec
 import qualified HarnessSpec
 import HostBootstrap.Ensure.Colima.Backend.Runner (runShippedCommandEntry, shippedCommandEntryArguments)
 import HostBootstrap.Handoff.Transaction (classifyFrameChild, frameInterpreter, runFrameChildEntry)
+import HostBootstrap.Identity.Install (provisionInstalledIdentity)
 import HostBootstrap.Ownership.Shipped (interpretShippedOwnership)
 import HostBootstrap.Substrate.Provider (RawProviderOutcome (RawProviderFailure))
 import qualified HostToolSpec
+import qualified IdentityInstallSpec
 import qualified IncusSpec
-import qualified LifecycleSpec
 import qualified LifecycleDependencySpec
+import qualified LifecycleSpec
 import qualified LiftContextSpec
 import qualified LiftSpec
 import qualified LimaSpec
@@ -74,7 +76,7 @@ import qualified SessionSpec
 import qualified SpecIndexSpec
 import qualified StepSpec
 import qualified SubstrateSpec
-import System.Environment (getArgs, lookupEnv)
+import System.Environment (getArgs, getExecutablePath, lookupEnv)
 import qualified TeardownSpec
 #if !defined(mingw32_HOST_OS)
 import System.Posix.Files (setFileCreationMask)
@@ -203,6 +205,8 @@ main = do
             | Just entry <- classifyFrameChild args ->
                 runFrameChildEntry (frameInterpreter interpretShippedOwnership) entry
         _ -> do
+            executable <- getExecutablePath
+            provisionInstalledIdentity executable >>= either fail pure
             docTests <- DocValidatorSpec.tests
             -- The suite runs single-threaded because several groups drive
             -- process-global state that has no per-test scope: CLISpec,
@@ -270,6 +274,7 @@ main = do
                     , LifecycleDependencySpec.tests
                     , HarnessSpec.tests
                     , IncusSpec.tests
+                    , IdentityInstallSpec.tests
                     , LimaSpec.tests
                     , Wsl2Spec.tests
                     , WslGlobalWallSpec.tests

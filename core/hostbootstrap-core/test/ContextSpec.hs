@@ -11,13 +11,13 @@ import Data.IORef (newIORef, readIORef, writeIORef)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Fixture
-import HostBootstrap.Authority
-    ( InstalledProjectIdentity
-    , ProjectVerb (ProjectUp)
-    , installedProjectName
-    , normalizeExecutableIdentity
-    , rootScopeAuthority
-    )
+import HostBootstrap.Authority (
+    InstalledProjectIdentity,
+    ProjectVerb (ProjectUp),
+    installedProjectName,
+    normalizeExecutableIdentity,
+    rootScopeAuthority,
+ )
 import HostBootstrap.CLI (
     ProjectSpec,
     addForwardChildPlan,
@@ -26,72 +26,72 @@ import HostBootstrap.CLI (
     projectSpec,
  )
 import qualified HostBootstrap.CLI as CLI
+import HostBootstrap.Config.Class (
+    AssemblyRequest (..),
+    ProjectCfg (withProductionProjectCodec),
+    pureConfigAssembly,
+ )
 import qualified HostBootstrap.Config.Schema as Schema
-import HostBootstrap.Config.Class
-    ( AssemblyRequest (..)
-    , ProjectCfg (withProductionProjectCodec)
-    , pureConfigAssembly
-    )
 import HostBootstrap.Config.Vocab (Production)
 import HostBootstrap.Context
 import HostBootstrap.DocValidator (findRepoRoot)
-import HostBootstrap.Harness (Case (Case), CaseResult (Pass), TestSuite (TestSuite), mkCaseId)
-import HostBootstrap.Lifecycle.Mode
-    ( ModeError (ModeAuthorityFailure)
-    , productionActiveMode
-    , productionRootAuthority
-    , productionRootModeLease
-    , productionRootUnboundLease
-    , withProductionLifecycleProfile
-    , withProductionRoot
-    )
-import HostBootstrap.Lifecycle.Context
-    ( LifecycleContextError (..)
-    , withValidatedLifecycleContext
-    )
+import HostBootstrap.Harness (Case (Case), CaseLifecycle (AssertOnce), CaseResult (Pass), TestSuite (TestSuite), mkCaseId)
+import HostBootstrap.Lifecycle.Context (
+    LifecycleContextError (..),
+    withValidatedLifecycleContext,
+ )
+import HostBootstrap.Lifecycle.Mode (
+    ModeError (ModeAuthorityFailure),
+    productionActiveMode,
+    productionRootAuthority,
+    productionRootModeLease,
+    productionRootUnboundLease,
+    withProductionLifecycleProfile,
+    withProductionRoot,
+ )
 import HostBootstrap.Lift (localContext)
-import HostBootstrap.ProjectPlan
-    ( ProjectPlan
-    , planDraftsFromValidatedBuilder
-    )
+import HostBootstrap.ProjectPlan (
+    ProjectPlan,
+    planDraftsFromValidatedBuilder,
+ )
 import HostBootstrap.ProjectPlan.Construct (withProjectPlan)
-import HostBootstrap.ProjectPlan.Frame
-    ( FrameError (..)
-    , currentFrameId
-    , projectFrameId
-    , validatedContextValue
-    , withCurrentFrame
-    )
-import HostBootstrap.ProjectRoot
-    ( CanonicalProjectRoot
-    , canonicalProjectRootPath
-    , withCanonicalProjectRoot
-    )
-import HostBootstrap.Protected
-    ( ProtectedRecord
-    , ProtectedStore
-    , listProtectedRecords
-    , openProtectedStore
-    , protectedStoreIdentity
-    , protectedStoreIdentityText
-    , protectedStoreRoot
-    , readProtectedRecord
-    , recordKeyText
-    , withProtectedEntry
-    )
-import HostBootstrap.Step
-    ( StepFrame (StepFrame)
-    , StepObservation (StepChanged)
-    , Step
-    , StepPlan
-    , buildImageStep
-    , contextInitStep
-    , deployVMStep
-    , descendsVia
-    , ensureStep
-    , mkStepPlan
-    )
-import System.Directory (getCurrentDirectory, removeFile)
+import HostBootstrap.ProjectPlan.Frame (
+    FrameError (..),
+    currentFrameId,
+    projectFrameId,
+    validatedContextValue,
+    withCurrentFrame,
+ )
+import HostBootstrap.ProjectRoot (
+    CanonicalProjectRoot,
+    canonicalProjectRootPath,
+    withCanonicalProjectRoot,
+ )
+import HostBootstrap.Protected (
+    ProtectedRecord,
+    ProtectedStore,
+    listProtectedRecords,
+    openProtectedStore,
+    protectedStoreIdentity,
+    protectedStoreIdentityText,
+    protectedStoreRoot,
+    readProtectedRecord,
+    recordKeyText,
+    withProtectedEntry,
+ )
+import HostBootstrap.Step (
+    Step,
+    StepFrame (StepFrame),
+    StepObservation (StepChanged),
+    StepPlan,
+    buildImageStep,
+    contextInitStep,
+    deployVMStep,
+    descendsVia,
+    ensureStep,
+    mkStepPlan,
+ )
+import System.Directory (canonicalizePath, getCurrentDirectory, removeFile, withCurrentDirectory)
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv, withArgs)
 import System.Exit (ExitCode (ExitFailure))
 import System.FilePath (takeDirectory, (</>))
@@ -151,26 +151,26 @@ fixtureSpec progName =
         finalizeProjectSpec $
             addSteps
                 (\_ _ -> [deployVMStep "fixture step" (StepFrame "host-orchestrator-0" "metal") (const (pure StepChanged))])
-                    ( addForwardChildPlan Fixture.refusingForwardChildPlan $
-                        projectSpec
-                            passingSuite
-                            (pure ())
-                            []
-                            Fixture.testConfigCodec
-                            (const (Fixture.defaultTestConfig (Fixture.Resources 4 "8GiB" "20GiB")))
-                            ( \request ->
-                                case request of
-                                    ProductionAssembly args ->
-                                        pureConfigAssembly (Fixture.projectInit (T.pack progName) args)
-                                    HarnessAssembly _ _ _ _ ->
-                                        pureConfigAssembly
-                                            ( Fixture.defaultProjectConfig
-                                                (T.pack progName)
-                                                "/workspace/demo"
-                                                HostOrchestrator
-                                            )
-                            )
-                    )
+                ( addForwardChildPlan Fixture.refusingForwardChildPlan $
+                    projectSpec
+                        passingSuite
+                        (pure ())
+                        []
+                        Fixture.testConfigCodec
+                        (const (Fixture.defaultTestConfig (Fixture.Resources 4 "8GiB" "20GiB")))
+                        ( \request ->
+                            case request of
+                                ProductionAssembly args ->
+                                    pureConfigAssembly (Fixture.projectInit (T.pack progName) args)
+                                HarnessAssembly _ _ _ _ ->
+                                    pureConfigAssembly
+                                        ( Fixture.defaultProjectConfig
+                                            (T.pack progName)
+                                            "/workspace/demo"
+                                            HostOrchestrator
+                                        )
+                        )
+                )
 
 runHostBootstrapCLI ::
     ProjectSpec Fixture.ProjectConfig Fixture.TestConfig ->
@@ -189,7 +189,7 @@ executableProjectName = normalizeExecutableIdentity <$> getExecutablePath
 
 passingSuite :: TestSuite
 passingSuite =
-    TestSuite (pure (Right ())) (\_ -> pure ()) [Case (either (error . show) id (mkCaseId "ok")) 1 False] (\_ _ -> pure Pass) (pure ())
+    TestSuite (pure (Right ())) (\_ _ -> pure ()) [Case (either (error . show) id (mkCaseId "ok")) 1 False AssertOnce] (\_ _ -> pure Pass) (pure ())
 
 tests :: TestTree
 tests =
@@ -707,8 +707,8 @@ tests =
                 @?= filter (/= HostOrchestratorPlacement) placements
             -- and no other class is placement-indexed
             [ (placement, cls)
-                | placement <- placements
-                , cls <-
+              | placement <- placements
+              , cls <-
                     [ EnsureCommand
                     , ConfigInspectionCommand
                     , ConfigGenerationCommand
@@ -719,8 +719,8 @@ tests =
                     , ServiceCommand
                     , ProjectCommand
                     ]
-                , not (placementAllowsCommand placement False cls)
-                ]
+              , not (placementAllowsCommand placement False cls)
+              ]
                 @?= []
         , testCase "a kind its provider cannot own is refused before authorization" $ do
             let host = hostOrchestratorContext "demo" "demo" "/workspace/demo"
@@ -858,6 +858,22 @@ tests =
                 cfgDockerfile @?= "docker/Dockerfile"
                 cfgResources @?= Fixture.Resources 4 "8GiB" "20GiB"
                 cfgDeploy @?= Fixture.DeployConfig 1
+        , testCase "project init records the absolute current directory when source-root is omitted" $
+            withSystemTempDirectory "hostbootstrap-config-init-root" $ \dir ->
+                withSystemTempDirectory "hostbootstrap-config-init-source" $ \source -> do
+                    projectName <- executableProjectName
+                    let path = dir </> T.unpack projectName <> ".dhall"
+                    expected <- canonicalizePath source
+                    withCurrentDirectory source $
+                        withArgs
+                            [ "project"
+                            , "init"
+                            , "--output"
+                            , path
+                            ]
+                            (runHostBootstrapCLI (fixtureSpec (T.unpack projectName)))
+                    Fixture.ProjectConfig _ _ cfgContext _ <- Fixture.decodeProjectConfigFile path
+                    sourceRoot cfgContext @?= T.pack expected
         , testCase "project init --if-missing writes when absent and is a no-op when present" $
             withSystemTempDirectory "hostbootstrap-config-init-if-missing" $ \dir -> do
                 projectName <- executableProjectName
@@ -895,7 +911,9 @@ frameAdmissionTests =
         "plan-local current frame"
         [ testCase "admits the exact root prefix and jointly exposes semantic evidence" $
             withFramePlan hostFrameContext twoFramePlan $ \plan ->
-                withCurrentFrame plan hostFrameContext
+                withCurrentFrame
+                    plan
+                    hostFrameContext
                     ( \current projectFrame validated ->
                         ( currentFrameId current
                         , projectFrameId projectFrame
@@ -909,7 +927,9 @@ frameAdmissionTests =
                         )
         , testCase "admits the exact deeper topology prefix at its endpoint" $
             withFramePlan vmFrameContext twoFramePlan $ \plan ->
-                withCurrentFrame plan vmFrameContext
+                withCurrentFrame
+                    plan
+                    vmFrameContext
                     ( \current projectFrame validated ->
                         ( currentFrameId current
                         , projectFrameId projectFrame
@@ -1005,7 +1025,9 @@ frameAdmissionTests =
         , testCase "admission performs no protected-store transition" $
             withFramePlanAndStore hostFrameContext twoFramePlan $ \store plan -> do
                 before <- observeProtectedStore store
-                withCurrentFrame plan hostFrameContext
+                withCurrentFrame
+                    plan
+                    hostFrameContext
                     (\current _ _ -> currentFrameId current)
                     @?= Right "host-orchestrator-0"
                 after <- observeProtectedStore store
@@ -1030,7 +1052,7 @@ lifecycleContextAdmissionTests =
             withLifecycleContextPlan
                 (\rootContext -> deriveTestHarnessContext rootContext (sourceRoot rootContext))
                 harnessFramePlan
-                (\root store plan context -> do
+                ( \root store plan context -> do
                     admitted <-
                         withValidatedLifecycleContext
                             root
@@ -1044,7 +1066,7 @@ lifecycleContextAdmissionTests =
             withLifecycleContextPlan
                 (\context -> context{allowedCommandClasses = [], capabilities = []})
                 twoFramePlan
-                (\root store plan context -> do
+                ( \root store plan context -> do
                     admitted <-
                         withValidatedLifecycleContext
                             root
@@ -1065,7 +1087,7 @@ lifecycleContextAdmissionTests =
                             }
                     )
                     twoFramePlan
-                    (\root store plan context -> do
+                    ( \root store plan context -> do
                         admitted <-
                             withValidatedLifecycleContext
                                 root
@@ -1084,7 +1106,7 @@ lifecycleContextAdmissionTests =
                 withLifecycleContextPlan
                     (\rootContext -> deriveHostDaemonContext rootContext (sourceRoot rootContext))
                     daemonFramePlan
-                    (\root store plan context -> do
+                    ( \root store plan context -> do
                         admitted <-
                             withValidatedLifecycleContext
                                 root
@@ -1104,7 +1126,7 @@ lifecycleContextAdmissionTests =
                         case drifted of
                             Left
                                 ( LifecycleContextBinaryContextError
-                                    (ContextRuntimeWitnessFailed witness _)
+                                        (ContextRuntimeWitnessFailed witness _)
                                     ) ->
                                     witness
                                         @?= RuntimeWitness
@@ -1119,7 +1141,7 @@ lifecycleContextAdmissionTests =
             withLifecycleContextPlan
                 (\context -> context{project = "other-project"})
                 twoFramePlan
-                (\root store plan context -> do
+                ( \root store plan context -> do
                     admitted <-
                         withValidatedLifecycleContext root store plan context (const (pure ()))
                     admitted
@@ -1132,7 +1154,7 @@ lifecycleContextAdmissionTests =
             withLifecycleContextPlan
                 (\context -> context{binary = "other-binary"})
                 twoFramePlan
-                (\root store plan context -> do
+                ( \root store plan context -> do
                     admitted <-
                         withValidatedLifecycleContext root store plan context (const (pure ()))
                     admitted
@@ -1145,7 +1167,7 @@ lifecycleContextAdmissionTests =
             withLifecycleContextPlan
                 (\context -> context{sourceRoot = sourceRoot context <> "/."})
                 twoFramePlan
-                (\root store plan context -> do
+                ( \root store plan context -> do
                     admitted <-
                         withValidatedLifecycleContext root store plan context (const (pure ()))
                     admitted
@@ -1176,10 +1198,10 @@ lifecycleContextAdmissionTests =
                             Left failure -> assertFailure ("could not admit other root: " ++ show failure)
                             Right
                                 ( Left
-                                    (LifecycleContextPlanRootMismatch expected observed)
+                                        (LifecycleContextPlanRootMismatch expected observed)
                                     ) -> do
-                                        expected @?= directory
-                                        observed @?= T.unpack (sourceRoot context)
+                                    expected @?= directory
+                                    observed @?= T.unpack (sourceRoot context)
                             Right other ->
                                 assertFailure
                                     ("expected exact plan-root refusal, got " ++ show other)
@@ -1244,10 +1266,10 @@ lifecycleContextAdmissionTests =
                 case admitted of
                     Left
                         ( LifecycleContextFrameError
-                            (FrameConfigContextMismatch expected observed)
+                                (FrameConfigContextMismatch expected observed)
                             ) -> do
-                                expected @?= context
-                                observed @?= substituted
+                            expected @?= context
+                            observed @?= substituted
                     other ->
                         assertFailure ("expected retained-config refusal, got " ++ show other)
         , testCase "wraps topology, placement, and current-frame refusals before the callback" $ do
@@ -1407,14 +1429,18 @@ withLifecycleContextPlan selectContext stepPlan use =
                                             validated <-
                                                 Schema.withValidatedConfig codec value $ \_wire config -> do
                                                     drafts <-
-                                                        either (fail . show) pure
+                                                        either
+                                                            (fail . show)
+                                                            pure
                                                             ( planDraftsFromValidatedBuilder
                                                                 root
                                                                 config
                                                                 (\_ _ -> Right stepPlan)
                                                             )
                                                     action <-
-                                                        either (fail . show) pure
+                                                        either
+                                                            (fail . show)
+                                                            pure
                                                             ( withProjectPlan
                                                                 profile
                                                                 root
@@ -1614,14 +1640,18 @@ withFramePlanAndStore context plan use =
                                                 admitted <-
                                                     Schema.withValidatedConfig codec value $ \_wire config -> do
                                                         drafts <-
-                                                            either (fail . show) pure
+                                                            either
+                                                                (fail . show)
+                                                                pure
                                                                 ( planDraftsFromValidatedBuilder
                                                                     root
                                                                     config
                                                                     (\_ _ -> Right plan)
                                                                 )
                                                         action <-
-                                                            either (fail . show) pure
+                                                            either
+                                                                (fail . show)
+                                                                pure
                                                                 ( withProjectPlan
                                                                     profile
                                                                     root

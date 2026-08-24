@@ -58,8 +58,8 @@ declared child boundary; authenticated child admission and cross-frame continuat
    host daemon (singleton via lifecycle ownership directories plus strict PID identity) that connects to
    an in-cluster coordinator, used when a capability is reachable only on the host. The accelerator demo is
    the small implemented instance:
-   Apple Silicon and Windows GPU daemons run host-native, connect to the web service over a local-only
-   NodePort, exchange CBOR over WebSocket, and forward work to a generated native worker. See
+   Apple Silicon and Windows GPU daemons run host-native, connect to the web service over its exact
+   runtime-resolved loopback exposure, exchange CBOR over WebSocket, and forward work to a generated native worker. See
    [accelerator_daemon](accelerator_daemon.md).
 7. **Headless host build for platform-locked artifacts** — a generic consumer may build a
    platform-locked artifact on the bare host (no build VM) and stage it into a cluster. This is distinct
@@ -154,12 +154,10 @@ summary for shape 2:
   public boundary executes only the admitted current-frame segment.
 - The standardized harness (`HostBootstrap.Harness`: `runMatrix` + `Seams`) is a **separate** test
   surface. For each generated run it constructs and retains an exact `ProjectPlan (Harness projectId
-  runId) ...`, drives the Cabal-private fixed root-Up entry into the lower current-frame Chain and the
-  exact reverse boundary, and keeps assertion logic outside lifecycle authority.
-- The demo's remaining Harness gap is not a second forward graph: profile, root, and cluster consumers
-  still receive independent config-derived terms rather than projections from that exact retained plan.
-  The [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns that final projection and
-  the same-run durable destroy/up/readback acceptance.
+  runId) ...`, drives the Cabal-private fixed root-Up entry through the recursive Chain and exact reverse
+  boundary, and keeps assertion logic outside lifecycle authority. A restart-spanning case requests the
+  engine-owned settled reverse, protected invocation rotation, exact plan rebind, second forward, and one-row
+  before/after assertion merge.
 
 ## Business-Logic Composition Shapes
 
@@ -240,7 +238,7 @@ compose one exact forward description. The current public Chain executes the aut
 segment and derives its declared descent; nested lifecycle entry fails closed pending authenticated
 child admission and proof-complete traversal. The complete interpreter is intended to carry the Incus/Linux
 plan through to a cordoned kind cluster, the in-cluster registry, the project image pushed to that
-registry, and the web chart pod serving `localhost:30080`. Current `project down`/`project destroy`
+registry, and the web chart pod serving through its runtime-resolved loopback endpoint. Current `project down`/`project destroy`
 consume the verb's exact current-frame reverse projection and must not be described as fractal teardown. The
 demo's status is tracked in
 [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) and the composition phases of the

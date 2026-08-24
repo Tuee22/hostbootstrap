@@ -130,7 +130,11 @@ native validation lives.
   that identity before and after every later mutation and every guest command. A share is an owned object
   of its own inside that instance, so its attachment re-observes both: the device on both sides of the
   attachment, and the instance's standing on both sides of the device readback — an instance replaced
-  while a device was being attached is a conflict rather than a share. The boundary's **durability** is
+  while a device was being attached is a conflict rather than a share. Incus does not reliably hot-mount
+  a newly attached disk into an already-running VM. Consequently the newly-attached and recovered-unbound
+  branches force-restart only the still-owned instance, then re-read its exact identity and Running state
+  before binding the share record. A replacement during that restart is a conflict, and an exact bound
+  retry performs no additional restart. The boundary's **durability** is
   not its own: every durable byte it publishes is the protected store's compare-and-swap, so the
   partial-write and partial-unlink windows are the store's contract below, and the driver names no
   mutating filesystem primitive at all. `Provider.Backend` and
@@ -145,9 +149,11 @@ native validation lives.
   managed Running provider and accepts the exact opaque managed share authority. `ManagedGuestAliasHandle`
   hides the generic handle/receipt authority after settlement. The whole-plan alias projection yields its
   opaque alias resource and typed alias-to-share edge only when the durable-share node both depends on the
-  provider and declares the derived `<provider>/<share>/guest-alias` operation. The demo still creates the
-  alias through its compatibility pathname route; migrating that call site belongs to
-  [the worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
+  provider and declares the derived `<provider>/<share>/guest-alias` operation. The project binary installed
+  in the guest interprets a closed shipped symbolic-link transaction over the same ownership row: the shared
+  codec records absence in the host-backed share, a no-replace publication binds the link's kernel identity,
+  retries converge across the unbound and published windows, and destroy releases that exact identity before
+  deleting the provider frame. No guest Python program or `stat`/`flock` front end participates.
 - `HostBootstrap.Cluster.Backend` is the **join** between the plan's prepared cluster package and the driver
   above, not a second holder of the clauses. It derives the owned object from the package — name, declared
   node containers control plane first, configuration snapshot, the file this run opens for the credential,
@@ -158,6 +164,13 @@ native validation lives.
   admitted from the typed `HostConfig` when all three tools the cluster drives are resolved in it and probed
   no further. A cluster this record already owns is additionally asked whether its node containers are
   running, because that is the container runtime's answer rather than the API server's.
+- The backend also holds the four clauses over one cluster-adjacent exposure relay. Clause 1 is the same
+  protected-store entry; clause 2 publishes a nonce- and specification-bound pending record before `docker
+  container run`; clause 3 binds the exact inspected relay/container identity and every runtime-selected
+  `127.0.0.1` mapping; clause 4 re-inspects the name, identity, labels, generation, operation, and complete
+  mapping set before removal and forgets the record only after the exact identity is absent. A replacement,
+  wildcard, missing/additional mapping, or changed target is a conflict, and cluster cleanup refuses until
+  this adjacent resource has completed clause 4.
 - `HostBootstrap.Cluster.Ownership` is the kind cluster written as a **row** of the one seam rather than as
   a program in another language. What to ask is a described command (`Cluster.Command`), what an answer
   means is a total classification (`Cluster.Report`), where an interrupted transaction stands is a total

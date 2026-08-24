@@ -2750,6 +2750,17 @@ published exposure, backing object-store endpoint, credential authority, and blo
 Consumers may contribute concrete registry resources and image operations, but may not independently
 select endpoint strings or a serialized redirect boolean.
 
+A local publication is also a runtime-owned resource, not a configured number. A plan names the service,
+protocol, and stable cluster-internal target. The cluster backend asks the container runtime to bind the
+relay on loopback with no host-side number, then authenticates the exact relay identity and inspected mapping
+before minting `ResolvedExposure`. That value carries the selected port with its scope, plan, cluster
+generation, service, relay identity, and ownership operation; it travels only through the matching dependency
+package and is never written back into Dhall. The runtime bind is the allocation. Scanning for a free port,
+closing the probe, and later passing that number to Kind, nvkind, Docker, or a child process is forbidden
+because another process can acquire it in the gap. Kind/nvkind `hostPort: 0` is not sufficient when the
+launcher resolves zero to a candidate before the runtime binds it. Cluster teardown releases the exact relay
+and its mappings by identity.
+
 `RedirectToBackend` is constructible only from a proof that the client scope can reach the backend
 scope. There is no proof from `HostLocal` to `ClusterOnly`; that topology can construct only
 `ProxyThroughRegistry`. Rendering is total over delivery strategy, so proxy delivery emits

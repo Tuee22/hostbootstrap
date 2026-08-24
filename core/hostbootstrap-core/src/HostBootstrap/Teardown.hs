@@ -123,10 +123,10 @@ module HostBootstrap.Teardown (
     teardownErrorMessage,
 ) where
 
-import qualified Data.List.NonEmpty as NonEmpty
 import Data.ByteString (ByteString)
 import Data.Kind (Type)
-import Data.List (nub, sort)
+import Data.List (nub)
+import qualified Data.List.NonEmpty as NonEmpty
 import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -136,8 +136,8 @@ import HostBootstrap.Authority (
     VerbUp,
     projectVerbName,
  )
-import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Handoff (HandoffError, handoffErrorMessage, lifecycleObservationsFromWire, renderLifecycleObservations)
+import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.ProjectPlan (
     OperationKey,
     PlannedStep,
@@ -147,6 +147,7 @@ import HostBootstrap.ProjectPlan (
     plannedStepFrameId,
     plannedStepIdentity,
     plannedStepOperationKey,
+    plannedStepProjectedOperationKeys,
     plannedStepReversePolicy,
     plannedStepReverseRun,
     renderSnapshot,
@@ -216,7 +217,6 @@ teardownPlanVerbName (TeardownPlan verb _ _ _ _ _) = projectVerbName verb
 teardownPlanFrameId :: TeardownPlan scope planId frame verb -> Text
 teardownPlanFrameId (TeardownPlan _ _ _ frame _ _) = frame
 
-
 projectedOperationKeys :: TeardownPlan scope planId frame verb -> [OperationKey]
 projectedOperationKeys (TeardownPlan _ _ _ _ _ levels) =
     [reverseOperationKey step | level <- levels, step <- level]
@@ -268,11 +268,12 @@ teardownPlan plan current verb =
         , plannedStepReversePolicy step /= PreserveOnReverse
         ]
 
-{- | Project only effects whose durable Prepared gates were reached by one
-failed Up.  The retained verb remains Up, so this value cannot be promoted to
-Destroy settlement or used to open a reverse Production intent; action
-selection is cleanup-only and uses destroy-strength release for the exact
-reached prefix.
+{- | Project only removable effects whose durable Prepared gates were reached by
+one failed Up.  The retained verb remains Up, so this value cannot be promoted
+to Destroy settlement or used to open a reverse Production intent.  The
+duplicate-free evidence is an ordered subset of the plan's own and projected
+operations; preservation-only and projected relation keys contribute
+reachability evidence but are never turned into cleanup actions.
 -}
 failedUpTeardownPlanKernel ::
     ProjectPlan scope specDigest planId configId cfg ->
@@ -282,11 +283,11 @@ failedUpTeardownPlanKernel ::
 failedUpTeardownPlanKernel plan current reached
     | length reached /= length (nub reached) =
         Left (TeardownReverseDescentRefused "the failed-Up reached set contains a duplicate")
-    | sort reached /= sort projected =
+    | reached /= filter (`elem` reached) admitted =
         Left
             ( TeardownReverseDescentRefused
-                ( "the failed-Up reached set differs from the admitted plan: expected "
-                    <> Text.intercalate ", " projected
+                ( "the failed-Up reached set is not an ordered subset of the admitted plan: admitted "
+                    <> Text.intercalate ", " admitted
                     <> ", observed "
                     <> Text.intercalate ", " reached
                 )
@@ -312,16 +313,22 @@ failedUpTeardownPlanKernel plan current reached
         , Text.pack (operationKeyText (plannedStepOperationKey step)) `elem` reached
         , plannedStepReversePolicy step /= PreserveOnReverse
         ]
+    admitted =
+        [ operation
+        | frame <- frames
+        , step <- steps
+        , plannedStepFrameId step == frame
+        , operation <-
+            Text.pack (operationKeyText (plannedStepOperationKey step))
+                : map
+                    (Text.pack . operationKeyText)
+                    (plannedStepProjectedOperationKeys step)
+        ]
     levels =
         [ level
         | frame <- reverse frames
         , let level = reverse (mapMaybe (reverseStepFor ProjectDestroy (placementFor frame)) (selected frame))
         , not (null level)
-        ]
-    projected =
-        [ Text.pack (operationKeyText (plannedStepOperationKey step))
-        | frame <- frames
-        , step <- selected frame
         ]
 
 reverseStepFor ::
@@ -404,39 +411,42 @@ openTeardownForest projection@(TeardownPlan verb failedUp _ _ _ levels)
     | null levels = Left (TeardownPlanEmpty (projectVerbName verb))
     | otherwise = Right (TeardownForest projection (nest verb levels))
 
-{- | Nest the per-frame levels so the deepest frame's nodes are children of the
-next frame out. Levels arrive innermost-first, so the fold attaches each level
-to the one already built beneath it.
+{- | Nest the per-frame levels so the deepest frame's nodes precede every node
+in the next frame out. Levels arrive innermost-first, so the fold attaches each
+level to the one already built beneath it.
+
+The first reverse node owns that attachment: regardless of which forward node
+declared the descent, no current-frame reverse effect may run before the child
+subtree settles. A VM provider then owns the reverse prefix acquired after it,
+preventing failure in that prefix from exposing the provider's stop/delete
+action.
 -}
 nest :: ProjectVerb verb -> [[ReverseStep]] -> [Node]
 nest verb = foldl attach []
   where
-    attach deeper level =
-        [ Node
+    attach deeper level = retainFrameOwner (attachDeeper deeper level)
+
+    attachDeeper deeper level = case level of
+        [] -> []
+        first : rest -> makeNode deeper first : map (makeNode []) rest
+
+    retainFrameOwner nodes = case break (isFrameAction . reverseAction . nodeStep) nodes of
+        (prefix, owner : suffix) ->
+            let children = prefix ++ nodeChildren owner
+             in owner
+                    { nodeState = initialState verb (nodeStep owner) children
+                    , nodeChildren = children
+                    }
+                    : suffix
+        _ -> nodes
+
+    makeNode children step =
+        Node
             { nodeStep = step
-            , nodeState = initialState verb step (childrenOf step)
-            , nodeChildren = childrenOf step
+            , nodeState = initialState verb step children
+            , nodeChildren = children
             , nodeObservation = Nothing
             }
-        | step <- level
-        ]
-      where
-        -- The step that provisions the deeper frame lives in *this* level, so
-        -- the deeper nodes hang under it. With no frame step in this level the
-        -- first one owns them, which preserves the child-first ordering.
-        childrenOf step
-            | Just owner <- frameOwner level
-            , reverseKey step == reverseKey owner =
-                deeper
-            | otherwise = []
-
-frameOwner :: [ReverseStep] -> Maybe ReverseStep
-frameOwner steps =
-    case [step | step <- steps, isFrameAction (reverseAction step)] of
-        (step : _) -> Just step
-        [] -> case steps of
-            (step : _) -> Just step
-            [] -> Nothing
 
 isFrameAction :: TeardownAction -> Bool
 isFrameAction action = action == StopFrame || action == DeleteFrame
@@ -455,7 +465,7 @@ needsPreDescent :: ProjectVerb verb -> ReverseStep -> [Node] -> Bool
 needsPreDescent ProjectUp _ _ = False
 needsPreDescent ProjectDown _ _ = False
 needsPreDescent ProjectDestroy step children =
-    isFrameAction (reverseAction step) && not (null children)
+    reverseAction step == DeleteFrame && not (null children)
 
 -- | Nodes that have not settled, deepest first.
 teardownForestOutstanding :: TeardownForest scope planId frame verb -> [Text]
@@ -546,8 +556,8 @@ authorizationPointKey :: TeardownAuthorizationPoint scope planId frame verb -> T
 authorizationPointKey = reverseKey . authorizationPointStep
 
 -- | The destroy-only step that makes a stopped provider teardown-reachable.
-newtype PreDescentStep scope planId frame verb =
-    PreDescentStep (TeardownAuthorizationPoint scope planId frame verb)
+newtype PreDescentStep scope planId frame verb
+    = PreDescentStep (TeardownAuthorizationPoint scope planId frame verb)
 
 type role PreDescentStep nominal nominal nominal nominal
 
@@ -589,20 +599,22 @@ type role TeardownWork nominal nominal nominal nominal
 the originating forest point and its cursor; this is the only public value from
 which a reverse key, action, policy, or runner can be projected.
 -}
-data LocalWork scope planId frame verb = LocalWork
-    (TeardownAuthorizationPoint scope planId frame verb)
-    (TeardownCursor scope planId frame verb)
+data LocalWork scope planId frame verb
+    = LocalWork
+        (TeardownAuthorizationPoint scope planId frame verb)
+        (TeardownCursor scope planId frame verb)
 
 type role LocalWork nominal nominal nominal nominal
 
 {- | Recursive routing authority for the immediate topology edge below the
 opening frame. The child index is existential outside 'eliminateTeardownWork'.
 -}
-data DescentWork scope planId frame (childFrame :: Type) verb = DescentWork
-    (TeardownAuthorizationPoint scope planId frame verb)
-    Text
-    Text
-    (TeardownPlan scope planId childFrame verb)
+data DescentWork scope planId frame (childFrame :: Type) verb
+    = DescentWork
+        (TeardownAuthorizationPoint scope planId frame verb)
+        Text
+        Text
+        (TeardownPlan scope planId childFrame verb)
 
 type role DescentWork nominal nominal nominal nominal nominal
 
@@ -946,10 +958,11 @@ driveTeardownForest ::
     TeardownForest scope planId frame verb ->
     (PreDescentStep scope planId frame verb -> IO TeardownOutcome) ->
     (SettledChildren scope planId frame -> LocalWork scope planId frame verb -> IO TeardownOutcome) ->
-    (forall (childFrame :: Type).
+    ( forall (childFrame :: Type).
       SettledChildren scope planId frame ->
       DescentWork scope planId frame childFrame verb ->
-      IO (Either Text (SubtreeSettled scope planId childFrame verb))) ->
+      IO (Either Text (SubtreeSettled scope planId childFrame verb))
+    ) ->
     (Text -> TeardownOutcome -> IO ()) ->
     IO (Either [Text] (CompletedTeardownForest scope planId frame verb))
 driveTeardownForest forest attemptPreDescent attemptLocal attemptDescent report = go [] forest
@@ -1021,7 +1034,6 @@ driveTeardownForest forest attemptPreDescent attemptLocal attemptDescent report 
 
     reportTerminal operation outcome =
         report (Text.pack (operationKeyText operation)) outcome
-
 
 isTeardownFailure :: TeardownOutcome -> Bool
 isTeardownFailure (TeardownFailed _) = True

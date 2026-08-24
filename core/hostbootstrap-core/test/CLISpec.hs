@@ -1,5 +1,5 @@
-{-# LANGUAGE GADTs #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
@@ -9,6 +9,7 @@
 
 module CLISpec (runSchemaFixture, tests) where
 
+import ActivationSpec (withBrokerFor)
 import Control.Exception (finally, throwIO, try)
 import Control.Monad (filterM)
 import qualified Crypto.Hash as Hash
@@ -23,14 +24,22 @@ import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TIO
 import Data.Word (Word64)
 import qualified Fixture
-import ActivationSpec (withBrokerFor)
+import HostBootstrap.Activation (ActivationManifest (..), activationSecretDigestFromBytes, activationVerificationKeyBytes)
+import HostBootstrap.Authority (
+    InstalledProjectIdentity,
+    authorityErrorMessage,
+    installedProjectName,
+    normalizeExecutableIdentity,
+    withInstalledProjectIdentity,
+ )
+import qualified HostBootstrap.Authority as Authority
 import HostBootstrap.CLI (
     ProjectSpec,
     ProjectSpecBuilder,
     ProjectSpecError (..),
-    addForwardChildPlan,
     addArtifacts,
     addAssemblyInputs,
+    addForwardChildPlan,
     addServices,
     addSteps,
     finalizeProjectSpec,
@@ -49,28 +58,17 @@ import HostBootstrap.Context (ContextKind (HostOrchestrator))
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf, autoCodecWitness, requireCodecWitness)
 import HostBootstrap.DocValidator (findRepoRoot)
-import HostBootstrap.Authority (
-    InstalledProjectIdentity,
-    authorityErrorMessage,
-    installedProjectName,
-    normalizeExecutableIdentity,
-    withInstalledProjectIdentity,
- )
-import qualified HostBootstrap.Authority as Authority
 import HostBootstrap.Harness (
+    AssertionPhase (AfterRestart, BeforeRestart),
     Case (Case),
     CaseId,
-    allCasesSelector,
+    CaseLifecycle (AssertAcrossRestart, AssertOnce),
     CaseResult (Fail, Pass),
     SafetyRefusal (SafetyRefusal),
     TestSuite (TestSuite),
+    allCasesSelector,
     mkCaseId,
  )
-import HostBootstrap.Handoff
-    ( projectSigningKeyFromBytes
-    , projectSigningVerificationKey
-    , verificationKeyBytes
-    )
 import HostBootstrap.Lifecycle.Execution (stepExecutionPlanDigest)
 import HostBootstrap.Lifecycle.Mode (
     ProductionRoot,
@@ -89,6 +87,7 @@ import HostBootstrap.Lifecycle.Mode (
     withProductionLifecycleProfile,
     withProductionRoot,
  )
+import HostBootstrap.Lift.Context (IncusVM (IncusVM), inVM, localContext)
 import HostBootstrap.ProjectPlan (
     ProjectPlan,
     renderSnapshot,
@@ -141,35 +140,33 @@ import HostBootstrap.RoleLifecycle (
     rolePlanDraft,
     rolePlanDraftDigest,
  )
-import HostBootstrap.Activation (ActivationManifest (..), activationSecretDigestFromBytes, activationVerificationKeyBytes)
 import HostBootstrap.Service (
     ServiceRegistry,
     ServiceRegistryError (..),
+    ServiceResourceBackend (..),
     emptyServiceRegistry,
     installServiceActivationRevision,
     serviceActivationRevisionPath,
     serviceDefinition,
     serviceId,
-    serviceRegistry,
     serviceProgramDefinition,
-    ServiceResourceBackend (..),
+    serviceRegistry,
     serviceRoleSchemaFamilies,
     withFinalizedServiceRegistry,
     withSelectedServiceProgram,
  )
-import HostBootstrap.Service.Program
-    ( ServiceBackend (..)
-    , ServicePayloads (..)
-    , lookupAcquiredResource
-    , serve
-    , withReadyServiceHandles
-    )
-import HostBootstrap.Lift.Context (IncusVM (IncusVM), inVM, localContext)
+import HostBootstrap.Service.Program (
+    ServiceBackend (..),
+    ServicePayloads (..),
+    lookupAcquiredResource,
+    serve,
+    withReadyServiceHandles,
+ )
 import HostBootstrap.Step (ProjectStepId, ReversePolicy (PreserveOnReverse, ProjectManagedReverse), Step, StepFrame (..), StepObservation (..), StepPlanError (DuplicateStepIdentities), TeardownAction (StopFrame), TeardownOutcome (TeardownReleased), deployVMStep, descendsVia, projectStep, projectStepId, reversedBy, stepLabel, stepPlanSteps)
+import SourceGuard (repoRelativePath)
 import System.Directory (doesDirectoryExist, doesFileExist, doesPathExist, getCurrentDirectory, listDirectory, removeFile)
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv, withArgs)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), die)
-import SourceGuard (repoRelativePath)
 import System.FilePath (takeExtension, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (readProcessWithExitCode)
@@ -188,8 +185,9 @@ builderWith ::
     ProjectSpecBuilder Fixture.ProjectConfig Fixture.TestConfig
 builderWith = builderWithHarnessContext "/workspace/demo" "cli"
 
--- | A CLI fixture whose restricted Harness assembler retains the exact
--- canonical root selected by the surrounding runtime test.
+{- | A CLI fixture whose restricted Harness assembler retains the exact
+canonical root selected by the surrounding runtime test.
+-}
 builderWithHarnessContext ::
     FilePath ->
     T.Text ->
@@ -293,35 +291,29 @@ tests =
                 Left EmptyProjectTestSuite -> pure ()
                 other -> assertFailure ("expected EmptyProjectTestSuite, got " ++ either show (const "Right ProjectSpec") other)
         , testCase "real project specs reject a missing forward-child projector" $
-            case
-                finalizeProjectSpec
-                    ( addSteps sampleChain $
-                        builderWithoutForwardChildPlan
-                            "/workspace/demo"
-                            "cli"
-                            passingSuite
-                            (pure ())
-                            []
-                    )
-            of
+            case finalizeProjectSpec
+                ( addSteps sampleChain $
+                    builderWithoutForwardChildPlan
+                        "/workspace/demo"
+                        "cli"
+                        passingSuite
+                        (pure ())
+                        []
+                ) of
                 Left MissingForwardChildPlan -> pure ()
                 other -> assertFailure ("expected MissingForwardChildPlan, got " ++ either show (const "Right ProjectSpec") other)
         , testCase "one forward-child projector completes real project finalization" $
-            case
-                finalizeProjectSpec
-                    (addSteps sampleChain (builderWith passingSuite (pure ()) []))
-            of
+            case finalizeProjectSpec
+                (addSteps sampleChain (builderWith passingSuite (pure ()) [])) of
                 Right _ -> pure ()
                 Left failure -> assertFailure ("expected one projector to finalize, got " ++ show failure)
         , testCase "duplicate forward-child projectors refuse instead of replacing" $
-            case
-                finalizeProjectSpec
-                    ( addSteps sampleChain $
-                        addForwardChildPlan
-                            Fixture.refusingForwardChildPlan
-                            (builderWith passingSuite (pure ()) [])
-                    )
-            of
+            case finalizeProjectSpec
+                ( addSteps sampleChain $
+                    addForwardChildPlan
+                        Fixture.refusingForwardChildPlan
+                        (builderWith passingSuite (pure ()) [])
+                ) of
                 Left DuplicateForwardChildPlan -> pure ()
                 other -> assertFailure ("expected DuplicateForwardChildPlan, got " ++ either show (const "Right ProjectSpec") other)
         , testCase "runtime executable identity must match the declared project" $ do
@@ -572,13 +564,13 @@ tests =
                 suite =
                     TestSuite
                         (pure (Right ()))
-                        ( \_ -> do
+                        ( \_ _ -> do
                             generatedConfigPresent <- doesFileExist cfgPath
                             records <- observeBoundHarnessPlan storeRoot projectName
                             modifyIORef' observed (++ [(generatedConfigPresent, records)])
                             pure ()
                         )
-                        [Case (fixtureCaseId "ok") 1 False]
+                        [Case (fixtureCaseId "ok") 1 False AssertOnce]
                         (\_ _ -> pure Pass)
                         ( do
                             generatedConfigPresent <- doesFileExist cfgPath
@@ -676,6 +668,58 @@ tests =
                     doesFileExist cfgPath >>= (@?= False)
                 )
                 `finally` removeFile testPath
+        , testCase "a restart-spanning Harness case rotates and rebinds the same run before its second assertion" $ do
+            projectName <- executableProjectName
+            cfgPath <- Schema.siblingProjectConfigPath projectName
+            testPath <- Schema.siblingTestConfigPath projectName
+            stateRoot <- getCurrentDirectory
+            forwardCalls <- newIORef (0 :: Int)
+            reverseCalls <- newIORef (0 :: Int)
+            openedPhases <- newIORef []
+            assertedPhases <- newIORef []
+            let frame = StepFrame "host-orchestrator-0" "metal"
+                restartChain :: FixtureFragment
+                restartChain _ _ =
+                    [ reversedBy
+                        (\_ _ -> modifyIORef' reverseCalls (+ 1) >> pure TeardownReleased)
+                        ( projectStep
+                            (fixtureProjectStepId "same-run-restart-probe")
+                            ProjectManagedReverse
+                            "record both same-run Harness invocations"
+                            frame
+                            (\_ -> modifyIORef' forwardCalls (+ 1) >> pure StepChanged)
+                        )
+                    ]
+                suite =
+                    TestSuite
+                        (pure (Right ()))
+                        (\phase _ -> modifyIORef' openedPhases (++ [phase]) >> pure phase)
+                        [Case (fixtureCaseId "survives-restart") 1 False AssertAcrossRestart]
+                        (\phase _ -> modifyIORef' assertedPhases (++ [phase]) >> pure Pass)
+                        (pure ())
+                spec =
+                    finalized $
+                        addSteps
+                            restartChain
+                            (builderWithHarnessContext stateRoot projectName suite (pure ()) [])
+            ( do
+                    initialized <-
+                        try (withArgs ["test", "init"] (runHostBootstrapCLI spec)) ::
+                            IO (Either ExitCode ())
+                    initialized @?= Right ()
+                    ran <-
+                        try (withArgs ["test", "run", "all"] (runHostBootstrapCLI spec)) ::
+                            IO (Either ExitCode ())
+                    ran @?= Right ()
+                    readIORef forwardCalls >>= (@?= 4)
+                    readIORef reverseCalls >>= (@?= 4)
+                    readIORef openedPhases
+                        >>= (@?= [BeforeRestart, AfterRestart, BeforeRestart, AfterRestart])
+                    readIORef assertedPhases
+                        >>= (@?= [BeforeRestart, AfterRestart, BeforeRestart, AfterRestart])
+                    doesFileExist cfgPath >>= (@?= False)
+                )
+                `finally` removeFile testPath
         , testCase "a true pre-effect Harness refusal skips reverse and admits the successor variant" $ do
             projectName <- executableProjectName
             cfgPath <- Schema.siblingProjectConfigPath projectName
@@ -758,7 +802,8 @@ tests =
                         openProtectedStore storeRoot
                             >>= either (assertFailure . T.unpack . protectedErrorMessage) pure
                     version <-
-                        withProtectedEntry store
+                        withProtectedEntry
+                            store
                             (\session -> compareAndSwapProtectedRecord session key ExpectAbsent "acquired")
                             >>= either (assertFailure . T.unpack . protectedErrorMessage) pure
                     modifyIORef' effectRecords (++ [(key, version)])
@@ -802,8 +847,8 @@ tests =
                 suite =
                     TestSuite
                         (pure (Right ()))
-                        (\_ -> pure ())
-                        [Case (fixtureCaseId "ok") 1 False]
+                        (\_ _ -> pure ())
+                        [Case (fixtureCaseId "ok") 1 False AssertOnce]
                         (\_ _ -> pure Pass)
                         (modifyIORef' postReverseChecks (+ 1))
                 spec =
@@ -910,12 +955,12 @@ tests =
                 result @?= Left (ExitFailure 1)
                 readIORef handlerRan >>= (@?= False)
         , testCase "service run verifies activation and dispatches exactly its signed program variant" $ do
-                webRan <- newIORef False
-                acceleratorRan <- newIORef False
-                withVerifiedServiceRuntime "accelerator" [("web", writeIORef webRan True), ("accelerator", writeIORef acceleratorRan True)] $ \spec ->
-                    withArgs ["service", "run"] (runHostBootstrapCLI spec)
-                readIORef webRan >>= (@?= False)
-                readIORef acceleratorRan >>= (@?= True)
+            webRan <- newIORef False
+            acceleratorRan <- newIORef False
+            withVerifiedServiceRuntime "accelerator" [("web", writeIORef webRan True), ("accelerator", writeIORef acceleratorRan True)] $ \spec ->
+                withArgs ["service", "run"] (runHostBootstrapCLI spec)
+            readIORef webRan >>= (@?= False)
+            readIORef acceleratorRan >>= (@?= True)
         , testCase "service run rejects a legacy positional variant" $
             withServiceProjectConfig $ do
                 let spec = specWithServices (Just "web") [("web", pure ())]
@@ -1529,7 +1574,7 @@ tests =
                 , "runExactProjectUp"
                 , "withRootProjectUpLifecycleEntry"
                 , "runRootProjectUpLifecycleEntry"
-                , "withRootProjectUpLifecycleEntry exactSpec rootAuthority Authority.ProjectUp verified bound binding lease plan lifecycleContext (runRootProjectUpLifecycleEntry cfg self handoffScope loadSigningKey runFailedLocal)"
+                , "withRootProjectUpLifecycleEntry exactSpec rootAuthority Authority.ProjectUp verified bound binding lease plan lifecycleContext (runRootProjectUpLifecycleEntry cfg self handoffScope loadSigningKey loadActivationSigningKey runFailedLocal)"
                 , "Teardown.teardownPlan plan currentFrame verb"
                 ]
             mapM_
@@ -1645,7 +1690,7 @@ withVerifiedServiceRuntime selected handlers use =
                     (WithEffect NetworkListenName NoEffects)
                     resources
                     (cliServiceBackend :: ServiceBackend CliServicePayloads)
-                    (\_ -> withReadyServiceHandles $ \ready -> case lookupAcquiredResource ready "listener" of
+                    ( \_ -> withReadyServiceHandles $ \ready -> case lookupAcquiredResource ready "listener" of
                         Nothing -> pure ()
                         Just listener -> serve [(listener, action)]
                     )
@@ -1770,7 +1815,6 @@ withIsolatedProjectConfig :: (IsolatedProductionPaths -> IO result) -> IO result
 withIsolatedProjectConfig use =
     withSystemTempDirectory "hostbootstrap-cli-production" $ \configuredRoot -> do
         projectName <- executableProjectName
-        executable <- getExecutablePath
         configPath <- Schema.siblingProjectConfigPath projectName
         rooted <-
             withCanonicalProjectRoot
@@ -1783,14 +1827,8 @@ withIsolatedProjectConfig use =
                     projectName
                     (T.pack canonicalRoot)
                     HostOrchestrator
-            signingPath = executable <> ".handoff.key"
-            verificationPath = executable <> ".handoff.pub"
-            signingSeed = ByteString.pack [0 .. 31]
-            cleanup = mapM_ removeIfPresent [configPath, signingPath, verificationPath]
+            cleanup = removeIfPresent configPath
         ( do
-                signing <- either (assertFailure . show) pure (projectSigningKeyFromBytes signingSeed)
-                ByteString.writeFile signingPath signingSeed
-                ByteString.writeFile verificationPath (verificationKeyBytes (projectSigningVerificationKey signing))
                 Schema.writeProjectConfigFile Fixture.projectConfigCodec configPath config
                 use
                     IsolatedProductionPaths
@@ -2210,8 +2248,8 @@ passingSuite :: TestSuite
 passingSuite =
     TestSuite
         (pure (Right ()))
-        (\_ -> pure ())
-        [Case (fixtureCaseId "ok") 1 False]
+        (\_ _ -> pure ())
+        [Case (fixtureCaseId "ok") 1 False AssertOnce]
         (\_ _ -> pure Pass)
         (pure ())
 
@@ -2220,15 +2258,15 @@ failingSuite :: TestSuite
 failingSuite =
     TestSuite
         (pure (Right ()))
-        (\_ -> pure ())
-        [Case (fixtureCaseId "fails") 1 False]
+        (\_ _ -> pure ())
+        [Case (fixtureCaseId "fails") 1 False AssertOnce]
         (\_ _ -> pure (Fail "seeded case failure"))
         (pure ())
 
 -- | A suite with no cases (rejected by the project-spec validator).
 emptySuiteFixture :: TestSuite
 emptySuiteFixture =
-    TestSuite (pure (Right ())) (\_ -> pure ()) [] (\_ _ -> pure Pass) (pure ())
+    TestSuite (pure (Right ())) (\_ _ -> pure ()) [] (\_ _ -> pure Pass) (pure ())
 
 fixtureCaseId :: T.Text -> CaseId
 fixtureCaseId value = either (error . show) id (mkCaseId value)

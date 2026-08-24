@@ -23,7 +23,7 @@ import qualified HostBootstrap.Authority as Authority
 import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Harness
-import HostBootstrap.Harness.Lifecycle.Internal (testingHarnessLifecycle)
+import HostBootstrap.Harness.Lifecycle.Internal (testingHarnessLifecycle, testingRestartingHarnessLifecycle)
 import HostBootstrap.Harness.Ownership (
     OwnedHarnessRoot,
     RecoveredResourceExecutor (RecoveredResourceExecutor),
@@ -286,6 +286,35 @@ suiteCases =
         case outcome of
             Right (Report rs) -> map fst rs @?= ["[v0] b"]
             Left err -> assertFailure ("expected Right, got Left " ++ err)
+    , testCase "a restart-spanning case keeps one row across fresh same-run lifecycle generations" $ do
+        events <- newIORef []
+        let record event = modifyIORef' events (++ [event])
+            spanning = Case (cid "durable") 1 False AssertAcrossRestart
+            suite =
+                TestSuite
+                    (pure (Right ()))
+                    (\phase _ -> pure phase)
+                    [spanning]
+                    (\phase _ -> record (show phase) >> pure Pass)
+                    (record "verified")
+            selected =
+                ConfigVariant
+                    (vid "v0")
+                    (cid "durable" :| [])
+                    ( \_ body ->
+                        body
+                            ( testingRestartingHarnessLifecycle
+                                (record "up-1")
+                                (record "destroy-1+up-2")
+                                (record "destroy-2")
+                            )
+                    )
+        outcome <- runSuiteSelection passthroughOwnership suite [selected]
+        case outcome of
+            Right (Report rows) -> rows @?= [("[v0] durable", Pass)]
+            Left err -> assertFailure ("expected Right, got Left " ++ err)
+        readIORef events
+            >>= (@?= ["up-1", "BeforeRestart", "destroy-1+up-2", "AfterRestart", "destroy-2", "verified"])
     , testCase "two variants loop with full teardown + spin-up, aggregating labeled rows" $ do
         events <- newIORef []
         acquisitions <- newIORef (0 :: Int)
@@ -314,7 +343,7 @@ suiteCases =
             suite =
                 TestSuite
                     (pure (Right ()))
-                    pure
+                    (\_ -> pure)
                     [fixtureCase "a"]
                     (\ident _ -> record ("assert:" ++ T.unpack (variantIdText ident)) >> pure Pass)
                     (record "verified")
@@ -356,7 +385,7 @@ suiteCases =
             suite =
                 TestSuite
                     (pure (Right ()))
-                    (\ident -> modifyIORef' events (variantIdText ident :) >> pure ident)
+                    (\_ ident -> modifyIORef' events (variantIdText ident :) >> pure ident)
                     [fixtureCase "a"]
                     (\_ _ -> pure Pass)
                     (pure ())
@@ -389,7 +418,7 @@ suiteCases =
             suite =
                 TestSuite
                     (pure (Right ()))
-                    pure
+                    (\_ -> pure)
                     [fixtureCase "a"]
                     (\label _ -> record ("assert:" ++ T.unpack (variantIdText label)) >> pure Pass)
                     (pure ())
@@ -414,7 +443,7 @@ suiteCases =
             suite =
                 TestSuite
                     (pure (Right ()))
-                    pure
+                    (\_ -> pure)
                     [fixtureCase "a"]
                     (\_ _ -> pure Pass)
                     (modifyIORef' verifiedCount (+ 1))
@@ -497,7 +526,7 @@ suiteCases =
             suite =
                 TestSuite
                     (pure (Right ()))
-                    pure
+                    (\_ -> pure)
                     [fixtureCase "a"]
                     (\ident _ -> record ("assert:" ++ T.unpack (variantIdText ident)) >> pure Pass)
                     (pure ())
@@ -530,7 +559,7 @@ suiteCases =
         let suite =
                 TestSuite
                     (pure (Right ()))
-                    pure
+                    (\_ -> pure)
                     [fixtureCase "a"]
                     (\_ _ -> pure Pass)
                     (pure ())
@@ -558,7 +587,7 @@ suiteCases =
             suite =
                 TestSuite
                     (pure (Right ()))
-                    pure
+                    (\_ -> pure)
                     [fixtureCase "a"]
                     (\_ _ -> pure Pass)
                     (pure ())
@@ -588,7 +617,7 @@ suiteCases =
             suite =
                 TestSuite
                     (pure (Right ()))
-                    pure
+                    (\_ -> pure)
                     [fixtureCase "a"]
                     (\_ _ -> pure Pass)
                     (pure ())
@@ -620,7 +649,7 @@ suiteCases =
     twoCaseSuite =
         TestSuite
             (pure (Right ()))
-            pure
+            (\_ -> pure)
             [fixtureCase "a", fixtureCase "b"]
             (\_ _ -> pure Pass)
             (pure ())
@@ -866,26 +895,26 @@ withAbandonedMigrationRecording kind recordEffect body =
         prepared <-
             Fixture.withFixtureInstalledProject $ \project ->
                 withCanonicalProjectRoot root root $ \canonicalRoot -> do
-                        -- The exact store the ownership bracket sweeps: derived
-                        -- from the *canonical* root and namespaced by installed
-                        -- project identity, as `protectedProjectRunOwnership`
-                        -- derives it. Opening a differently-spelled path would
-                        -- seed a store nothing under test ever reads.
-                        store <-
-                            either (assertFailure . show) pure
-                                =<< openProtectedStore
-                                    ( canonicalProjectRootPath canonicalRoot
-                                        </> harnessAuthorityStoreDirectory
-                                        </> T.unpack (Authority.installedProjectName project)
-                                    )
-                        abandonBoundRunWithMigration store project kind recordEffect
-                        body
-                            ( protectedProjectRunOwnership
-                                project
-                                canonicalRoot
-                                root
-                                (root </> ".test_data")
-                            )
+                    -- The exact store the ownership bracket sweeps: derived
+                    -- from the *canonical* root and namespaced by installed
+                    -- project identity, as `protectedProjectRunOwnership`
+                    -- derives it. Opening a differently-spelled path would
+                    -- seed a store nothing under test ever reads.
+                    store <-
+                        either (assertFailure . show) pure
+                            =<< openProtectedStore
+                                ( canonicalProjectRootPath canonicalRoot
+                                    </> harnessAuthorityStoreDirectory
+                                    </> T.unpack (Authority.installedProjectName project)
+                                )
+                    abandonBoundRunWithMigration store project kind recordEffect
+                    body
+                        ( protectedProjectRunOwnership
+                            project
+                            canonicalRoot
+                            root
+                            (root </> ".test_data")
+                        )
         either (assertFailure . show) pure prepared
 
 withAbandonedResourceOwnership ::
@@ -1177,15 +1206,15 @@ ownershipCases =
         $ withAbandonedMigrationRecording
             (IncompleteMigration "migration-1")
             True
-            $ \ownership -> do
-                admitted <- runWithOwnedRun ownership (\_ -> pure ())
-                case admitted of
-                    Left reason ->
-                        assertBool
-                            ("the refusal names the recorded effect: " ++ reason)
-                            ("effect" `isInfixOf` reason)
-                    Right _ ->
-                        assertFailure "a staging that acquired something must block the next run"
+        $ \ownership -> do
+            admitted <- runWithOwnedRun ownership (\_ -> pure ())
+            case admitted of
+                Left reason ->
+                    assertBool
+                        ("the refusal names the recorded effect: " ++ reason)
+                        ("effect" `isInfixOf` reason)
+                Right _ ->
+                    assertFailure "a staging that acquired something must block the next run"
     , testCase "an abandoned acquired resource is released and the settled run closes" $
         withAbandonedResourceOwnership False $ \observed _refusing ownership -> do
             admitted <- runWithOwnedRun ownership (\_ -> pure ())
@@ -1537,7 +1566,7 @@ representationCases =
             ownershipExports = fst (T.breakOn ") where" ownership)
         assertBool "HarnessLifecycle stays abstract at the public facade" (not ("HarnessLifecycle (..)" `T.isInfixOf` harness))
         assertBool "the raw lifecycle constructor stays out of the facade" (not ("    harnessLifecycle," `T.isInfixOf` harness))
-        assertBool "the raw lifecycle constructor exists only at the private-component boundary" ("harnessLifecycle = HarnessLifecycle" `T.isInfixOf` internal)
+        assertBool "the raw lifecycle constructor exists only at the private-component boundary" ("data HarnessLifecycle = HarnessLifecycle" `T.isInfixOf` internal)
         assertBool "the constructor module is absent from the public library" (not ("HostBootstrap.Harness.Lifecycle.Internal" `T.isInfixOf` exposedSection))
         assertBool "the constructor component is explicitly private" ("library harness-lifecycle-internal" `T.isInfixOf` cabal && "visibility: private" `T.isInfixOf` cabal)
         assertBool "the close-control module is not exposed" (not ("HostBootstrap.Harness.Ownership.Internal" `T.isInfixOf` exposedSection))
@@ -1550,6 +1579,7 @@ representationCases =
             )
             [ "beginOwnedHarnessBinding"
             , "armOwnedHarnessBoundClose"
+            , "rearmOwnedHarnessBoundClose"
             , "markOwnedHarnessClosePending"
             , "settleOwnedHarnessClose"
             , "consumeOwnedHarnessClose"
@@ -1592,10 +1622,16 @@ representationCases =
             fromHarness = snd (T.breakOn start command)
             harnessSlice = fst (T.breakOn ending fromHarness)
             normalized = T.unwords (T.words harnessSlice)
+            destroyKernel = snd (T.breakOn "runExactHarnessDestroyProjection ::" command)
+            kernelNormalized = T.unwords (T.words destroyKernel)
             require fragment =
                 assertBool
                     ("Harness command lost its exact-plan route: " ++ T.unpack fragment)
                     (fragment `T.isInfixOf` normalized)
+            requireKernel fragment =
+                assertBool
+                    ("Harness destroy kernel lost its authenticated route: " ++ T.unpack fragment)
+                    (fragment `T.isInfixOf` kernelNormalized)
             forbid fragment =
                 assertBool
                     ("Harness command still contains compatibility shape " ++ T.unpack fragment)
@@ -1619,16 +1655,26 @@ representationCases =
             , "LifecycleContext.withValidatedLifecycleContext runRoot store plan"
             , "beginOwnedHarnessBinding closeControl"
             , "withPersistedPlanSnapshot rootAuthority unbound plan"
-            , "armOwnedHarnessBoundClose closeControl lease"
+            , "armOwnedHarnessBoundClose closeControl (currentHarnessCloseRoot root) (harnessRootModeLease root) lease"
             , "acquireOwnedRunConfig"
             , "runExactProjectUp"
-            , "runExactDestroyProjection"
+            , "withExactHarnessDestroyGeneration"
+            , "settleOwnedHarnessClose closeControl"
+            , "withFreshHarnessInvocationFrom"
+            , "rearmOwnedHarnessBoundClose closeControl freshCloseRoot freshMode freshLease"
+            , "withRestartedBoundPlanSnapshot freshRoot freshLease verified freshPlan"
+            , "useLifecycle (restartingHarnessLifecycle forwardAction restartAction finalReverseAction)"
+            , "`finally` removeGeneratedConfig"
+            ]
+        mapM_
+            requireKernel
+            [ "withFreshHarnessDestroyInvocation"
+            , "runExactHarnessDestroyProjection"
+            , "withBoundProjectDestroyLifecycleEntry"
+            , "runRootProjectReverseLifecycleEntry"
             , "destroySettledClosure"
             , "authorizeHarnessClose"
             , "markOwnedHarnessClosePending closeControl"
-            , "settleOwnedHarnessClose closeControl"
-            , "useLifecycle (harnessLifecycle forwardAction reverseAction)"
-            , "`finally` removeGeneratedConfig"
             ]
         T.count "withProjectPlan profile runRoot validated drafts" normalized @?= 1
         assertBool
@@ -1636,7 +1682,7 @@ representationCases =
             (appearsBefore "selectTestMatrix selector matrix" "withProjectPlan profile runRoot validated drafts" normalized)
         assertBool
             "the generated config must exist before exact lifecycle interpretation"
-            (appearsBefore "acquireOwnedRunConfig" "useLifecycle (harnessLifecycle forwardAction reverseAction)" normalized)
+            (appearsBefore "acquireOwnedRunConfig" "useLifecycle (restartingHarnessLifecycle forwardAction restartAction finalReverseAction)" normalized)
         assertBool
             "the fail-closed binding sentinel must precede durable plan binding"
             (appearsBefore "beginOwnedHarnessBinding closeControl" "withPersistedPlanSnapshot rootAuthority unbound plan" normalized)
@@ -1649,16 +1695,20 @@ representationCases =
             )
         assertBool
             "the exact bound fallback must be armed before generated-config work"
-            (appearsBefore "armOwnedHarnessBoundClose closeControl lease" "acquireOwnedRunConfig" normalized)
+            ( appearsBefore
+                "armOwnedHarnessBoundClose closeControl (currentHarnessCloseRoot root) (harnessRootModeLease root) lease"
+                "acquireOwnedRunConfig"
+                normalized
+            )
         assertBool
-            "ordinary exact destroy must settle before terminal close authorization"
-            (appearsBefore "runExactDestroyProjection" "authorizeHarnessClose" normalized)
+            "the authenticated exact destroy must settle before terminal close authorization"
+            (appearsBefore "runExactHarnessDestroyProjection" "authorizeHarnessClose" kernelNormalized)
         assertBool
             "settled-destroy closure evidence must precede terminal close authorization"
-            (appearsBefore "destroySettledClosure" "authorizeHarnessClose" normalized)
+            (appearsBefore "destroySettledClosure" "authorizeHarnessClose" kernelNormalized)
         assertBool
             "persisted close authorization must precede the private pending state"
-            (appearsBefore "authorizeHarnessClose" "markOwnedHarnessClosePending closeControl" normalized)
+            (appearsBefore "authorizeHarnessClose" "markOwnedHarnessClosePending closeControl" kernelNormalized)
         mapM_
             forbid
             [ "variantWithConfig"
@@ -1674,6 +1724,7 @@ representationCases =
             , "HostBootstrap.Chain.Compatibility"
             , "stageOwnedHarnessClose"
             , "finalizeHarnessClose"
+            , "runExactDestroyProjection"
             ]
     ]
 
@@ -1690,7 +1741,7 @@ selector :: T.Text -> CaseSelector
 selector value = either (error . show) id (parseCaseSelector value)
 
 fixtureCase :: T.Text -> Case
-fixtureCase ident = Case (cid ident) 1 False
+fixtureCase ident = Case (cid ident) 1 False AssertOnce
 
 nonEmptyCaseIds :: [T.Text] -> NonEmpty CaseId
 nonEmptyCaseIds (first : rest) = cid first :| map cid rest

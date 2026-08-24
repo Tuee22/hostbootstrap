@@ -128,8 +128,8 @@ The accelerator daemon design uses CUDA in two places:
   before that pod is deployed. It does not run host ensure inside the pod.
 - `windows-gpu`: the daemon runs host-native, uses `ensure-cudawin` to verify/install the host CUDA build
   stack (`Nvidia.CUDA`, MSVC C++ Build Tools/VCTools, LLVM clang, and an `nvcc -ccbin` smoke compile),
-  builds the generated CUDA worker with host `nvcc`, and connects to the cluster web service through a
-  local-only NodePort.
+  builds the generated CUDA worker with host `nvcc`, and connects to the cluster web service through its
+  exact runtime-resolved loopback exposure.
 
 The browser e2e specification asserts backend metadata and Float32 results returned by the daemon, so an
 in-process fallback cannot satisfy the CUDA lane. See

@@ -108,6 +108,8 @@ module HostBootstrap.Handoff (
     -- * Canonical provider dependency wire
     providerDependencyPackageFields,
     providerDependencyPackageFromFields,
+    providerDependencyPackagesFields,
+    providerDependencyPackagesFromFields,
     providerDependencyProbeRequestFields,
     providerDependencyProbeRequestFromFields,
     providerDependencyProbeResponseFields,
@@ -216,6 +218,7 @@ module HostBootstrap.Handoff (
     receiveLifecycleAcknowledgementKernel,
     prepareLifecycleAcknowledgementKernel,
     adoptLifecycleAcknowledgementKernel,
+    rehydrateAdoptedLifecycleReportKernel,
     rehydrateAdoptedLifecycleAcknowledgementKernel,
 
     -- * Failures
@@ -276,16 +279,18 @@ import HostBootstrap.Protected (
     ProtectedStore,
     RecordKey,
     compareAndSwapProtectedRecord,
+    listProtectedRecords,
     mkRecordKey,
     protectedErrorMessage,
     protectedStoreIdentity,
     protectedStoreIdentityText,
     readProtectedRecord,
+    recordKeyText,
     recordVersionWord,
     withProtectedEntry,
  )
-import System.Timeout (timeout)
 import System.Directory (doesFileExist)
+import System.Timeout (timeout)
 
 -- ---------------------------------------------------------------------------
 -- Framing
@@ -786,6 +791,90 @@ adoptLifecycleAcknowledgementKernel kernel =
                 Left failure -> pure (Left failure)
                 Right True -> Right <$> fresh
                 Right False -> Right <$> replay
+
+{- | Read the exact report retained by one parent Adopted row.
+
+The binding determines the sole parent-row key. Absence and the two live
+pre-adoption versions are ordinary misses so a caller may resume the process;
+an exact version-three row yields its canonical report, and every malformed or
+later row refuses. No token, offer, or acknowledgement is reopened.
+-}
+rehydrateAdoptedLifecycleReportKernel ::
+    RecoverySigningKernel ->
+    ProtectedStore ->
+    ByteString ->
+    IO (Either HandoffError (Maybe (ByteString, ByteString)))
+{-# OPAQUE rehydrateAdoptedLifecycleReportKernel #-}
+rehydrateAdoptedLifecycleReportKernel kernel =
+    case consumeRecoverySigningKernel kernel () of
+        () -> \store bindingBytes -> case parentMaterial store bindingBytes of
+            Left failure -> pure (Left failure)
+            Right expected -> inLifecycleEntry store $ \session -> do
+                listed <- listProtectedRecords session
+                case listed of
+                    Left failure -> pure (Left (HandoffStoreFailure failure))
+                    Right keys -> do
+                        candidates <- traverse (candidate session expected) (filter isParentKey keys)
+                        pure $ case sequence candidates of
+                            Left failure -> Left failure
+                            Right rows -> case [row | Just row <- rows] of
+                                [] -> Right Nothing
+                                [row] -> Right (Just row)
+                                _ -> lifecycleRowConflict
+  where
+    parentMaterial store bindingBytes = do
+        binding <- decodeHandoffBinding bindingBytes
+        requireLifecycle
+            (handoffStoreIdentity binding == protectedStoreIdentityText (protectedStoreIdentity store))
+            "the adopted lifecycle binding names another protected store"
+        pure binding
+
+    isParentKey key = "lifecycle-parent." `Text.isPrefixOf` recordKeyText key
+
+    candidate session expected key = do
+        observed <- readProtectedRecord session key
+        pure $ case observed of
+            Left failure -> Left (HandoffStoreFailure failure)
+            Right Nothing -> Right Nothing
+            Right (Just record)
+                | recordVersionWord (protectedRecordVersion record) < 3 -> Right Nothing
+                | recordVersionWord (protectedRecordVersion record) == 3 -> do
+                    row@(bindingBytes, _report) <- adoptedReport (protectedRecordBytes record)
+                    binding <- decodeHandoffBinding bindingBytes
+                    expectedKey <- lifecycleRecordKey "parent" bindingBytes
+                    requireLifecycle (key == expectedKey) "the adopted lifecycle row key differs"
+                    pure (if sameLifecycleEdge expected binding then Just row else Nothing)
+                | otherwise -> lifecycleRowConflict
+
+    adoptedReport raw = do
+        fields <- takeExactFrames 7 raw
+        case fields of
+            [domain, version, side, stage, storedBinding, report, acknowledgement] -> do
+                requireLifecycle (domain == "hostbootstrap/lifecycle-durable") "the adopted lifecycle row domain differs"
+                requireLifecycle (version == lifecycleWordBytes 1) "the adopted lifecycle row version differs"
+                requireLifecycle (side == "parent") "the adopted lifecycle row side differs"
+                requireLifecycle (stage == "adopted") "the adopted lifecycle row stage differs"
+                verifyLifecycleAcknowledgement report acknowledgement
+                expected <- lifecycleDurableRow "parent" "adopted" storedBinding report acknowledgement
+                requireLifecycle (raw == expected) "the adopted lifecycle row is not canonical"
+                pure (storedBinding, report)
+            _ -> lifecycleRowConflict
+
+    sameLifecycleEdge expected observed =
+        and
+            [ handoffInstalledProject expected == handoffInstalledProject observed
+            , handoffSpecDigest expected == handoffSpecDigest observed
+            , handoffPayloadKind expected == handoffPayloadKind observed
+            , handoffScope expected == handoffScope observed
+            , handoffStoreIdentity expected == handoffStoreIdentity observed
+            , handoffPlanRevision expected == handoffPlanRevision observed
+            , handoffBrokerGeneration expected == handoffBrokerGeneration observed
+            , handoffParentFrame expected == handoffParentFrame observed
+            , handoffChildFrame expected == handoffChildFrame observed
+            , handoffChildConfigDigest expected == handoffChildConfigDigest observed
+            , handoffVerb expected == handoffVerb observed
+            , handoffPhase expected == handoffPhase observed
+            ]
 
 {- | Read one exact parent Adopted row without reopening its offer or token.
 
@@ -1964,17 +2053,32 @@ providerDependencyPackageFromFields fields = case fields of
         pure (Dependency.runtimeDependencyPackageWire package)
     _ -> Left "provider dependency package field count differs"
 
+providerDependencyPackagesFields :: ByteString -> Either Text [ByteString]
+providerDependencyPackagesFields bundleWire = do
+    packages <- Dependency.runtimeDependencyPackagesFromBundleWire bundleWire :: Either Text [Dependency.RuntimeDependencyPackage () ()]
+    mapM_ requireCarriedProviderDependencyPackage packages
+    canonical <- Dependency.runtimeDependencyPackageBundleWire packages
+    pure [canonical]
+
+providerDependencyPackagesFromFields :: [ByteString] -> Either Text [ByteString]
+providerDependencyPackagesFromFields fields = case fields of
+    [bundleWire] -> do
+        packages <- Dependency.runtimeDependencyPackagesFromBundleWire bundleWire :: Either Text [Dependency.RuntimeDependencyPackage () ()]
+        mapM_ requireCarriedProviderDependencyPackage packages
+        pure (map Dependency.runtimeDependencyPackageWire packages)
+    _ -> Left "provider dependency package bundle field count differs"
+
 providerDependencyProbeRequestFields :: ByteString -> Text -> Either Text [ByteString]
 providerDependencyProbeRequestFields packageWire nonce = do
     package <- Dependency.runtimeDependencyPackageFromWire packageWire :: Either Text (Dependency.RuntimeDependencyPackage () ())
-    requireProviderPackage package
+    requireCarriedProviderDependencyPackage package
     request <- Dependency.runtimeDependencyProbeRequest package nonce
     pure [request]
 
 providerDependencyProbeRequestFromFields :: ByteString -> [ByteString] -> Either Text Text
 providerDependencyProbeRequestFromFields packageWire fields = do
     package <- Dependency.runtimeDependencyPackageFromWire packageWire :: Either Text (Dependency.RuntimeDependencyPackage () ())
-    requireProviderPackage package
+    requireCarriedProviderDependencyPackage package
     case fields of
         [request] -> Dependency.withRuntimeDependencyProbeRequest package request id
         _ -> Left "provider dependency probe request field count differs"
@@ -1982,20 +2086,20 @@ providerDependencyProbeRequestFromFields packageWire fields = do
 providerDependencyProbeResponseFields :: ByteString -> Text -> Word64 -> Either Text [ByteString]
 providerDependencyProbeResponseFields packageWire nonce generation = do
     package <- Dependency.runtimeDependencyPackageFromWire packageWire :: Either Text (Dependency.RuntimeDependencyPackage () ())
-    requireProviderPackage package
+    requireCarriedProviderDependencyPackage package
     pure [Dependency.renderRuntimeDependencyProbeResponse package nonce generation]
 
 providerDependencyProbeRefusalFields :: ByteString -> Text -> Text -> Either Text [ByteString]
 providerDependencyProbeRefusalFields packageWire nonce reason = do
     package <- Dependency.runtimeDependencyPackageFromWire packageWire :: Either Text (Dependency.RuntimeDependencyPackage () ())
-    requireProviderPackage package
+    requireCarriedProviderDependencyPackage package
     response <- Dependency.renderRuntimeDependencyProbeRefusal package nonce reason
     pure [response]
 
 providerDependencyProbeResponseFromFields :: ByteString -> Text -> [ByteString] -> Either Text (Either Text Word64)
 providerDependencyProbeResponseFromFields packageWire nonce fields = do
     package <- Dependency.runtimeDependencyPackageFromWire packageWire :: Either Text (Dependency.RuntimeDependencyPackage () ())
-    requireProviderPackage package
+    requireCarriedProviderDependencyPackage package
     case fields of
         [response] -> Dependency.verifyRuntimeDependencyProbeOutcome package nonce response
         _ -> Left "provider dependency probe response field count differs"
@@ -2025,8 +2129,20 @@ withAuthenticatedProviderDependencyProbeRequest packageWire plan scope resource 
     request <- case fields of
         [single] -> Right single
         _ -> Left "provider dependency probe request field count differs"
-    _ <- Dependency.withProviderRuntimeDependencyPackage
-        plan scope resource frame origin generation journal receipt route now package id
+    _ <-
+        Dependency.withProviderRuntimeDependencyPackage
+            plan
+            scope
+            resource
+            frame
+            origin
+            generation
+            journal
+            receipt
+            route
+            now
+            package
+            id
     Dependency.withRuntimeDependencyProbeRequest package request use
 
 {- | Bracket one caller-free provider reprobe kernel around its lexical live
@@ -2034,7 +2150,17 @@ probe. Installation in a Process channel is separate: the continuation sees
 only a bounded data request handler, never the probe or backend authority.
 -}
 withProviderDependencyReprobeKernel ::
-    ByteString -> Text -> Text -> Text -> Text -> Text -> Word64 -> Text -> Text -> Text -> Word64 ->
+    ByteString ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
     IO (Either Text Word64) ->
     (([ByteString] -> IO (Either Text [ByteString])) -> IO result) ->
     IO result
@@ -2044,7 +2170,19 @@ withProviderDependencyReprobeKernel packageWire plan scope resource frame origin
   where
     answer consumed fields =
         case withAuthenticatedProviderDependencyProbeRequest
-            packageWire plan scope resource frame origin generation journal receipt route now fields id of
+            packageWire
+            plan
+            scope
+            resource
+            frame
+            origin
+            generation
+            journal
+            receipt
+            route
+            now
+            fields
+            id of
             Left failure -> pure (Left failure)
             Right nonce -> do
                 admitted <- modifyMVar consumed $ \nonces ->
@@ -2076,6 +2214,12 @@ requireProviderPackage package =
     if Dependency.runtimeDependencyPackageDomain package == "provider"
         then Right ()
         else Left "provider dependency package domain mismatch"
+
+requireCarriedProviderDependencyPackage :: Dependency.RuntimeDependencyPackage scope planId -> Either Text ()
+requireCarriedProviderDependencyPackage package =
+    if Dependency.runtimeDependencyPackageDomain package `elem` ["provider", "provider-share"]
+        then Right ()
+        else Left "carried provider dependency package domain mismatch"
 
 recoveryRequestFields ::
     RecoveryProjectionBinding
@@ -3176,7 +3320,9 @@ registerAdmittedHandoffEdge broker admission input =
 The existing hidden recovery capability is forced before any broker or input.
 The durable map owns the binding/token choice across crashes; only after that
 choice is read back may the ordinary planned-token record be created or
-reused.  A granted token is never reopened.
+reused. A granted token remains consumed forever; an exact later recovery
+registration advances the map to a fresh token before another child transcript
+can begin.
 -}
 registerRecoverableAdmittedHandoffEdgeKernel ::
     RecoverySigningKernel ->
@@ -3212,14 +3358,15 @@ registerRecoverableAdmittedHandoffEdgeKernel kernel =
         case mkRecordKey ("recovery-open." <> digestBytes identity) of
             Left failure -> pure (Left (HandoffStoreFailure failure))
             Right mapKey -> do
-                selected <- select session mapKey broker input identity
-                case selected of
+                selection <- select session mapKey broker input identity
+                case selection of
                     Left failure -> pure (Left failure)
-                    Right edge@(relay, token) -> do
-                        repaired <- repair session (relayBinding relay)
+                    Right selected -> do
+                        repaired <- repair session mapKey broker input identity selected
                         case repaired of
                             Left failure -> pure (Left failure)
-                            Right () -> fmap (edge <$) (verify session mapKey identity relay token)
+                            Right (mapVersion, edge@(relay, token)) ->
+                                fmap (edge <$) (verify session mapKey identity mapVersion relay token)
 
     recoveryOpenIdentity broker input adapter
         | requestedPayloadKind input /= RecoveryAdapterWire = mismatch "recoverable open requires recovery-adapter-wire"
@@ -3255,8 +3402,12 @@ registerRecoverableAdmittedHandoffEdgeKernel kernel =
         case observed of
             Left failure -> pure (Left (HandoffStoreFailure failure))
             Right (Just record)
-                | recordVersionWord (protectedRecordVersion record) /= 1 -> pure mapConflict
-                | otherwise -> pure (decode broker input identity (protectedRecordBytes record))
+                | recordVersionWord (protectedRecordVersion record) < 1 -> pure mapConflict
+                | otherwise ->
+                    pure
+                        ( (,) (protectedRecordVersion record)
+                            <$> decode broker input identity (protectedRecordBytes record)
+                        )
             Right Nothing -> do
                 token <- freshHandoffToken
                 case mkHandoffBinding broker input token >>= brokerRelay broker of
@@ -3276,7 +3427,8 @@ registerRecoverableAdmittedHandoffEdgeKernel kernel =
                     Left failure -> Left (HandoffStoreFailure failure)
                     Right (Just record)
                         | recordVersionWord (protectedRecordVersion record) == 1 ->
-                            decode broker input identity (protectedRecordBytes record)
+                            (,) (protectedRecordVersion record)
+                                <$> decode broker input identity (protectedRecordBytes record)
                     _ -> mapConflict
 
     recoveryRecord identity relay token =
@@ -3305,23 +3457,63 @@ registerRecoverableAdmittedHandoffEdgeKernel kernel =
         require (recoveryRecord identity relay token == raw)
         pure (relay, token)
 
-    repair session binding = case mkRecordKey (tokenRecordKey binding) of
-        Left failure -> pure (Left (HandoffStoreFailure failure))
-        Right key -> do
-            observed <- readProtectedRecord session key
-            case observed of
-                Left failure -> pure (Left (HandoffStoreFailure failure))
-                Right (Just record)
-                    | protectedRecordBytes record == plannedEdgeRecord binding
-                    , recordVersionWord (protectedRecordVersion record) == 1 ->
-                        pure (Right ())
-                    | "granted:" `ByteString.isPrefixOf` protectedRecordBytes record ->
-                        pure (Left HandoffTokenConsumed)
-                    | otherwise -> pure tokenConflict
-                Right Nothing -> writeExact session key (plannedEdgeRecord binding) tokenConflict
+    repair session mapKey broker input identity selected@(mapVersion, (relay, _token)) =
+        case mkRecordKey (tokenRecordKey binding) of
+            Left failure -> pure (Left (HandoffStoreFailure failure))
+            Right key -> do
+                observed <- readProtectedRecord session key
+                case observed of
+                    Left failure -> pure (Left (HandoffStoreFailure failure))
+                    Right (Just record)
+                        | protectedRecordBytes record == plannedEdgeRecord binding
+                        , recordVersionWord (protectedRecordVersion record) == 1 ->
+                            pure (Right selected)
+                        | "granted:" `ByteString.isPrefixOf` protectedRecordBytes record ->
+                            rotate session mapKey broker input identity mapVersion
+                        | otherwise -> pure tokenConflict
+                    Right Nothing ->
+                        fmap (selected <$) (writeExact session key (plannedEdgeRecord binding) tokenConflict)
+      where
+        binding = relayBinding relay
 
-    verify session mapKey identity relay token = do
-        checked <- readExact session mapKey (recoveryRecord identity relay token) mapReadbackConflict
+    rotate session mapKey broker input identity mapVersion = do
+        token <- freshHandoffToken
+        case mkHandoffBinding broker input token >>= brokerRelay broker of
+            Left failure -> pure (Left failure)
+            Right relay -> case mkRecordKey (tokenRecordKey (relayBinding relay)) of
+                Left failure -> pure (Left (HandoffStoreFailure failure))
+                Right tokenKey -> do
+                    planned <-
+                        writeExact
+                            session
+                            tokenKey
+                            (plannedEdgeRecord (relayBinding relay))
+                            tokenConflict
+                    case planned of
+                        Left failure -> pure (Left failure)
+                        Right () -> do
+                            let bytes = recoveryRecord identity relay token
+                            advanced <-
+                                compareAndSwapProtectedRecord
+                                    session
+                                    mapKey
+                                    (ExpectVersion mapVersion)
+                                    bytes
+                            pure $ case advanced of
+                                Left failure -> Left (HandoffStoreFailure failure)
+                                Right version
+                                    | recordVersionWord version == recordVersionWord mapVersion + 1 ->
+                                        Right (version, (relay, token))
+                                    | otherwise -> mapConflict
+
+    verify session mapKey identity mapVersion relay token = do
+        checked <-
+            readExact
+                session
+                mapKey
+                mapVersion
+                (recoveryRecord identity relay token)
+                mapReadbackConflict
         case checked of
             Left failure -> pure (Left failure)
             Right () -> case mkRecordKey (tokenRecordKey binding) of
@@ -3333,17 +3525,27 @@ registerRecoverableAdmittedHandoffEdgeKernel kernel =
     writeExact session key bytes conflict = do
         written <- compareAndSwapProtectedRecord session key ExpectAbsent bytes
         case written of
-            Left _ -> readExact session key bytes conflict
+            Left _ -> readExactInitial session key bytes conflict
             Right version
                 | recordVersionWord version /= 1 -> pure conflict
-                | otherwise -> readExact session key bytes conflict
+                | otherwise -> readExact session key version bytes conflict
 
-    readExact session key bytes conflict = do
+    readExactInitial session key bytes conflict = do
         observed <- readProtectedRecord session key
         pure $ case observed of
             Left failure -> Left (HandoffStoreFailure failure)
             Right (Just record)
                 | recordVersionWord (protectedRecordVersion record) == 1
+                , protectedRecordBytes record == bytes ->
+                    Right ()
+            _ -> conflict
+
+    readExact session key version bytes conflict = do
+        observed <- readProtectedRecord session key
+        pure $ case observed of
+            Left failure -> Left (HandoffStoreFailure failure)
+            Right (Just record)
+                | protectedRecordVersion record == version
                 , protectedRecordBytes record == bytes ->
                     Right ()
             _ -> conflict

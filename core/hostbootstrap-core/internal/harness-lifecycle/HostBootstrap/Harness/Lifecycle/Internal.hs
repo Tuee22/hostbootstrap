@@ -9,8 +9,11 @@ for engine unit tests; downstream packages cannot depend on this component.
 module HostBootstrap.Harness.Lifecycle.Internal (
     HarnessLifecycle,
     harnessLifecycle,
+    restartingHarnessLifecycle,
     testingHarnessLifecycle,
+    testingRestartingHarnessLifecycle,
     runHarnessForward,
+    runHarnessRestart,
     runHarnessReverse,
 )
 where
@@ -22,17 +25,36 @@ There is deliberately no selector, raw plan, or caller-supplied frame in this
 value.  Its creator has already fixed the plan, current frame, snapshot, lease,
 journal, cursor, and authority for one generated-config bracket.
 -}
-data HarnessLifecycle = HarnessLifecycle (IO ()) (IO ())
+data HarnessLifecycle = HarnessLifecycle (IO ()) (Maybe (IO ())) (IO ())
 
 harnessLifecycle :: IO () -> IO () -> HarnessLifecycle
-harnessLifecycle = HarnessLifecycle
+harnessLifecycle forwardAction reverseAction =
+    HarnessLifecycle forwardAction Nothing reverseAction
+
+{- | Command-private constructor for a Harness lifecycle that can move from a
+settled intermediate destroy into a fresh same-run invocation.
+-}
+restartingHarnessLifecycle :: IO () -> IO () -> IO () -> HarnessLifecycle
+restartingHarnessLifecycle forwardAction restartAction reverseAction =
+    HarnessLifecycle forwardAction (Just restartAction) reverseAction
 
 -- | Private-component alias used only by the core test suite.
 testingHarnessLifecycle :: IO () -> IO () -> HarnessLifecycle
-testingHarnessLifecycle = HarnessLifecycle
+testingHarnessLifecycle = harnessLifecycle
+
+-- | Private-component alias used only by engine tests of the restart route.
+testingRestartingHarnessLifecycle :: IO () -> IO () -> IO () -> HarnessLifecycle
+testingRestartingHarnessLifecycle = restartingHarnessLifecycle
 
 runHarnessForward :: HarnessLifecycle -> IO ()
-runHarnessForward (HarnessLifecycle forwardAction _) = forwardAction
+runHarnessForward (HarnessLifecycle forwardAction _ _) = forwardAction
+
+runHarnessRestart :: HarnessLifecycle -> IO ()
+runHarnessRestart (HarnessLifecycle _ restartAction _) =
+    maybe
+        (ioError (userError "this Harness lifecycle has no fresh same-run invocation"))
+        id
+        restartAction
 
 runHarnessReverse :: HarnessLifecycle -> IO ()
-runHarnessReverse (HarnessLifecycle _ reverseAction) = reverseAction
+runHarnessReverse (HarnessLifecycle _ _ reverseAction) = reverseAction

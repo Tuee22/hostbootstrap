@@ -6,19 +6,31 @@ module ClusterWorkloadSpec (tests) where
 
 import qualified ClusterReconcileSpec
 import qualified Data.ByteString.Char8 as ByteString
+import qualified Data.Text as Text
 import qualified FakeCluster
-import HostBootstrap.Cluster.Backend (runChartWorkloadCall, runChartWorkloadCleanupCall, withFreshClusterRuntimeDependency, withPreparedChartWorkload)
+import HostBootstrap.Cluster.Backend (
+    resolvedExposureClusterGeneration,
+    resolvedExposureHostPort,
+    resolvedExposureListenAddress,
+    resolvedExposureOwnershipOperation,
+    resolvedExposureRelayIdentity,
+    resolvedExposureService,
+    runChartWorkloadCall,
+    runChartWorkloadCleanupCall,
+    withFreshClusterRuntimeDependency,
+    withPreparedChartWorkload,
+ )
 import qualified HostBootstrap.ProjectPlan as ProjectPlan
-import HostBootstrap.Reconcile
-    ( ChangeView (..)
-    , ChangedKind (..)
-    , ReconcileError (..)
-    , ReconcileResult
-    , withReconcileResult
-    )
+import HostBootstrap.Reconcile (
+    ChangeView (..),
+    ChangedKind (..),
+    ReconcileError (..),
+    ReconcileResult,
+    withReconcileResult,
+ )
 import PrepareFixture (gateFor)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 tests :: TestTree
 tests =
@@ -34,7 +46,7 @@ tests =
             case result of
                 Left (Failure _) -> pure ()
                 other -> assertFailure ("expected values refusal, got " <> show other)
-        , testCase "a malformed successful Helm response is refused" $ do
+        , testCase "an incomplete Helm 4 install result is refused" $ do
             result <- runArmed FakeCluster.armHelmMalformed
             case result of
                 Left (Failure _) -> pure ()
@@ -61,11 +73,33 @@ tests =
         , testCase "successor readiness refuses a mismatched route" $ do
             refused <- runtimeRefusal "runtime://cluster/another" "fresh-nonce"
             refused @?= Right ()
+        , testCase "successor recovery returns freshly inspected exact exposures" $ do
+            recovered <-
+                ClusterReconcileSpec.withChartWorkloadFixture $ \_plan _cluster _chart _workloads _partition _execution _readiness exposures _backend _root ->
+                    pure
+                        ( Right
+                            [ ( resolvedExposureService exposure
+                              , resolvedExposureListenAddress exposure
+                              , resolvedExposureHostPort exposure
+                              , resolvedExposureRelayIdentity exposure
+                              , resolvedExposureClusterGeneration exposure
+                              , resolvedExposureOwnershipOperation exposure
+                              )
+                            | exposure <- exposures
+                            ]
+                        )
+            case recovered of
+                Right mappings -> do
+                    map (\(service, _, _, _, _, _) -> service) mappings @?= ["registry"]
+                    assertBool "the recovered endpoint is not loopback-bound" (all (\(_, address, _, _, _, _) -> address == "127.0.0.1") mappings)
+                    assertBool "the recovered host port was not runtime-selected" (all (\(_, _, port, _, _, _) -> port /= 30500 && port > 0) mappings)
+                    assertBool "the recovered exposure lacks runtime identity" (all (\(_, _, _, relay, generation, operation) -> not (Text.null relay) && generation > 0 && not (Text.null operation)) mappings)
+                Left refusal -> assertFailure (show refusal)
         ]
 
 runtimeRefusal route nonce =
-    ClusterReconcileSpec.withChartWorkloadFixture $ \_plan cluster _chart _workloads _partition execution _readiness _backend _root -> do
-        result <- withFreshClusterRuntimeDependency execution "fixture-chart-successor" cluster "core:deploy-kind" route 1 nonce (const ())
+    ClusterReconcileSpec.withChartWorkloadFixture $ \_plan cluster _chart _workloads _partition execution _readiness _exposures _backend _root -> do
+        result <- withFreshClusterRuntimeDependency execution "fixture-chart-successor" cluster "core:deploy-kind" route 1 nonce (\_ _ -> ())
         case result of
             Left (Failure _) -> pure (Right ())
             other -> assertFailure ("expected runtime dependency refusal, got " <> show other) >> pure (Right ())
@@ -78,14 +112,19 @@ runArmed arm =
     prepareRun "apiVersion: v1\n" (Just arm)
 
 prepareRun values arming =
-    ClusterReconcileSpec.withChartWorkloadFixture $ \plan cluster chart _workloads _partition execution readiness _backend root -> do
+    ClusterReconcileSpec.withChartWorkloadFixture $ \plan cluster chart _workloads _partition execution readiness _exposures _backend root -> do
         let planDigest = ProjectPlan.stablePlanSnapshotDigest (ProjectPlan.renderSnapshot plan)
         gate <- gateFor planDigest "core:deploy-chart"
         maybe (pure ()) ($ root) arming
         prepared <-
             withPreparedChartWorkload
-                chart cluster readiness execution
-                (ByteString.pack values) gate (runChartWorkloadCall Nothing)
+                chart
+                cluster
+                readiness
+                execution
+                (ByteString.pack values)
+                gate
+                (runChartWorkloadCall Nothing)
         case prepared of
             Left failure -> pure (Left failure)
             Right action -> resultView <$> action
@@ -94,12 +133,18 @@ resultView :: Either ReconcileError (ReconcileResult scope planId resourceId res
 resultView = fmap (\result -> withReconcileResult result (\_ _ change -> change) (\_ _ -> error "chart workload unexpectedly became foreign"))
 
 cleanupCase arming =
-    ClusterReconcileSpec.withChartWorkloadFixture $ \plan cluster chart _workloads _partition execution readiness backend root -> do
+    ClusterReconcileSpec.withChartWorkloadFixture $ \plan cluster chart _workloads _partition execution readiness _exposures backend root -> do
         let planDigest = ProjectPlan.stablePlanSnapshotDigest (ProjectPlan.renderSnapshot plan)
         gate <- gateFor planDigest "core:deploy-chart"
         prepared <-
-            withPreparedChartWorkload chart cluster readiness execution
-                (ByteString.pack "apiVersion: v1\n") gate (runChartWorkloadCall Nothing)
+            withPreparedChartWorkload
+                chart
+                cluster
+                readiness
+                execution
+                (ByteString.pack "apiVersion: v1\n")
+                gate
+                (runChartWorkloadCall Nothing)
         case prepared of
             Left failure -> pure (Left failure)
             Right runForward -> do

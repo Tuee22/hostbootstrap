@@ -61,7 +61,7 @@ its row here.
 | 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Done | linux-cpu | — |
 | 22 | [Service runtime](phase-22-service-runtime.md) | Done | linux-cpu | — |
 | 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
-| 24 | [The worked demo](phase-24-worked-demo.md) | Active | linux-cpu | 24.3 readback; 24.4–24.7 exact plan/resources/slices; 24.8–24.18 provider recovery/adopters/transport; 24.19–24.23 cluster config/backend/recovery/adopter; 24.24–24.27 workload/reverse; 24.28 projector; 24.29 image; 24.30 live acceptance; 24.31 guest bootstrap and guest alias |
+| 24 | [The worked demo](phase-24-worked-demo.md) | Done | linux-cpu | — |
 | 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Active | **apple-silicon** | 25.3 acceptance re-run |
 | 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Active | **nvidia** | 26.3 acceptance re-run |
 | 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | 27.3 acceptance re-run |
@@ -70,9 +70,12 @@ its row here.
 
 ## The current frontier
 
-The lowest-numbered open phase is **24**, the worked demo. The service-runtime phase is closed with an
-activation-only, measured, effect-indexed `service run`; Phase 24 now owns adoption by the concrete demo,
-its workload packaging, readiness, and live acceptance. § KK's invocation half is closed — the
+The lowest-numbered open phase is **24**, the worked demo. Its static adoption is complete: host publication
+is an owned runtime relay, concrete clients consume only resolved exposures, the pristine guest consumes the
+closed bootstrap vocabulary, and its durable alias is a shipped ownership-row transaction with
+identity-conditional destroy. Phase 24 now owes only the native `linux-cpu` Production/Harness live acceptance,
+including concurrent exposure isolation and pristine-guest stop/restart/release evidence. The service-runtime
+phase is closed with an activation-only, measured, effect-indexed `service run`. § KK's invocation half is closed — the
 [host-tools-and-substrate-detection phase](phase-3-host-tools-and-substrate-detection.md) carries one
 quoter, one process runner, one closed command vocabulary, and one interpreter for it — and the
 [ensure-reconcilers phase](phase-8-ensure-reconcilers.md) closed the guest bootstrap vocabulary and § LL's
@@ -110,12 +113,12 @@ and a process group ended on every exit path. The receiving process holds the pr
 entry for exactly its own lifetime, so clause 1 stays a kernel fact, and the frame table now carries the
 ownership column that says which row holds a frame's clauses.
 
-The seam's **adoption by the drivers** is under way. The provider is done: its provisioning, readiness,
+The seam's **adoption by the drivers** is complete. The provider's provisioning, readiness,
 share, stop, delete, and guest-execution transactions are now Haskell operations over the protected
 store, described commands, and total classifiers, and the 27KB interpreter program, the Direct
-permission program, and the locking front end they ran under are deleted. The cluster, Colima, and
-guest-alias transactions are still interpreter programs; phase 16 adopts the row at the cluster and
-Colima, and phase 24 at the guest alias — where the binary must first exist in the guest. Phase 13 supplies the entry a frame crossing needs: one total pure classifier
+permission program, and the locking front end they ran under are deleted. Cluster and Colima use the same
+clause seam locally; the guest alias ships its closed symbolic-link transaction to the binary established in
+that frame. Phase 13 supplies the entry a frame crossing needs: one total pure classifier
 over `argv`, consulted once before the parser, and one bracketed near side that folds a lift context into
 the invocation that crosses the frames, carries one transaction over, reads one answer, and ends the
 child group.
@@ -137,9 +140,9 @@ writing the durable state an interruption leaves — a value — through the wal
 the driver carries no crash point and no injected seam, and the injected object-identity seam is deleted.
 Phase 15 has taken the third: the provider backend holds no execution seam, a source guard says so, and
 the outcome-unknown window between clause 2 and clause 3 is reached by a provider client that really
-performs its launch and really dies rather than by a patch point. Phases 16 and 24 owe the remaining
-injected execution seam, the stand-in executables, and the two patchable crash-point markers their own
-rows delete.
+performs its launch and really dies rather than by a patch point. Phases 16 and 24 apply the same rule to
+cluster, Colima, and guest-alias recovery: fixtures write the durable boundary state and production carries
+no patchable crash-point marker.
 
 On 2026-08-17 the complete host static gate passed host-native on Windows 11 Home 10.0.26200 x86_64 with
 GHC 9.12.4 and Cabal 3.16.1.0: `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/`
@@ -162,10 +165,9 @@ beneath; and one module owns the guest bootstrap — the ordered, probe-first st
 in a frame that has never run it. It now reaches the provider's ownership driver and the cluster's: every
 provider and cluster effect is a described command, every decision above it a total function, and the
 cluster boundary carries no program written in another language at all — the embedded one, the protocol its
-reports were parsed back out of, and the private component its injected executor lived in are deleted. What
-it does not yet reach is the Colima and guest-alias drivers, each still an interpreter program carried as a
-string literal, and a program in a string parses its own protocol, restates invariants its caller already
-states, and has to be reviewed in two languages.
+reports were parsed back out of, and the private component its injected executor lived in are deleted.
+Colima is held by its private native row and the guest alias is interpreted by the installed project binary,
+so neither carries an interpreter program or discovers a locking/stat front end.
 
 § LL makes a provider a **row** over one closed frame table rather than a module of parallel logic, because
 the guarded delete, the existence probe, the readiness wait, the budget-to-wall rendering, and the four
@@ -175,8 +177,8 @@ three-constructor axis and the reconcilers are rows over it — and its guarded 
 computation over that table. The **ownership primitive** is built, every host-local owner is on it, and the
 provider and cluster drivers now hold their four clauses through it — the cluster as an object whose every
 node carries its own record, so a cordon addresses a node by the identity this run bound rather than by the
-name a replacement inherits. The rows still owed are the one that ships a transaction to another frame and
-the Colima and guest-alias drivers that consume it, which is why phases 16, 21, and 24 are open on it.
+name a replacement inherits. The shipped row carries that transaction to another frame, and both Colima and
+the guest alias consume their appropriate rows without restating the clauses.
 
 § NN states what a gate's evidence is worth. A fake exists because a decision is trapped inside an effect,
 so the answer is not to write better fakes but to lift the decision into a total function that can be
@@ -447,9 +449,10 @@ Three limits worth stating rather than assuming: `fourmolu` and `hlint` run only
 for the one outer host that ran it, so its dated evidence names that host and a pass on one outer host is
 not a claim about another; and the long demo gate brings up real
 provider VMs, Docker state, and clusters on the host it runs on. A harness run's cluster identity, removable
-state, host ports, and durable root are now its own rather than production's, so the gate no longer takes the
-operator's project identity — but it still mutates real host infrastructure, so a disposable host remains the
-supported way to run it.
+state, and durable root are its own rather than production's. The active exposure work makes selected host
+ports runtime-owned by that exact run as well; until it closes, fixed mappings can still collide. The gate no
+longer takes the operator's project identity, but it still mutates real host infrastructure, so a disposable
+host remains the supported way to run it.
 
 ## Governance
 

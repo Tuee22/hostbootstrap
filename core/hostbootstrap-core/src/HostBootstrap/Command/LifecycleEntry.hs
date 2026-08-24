@@ -18,6 +18,7 @@ module HostBootstrap.Command.LifecycleEntry (
     lifecycleEntryFrameName,
     lifecycleEntryVerbName,
     withRootProjectUpLifecycleEntry,
+    withBoundProjectDestroyLifecycleEntry,
     withRootProjectReverseLifecycleEntry,
     withRootRecursiveHandoffRuntimeKernel,
     withPreparedRootReverseDescentKernel,
@@ -48,6 +49,15 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
+import HostBootstrap.Activation (
+    ActivationError (..),
+    ActivationGrant,
+    ActivationManifest (..),
+    ActivationSigningKey,
+    activationSigningPolicy,
+    signActivationManifest,
+    withActivationBroker,
+ )
 import HostBootstrap.Authority (
     CommandAuthority,
     ExecutePhase,
@@ -190,10 +200,13 @@ import HostBootstrap.Lifecycle.Plan (
     acquisitionJournalAdmissionKernel,
     existingBoundSnapshotAdmissionKernel,
     projectPlanProfileEpochKernel,
+    serviceActivationPlacementsKernel,
+    withChartWorkloadResourceDetailsKernel,
  )
 import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 import HostBootstrap.Lifecycle.Rooted (
     RootedFrameSession,
+    cancelUnattachedRootedFrameSessionKernel,
     withAdvancedRootedFrameSessionKernel,
     withRootOpenedDirectFrameSessionKernel,
     withRootOpenedFrameSessionKernel,
@@ -243,6 +256,7 @@ import HostBootstrap.ProjectPlan (
     stablePlanSnapshotSpecDigest,
     topology,
     topologyDescentFrom,
+    withChartWorkloadResource,
  )
 import HostBootstrap.ProjectPlan.Child.Internal (
     AuthorizedChildCursor,
@@ -261,7 +275,7 @@ import HostBootstrap.ProjectPlan.Construct (
     withRecoveredProductionProjectPlan,
     withRecoveredProductionProjectPlanInputs,
  )
-import HostBootstrap.ProjectPlan.Frame (CurrentFrame)
+import HostBootstrap.ProjectPlan.Frame (CurrentFrame, ProjectFrame, ValidatedContext)
 import HostBootstrap.ProjectPlan.Handoff.Internal (
     withCatalogForwardHandoffKernel,
     withCatalogForwardProcessInputsKernel,
@@ -329,6 +343,7 @@ import HostBootstrap.Teardown.Internal (
     withPreparedReverseAdmissionsKernel,
     withPreparedReverseDescentKernel,
     withPreparedReverseForestKernel,
+    withRehydratedSettledReverseDescentKernel,
     withReverseDescentLiftContextKernel,
     withReverseDescentProcessInputsKernel,
  )
@@ -561,6 +576,97 @@ withRootProjectUpLifecycleEntry
                     )
             pure (either (Left . Text.unpack) Right cataloged)
 
+{- | Seal a destroy-only root entry from one exact bound plan whose broker
+generation has already been advanced by its scope owner.
+
+The caller retains the verified snapshot, bound snapshot, digest binding,
+plan, and lifecycle context from the live invocation.  No plan is rebuilt and
+the returned entry can only drive the authenticated reverse-child protocol.
+-}
+withBoundProjectDestroyLifecycleEntry ::
+    forall scope specDigest cfg brokerGeneration planDigest planId configId frame.
+    (ProjectCfg cfg) =>
+    FinalizedProjectSpec scope specDigest cfg ->
+    RootInvocationAuthority scope brokerGeneration VerbDestroy ->
+    VerifiedPlanSnapshot scope specDigest planDigest ->
+    BoundPlanSnapshot scope specDigest planDigest planId ->
+    PlanDigestBinding scope specDigest planDigest planId ->
+    BoundRunLease scope specDigest planDigest brokerGeneration ->
+    ProjectPlan scope specDigest planId configId cfg ->
+    ValidatedLifecycleContext scope specDigest planId configId frame ->
+    ( LifecycleEntry scope planId frame brokerGeneration VerbDestroy ->
+      CurrentFrame scope planId frame ->
+      IO (Either String ())
+    ) ->
+    IO (Either String ())
+withBoundProjectDestroyLifecycleEntry finalized rootAuthority verified bound binding lease plan lifecycleContext use =
+    case withValidatedRootLifecycleContext lifecycleContext admit of
+        Left failure -> pure (Left (lifecycleContextErrorMessage failure))
+        Right action -> action
+  where
+    admit ::
+        forall rootId.
+        CanonicalProjectRoot scope rootId ->
+        ProtectedStore ->
+        CurrentFrame scope planId frame ->
+        ProjectFrame scope specDigest planId configId frame ->
+        ValidatedContext scope planId frame ->
+        IO (Either String ())
+    admit root store current frame _validated
+        | canonicalProjectRootPath root /= stablePlanSnapshotRoot (renderSnapshot plan) =
+            pure (Left "lifecycle entry: canonical root does not match the retained destroy plan")
+        | protectedStoreIdentityText (protectedStoreIdentity store) /= planSnapshotStoreIdentity verified =
+            pure (Left "lifecycle entry: protected store does not match the retained destroy snapshot")
+        | otherwise = do
+            opened <-
+                withAcquisitionJournal
+                    rootAuthority
+                    lease
+                    bound
+                    binding
+                    plan
+                    ( \journal -> do
+                        cursored <-
+                            withReverseRootTargetLifecycleCursorKernel
+                                acquisitionJournalAdmissionKernel
+                                journal
+                                frame
+                                ProjectDestroy
+                                ( \teardownCursor -> do
+                                    let reauthorize =
+                                            ProjectAuthority.authorizeRootProject
+                                                rootAuthority
+                                                ProjectDestroy
+                                                verified
+                                                bound
+                                                binding
+                                                lease
+                                                plan
+                                                journal
+                                                teardownCursor
+                                                lifecycleContext
+                                    reserved <- reauthorize
+                                    case reserved of
+                                        Left failure ->
+                                            pure (Left (Text.unpack (Authority.authorityErrorMessage failure)))
+                                        Right authority ->
+                                            sealReverseRootEntry
+                                                finalized
+                                                ProjectDestroy
+                                                rootAuthority
+                                                plan
+                                                current
+                                                lifecycleContext
+                                                journal
+                                                teardownCursor
+                                                authority
+                                                reauthorize
+                                                (\entry -> use entry current)
+                                )
+                        pure (either (Left . lifecycleErrorMessage) id cursored)
+                    )
+            pure (either (Left . lifecycleErrorMessage) id opened)
+
 {- | Compare-and-swap and strictly re-read one recursive catalog manifest.
 
 An absent record is written exactly once; an exact retry and a
@@ -731,7 +837,12 @@ withRootProjectReverseLifecycleEntry
                                                                                                             ( \phase cursor ->
                                                                                                                 case phase of
                                                                                                                     Prepare -> sourcePhaseFailure "prepare"
-                                                                                                                    Execute -> sourcePhaseFailure "execute"
+                                                                                                                    Execute -> do
+                                                                                                                        transitioned <-
+                                                                                                                            withTeardownLifecycleCursor
+                                                                                                                                cursor
+                                                                                                                                (continue sourcePlan lifecycleContext journal)
+                                                                                                                        pure (either sourceSessionFailure id transitioned)
                                                                                                                     Teardown ->
                                                                                                                         continue
                                                                                                                             sourcePlan
@@ -1373,16 +1484,19 @@ withChildProjectUpLifecycleEntry
 
 {- | Interpret exactly one admitted root @project up@ leaf.
 
-The retained lifecycle context supplies the only store.  Chain success is
-followed by the exact Execute-to-Teardown cursor transition; any failure leaves
-the consumed invocation durably fail-closed at Execute and is returned
-descriptively.
+The retained lifecycle context supplies the only store. Chain success and a
+controlled coordinator failure are both followed by the exact
+Execute-to-Teardown cursor transition. The latter remains a failed command, but
+its consumed invocation is now eligible for the shared reverse command; an
+unexpected exception remains fail-closed at Execute and is recovered by that
+reverse entry's exact Execute-to-Teardown bridge.
 -}
 runRootProjectUpLifecycleEntry ::
     HostConfig ->
     SelfRef ->
     HandoffScope scope ->
     IO (Either String ProjectSigningKey) ->
+    IO (Either String ActivationSigningKey) ->
     (LocalWork scope planId frame VerbUp -> IO TeardownOutcome) ->
     LifecycleEntry scope planId frame brokerGeneration VerbUp ->
     IO (Either String ())
@@ -1391,6 +1505,7 @@ runRootProjectUpLifecycleEntry
     _self
     _scope
     _loadSigningKey
+    _loadActivationSigningKey
     _runFailedLocal
     (ChildUpLifecycleEntry _) =
         pure (Left "lifecycle entry: the root interpreter refuses a child origin")
@@ -1399,6 +1514,7 @@ runRootProjectUpLifecycleEntry
     _self
     _scope
     _loadSigningKey
+    _loadActivationSigningKey
     _runFailedLocal
     (ChildRecoveryLifecycleEntry _) =
         pure (Left "lifecycle entry: the root interpreter refuses a recovery child origin")
@@ -1407,6 +1523,7 @@ runRootProjectUpLifecycleEntry
     self
     scope
     loadSigningKey
+    loadActivationSigningKey
     runFailedLocal
     entry@(RootUpLifecycleEntry rootAuthority verb plan lifecycleContext journal cursor authority catalog) =
         case withValidatedRootLifecycleContext
@@ -1417,9 +1534,12 @@ runRootProjectUpLifecycleEntry
       where
         run store = do
             attempted <-
-                try (runRootForwardCoordinator cfg self scope loadSigningKey runFailedLocal entry rootAuthority verb store plan catalog journal authority cursor) ::
+                try (runRootForwardCoordinator cfg self scope loadSigningKey loadActivationSigningKey runFailedLocal entry rootAuthority verb store plan catalog journal authority cursor) ::
                     IO (Either SomeException (Either (String, [Text], [Text]) ()))
             case attempted of
+                -- A failed Up retains its consumed Execute reservation.  That
+                -- makes a same-verb replay refuse, while the reverse entry's
+                -- exact Execute-to-Teardown bridge remains the only continuation.
                 Right (Left (failure, _reached, _unresolved)) -> pure (Left failure)
                 Left exception ->
                     pure $ case fromException exception of
@@ -1481,7 +1601,16 @@ runRootProjectReverseLifecycleEntry cfg self scope loadSigningKey entry runLocal
                                         driveTeardownForest
                                             forest
                                             (const (pure TeardownReleased))
-                                            (\_ local -> runLocal plan local)
+                                            ( \_ local -> do
+                                                outcome <- runLocal plan local
+                                                case outcome of
+                                                    TeardownFailed detail ->
+                                                        modifyIORef'
+                                                            descentFailures
+                                                            (<> [localWorkKey local <> ": " <> Text.pack detail])
+                                                    _ -> pure ()
+                                                pure outcome
+                                            )
                                             ( \_ descent -> do
                                                 outcome <- launch store broker runtime descent
                                                 case outcome of
@@ -1512,44 +1641,53 @@ runRootProjectReverseLifecycleEntry cfg self scope loadSigningKey entry runLocal
             IO (Either Text (SubtreeSettled scope planId childFrame verb))
         launch store broker runtime descent = do
             settledRef <- newIORef Nothing
-            prepared <- withPreparedRootReverseDescentKernel entry descent $ \reverseDescent ->
-                withRootOpenedDirectFrameSessionKernel
-                    runtime
-                    catalog
-                    store
-                    verb
-                    (stablePlanSnapshotDigest (renderSnapshot plan))
-                    (descentWorkChildFrame descent)
-                    ( \session -> do
-                        served <-
-                            withPreparedRootReverseFrameServiceKernel
-                                store
-                                (brokerEpochWord (rootAuthorityEpoch root))
-                                runtime
-                                broker
-                                reverseDescent
-                                session
-                                (const (pure TeardownReleased))
-                                (launch store broker runtime)
-                                (\settled -> writeIORef settledRef (Just settled) >> pure (Right ()))
-                                ( \retainOffer service ->
-                                    withPreparedReverseAdmissionsKernel reverseDescent $ \admitEdge admitRecovery -> do
-                                        linked <- rootReverseBrokerLink broker scope admitEdge admitRecovery retainOffer service
-                                        case linked of
-                                            Left failure -> pure (Left (Text.pack (relayErrorMessage failure)))
-                                            Right link ->
-                                                withReverseDescentLiftContextKernel reverseDescent $ \liftContext ->
-                                                    withPreparedReverseLifecycleChildProcess
-                                                        cfg
-                                                        link
-                                                        1
-                                                        (targetBinary liftContext)
-                                                        reverseDescent
-                                )
-                        pure $ case served of
-                            Left failure -> Left (Text.pack (teardownErrorMessage failure))
-                            Right result -> result
-                    )
+            prepared <- withPreparedRootReverseDescentKernel entry descent $ \reverseDescent -> do
+                rehydrated <-
+                    withRehydratedSettledReverseDescentKernel
+                        reverseDescent
+                        (\settled -> writeIORef settledRef (Just settled) >> pure (Right ()))
+                case rehydrated of
+                    Left (failure, _) -> pure (Left (Text.pack (teardownErrorMessage failure)))
+                    Right (Left failure) -> pure (Left failure)
+                    Right (Right True) -> pure (Right ())
+                    Right (Right False) ->
+                        withRootOpenedDirectFrameSessionKernel
+                            runtime
+                            catalog
+                            store
+                            verb
+                            (stablePlanSnapshotDigest (renderSnapshot plan))
+                            (descentWorkChildFrame descent)
+                            ( \session -> do
+                                served <-
+                                    withPreparedRootReverseFrameServiceKernel
+                                        store
+                                        (brokerEpochWord (rootAuthorityEpoch root))
+                                        runtime
+                                        broker
+                                        reverseDescent
+                                        session
+                                        (const (pure TeardownReleased))
+                                        (launch store broker runtime)
+                                        (\settled -> writeIORef settledRef (Just settled) >> pure (Right ()))
+                                        ( \retainOffer service ->
+                                            withPreparedReverseAdmissionsKernel reverseDescent $ \admitEdge admitRecovery -> do
+                                                linked <- rootReverseBrokerLink broker scope admitEdge admitRecovery retainOffer service
+                                                case linked of
+                                                    Left failure -> pure (Left (Text.pack (relayErrorMessage failure)))
+                                                    Right link ->
+                                                        withReverseDescentLiftContextKernel reverseDescent $ \liftContext ->
+                                                            withPreparedReverseLifecycleChildProcess
+                                                                cfg
+                                                                link
+                                                                1
+                                                                (targetBinary liftContext)
+                                                                reverseDescent
+                                        )
+                                pure $ case served of
+                                    Left failure -> Left (Text.pack (teardownErrorMessage failure))
+                                    Right result -> result
+                            )
             case prepared of
                 Left (failure, _) -> pure (Left (Text.pack (teardownErrorMessage failure)))
                 Right (Left failure) -> pure (Left failure)
@@ -1557,8 +1695,10 @@ runRootProjectReverseLifecycleEntry cfg self scope loadSigningKey entry runLocal
                     settled <- readIORef settledRef
                     pure $ maybe (Left "reverse child returned without verified subtree settlement") Right settled
 
-    targetBinary (LiftContext [ViaContainer _]) = Text.empty
-    targetBinary _ = Text.pack (inVMSelfPath self)
+    targetBinary (LiftContext layers) =
+        case reverse layers of
+            ViaContainer _ : _ -> Text.empty
+            _ -> Text.pack (inVMSelfPath self)
     refused owner = pure (Left ("reverse lifecycle: " ++ owner ++ " is not a root reverse entry"))
 
 {- | Run the root frame and every declared forward child under one live root.
@@ -1574,6 +1714,7 @@ runRootForwardCoordinator ::
     SelfRef ->
     HandoffScope scope ->
     IO (Either String ProjectSigningKey) ->
+    IO (Either String ActivationSigningKey) ->
     (LocalWork scope planId frame VerbUp -> IO TeardownOutcome) ->
     LifecycleEntry scope planId frame brokerGeneration VerbUp ->
     RootInvocationAuthority scope brokerGeneration VerbUp ->
@@ -1585,7 +1726,7 @@ runRootForwardCoordinator ::
     CommandAuthority scope planId frame brokerGeneration VerbUp ExecutePhase ->
     LifecycleCursor scope planId frame brokerGeneration VerbUp ExecutePhase ->
     IO (Either (String, [Text], [Text]) ())
-runRootForwardCoordinator cfg self scope loadSigningKey runFailedLocal entry rootAuthority verb store plan catalog journal authority cursor
+runRootForwardCoordinator cfg self scope loadSigningKey loadActivationSigningKey runFailedLocal entry rootAuthority verb store plan catalog journal authority cursor
     | null catalogEntries = do
         driven <-
             runChainFromFrameWithDescentFailure
@@ -1610,9 +1751,11 @@ runRootForwardCoordinator cfg self scope loadSigningKey runFailedLocal entry roo
                 pure (Left failure)
     | otherwise = do
         loaded <- loadSigningKey
-        case loaded of
-            Left failure -> pure (Left ("project up: " ++ failure, [], []))
-            Right signingKey -> do
+        activationLoaded <- loadActivationSigningKey
+        case (loaded, activationLoaded) of
+            (Left failure, _) -> pure (Left ("project up: " ++ failure, [], []))
+            (_, Left failure) -> pure (Left ("project up: " ++ failure, [], []))
+            (Right signingKey, Right activationSigningKey) -> do
                 coordinatorFailureRef <- newIORef Nothing
                 brokered <- withRootBroker scope store signingKey rootAuthority $ \broker ->
                     withRootRecursiveHandoffRuntimeKernel entry broker scope $ \runtime ->
@@ -1628,7 +1771,14 @@ runRootForwardCoordinator cfg self scope loadSigningKey runFailedLocal entry roo
                                     terminalRef <- newIORef Nothing
                                     observationFailureRef <- newIORef Nothing
                                     observationsRef <- newIORef []
-                                    let admitFailedUnwind ::
+                                    let cancelIfUnused = do
+                                            offered <- readIORef offerRef
+                                            case offered of
+                                                Just _ -> pure (Right ())
+                                                Nothing -> do
+                                                    retainedSession <- readIORef sessionRef
+                                                    cancelUnattachedRootedFrameSessionKernel store retainedSession
+                                        admitFailedUnwind ::
                                             [Text] ->
                                             [Text] ->
                                             IO (Either Text ())
@@ -1638,29 +1788,37 @@ runRootForwardCoordinator cfg self scope loadSigningKey runFailedLocal entry roo
                                             retainedTerminal <- readIORef terminalRef
                                             case (retainedOffer, retainedTerminal) of
                                                 (Just offer, Just (report, _completion)) ->
-                                                    case withFailedUpUnwindAuthorityForEntryKernel
-                                                        entry
-                                                        retainedSession
-                                                        report
-                                                        (renderHandoffBinding (handoffOfferBinding offer))
-                                                        reached
-                                                        unresolved
-                                                        ( \failedAuthority ->
-                                                            withFailedUpTeardownForestForEntryKernel
-                                                                entry
-                                                                failedAuthority
-                                                                (runFailedUpUnwind broker runtime failedAuthority)
-                                                        ) of
-                                                        Left failure -> pure (Left failure)
-                                                        Right admitted ->
-                                                            case admitted of
+                                                    case renderLifecycleAcknowledgement report of
+                                                        Left failure -> pure (Left (Text.pack (handoffErrorMessage failure)))
+                                                        Right acknowledgement -> do
+                                                            persisted <- persistRootedLifecycleCompletionKernel store report acknowledgement
+                                                            case persisted of
                                                                 Left failure -> pure (Left failure)
-                                                                Right action -> action
+                                                                Right () ->
+                                                                    case withFailedUpUnwindAuthorityForEntryKernel
+                                                                        entry
+                                                                        retainedSession
+                                                                        report
+                                                                        (renderHandoffBinding (handoffOfferBinding offer))
+                                                                        reached
+                                                                        unresolved
+                                                                        ( \failedAuthority ->
+                                                                            withFailedUpTeardownForestForEntryKernel
+                                                                                entry
+                                                                                failedAuthority
+                                                                                (runFailedUpUnwind broker runtime failedAuthority)
+                                                                        ) of
+                                                                        Left failure -> pure (Left failure)
+                                                                        Right admitted ->
+                                                                            case admitted of
+                                                                                Left failure -> pure (Left failure)
+                                                                                Right action -> action
                                                 _ -> pure (Left "the failed frame has no authenticated terminal report")
                                     withRootedFrameSessionKernel session $ \_ _ _ _ _ path _ _ _ _ ->
                                         continue
                                             ( ( path
                                               , child
+                                              , cancelIfUnused
                                               , offerRef
                                               , observationsRef
                                               , serveForwardFrame store generation runtime broker childPlan child sessionRef nodeRef descendedRef offerRef terminalRef observationFailureRef observationsRef
@@ -1670,7 +1828,7 @@ runRootForwardCoordinator cfg self scope loadSigningKey runFailedLocal entry roo
                                             )
                             )
                             $ \services -> do
-                                linked <- rootForwardBrokerLink broker scope admitEdge (retainOffer services) (dispatch services)
+                                linked <- rootForwardBrokerLink broker scope (signActivation activationSigningKey) admitEdge (retainOffer services) (dispatch services)
                                 case linked of
                                     Left failure -> pure (Left (Text.pack (relayErrorMessage failure)))
                                     Right link -> do
@@ -1687,44 +1845,88 @@ runRootForwardCoordinator cfg self scope loadSigningKey runFailedLocal entry roo
                                             Right () -> pure (Right ())
                                             Left failure@(detail, reached, unresolved) -> do
                                                 writeIORef coordinatorFailureRef (Just failure)
+                                                unusedCancelled <- cancelUnusedFrameSessions services
                                                 observedRows <-
                                                     mapM
-                                                        (\(_path, _child, _offer, observations, _service, _admit) -> readIORef observations)
+                                                        (\(_path, _child, _cancel, _offer, observations, _service, _admit) -> readIORef observations)
                                                         services
-                                                let childReached = [operation | rows <- reverse observedRows, (operation, _, _) <- rows]
+                                                let childReached =
+                                                        [ operation
+                                                        | rows <- reverse observedRows
+                                                        , (operation, _, _) <- rows
+                                                        , not ("descent/" `Text.isPrefixOf` operation)
+                                                        ]
                                                     frozenReached = reached <> filter (`notElem` reached) childReached
                                                     frozenUnresolved = unresolved <> filter (`notElem` unresolved) childReached
-                                                joined <-
-                                                    admitFirstFailedFrame
-                                                        services
-                                                        frozenReached
-                                                        frozenUnresolved
-                                                case joined of
-                                                    Right () -> pure (Left (Text.pack detail))
-                                                    Left _ -> do
-                                                        rootJoined <- runRootFailedUpUnwind broker runtime frozenReached frozenUnresolved (Text.pack detail)
-                                                        pure $ case rootJoined of
-                                                            Right () -> Left (Text.pack detail)
-                                                            Left unwindFailure -> Left unwindFailure
+                                                case unusedCancelled of
+                                                    Left cancellationFailure -> pure (Left cancellationFailure)
+                                                    Right () -> do
+                                                        joined <-
+                                                            admitFirstFailedFrame
+                                                                services
+                                                                frozenReached
+                                                                frozenUnresolved
+                                                        let finishRootUnwind = do
+                                                                rootJoined <- runRootFailedUpUnwind broker runtime frozenReached frozenUnresolved (Text.pack detail)
+                                                                pure $ case rootJoined of
+                                                                    Right () -> Left (Text.pack detail)
+                                                                    Left unwindFailure -> Left unwindFailure
+                                                        case joined of
+                                                            Right () -> finishRootUnwind
+                                                            Left _ -> finishRootUnwind
                 case brokered of
                     Left failure -> pure (Left ("project up: " ++ handoffErrorMessage failure, [], []))
                     Right (Right ()) -> pure (Right ())
                     Right (Left failure) -> do
                         retained <- readIORef coordinatorFailureRef
-                        pure (Left (maybe (Text.unpack failure, [], []) id retained))
+                        pure $ case retained of
+                            Just original@(detail, _, _)
+                                | Text.pack detail == failure -> Left original
+                            _ -> Left (Text.unpack failure, [], [])
   where
+    signActivation :: ActivationSigningKey -> ActivationManifest -> IO (Either ActivationError ActivationGrant)
+    signActivation signingKey manifest =
+        case [(digest, service, effects) | (frame, digest, service, effects) <- admittedActivationPlacements, frame == manifestFrame manifest] of
+            [(expectedDigest, expectedService, expectedEffects)]
+                | manifestPlanDigest manifest /= expectedDigest ->
+                    pure (Left (ActivationManifestInvalid "the manifest plan digest differs from its admitted frame plan"))
+                | (manifestService manifest, manifestPermittedEffects manifest) /= (expectedService, expectedEffects) ->
+                    pure (Left (ActivationManifestInvalid "the manifest service/effect placement is absent from the admitted root plan"))
+                | otherwise -> case activationSigningPolicy [manifest] of
+                    Left failure -> pure (Left failure)
+                    Right policy -> withActivationBroker signingKey rootAuthority policy (\broker -> signActivationManifest broker manifest)
+            [] -> pure (Left (ActivationManifestInvalid "the manifest frame is absent from the admitted rooted plan catalog"))
+            _ -> pure (Left (ActivationManifestInvalid "the manifest frame is duplicated in the admitted rooted plan catalog"))
+
     rootDigest = stablePlanSnapshotDigest (renderSnapshot plan)
+    admittedActivationPlacements =
+        activationPlacementsFor plan
+            <> concat
+                ( withRootedPlanCatalogEntriesKernel
+                    catalog
+                    (\childPlan _ _ _ _ _ _ _ _ _ _ -> activationPlacementsFor childPlan)
+                )
+    activationPlacementsFor admittedPlan =
+        [ placement
+        | planned <- NonEmpty.toList (forward admittedPlan)
+        , Right placement <-
+            [ withChartWorkloadResource admittedPlan (plannedStepOperationKey planned) $ \chart ->
+                withChartWorkloadResourceDetailsKernel chart $ \_ _ _ _ _ _ _ activationFrame role effects planDigest _ ->
+                    (activationFrame, planDigest, role, filter (not . Text.isPrefixOf "deployment:") effects)
+            ]
+        ]
+            <> serviceActivationPlacementsKernel admittedPlan
     generation = brokerEpochWord (rootAuthorityEpoch rootAuthority)
     catalogEntries = withRootedPlanCatalogEntriesKernel catalog (\_ _ _ _ _ _ _ _ _ _ _ -> ())
 
     dispatch services path request =
-        case [service | (expected, _child, _offer, _observations, service, _admit) <- services, expected == path] of
+        case [service | (expected, _child, _cancel, _offer, _observations, service, _admit) <- services, expected == path] of
             [service] -> service path request
             [] -> pure (Right (Left ("rooted-path", "no admitted frame session names this requester path")))
             _ -> pure (Right (Left ("rooted-path", "more than one frame session names this requester path")))
 
     retainOffer services offer =
-        case [ref | (_path, child, ref, _observations, _service, _admit) <- services, child == offeredChild] of
+        case [ref | (_path, child, _cancel, ref, _observations, _service, _admit) <- services, child == offeredChild] of
             [ref] -> do
                 present <- readIORef ref
                 let binding = renderHandoffBinding (handoffOfferBinding offer)
@@ -1738,8 +1940,15 @@ runRootForwardCoordinator cfg self scope loadSigningKey runFailedLocal entry roo
       where
         offeredChild = handoffChildFrame (handoffOfferBinding offer)
 
+    cancelUnusedFrameSessions [] = pure (Right ())
+    cancelUnusedFrameSessions ((_path, _child, cancel, _offer, _observations, _service, _admit) : rest) = do
+        cancelled <- cancel
+        case cancelled of
+            Left failure -> pure (Left failure)
+            Right () -> cancelUnusedFrameSessions rest
+
     admitFirstFailedFrame [] _ _ = pure (Left ("no failed rooted frame was admitted" :: Text))
-    admitFirstFailedFrame ((_path, _child, _offer, _observations, _service, admit) : rest) reached unresolved = do
+    admitFirstFailedFrame ((_path, _child, _cancel, _offer, _observations, _service, admit) : rest) reached unresolved = do
         attempted <- admit reached unresolved
         case attempted of
             Right () -> pure (Right ())

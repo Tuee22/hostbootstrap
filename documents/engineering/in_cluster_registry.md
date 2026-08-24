@@ -13,7 +13,7 @@
 
 The demo resources and push step exist, but the end-to-end registry route is not currently valid.
 Distribution's S3 driver redirects repeated blob requests to `http://minio.default.svc:9000`. That
-name is cluster-only, while the Docker client pushing through `localhost:30500` runs in host scope.
+name is cluster-only, while the Docker client pushing through the registry's local exposure runs in host scope.
 The registry therefore answers a blob `HEAD` with `307`, and the client fails DNS resolution for
 `minio.default.svc`.
 
@@ -36,8 +36,9 @@ supplies and interprets its own concrete registry resources and push operation.
 
 A project that wants its container in a registry contributes its own chain steps
 that push it as part of the project's deploy. The `hostbootstrap-demo` consumer
-registers `deploy-registry` and `push-image` for that purpose, but its current raw
-configuration does not yet satisfy the end-to-end route contract.
+registers `deploy-registry` and `push-image` for that purpose. Its rendered
+configuration derives the legal proxy delivery strategy from the exact plan; live acceptance remains
+the proof of the complete blob route.
 
 ## The registry: single-binary `registry:2`
 
@@ -45,23 +46,23 @@ The demo's in-cluster registry is the **single-binary CNCF `distribution`
 (`registry:2`) OCI registry** — one Deployment plus a NodePort Service, not a
 multi-pod stack. `registry:2` publishes a **multi-arch manifest**, so the same
 upstream image runs natively on `amd64` and `arm64` kind nodes with no
-per-component image override and no emulation. It runs **anonymous over HTTP**. The client uses
-`localhost:30500`, but the kind `extraPortMappings` listener is currently `0.0.0.0`, not loopback-only.
-Reachability beyond the VM/host depends on provider networking and firewall policy; there is no registry
-authentication or TLS boundary.
+per-component image override and no emulation. It runs **anonymous over HTTP**. The target client endpoint is
+projected only from the exact runtime-owned loopback relay; there is no registry host port in Dhall or canonical
+Kind/nvkind config. Relay inspection proves the selected loopback mapping before a client receives it. There
+is no registry authentication or TLS boundary.
 
 The `hostbootstrap-demo` consumer (`demo/`) is intended to drive this end-to-end. Its
 `deploy-registry` and `push-image` steps belong to the container frame of
 `demoChainFor :: Substrate -> ProjectConfig -> [Step]`, the demo's contributed chain, and `project
 up` interprets them as it descends into that frame. `deploy-registry` applies a
-single Deployment + NodePort-30500 Service with `kubectl` and waits for the
+single Deployment + internal NodePort Service with `kubectl` and waits for the
 Deployment to be Ready; the registry pod **pulls** `registry:2` itself
 (`imagePullPolicy: IfNotPresent`), so containerd on the node selects the node
 platform from the multi-arch manifest. It is **not** `kind load`-ed: `kind load
 docker-image` (a `docker save` + `ctr import --all-platforms`) cannot import a
 multi-arch image (it fails `content digest … not found`).
-`push-image` loads the project image into the kind nodes, tags it, and pushes it to
-`localhost:30500/library/hostbootstrap-demo:demo`. The push is registered in the
+`push-image` loads the project image into the kind nodes, tags it, and pushes it through the exact resolved
+registry exposure as `library/hostbootstrap-demo:demo`. The push is registered in the
 live stack that `project up` stands up, but registration and `/v2/` readiness are
 not proof that the blob route works.
 
@@ -79,8 +80,8 @@ contributed `deploy-minio` chain step (`deployMinioAction`), ordered **before**
 `deploy-registry`: a `minio/minio` Deployment + a `minio-data` PVC (bound to kind's
 default `local-path` StorageClass) + a `minio-credentials` Secret, followed by
 `mc mb --ignore-existing` to create the `registry` bucket. The bucket-init runs from
-the container frame reusing the base image's `mc` client at `localhost:30900`. That NodePort is also
-bound to `0.0.0.0`; the localhost client address does not make it a loopback-only listener. The registry's storage
+the container frame reusing the base image's `mc` client through the exact resolved MinIO exposure. A client
+spelling of localhost is not itself listener or ownership proof; the relay inspection supplies both. The registry's storage
 stanza is supplied by a mounted `registry-config` ConfigMap declaring only the `s3`
 driver pointing at `minio.default.svc:9000`; the two S3 credentials are layered in by
 env from the Secret. Those Secret values are currently hardcoded source constants
@@ -93,10 +94,9 @@ yields two drivers and the registry refuses to start — hence the ConfigMap rep
 the whole config file.) The `deploy-minio` step is ordered first because the s3
 driver requires the bucket to pre-exist.
 
-The current ConfigMap omits Distribution's `storage.redirect.disable` setting. Its default redirect
-behavior is illegal for the host-client/cluster-only-store topology. The target DSL does not expose
-that setting as a boolean: `ProxyThroughRegistry` is the only constructible delivery strategy, and
-the renderer derives `disable: true`. See
+Distribution's default storage redirect is illegal for the host-client/cluster-only-store topology. The
+registry DSL does not expose that setting as a boolean: `ProxyThroughRegistry` is the only constructible
+delivery strategy for this topology, and the renderer derives `storage.redirect.disable: true`. See
 [network reachability](../architecture/network_reachability.md) for the type-level rule.
 
 The target derives a per-run credential from scoped secret authority and binds it to the exact plan.
@@ -107,9 +107,9 @@ and namespace; a client spelling of `localhost` is not that proof.
 **Why.** With the default ephemeral filesystem driver a registry pod restart (crash,
 eviction, node reboot) loses every pushed blob — `GET /v2/<repo>/tags/list` 404s.
 S3-backed, the restarted pod can re-read the blobs from MinIO and the pushed tag
-should survive. The `registry-persistence` harness case is intended to prove exactly this: push →
-delete the registry pod → the tag is still served. That claim remains open until the blob route
-succeeds for both initial and repeated pushes. The MinIO PVC lives on the kind node's
+survives. The `registry-persistence` harness case proves exactly this: push → delete the registry pod →
+the tag is still served. The phase's live gate must additionally confirm the initial and repeated pushes on
+the current native substrate. The MinIO PVC lives on the kind node's
 `local-path` volume, so durability spans **pod** restarts — but not `project destroy`,
 which deletes the cluster (the in-VM cluster is ephemeral by design; the registry's
 durable state lives inside the cluster, and the demo mirrors none of it back to the

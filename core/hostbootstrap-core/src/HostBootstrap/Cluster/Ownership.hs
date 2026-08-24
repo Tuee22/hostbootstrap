@@ -69,6 +69,7 @@ module HostBootstrap.Cluster.Ownership (
     observeOwnedClusterReadiness,
     cordonOwnedCluster,
     releaseOwnedCluster,
+    releaseRetainedOwnedCluster,
 )
 where
 
@@ -357,7 +358,7 @@ observeOwnedNode cfg node = do
                     | observed == candidate -> Right (OriginPresent observed)
                     | otherwise -> Left (nodeMovedUnderReadback candidate observed)
 
-{- | What the driver says about the cluster's name. -}
+-- | What the driver says about the cluster's name.
 observeOwnedClusterPresence ::
     HostConfig ->
     OwnedCluster ->
@@ -803,6 +804,55 @@ releaseOwnedCluster cfg session key owned = do
                             Right releasable ->
                                 removeOwnedCluster cfg session key owned nodes releasable
 
+{- | Release a cluster from the claim retained in its exact durable record.
+
+Recursive reverse interpretation no longer holds the forward action's lexical
+owner input.  It does retain the protected record that clause 2/3 published, so
+this entry derives the claim from those bytes and re-mints the same bound token
+before conditional deletion.  A malformed or non-cluster record refuses; a
+same-named replacement remains protected by the ordinary standing checks.
+-}
+releaseRetainedOwnedCluster ::
+    HostConfig ->
+    ProtectedSession session ->
+    RecordKey ->
+    OwnedCluster ->
+    IO (Either ClusterOwnershipFault ClusterReleaseOutcome)
+releaseRetainedOwnedCluster cfg session key owned = do
+    entered <- ownedClusterStanding cfg session key owned
+    case entered of
+        Left fault -> pure (Left fault)
+        Right ClusterNothingDone -> pure (Right ClusterAlreadyReleased)
+        Right ClusterOriginRecorded -> forgetEveryRecord session key owned
+        Right (ClusterCreatedUnbound _) -> pure (Left (releaseBeforeBinding owned))
+        Right (ClusterOwned identity) -> do
+            retained <- retainedClaim session key
+            case retained of
+                Left fault -> pure (Left fault)
+                Right claim -> do
+                    standing <- ownedClusterNodes cfg session key owned
+                    case standing of
+                        Left fault -> pure (Left fault)
+                        Right nodes ->
+                            withBoundNodeClaim session key owned (ownedClusterControlPlane owned) claim identity $
+                                \bound -> case reobserveReportedIdentity bound (OriginPresent identity) of
+                                    Left fault -> pure (Left (ClusterOwnershipClause fault))
+                                    Right releasable ->
+                                        removeOwnedCluster cfg session key owned nodes releasable
+
+retainedClaim ::
+    ProtectedSession session ->
+    RecordKey ->
+    IO (Either ClusterOwnershipFault OwnerClaim)
+retainedClaim session key = do
+    record <- readRecordUnder session key
+    pure $ case record of
+        Left fault -> Left fault
+        Right Nothing -> Left (ClusterOwnershipClause (OwnershipProbeFailed "read the retained cluster claim" "the cluster ownership record is absent"))
+        Right (Just held) -> case originRecordKind held of
+            ReportedObject claim -> Right claim
+            _ -> Left (ClusterOwnershipClause foreignRecord)
+
 {- | Remove the cluster, then forget exactly the records whose objects are gone.
 
 The cluster's own record is forgotten last and through the seam, because it is
@@ -966,12 +1016,26 @@ withRecordedNode ::
     ) ->
     IO (Either ClusterOwnershipFault result)
 withRecordedNode session key owned node continue = do
+    withRecordedNodeClaim session key owned node (ownedClusterClaim owned) continue
+
+withRecordedNodeClaim ::
+    ProtectedSession session ->
+    RecordKey ->
+    OwnedCluster ->
+    String ->
+    OwnerClaim ->
+    ( forall object.
+      Recorded session object ->
+      IO (Either ClusterOwnershipFault result)
+    ) ->
+    IO (Either ClusterOwnershipFault result)
+withRecordedNodeClaim session key _owned node claim continue = do
     outcome <-
         enterReportedObject session node OriginAbsent $ \entered -> do
             recorded <-
                 recordReportedOrigin
                     entered
-                    (ReportedObject (ownedClusterClaim owned))
+                    (ReportedObject claim)
                     (publishFreshRecord session key)
             traverse continue recorded
     pure (collapseClause outcome)
@@ -996,7 +1060,22 @@ withBoundNode ::
     ) ->
     IO (Either ClusterOwnershipFault result)
 withBoundNode session key owned node identity continue =
-    withRecordedNode session key owned node $ \recorded -> do
+    withBoundNodeClaim session key owned node (ownedClusterClaim owned) identity continue
+
+withBoundNodeClaim ::
+    ProtectedSession session ->
+    RecordKey ->
+    OwnedCluster ->
+    String ->
+    OwnerClaim ->
+    ObjectIdentity ->
+    ( forall object.
+      Bound session object ->
+      IO (Either ClusterOwnershipFault result)
+    ) ->
+    IO (Either ClusterOwnershipFault result)
+withBoundNodeClaim session key owned node claim identity continue =
+    withRecordedNodeClaim session key owned node claim $ \recorded -> do
         bound <- bindReportedIdentity recorded identity (publishBoundRecord session key)
         case collapseFault bound of
             Left fault -> pure (Left fault)

@@ -44,6 +44,7 @@ module HostBootstrapDemo.Config (
     mkTimeoutSeconds,
     RunProfile (..),
     clusterProfileOf,
+    acceleratorPlacementForContext,
     TestConfig (..),
     TestVariantConfig (..),
     demoDefaultTestVariants,
@@ -105,7 +106,7 @@ import qualified Dhall
 import Dhall.Marshal.Decode (Decoder (Decoder, expected, extract), extractError, fromMonadic, toMonadic)
 import GHC.Generics (Generic)
 import HostBootstrap.Cluster.Cordon (parseQuantity)
-import HostBootstrap.Cluster.Lifecycle (ClusterProfile (Production, TestCase), profileDataPath)
+import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon, InClusterDaemon), ClusterProfile (Production, TestCase), profileDataPath)
 import HostBootstrap.Config.Class (
     AssemblyRequest (..),
     ConfigAssembly,
@@ -377,14 +378,23 @@ data ProjectConfig scope = ProjectConfig
 
 {- | The cluster profile this config's stack resolves under.
 
-A harness run's cluster name, its removable state, and its host-port publishing
-all derive from its own run identity, so two runs never collide and neither
-touches the production cluster or the durable root.
+A harness run's cluster name and removable state derive from its own run
+identity, so two runs never collide and neither touches the production cluster
+or the durable root. Local publication is a later runtime-owned result and is
+not part of this configuration.
 -}
 clusterProfileOf :: ProjectConfig scope -> ClusterProfile
 clusterProfileOf cfg = case runProfile cfg of
     ProductionRun -> Production
     HarnessRun runName -> TestCase (T.unpack runName)
+
+acceleratorPlacementForContext :: Context.BinaryContext -> AcceleratorDaemonPlacement
+acceleratorPlacementForContext ctx
+    | Context.isExplicitLinuxGpuContainer ctx = InClusterDaemon
+    | Context.IncusVMProvider `elem` providers = InClusterDaemon
+    | otherwise = HostResidentDaemon
+  where
+    providers = map Context.topologyProvider (Context.topologyFrames ctx)
 
 {- | The demo's 'ProjectCfg' instance: the core reaches the embedded context
 through one read-only projection and otherwise never touches the demo's fields.
@@ -436,7 +446,7 @@ contract: its members remain the project's existing refined values.
 canonicalDemoConfigProjection ::
     Text ->
     ProjectConfig scope ->
-    Either String (Resources, Natural, Port, Port, FilePath)
+    Either String (Resources, Natural, Port, Port, [(Text, Int)], FilePath)
 canonicalDemoConfigProjection retainedDigest cfg
     | observedDigest /= retainedDigest =
         Left
@@ -451,6 +461,7 @@ canonicalDemoConfigProjection retainedDigest cfg
             , haReplicasNat (haReplicas (deploy cfg))
             , publicPort (webServiceConfig cfg)
             , acceleratorPort (webServiceConfig cfg)
+            , [("registry", 30500), ("web", 30080), ("minio", 30900), ("accelerator", 30081)]
             , profileDataPath (clusterProfileOf cfg) (T.unpack (Context.sourceRoot (context cfg)))
             )
   where

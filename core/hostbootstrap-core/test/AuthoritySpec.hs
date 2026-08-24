@@ -15,47 +15,31 @@ actually leaves behind.
 -}
 module AuthoritySpec (tests, runEntryProbe, runModeProfileProbe) where
 
-import Control.Exception (bracket_)
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (bracket_)
 import Control.Monad (filterM, replicateM)
-import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.ByteString.Lazy as LazyByteString
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
+import Data.List (sort)
+import Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as NonEmpty
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
 import Data.Word (Word64)
-import Data.List (sort)
 import qualified Fixture
 import HostBootstrap.Authority
-import HostBootstrap.Lifecycle.Closure
 import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec), ProjectCodec)
 import HostBootstrap.Config.Schema (ValidatedConfig, VerifiedConfigWire, validatedConfigValue, withValidatedConfig)
 import HostBootstrap.Config.Vocab (Production)
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.DocValidator (findRepoRoot)
+import HostBootstrap.Lifecycle.Closure
 import HostBootstrap.Lifecycle.Mode
-import HostBootstrap.ProjectPlan
-    ( PlanDraft
-    , PlannedResourceKind (ClusterResourceKind)
-    , ProjectPlan
-    , forward
-    , planDraftsFromValidatedBuilder
-    , plannedResourceFrame
-    , plannedResourceKey
-    , plannedStepOperationKey
-    , renderSnapshot
-    , stablePlanSnapshotDigest
-    , stablePlanSnapshotRoot
-    , withPlannedResourceOfKind
-    )
-import HostBootstrap.ProjectPlan.Snapshot (withPersistedPlanSnapshot)
-import HostBootstrap.ProjectRoot (canonicalProjectRootPath, withCanonicalProjectRoot)
-import Data.List.NonEmpty (NonEmpty)
-import qualified Data.List.NonEmpty as NonEmpty
 import HostBootstrap.Lifecycle.Session (
     ProjectJournalState (ClosedProject, ClosingProject),
     SessionError (SessionProjectClosing, SessionStillOpen),
@@ -68,6 +52,23 @@ import HostBootstrap.Lifecycle.Session (
     recordClosedProject,
     verifyAllSessionsClosed,
  )
+import HostBootstrap.Lift (localContext)
+import HostBootstrap.ProjectPlan (
+    PlanDraft,
+    PlannedResourceKind (ClusterResourceKind),
+    ProjectPlan,
+    forward,
+    planDraftsFromValidatedBuilder,
+    plannedResourceFrame,
+    plannedResourceKey,
+    plannedStepOperationKey,
+    renderSnapshot,
+    stablePlanSnapshotDigest,
+    stablePlanSnapshotRoot,
+    withPlannedResourceOfKind,
+ )
+import HostBootstrap.ProjectPlan.Snapshot (withPersistedPlanSnapshot)
+import HostBootstrap.ProjectRoot (canonicalProjectRootPath, withCanonicalProjectRoot)
 import HostBootstrap.Protected
 import HostBootstrap.Reconcile (
     CanonicalPlanSnapshot,
@@ -81,7 +82,6 @@ import HostBootstrap.Reconcile (
     resourceRecordKey,
     withLifecyclePlanForConfig,
  )
-import HostBootstrap.Lift (localContext)
 import HostBootstrap.Step (
     StepFrame (..),
     StepObservation (StepChanged),
@@ -95,6 +95,7 @@ import HostBootstrap.Step (
     mkStepPlan,
     operationKeyText,
  )
+import SourceGuard (repoRelativePath)
 import System.Directory (
     doesDirectoryExist,
     doesFileExist,
@@ -104,7 +105,6 @@ import System.Directory (
  )
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitSuccess, exitWith)
-import SourceGuard (repoRelativePath)
 import System.FilePath (takeExtension, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (readProcessWithExitCode)
@@ -418,292 +418,293 @@ authorityCases :: [TestTree]
 authorityCases =
     exactProjectUpAuthorityCases
         <> [ testCase "installed identity matches the normalized invoked executable" $ do
-        executable <- getExecutablePath
-        let invoked = normalizeExecutableIdentity executable
-        outcome <-
-            withInstalledProjectIdentity
-                invoked
-                (pure . installedProjectName)
-        outcome @?= Right invoked
-    , testCase "installed identity normalizes the Windows executable suffix" $ do
-        normalizeExecutableIdentity "/installed/authority-project.ExE"
-            @?= "authority-project"
-    , testCase "installed identity refuses a different declared project" $ do
-        executable <- getExecutablePath
-        let invoked = normalizeExecutableIdentity executable
-        outcome <-
-            withInstalledProjectIdentity
-                "declared-project"
-                (pure . installedProjectName)
-        case outcome of
-            Left (AuthorityInvalidIdentity reason) ->
-                assertBool "the refusal names both identities" $
-                    "declared-project" `Text.isInfixOf` reason
-                        && invoked `Text.isInfixOf` reason
-            other -> assertFailure ("expected an executable-identity refusal, got " <> show other)
-    , testCase "installed identity refuses a non-stable project name" $ do
-        outcome <-
-            withInstalledProjectIdentity
-                "not.a.stable.name"
-                (pure . installedProjectName)
-        case outcome of
-            Left (AuthorityInvalidIdentity reason) ->
-                assertBool "the stable-name grammar made the decision" $
-                    "may contain only alphanumerics, '-', and '_'" `Text.isInfixOf` reason
-                        && "not.a.stable.name" `Text.isInfixOf` reason
-            other -> assertFailure ("expected an invalid stable name, got " <> show other)
-    , testCase "installed identity refuses non-ASCII record names" $ do
-        outcome <-
-            withInstalledProjectIdentity
-                "authority-λ"
-                (pure . installedProjectName)
-        case outcome of
-            Left (AuthorityInvalidIdentity reason) ->
-                assertBool "the ASCII stable-name grammar made the decision" $
-                    "may contain only alphanumerics, '-', and '_'" `Text.isInfixOf` reason
-                        && "authority-λ" `Text.isInfixOf` reason
-            other -> assertFailure ("expected a non-ASCII identity refusal, got " <> show other)
-    , testCase "OS-principal evidence names the exact protected store" $
-        withStore $ \store -> do
-            outcome <- withAuthorityEntry store verifyOsPrincipal
-            case outcome of
-                Left failure -> assertFailure (show failure)
-                Right principal ->
-                    assertBool "the evidence retained this store identity" $
-                        protectedStoreIdentityText (protectedStoreIdentity store)
-                            `Text.isInfixOf` Text.pack (show principal)
-    , testCase "OS-principal verification refuses an unavailable records directory" $
-        withStore $ \store -> do
-            outcome <-
-                withAuthorityEntry store $ \session -> do
-                    let recordsRoot = sessionStoreRoot session </> "records"
-                        unavailableRoot = recordsRoot <> ".operator-refusal"
-                    bracket_
-                        (renameDirectory recordsRoot unavailableRoot)
-                        (renameDirectory unavailableRoot recordsRoot)
-                        (verifyOsPrincipal session)
-            case outcome of
-                Left (AuthorityOperatorRefused _) -> pure ()
-                other -> assertFailure ("expected an OS-principal refusal, got " <> show other)
-    , testCase "broker generations advance monotonically" $
-        withStore $ \store ->
-            Fixture.withFixtureInstalledProject $ \project -> do
-                first <-
-                    withProductionRoot store project ProjectUp $ \root ->
-                        pure (Right (brokerEpochWord (rootAuthorityEpoch (productionRootAuthority root))))
-                second <-
-                    withProductionRoot store project ProjectUp $ \root ->
-                        pure (Right (brokerEpochWord (rootAuthorityEpoch (productionRootAuthority root))))
-                first @?= Right 1
-                second @?= Right 2
-    , testCase "a malformed broker counter refuses instead of reusing a generation" $
-        withStore $ \store ->
-            Fixture.withFixtureInstalledProject $ \project -> do
-                key <-
-                    expectKey
-                        ("broker." <> installedProjectName project <> ".generation")
-                seeded <-
-                    withProtectedEntry store $ \session ->
-                        compareAndSwapProtectedRecord session key ExpectAbsent "not-a-counter"
-                assertBool "the malformed counter was seeded" (isRight seeded)
+                executable <- getExecutablePath
+                let invoked = normalizeExecutableIdentity executable
                 outcome <-
-                    withProductionRoot store project ProjectUp (\_ -> pure (Right ()))
-                case outcome of
-                    Left (ModeAuthorityFailure (AuthorityInvalidIdentity reason)) ->
-                        assertBool "the refusal names the malformed counter" ("malformed" `Text.isInfixOf` reason)
-                    other -> assertFailure ("expected a malformed-counter refusal, got " <> show other)
-    , testCase "an exhausted broker counter refuses instead of wrapping" $
-        withStore $ \store ->
-            Fixture.withFixtureInstalledProject $ \project -> do
-                key <-
-                    expectKey
-                        ("broker." <> installedProjectName project <> ".generation")
-                seeded <-
-                    withProtectedEntry store $ \session ->
-                        compareAndSwapProtectedRecord
-                            session
-                            key
-                            ExpectAbsent
-                            (ByteStringChar8.pack (show (maxBound :: Word64)))
-                assertBool "the exhausted broker counter was seeded" (isRight seeded)
+                    withInstalledProjectIdentity
+                        invoked
+                        (pure . installedProjectName)
+                outcome @?= Right invoked
+           , testCase "installed identity normalizes the Windows executable suffix" $ do
+                normalizeExecutableIdentity "/installed/authority-project.ExE"
+                    @?= "authority-project"
+           , testCase "installed identity refuses a different declared project" $ do
+                executable <- getExecutablePath
+                let invoked = normalizeExecutableIdentity executable
                 outcome <-
-                    withProductionRoot store project ProjectUp (\_ -> pure (Right ()))
+                    withInstalledProjectIdentity
+                        "declared-project"
+                        (pure . installedProjectName)
                 case outcome of
-                    Left (ModeAuthorityFailure (AuthorityInvalidIdentity reason)) ->
-                        assertBool "the refusal names exhaustion" ("exhausted" `Text.isInfixOf` reason)
-                    other -> assertFailure ("expected an exhausted-counter refusal, got " <> show other)
-    , testCase "broker counters are separated by store" $
-        withStore $ \firstStore ->
-            withStore $ \secondStore ->
-                Fixture.withFixtureInstalledProject $ \project -> do
-                    first <-
-                        withProductionRoot firstStore project ProjectUp $ \root ->
-                            pure
-                                ( Right
-                                    (brokerEpochWord (rootAuthorityEpoch (productionRootAuthority root)))
-                                )
-                    second <-
-                        withProductionRoot secondStore project ProjectUp $ \root ->
-                            pure
-                                ( Right
-                                    (brokerEpochWord (rootAuthorityEpoch (productionRootAuthority root)))
-                                )
-                    first @?= Right 1
-                    second @?= Right 1
-    , testCase "the root gate mints authority for the exact verb and scope" $
-        withStore $ \store ->
-            withRoot store ProjectUp $ \project _session root -> do
-                projectVerbName (rootAuthorityVerb root) @?= "up"
-                rootAuthorityProjectName root @?= installedProjectName project
-                rootScopeAuthority root `seq` pure ()
-                pure (Right ())
-    , testCase "the authority kernel has a closed package-internal importer set" $ do
-        cwd <- getCurrentDirectory
-        root <- findRepoRoot cwd >>= maybe (assertFailure "could not locate the repository root") pure
-        let sourceRoot = root </> "core" </> "hostbootstrap-core" </> "src"
-            kernelPath = sourceRoot </> "HostBootstrap" </> "Authority" </> "Kernel.hs"
-            expected =
-                [ "HostBootstrap/Authority.hs"
-                , "HostBootstrap/Authority/ProjectPlan.hs"
-                , "HostBootstrap/Command/LifecycleEntry.hs"
-                , "HostBootstrap/Handoff.hs"
-                , "HostBootstrap/Handoff/Runtime.hs"
-                , "HostBootstrap/Lifecycle/Closure.hs"
-                , "HostBootstrap/Lifecycle/Mode.hs"
-                , "HostBootstrap/Lifecycle/RootedPlan.hs"
-                , "HostBootstrap/Lifecycle/Session.hs"
-                , "HostBootstrap/ProjectPlan/Child/Internal.hs"
-                , "HostBootstrap/Teardown/Internal.hs"
-                ]
-        sources <- haskellSources sourceRoot
-        importers <-
-            filterM
-                (fmap (Text.isInfixOf "HostBootstrap.Authority.Kernel") . TextIO.readFile)
-                (filter (/= kernelPath) sources)
-        sort (map (repoRelativePath sourceRoot) importers) @?= expected
-        childReservationCallers <-
-            filterM
-                (fmap (Text.isInfixOf "childCommandReservationKernel") . TextIO.readFile)
-                (filter (/= kernelPath) sources)
-        sort (map (repoRelativePath sourceRoot) childReservationCallers)
-            @?= ["HostBootstrap/ProjectPlan/Child/Internal.hs"]
-        facade <- TextIO.readFile (sourceRoot </> "HostBootstrap" </> "Authority.hs")
-        authorityFacadeExports facade
-            @?= Right
-                [ "VerbUp"
-                , "VerbDown"
-                , "VerbDestroy"
-                , "ProjectVerb (..)"
-                , "projectVerbName"
-                , "SomeProjectVerb (..)"
-                , "parseProjectVerb"
-                , "PreparePhase"
-                , "ExecutePhase"
-                , "TeardownPhase"
-                , "LifecyclePhase (..)"
-                , "lifecyclePhaseName"
-                , "InstalledProjectIdentity"
-                , "withInstalledProjectIdentity"
-                , "normalizeExecutableIdentity"
-                , "installedProjectName"
-                , "VerifiedOsPrincipal"
-                , "verifyOsPrincipal"
-                , "BrokerEpoch"
-                , "brokerEpochWord"
-                , "RootInvocationAuthority"
-                , "RootScopeAuthority"
-                , "rootScopeAuthority"
-                , "rootAuthorityVerb"
-                , "rootAuthorityEpoch"
-                , "rootAuthorityProjectName"
-                , "CommandAuthority"
-                , "commandAuthorityVerb"
-                , "commandAuthorityPhase"
-                , "commandAuthorityFrame"
-                , "commandAuthorityEpoch"
-                , "commandAuthorityInvocation"
-                , "commandAuthorityMatchesStore"
-                , "InvocationId"
-                , "invocationIdText"
-                , "AuthorityError (..)"
-                , "authorityErrorMessage"
-                ]
-        compatibilityExists <-
-            doesFileExist
-                (sourceRoot </> "HostBootstrap" </> "Config" </> "InstalledProject.hs")
-        assertBool "the configuration compatibility module is absent" (not compatibilityExists)
-        cabal <- TextIO.readFile (root </> "core" </> "hostbootstrap-core" </> "hostbootstrap-core.cabal")
-        assertBool "the configuration compatibility module is not exposed" $
-            not ("HostBootstrap.Config.InstalledProject" `Text.isInfixOf` cabal)
-        kernel <- TextIO.readFile kernelPath
-        assertBool "the kernel has no caller-fixed installed-identity escape" $
-            not ("installedProjectForKernel" `Text.isInfixOf` kernel)
-        assertBool "the kernel has no configuration dependency" $
-            not ("import HostBootstrap.Config" `Text.isInfixOf` kernel)
-        assertBool "the kernel has no lifecycle-plan dependency" $
-            not ("import HostBootstrap.Reconcile" `Text.isInfixOf` kernel)
-        projectPlanAuthority <-
-            TextIO.readFile
-                (sourceRoot </> "HostBootstrap" </> "Authority" </> "ProjectPlan.hs")
-        assertBool "the caller-selected lifecycle-plan authority gate is absent" $
-            not ("authorizeProjectCommand" `Text.isInfixOf` projectPlanAuthority)
-        assertBool "the Production compatibility authority gate is absent" $
-            not ("authorizeProductionProjectCommand" `Text.isInfixOf` projectPlanAuthority)
-    , testCase "a store already bound to another project refuses this one" $
-        withStore $ \store -> do
-            key <- expectKey "authority.binding"
-            seeded <-
-                withProtectedEntry store $ \session ->
-                    compareAndSwapProtectedRecord
-                        session
-                        key
-                        ExpectAbsent
-                        (TextEncoding.encodeUtf8 "other-project")
-            assertBool "the foreign project binding was seeded" (isRight seeded)
-            Fixture.withFixtureInstalledProject $ \project -> do
-                outcome <- withProductionRoot store project ProjectUp (\_ -> pure (Right ()))
+                    Left (AuthorityInvalidIdentity reason) ->
+                        assertBool "the refusal names both identities" $
+                            "declared-project" `Text.isInfixOf` reason
+                                && invoked `Text.isInfixOf` reason
+                    other -> assertFailure ("expected an executable-identity refusal, got " <> show other)
+           , testCase "installed identity refuses a non-stable project name" $ do
+                outcome <-
+                    withInstalledProjectIdentity
+                        "not.a.stable.name"
+                        (pure . installedProjectName)
                 case outcome of
-                    Left (ModeAuthorityFailure (AuthorityStoreNotOurs expected observed)) -> do
-                        expected @?= installedProjectName project
-                        observed @?= "other-project"
-                    other -> assertFailure ("expected a store-binding refusal, got " <> show other)
-    , testCase "a malformed authority binding refuses root admission" $
-        withStore $ \store -> do
-            key <- expectKey "authority.binding"
-            seeded <-
-                withProtectedEntry store $ \session ->
-                    compareAndSwapProtectedRecord
-                        session
-                        key
-                        ExpectAbsent
-                        (ByteString.pack [0xff])
-            assertBool "the malformed authority binding was seeded" (isRight seeded)
-            outcome <-
-                Fixture.withFixtureInstalledProject $ \project ->
-                    withProductionRoot store project ProjectUp (\_ -> pure (Right ()))
-            case outcome of
-                Left (ModeAuthorityFailure AuthorityMalformedBinding{}) -> pure ()
-                other -> assertFailure ("expected a malformed-binding refusal, got " <> show other)
-    , testCase "the verb vocabulary is closed" $ do
-        case parseProjectVerb "up" of
-            Right (SomeProjectVerb verb) -> projectVerbName verb @?= "up"
-            other -> assertFailure ("expected the up verb, got " <> show other)
-        case parseProjectVerb "down" of
-            Right (SomeProjectVerb verb) -> projectVerbName verb @?= "down"
-            other -> assertFailure ("expected the down verb, got " <> show other)
-        case parseProjectVerb "destroy" of
-            Right (SomeProjectVerb verb) -> projectVerbName verb @?= "destroy"
-            other -> assertFailure ("expected the destroy verb, got " <> show other)
-        case parseProjectVerb "deploy" of
-            Left (AuthorityUnknownVerb raw) -> raw @?= "deploy"
-            other -> assertFailure ("expected an unknown verb, got " <> show other)
-    , testCase "a settled-destroy close root comes only from a destroy authority" $
-        withStore $ \store ->
-            withRoot store ProjectDestroy $ \_project _session root -> do
-                productionCloseRootVerb (destroyCloseRoot root) @?= SettledDestroyClose
-                productionCloseRootVerb (preEffectCloseRoot root) @?= PreEffectRefusalClose
-                pure (Right ())
-    ]
+                    Left (AuthorityInvalidIdentity reason) ->
+                        assertBool "the stable-name grammar made the decision" $
+                            "may contain only alphanumerics, '-', and '_'" `Text.isInfixOf` reason
+                                && "not.a.stable.name" `Text.isInfixOf` reason
+                    other -> assertFailure ("expected an invalid stable name, got " <> show other)
+           , testCase "installed identity refuses non-ASCII record names" $ do
+                outcome <-
+                    withInstalledProjectIdentity
+                        "authority-λ"
+                        (pure . installedProjectName)
+                case outcome of
+                    Left (AuthorityInvalidIdentity reason) ->
+                        assertBool "the ASCII stable-name grammar made the decision" $
+                            "may contain only alphanumerics, '-', and '_'" `Text.isInfixOf` reason
+                                && "authority-λ" `Text.isInfixOf` reason
+                    other -> assertFailure ("expected a non-ASCII identity refusal, got " <> show other)
+           , testCase "OS-principal evidence names the exact protected store" $
+                withStore $ \store -> do
+                    outcome <- withAuthorityEntry store verifyOsPrincipal
+                    case outcome of
+                        Left failure -> assertFailure (show failure)
+                        Right principal ->
+                            assertBool "the evidence retained this store identity" $
+                                protectedStoreIdentityText (protectedStoreIdentity store)
+                                    `Text.isInfixOf` Text.pack (show principal)
+           , testCase "OS-principal verification refuses an unavailable records directory" $
+                withStore $ \store -> do
+                    outcome <-
+                        withAuthorityEntry store $ \session -> do
+                            let recordsRoot = sessionStoreRoot session </> "records"
+                                unavailableRoot = recordsRoot <> ".operator-refusal"
+                            bracket_
+                                (renameDirectory recordsRoot unavailableRoot)
+                                (renameDirectory unavailableRoot recordsRoot)
+                                (verifyOsPrincipal session)
+                    case outcome of
+                        Left (AuthorityOperatorRefused _) -> pure ()
+                        other -> assertFailure ("expected an OS-principal refusal, got " <> show other)
+           , testCase "broker generations advance monotonically" $
+                withStore $ \store ->
+                    Fixture.withFixtureInstalledProject $ \project -> do
+                        first <-
+                            withProductionRoot store project ProjectUp $ \root ->
+                                pure (Right (brokerEpochWord (rootAuthorityEpoch (productionRootAuthority root))))
+                        second <-
+                            withProductionRoot store project ProjectUp $ \root ->
+                                pure (Right (brokerEpochWord (rootAuthorityEpoch (productionRootAuthority root))))
+                        first @?= Right 1
+                        second @?= Right 2
+           , testCase "a malformed broker counter refuses instead of reusing a generation" $
+                withStore $ \store ->
+                    Fixture.withFixtureInstalledProject $ \project -> do
+                        key <-
+                            expectKey
+                                ("broker." <> installedProjectName project <> ".generation")
+                        seeded <-
+                            withProtectedEntry store $ \session ->
+                                compareAndSwapProtectedRecord session key ExpectAbsent "not-a-counter"
+                        assertBool "the malformed counter was seeded" (isRight seeded)
+                        outcome <-
+                            withProductionRoot store project ProjectUp (\_ -> pure (Right ()))
+                        case outcome of
+                            Left (ModeAuthorityFailure (AuthorityInvalidIdentity reason)) ->
+                                assertBool "the refusal names the malformed counter" ("malformed" `Text.isInfixOf` reason)
+                            other -> assertFailure ("expected a malformed-counter refusal, got " <> show other)
+           , testCase "an exhausted broker counter refuses instead of wrapping" $
+                withStore $ \store ->
+                    Fixture.withFixtureInstalledProject $ \project -> do
+                        key <-
+                            expectKey
+                                ("broker." <> installedProjectName project <> ".generation")
+                        seeded <-
+                            withProtectedEntry store $ \session ->
+                                compareAndSwapProtectedRecord
+                                    session
+                                    key
+                                    ExpectAbsent
+                                    (ByteStringChar8.pack (show (maxBound :: Word64)))
+                        assertBool "the exhausted broker counter was seeded" (isRight seeded)
+                        outcome <-
+                            withProductionRoot store project ProjectUp (\_ -> pure (Right ()))
+                        case outcome of
+                            Left (ModeAuthorityFailure (AuthorityInvalidIdentity reason)) ->
+                                assertBool "the refusal names exhaustion" ("exhausted" `Text.isInfixOf` reason)
+                            other -> assertFailure ("expected an exhausted-counter refusal, got " <> show other)
+           , testCase "broker counters are separated by store" $
+                withStore $ \firstStore ->
+                    withStore $ \secondStore ->
+                        Fixture.withFixtureInstalledProject $ \project -> do
+                            first <-
+                                withProductionRoot firstStore project ProjectUp $ \root ->
+                                    pure
+                                        ( Right
+                                            (brokerEpochWord (rootAuthorityEpoch (productionRootAuthority root)))
+                                        )
+                            second <-
+                                withProductionRoot secondStore project ProjectUp $ \root ->
+                                    pure
+                                        ( Right
+                                            (brokerEpochWord (rootAuthorityEpoch (productionRootAuthority root)))
+                                        )
+                            first @?= Right 1
+                            second @?= Right 1
+           , testCase "the root gate mints authority for the exact verb and scope" $
+                withStore $ \store ->
+                    withRoot store ProjectUp $ \project _session root -> do
+                        projectVerbName (rootAuthorityVerb root) @?= "up"
+                        rootAuthorityProjectName root @?= installedProjectName project
+                        rootScopeAuthority root `seq` pure ()
+                        pure (Right ())
+           , testCase "the authority kernel has a closed package-internal importer set" $ do
+                cwd <- getCurrentDirectory
+                root <- findRepoRoot cwd >>= maybe (assertFailure "could not locate the repository root") pure
+                let sourceRoot = root </> "core" </> "hostbootstrap-core" </> "src"
+                    kernelPath = sourceRoot </> "HostBootstrap" </> "Authority" </> "Kernel.hs"
+                    expected =
+                        [ "HostBootstrap/Authority.hs"
+                        , "HostBootstrap/Authority/ProjectPlan.hs"
+                        , "HostBootstrap/Command/LifecycleEntry.hs"
+                        , "HostBootstrap/Handoff.hs"
+                        , "HostBootstrap/Handoff/Runtime.hs"
+                        , "HostBootstrap/Lifecycle/Closure.hs"
+                        , "HostBootstrap/Lifecycle/Mode.hs"
+                        , "HostBootstrap/Lifecycle/RootedPlan.hs"
+                        , "HostBootstrap/Lifecycle/Session.hs"
+                        , "HostBootstrap/ProjectPlan/Child/Internal.hs"
+                        , "HostBootstrap/ProjectPlan/Snapshot.hs"
+                        , "HostBootstrap/Teardown/Internal.hs"
+                        ]
+                sources <- haskellSources sourceRoot
+                importers <-
+                    filterM
+                        (fmap (Text.isInfixOf "HostBootstrap.Authority.Kernel") . TextIO.readFile)
+                        (filter (/= kernelPath) sources)
+                sort (map (repoRelativePath sourceRoot) importers) @?= expected
+                childReservationCallers <-
+                    filterM
+                        (fmap (Text.isInfixOf "childCommandReservationKernel") . TextIO.readFile)
+                        (filter (/= kernelPath) sources)
+                sort (map (repoRelativePath sourceRoot) childReservationCallers)
+                    @?= ["HostBootstrap/ProjectPlan/Child/Internal.hs"]
+                facade <- TextIO.readFile (sourceRoot </> "HostBootstrap" </> "Authority.hs")
+                authorityFacadeExports facade
+                    @?= Right
+                        [ "VerbUp"
+                        , "VerbDown"
+                        , "VerbDestroy"
+                        , "ProjectVerb (..)"
+                        , "projectVerbName"
+                        , "SomeProjectVerb (..)"
+                        , "parseProjectVerb"
+                        , "PreparePhase"
+                        , "ExecutePhase"
+                        , "TeardownPhase"
+                        , "LifecyclePhase (..)"
+                        , "lifecyclePhaseName"
+                        , "InstalledProjectIdentity"
+                        , "withInstalledProjectIdentity"
+                        , "normalizeExecutableIdentity"
+                        , "installedProjectName"
+                        , "VerifiedOsPrincipal"
+                        , "verifyOsPrincipal"
+                        , "BrokerEpoch"
+                        , "brokerEpochWord"
+                        , "RootInvocationAuthority"
+                        , "RootScopeAuthority"
+                        , "rootScopeAuthority"
+                        , "rootAuthorityVerb"
+                        , "rootAuthorityEpoch"
+                        , "rootAuthorityProjectName"
+                        , "CommandAuthority"
+                        , "commandAuthorityVerb"
+                        , "commandAuthorityPhase"
+                        , "commandAuthorityFrame"
+                        , "commandAuthorityEpoch"
+                        , "commandAuthorityInvocation"
+                        , "commandAuthorityMatchesStore"
+                        , "InvocationId"
+                        , "invocationIdText"
+                        , "AuthorityError (..)"
+                        , "authorityErrorMessage"
+                        ]
+                compatibilityExists <-
+                    doesFileExist
+                        (sourceRoot </> "HostBootstrap" </> "Config" </> "InstalledProject.hs")
+                assertBool "the configuration compatibility module is absent" (not compatibilityExists)
+                cabal <- TextIO.readFile (root </> "core" </> "hostbootstrap-core" </> "hostbootstrap-core.cabal")
+                assertBool "the configuration compatibility module is not exposed" $
+                    not ("HostBootstrap.Config.InstalledProject" `Text.isInfixOf` cabal)
+                kernel <- TextIO.readFile kernelPath
+                assertBool "the kernel has no caller-fixed installed-identity escape" $
+                    not ("installedProjectForKernel" `Text.isInfixOf` kernel)
+                assertBool "the kernel has no configuration dependency" $
+                    not ("import HostBootstrap.Config" `Text.isInfixOf` kernel)
+                assertBool "the kernel has no lifecycle-plan dependency" $
+                    not ("import HostBootstrap.Reconcile" `Text.isInfixOf` kernel)
+                projectPlanAuthority <-
+                    TextIO.readFile
+                        (sourceRoot </> "HostBootstrap" </> "Authority" </> "ProjectPlan.hs")
+                assertBool "the caller-selected lifecycle-plan authority gate is absent" $
+                    not ("authorizeProjectCommand" `Text.isInfixOf` projectPlanAuthority)
+                assertBool "the Production compatibility authority gate is absent" $
+                    not ("authorizeProductionProjectCommand" `Text.isInfixOf` projectPlanAuthority)
+           , testCase "a store already bound to another project refuses this one" $
+                withStore $ \store -> do
+                    key <- expectKey "authority.binding"
+                    seeded <-
+                        withProtectedEntry store $ \session ->
+                            compareAndSwapProtectedRecord
+                                session
+                                key
+                                ExpectAbsent
+                                (TextEncoding.encodeUtf8 "other-project")
+                    assertBool "the foreign project binding was seeded" (isRight seeded)
+                    Fixture.withFixtureInstalledProject $ \project -> do
+                        outcome <- withProductionRoot store project ProjectUp (\_ -> pure (Right ()))
+                        case outcome of
+                            Left (ModeAuthorityFailure (AuthorityStoreNotOurs expected observed)) -> do
+                                expected @?= installedProjectName project
+                                observed @?= "other-project"
+                            other -> assertFailure ("expected a store-binding refusal, got " <> show other)
+           , testCase "a malformed authority binding refuses root admission" $
+                withStore $ \store -> do
+                    key <- expectKey "authority.binding"
+                    seeded <-
+                        withProtectedEntry store $ \session ->
+                            compareAndSwapProtectedRecord
+                                session
+                                key
+                                ExpectAbsent
+                                (ByteString.pack [0xff])
+                    assertBool "the malformed authority binding was seeded" (isRight seeded)
+                    outcome <-
+                        Fixture.withFixtureInstalledProject $ \project ->
+                            withProductionRoot store project ProjectUp (\_ -> pure (Right ()))
+                    case outcome of
+                        Left (ModeAuthorityFailure AuthorityMalformedBinding{}) -> pure ()
+                        other -> assertFailure ("expected a malformed-binding refusal, got " <> show other)
+           , testCase "the verb vocabulary is closed" $ do
+                case parseProjectVerb "up" of
+                    Right (SomeProjectVerb verb) -> projectVerbName verb @?= "up"
+                    other -> assertFailure ("expected the up verb, got " <> show other)
+                case parseProjectVerb "down" of
+                    Right (SomeProjectVerb verb) -> projectVerbName verb @?= "down"
+                    other -> assertFailure ("expected the down verb, got " <> show other)
+                case parseProjectVerb "destroy" of
+                    Right (SomeProjectVerb verb) -> projectVerbName verb @?= "destroy"
+                    other -> assertFailure ("expected the destroy verb, got " <> show other)
+                case parseProjectVerb "deploy" of
+                    Left (AuthorityUnknownVerb raw) -> raw @?= "deploy"
+                    other -> assertFailure ("expected an unknown verb, got " <> show other)
+           , testCase "a settled-destroy close root comes only from a destroy authority" $
+                withStore $ \store ->
+                    withRoot store ProjectDestroy $ \_project _session root -> do
+                        productionCloseRootVerb (destroyCloseRoot root) @?= SettledDestroyClose
+                        productionCloseRootVerb (preEffectCloseRoot root) @?= PreEffectRefusalClose
+                        pure (Right ())
+           ]
 
 -- Project mode and run leases ---------------------------------------------------------
 
@@ -889,7 +890,9 @@ modeCases =
                         )
                 _ <-
                     expectRight
-                        =<< withProtectedEntry' store (\session -> do
+                        =<< withProtectedEntry'
+                            store
+                            ( \session -> do
                                 written <-
                                     compareAndSwapProtectedRecord
                                         session
@@ -1119,7 +1122,9 @@ modeCases =
                                     )
                             _ <-
                                 expectRight
-                                    =<< withProtectedEntry' store (\session -> do
+                                    =<< withProtectedEntry'
+                                        store
+                                        ( \session -> do
                                             written <-
                                                 compareAndSwapProtectedRecord
                                                     session
@@ -1862,8 +1867,8 @@ closeCases =
                             -- member of the set: it is exactly what a kill right
                             -- after open leaves behind.
                             still <-
-                                verifyAllSessionsClosedHere session
-                                    :: IO (Either SessionError (VerifiedAllSessionsClosed () ()))
+                                verifyAllSessionsClosedHere session ::
+                                    IO (Either SessionError (VerifiedAllSessionsClosed () ()))
                             case still of
                                 Left (SessionStillOpen _) -> pure (Right ())
                                 other ->
@@ -2192,8 +2197,9 @@ writeAcquisitionShapedRecord store project run suffix payload = do
     _ <- either (assertFailure . show) pure written
     pure key
 
--- | Exact key/version/payload image used to prove a refused sweep changed
--- neither the offending row nor its mode and lease ownership records.
+{- | Exact key/version/payload image used to prove a refused sweep changed
+neither the offending row nor its mode and lease ownership records.
+-}
 protectedStoreImage :: ProtectedStore -> IO [(Text, Word64, ByteString.ByteString)]
 protectedStoreImage store = do
     observed <-
@@ -2278,6 +2284,7 @@ abandonBoundHarnessRunWith store project afterBinding = do
 {- | Persist a run's plan snapshot and hand back the verified value, which is
 the only thing 'bindRunLease' accepts.
 -}
+
 -- ---------------------------------------------------------------------------
 -- Plan migration
 
@@ -2311,28 +2318,30 @@ migrationCases =
                 outcome @?= Right ()
     , testCase "a migration onto the exact same canonical plan is refused before freeze" $
         Fixture.withFixtureProjectPlanRoot alternateTestStepPlan $ \store project root oldPlan -> do
-            opened <- withPersistedPlanSnapshot
-                (productionRootAuthority root)
-                (productionRootUnboundLease root)
-                oldPlan
-                (\verified _boundPlan _binding bound _recovery ->
-                    case withProjectUpMigrationProfile (productionRootAuthority root) (productionRootModeLease root) bound verified of
-                        Left failure -> pure (Left failure)
-                        Right profile -> withProtectedEntry' store $ \session ->
-                            withSystemTempDirectory "hostbootstrap-same-migration" $ \directory -> do
-                                rooted <- withCanonicalProjectRoot (directory </> "candidate.dhall") "." $ \candidateRoot ->
-                                    withProductionProjectCodec @Fixture.ProjectConfig $ \codec -> do
-                                        let value = Fixture.defaultProjectConfig (installedProjectName project) (Text.pack (canonicalProjectRootPath candidateRoot)) Context.HostOrchestrator
-                                        validated <- withValidatedConfig codec value $ \wire config -> do
-                                            drafts <- either (fail . show) pure $
-                                                planDraftsFromValidatedBuilder candidateRoot config (\_ _ -> Right alternateTestStepPlan)
-                                            result <- withProspectiveMigrationPlan session project profile bound codec wire config drafts $ \_plan _digest _candidate -> pure (Right ())
-                                            pure $ case result of
-                                                Left (ModeSnapshotMismatch expected observed) | expected == observed -> Right ()
-                                                other -> Left (ModeInvalidIdentity (Text.pack ("expected same-plan refusal, got " <> show other)))
-                                        either (fail . show) pure validated
-                                either (fail . show) pure rooted
-                )
+            opened <-
+                withPersistedPlanSnapshot
+                    (productionRootAuthority root)
+                    (productionRootUnboundLease root)
+                    oldPlan
+                    ( \verified _boundPlan _binding bound _recovery ->
+                        case withProjectUpMigrationProfile (productionRootAuthority root) (productionRootModeLease root) bound verified of
+                            Left failure -> pure (Left failure)
+                            Right profile -> withProtectedEntry' store $ \session ->
+                                withSystemTempDirectory "hostbootstrap-same-migration" $ \directory -> do
+                                    rooted <- withCanonicalProjectRoot (directory </> "candidate.dhall") "." $ \candidateRoot ->
+                                        withProductionProjectCodec @Fixture.ProjectConfig $ \codec -> do
+                                            let value = Fixture.defaultProjectConfig (installedProjectName project) (Text.pack (canonicalProjectRootPath candidateRoot)) Context.HostOrchestrator
+                                            validated <- withValidatedConfig codec value $ \wire config -> do
+                                                drafts <-
+                                                    either (fail . show) pure $
+                                                        planDraftsFromValidatedBuilder candidateRoot config (\_ _ -> Right alternateTestStepPlan)
+                                                result <- withProspectiveMigrationPlan session project profile bound codec wire config drafts $ \_plan _digest _candidate -> pure (Right ())
+                                                pure $ case result of
+                                                    Left (ModeSnapshotMismatch expected observed) | expected == observed -> Right ()
+                                                    other -> Left (ModeInvalidIdentity (Text.pack ("expected same-plan refusal, got " <> show other)))
+                                            either (fail . show) pure validated
+                                    either (fail . show) pure rooted
+                    )
             either (assertFailure . show) (const (pure ())) opened
     , testCase "the candidate digest is derived from exact plan bytes" $
         withMigrationProfile $ \project _ bound profile session codec wire config drafts ->
@@ -2425,10 +2434,16 @@ migrationCases =
                 candidateKey <- case filter (Text.isPrefixOf "prospective." . recordKeyText) keys of
                     [found] -> pure found
                     _ -> assertFailure "the frozen prospective candidate was not unique"
-                record <- maybe (assertFailure "the frozen candidate disappeared") pure
-                    =<< (expectRight =<< readProtectedRecord session candidateKey)
-                _ <- expectRight =<< compareAndSwapProtectedRecord session candidateKey
-                    (ExpectVersion (protectedRecordVersion record)) "changed-after-freeze"
+                record <-
+                    maybe (assertFailure "the frozen candidate disappeared") pure
+                        =<< (expectRight =<< readProtectedRecord session candidateKey)
+                _ <-
+                    expectRight
+                        =<< compareAndSwapProtectedRecord
+                            session
+                            candidateKey
+                            (ExpectVersion (protectedRecordVersion record))
+                            "changed-after-freeze"
                 committed <- commitMigrationActivation session project frozen epoch
                 case committed of
                     Left (ModeMalformedRecord _) -> pure ()
@@ -2444,10 +2459,16 @@ migrationCases =
                 resourceKey <- case filter (Text.isPrefixOf "resource." . recordKeyText) keys of
                     [found] -> pure found
                     _ -> assertFailure "the frozen resource set was not a singleton"
-                record <- maybe (assertFailure "the frozen resource disappeared") pure
-                    =<< (expectRight =<< readProtectedRecord session resourceKey)
-                _ <- expectRight =<< compareAndSwapProtectedRecord session resourceKey
-                    (ExpectVersion (protectedRecordVersion record)) "changed-after-freeze"
+                record <-
+                    maybe (assertFailure "the frozen resource disappeared") pure
+                        =<< (expectRight =<< readProtectedRecord session resourceKey)
+                _ <-
+                    expectRight
+                        =<< compareAndSwapProtectedRecord
+                            session
+                            resourceKey
+                            (ExpectVersion (protectedRecordVersion record))
+                            "changed-after-freeze"
                 committed <- commitMigrationActivation session project frozen epoch
                 case committed of
                     Left (ModeMalformedRecord _) -> pure ()
@@ -2512,8 +2533,9 @@ migrationCases =
                         other -> assertFailure ("changed config reconstructed the completed plan: " <> show other)
                     withSystemTempDirectory "hostbootstrap-changed-migration-draft" $ \directory -> do
                         rooted <- withCanonicalProjectRoot (directory </> "candidate.dhall") (stablePlanSnapshotRoot (renderSnapshot candidatePlan)) $ \candidateRoot -> do
-                            changedDrafts <- either (fail . show) pure $
-                                planDraftsFromValidatedBuilder candidateRoot config (\_ _ -> Right testStepPlan)
+                            changedDrafts <-
+                                either (fail . show) pure $
+                                    planDraftsFromValidatedBuilder candidateRoot config (\_ _ -> Right testStepPlan)
                             changedDraftResult <- withCompletedMigrationPlan session project recoveryProfile bound codec wire config changedDrafts $ \_ _ _ -> pure (Right ())
                             case changedDraftResult of
                                 Left (ModeInvalidIdentity _) -> pure (Right ())
@@ -2583,7 +2605,7 @@ withMigrationProfile use =
                 (productionRootAuthority root)
                 (productionRootUnboundLease root)
                 oldPlan
-                (\snapshot _boundPlan _binding bound _recovery -> do
+                ( \snapshot _boundPlan _binding bound _recovery -> do
                     writeMigrationResourceRecords store oldPlan
                     case withProjectUpMigrationProfile (productionRootAuthority root) (productionRootModeLease root) bound snapshot of
                         Left failure -> pure (Left failure)
@@ -2594,8 +2616,9 @@ withMigrationProfile use =
                                         withProductionProjectCodec @Fixture.ProjectConfig $ \codec -> do
                                             let value = Fixture.defaultProjectConfig (installedProjectName project) (Text.pack (canonicalProjectRootPath candidateRoot)) Context.HostOrchestrator
                                             validated <- withValidatedConfig codec value $ \wire config -> do
-                                                drafts <- either (fail . show) pure $
-                                                    planDraftsFromValidatedBuilder candidateRoot config (\_ _ -> Right migrationCandidateStepPlan)
+                                                drafts <-
+                                                    either (fail . show) pure $
+                                                        planDraftsFromValidatedBuilder candidateRoot config (\_ _ -> Right migrationCandidateStepPlan)
                                                 use project (rootAuthorityEpoch (productionRootAuthority root)) bound profile session codec wire config drafts
                                             either fail pure validated
                                     either (fail . show) pure rooted
@@ -2626,10 +2649,12 @@ writeMigrationResourceRecords store plan = case NonEmpty.toList (forward plan) o
             withPlannedResourceOfKind plan ClusterResourceKind (plannedStepOperationKey node) $ \planned -> do
                 let lifecycle = lifecyclePlanFromProjectPlan plan
                     operation = Text.pack (operationKeyText (plannedStepOperationKey node))
-                bytes <- either (assertFailure . show) pure $
-                    renderResourceRecordBundle lifecycle planned 1 operation 1 "running" "adapter-v1" True
-                rawKey <- either (assertFailure . show) pure $
-                    resourceRecordKey (lifecyclePlanDigest lifecycle) (plannedResourceFrame planned) (plannedResourceKey planned)
+                bytes <-
+                    either (assertFailure . show) pure $
+                        renderResourceRecordBundle lifecycle planned 1 operation 1 "running" "adapter-v1" True
+                rawKey <-
+                    either (assertFailure . show) pure $
+                        resourceRecordKey (lifecyclePlanDigest lifecycle) (plannedResourceFrame planned) (plannedResourceKey planned)
                 key <- either (assertFailure . show) pure (mkRecordKey rawKey)
                 written <- withProtectedEntry store $ \session ->
                     compareAndSwapProtectedRecord session key ExpectAbsent bytes
@@ -2641,10 +2666,10 @@ readRecordedRevisionKind ::
     ProtectedSession session ->
     InstalledProjectIdentity projectId ->
     BoundRunLease
-      (Production projectId)
-      specDigest
-      planDigest
-      brokerGeneration ->
+        (Production projectId)
+        specDigest
+        planDigest
+        brokerGeneration ->
     IO OpenRevisionKind
 readRecordedRevisionKind session project bound = do
     observed <- readRecordedOpenRevisionKind session project bound
@@ -2694,7 +2719,7 @@ readModeRecord store key =
         observed <- readProtectedRecord session key
         pure (either (Left . ModeStoreFailure) Right observed)
 
-expectRight :: Show failure => Either failure result -> IO result
+expectRight :: (Show failure) => Either failure result -> IO result
 expectRight = either (assertFailure . show) pure
 
 expectCloseKey :: Text -> IO InvocationCloseKey

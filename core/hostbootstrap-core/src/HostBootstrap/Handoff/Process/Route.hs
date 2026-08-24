@@ -253,9 +253,12 @@ withRecoveryLifecycleProcessRouteForKernel _ _ package route input verb targetBi
         derive verb "teardown" (withoutConfigDelivery route) input targetBinary
 
 withoutConfigDelivery :: LiftContext -> LiftContext
-withoutConfigDelivery (LiftContext [ViaContainer container]) =
-    LiftContext [ViaContainer container{clConfigDelivery = Nothing}]
-withoutConfigDelivery route = route
+withoutConfigDelivery (LiftContext layers) =
+    LiftContext (reverse (stripTerminal (reverse layers)))
+  where
+    stripTerminal (ViaContainer container : rest) =
+        ViaContainer container{clConfigDelivery = Nothing} : rest
+    stripTerminal rest = rest
 
 {- | Seal one route from an already admitted edge and its plan-owned lift.
 
@@ -312,6 +315,64 @@ have no path into the rendered vector.
 sanitizedLaunch :: LiftContext -> Text -> Text -> [Text] -> Either Text (HostTool, [Text], Bool)
 sanitizedLaunch (LiftContext [ViaContainer container]) child targetBinary inner = do
     require "a container layer needs no target binary path" (Text.null targetBinary)
+    admitted <- admittedContainer child container
+    folded (LiftContext [ViaContainer admitted]) "" inner True
+sanitizedLaunch route@(LiftContext [ViaVM vm]) _child targetBinary inner = do
+    _ <- sanitizedPath "the admitted target binary" targetBinary
+    _ <- sanitizedArgument "the admitted Incus instance" (Text.pack (vmName vm))
+    folded route targetBinary inner False
+sanitizedLaunch route@(LiftContext [ViaLimaVM vm]) _child targetBinary inner = do
+    _ <- sanitizedPath "the admitted target binary" targetBinary
+    _ <- sanitizedArgument "the admitted Lima instance" (Text.pack (limaName vm))
+    folded route targetBinary inner False
+sanitizedLaunch route@(LiftContext [ViaWsl2VM vm]) _child targetBinary inner = do
+    _ <- sanitizedPath "the admitted target binary" targetBinary
+    _ <- sanitizedArgument "the admitted WSL distribution" (Text.pack (wsl2Distro vm))
+    folded route targetBinary inner False
+sanitizedLaunch (LiftContext layers@(_ : _ : _)) child targetBinary inner = do
+    (admitted, interactive) <- validateComposedLayers child layers targetBinary
+    folded (LiftContext admitted) targetBinary inner interactive
+sanitizedLaunch _ _ _ _ =
+    Left (routeFailure "a process route carries exactly one plan-owned lift layer")
+
+{- | Validate the root-relative route used when the rooted reverse coordinator
+must reach a descendant below its immediate child. Every constituent edge keeps
+the same closed checks as a one-layer route; only a terminal container may make
+the lifecycle binary path implicit.
+-}
+validateComposedLayers :: Text -> [LiftLayer] -> Text -> Either Text ([LiftLayer], Bool)
+validateComposedLayers child layers targetBinary = go layers
+  where
+    go [] = Left (routeFailure "a composed process route is empty")
+    go [ViaContainer container] = do
+        require "a container layer needs no target binary path" (Text.null targetBinary)
+        admitted <- admittedContainer child container
+        pure ([ViaContainer admitted], True)
+    go [ViaVM vm] = validateTerminalVm "Incus instance" (Text.pack (vmName vm)) (ViaVM vm)
+    go [ViaLimaVM vm] = validateTerminalVm "Lima instance" (Text.pack (limaName vm)) (ViaLimaVM vm)
+    go [ViaWsl2VM vm] = validateTerminalVm "WSL distribution" (Text.pack (wsl2Distro vm)) (ViaWsl2VM vm)
+    go (ViaVM vm : rest) = do
+        _ <- sanitizedArgument "the admitted Incus instance" (Text.pack (vmName vm))
+        (admitted, interactive) <- go rest
+        pure (ViaVM vm : admitted, interactive)
+    go (ViaLimaVM vm : rest) = do
+        _ <- sanitizedArgument "the admitted Lima instance" (Text.pack (limaName vm))
+        (admitted, interactive) <- go rest
+        pure (ViaLimaVM vm : admitted, interactive)
+    go (ViaWsl2VM vm : rest) = do
+        _ <- sanitizedArgument "the admitted WSL distribution" (Text.pack (wsl2Distro vm))
+        (admitted, interactive) <- go rest
+        pure (ViaWsl2VM vm : admitted, interactive)
+    go (ViaContainer _ : _) =
+        Left (routeFailure "a container layer is terminal in a composed process route")
+
+    validateTerminalVm label name layer = do
+        _ <- sanitizedPath "the admitted target binary" targetBinary
+        _ <- sanitizedArgument ("the admitted " <> label) name
+        pure ([layer], False)
+
+admittedContainer :: Text -> ContainerLift -> Either Text ContainerLift
+admittedContainer child container = do
     require
         "the admitted container layer delivers a configuration on standard input"
         (isNothing (clConfigDelivery container))
@@ -327,34 +388,19 @@ sanitizedLaunch (LiftContext [ViaContainer container]) child targetBinary inner 
     let placementArgs = case clPlacement container of
             ProviderGuestContainer -> []
             DirectHostContainer -> ["-e", "HOSTBOOTSTRAP_DIRECT_CONTAINER=linux-gpu"]
-        admitted =
-            container
-                { clExtraArgs =
-                    [ "-i"
-                    , "--network=host"
-                    , "-e"
-                    , "HOSTBOOTSTRAP_CURRENT_FRAME=" <> Text.unpack frame
-                    , "-e"
-                    , "HOSTBOOTSTRAP_REGISTRY_AUTH"
-                    ]
-                        ++ placementArgs
-                        ++ ["-w", "/"]
-                }
-    folded (LiftContext [ViaContainer admitted]) "" inner True
-sanitizedLaunch route@(LiftContext [ViaVM vm]) _child targetBinary inner = do
-    _ <- sanitizedPath "the admitted target binary" targetBinary
-    _ <- sanitizedArgument "the admitted Incus instance" (Text.pack (vmName vm))
-    folded route targetBinary inner False
-sanitizedLaunch route@(LiftContext [ViaLimaVM vm]) _child targetBinary inner = do
-    _ <- sanitizedPath "the admitted target binary" targetBinary
-    _ <- sanitizedArgument "the admitted Lima instance" (Text.pack (limaName vm))
-    folded route targetBinary inner False
-sanitizedLaunch route@(LiftContext [ViaWsl2VM vm]) _child targetBinary inner = do
-    _ <- sanitizedPath "the admitted target binary" targetBinary
-    _ <- sanitizedArgument "the admitted WSL distribution" (Text.pack (wsl2Distro vm))
-    folded route targetBinary inner False
-sanitizedLaunch _ _ _ _ =
-    Left (routeFailure "a process route carries exactly one plan-owned lift layer")
+    pure
+        container
+            { clExtraArgs =
+                [ "-i"
+                , "--network=host"
+                , "-e"
+                , "HOSTBOOTSTRAP_CURRENT_FRAME=" <> Text.unpack frame
+                , "-e"
+                , "HOSTBOOTSTRAP_REGISTRY_AUTH"
+                ]
+                    ++ placementArgs
+                    ++ ["-w", "/"]
+            }
 
 folded :: LiftContext -> Text -> [Text] -> Bool -> Either Text (HostTool, [Text], Bool)
 folded route binary inner interactive =

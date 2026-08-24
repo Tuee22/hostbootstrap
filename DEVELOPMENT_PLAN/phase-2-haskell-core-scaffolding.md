@@ -47,6 +47,9 @@ One self-contained Haskell workspace with a pinned toolchain.
 - `optimization: 2` matches the warm Cabal store baked into the base image, so derived builds reuse the
   pre-built dependency unfoldings.
 - The package declares a library, an executable (`hostbootstrap`), and one test suite.
+- Every component that imports `crypton` carries the shared `crypton <1.1` compatibility ceiling. The
+  project currently targets the 1.0 API; an unconstrained current-index solve otherwise selects the
+  source-incompatible 1.1 series and makes a clean host build depend on stale store contents.
 - `-Werror` is supplied by the gate rather than baked into the package, so a warm tree cannot hide a
   warning the clean gate would catch.
 - The same `cabal.project` is used host-native and inside the derived container; there is no
@@ -58,7 +61,8 @@ One self-contained Haskell workspace with a pinned toolchain.
 
 #### Remaining Work
 
-None.
+None. Revalidated 2026-08-23 against the current Hackage index from an empty build tree: Cabal selected
+`crypton-1.0.6` through the explicit shared ceiling and compiled the core library and demo executable.
 
 ### Sprint 2.2: The generic CLI entrypoint [Done]
 

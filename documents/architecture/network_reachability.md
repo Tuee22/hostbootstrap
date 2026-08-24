@@ -11,6 +11,10 @@
 
 An endpoint is not `Text`; it carries the network scope from which it is reachable. A registry plan
 jointly binds its client, published exposure, object-store endpoint, and blob-delivery strategy.
+Local publication is a runtime-owned resource: configuration names a semantic service and stable
+cluster-internal target, the container runtime atomically assigns a loopback port to an identity-bound relay,
+and authenticated inspection of that exact relay produces the endpoint clients consume. The selected port is
+never a Dhall value or a canonical Kind/nvkind input.
 Redirect delivery is constructible only with proof that the client can reach the backing endpoint.
 When a host-local Docker client reaches a NodePort registry backed by cluster-only MinIO, the only legal
 delivery strategy is `ProxyThroughRegistry`, and the renderer necessarily emits
@@ -18,17 +22,22 @@ delivery strategy is `ProxyThroughRegistry`, and the renderer necessarily emits
 
 ## Current Status
 
-**The generic algebra exists** (`HostBootstrap.Network`, `HostBootstrap.RegistryPlan`). The scope is a
+**The generic algebra and resolved-endpoint boundary are implemented** (`HostBootstrap.Network`,
+`HostBootstrap.RegistryPlan`). The scope is a
 type index, `Reachability` is a closed GADT with no host-local→cluster-only constructor, the redirecting
 `BlobDelivery` constructor takes that witness, `RegistryPlan` is opaque behind topology-specific
-constructors, and the `storage.redirect` stanza is derived from the delivery rather than chosen beside
-it. Compile-fail fixtures pin the forbidden constructions.
+constructors, and the `storage.redirect` stanza is derived from the delivery rather than chosen beside it.
+Local `Exposure`, `RegistryPlan`, and `ReadyBlobRoute` retain nominal lifecycle-scope, plan, cluster, and
+service indices. Route settlement compares the exact service, runtime-selected port, relay identity, cluster
+generation, and ownership operation. Compile-fail fixtures pin the forbidden constructions and role coercions.
 
-**The demo rendering is migrated.** Its finalized registry plan selects proxy delivery, so generated registry
-configuration disables redirects to cluster-only MinIO. Its exact cluster renderer separately derives the
-complete published-port set from the digest-matched cluster plan slice and emits only `127.0.0.1` Kind/nvkind
-mappings. Neither registry delivery nor listener scope is an independently supplied boolean or address string.
-Runtime observation and lifecycle adoption remain owned by the later worked-demo sprints.
+**The demo registry delivery and application clients use the resolved-endpoint boundary.** Its finalized
+registry plan selects proxy delivery, so generated registry configuration disables redirects to cluster-only MinIO.
+The cluster backend removes host publication from Kind/nvkind rendering, creates one owned relay on the
+cluster container network, lets the container runtime assign its loopback host ports, and is the only producer
+of authenticated resolved exposures. The worked demo carries those values lexically to MinIO initialization,
+registry deployment and image push, web readiness, and host-resident accelerator ingress; none reconstructs
+an endpoint from a number.
 
 The [composition-and-network-algebra phase](../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md)
 owns the generic reachability/delivery algebra and finalized registry plan. The
@@ -64,12 +73,17 @@ Constructors validate syntax and topology ownership. Code must not infer scope b
 `.svc`, `localhost`, or an IP substring. A client spelling of `localhost` is also not proof that the
 listener is loopback-only.
 
-For the worked demo, the pure cluster renderer makes that listener claim concrete before filesystem or
-backend work. Kind publishes registry `30500`, web `30080`, accelerator `30081`, and MinIO `30900`; nvkind
-publishes registry `30500`, web `30080`, and MinIO `30900`. Every mapping has
-`listenAddress: "127.0.0.1"`. Duplicate, out-of-range, missing, or additional mappings refuse, and canonical
-bytes are digest-bound to the same exact plan slice. VM-backed rendering retains the selected writable durable
-mount; Direct nvkind rendering adds only its GPU worker topology and invents no VM/share layer.
+For the worked demo, the pure cluster renderer declares registry, web, accelerator where applicable, and
+MinIO as semantic services with stable cluster-internal targets. It emits no host-side port number and no
+Kind/nvkind `extraPortMappings`. VM-backed rendering retains the selected writable durable mount; Direct
+nvkind rendering adds only its GPU worker topology and invents no VM/share layer.
+
+After the exact cluster is Ready, the cluster backend creates a relay from the authenticated derived project
+image on that cluster's container network. Each relay listener forwards to its declared internal target, and
+Docker publishes it as loopback-only without a requested host port. Runtime creation therefore chooses and
+retains the binding in one operation. The backend inspects the exact relay container identity and refuses a
+wildcard, missing, additional, duplicate, wrong-protocol, or wrong-target mapping before producing any local
+endpoint.
 
 ## Client and Exposure Identity
 
@@ -86,9 +100,25 @@ data RegistryExposure (reach :: Reachability) registryId
 ```
 
 `RegistryExposure` is opaque. A backend/topology-specific constructor verifies the actual listener and
-publishing mechanism before minting it. `localhost:30500` supplied as text cannot claim
-`RegistryExposure HostLocal registryId`; the kind mapping must be proven to bind the intended interface
-in the intended provider/host namespace.
+publishing mechanism before minting it. A `localhost` URL supplied as text cannot claim
+`RegistryExposure HostLocal registryId`; the exact relay identity and runtime-inspected mapping must prove the
+intended loopback interface in the intended provider/host namespace.
+
+The selected number lives only in an opaque value such as:
+
+```haskell
+data ResolvedExposure scope planId clusterId service
+```
+
+Its hidden constructor binds the service, protocol, selected loopback port, internal target, relay/container
+identity, cluster generation, and ownership operation. It is carried with the cluster dependency package and
+freshly re-inspected when opened. It is never serialized back into Dhall, cached as a conventional endpoint,
+or recreated from a number. Stable Kubernetes Service/NodePort values are internal targets and do not imply a
+same-number host publication.
+
+Scanning for a free port and then closing the probe is not supported: the gap before the real bind admits a
+race. The same rule excludes treating a launcher-specific `hostPort: 0` expansion as allocation when that
+launcher first selects and releases a candidate. The component that retains the binding must choose it.
 
 ## Blob Delivery
 
@@ -207,7 +237,8 @@ Closure requires:
 - constructor/property tests covering all supported reachability pairs;
 - golden tests proving rendering is uniquely derived from delivery strategy;
 - negative runtime tests where `/v2/` is Ready but blob `HEAD` returns an illegal `307`;
-- a live host-client → NodePort registry → cluster-only MinIO push, repeated push, pull, registry-pod
+- a live host-client → resolved relay exposure → internal NodePort registry → cluster-only MinIO push,
+  repeated push, pull, registry-pod
   restart, and tag lookup;
 - assertions that proxy mode exposes no cluster-only MinIO URL to the client.
 

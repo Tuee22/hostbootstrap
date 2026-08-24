@@ -197,10 +197,9 @@ own and generate run config
 
 It does not need a separate run-model dispatch to bring up a parallel test topology. `TestSuite` contains
 only safety and assertion behavior; the private lifecycle constructor is available to the command and core
-test components, not to downstream projects. The configured `durable-readback` case remains honestly red
-until the engine owns a fresh same-run lifecycle-invocation generation for its intermediate
-destroy→up cycle. That open case and the remaining recursive-teardown/receipt gaps are documented in
-[harness workflow](harness_workflow.md); the presence of the four-name taxonomy does not close them.
+test components, not to downstream projects. The configured `durable-readback` case declares that it spans a
+restart, while the engine owns the intermediate destroy, fresh invocation generation, exact rebind, and second
+forward. The detailed authority path is documented in [harness workflow](harness_workflow.md).
 
 ## Single-representation guard
 

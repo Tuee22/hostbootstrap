@@ -1664,6 +1664,9 @@ Interpret the current-frame `forward` projection of one already admitted and loc
 - Every descriptor, prepared operation, observation, and carried resource retains the same plan indices; each
   protected transition is reached through the matching broker-indexed cursor and authority, and the authority's
   retained store origin is checked before any record is opened in the supplied protected store.
+- Every synchronous action exception terminalizes the node and every gate it took, closes the exact operation
+  session, and only then propagates the original exception. `EffectOutcomeUnknown` therefore denotes an
+  interrupted process whose outcome genuinely needs recovery, not an ordinary callback failure.
 - The pure renderer and effectful interpreter observe the same ordered projection; plan validation requires
   post-handoff nodes to follow recursive deepest-frame-to-root unwind order.
 - The current-frame interpreter queries `DerivedTopology` for descent boundaries; the
@@ -1673,14 +1676,19 @@ Interpret the current-frame `forward` projection of one already admitted and loc
 #### Validation
 
 `ChainSpec` covers one admission per interpretation, full current-frame traversal, dry rendering, failure
-short-circuiting, and plan/cursor/authority index continuity. Compile-fail fixtures reject a chain entry with
-mismatched authority or cursor evidence.
+short-circuiting, synchronous-exception terminalization, session closure, and plan/cursor/authority index
+continuity. Compile-fail fixtures reject a chain entry with mismatched authority or cursor evidence.
 
 Dated evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4), the focused `ChainSpec`, `StepSpec`, and
 `ProviderAliasSpec` groups passed 37/37, 30/30, and 16/16 respectively; the changed demo consumer's
 `CommandsSpec` passed 42/42; all 228 public compile-fail boundaries passed; and the fresh exact phase gate,
 `cabal test all --ghc-options=-Werror` from `core/`, passed 1414/1414 cases in 110.05 seconds, including
 228/228 compile-fail boundaries and 2/2 governed-documentation checks.
+
+Dated evidence: on 2026-08-23 (x86_64 Linux, GHC 9.12.4), the 46-case `ChainSpec` group and the complete
+warning-clean core gate passed; the complete gate reported 2,442/2,442 in 179.14 seconds. The exception cases
+include an untaken projected gate, proving that a synchronous callback failure leaves no ordinary
+`EffectOutcomeUnknown` operation behind.
 
 #### Remaining Work
 

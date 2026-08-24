@@ -10,6 +10,9 @@ image:
 # Applied to the Deployment and overridden from the live project config.
 haReplicas: 1
 
+activation:
+  revision: ""
+
 service:
   # Overridden with the frame id and fingerprint of the parent-derived service
   # config. The hash rolls the pod when the separately applied ConfigMap changes.

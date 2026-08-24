@@ -125,7 +125,7 @@ substrate-selected lift as a single `[Step]`: VM-backed lanes use host→VM→co
 build pb + image in the VM, then carry the project-container child config on the descent the in-VM
 `context-init` step declares), while native Linux GPU uses a two-frame host→direct-container→nvkind
 path.
-Both continue through MinIO, registry, image push, chart, NodePort, and accelerator placement as selected
+Both continue through MinIO, registry, image push, chart, runtime-owned exposure, and accelerator placement as selected
 for that lane. `project up` interprets the chosen current-frame segment; `context` visualizes the
 composition. For each test config, `test run all` retains its exact Harness plan and directly wraps the
 common current-frame forward/reverse boundaries around `demoTestSuite` assertions — reusing the plan
@@ -182,12 +182,22 @@ toolchain image without becoming a hostbootstrap project; that is not a second i
    transitive closure may already be warm in the store. A moving branch or omitted remote `tag` is not
    a governed consumer source dependency. The demo uses `demo/cabal.project` unchanged in both
    environments. See [warm_store.md](warm_store.md).
-3. **Build the binary, materialize the image-build context, run `<project> check-code`, and add a
+3. **Build the binary, materialize the image-build context, run `<project> check-code`, expose the authenticated
+   executable, and add a
    tini-wrapped `ENTRYPOINT`.** Image-build context materialization is explicit: the Dockerfile runs the
    binary once to write its image-build-container `<project>.dhall` after the binary is installed and
    before any normal command. The check then runs under the narrow image-build frame and before any
    expensive backend work; the container is built on every substrate as the mandatory code-check gate. The
-   container frame skips the build step at runtime — `docker run img project up` enters the chain already
+   The authenticated named-context builder occupies `/usr/local/libexec/<project>` and is itself source-built
+   and digest-bound to the clean input. After backend/web compilation, the Dockerfile proves the in-image Cabal
+   product is non-empty, copies the authenticated builder bytes with `dd` into a new regular
+   `/usr/local/bin/<project>` runtime file, final-materializes its runtime config, public keys, and generated
+   web output, removes the build-only libexec authority, and proves the runtime artifacts are non-empty. The
+   coordinator repeats those checks against an exported probe container before accepting the build. The image
+   therefore does not depend on snapshotting either the in-container linked product or a direct large-file
+   named-context copy.
+   The container frame skips the build step at runtime —
+   `docker run img project up` enters the chain already
    built. Runtime launchers receive a parent-generated runtime `<project>.dhall` **streamed in-place**
    (over the launch `stdin`, written before dispatch — no config bind-mount). In the current demo the
    payload is carried by the descent the `context-init` step itself declares, so the announcing row and
@@ -245,12 +255,29 @@ WORKDIR /workspace/app
 
 COPY . /workspace/app
 
-RUN cabal build --enable-tests --enable-benchmarks all \
-    && install -m 0755 "$(cabal list-bin --enable-tests --enable-benchmarks exe:app)" /usr/local/bin/app
+COPY --from=hostbootstrap-builder app /usr/local/libexec/app
+RUN --mount=type=secret,id=hostbootstrap-build-config,required=true \
+    install -m 0644 /run/secrets/hostbootstrap-build-config /usr/local/libexec/app.dhall
+RUN --mount=type=secret,id=hostbootstrap-build-channel,required=true \
+    --mount=type=secret,id=hostbootstrap-build-verification,required=true \
+    --mount=type=secret,id=hostbootstrap-build-coordinator,required=true \
+    /usr/local/libexec/app check-code
 
-RUN app project init --role image-build-container --output /usr/local/bin/app.dhall
+RUN cabal build --enable-tests --enable-benchmarks all --ghc-options=-Werror \
+    && built_binary="$(cabal list-bin --enable-tests --enable-benchmarks exe:app)" \
+    && test -s "${built_binary}"
 
-RUN app check-code
+# Run backend/web compilation here.
+
+RUN built_binary="$(cabal list-bin --enable-tests --enable-benchmarks exe:app)" \
+    && test -s "${built_binary}" \
+    && dd if=/usr/local/libexec/app of=/usr/local/bin/app bs=4M status=none \
+    && dd if=/usr/local/libexec/app.dhall of=/usr/local/bin/app.dhall status=none \
+    && chmod 0755 /usr/local/bin/app \
+    && rm /usr/local/libexec/app \
+    && rm /usr/local/libexec/app.dhall \
+    && test -s /usr/local/bin/app \
+    && test -s /usr/local/bin/app.dhall
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/app"]
 ```
@@ -318,10 +345,10 @@ descent. The demo contributes its `web` and `accelerator` service variants (run 
 build-time bridge folds into the build-image step) and its VM/provider IO as chain steps — the surface is
 fixed, so it adds no verbs. The image-build hook runs as `project init --role image-build-container`.
 
-A single `project up` is intended to stand up the live persistent stack — a cordoned kind cluster
-(kind `extraPortMappings` publish NodePorts to the VM localhost) → the in-cluster registry
-(NodePort 30500) → the project image pushed to that registry → the web chart pod →
-`localhost:30080` serving HTTP 200. Current teardown performs owned current-frame cleanup plus a project
+A single `project up` is intended to stand up the live persistent stack — a cordoned kind cluster → the
+runtime-owned loopback relay and its resolved registry endpoint → the in-cluster registry → the project image
+pushed to that registry → the web chart pod → its resolved web endpoint serving HTTP 200. Stable
+Service/NodePort targets remain cluster-internal and never select the host-side number. Current teardown performs owned current-frame cleanup plus a project
 hook; the target recursive child-first inverse remains open.
 The target registry step is contributed from an opaque finalized plan that jointly binds client scope,
 verified exposure, backing endpoint, and blob delivery. A consumer must not pass raw endpoints or

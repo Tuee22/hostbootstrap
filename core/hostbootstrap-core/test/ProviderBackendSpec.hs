@@ -34,10 +34,10 @@ import HostBootstrap.Step
 import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (..), SubstrateName (LinuxCpu, LinuxGpu))
 import HostBootstrap.Substrate.Provider.Backend
 import HostBootstrap.Substrate.Provider.Reconcile
+import PlatformPath (hostFixturePath)
 import PrepareFixture (gateFor)
 import qualified SourceGuard
 import System.Directory
-import PlatformPath (hostFixturePath)
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.FilePath (takeFileName, (</>))
@@ -63,6 +63,7 @@ state is ordinary files, so the family runs — and is counted — on every gate
 lifecycleCases :: [TestTree]
 lifecycleCases =
     [ testCase "provision, fresh boot, share, stop, and conditional delete hold one identity" fullLifecycleCase
+    , testCase "retained reverse stops, conditionally deletes, and retires the provider record" retainedReverseCase
     , testCase "concurrent provision enters once and launches once" concurrentProvisionCase
     , testCase "a client that dies after its launch is recovered without relaunching" crashRecoveryCase
     , testCase "readiness retries only a guest that is not answering yet" readinessRetryCase
@@ -72,6 +73,7 @@ lifecycleCases =
     , testCase "Ready rechecks identity across the guest observation" readyObservationReplacementCase
     , testCase "Stop rechecks identity after the stop it issued" stopObservationReplacementCase
     , testCase "a share rechecks its instance after the device readback" shareObservationReplacementCase
+    , testCase "a share rechecks its instance after the activating restart" shareRestartReplacementCase
     , testCase "a same-named replacement is left standing rather than forgotten" deleteReplacementLeftStandingCase
     ]
 
@@ -171,7 +173,8 @@ providerRuntimePackageCase = withFakeHost $ \host ->
                                             else case stale of
                                                 Left _
                                                     | either (const True) (const False) replay
-                                                        && either (const True) (const False) expired -> Right package
+                                                        && either (const True) (const False) expired ->
+                                                        Right package
                                                     | otherwise -> Left (Failure (FailureDetail "recover provider runtime dependency" "replay or expiry was accepted" DoNotRetry))
                                                 Right _ -> Left (Failure (FailureDetail "register provider runtime dependency" "a changed package replaced the pending commitment" DoNotRetry))
                               where
@@ -372,12 +375,39 @@ runDirectReadyWith config root = do
 fullLifecycleCase :: IO ()
 fullLifecycleCase = withFakeHost $ \host ->
     withBackend host $ \backend ->
-        withRunningProviderAndShare host backend $ \execution planned _ _ running preparedShare -> do
+        withRunningProviderAndShare host backend $ \execution planned shareExecution _ running shareGate preparedShare -> do
             attached <- shareCall backend preparedShare
             case settleProviderShare Nothing preparedShare attached of
                 Left failure -> assertFailure ("share failed: " <> show failure)
                 Right settled ->
-                    withProviderShareSettlement settled (\_ _ -> pure ()) (\_ _ _ _ -> assertFailure "share unexpectedly remained foreign")
+                    withProviderShareSettlement
+                        settled
+                        ( \managed _ -> do
+                            carried <- carryProviderShareSettlement shareExecution managed "provider-share-v1"
+                            carried @?= Right ()
+                            registered <-
+                                registerProviderShareDependencyPackage
+                                    (underTestBackend backend)
+                                    shareExecution
+                                    "production"
+                                    shareGate
+                                    preparedShare
+                                    managed
+                                    "runtime://provider-share/fresh-readiness"
+                                    100
+                            void (either (assertFailure . show) pure registered)
+                            fresh <-
+                                withFreshCarriedProviderShareDependency
+                                    shareExecution
+                                    "production"
+                                    (Execution.stepExecutionOperationKey shareExecution)
+                                    "runtime://provider-share/fresh-readiness"
+                                    99
+                                    "share-nonce-1"
+                                    (\_ _ -> ())
+                            fresh @?= Right ()
+                        )
+                        (\_ _ _ _ -> assertFailure "share unexpectedly remained foreign")
             stopped <- stopProvider backend execution planned running
             case stopped of
                 Left failure -> assertFailure ("stop failed: " <> show failure)
@@ -386,6 +416,17 @@ fullLifecycleCase = withFakeHost $ \host ->
                     deleted @?= Right ()
                     heldInstance host vmName >>= (@?= Nothing)
                     durableRecords host >>= (@?= [])
+
+retainedReverseCase :: IO ()
+retainedReverseCase = withFakeHost $ \host ->
+    withBackend host $ \backend ->
+        withRunningProvider backend $ \_ _ _ _ -> do
+            result <- runRetainedProviderDelete (underTestBackend backend)
+            result @?= Right ()
+            heldInstance host vmName >>= (@?= Nothing)
+            durableRecords host >>= (@?= [])
+            mutationsOf host "stop" >>= (@?= 1)
+            mutationsOf host "delete" >>= (@?= 1)
 
 {- | Two provisions racing for the same name launch the instance at most once.
 
@@ -460,12 +501,14 @@ replacementCase = withFakeHost $ \host ->
 shareReadbackCase :: IO ()
 shareReadbackCase = withFakeHost $ \host ->
     withBackend host $ \backend ->
-        withRunningProviderAndShare host backend $ \_ _ _ _ _ prepared -> do
+        withRunningProviderAndShare host backend $ \_ _ _ _ _ _ prepared -> do
             first <- shareCall backend prepared
             case settleProviderShare Nothing prepared first of
                 Left failure -> assertFailure ("first share failed: " <> show failure)
                 Right _ -> pure ()
             before <- mutationsOf host "device-add"
+            restartedBefore <- mutationsOf host "restart"
+            restartedBefore @?= 1
             second <- shareCall backend prepared
             case settleProviderShare Nothing prepared second of
                 Right settled ->
@@ -473,6 +516,7 @@ shareReadbackCase = withFakeHost $ \host ->
                 Left failure -> assertFailure ("exact repeat failed: " <> show failure)
             after <- mutationsOf host "device-add"
             after @?= before
+            mutationsOf host "restart" >>= (@?= restartedBefore)
             device <- onlyDevice host
             retargetDevice host vmName device "/srv/replaced"
             changed <- shareCall backend prepared
@@ -528,12 +572,23 @@ this run's to a device inside somebody else's object.
 shareObservationReplacementCase :: IO ()
 shareObservationReplacementCase = withFakeHost $ \host ->
     withBackend host $ \backend ->
-        withRunningProviderAndShare host backend $ \_ _ _ _ _ prepared -> do
+        withRunningProviderAndShare host backend $ \_ _ _ _ _ _ prepared -> do
             FakeProvider.armReplacementAfter (hostRoot host) "device-add"
             attached <- shareCall backend prepared
             case settleProviderShare Nothing prepared attached of
                 Left (Conflict _) -> pure ()
                 other -> assertFailure ("expected a share replacement conflict, got " <> showEither (() <$ other))
+            heldIdentity host vmName >>= (@?= Just FakeProvider.replacementIdentity)
+
+shareRestartReplacementCase :: IO ()
+shareRestartReplacementCase = withFakeHost $ \host ->
+    withBackend host $ \backend ->
+        withRunningProviderAndShare host backend $ \_ _ _ _ _ _ prepared -> do
+            FakeProvider.armReplacementAfter (hostRoot host) "restart"
+            attached <- shareCall backend prepared
+            case settleProviderShare Nothing prepared attached of
+                Left (Conflict _) -> pure ()
+                other -> assertFailure ("expected a post-restart share replacement conflict, got " <> showEither (() <$ other))
             heldIdentity host vmName >>= (@?= Just FakeProvider.replacementIdentity)
 
 {- | Clause 4 compares the identity, so a same-named replacement is not release.
@@ -672,6 +727,7 @@ withRunningProviderAndShare ::
       Execution.StepExecution (Production projectId) planId ->
       PlannedResource (Production projectId) planId shareId DurableShareResource shareFrame ->
       ManagedProviderHandle (Production projectId) planId backendId providerId Running ->
+      PreparedGate ->
       PreparedProviderShare
         (Production projectId)
         planId
@@ -731,7 +787,7 @@ withRunningProviderAndShare host backend consume =
                                                                             (dependencyProbe (pure (Right (managedProviderGeneration running))))
                                                                             shareSpec
                                                                             shareGateValue
-                                                                            (consume providerExecution plannedProvider shareExecution plannedShare running)
+                                                                            (consume providerExecution plannedProvider shareExecution plannedShare running shareGateValue)
                                                                     either (assertFailure . show) id preparedResult
                                                 )
                                     )

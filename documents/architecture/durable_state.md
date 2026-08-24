@@ -38,9 +38,8 @@ or local effect. The
 [authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
 owns the closed wire vocabulary and the
 [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) consumes
-it. End-to-end same-run
-destroy/up/readback remains unproved; the
-[worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns that acceptance.
+it. The [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns the live same-run
+destroy/up/readback acceptance.
 
 ## Current Status
 
@@ -125,6 +124,12 @@ record keys or versions.
   Cleanup receives no durable-root pathname and removes the managed origin only after independently proving
   every retained node container absent. A copied record, replaced namespace object, or uncertain deletion
   preserves origin state and cannot widen the removal set.
+- The same removable state leaf carries the cluster-adjacent exposure record. Its pending state precedes
+  relay creation and binds the exact plan resource, cluster identity/generation, immutable image, semantic
+  targets, owner digest, and fresh operation nonce. Its managed successor adds only the runtime-inspected
+  relay identity and complete loopback mapping set. Recovery re-inspects those exact facts; release removes
+  by identity, proves absence, and only then deletes the record. Cluster cleanup refuses while the exposure
+  record exists, so the durable host root and the release order remain outside caller discretion.
 - The implemented direct-Colima adapter likewise keeps control ownership outside the workload payload. Its
   self-bound origin and isolated `DOCKER_CONFIG` live under the exact plan root's `.hostbootstrap/colima`
   state leaf, while one 128-bit plan/lifecycle token names the isolated Colima/Lima/cache/temp home and
@@ -176,39 +181,22 @@ absence readback, and publishes the next Pending row through the normal absent-o
 rearm, and a crash after terminal consumption is safe because the independently durable new Up source can
 recreate the absent Pending row.
 
-## Open defects
+## Durability boundaries
 
-The carry is not yet a delivered durability guarantee:
+The carry and its same-run protocol are implemented:
 
-- Production `HostBootstrap.Command` uses the exact pure `ProjectPlan` reverse route, but that route is
-  current-frame-only and grants no exact teardown authority. The final plan-owned path surface must also
-  derive every provider-guest/container/kind-node/pod projection rather than letting remaining adapters
-  accept raw path values.
-- The closed provider boundary now maps both guest and Direct raw observations into the same total
-  descriptive result vocabulary, but the demo has not adopted its prepared provider/share route.
-- The demo's `/var/tmp/hostbootstrap-demo-data` call site still creates and removes an alias by pathname,
-  so that call site holds none of the four [ownership invariant](ownership_invariant.md) clauses and
-  mints no cleanup receipt. The package-level provider-guest alias backend does hold those clauses; moving
-  the demo to its prepared node route remains work for the
-  [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
-- `DurableStore` is not uniform mutation authority. Core `service run` now binds typed role selection and
-  handler fields to one canonically verified sibling snapshot, but neither Web nor accelerator handler
-  yet receives plan-derived effect/capability authority. The remaining raw handler `IO` therefore does
-  not prove durable placement.
-- The demo Harness config selects a run-scoped cluster and `.test_data/<runId>`, but cluster, provider,
-  mount, and teardown consumers still derive that profile/root independently from config instead of from
-  the retained exact Harness plan.
-- The configured `durable-readback` case deliberately fails before lifecycle mutation because the engine
-  cannot yet place write/read assertions around a nonterminal same-run destroy → fresh exact up cycle.
-  No substrate has passed that end-to-end gate.
-- Teardown is not yet an authenticated recursive child-to-parent interpretation. The pure projection,
-  `TeardownForest`, and every successor package retain the same nominal opening frame, but the work
-  algebra does not yet distinguish local work from a foreign descent. A provider VM can therefore be
-  stopped or removed without first admitting and settling the lifecycle verb in each child frame.
+- Production and Harness reverse traverse the admitted recursive plan child-first and settle exact teardown
+  evidence before a terminal close can be authorized.
+- The provider/share operation owns the guest mount, and the guest alias holds the four ownership clauses over
+  the Docker-daemon-visible durable path. Kind/nvkind projects that alias into the node and pod.
+- Chart and standalone service placements use signed immutable activation revisions whose durable directories
+  are mounted into their exact runtime frames.
+- Each Harness variant retains one exact plan and `.test_data/<runId>`. `AssertAcrossRestart` places the durable
+  write/read pair around a settled destroy, protected fresh broker generation, exact snapshot rebind, and
+  second forward; stable released resource members admit only a strictly newer owned generation.
 
-Documentation must therefore describe the mechanism as **durable carry implemented, end-to-end
-persistence not yet proved**. A statement covering any provider needs that provider's own same-run
-destroy/up/readback result.
+Live confirmation remains substrate-specific evidence. The worked-demo phase records linux-cpu, while the
+Apple, NVIDIA, and Windows acceptance phases record the same invariant through their declared providers.
 
 ## Root authority and alias target
 

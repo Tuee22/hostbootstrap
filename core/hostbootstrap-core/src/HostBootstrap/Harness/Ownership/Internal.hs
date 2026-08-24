@@ -16,6 +16,7 @@ module HostBootstrap.Harness.Ownership.Internal (
     newOwnedHarnessCloseControl,
     beginOwnedHarnessBinding,
     armOwnedHarnessBoundClose,
+    rearmOwnedHarnessBoundClose,
     markOwnedHarnessClosePending,
     settleOwnedHarnessClose,
     consumeOwnedHarnessClose,
@@ -28,7 +29,10 @@ import HostBootstrap.Lifecycle.Closure (
 import HostBootstrap.Lifecycle.Mode (
     BoundRunLease,
     HarnessCloseAuthorization,
+    HarnessCloseRoot,
+    HarnessMode,
     ProjectClosureEvidence,
+    ProjectModeLease,
     projectClosureEvidenceKind,
  )
 import HostBootstrap.ProjectScope (Harness)
@@ -40,11 +44,16 @@ data OwnedHarnessCloseState projectId runId brokerGeneration where
     OwnedHarnessCloseBinding ::
         OwnedHarnessCloseState projectId runId brokerGeneration
     OwnedHarnessCloseBoundFallback ::
+        HarnessCloseRoot projectId runId fallbackBrokerGeneration ->
+        ProjectModeLease
+            projectId
+            (HarnessMode runId)
+            fallbackBrokerGeneration ->
         BoundRunLease
             (Harness projectId runId)
             specDigest
             planDigest
-            brokerGeneration ->
+            fallbackBrokerGeneration ->
         OwnedHarnessCloseState projectId runId brokerGeneration
     OwnedHarnessClosePending ::
         HarnessCloseAuthorization projectId runId ->
@@ -87,17 +96,40 @@ only successful successor of the binding sentinel.
 -}
 armOwnedHarnessBoundClose ::
     OwnedHarnessCloseControl projectId runId brokerGeneration ->
+    HarnessCloseRoot projectId runId brokerGeneration ->
+    ProjectModeLease projectId (HarnessMode runId) brokerGeneration ->
     BoundRunLease
         (Harness projectId runId)
         specDigest
         planDigest
         brokerGeneration ->
     IO (Either String ())
-armOwnedHarnessBoundClose control bound =
+armOwnedHarnessBoundClose control closeRoot modeLease bound =
     transition control $ \current -> case current of
         OwnedHarnessCloseBinding ->
-            (OwnedHarnessCloseBoundFallback bound, Right ())
+            (OwnedHarnessCloseBoundFallback closeRoot modeLease bound, Right ())
         _ -> refused current "arm the bound pre-effect fallback"
+
+{- | Replace the pre-effect fallback after an intermediate settled destroy has
+rotated the same Harness run onto a fresh broker generation. The control keeps
+the new root/mode/bound tuple existentially, so terminal finalization can never
+mix it with the source generation.
+-}
+rearmOwnedHarnessBoundClose ::
+    OwnedHarnessCloseControl projectId runId sourceBrokerGeneration ->
+    HarnessCloseRoot projectId runId targetBrokerGeneration ->
+    ProjectModeLease projectId (HarnessMode runId) targetBrokerGeneration ->
+    BoundRunLease
+        (Harness projectId runId)
+        specDigest
+        planDigest
+        targetBrokerGeneration ->
+    IO (Either String ())
+rearmOwnedHarnessBoundClose control closeRoot modeLease bound =
+    transition control $ \current -> case current of
+        OwnedHarnessCloseBoundFallback _ _ _ ->
+            (OwnedHarnessCloseBoundFallback closeRoot modeLease bound, Right ())
+        _ -> refused current "rearm the bound pre-effect fallback"
 
 {- | Record the exact persisted Closing authorization before terminal
 settlement. The pending state is deliberately not finalizable: interruption
@@ -109,7 +141,7 @@ markOwnedHarnessClosePending ::
     IO (Either String ())
 markOwnedHarnessClosePending control authorization =
     transition control $ \current -> case current of
-        OwnedHarnessCloseBoundFallback _ ->
+        OwnedHarnessCloseBoundFallback _ _ _ ->
             (OwnedHarnessClosePending authorization, Right ())
         _ -> refused current "record pending terminal close"
 
@@ -141,12 +173,14 @@ any close effect.
 consumeOwnedHarnessClose ::
     OwnedHarnessCloseControl projectId runId brokerGeneration ->
     IO (Either String ()) ->
-    ( forall specDigest planDigest.
+    ( forall fallbackBrokerGeneration specDigest planDigest.
+      HarnessCloseRoot projectId runId fallbackBrokerGeneration ->
+      ProjectModeLease projectId (HarnessMode runId) fallbackBrokerGeneration ->
       BoundRunLease
         (Harness projectId runId)
         specDigest
         planDigest
-        brokerGeneration ->
+        fallbackBrokerGeneration ->
       IO (Either String ())
     ) ->
     (HarnessCloseAuthorization projectId runId -> IO (Either String ())) ->
@@ -156,7 +190,7 @@ consumeOwnedHarnessClose (OwnedHarnessCloseControl stateRef) closeUnbound closeB
     case dispatch of
         Left failure -> pure (Left failure)
         Right OwnedHarnessCloseDispatchUnbound -> closeUnbound
-        Right (OwnedHarnessCloseDispatchBound bound) -> closeBound bound
+        Right (OwnedHarnessCloseDispatchBound closeRoot modeLease bound) -> closeBound closeRoot modeLease bound
         Right (OwnedHarnessCloseDispatchSettled authorization) ->
             closeSettled authorization
 
@@ -173,9 +207,9 @@ consumeState current = case current of
         , Left
             "the Harness plan binding did not yield its exact bound close fallback"
         )
-    OwnedHarnessCloseBoundFallback bound ->
+    OwnedHarnessCloseBoundFallback closeRoot modeLease bound ->
         ( OwnedHarnessCloseConsumed
-        , Right (OwnedHarnessCloseDispatchBound bound)
+        , Right (OwnedHarnessCloseDispatchBound closeRoot modeLease bound)
         )
     OwnedHarnessClosePending _ ->
         ( OwnedHarnessCloseConsumed
@@ -195,11 +229,13 @@ data OwnedHarnessCloseDispatch projectId runId brokerGeneration where
     OwnedHarnessCloseDispatchUnbound ::
         OwnedHarnessCloseDispatch projectId runId brokerGeneration
     OwnedHarnessCloseDispatchBound ::
+        HarnessCloseRoot projectId runId fallbackBrokerGeneration ->
+        ProjectModeLease projectId (HarnessMode runId) fallbackBrokerGeneration ->
         BoundRunLease
             (Harness projectId runId)
             specDigest
             planDigest
-            brokerGeneration ->
+            fallbackBrokerGeneration ->
         OwnedHarnessCloseDispatch projectId runId brokerGeneration
     OwnedHarnessCloseDispatchSettled ::
         HarnessCloseAuthorization projectId runId ->
@@ -232,7 +268,7 @@ stateName :: OwnedHarnessCloseState projectId runId brokerGeneration -> String
 stateName current = case current of
     OwnedHarnessCloseUnbound -> "unbound"
     OwnedHarnessCloseBinding -> "binding"
-    OwnedHarnessCloseBoundFallback _ -> "bound"
+    OwnedHarnessCloseBoundFallback _ _ _ -> "bound"
     OwnedHarnessClosePending _ -> "closing-pending"
     OwnedHarnessCloseSettled _ -> "settled"
     OwnedHarnessCloseConsumed -> "consumed"

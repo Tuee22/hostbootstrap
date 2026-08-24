@@ -29,6 +29,7 @@ module HostBootstrap.Lifecycle.Execution (
     stepExecutionOperationKey,
     stepExecutionFrame,
     stepExecutionDependencyKeys,
+    stepExecutionSignActivationManifest,
 
     -- * The gates the interpreter opened for this node
     stepExecutionPreparedGate,
@@ -43,6 +44,7 @@ module HostBootstrap.Lifecycle.Execution (
     carriedResourceKeys,
 ) where
 
+import Data.ByteString (ByteString)
 import Data.Text (Text)
 import HostBootstrap.Lifecycle.Execution.Internal (
     ResourceCarrier,
@@ -51,6 +53,7 @@ import HostBootstrap.Lifecycle.Execution.Internal (
     carriedResourceKey,
     executionNodeDependencyKeys,
     executionNodeProjectedKeys,
+    invokeStepRuntimeActivationSigningService,
     newResourceCarrier,
     newStepRuntime,
     readCarriedResources,
@@ -61,8 +64,8 @@ import HostBootstrap.Lifecycle.Execution.Internal (
     stepExecutionNodeIdentity,
     stepExecutionOperationKey,
     stepExecutionPlanDigest,
-    stepExecutionSpecDigest,
     stepExecutionRuntime,
+    stepExecutionSpecDigest,
     stepRuntimeOwnGate,
     takeStepRuntimeGate,
  )
@@ -77,6 +80,11 @@ to the resource-bearing members when it seals an @OperationPreconditionSet@
 -}
 stepExecutionDependencyKeys :: StepExecution scope planId -> [Text]
 stepExecutionDependencyKeys = executionNodeDependencyKeys . stepExecutionNode
+
+-- | Route one canonical activation manifest through this admitted invocation.
+stepExecutionSignActivationManifest :: StepExecution scope planId -> ByteString -> IO (Either Text ByteString)
+stepExecutionSignActivationManifest execution =
+    invokeStepRuntimeActivationSigningService (stepExecutionRuntime execution)
 
 {- | The prepared gate for this node's __own__ operation.
 

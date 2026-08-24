@@ -19,6 +19,11 @@ module HostBootstrap.Cluster.Lifecycle (
     withPlanOwnedCluster,
     withExecutionOwnedCluster,
     PlanOwnedClusterConfig,
+    ExposureIntent,
+    mkPlanExposureIntent,
+    exposureIntentService,
+    exposureIntentTargetHost,
+    exposureIntentTargetPort,
     withPlanOwnedClusterConfig,
     planOwnedClusterConfigBase,
     planOwnedClusterConfigDriver,
@@ -26,14 +31,13 @@ module HostBootstrap.Cluster.Lifecycle (
     planOwnedClusterConfigDigest,
     planOwnedClusterConfigStatePath,
     planOwnedRenderedConfigPath,
-    planOwnedClusterConfigLoopbackPorts,
+    planOwnedClusterConfigExposureIntents,
     planOwnedClusterConfigNodeMappings,
     planOwnedClusterConfigWorkloadSlice,
     withPlanOwnedClusterPreparation,
     planOwnedClusterName,
     planOwnedClusterStateDirectory,
     planOwnedClusterDurableRoot,
-    planOwnedClusterPublishesHostPorts,
     planOwnedClusterConfigPath,
     planOwnedClusterPlacement,
     planOwnedClusterProviderKey,
@@ -47,9 +51,12 @@ module HostBootstrap.Cluster.Lifecycle (
     ensureDurableDataPath,
     profileDataSegments,
     profileDataPath,
+    profileFromPlanName,
     ensureProfileDataPath,
     resolvePlan,
     resolvePlanWithDriver,
+    clusterRuntimeStateDirectory,
+    clusterKubeconfigPath,
     resolveAcceleratorPlan,
     clusterDriverForSubstrate,
     clusterCreate,
@@ -89,18 +96,17 @@ import Data.Maybe (catMaybes, maybeToList)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TextEncoding
-import Numeric.Natural (Natural)
-import HostBootstrap.Cluster.Budget
-    ( ResourceSlice
-    , resourceSliceBudget
-    , resourceSliceFrame
-    , resourceSliceName
-    )
+import HostBootstrap.Cluster.Budget (
+    ResourceSlice,
+    resourceSliceBudget,
+    resourceSliceFrame,
+    resourceSliceName,
+ )
 import HostBootstrap.Cluster.Cordon (
     budgetCpu,
+    budgetFromResources,
     budgetMemoryBytes,
     budgetStorageBytes,
-    budgetFromResources,
     kindNodeCordonArgsFor,
     preflightBudget,
     resolveHostCapacity,
@@ -111,44 +117,44 @@ import HostBootstrap.Ensure (runTool)
 import qualified HostBootstrap.Ensure.Cuda as Cuda
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Docker, Helm, Kind, Kubectl, Nvkind))
-import HostBootstrap.Lifecycle.Execution.Internal
-    ( StepExecution
-    , executionNodeDependencies
-    , executionNodeFrame
-    , executionNodeOperationKey
-    , planExecutionPackageNode
-    , planExecutionPackageProfile
-    , planExecutionPackageProject
-    , planExecutionPackageRoot
-    , stepExecutionPackage
-    , stepExecutionPlanDigest
-    )
+import HostBootstrap.Lifecycle.Execution.Internal (
+    StepExecution,
+    executionNodeDependencies,
+    executionNodeFrame,
+    executionNodeOperationKey,
+    planExecutionPackageNode,
+    planExecutionPackageProfile,
+    planExecutionPackageProject,
+    planExecutionPackageRoot,
+    stepExecutionPackage,
+    stepExecutionPlanDigest,
+ )
+import HostBootstrap.ProjectPlan (
+    ClusterResource,
+    DerivedTopology,
+    PlannedResource,
+    ProjectPlan,
+    ProviderResource,
+    plannedResourceFrame,
+    plannedResourceKey,
+    projectPlanProfileName,
+    projectPlanProjectName,
+    renderSnapshot,
+    stablePlanSnapshotDigest,
+    stablePlanSnapshotRoot,
+    topology,
+    topologyContainsFrame,
+    topologyDescentEdges,
+    topologyFrameOrder,
+    topologyParentEdges,
+    topologyParentFrame,
+    withPlannedEdge,
+ )
 import HostBootstrap.Readiness (ProbeResult (..), nodePoll, pollUntilReady)
-import HostBootstrap.ProjectPlan
-    ( ClusterResource
-    , DerivedTopology
-    , PlannedResource
-    , ProjectPlan
-    , ProviderResource
-    , plannedResourceFrame
-    , plannedResourceKey
-    , projectPlanProfileName
-    , projectPlanProjectName
-    , renderSnapshot
-    , stablePlanSnapshotDigest
-    , stablePlanSnapshotRoot
-    , topology
-    , topologyContainsFrame
-    , topologyDescentEdges
-    , topologyFrameOrder
-    , topologyParentEdges
-    , topologyParentFrame
-    , withPlannedEdge
-    )
 import HostBootstrap.Substrate (Substrate (substrateName), SubstrateName (LinuxGpu), isLinux)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removePathForcibly)
 import System.Exit (ExitCode (..), die)
-import System.FilePath ((</>))
+import System.FilePath (takeDirectory, (</>))
 
 {- | The cluster profile: production uses fixed names and the canonical @.data@
 path; the test profile isolates each case under its own paths so a
@@ -168,20 +174,15 @@ data ClusterDriver = KindDriver | NvkindDriver
 {- | A resolved cluster plan: the kind cluster name, the durable state path
 teardown never enumerates for removal (@.data@ under 'Production',
 @.test_data\/\<case\>@ under 'TestCase'), the derived state safe to remove on
-@delete@, and whether this
-cluster publishes the project's fixed host NodePorts (via @./kind.yaml@'s
-@extraPortMappings@). Only the production cluster does — it is the persistent
-stack the host reaches on @localhost:\<nodePort\>@. Test-case clusters set this
-'False' so they create a plain kind cluster with no host-port binding: several
-isolated case clusters then coexist (and never collide with a running
-production cluster) on the same host, and each case reaches its in-cluster
-workload through the kind container network rather than a fixed host port.
+@delete@, and the closed fact that cluster rendering never publishes host
+ports. Local endpoints are runtime-owned relay results, so both production and
+test-case clusters create without host-port bindings and can coexist without
+preselecting or colliding on host ports.
 -}
 data ClusterPlan = ClusterPlan
     { clusterName :: String
     , dataPath :: FilePath
     , derivedPaths :: [FilePath]
-    , publishesHostPorts :: Bool
     , clusterDriver :: ClusterDriver
     , clusterConfigFile :: Maybe FilePath
     , clusterNodeSuffixes :: [String]
@@ -201,22 +202,23 @@ from another admission cannot be relabelled into this package.  The descriptive
 driver vocabulary is derived once from the admitted plan and is never accepted
 again as independent caller input.
 -}
-data PlanOwnedCluster
-    scope
-    specDigest
-    planId
-    configId
-    cfg
-    clusterId
-    clusterFrame
-    providerId
-    providerFrame
-    budgetId
-    provider
-    capabilityId
-    wallSpecId
-    workloadSetId
-    partitionId
+data
+    PlanOwnedCluster
+        scope
+        specDigest
+        planId
+        configId
+        cfg
+        clusterId
+        clusterFrame
+        providerId
+        providerFrame
+        budgetId
+        provider
+        capabilityId
+        wallSpecId
+        workloadSetId
+        partitionId
     = PlanOwnedCluster
         (ProjectPlan scope specDigest planId configId cfg)
         (PlannedResource scope planId clusterId ClusterResource clusterFrame)
@@ -273,11 +275,30 @@ data PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clust
         Text
         FilePath
         FilePath
-        [(Text, Natural)]
+        [ExposureIntent]
         [(Text, Text)]
         [Text]
 
 type role PlanOwnedClusterConfig nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
+
+data ExposureIntent = ExposureIntent Text Text Int
+    deriving (Eq, Show)
+
+mkPlanExposureIntent :: Text -> Text -> Int -> Either ClusterPackageError ExposureIntent
+mkPlanExposureIntent service target port
+    | T.null service || T.any (`elem` ['/', '\\', ':', '\n', '\r', '\t']) service = Left (ClusterPackageMismatch "the exposure service identity is invalid")
+    | T.null target || T.any (`elem` ['/', '\\', ':', '\n', '\r', '\t', ' ']) target = Left (ClusterPackageMismatch "the exposure target host is invalid")
+    | port < 1 || port > 65535 = Left (ClusterPackageMismatch "the exposure target port is outside 1..65535")
+    | otherwise = Right (ExposureIntent service target port)
+
+exposureIntentService :: ExposureIntent -> Text
+exposureIntentService (ExposureIntent service _ _) = service
+
+exposureIntentTargetHost :: ExposureIntent -> Text
+exposureIntentTargetHost (ExposureIntent _ target _) = target
+
+exposureIntentTargetPort :: ExposureIntent -> Int
+exposureIntentTargetPort (ExposureIntent _ _ port) = port
 
 {- | Join the one admitted plan to its exact cluster resource, direct provider
 dependency, retained topology, and cluster budget slice.
@@ -402,30 +423,28 @@ withPlanOwnedClusterConfig ::
     Text ->
     FilePath ->
     FilePath ->
-    [(Text, Natural)] ->
+    [ExposureIntent] ->
     [(Text, Text)] ->
     [Text] ->
     (PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> result) ->
     Either ClusterPackageError result
-withPlanOwnedClusterConfig base driver bytes suppliedDigest suppliedState suppliedPath ports mappings workload consume = do
+withPlanOwnedClusterConfig base driver bytes suppliedDigest suppliedState suppliedPath intents mappings workload consume = do
     requireConfig (not (nullBytes bytes)) "the canonical cluster config is empty"
     requireConfig (ByteString.length bytes <= 1048576) "the canonical cluster config exceeds 1 MiB"
     requireConfig (suppliedDigest == digestBytes bytes) "the canonical cluster config digest disagrees with its bytes"
     requireConfig (suppliedState == expectedState) "the cluster state path disagrees with the plan-owned durable root and driver"
     requireConfig (suppliedPath == expectedPath) "the cluster config path disagrees with the plan-owned durable root and driver"
-    requireConfig (not (null ports)) "the loopback publication set is empty"
-    requireConfig (unique (map fst ports) && unique (map snd ports)) "the loopback publication set contains a duplicate"
-    requireConfig (all (\(_, port) -> port >= 1 && port <= 65535) ports) "the loopback publication set contains an out-of-range port"
+    requireConfig (not ("hostPort:" `ByteString.isInfixOf` bytes)) "the canonical cluster config contains a host port"
+    requireConfig (not ("extraPortMappings:" `ByteString.isInfixOf` bytes)) "the canonical cluster config contains host publication"
+    requireConfig (not (null intents)) "the semantic exposure intent set is empty"
+    requireConfig (unique (map exposureIntentService intents)) "the semantic exposure intent set contains a duplicate service"
     requireConfig (mappings == expectedMappings) "the node mapping disagrees with the closed driver"
     requireConfig (not (null workload) && unique workload) "the workload slice is empty or contains a duplicate"
-    pure (consume (PlanOwnedClusterConfig adjusted driver bytes suppliedDigest suppliedState suppliedPath ports mappings workload))
+    pure (consume (PlanOwnedClusterConfig adjusted driver bytes suppliedDigest suppliedState suppliedPath intents mappings workload))
   where
-    driverName = case driver of
-        KindDriver -> "kind"
-        NvkindDriver -> "nvkind"
     durableRoot = planOwnedClusterDurableRoot base
-    expectedState = durableRoot </> "cluster" </> driverName </> "state"
-    expectedPath = durableRoot </> "cluster" </> driverName </> "config.yaml"
+    expectedState = clusterRuntimeStateDirectoryFor driver durableRoot
+    expectedPath = takeDirectory expectedState </> "config.yaml"
     expectedMappings =
         [ (T.pack suffix, T.pack (planOwnedClusterName base ++ "-" ++ suffix))
         | suffix <- driverNodeSuffixes driver
@@ -480,8 +499,8 @@ planOwnedClusterConfigStatePath (PlanOwnedClusterConfig _ _ _ _ statePath _ _ _ 
 planOwnedRenderedConfigPath :: PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> FilePath
 planOwnedRenderedConfigPath (PlanOwnedClusterConfig _ _ _ _ _ configPath _ _ _) = configPath
 
-planOwnedClusterConfigLoopbackPorts :: PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> [(Text, Natural)]
-planOwnedClusterConfigLoopbackPorts (PlanOwnedClusterConfig _ _ _ _ _ _ ports _ _) = ports
+planOwnedClusterConfigExposureIntents :: PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> [ExposureIntent]
+planOwnedClusterConfigExposureIntents (PlanOwnedClusterConfig _ _ _ _ _ _ intents _ _) = intents
 
 planOwnedClusterConfigNodeMappings :: PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> [(Text, Text)]
 planOwnedClusterConfigNodeMappings (PlanOwnedClusterConfig _ _ _ _ _ _ _ mappings _) = mappings
@@ -543,10 +562,6 @@ planOwnedClusterDurableRoot :: PlanOwnedCluster scope specDigest planId configId
 planOwnedClusterDurableRoot (PlanOwnedCluster _ _ _ _ _ resolved _ _) = dataPath resolved
 planOwnedClusterDurableRoot (ExecutionOwnedCluster _ _ _ _ resolved _ _) = dataPath resolved
 
-planOwnedClusterPublishesHostPorts :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> Bool
-planOwnedClusterPublishesHostPorts (PlanOwnedCluster _ _ _ _ _ resolved _ _) = publishesHostPorts resolved
-planOwnedClusterPublishesHostPorts (ExecutionOwnedCluster _ _ _ _ resolved _ _) = publishesHostPorts resolved
-
 planOwnedClusterConfigPath :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> Maybe FilePath
 planOwnedClusterConfigPath (PlanOwnedCluster _ _ _ _ _ resolved _ _) = clusterConfigFile resolved
 planOwnedClusterConfigPath (ExecutionOwnedCluster _ _ _ _ resolved _ _) = clusterConfigFile resolved
@@ -586,7 +601,6 @@ resolvePlanWithDriver project root profile driver = case profile of
             { clusterName = project
             , dataPath = durableDataPathFor profile root
             , derivedPaths = [root </> ".cluster" </> project]
-            , publishesHostPorts = True
             , clusterDriver = driver
             , clusterConfigFile = Just (driverConfigFile driver)
             , clusterNodeSuffixes = driverNodeSuffixes driver
@@ -596,12 +610,27 @@ resolvePlanWithDriver project root profile driver = case profile of
             { clusterName = project ++ "-test-" ++ caseId
             , dataPath = durableDataPathFor profile root
             , derivedPaths = [root </> ".cluster" </> (project ++ "-test-" ++ caseId)]
-            , publishesHostPorts = False
             , clusterDriver = driver
             , clusterConfigFile = Nothing
             , clusterNodeSuffixes = driverNodeSuffixes driver
             }
 
+-- | The durable, driver-specific authority directory for one resolved cluster.
+clusterRuntimeStateDirectory :: ClusterPlan -> FilePath
+clusterRuntimeStateDirectory plan =
+    clusterRuntimeStateDirectoryFor (clusterDriver plan) (dataPath plan)
+
+-- | The kubeconfig written and owned beside the cluster authority records.
+clusterKubeconfigPath :: ClusterPlan -> FilePath
+clusterKubeconfigPath plan = clusterRuntimeStateDirectory plan </> "cluster.kubeconfig"
+
+clusterRuntimeStateDirectoryFor :: ClusterDriver -> FilePath -> FilePath
+clusterRuntimeStateDirectoryFor driver durableRoot =
+    durableRoot </> "cluster" </> driverName </> "state"
+  where
+    driverName = case driver of
+        KindDriver -> "kind"
+        NvkindDriver -> "nvkind"
 driverConfigFile :: ClusterDriver -> FilePath
 driverConfigFile KindDriver = "kind.yaml"
 driverConfigFile NvkindDriver = "nvkind.yaml"
@@ -798,14 +827,10 @@ ensureCluster cfg plan = do
         Right (code, _, err) ->
             die ("cluster up: `kind get clusters` failed (" ++ show code ++ "): " ++ err)
 
-{- | Create the kind cluster fresh (fail-closed). The production cluster publishes
-its NodePorts to the host (the in-VM registry/web endpoints the demo reaches on
-@localhost@) by shipping a @./kind.yaml@ with @extraPortMappings@; @kind create@
-uses it via @--config@. A test-case plan intentionally carries
-@clusterConfigFile = Nothing@, so its node binds no fixed host port and several
-isolated case clusters can coexist. An explicitly supplied config is always
-honored; this matters for a non-publishing nvkind test topology whose GPU worker
-still needs its label and device mount.
+{- | Create the kind cluster fresh (fail-closed). Canonical configs contain only
+cluster-internal topology and mounts; runtime exposure owns all local endpoint
+allocation after readiness. An explicitly supplied config is always honored,
+including nvkind topology whose GPU worker needs its label and device mount.
 -}
 createCluster :: HostConfig -> ClusterPlan -> IO ()
 createCluster cfg plan = do

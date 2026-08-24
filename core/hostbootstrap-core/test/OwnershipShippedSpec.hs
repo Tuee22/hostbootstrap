@@ -22,12 +22,16 @@ is not simulated here.
 module OwnershipShippedSpec (tests) where
 
 import qualified Data.ByteString as ByteString
+import qualified Data.ByteString.Builder as Builder
+import qualified Data.ByteString.Lazy as LazyByteString
+import qualified Data.Map.Strict as Map
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
+import Data.Word (Word8)
 import HostBootstrap.Effect.Vocabulary (
     EffectFrame (CrossedInto, OuterHost),
     FrameCrossing (CrossContainer, CrossIncusVM, CrossLimaVM, CrossWsl2VM),
  )
-import qualified Data.Map.Strict as Map
-import Data.Word (Word8)
 import HostBootstrap.HostConfig (HostConfig (HostConfig, hcSubstrate, hcToolPaths))
 import HostBootstrap.Lift (localContext, mkSelfRef)
 import HostBootstrap.Ownership.Object (
@@ -57,15 +61,16 @@ import HostBootstrap.Substrate.Frame (
     frameOwnershipRow,
     frameOwnsLocally,
  )
-import qualified Data.ByteString.Builder as Builder
-import qualified Data.ByteString.Lazy as LazyByteString
-import qualified Data.Text as Text
-import qualified Data.Text.Encoding as TextEncoding
 import System.Directory (
     createDirectory,
+    createFileLink,
     doesDirectoryExist,
     doesFileExist,
+    doesPathExist,
+    getSymbolicLinkTarget,
+    pathIsSymbolicLink,
     removeDirectoryRecursive,
+    removeFile,
  )
 import System.Environment (getExecutablePath)
 import System.FilePath ((</>))
@@ -132,6 +137,8 @@ transactionCodecTests =
             , ShipTakeFile (mkPayload "let cfg = 1 in cfg\n")
             , ShipTakeFile (mkPayload "")
             , ShipGiveBackObject
+            , ShipTakeSymbolicLink "/srv/project-data"
+            , ShipGiveBackSymbolicLink "/srv/project-data"
             ]
     , testCase "an unknown format is refused, never guessed" $
         expectMalformed "an unknown format" (decodeShippedOwnership "not a transaction at all")
@@ -170,6 +177,8 @@ outcomeCodecTests =
             , ShippedObjectPresent identity
             , ShippedObjectTaken identity
             , ShippedObjectGivenBack
+            , ShippedSymbolicLinkCreated identity
+            , ShippedSymbolicLinkRetained identity
             ]
     , testCase "every refusal in the closed fault sum round-trips exactly" $ do
         identity <- someIdentity
@@ -250,6 +259,60 @@ interpreterTests =
         identity <- expectTaken first
         again <- runShippedOwnership ownershipRowForHost (transactionFor frame ShipTakeDirectory)
         again @?= ShippedObjectTaken identity
+    , rowCase "a symbolic link is published, retained on retry, and conditionally given back" $ \frame -> do
+        createDirectory (frameLinkTarget frame)
+        created <-
+            runShippedOwnership
+                ownershipRowForHost
+                (transactionFor frame (ShipTakeSymbolicLink (frameLinkTarget frame)))
+        identity <- case created of
+            ShippedSymbolicLinkCreated value -> pure value
+            other -> assertFailure ("expected a created symbolic link, got " <> show other)
+        linked <- pathIsSymbolicLink (frameTarget frame)
+        assertBool "the published object is a symbolic link" linked
+        getSymbolicLinkTarget (frameTarget frame) >>= (@?= frameLinkTarget frame)
+
+        retried <-
+            runShippedOwnership
+                ownershipRowForHost
+                (transactionFor frame (ShipTakeSymbolicLink (frameLinkTarget frame)))
+        retried @?= ShippedSymbolicLinkRetained identity
+
+        released <-
+            runShippedOwnership
+                ownershipRowForHost
+                (transactionFor frame (ShipGiveBackSymbolicLink (frameLinkTarget frame)))
+        released @?= ShippedObjectGivenBack
+        remaining <- doesPathExist (frameTarget frame)
+        assertBool "the managed symbolic link was removed" (not remaining)
+        targetRemaining <- doesDirectoryExist (frameLinkTarget frame)
+        assertBool "the symbolic link target was not removed" targetRemaining
+    , rowCase "an exact-looking symbolic link without this transaction's record remains foreign" $ \frame -> do
+        createDirectory (frameLinkTarget frame)
+        createFileLink (frameLinkTarget frame) (frameTarget frame)
+        refused <-
+            runShippedOwnership
+                ownershipRowForHost
+                (transactionFor frame (ShipTakeSymbolicLink (frameLinkTarget frame)))
+        case refused of
+            ShippedRefused (OwnershipOccupied _) -> pure ()
+            other -> assertFailure ("expected an occupied refusal, got " <> show other)
+        linked <- pathIsSymbolicLink (frameTarget frame)
+        assertBool "the foreign exact-looking link survived" linked
+    , rowCase "a replacement symbolic link is refused on release and left intact" $ \frame -> do
+        createDirectory (frameLinkTarget frame)
+        _ <-
+            runShippedOwnership
+                ownershipRowForHost
+                (transactionFor frame (ShipTakeSymbolicLink (frameLinkTarget frame)))
+        removeFile (frameTarget frame)
+        createFileLink "/operator/replacement" (frameTarget frame)
+        refused <-
+            runShippedOwnership
+                ownershipRowForHost
+                (transactionFor frame (ShipGiveBackSymbolicLink (frameLinkTarget frame)))
+        expectRefusal "giving back a replacement symbolic link" refused
+        getSymbolicLinkTarget (frameTarget frame) >>= (@?= "/operator/replacement")
     , rowCase "an object already there is refused, and nothing is recorded" $ \frame -> do
         ByteString.writeFile (frameTarget frame) "an operator's file\n"
         refused <-
@@ -326,6 +389,7 @@ crossingTests =
 data Frame = Frame
     { frameTarget :: FilePath
     , frameAuthority :: FilePath
+    , frameLinkTarget :: FilePath
     }
 
 withFrame :: (Frame -> IO ()) -> IO ()
@@ -335,6 +399,7 @@ withFrame use =
             Frame
                 { frameTarget = root </> "owned"
                 , frameAuthority = root </> "authority"
+                , frameLinkTarget = root </> "durable-target"
                 }
 
 {- | One case that drives the production row against the kernel.

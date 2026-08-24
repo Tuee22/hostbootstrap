@@ -76,15 +76,17 @@ clusterCommandTools = [Kind, Docker, Kubectl]
 
 The whole listing rather than a membership question about one name, because a
 driver that names the same cluster twice is contradicting itself and a
-membership answer cannot say so.
+membership answer cannot say so. The driver's global quiet flag keeps its
+authoritative empty listing on standard output without the informational
+@No kind clusters found.@ diagnostic it otherwise writes to standard error.
 -}
 listClustersCommand :: HostCommand
-listClustersCommand = hostCommand Kind ["get", "clusters"]
+listClustersCommand = kindCommand ["get", "clusters"]
 
 -- | Ask the driver for one cluster's kubeconfig.
 readKubeconfigCommand :: String -> HostCommand
 readKubeconfigCommand clusterName =
-    hostCommand Kind ["get", "kubeconfig", "--name", clusterName]
+    kindCommand ["get", "kubeconfig", "--name", clusterName]
 
 {- | Create the cluster, writing its kubeconfig where this run already owns a file.
 
@@ -92,7 +94,9 @@ The kubeconfig destination rides on the creating command rather than on a copy
 that follows it, so the credential is never written anywhere this transaction
 does not already hold. A declared configuration is optional because a cluster
 with no declared topology is a legitimate single-node one, and an empty
-@--config@ would name a file that does not exist rather than mean "none".
+@--config@ would name a file that does not exist rather than mean "none". The
+bounded wait keeps a successful create from racing the separate fresh API and
+node-readiness observation that follows it.
 -}
 createClusterCommand ::
     -- | the cluster's own name
@@ -103,11 +107,10 @@ createClusterCommand ::
     FilePath ->
     HostCommand
 createClusterCommand clusterName config kubeconfig =
-    hostCommand
-        Kind
+    kindCommand
         ( ["create", "cluster", "--name", clusterName]
             <> maybe [] (\path -> ["--config", path]) config
-            <> ["--kubeconfig", kubeconfig]
+            <> ["--kubeconfig", kubeconfig, "--wait", "5m"]
         )
 
 {- | Remove the cluster the driver names.
@@ -119,7 +122,17 @@ command is issued at all.
 -}
 deleteClusterCommand :: String -> HostCommand
 deleteClusterCommand clusterName =
-    hostCommand Kind ["delete", "cluster", "--name", clusterName]
+    kindCommand ["delete", "cluster", "--name", clusterName]
+
+{- | Keep Kind's progress chatter off the report vocabulary's error stream.
+
+Every successful answer is classified strictly, including mutations whose
+standard output is otherwise ignored. Kind writes ordinary progress to standard
+error by default, so its own global quiet flag is part of every typed Kind
+command rather than an exception in each report classifier.
+-}
+kindCommand :: [String] -> HostCommand
+kindCommand arguments = hostCommand Kind ("--quiet" : arguments)
 
 -- ---------------------------------------------------------------------------
 -- The container runtime

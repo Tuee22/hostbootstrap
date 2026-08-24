@@ -249,6 +249,7 @@ tests =
             root <- findRepoRoot cwd >>= maybe (fail ("could not locate repository root from " ++ cwd)) pure
             let sourceRoot = root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap"
             liftSource <- readFile (sourceRoot </> "Lift.hs")
+            networkSource <- readFile (sourceRoot </> "Network.hs")
             registrySource <- readFile (sourceRoot </> "Registry.hs")
             assertBool
                 "Lift must not import the higher Registry module"
@@ -262,6 +263,22 @@ tests =
             assertBool
                 "the registry-aware helper must be implemented in Registry"
                 (hasStr "liftSubcommandWithAuth" registrySource)
+            assertBool
+                "Network must project local endpoints from the cluster backend authority"
+                ( importsModule "HostBootstrap.Cluster.Backend" networkSource
+                    && hasStr "resolvedExposureHostPort" networkSource
+                    && hasStr "resolvedExposureRelayIdentity" networkSource
+                )
+            assertBool
+                "Network must expose no raw local endpoint or host-port constructor"
+                ( not (hasStr "loopbackExposure ::" networkSource)
+                    && not (hasStr "hostLocalEndpoint ::" networkSource)
+                    && not (hasStr "vmLocalEndpoint ::" networkSource)
+                    && not (hasStr "30500" networkSource)
+                )
+            assertBool
+                "reachLeaf remains an additive helper in generic Lift"
+                (hasStr "reachLeaf :: String -> LiftLeaf" liftSource)
         ]
 
 importsModule :: String -> String -> Bool

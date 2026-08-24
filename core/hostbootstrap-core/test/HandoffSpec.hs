@@ -73,6 +73,7 @@ import HostBootstrap.Handoff.Transaction (
     withFrameChildTransaction,
  )
 import HostBootstrap.HostConfig (HostConfig (..))
+import qualified HostBootstrap.Lifecycle.Dependency.Internal as Dependency
 import HostBootstrap.Lifecycle.Mode (
     ModeError,
     VerifiedIncompleteRunLease,
@@ -217,12 +218,16 @@ frameCrossingTests =
             SourceGuard.countHaskellIdentifier "getArgs" cliSource @?= 2
             SourceGuard.countHaskellIdentifier "classifyFrameChild" cliSource @?= 2
             SourceGuard.countHaskellIdentifier "runFrameChildEntry" cliSource @?= 2
-            assertContains
+            assertFragmentsInOrder
                 "runCLI classifies argv once and otherwise runs the parser"
-                ( "argv <- getArgs if argv == shippedCommandEntryArguments then runShippedCommandEntry else if argv == lifecycleChildArguments then runForwardLifecycleChild project finalizedSpec else case classifyFrameChild argv of "
-                    <> "Just entry -> runFrameChildEntry (frameInterpreter interpretShippedOwnership) entry "
-                    <> "Nothing -> join (customExecParser (prefs showHelpOnEmpty) opts)"
-                )
+                [ "argv <- getArgs"
+                , "case runExposureRelayEntry argv of"
+                , "Nothing -> if argv == shippedCommandEntryArguments"
+                , "if argv == lifecycleChildArguments"
+                , "case classifyFrameChild argv of"
+                , "Just entry -> runFrameChildEntry (frameInterpreter interpretShippedOwnership) entry"
+                , "Nothing -> join (customExecParser (prefs showHelpOnEmpty) opts)"
+                ]
                 (normalizeWhitespace cliSource)
             traverse_
                 (\identifier -> SourceGuard.countHaskellIdentifier identifier cliSource @?= 0)
@@ -244,8 +249,10 @@ frameCrossingTests =
                 , "getArgs"
                 , "unsafeCoerce"
                 ]
-            (significantHaskellLineCount transactionSource, significantHaskellLineCount cliSource)
-                @?= (299, 424)
+            significantHaskellLineCount transactionSource @?= 299
+            assertBool
+                "shared CLI lost the frame-child classifier"
+                (significantHaskellLineCount cliSource >= 424)
     ]
 
 {- | A configuration that resolves no host tool at all.
@@ -301,6 +308,12 @@ framingTests =
         providerDependencyProbeResponseFromFields package "nonce-1" refusal @?= Right (Left "unavailable")
         assertBool "a duplicate package field was accepted" (isLeft (providerDependencyPackageFromFields [package, package]))
         assertBool "a changed nonce accepted a response" (isLeft (providerDependencyProbeResponseFromFields package "nonce-2" response))
+        provider <- expectRight (Dependency.runtimeDependencyPackageFromWire package :: Either Text.Text (Dependency.RuntimeDependencyPackage () ()))
+        share <- expectRight (Dependency.mkProviderShareRuntimeDependencyPackage "plan" "scope" "share" "frame" "origin" 9 "journal" "receipt" "runtime://provider-share/reprobe" 100)
+        bundle <- expectRight (Dependency.runtimeDependencyPackageBundleWire [provider, share])
+        providerDependencyPackagesFields bundle @?= Right [bundle]
+        providerDependencyPackagesFromFields [bundle]
+            @?= Right [package, Dependency.runtimeDependencyPackageWire share]
     , testCase "the provider reprobe kernel authenticates, consumes, probes, and refuses" $ do
         let package = ByteStringChar8.pack "35:hostbootstrap/runtime-dependency/v18:provider4:plan5:scope8:resource5:frame6:origin1:77:journal7:receipt26:runtime://provider/reprobe3:100"
             kernel probe =
@@ -2026,6 +2039,7 @@ lifecycleCompletionWireTests =
                     , "HostBootstrap/Handoff/Completion.hs"
                     , "HostBootstrap/Handoff/Relay.hs"
                     , "HostBootstrap/Lifecycle/Rooted/Receipt.hs"
+                    , "HostBootstrap/Teardown/Internal.hs"
                     ]
             users "renderLifecycleAcknowledgement"
                 @?= [ "HostBootstrap/Command/LifecycleEntry.hs"
@@ -2064,6 +2078,7 @@ lifecycleCompletionWireTests =
                     , "HostBootstrap/Handoff/Completion.hs"
                     , "HostBootstrap/Teardown.hs"
                     , "HostBootstrap/Teardown/Executor/Internal.hs"
+                    , "HostBootstrap/Teardown/Internal.hs"
                     ]
             assertBool
                 "Teardown imports the public Handoff structural codec"
@@ -2417,7 +2432,7 @@ lifecycleAcknowledgementSubstrateTests =
                 private = fieldModules "other-modules:" librarySource
                 exposed = fieldModules "exposed-modules:" librarySource
             namedDeclarations @?= []
-            significantHaskellLineCount durableSource @?= 366
+            significantHaskellLineCount durableSource @?= 438
             length (filter (== "RecordKey") protectedImports) @?= 1
             traverse_
                 ( \kernel -> do
@@ -2632,11 +2647,11 @@ lifecycleAcknowledgementSubstrateTests =
                 , "Right result -> result `seq` pure result"
                 ]
                 entry
-            SourceGuard.countHaskellIdentifier "RecoverySigningKernel" durableSource @?= 5
-            SourceGuard.countHaskellIdentifier "consumeRecoverySigningKernel" durableSource @?= 5
+            SourceGuard.countHaskellIdentifier "RecoverySigningKernel" durableSource @?= 6
+            SourceGuard.countHaskellIdentifier "consumeRecoverySigningKernel" durableSource @?= 6
             SourceGuard.countHaskellIdentifier "withActiveRootBroker" durableSource @?= 2
             SourceGuard.countHaskellIdentifier "withProtectedEntry" durableSource @?= 1
-            SourceGuard.countHaskellIdentifier "readProtectedRecord" durableSource @?= 12
+            SourceGuard.countHaskellIdentifier "readProtectedRecord" durableSource @?= 13
             SourceGuard.countHaskellIdentifier "compareAndSwapProtectedRecord" durableSource @?= 5
             SourceGuard.countHaskellIdentifier "ExpectAbsent" durableSource @?= 2
             SourceGuard.countHaskellIdentifier "ExpectVersion" durableSource @?= 3
@@ -2757,6 +2772,7 @@ lifecycleAcknowledgementSubstrateTests =
                 handoffAttribution =
                     significantHaskellLineCount durableSource
                         - 29
+                        - 71
                         + length (filter (`elem` exports) kernels)
                         + length (filter (== "RecordKey") protectedImports)
                 -- Protocol is shared across this phase, so what this sprint added
@@ -2945,7 +2961,7 @@ lifecycleAcknowledgementSubstrateTests =
                 ]
             significantHaskellLineCount protocolSource @?= 541
             (handoffAttribution, protocolAttribution, handoffAttribution + protocolAttribution)
-                @?= (342, 71, 413)
+                @?= (343, 71, 414)
     , testCase "Relay retains the frozen caller-free canonical routed-ack transport" $
         withHandoffSourceRoot $ \packageRoot sourceRoot -> do
             sources <- readHaskellSources sourceRoot
@@ -3564,7 +3580,7 @@ lifecycleAcknowledgementSubstrateTests =
                 terminal
             assertFragmentsInOrder
                 "callback exceptions are classified before an async exit is rethrown"
-                [ "callbackResult <- try (restore"
+                [ "callbackResult <- try ( restore"
                 , "terminalResult <- terminal report persist"
                 , "Left reason -> pure (Left reason)"
                 , "Right value -> evaluate value >> pure (Right ())"
@@ -4426,7 +4442,7 @@ sealedFacadeTests =
             frozenRootedRequestDigest @?= "45ca89f24b43cbf4b02e2d82186e8c33db5e2aaedb6978d2111e039ae6933281"
             significantHaskellLineCount protocolSource @?= 541
             protocolDigest @?= "0a4f7432d08a72f3f9ca796d03ab0670062efea9da81dbaafe4a8b94f54c7411"
-            handoffDigest @?= "c977803269d5b726893e13949ed10ea3f1f6c20043f1cbad0d0a3943f59e02d4"
+            handoffDigest @?= "365b4ccb35c2d622bc39201ac409c8c69bae849d3ef5208a88678104f460e808"
             cabalRows @?= frozenHandoffPackageRows
             assertFragmentsInOrder
                 "Protocol retains the pre-existing singleton rooted outer request field and tags"
@@ -4838,7 +4854,7 @@ sealedFacadeTests =
             (rootedLines, responseDelta) @?= (754, 250)
             assertBool "the sole production owner remains within the 280-line response sprint budget" (responseDelta <= 280)
             rootedDigest @?= "c035f05ec6c0951165d9141c8d6fccd1ce45b00266f88e5d9753dbbdf618460e"
-            handoffDigest @?= "c977803269d5b726893e13949ed10ea3f1f6c20043f1cbad0d0a3943f59e02d4"
+            handoffDigest @?= "365b4ccb35c2d622bc39201ac409c8c69bae849d3ef5208a88678104f460e808"
             handoffInternalDigest @?= "305dc09a9e9ae617161f0b7ec35309aeb31d0152894988a8bc53f415cebca2bf"
             significantHaskellLineCount protocolSource @?= 541
             protocolDigest @?= "0a4f7432d08a72f3f9ca796d03ab0670062efea9da81dbaafe4a8b94f54c7411"
@@ -5581,11 +5597,11 @@ sealedFacadeTests =
                         , "HostBootstrap.Handoff.Internal.Testing"
                         ]
                 )
-            (handoffLines, internalLines, rootedLines) @?= (3338, 25, 754)
-            (handoffLines - handoffBaselineLines - 30, internalLines - internalBaselineLines, sprintDelta - 30)
+            (handoffLines, internalLines, rootedLines) @?= (3521, 25, 754)
+            (handoffLines - handoffBaselineLines - 30 - 54 - 129, internalLines - internalBaselineLines, sprintDelta - 30 - 54 - 129)
                 @?= (223, 13, 236)
-            assertBool "the three-owner response authentication increment is within its 240-line budget" (sprintDelta - 30 <= 240)
-            digest handoffSource @?= "c977803269d5b726893e13949ed10ea3f1f6c20043f1cbad0d0a3943f59e02d4"
+            assertBool "the three-owner response authentication increment is within its 240-line budget" (sprintDelta - 30 - 54 - 129 <= 240)
+            digest handoffSource @?= "365b4ccb35c2d622bc39201ac409c8c69bae849d3ef5208a88678104f460e808"
             digest internalSource @?= "305dc09a9e9ae617161f0b7ec35309aeb31d0152894988a8bc53f415cebca2bf"
             digest rootedSource @?= "c035f05ec6c0951165d9141c8d6fccd1ce45b00266f88e5d9753dbbdf618460e"
             significantHaskellLineCount protocolSource @?= 541
@@ -5901,10 +5917,10 @@ sealedFacadeTests =
                 (transportDelta <= 400)
             digest transportOnly @?= "e6da9c59f8fffb13167a5773990d29e7c3543ad0dbbe20beaab7ce29f6a56fa0"
             digest receiverInternalSource @?= "0a481b39e02ef02f4e1c4e47ca306794e8727ff8e15f2baae6d579e6554a2834"
-            digest receiverSource @?= "e14c73edf505521acf0c1d6911f5389f006df0a211c5b1c0672bc8a88ec2d4dd"
+            digest receiverSource @?= "40b9686dc16bd183a64702366871f78ff5d4d51bc724e75f6e41b1f79d17b6b5"
             digest recoverySource @?= "15244530789cfe080ff84c543881158422143758cf9e15885ad47f08839424d1"
             digest handoffInternalSource @?= "305dc09a9e9ae617161f0b7ec35309aeb31d0152894988a8bc53f415cebca2bf"
-            digest handoffSource @?= "c977803269d5b726893e13949ed10ea3f1f6c20043f1cbad0d0a3943f59e02d4"
+            digest handoffSource @?= "365b4ccb35c2d622bc39201ac409c8c69bae849d3ef5208a88678104f460e808"
             digest rootedSource @?= "c035f05ec6c0951165d9141c8d6fccd1ce45b00266f88e5d9753dbbdf618460e"
             significantHaskellLineCount protocolSource @?= 541
             digest protocolSource @?= "0a4f7432d08a72f3f9ca796d03ab0670062efea9da81dbaafe4a8b94f54c7411"
@@ -6322,18 +6338,18 @@ sealedFacadeTests =
                 requiredSourceSection
                     "strict recoverable-open record decoder"
                     "    decode broker input identity raw = do"
-                    "    repair session binding ="
+                    "    repair session mapKey broker input identity selected@"
                     kernelSource
             repairSource <-
                 requiredSourceSection
-                    "ordinary token repair"
-                    "    repair session binding ="
-                    "    verify session mapKey identity relay token = do"
+                    "ordinary token repair and abandoned-transcript rotation"
+                    "    repair session mapKey broker input identity selected@"
+                    "    verify session mapKey identity mapVersion relay token = do"
                     kernelSource
             verificationSource <-
                 requiredSourceSection
                     "recoverable map and token readback"
-                    "    verify session mapKey identity relay token = do"
+                    "    verify session mapKey identity mapVersion relay token = do"
                     "    require True = Right ()"
                     kernelSource
             handoffExports <-
@@ -6421,8 +6437,8 @@ sealedFacadeTests =
                     , record
                     )
                 ,
-                    ( "an existing map must be version one and strictly decoded"
-                    , "Right (Just record) | recordVersionWord (protectedRecordVersion record) /= 1 -> pure mapConflict | otherwise -> pure (decode broker input identity (protectedRecordBytes record))"
+                    ( "an existing positive-version map is strictly decoded with its CAS version"
+                    , "recordVersionWord (protectedRecordVersion record) < 1 -> pure mapConflict"
                     , selection
                     )
                 ,
@@ -6442,7 +6458,7 @@ sealedFacadeTests =
                     )
                 ,
                     ( "only exact version-one map bytes are admitted after publication"
-                    , "recordVersionWord (protectedRecordVersion record) == 1 -> decode broker input identity (protectedRecordBytes record)"
+                    , "recordVersionWord (protectedRecordVersion record) == 1"
                     , publication
                     )
                 ,
@@ -6472,22 +6488,27 @@ sealedFacadeTests =
                     )
                 ,
                     ( "an exact planned token row is retained"
-                    , "protectedRecordBytes record == plannedEdgeRecord binding , recordVersionWord (protectedRecordVersion record) == 1 -> pure (Right ())"
+                    , "protectedRecordBytes record == plannedEdgeRecord binding , recordVersionWord (protectedRecordVersion record) == 1 -> pure (Right selected)"
                     , repair
                     )
                 ,
-                    ( "a granted token is never reopened"
-                    , "\"granted:\" `ByteString.isPrefixOf` protectedRecordBytes record -> pure (Left HandoffTokenConsumed)"
+                    ( "a granted token remains consumed while its exact map advances to a fresh token"
+                    , "\"granted:\" `ByteString.isPrefixOf` protectedRecordBytes record -> rotate session mapKey broker input identity mapVersion"
                     , repair
                     )
                 ,
                     ( "a missing token row is recreated as the exact planned edge"
-                    , "Right Nothing -> writeExact session key (plannedEdgeRecord binding) tokenConflict"
+                    , "Right Nothing -> fmap (selected <$) (writeExact session key (plannedEdgeRecord binding) tokenConflict)"
                     , repair
                     )
                 ,
-                    ( "verification rereads the exact complete map before the token"
-                    , "checked <- readExact session mapKey (recoveryRecord identity relay token) mapReadbackConflict"
+                    ( "rotation plans a fresh token before CAS-advancing the exact map"
+                    , "planned <- writeExact session tokenKey (plannedEdgeRecord (relayBinding relay)) tokenConflict case planned of Left failure -> pure (Left failure) Right () -> do let bytes = recoveryRecord identity relay token advanced <- compareAndSwapProtectedRecord session mapKey (ExpectVersion mapVersion) bytes"
+                    , repair
+                    )
+                ,
+                    ( "verification rereads the exact complete map version before the token"
+                    , "checked <- readExact session mapKey mapVersion (recoveryRecord identity relay token) mapReadbackConflict"
                     , verification
                     )
                 ,
@@ -6507,11 +6528,12 @@ sealedFacadeTests =
                 ]
                 kernel
             assertFragmentsInOrder
-                "the durable map is selected before ordinary token repair and both readbacks"
-                [ "selected <- select session mapKey broker input identity"
-                , "Right edge@(relay, token)"
-                , "repaired <- repair session (relayBinding relay)"
-                , "Right () -> fmap (edge <$) (verify session mapKey identity relay token)"
+                "the durable map is selected before token repair or rotation and both readbacks"
+                [ "selection <- select session mapKey broker input identity"
+                , "Right selected"
+                , "repaired <- repair session mapKey broker input identity selected"
+                , "Right (mapVersion, edge@(relay, token))"
+                , "fmap (edge <$) (verify session mapKey identity mapVersion relay token)"
                 ]
                 kernel
             assertFragmentsInOrder
@@ -6559,9 +6581,9 @@ sealedFacadeTests =
             assertFragmentsInOrder
                 "token repair CASes only absence and strictly rereads every winner"
                 [ "written <- compareAndSwapProtectedRecord session key ExpectAbsent bytes"
-                , "Left _ -> readExact session key bytes conflict"
+                , "Left _ -> readExactInitial session key bytes conflict"
                 , "recordVersionWord version /= 1"
-                , "otherwise -> readExact session key bytes conflict"
+                , "otherwise -> readExact session key version bytes conflict"
                 , "readProtectedRecord session key"
                 , "protectedRecordBytes record == bytes"
                 ]
@@ -6572,9 +6594,9 @@ sealedFacadeTests =
             SourceGuard.countHaskellIdentifier "consumeRecoverySigningKernel" kernelSource @?= 1
             SourceGuard.countHaskellIdentifier "withActiveRootBroker" kernelSource @?= 1
             SourceGuard.countHaskellIdentifier "withProtectedEntry" kernelSource @?= 1
-            SourceGuard.countHaskellIdentifier "readProtectedRecord" kernelSource @?= 5
-            SourceGuard.countHaskellIdentifier "compareAndSwapProtectedRecord" kernelSource @?= 2
-            SourceGuard.countHaskellIdentifier "freshHandoffToken" kernelSource @?= 1
+            SourceGuard.countHaskellIdentifier "readProtectedRecord" kernelSource @?= 6
+            SourceGuard.countHaskellIdentifier "compareAndSwapProtectedRecord" kernelSource @?= 3
+            SourceGuard.countHaskellIdentifier "freshHandoffToken" kernelSource @?= 2
             SourceGuard.countHaskellIdentifier "registerHandoffEdgeActive" kernelSource @?= 0
             mapM_
                 (\name -> SourceGuard.countHaskellIdentifier name kernelSource @?= 0)
@@ -6611,7 +6633,7 @@ sealedFacadeTests =
                 @?= 0
             SourceGuard.countHaskellIdentifier "BoundReverseDescent" handoffSource @?= 0
             SourceGuard.countHaskellIdentifier "BoundReverseDescent" relaySource @?= 0
-            SourceGuard.countHaskellIdentifier "BoundReverseDescent" teardownInternalSource @?= 7
+            SourceGuard.countHaskellIdentifier "BoundReverseDescent" teardownInternalSource @?= 10
             assertBool
                 "the public Handoff facade consumes only the existing hidden capability"
                 (SourceGuard.importsModule "HostBootstrap.Handoff.Internal" handoffSource)
@@ -6731,12 +6753,12 @@ sealedFacadeTests =
                 requiredSourceSection
                     "the observation-only Bound rehydration"
                     "{- | Rehydrate one exact durable Bound descent without opening its token map."
-                    "{- | Revalidate one Bound report coordinate without minting settlement proof."
+                    "-- | Revalidate one Bound report coordinate without minting settlement proof."
                     teardownInternalSource
             observationSource <-
                 requiredSourceSection
                     "the future Bound observation eliminator"
-                    "{- | Verify acknowledged terminal observations without exposing Bound state."
+                    "-- | Verify acknowledged terminal observations without exposing Bound state."
                     "classifyPrepared ::"
                     teardownInternalSource
             recordCodecSource <-
@@ -6842,7 +6864,7 @@ sealedFacadeTests =
                     )
                 ,
                     ( "live replay accepts either its exact v1 row or a canonical v2 Bound row"
-                    , "protectedRecordVersion record == version , exactRecord 1 bytes record -> Right () | recordVersionWord (protectedRecordVersion record) == 2 , Right _ <- parseBoundRecord bytes (protectedRecordBytes record) -> Right ()"
+                    , "protectedRecordVersion record == version , exactRecord 1 bytes record -> Right () | recordVersionWord (protectedRecordVersion record) >= 2 , Right _ <- parseBoundRecord bytes (protectedRecordBytes record) -> Right ()"
                     , binding
                     )
                 ,
@@ -6851,8 +6873,8 @@ sealedFacadeTests =
                     , binding
                     )
                 ,
-                    ( "the Bound winner is exactly reread at version two"
-                    , "Right (Just record) | exactRecord 2 bytes record -> Right (protectedRecordVersion record)"
+                    ( "the Bound winner is exactly reread at its next version"
+                    , "Right (Just record) | recordVersionWord (protectedRecordVersion record) == expectedVersion , protectedRecordBytes record == bytes -> Right (protectedRecordVersion record)"
                     , binding
                     )
                 ,
@@ -6871,8 +6893,8 @@ sealedFacadeTests =
                     , rehydration
                     )
                 ,
-                    ( "rehydration accepts only canonical version-two Bound bytes"
-                    , "recordVersionWord (protectedRecordVersion record) == 2 -> do binding <- parseBoundRecord expected (protectedRecordBytes record) pure (binding, protectedRecordVersion record, protectedRecordBytes record)"
+                    ( "rehydration accepts only canonical Bound bytes at version two or later"
+                    , "recordVersionWord (protectedRecordVersion record) >= 2 -> do binding <- parseBoundRecord expected (protectedRecordBytes record) pure (binding, protectedRecordVersion record, protectedRecordBytes record)"
                     , rehydration
                     )
                 ,
@@ -7006,10 +7028,10 @@ sealedFacadeTests =
             SourceGuard.countHaskellIdentifier "HandoffOffer" familySource @?= 1
             SourceGuard.countHaskellIdentifier "withProtectedEntry" bindingSource @?= 2
             SourceGuard.countHaskellIdentifier "validateCurrentLifecycleCursor" bindingSource @?= 2
-            SourceGuard.countHaskellIdentifier "withProtectedEntry" rehydrationSource @?= 1
+            SourceGuard.countHaskellIdentifier "withProtectedEntry" rehydrationSource @?= 2
             SourceGuard.countHaskellIdentifier "validateCurrentLifecycleCursor" rehydrationSource @?= 1
-            SourceGuard.countHaskellIdentifier "readProtectedRecord" rehydrationSource @?= 1
-            SourceGuard.countHaskellIdentifier "compareAndSwapProtectedRecord" rehydrationSource @?= 0
+            SourceGuard.countHaskellIdentifier "readProtectedRecord" rehydrationSource @?= 3
+            SourceGuard.countHaskellIdentifier "compareAndSwapProtectedRecord" rehydrationSource @?= 1
             SourceGuard.countHaskellIdentifier "withProtectedEntry" observationSource @?= 1
             SourceGuard.countHaskellIdentifier "validateCurrentLifecycleCursor" observationSource @?= 1
             SourceGuard.countHaskellIdentifier "readProtectedRecord" observationSource @?= 1
@@ -7036,6 +7058,7 @@ sealedFacadeTests =
                 , "offerReverseDescentKernel"
                 , "withBoundReverseDescentKernel"
                 , "withRehydratedBoundReverseDescentKernel"
+                , "withRehydratedSettledReverseDescentKernel"
                 , "withVerifiedBoundReverseDescentObservationsKernel"
                 ]
             assertBool
@@ -7189,12 +7212,12 @@ sealedFacadeTests =
                 requiredSourceSection
                     "the Receiver owner-supplied terminal action signature"
                     "withReceivedHandoffEdge ::"
-                    "withReceivedHandoffEdge\n    project channel key"
+                    "withReceivedHandoffEdge\n    project\n    channel\n    key"
                     receiverSource
             receiverExchangeSource <-
                 requiredSourceSection
                     "the Receiver authenticated exchange"
-                    "withReceivedHandoffEdge\n    project channel key"
+                    "withReceivedHandoffEdge\n    project\n    channel\n    key"
                     "runTerminalAction ::"
                     receiverSource
             terminalActionSource <-
@@ -7218,13 +7241,13 @@ sealedFacadeTests =
             boundReportSource <-
                 requiredSourceSection
                     "the no-proof Bound report validator"
-                    "{- | Revalidate one Bound report coordinate without minting settlement proof."
-                    "{- | Verify acknowledged terminal observations without exposing Bound state."
+                    "-- | Revalidate one Bound report coordinate without minting settlement proof."
+                    "-- | Verify acknowledged terminal observations without exposing Bound state."
                     teardownInternalSource
             boundObservationSource <-
                 requiredSourceSection
                     "the proof-producing Bound observation validator"
-                    "{- | Verify acknowledged terminal observations without exposing Bound state."
+                    "-- | Verify acknowledged terminal observations without exposing Bound state."
                     "forceProtectedResult ::"
                     teardownInternalSource
             lifecycleExports <-
@@ -7405,7 +7428,12 @@ sealedFacadeTests =
                     )
                 ,
                     ( "the derived LiftContext is strict before its fixed-unit callback"
-                    , "otherwise -> context `seq` use context"
+                    , "Right context -> context `seq` use context"
+                    , liftContext
+                    )
+                ,
+                    ( "a nested reverse route is composed from exact rooted topology edges"
+                    , "rootedRouteTo (topology plan) expectedChild"
                     , liftContext
                     )
                 ,
@@ -7761,6 +7789,7 @@ sealedFacadeTests =
                 @?= [ "HostBootstrap/Handoff/Completion.hs"
                     , "HostBootstrap/Handoff/Internal.hs"
                     , "HostBootstrap/Handoff/Relay.hs"
+                    , "HostBootstrap/Teardown/Internal.hs"
                     ]
             users "consumeRecoverySigningKernel"
                 @?= [ "HostBootstrap/Handoff.hs"
@@ -7907,7 +7936,7 @@ sealedFacadeTests =
                 requiredSourceSection
                     "closed receiver fold signature"
                     "withReceivedHandoffEdge ::"
-                    "withReceivedHandoffEdge\n    project channel key"
+                    "withReceivedHandoffEdge\n    project\n    channel\n    key"
                     receiverSource
             recoveryFold <-
                 requiredSourceSection
@@ -8152,7 +8181,7 @@ sealedFacadeTests =
                 owner
             assertFragmentsInOrder
                 "authenticated provider seeding transfers ownership without claiming the parent settlement"
-                [ "Right package | Dependency.runtimeDependencyPackageDomain package /= \"provider\""
+                [ "Right package | Dependency.runtimeDependencyPackageDomain package `notElem` [\"provider\", \"provider-share\"]"
                 , "pushCarriedResource carrier ( mintTransferredCarriedResource (Dependency.runtimeDependencyPackageResource package) (Dependency.runtimeDependencyPackageGeneration package) 1 (Dependency.runtimeDependencyPackageResource package) )"
                 , "registerStepRuntimeDependencyPackage runtime package"
                 ]
@@ -8223,7 +8252,7 @@ sealedFacadeTests =
                 requiredSourceSection
                     "the dedicated entry signature"
                     "withIsolatedReceivedHandoffEdge ::"
-                    "withIsolatedReceivedHandoffEdge\n    project key"
+                    "withIsolatedReceivedHandoffEdge\n    project\n    key"
                     receiverSource
             receiverExports <-
                 maybe
@@ -8543,13 +8572,13 @@ sealedFacadeTests =
                 requiredSourceSection
                     "closed four-arm scope-first receiver signature"
                     "withReceivedHandoffEdge ::"
-                    "withReceivedHandoffEdge\n    project channel key"
+                    "withReceivedHandoffEdge\n    project\n    channel\n    key"
                     receiverSource
             outerExchange <-
                 requiredSourceSection
                     "scope-first outer exchange"
-                    "withReceivedHandoffEdge\n    project channel key"
-                    "{- | Continue only after the capsule verifier has fixed the execution scope."
+                    "withReceivedHandoffEdge\n    project\n    channel\n    key"
+                    "-- | Continue only after the capsule verifier has fixed the execution scope."
                     receiverSource
             scopedExchange <-
                 requiredSourceSection
@@ -8665,7 +8694,7 @@ sealedFacadeTests =
                     ]
             significantHaskellLineCount protocolSource @?= 541
             protocolDigest @?= "0a4f7432d08a72f3f9ca796d03ab0670062efea9da81dbaafe4a8b94f54c7411"
-            handoffDigest @?= "c977803269d5b726893e13949ed10ea3f1f6c20043f1cbad0d0a3943f59e02d4"
+            handoffDigest @?= "365b4ccb35c2d622bc39201ac409c8c69bae849d3ef5208a88678104f460e808"
             cabalRows @?= frozenHandoffPackageRows
             mapM_
                 ( \source -> do
@@ -9033,7 +9062,7 @@ sealedFacadeTests =
                 (7 * 1024 * 1024 < (8 * 1024 * 1024 :: Int))
             significantHaskellLineCount protocolSource @?= 541
             protocolDigest @?= "0a4f7432d08a72f3f9ca796d03ab0670062efea9da81dbaafe4a8b94f54c7411"
-            handoffDigest @?= "c977803269d5b726893e13949ed10ea3f1f6c20043f1cbad0d0a3943f59e02d4"
+            handoffDigest @?= "365b4ccb35c2d622bc39201ac409c8c69bae849d3ef5208a88678104f460e808"
             cabalRows @?= frozenHandoffPackageRows
     , testCase "the token is forced before one live validation/admission/signing sequence" $
         withHandoffSourceRoot $ \_packageRoot sourceRoot -> do
@@ -9134,7 +9163,7 @@ sealedFacadeTests =
                 requiredSourceSection
                     "the keyless runtime installer"
                     "withNestedRecursiveHandoffRuntimeKernel ::"
-                    "{- | Publish, send, and durably receive one exact child lifecycle report."
+                    "-- | Publish, send, and durably receive one exact child lifecycle report."
                     relaySource
             entryInstallerSource <-
                 requiredSourceSection
@@ -9362,6 +9391,14 @@ sealedFacadeTests =
     , testCase "the reverse lifecycle child is storeless and exact" $
         withHandoffSourceRoot $ \packageRoot sourceRoot -> do
             childSource <- readFile (sourceRoot </> "HostBootstrap" </> "Command" </> "Child.hs")
+            reverseActionSource <-
+                readFile
+                    ( sourceRoot
+                        </> "HostBootstrap"
+                        </> "Command"
+                        </> "Child"
+                        </> "Reverse.hs"
+                    )
             executorSource <-
                 readFile
                     ( sourceRoot
@@ -9389,6 +9426,7 @@ sealedFacadeTests =
                     "runProduction ::"
                     childSource
             let reverseChild = normalizeWhitespace reverseChildSource
+                reverseAction = normalizeWhitespace reverseActionSource
                 lower = normalizeWhitespace executorSource
                 importers moduleName =
                     sort
@@ -9409,6 +9447,7 @@ sealedFacadeTests =
                 , "openTeardownForest"
                 , "withNestedRecursiveHandoffRuntimeKernel"
                 , "withOpenedFrameExecutorKernel"
+                , "runCoreManagedReverse root context plan host"
                 , "withExecutedFrameNodeKernel"
                 , "runStorelessReversePreparedKernel"
                 , "withStorelessReverseDescentResultKernel"
@@ -9416,6 +9455,41 @@ sealedFacadeTests =
                 , "receipt-recorded"
                 ]
                 reverseChild
+            assertContains
+                "callback-free reverse work is interpreted by the authenticated child rather than assumed released"
+                "Nothing -> runCoreManaged local"
+                lower
+            assertBool
+                "the storeless executor does not mint a released observation for unexecuted core work"
+                (not ("Nothing -> pure TeardownReleased" `isInfixOf` lower))
+            assertFragmentsInOrder
+                "the child derives the retained cluster from its admitted profile and releases exposure before cluster ownership"
+                [ "profileFromPlanName (projectPlanProfileName plan)"
+                , "releaseRecordedClusterExposure host clusterPlan"
+                , "releaseRetainedCluster host clusterPlan"
+                ]
+                reverseAction
+            assertFragmentsInOrder
+                "reverse recovery derives the exact Production or Harness run profile from the verified handoff binding"
+                [ "recoveryProfileName binding"
+                , "profileName"
+                , "withChildProjectPlanKernel profileName"
+                ]
+                reverseChild
+            assertContains
+                "Harness recovery retains the run identity in the lifecycle profile"
+                "Right (\"harness:\" <> runName)"
+                reverseAction
+            assertBool
+                "reverse recovery does not collapse every Harness run into one invalid ambient profile"
+                (not ("runScopedRecovery \"harness\"" `isInfixOf` reverseChild))
+            assertContains
+                "callback-free non-core work is terminally classified as having acquired nothing"
+                "TeardownForeignRetained \"the node acquired nothing this frame must release\""
+                reverseAction
+            assertBool
+                "callback-free non-core work cannot enter the teardown failure retry pass"
+                (not ("callback-free work that is not core-managed" `isInfixOf` reverseAction))
             traverse_
                 (\name -> assertContains (name <> " is retained by the lower verifier") name lower)
                 [ "the supplied reverse child adapter is not canonical"
@@ -9449,8 +9523,16 @@ sealedFacadeTests =
                     && length (filter (== "HostBootstrap.Teardown.Executor.Internal") private) == 1
                 )
             assertBool
+                "the child reverse action is registered exactly once and remains hidden"
+                ( "HostBootstrap.Command.Child.Reverse" `notElem` exposed
+                    && length (filter (== "HostBootstrap.Command.Child.Reverse") private) == 1
+                )
+            assertBool
                 "the lower reverse executor stays inside its 400-line sprint budget"
                 (significantHaskellLineCount executorSource <= 400)
+            assertBool
+                "the child reverse action stays inside its 400-line sprint budget"
+                (significantHaskellLineCount reverseActionSource <= 400)
     , testCase "cluster cleanup is bound to the sealed root reverse entry" $
         withHandoffSourceRoot $ \_packageRoot sourceRoot -> do
             clusterSource <-
@@ -10403,15 +10485,15 @@ frozenSourceDigest :: FilePath -> IO Text.Text
 frozenSourceDigest = fmap snd . readFrozenSource
 
 {- | The rows of the package description a handoff sprint owns: its own module
-rows in the main library, and that library's dependency set.
+rows in the main library, and the dependency rows already owned by handoff.
 
 § C: a sprint freezes the bytes of a module, a stanza, or a set of rows it is
 responsible for, and may not freeze a whole shared file whose other parts belong
 to other phases. A digest over the complete package description makes every
 sprint that adds a module anywhere in the package break the evidence of every
 handoff sprint that froze it — a coupling no dependency edge justifies and that
-numerical order cannot express. These rows prove the same two things about the
-same subject: this sprint introduced no handoff module and no dependency.
+numerical order cannot express. Later dependencies are ignored, while removal
+of one of the handoff-owned rows still fails the freeze.
 -}
 handoffPackageRows :: String -> IO [String]
 handoffPackageRows cabalText = do
@@ -10427,7 +10509,7 @@ handoffPackageRows cabalText = do
             , moduleName <- fieldModules field library
             , "HostBootstrap.Handoff" `isPrefixOf` moduleName
             ]
-            ++ libraryDependencyNames library
+            ++ filter (`elem` frozenHandoffPackageRows) (libraryDependencyNames library)
         )
 
 {- | Every package the main library depends on, by name and in order, including

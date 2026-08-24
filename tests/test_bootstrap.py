@@ -547,6 +547,7 @@ async def test_bootstrap_linux_builds_host_native_without_writing_dhall(
         bootstrap.cabal_update_command(),
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
+        (str(bootstrap.binary_path(spec, tmp_path)), "--hostbootstrap-install-identity"),
     ]
     assert (tmp_path / ".build").is_dir()
     assert not any(path.suffix == ".dhall" for path in (tmp_path / ".build").iterdir())
@@ -566,7 +567,8 @@ async def test_build_binary_builds_without_exec_or_dhall(
     binary = await bootstrap.build_binary(spec, project_root=tmp_path)
 
     assert doctored == [LINUX_CPU]
-    # build_binary builds and locates the binary -- it does NOT run any
+    # build_binary builds and locates the binary, then asks that installed
+    # binary to provision its own cryptographic identity. It does not run any
     # ``project init`` / config-init step (no auto-init).
     assert recorded_commands == [
         # A satisfied host runs the library probe and installs nothing.
@@ -577,6 +579,7 @@ async def test_build_binary_builds_without_exec_or_dhall(
         bootstrap.cabal_update_command(),
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
+        (str(bootstrap.binary_path(spec, tmp_path)), "--hostbootstrap-install-identity"),
     ]
     assert all("init" not in cmd for cmd in recorded_commands)
     assert binary == bootstrap.binary_path(spec, tmp_path)
@@ -616,6 +619,7 @@ async def test_build_native_skips_update_for_fresh_index_and_unchanged_copy(
     assert commands == [
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
+        (str(destination), "--hostbootstrap-install-identity"),
     ]
     assert copies == []
 
@@ -647,6 +651,10 @@ async def test_build_native_offline_uses_cache_and_copies_changed_binary(
     assert commands == [
         bootstrap.native_build_command(spec, tmp_path, offline=True),
         bootstrap.native_listbin_command(spec, tmp_path),
+        (
+            str(bootstrap.binary_path(spec, tmp_path)),
+            "--hostbootstrap-install-identity",
+        ),
     ]
     assert bootstrap.binary_path(spec, tmp_path).read_bytes() == b"new binary"
 
@@ -754,10 +762,11 @@ async def test_bootstrap_linux_gpu_builds_host_native(
     spec = _project(tmp_path)
     await bootstrap.bootstrap(spec, project_root=tmp_path)
 
-    assert recorded_commands[-3:] == [
+    assert recorded_commands[-4:] == [
         bootstrap.cabal_update_command(),
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
+        (str(bootstrap.binary_path(spec, tmp_path)), "--hostbootstrap-install-identity"),
     ]
     assert execed == [[str(bootstrap.binary_path(spec, tmp_path))]]
 
@@ -782,6 +791,7 @@ async def test_bootstrap_apple_provisioned_host_probes_then_builds_native(
         bootstrap.cabal_update_command(),
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
+        (str(bootstrap.binary_path(spec, tmp_path)), "--hostbootstrap-install-identity"),
     ]
     assert execed == [[str(bootstrap.binary_path(spec, tmp_path)), "--help"]]
 
@@ -822,6 +832,7 @@ async def test_bootstrap_linux_fresh_host_installs_toolchain(
         bootstrap.cabal_update_command(),
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
+        (str(bootstrap.binary_path(spec, tmp_path)), "--hostbootstrap-install-identity"),
     ]
     assert installed == [LINUX_CPU]
     assert execed == [[str(bootstrap.binary_path(spec, tmp_path)), "play"]]
@@ -849,6 +860,7 @@ async def test_bootstrap_apple_fresh_host_installs_homebrew_toolchain(
         bootstrap.cabal_update_command(),
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
+        (str(bootstrap.binary_path(spec, tmp_path)), "--hostbootstrap-install-identity"),
     ]
     assert execed == [[str(bootstrap.binary_path(spec, tmp_path)), "--help"]]
 

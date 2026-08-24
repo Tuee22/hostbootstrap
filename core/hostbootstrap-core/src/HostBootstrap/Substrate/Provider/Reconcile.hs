@@ -59,6 +59,7 @@ module HostBootstrap.Substrate.Provider.Reconcile (
     ProviderShareSettlement,
     withProviderShareSettlement,
     settleProviderShare,
+    carryProviderShareSettlement,
     ProviderStartable,
     providerStartableAfterProvision,
     providerStartableAfterStop,
@@ -74,6 +75,8 @@ module HostBootstrap.Substrate.Provider.Reconcile (
     carryCreatedRunningProviderSettlement,
     withFreshRunningProviderDependency,
     withFreshCarriedRunningProviderDependency,
+    ProviderShareDependency,
+    withFreshCarriedProviderShareDependency,
     withFreshRunningProviderHandle,
     ProviderStopCallResult,
     PreparedProviderStop,
@@ -100,6 +103,7 @@ import HostBootstrap.Lifecycle.Dependency.Internal (
     runtimeDependencyProbeRequest,
     verifyRuntimeDependencyProbeResponse,
     withCarriedProviderRuntimeDependencyCoordinates,
+    withCarriedProviderShareRuntimeDependencyCoordinates,
     withProviderRuntimeDependencyCoordinates,
  )
 import HostBootstrap.Lifecycle.Execution (
@@ -125,7 +129,7 @@ import HostBootstrap.Reconcile (
     OperationPreconditionSet,
     OwnershipReceipt,
     PhaseTransition,
-    PlannedResourceKind (ProviderResourceKind),
+    PlannedResourceKind (DurableShareResourceKind, ProviderResourceKind),
     PreparedOperation,
     PreparedPhaseTransition,
     PreparedPreconditions,
@@ -166,7 +170,10 @@ import HostBootstrap.Reconcile (
     withReconcileResult,
     zeroDependencyPreconditions,
  )
-import HostBootstrap.Substrate.Provider.Dependency.Internal (RunningProviderDependency (..))
+import HostBootstrap.Substrate.Provider.Dependency.Internal (
+    ProviderShareDependency (..),
+    RunningProviderDependency (..),
+ )
 import HostBootstrap.Substrate.Provider.Observation.Internal (
     ManagedProviderHandle (..),
     ManagedProviderShareHandle (..),
@@ -740,6 +747,19 @@ providerShareSettlement (PreparedProviderBinding origin _ _) reconciled =
                 )
         )
 
+{- | Publish an owned provider share as this node's settled managed resource.
+The share is acquired directly in its final Provisioned phase, so its durable
+member retains the acquisition's absent predecessor just like a freshly
+created provider carried directly to Running.
+-}
+carryProviderShareSettlement ::
+    StepExecution scope planId ->
+    ManagedProviderShareHandle scope planId backendId providerId shareId Provisioned ->
+    Text ->
+    IO (Either ReconcileError ())
+carryProviderShareSettlement execution (ManagedProviderShareHandle _ handle receipt) adapter =
+    carryManagedResourceSettlement execution handle receipt "provisioned" adapter
+
 -- Managed phase preparations ------------------------------------------------
 
 {- | Plan-owned eligibility for the two provider states that may boot.
@@ -955,6 +975,61 @@ withFreshCarriedRunningProviderDependency execution scopeCommitment dependencyKe
         _ -> pure (dependencyFailure "the provider package registry contains duplicate resource keys")
   where
     dependencyFailure reason = Left (Failure (FailureDetail "recover carried provider runtime dependency" reason ReprobeBeforeRetry))
+
+{- | Recover a provider-derived durable share carried from the parent frame.
+Both its managed receipt and its closed @provider-share@ package must name the
+same resource generation before the owner-serviced fresh reprobe is retained.
+-}
+withFreshCarriedProviderShareDependency ::
+    StepExecution scope planId ->
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    Text ->
+    (forall shareId shareFrame. PlannedResource scope planId shareId DurableShareResource shareFrame -> ProviderShareDependency scope planId shareId -> result) ->
+    IO (Either ReconcileError result)
+withFreshCarriedProviderShareDependency execution scopeCommitment dependencyKey route now nonce consume = do
+    packages <- ExecutionInternal.stepRuntimeDependencyPackages (ExecutionInternal.stepExecutionRuntime execution)
+    case filter ((== "provider-share:" <> dependencyKey) . runtimeDependencyPackageKey) packages of
+        [package] ->
+            case withNodeResourceOfKind execution DurableShareResourceKind dependencyKey $ \planned -> do
+                carried <- withCarriedManagedResourceReceipt execution dependencyKey $ \oldHandle oldReceipt ->
+                    withPlannedReboundManagedResourceEvidence planned oldHandle oldReceipt $ \handle receipt ->
+                        case withCarriedProviderShareRuntimeDependencyCoordinates
+                            scopeCommitment
+                            dependencyKey
+                            (plannedResourceFrame planned)
+                            (resourceHandleGeneration handle)
+                            route
+                            now
+                            package
+                            (\_origin _route -> ()) of
+                            Left refusal -> pure (dependencyFailure refusal)
+                            Right () -> do
+                                first <- invokePackageProbe execution package nonce
+                                case first of
+                                    Left failure -> pure (Left failure)
+                                    Right generation
+                                        | generation /= resourceHandleGeneration handle ->
+                                            pure (Left (Conflict (ConflictDetail dependencyKey ("generation=" <> Text.pack (show (resourceHandleGeneration handle))) ("fresh generation=" <> Text.pack (show generation)) "reconcile the provider share generation before using its dependency")))
+                                        | otherwise -> case validateOwnershipReceipt handle receipt of
+                                            Left failure -> pure (Left failure)
+                                            Right () -> do
+                                                sequenceRef <- newIORef (0 :: Word64)
+                                                let reprobe = do
+                                                        sequenceNumber <- atomicModifyIORef' sequenceRef $ \value -> let next = value + 1 in (next, next)
+                                                        invokePackageProbe execution package (nonce <> "-" <> Text.pack (show sequenceNumber))
+                                                pure (Right (consume planned (RecoveredProviderShareDependency handle reprobe)))
+                case carried of
+                    Left failure -> pure (Left failure)
+                    Right rebound -> either (pure . Left) id rebound of
+                Left failure -> pure (Left failure)
+                Right opened -> opened
+        [] -> pure (dependencyFailure "the exact provider share package is absent")
+        _ -> pure (dependencyFailure "the provider share package registry contains duplicate resource keys")
+  where
+    dependencyFailure reason = Left (Failure (FailureDetail "recover carried provider share runtime dependency" reason ReprobeBeforeRetry))
 
 withFreshRunningProviderHandle ::
     StepExecution scope planId ->

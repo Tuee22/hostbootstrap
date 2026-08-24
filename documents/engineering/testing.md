@@ -23,12 +23,12 @@
 - The demo command is `test init` followed by `test run <case-id>|all`. Cases are compiled Haskell with
   validated `CaseId`s; the current `<project>.test.dhall` contains resource overrides and declarative
   variants, not case bodies or lifecycle actions.
-- Help calls the test surface root-only, but the parser does not enforce a binary-context root gate.
+- The test surface is admitted only at the rooted Harness entry.
 - Each variant owns a generated config and one exact Harness-scoped `ProjectPlan`; the command drives its
   common forward/reverse interpreters directly. The five-field `TestSuite` contains assertions and no
   lifecycle callback.
-- `durable-readback` is deliberately non-passing until the engine owns the fresh same-run lifecycle
-  invocation needed for write → destroy → up → read.
+- `durable-readback` declares `AssertAcrossRestart`; the engine owns the fresh same-run lifecycle invocation,
+  exact plan rebind, and write → settled destroy → forward → read choreography.
 
 ## Gate Kinds
 
@@ -44,8 +44,10 @@ of thing, and none substitutes for another.
 
 The independent cluster-phase live gate is the bare binary's `hostbootstrap test run cluster-live` case.
 It is a `linux-cpu` substrate gate rather than the demo gate: one Harness-owned Kind plan creates the
-run-scoped cluster, the assertion performs only read-only Kubernetes observation, and the exact reverse
-proves labelled-node absence plus survival of the run's durable sentinel.
+run-scoped cluster; the assertion performs read-only Kubernetes observation and concurrently asks Docker to
+assign loopback ports to two isolated same-listener containers without supplying host numbers; the allocation
+bracket requires distinct inspected ports and proves both exact containers absent. The ordinary exact reverse
+then proves labelled-node absence plus survival of the run's durable sentinel.
 
 The host static gate is not the complete quality gate: `fourmolu` and `hlint` live only in the container
 `check-code`. See [code-check doctrine](code_check_doctrine.md).
@@ -108,15 +110,11 @@ CoverageManifest
 
 A family that lost a case on one host fails its declared count there rather than reporting a smaller
 total. A family whose subject is available everywhere is not declared, because a manifest listing every
-family would be a second copy of the suite. Five subjects make families conditional today. Three are
-platform rows — the two host-wall rows and the ownership seam's POSIX row, whose own declaration-only
-cases are available on every gate host and are therefore not declared. The other two are ownership
-*drivers* this project has not yet moved onto the seam: the cluster backend's transaction, which runs
-under a util-linux `flock(2)` on an inherited descriptor and hands its driver `/proc/self/fd` paths, and
-the guest alias driver, which opens with `O_NOFOLLOW`, holds a `flock(2)` across an `exec`, and publishes
-by a no-replace hard link. Where an outer host offers none of that, both refuse to mint any authority at
-all, and every case in those families records that refusal rather than vanishing. Each row is deleted by
-the phase that replaces its driver.
+family would be a second copy of the suite. Conditional families name platform rows and the shipped guest
+alias symbolic-link row. On a POSIX gate the alias family exercises create, interruption recovery, exact
+retry, replacement-safe release, and record cleanup against the real kernel; on a gate without POSIX
+symbolic-link ownership the same fixed case family asserts the row's declared refusal. No external
+interpreter, `flock`, or `stat` executable is part of that test or production route.
 
 The ownership row's release-on-death case takes the suite's own re-invocation route: the suite spawns
 itself with a probe argument, the probe takes the row's exclusive open and drops the raw descriptor rather
@@ -172,8 +170,9 @@ The reusable engine runs a compiled, five-field `TestSuite` and aggregates `Case
 Those fields are the safety precondition, assertion-environment opener, case matrix, per-case assertion,
 and post-reverse absence assertion. For each variant, `HostBootstrap.Command` retains one exact
 Harness-scoped plan and supplies an opaque `HarnessLifecycle`; the engine invokes its forward action,
-opens the assertion environment, runs the selected cases, invokes its reverse action, and finally runs the
-absence assertion. A non-refusal bring-up failure still enters the same reverse path. Only a refusal that
+opens the assertion environment, runs the selected cases, and for `AssertAcrossRestart` cases invokes an
+intermediate reverse, a protected fresh same-run forward, and an `AfterRestart` assertion before its one final
+reverse and absence assertion. Both assertion phases retain one report row. A non-refusal bring-up failure still enters the same reverse path. Only a refusal that
 the command independently verifies preceded project-resource acquisition becomes `SafetyRefusal` and
 skips reverse; a late refusal is classified as refused but still tears down. The demo generates two
 project-config variants with different messages and runs the selected compiled cases against each.
@@ -192,7 +191,7 @@ disposable Ubuntu 24.04 amd64 Incus VM ran the deterministic recovery-interrupti
 complete warnings-as-errors core gate (2366/2366 in 151.83 seconds). Those runs exercise the Harness
 ownership, process, interruption, exact-plan, and report-engine rows available by Phase 19. The
 provider/cluster/workload lifecycle, exact recursive demo
-reverse adopter, and same-run durable recreate remain the worked-demo phase's own live acceptance; making
+reverse adopter, and live same-run durable recreate remain the worked-demo phase's own acceptance; making
 the earlier harness phase wait for them would invert the development-plan order.
 
 The Phase 20 command-surface acceptance ran the phase-owned concrete parser fixture in that same realized
@@ -212,11 +211,8 @@ bound to the created file's own kernel identity — the four
 `.test_data` generation holds. Cleanup unlinks it only when both that identity and the payload still
 match, so a non-cooperating writer is detected rather than clobbered, and an abandoned run's config is
 reclaimed by the next run's sweep instead of blocking it. A precondition also refuses a known running
-production cluster. These checks still do not provide complete transaction ownership: provider VMs,
-aliases, clusters, ports, and daemons do not uniformly return opaque ownership receipts, teardown is not
-recursive, and the demo's exact same-run destroy/up/readback assertion still lacks an engine-owned
-lifecycle-invocation generation. The direct Harness plan boundary itself no longer opens Production
-authority.
+production cluster. The direct Harness plan boundary never opens Production authority; its same-run transition
+rotates only the held Harness mode and exact bound lease after settled destroy.
 
 ### Out-of-process races
 
@@ -406,56 +402,36 @@ declaration that is empty, duplicated, or not a valid identity is refused while 
 `EmptyVariantRegistry`, `DuplicateVariantIds`, and `InvalidVariantDeclaration` respectively — which is
 before the run acquires anything. Selection, generation, and reporting consume that relation.
 
-## Current Safety Defects
+## Current Safety Boundaries
 
-The following statements are false for the current implementation:
+- `test init` and `test run` are admitted only at the rooted Harness entry.
+- A Harness run deliberately creates real provider VMs, Docker state, and clusters. Its exact plan derives the
+  run-scoped cluster name, removable state, semantic exposure intents, and `.test_data/<run-id>` root together;
+  runtime-selected ports remain opaque results rather than profile fields. The long gate therefore runs only
+  on a disposable host with no production demo state.
+- Provider, share, alias, exposure, cluster, workload, activation, generated-config, and durable-root mutations
+  are released only through their exact plan projection and ownership evidence. Recursive reverse settles each
+  child frame before stopping or deleting its parent provider.
+- Project assertion code receives only `BeforeRestart` or `AfterRestart`. The engine owns settled Destroy,
+  protected generation rotation, exact snapshot/plan rebind, fresh recursive Up, and terminal close.
 
-- “The parser root-gates `test init` and `test run`.” It does not apply the context root gate.
-- “A harness run touches no host state at all.” Its config-derived `RunProfile` selects a distinct cluster
-  name, removable state, host-port publication, and `.test_data/<run>` root, but consumers still receive
-  those as independent terms rather than as one exact plan projection. The
-  [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns that exact-plan adoption. The run
-  still brings up real provider VMs, Docker state, and clusters on the host, which is why a disposable host
-  remains the supported way to run the long gate.
-- “A passing harness run proves resources are owned.” The run's `.test_data` root **is** owned under all
-  four [ownership_invariant](../architecture/ownership_invariant.md) clauses — kernel-identity binding and
-  identity-conditional release included — but most other lifecycle mutations still return `IO ()`, and
-  neither the data root nor generated-file ownership establishes VM/cluster/alias/daemon ownership.
-- “Teardown recursively visits every child.” The current command performs current-frame cluster cleanup
-  plus the reverse effects the plan's own nodes declare.
-- “The five configured cases currently pass.” `durable-readback` intentionally returns `Fail` because
-  project assertion code is not allowed to run lifecycle commands and the engine does not yet provide a
-  same-run destroy/up invocation transition.
+The harness obtains opaque `HarnessAuthority projectId runId`, active Harness mode, and the exact unbound run
+lease. The protected profile opener combines only matching values into
+`LifecycleProfile (Harness projectId runId)`; authority alone cannot construct it. Plan construction derives a
+run-scoped cluster identity and `.test_data/<run-id>` together, and Command retains that exact plan through
+common forward/reverse interpretation. Every adapter consumes a freshly prepared operation/preconditions pair
+and returns an explicit reconcile result with owned evidence or a foreign observation. Cleanup accepts only
+verified records and walks child-to-parent while each child remains reachable.
 
-The long demo suite mutates real provider, Docker, and cluster state. Run it only on a disposable machine
-with no production demo state until the remaining ownership and recursive-lifecycle gates close.
-
-## Remaining Transaction Work
-
-The harness already obtains opaque `HarnessAuthority projectId runId`, active Harness mode, and the exact
-unbound run lease. Only
-[the lifecycle-modes-and-run-leases phase](../../DEVELOPMENT_PLAN/phase-9-lifecycle-modes-and-run-leases.md)'s
-implemented protected profile opener can combine those matching values into
-`LifecycleProfile (Harness projectId runId)`; the authority alone cannot construct it. Plan construction
-derives a run-scoped cluster identity and `.test_data/<runId>` together, and Command retains that exact
-plan through common forward/reverse interpretation. Remaining resource work requires every mutation to seal its
-plan-internally traversed edge set and fresh resource-indexed probe observations into a plan-owned
-precondition set; only the fresh prepared
-operation/preconditions pair can enter the adapter, which returns an explicit reconcile result with an
-owned receipt or foreign observation. Cleanup accepts only verified receipts
-and walks child-to-parent while each child remains reachable.
-
-The durable-readback program also needs an engine-owned two-phase assertion form and a protected fresh
-lifecycle-invocation generation under the same run, config, durable root, and plan. The intermediate
-destroy must be settled but nonterminal, the next exact `up` must use the fresh generation, and only the
-final destroy's current-version evidence may authorize terminal Harness close. No lifecycle action enters
+The durable-readback program uses the engine-owned two-phase assertion form and a protected fresh
+lifecycle-invocation generation under the same run, config, durable root, and plan. No lifecycle action enters
 `TestSuite` to implement that choreography.
 
 The full algebra, including the limits of non-linear Haskell values and cross-process receipt
 rehydration, is canonical in
 [lifecycle state model](../architecture/lifecycle_state_model.md).
 
-## Required Live Gates
+## Live Gate Contract
 
 1. An off-root command is refused before any lifecycle read or mutation.
 2. The documented `<project>.test.dhall` schema and selector have one source of truth.

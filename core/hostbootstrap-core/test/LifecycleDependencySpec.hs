@@ -3,8 +3,8 @@
 
 module LifecycleDependencySpec (tests) where
 
-import Data.Either (isLeft)
 import qualified Data.ByteString.Char8 as ByteString
+import Data.Either (isLeft)
 import Data.List (isInfixOf, isPrefixOf)
 import qualified Data.Text as Text
 import Data.Word (Word64)
@@ -22,10 +22,11 @@ tests :: TestTree
 tests =
     testGroup
         "runtime dependency package"
-        [ testCase "provider and cluster domains render separately and open exactly" $ do
+        [ testCase "provider, provider-share, and cluster domains render separately and open exactly" $ do
             provider <- expectRight providerPackage
+            providerShare <- expectRight providerSharePackage
             cluster <- expectRight clusterPackage
-            assertBool "domains rendered identically" (renderRuntimeDependencyPackage provider /= renderRuntimeDependencyPackage cluster)
+            assertBool "domains rendered identically" (length (unique [renderRuntimeDependencyPackage provider, renderRuntimeDependencyPackage providerShare, renderRuntimeDependencyPackage cluster]) == 3)
             withProviderRuntimeDependencyPackage "plan" "scope" "resource" "frame" "origin" 7 "journal" "receipt" providerRoute 99 provider id
                 @?= Right providerRoute
             withClusterRuntimeDependencyPackage "plan" "scope" "resource" "frame" "origin" 7 "journal" "receipt" clusterRoute 99 cluster id
@@ -33,6 +34,15 @@ tests =
             assertBool
                 "a cluster package opened through the provider domain"
                 (isLeft (withProviderRuntimeDependencyPackage "plan" "scope" "resource" "frame" "origin" 7 "journal" "receipt" clusterRoute 99 cluster id))
+            withCarriedProviderShareRuntimeDependencyCoordinates "scope" "resource" "frame" 7 providerShareRoute 99 providerShare (\origin route -> (origin, route))
+                @?= Right ("origin", providerShareRoute)
+            assertBool
+                "a provider package opened through the provider-share domain"
+                (isLeft (withCarriedProviderShareRuntimeDependencyCoordinates "scope" "resource" "frame" 7 providerShareRoute 99 provider (\_ _ -> ())))
+            bundle <- expectRight (runtimeDependencyPackageBundleWire [provider, providerShare])
+            decodedBundle <- expectRight (runtimeDependencyPackagesFromBundleWire bundle)
+            map renderRuntimeDependencyPackage decodedBundle @?= map renderRuntimeDependencyPackage [provider, providerShare]
+            assertBool "a duplicate package key entered a bundle" (isLeft (runtimeDependencyPackageBundleWire [provider, provider]))
             request <- expectRight (runtimeDependencyProbeRequest provider "nonce-1")
             withRuntimeDependencyProbeRequest provider request id @?= Right "nonce-1"
             let response = renderRuntimeDependencyProbeResponse provider "nonce-1" 7
@@ -105,6 +115,38 @@ tests =
                 , opens "plan" "scope" "resource" "frame" "origin" 7 "runtime://cluster/wrong" 99
                 , opens "plan" "scope" "resource" "frame" "origin" 7 clusterRoute 100
                 ]
+        , testCase "cluster exposure responses bind nonce, package, service, relay, and generation" $ do
+            package <- expectRight clusterPackage
+            request <- expectRight (runtimeDependencyExposureRequest package "exposure-nonce")
+            withRuntimeDependencyExposureRequest package request id @?= Right "exposure-nonce"
+            let mappings = [("registry", "127.0.0.1", 41001, "demo-control-plane", 30500, "relay-id", 7, "operation-id")]
+            response <- expectRight (renderRuntimeDependencyExposureResponse package "exposure-nonce" mappings)
+            verifyRuntimeDependencyExposureResponse package "exposure-nonce" response @?= Right mappings
+            assertBool "another nonce accepted exposure authority" (isLeft (verifyRuntimeDependencyExposureResponse package "other" response))
+            provider <- expectRight providerPackage
+            assertBool "another package accepted exposure authority" (isLeft (verifyRuntimeDependencyExposureResponse provider "exposure-nonce" response))
+            assertBool
+                "a duplicated service was encoded"
+                (isLeft (renderRuntimeDependencyExposureResponse package "exposure-nonce" (mappings <> mappings)))
+            assertBool
+                "a wildcard address was encoded"
+                (isLeft (renderRuntimeDependencyExposureResponse package "exposure-nonce" [("registry", "0.0.0.0", 41001, "demo-control-plane", 30500, "relay-id", 7, "operation-id")]))
+        , testCase "chart requests admit bounded document values and refuse oversized fields and frames" $ do
+            package <- expectRight clusterPackage
+            let valuesAtBound = Text.replicate (64 * 1024) "v"
+                revision = Text.replicate 64 "a"
+                open request = withRuntimeDependencyChartRequest package request (,,,,,,,)
+            request <- expectRight (runtimeDependencyChartRequest package "call" "chart" "release" "namespace" "image" "deployment" revision valuesAtBound)
+            open request @?= Right ("call", "chart", "release", "namespace", "image", "deployment", revision, valuesAtBound)
+            assertBool
+                "oversized chart values were encoded"
+                (isLeft (runtimeDependencyChartRequest package "call" "chart" "release" "namespace" "image" "deployment" revision (valuesAtBound <> "v")))
+            assertBool
+                "an oversized chart coordinate was encoded"
+                (isLeft (runtimeDependencyChartRequest package (Text.replicate 4097 "c") "chart" "release" "namespace" "image" "deployment" revision "values"))
+            assertBool
+                "an oversized chart frame reached field parsing"
+                (isLeft (open (ByteString.replicate (256 * 1024 + 1) 'x')))
         , testCase "construction refuses malformed domains, generations, expiry, and routes" $ do
             assertBool "zero generation was accepted" (isLeft (mkProvider 0 providerRoute 100))
             assertBool "zero expiry was accepted" (isLeft (mkProvider 7 providerRoute 0))
@@ -121,12 +163,14 @@ tests =
             handoffSource <- readFile (root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap" </> "Handoff.hs")
             let packageDeclaration =
                     unlines
-                        ( takeWhile (not . isPrefixOf "type role RuntimeDependencyPackage")
+                        ( takeWhile
+                            (not . isPrefixOf "type role RuntimeDependencyPackage")
                             (dropWhile (not . isPrefixOf "data RuntimeDependencyPackage") (lines dependencySource))
                         )
                 providerWireSection =
                     unlines
-                        ( takeWhile (not . isPrefixOf "withAuthenticatedProviderDependencyProbeRequest ::")
+                        ( takeWhile
+                            (not . isPrefixOf "withAuthenticatedProviderDependencyProbeRequest ::")
                             (dropWhile (not . isPrefixOf "providerDependencyPackageFields ::") (lines handoffSource))
                         )
             mapM_
@@ -165,8 +209,9 @@ tests =
                 ]
         ]
 
-providerRoute, clusterRoute :: Text.Text
+providerRoute, providerShareRoute, clusterRoute :: Text.Text
 providerRoute = "runtime://provider/reprobe"
+providerShareRoute = "runtime://provider-share/reprobe"
 clusterRoute = "runtime://cluster/reprobe"
 
 providerPackage :: Either Text.Text (RuntimeDependencyPackage Scope Plan)
@@ -176,9 +221,17 @@ clusterPackage :: Either Text.Text (RuntimeDependencyPackage Scope Plan)
 clusterPackage =
     mkClusterRuntimeDependencyPackage "plan" "scope" "resource" "frame" "origin" 7 "journal" "receipt" clusterRoute 100
 
+providerSharePackage :: Either Text.Text (RuntimeDependencyPackage Scope Plan)
+providerSharePackage =
+    mkProviderShareRuntimeDependencyPackage "plan" "scope" "resource" "frame" "origin" 7 "journal" "receipt" providerShareRoute 100
+
 mkProvider :: Word64 -> Text.Text -> Word64 -> Either Text.Text (RuntimeDependencyPackage Scope Plan)
 mkProvider generation route expiry =
     mkProviderRuntimeDependencyPackage "plan" "scope" "resource" "frame" "origin" generation "journal" "receipt" route expiry
 
 expectRight :: (Show failure) => Either failure value -> IO value
 expectRight = either (assertFailure . show) pure
+
+unique :: (Eq value) => [value] -> [value]
+unique [] = []
+unique (value : rest) = value : unique (filter (/= value) rest)

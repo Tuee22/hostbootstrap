@@ -50,7 +50,8 @@ Harness confirmation.
 ### Sprint 17.1: Independent root gate for the three verbs [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`core/hostbootstrap-core/test/ContextSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`,
 `documents/architecture/ownership_invariant.md`
@@ -68,11 +69,14 @@ Authorize every lifecycle verb independently of the configuration being interpre
 - No context-declared class, capability, frame name, or payload substitutes for operator/root authorization.
 - `project init` remains the sole lifecycle verb that creates initial configuration without interpreting a
   plan.
+- An omitted `--source-root` is resolved to the absolute current directory before the project assembler writes
+  the sibling config, so the descriptive context and the canonical root admitted by lifecycle entry agree.
 
 #### Validation
 
 Dated linux-cpu evidence covers all three authorized verbs and refusal before lifecycle work when operator
-verification fails; the warning-clean core gate passed.
+verification fails. `ContextSpec` also executes `project init` from a separate source directory and asserts that
+the generated config records its absolute path; the warning-clean core gate passed.
 
 #### Remaining Work
 
@@ -2591,6 +2595,11 @@ Route failed forward work through the shared child-first machinery under its nar
 - Retry resumes exact rooted cleanup state and never reruns settled work or widens the reachable operation set.
 - Original forward-failure and unwind reports remain separately authenticated canonical terminal records;
   neither raw text nor one report may stand in for the other.
+- Eagerly opened child sessions that never receive an Offer are cancelled only by exact version-and-bytes
+  comparison. A failed terminal `frame-complete` is persisted and acknowledged before narrow unwind admission,
+  and reverse entry is the only path that advances a retained failed Execute cursor to Teardown.
+- Reverse-root admission first classifies and closes abandoned operation sessions, then proves the exact plan
+  has no open session before publishing Pending. A same-verb replay of the consumed failed Up still refuses.
 - Work is limited to the named production modules, targets at most 400 significant lines, adds no named
   type, and adopts only the one failed-Up unwind call site.
 
@@ -2599,18 +2608,13 @@ Route failed forward work through the shared child-first machinery under its nar
 Cover root/VM/container failure, partial settlement, retry/restart, cleanup failure, scope/catalog drift, and
 exact dual terminal reporting; run the warning-clean core gate.
 
-#### Validation
-
-The sprint was re-cut on 2026-08-21 when the typed failure prefix exposed necessary owners omitted from
-the original file list: `Teardown` must construct a cleanup projection that retains `VerbUp` while selecting
-only reached operations, the storeless recovery child must consume that projection, and the lower terminal
-report owner must canonically encode the failed forward settlement. The Chain now has a
-no-new-type failure-returning interpreter that records the exact ordered operation prefix
+The Chain has a no-new-type failure-returning interpreter that records the exact ordered operation prefix
 only after each durable Prepared gate is published; the forward coordinator preserves the tuple across its
 fixed `Either Text` broker continuation and the existing public interpreter still erases it to descriptive
-failure. `failedUpTeardownPlanKernel` retains `VerbUp`, refuses duplicate/foreign operation sets, and selects
-destroy-strength cleanup actions only for that exact reached prefix, so it cannot promote to Destroy
-settlement. The child now stops after the first durably settled failed observation, requests early frame
+failure. `failedUpTeardownPlanKernel` retains `VerbUp`, refuses duplicate, foreign, or reordered operation sets,
+and admits the reached evidence as an ordered subset of the plan's own and projected keys. It selects
+destroy-strength cleanup actions only for removable own nodes, excluding preservation-only nodes and projected
+relations, so it cannot promote to Destroy settlement. The child now stops after the first durably settled failed observation, requests early frame
 closure, authenticates and receipts a canonical `forward/failed` terminal report, then returns the original
 failure separately; malformed or trailing observation frames are refused before settlement. Failed reports
 now retain the canonical ordered settled-observation rows, and the coordinator freezes those child rows with
@@ -2627,6 +2631,11 @@ the authority, no-Destroy call path, Up/teardown adapter, and shared process/exe
 host-static core suite passed all 2,309 tests on x86_64 Linux with GHC 9.12.4, and the library/executable build
 passed with `-Werror`. Sprint 17.54 owns the already-declared real-process root/VM/container, crash-redelivery,
 retry, cleanup-failure, and exact dual-report proof matrix.
+
+On 2026-08-23, `RecursiveLifecycleSpec` passed 6/6 through real root/VM/container processes, including a
+failed Up followed immediately by exact reverse recovery. The complete warning-clean core gate passed
+2,442/2,442 in 179.14 seconds; the focused `TeardownSpec` group passed 36/36, including reached
+preservation and projected-relation evidence.
 
 #### Remaining Work
 
@@ -2666,6 +2675,9 @@ gate and real root/VM/container child processes, covering forward Up, child-firs
 propagation and reached cleanup, and the proof-matrix guard. The complete warning-clean core suite passed at
 2,314 tests, while the Python code check and all 231 Python tests also passed.
 
+On 2026-08-23, the six-case group passed with the failed-Up immediate reverse-recovery case included; the
+complete warning-clean core suite passed 2,442/2,442 in 179.14 seconds.
+
 #### Objective boundary
 
 Consuming root `DestroySettled` as `ProjectClosureEvidence SettledDestroyClose` also requires the bound run
@@ -2675,7 +2687,124 @@ one and nothing beyond it.
 
 #### Remaining Work
 
-None.
+None. On 2026-08-24 the narrow handoff and reverse-plan source guards pass with their final recursive handoff,
+reverse-descent, and fresh-generation shapes; the complete warning-clean core gate passes 2,454/2,454 in
+148.82 seconds.
+
+### Sprint 17.55: Protected fresh Harness invocation [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Snapshot.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/test/CLISpec.hs`
+**Production modules**: `HostBootstrap.Lifecycle.Mode`, `HostBootstrap.ProjectPlan.Snapshot`,
+`HostBootstrap.Command` (3; cap 3)
+**Sprint budget**: one fresh-invocation contract and one command call-site adoption; at most 400 production
+Haskell lines.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/harness_workflow.md`,
+`documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Move one live Harness run from an intermediate settled destroy to a strictly fresh invocation generation while
+retaining its run identity, generated config, durable root, and immutable canonical plan snapshot.
+
+#### Deliverables
+
+- `withFreshHarnessInvocation` requires the exact live Harness root, held bound lease, and settled-destroy
+  closure, then atomically validates the source mode/lease before allocating a fresh broker epoch.
+- The transition advances mode and bound lease to that epoch, rearms the one-use lifecycle profile, verifies the
+  operator, and yields only a fresh root/mode/bound/profile/close-root tuple under a rank-2 generation.
+- `withRestartedBoundPlanSnapshot` compares exact project/store/spec/plan/config/canonical bytes and binds a
+  freshly re-admitted local plan identity without mutating the persisted snapshot.
+- The command performs intermediate exact reverse without terminal close, rotates, rebuilds the exact plan and
+  lifecycle context, rebinds the snapshot, runs the second forward, and retains the fresh final reverse.
+- A command-level fixture proves two variants each execute forward/reverse twice, observe both assertion phases,
+  and terminally close with no generated config left behind.
+
+#### Validation
+
+Run warning-clean build, focused `CLISpec` restart case, `HarnessSpec`, and the complete core gate.
+
+#### Remaining Work
+
+None. On 2026-08-24 the warning-clean build, protected command-level same-run fixture, focused 45-case Harness
+gate, and complete 2,454/2,454 core host-static gate passed.
+
+### Sprint 17.56: Stable released-resource successor [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Chain.hs`, `core/hostbootstrap-core/test/ChainSpec.hs`
+**Production modules**: `HostBootstrap.Lifecycle.ResourceRecord`, `HostBootstrap.Chain` (2; cap 3)
+**Sprint budget**: no new public named type and one exact stable-member transition; at most 120 production
+Haskell lines.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/harness_workflow.md`,
+`documents/architecture/durable_state.md`
+
+#### Objective
+
+Admit reacquisition after intermediate destroy without weakening stable resource members into arbitrary
+replacement.
+
+#### Deliverables
+
+- A predecessor and successor are both parsed as canonical resource records.
+- Plan, frame, and resource coordinate must be identical; predecessor must be Released and successor Owned.
+- The successor ownership generation must be strictly greater than the released generation.
+- `Chain` performs the replacement with exact record-version compare-and-swap; owned predecessors, malformed
+  bytes, changed coordinates, and non-advancing generations remain conflicts before journal commit.
+
+#### Validation
+
+`ChainSpec` proves the accepted released-to-owned successor and refusal of a non-advancing generation alongside
+the existing arbitrary-conflict gate; run the complete core gate.
+
+#### Remaining Work
+
+None. On 2026-08-24 the warning-clean build, focused `ChainSpec` 48/48 gate, and complete 2,454/2,454 core
+host-static gate passed.
+
+### Sprint 17.57: Generation-correct Harness close fallback [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership/Internal.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
+`core/hostbootstrap-core/test/HarnessSpec.hs`
+**Production modules**: `HostBootstrap.Harness.Ownership.Internal`,
+`HostBootstrap.Harness.Ownership` (2; cap 3)
+**Sprint budget**: no new named type and one close-fallback rearm adoption; at most 160 production Haskell
+lines.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/harness_workflow.md`,
+`documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+Keep the Harness ownership finalizer bound to the current generation after a same-run restart.
+
+#### Deliverables
+
+- The private close control existentially retains a matching close-root/mode/bound tuple rather than erasing
+  the generation join or retaining only the source-generation bound lease.
+- Initial binding arms the source tuple; a fresh invocation may rearm only the existing bound fallback with its
+  new tuple.
+- Pre-effect finalization verifies no project resource was acquired under that exact current bound lease and
+  closes with the matching current root and mode. Settled terminal authorization remains generation-erased only
+  after the protected kernel has validated the current tuple.
+- Binding, pending, settled, and consumed states keep their existing fail-closed monotonicity.
+
+#### Validation
+
+The command-level same-run fixture exercises the rearmed fallback and final settled close; source guards retain
+the control behind the private component. Run `HarnessSpec` and the complete core gate.
+
+#### Remaining Work
+
+None. On 2026-08-24 the warning-clean build, command-level restart fixture, focused 45-case Harness gate, and
+complete 2,454/2,454 core host-static gate passed.
 
 ## Remaining Work
 

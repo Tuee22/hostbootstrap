@@ -89,13 +89,12 @@ manifest =
     , ownershipWindowsRowFamily ["OwnershipWindowsSpec", "the exclusive open"] 2 2
     , ownershipWindowsRowFamily ["OwnershipWindowsSpec", "removal"] 2 2
     , ConditionalFamily
-        { familyPath = ["ProviderAliasSpec", "the local guest alias driver"]
-        , familyCases = 13
-        , familyRowCases = 13
+        { familyPath = ["ProviderAliasSpec", "the shipped guest alias ownership row"]
+        , familyCases = 5
+        , familyRowCases = 5
         , familyRowHolds = localGuestAliasSupported
         , familyReason =
-            "the guest alias driver needs O_NOFOLLOW opens, a flock(2) held across an exec,"
-                ++ " and no-replace hard links"
+            "the shipped guest alias row needs POSIX symbolic links and no-replace hard links"
         }
     , ConditionalFamily
         { familyPath = ["WslGlobalWallWindowsSpec"]

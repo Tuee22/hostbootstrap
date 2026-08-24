@@ -43,12 +43,13 @@ tests =
 driverTests :: [TestTree]
 driverTests =
     [ testCase "the whole listing is asked for, not a membership question" $
-        commandArguments listClustersCommand @?= ["get", "clusters"]
+        commandArguments listClustersCommand @?= ["--quiet", "get", "clusters"]
     , testCase "one cluster's kubeconfig is read by name" $
-        commandArguments (readKubeconfigCommand "demo") @?= ["get", "kubeconfig", "--name", "demo"]
+        commandArguments (readKubeconfigCommand "demo") @?= ["--quiet", "get", "kubeconfig", "--name", "demo"]
     , testCase "a declared configuration reaches the creating command" $
         commandArguments (createClusterCommand "demo" (Just "/state/demo.yaml") "/state/demo.kubeconfig")
-            @?= [ "create"
+            @?= [ "--quiet"
+                , "create"
                 , "cluster"
                 , "--name"
                 , "demo"
@@ -56,10 +57,12 @@ driverTests =
                 , "/state/demo.yaml"
                 , "--kubeconfig"
                 , "/state/demo.kubeconfig"
+                , "--wait"
+                , "5m"
                 ]
     , testCase "no declared configuration renders no --config at all" $
         commandArguments (createClusterCommand "demo" Nothing "/state/demo.kubeconfig")
-            @?= ["create", "cluster", "--name", "demo", "--kubeconfig", "/state/demo.kubeconfig"]
+            @?= ["--quiet", "create", "cluster", "--name", "demo", "--kubeconfig", "/state/demo.kubeconfig", "--wait", "5m"]
     , testCase "the kubeconfig destination is always named" $
         assertBool
             "every creation names where the credential lands"
@@ -68,7 +71,7 @@ driverTests =
                 [Nothing, Just "/state/demo.yaml"]
             )
     , testCase "removal addresses the cluster by name and nothing else" $
-        commandArguments (deleteClusterCommand "demo") @?= ["delete", "cluster", "--name", "demo"]
+        commandArguments (deleteClusterCommand "demo") @?= ["--quiet", "delete", "cluster", "--name", "demo"]
     ]
 
 -- ---------------------------------------------------------------------------

@@ -4,8 +4,8 @@
 **Supersedes**: N/A
 **Referenced by**: [../README.md](../README.md), [../engineering/base_image.md](../engineering/base_image.md), [go.md](go.md)
 
-> **Purpose**: Document the Kubernetes/cluster CLIs the base image ships and the demo's current
-> NodePort exposure.
+> **Purpose**: Document the Kubernetes/cluster CLIs the base image ships and the demo's runtime-owned
+> exposure boundary.
 
 This page documents what the base image ships for cluster tooling.
 
@@ -27,19 +27,18 @@ cluster + in-cluster registry:
 The rolling base workflow discovers releases and architecture-specific URLs at build time over HTTPS.
 There is no committed version replay manifest.
 
-## Demo NodePorts
+## Demo exposure
 
-The demo does **not** currently enforce one loopback-only boundary for all services.
-`demo/kind.yaml` and `demo/kind-in-cluster.yaml` bind the public web (`30080`),
-registry (`30500`), and MinIO (`30900`) mappings to `0.0.0.0`. They can therefore be reachable on the VM
-or host interfaces allowed by the provider/network/firewall. Only the host-daemon accelerator ingress
-(`30081`) is bound to `127.0.0.1`, and local binding is placement rather than authentication.
+Stable Kubernetes Service/NodePort values are cluster-internal routing targets. They do not select a port in
+the provider/host namespace. The target Kind/nvkind config therefore contains no host-side mappings. After
+cluster readiness, hostbootstrap starts an identity-owned relay on the exact cluster network and asks Docker
+to publish its declared listeners on `127.0.0.1` without supplying host-port numbers. Docker chooses and binds
+them atomically; exact inspection supplies the resolved registry, MinIO, web, and optional accelerator
+endpoints to their clients.
 
-The `hostbootstrap-demo` consumer instantiates this pattern: its `deploy-minio`
-chain step stands up an in-cluster MinIO (S3) store that backs the registry, and its
-container-frame binary creates the registry bucket with `mc` through `localhost:30900` from that frame.
-`push-image` similarly uses `localhost:30500`, but those client addresses do not change the listeners'
-`0.0.0.0` bindings. The registry is anonymous HTTP, and the demo's MinIO root/S3 values are fixed source
-constants rendered into a Kubernetes Secret. Treat these endpoints as development-demo services, not an
-authenticated or loopback-confined production boundary. See
+The fixed source mappings currently present in demo YAML/Haskell are tracked in the
+[legacy-deletion ledger](../../DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md). They are not defaults to copy
+or move into Dhall. The registry remains anonymous HTTP, and the demo's MinIO root/S3 values remain fixed
+source constants rendered into a Kubernetes Secret. Treat every resolved endpoint as a development-demo
+service, not an authenticated production boundary. See
 [in_cluster_registry.md](../engineering/in_cluster_registry.md).

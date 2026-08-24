@@ -62,9 +62,12 @@ module HostBootstrap.Substrate.Provider.Backend (
     RunningProviderDependency,
     withRunningProviderDependency,
     registerRunningProviderDependencyPackage,
+    registerProviderShareDependencyPackage,
     runProviderStopCall,
     runProviderShareCall,
     runProviderDeleteCall,
+    runRetainedProviderStop,
+    runRetainedProviderDelete,
 
     -- * Provider-bound discovery and guest execution
     withProviderBoundExec,
@@ -78,8 +81,8 @@ import Data.Bits (xor)
 import Data.ByteArray.Encoding (Base (Base16), convertToBase)
 import qualified Data.ByteString.Char8 as ByteString
 import Data.Char (isAlphaNum)
-import Data.List (isPrefixOf)
 import Data.IORef (atomicModifyIORef', newIORef)
+import Data.List (isPrefixOf)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
@@ -91,6 +94,7 @@ import HostBootstrap.HostTool (HostTool (Docker, Incus), absExePath)
 import HostBootstrap.Lifecycle.Dependency.Internal (
     RuntimeDependencyPackage,
     mkProviderRuntimeDependencyPackage,
+    mkProviderShareRuntimeDependencyPackage,
     renderRuntimeDependencyProbeResponse,
     withRuntimeDependencyProbeRequest,
  )
@@ -111,11 +115,25 @@ import HostBootstrap.Lifecycle.Prepared (
     preparedGatePlan,
     preparedGateSession,
  )
+import HostBootstrap.Ownership.Object (
+    Origin (OriginAbsent, OriginPresent),
+    objectIdentityText,
+    ownershipFault,
+ )
+import qualified HostBootstrap.Ownership.Object as OwnedObject
+import HostBootstrap.Protected (
+    ProtectedSession,
+    RecordKey,
+    openProtectedStore,
+    protectedErrorMessage,
+    withProtectedEntry,
+ )
 import HostBootstrap.Readiness (Micros, microsValue, seconds)
 import HostBootstrap.Reconcile (
     ConflictDetail (..),
     FailureDetail (..),
     ForeignObservation (..),
+    Provisioned,
     ReconcileError (..),
     RecoveryDisposition (DoNotRetry, ReprobeBeforeRetry),
     Running,
@@ -125,6 +143,10 @@ import HostBootstrap.Reconcile (
     validateOwnershipReceipt,
  )
 import HostBootstrap.Substrate (SubstrateName (LinuxCpu), substrateName)
+import HostBootstrap.Substrate.Provider.Command (ProviderSizing (ProviderSizing))
+import HostBootstrap.Substrate.Provider.Dependency.Internal (
+    RunningProviderDependency (..),
+ )
 import HostBootstrap.Substrate.Provider.Internal (
     DirectProbe (..),
     ProviderBoundExec,
@@ -151,39 +173,23 @@ import HostBootstrap.Substrate.Provider.Observation.Internal (
     ProviderStopObservation (..),
     providerOriginOwner,
  )
-import HostBootstrap.Substrate.Provider.Dependency.Internal
-  ( RunningProviderDependency (..),
-  )
-import HostBootstrap.Ownership.Object (
-    Origin (OriginAbsent, OriginPresent),
-    objectIdentityText,
-    ownershipFault,
- )
-import qualified HostBootstrap.Ownership.Object as OwnedObject
-import HostBootstrap.Protected (
-    ProtectedSession,
-    RecordKey,
-    openProtectedStore,
-    protectedErrorMessage,
-    withProtectedEntry,
- )
-import HostBootstrap.Substrate.Provider.Command (ProviderSizing (ProviderSizing))
 import HostBootstrap.Substrate.Provider.Ownership (
     OwnedProviderInstance (OwnedProviderInstance),
     OwnedProviderShare (OwnedProviderShare),
+    ProviderDeleteOutcome (DeleteAlreadyRemoved, DeleteRemoved, DeleteStillPresent),
     ProviderOwnershipFault (
         ProviderOwnershipClause,
         ProviderOwnershipReport,
         ProviderOwnershipStanding,
         ProviderOwnershipStore
     ),
-    ProviderDeleteOutcome (DeleteAlreadyRemoved, DeleteRemoved, DeleteStillPresent),
     ProviderProvisionOutcome (ProvisionAlreadyOwned, ProvisionCreated, ProvisionRecovered),
     ProviderReadyOutcome (ReadyAlready, ReadyNotAnswering, ReadyStarted),
     ProviderShareOutcome (ShareAlreadyAttached, ShareAttached, ShareRepaired),
     ProviderStopOutcome (StopAlreadyStopped, StopStillRunning, StopStopped),
     attachOwnedShare,
     deleteOwnedInstance,
+    deleteRetainedOwnedInstance,
     execInOwnedInstance,
     ownedInstanceRecordKey,
     ownedShareRecordKey,
@@ -191,21 +197,8 @@ import HostBootstrap.Substrate.Provider.Ownership (
     readyOwnedInstance,
     stopOwnedInstance,
  )
-import HostBootstrap.Substrate.Provider.Resume (
-    ProviderStandingConflict (
-        InstanceReplaced,
-        InstanceUnderAnotherClaim,
-        InstanceUnderNoRecord,
-        InstanceVanished,
-        RecordNamesAPriorInstance,
-        RecordNotAClaimedObject
-    ),
- )
-import HostBootstrap.Substrate.Provider.Report (
-    ProviderReportFault (ProviderCommandUnrun),
-    providerReportFaultMessage,
- )
 import HostBootstrap.Substrate.Provider.Reconcile (
+    ManagedProviderShareHandle,
     PreparedProviderBinding,
     PreparedProviderDelete,
     PreparedProviderProvision,
@@ -216,6 +209,8 @@ import HostBootstrap.Substrate.Provider.Reconcile (
     managedProviderGeneration,
     managedProviderKey,
     managedProviderObservationVersion,
+    managedProviderShareGeneration,
+    managedProviderShareObservationVersion,
     preparedProviderBindingCallDigest,
     preparedProviderBindingGeneration,
     preparedProviderBindingOperationKey,
@@ -229,11 +224,24 @@ import HostBootstrap.Substrate.Provider.Reconcile (
     preparedProviderShareHandle,
     preparedProviderShareSpec,
     preparedProviderStopBinding,
-    withProviderPhaseAdvance,
     providerShareGuestPath,
     providerShareHostPath,
+    withProviderPhaseAdvance,
  )
-import System.Exit (ExitCode (..))
+import HostBootstrap.Substrate.Provider.Report (
+    ProviderReportFault (ProviderCommandUnrun),
+    providerReportFaultMessage,
+ )
+import HostBootstrap.Substrate.Provider.Resume (
+    ProviderStandingConflict (
+        InstanceReplaced,
+        InstanceUnderAnotherClaim,
+        InstanceUnderNoRecord,
+        InstanceVanished,
+        RecordNamesAPriorInstance,
+        RecordNotAClaimedObject
+    ),
+ )
 import System.Directory (
     Permissions (readable, searchable, writable),
     canonicalizePath,
@@ -241,6 +249,7 @@ import System.Directory (
     getPermissions,
     pathIsSymbolicLink,
  )
+import System.Exit (ExitCode (..))
 import System.FilePath (equalFilePath, isAbsolute)
 
 -- Descriptive request ---------------------------------------------------------
@@ -314,6 +323,7 @@ mkIncusBackendSpec name image guardPrefix hostConfig stateDirectory cpu memory s
                         (Text.pack ("the HostConfig has no resolved " <> show tool <> " executable"))
                     )
                 )
+
 -- | Admit the canonical already-local root.  No ownership is implied.
 mkDirectHostBackendSpec :: HostConfig -> FilePath -> String -> Either ReconcileError ProviderBackendSpec
 mkDirectHostBackendSpec hostConfig root egressImage
@@ -613,23 +623,23 @@ registerRunningProviderDependencyPackage backend execution scopeCommitment gate 
         let binding = preparedProviderReadyBinding prepared
             runtime = stepExecutionRuntime execution
         case () of
-            _ | preparedGatePlan gate /= preparedProviderBindingPlanDigest binding ->
+            _
+                | preparedGatePlan gate /= preparedProviderBindingPlanDigest binding ->
                     pure (Left (Failure (failed "register provider runtime dependency" "the producer gate names another plan")))
                 | preparedGateOperation gate /= preparedProviderBindingOperationKey binding ->
                     pure (Left (Failure (failed "register provider runtime dependency" "the producer gate names another operation")))
-              | otherwise ->
-                    case
-                        mkProviderRuntimeDependencyPackage
-                            (stepExecutionPlanDigest execution)
-                            scopeCommitment
-                            (preparedProviderBindingResourceKey binding)
-                            (stepExecutionFrame execution)
-                            (preparedProviderBindingOwner binding)
-                            (managedProviderGeneration managed)
-                            (providerGateCommitment gate)
-                            (providerReadyCommitment binding managed)
-                            route
-                            expiry of
+                | otherwise ->
+                    case mkProviderRuntimeDependencyPackage
+                        (stepExecutionPlanDigest execution)
+                        scopeCommitment
+                        (preparedProviderBindingResourceKey binding)
+                        (stepExecutionFrame execution)
+                        (preparedProviderBindingOwner binding)
+                        (managedProviderGeneration managed)
+                        (providerGateCommitment gate)
+                        (providerReadyCommitment binding managed)
+                        route
+                        expiry of
                         Left refusal -> pure (Left (Failure (failed "register provider runtime dependency" refusal)))
                         Right package -> do
                             registered <- registerStepRuntimeDependencyPackage runtime package
@@ -658,6 +668,70 @@ registerRunningProviderDependencyPackage backend execution scopeCommitment gate 
                                         Left refusal -> Left (Failure (failed "register provider runtime dependency" refusal))
                                         Right () -> Right package
 
+{- | Publish one settled provider-derived share and a nonce-bound fresh share
+transaction for successor preconditions. The canonical package contains only
+recovery coordinates; the strong backend, prepared call, and managed generation
+remain exclusively in the invocation-local service closure.
+-}
+registerProviderShareDependencyPackage ::
+    StrongProviderBackend backendId ->
+    StepExecution scope planId ->
+    Text ->
+    PreparedGate ->
+    PreparedProviderShare scope planId backendId providerId shareId operationKey callDigest attempt journalVersion ->
+    ManagedProviderShareHandle scope planId backendId providerId shareId Provisioned ->
+    Text ->
+    Word64 ->
+    IO (Either ReconcileError (RuntimeDependencyPackage scope planId))
+registerProviderShareDependencyPackage backend execution scopeCommitment gate prepared managed route expiry = do
+    let binding = preparedProviderShareBinding prepared
+        runtime = stepExecutionRuntime execution
+    case () of
+        _
+            | preparedGatePlan gate /= preparedProviderBindingPlanDigest binding ->
+                pure (Left (Failure (failed "register provider share runtime dependency" "the producer gate names another plan")))
+            | preparedGateOperation gate /= preparedProviderBindingOperationKey binding ->
+                pure (Left (Failure (failed "register provider share runtime dependency" "the producer gate names another operation")))
+            | otherwise ->
+                case mkProviderShareRuntimeDependencyPackage
+                    (stepExecutionPlanDigest execution)
+                    scopeCommitment
+                    (resourceHandleKey (preparedProviderShareHandle prepared))
+                    (stepExecutionFrame execution)
+                    (preparedProviderBindingOwner binding)
+                    (managedProviderShareGeneration managed)
+                    (providerGateCommitment gate)
+                    (providerShareCommitment binding managed)
+                    route
+                    expiry of
+                    Left refusal -> pure (Left (Failure (failed "register provider share runtime dependency" refusal)))
+                    Right package -> do
+                        registered <- registerStepRuntimeDependencyPackage runtime package
+                        case registered of
+                            Left refusal -> pure (Left (Failure (failed "register provider share runtime dependency" refusal)))
+                            Right () -> do
+                                usedNonces <- newIORef []
+                                installed <-
+                                    replaceStepRuntimeDependencyService runtime package $ \request ->
+                                        case withRuntimeDependencyProbeRequest package request id of
+                                            Left refusal -> pure (Left refusal)
+                                            Right nonce -> do
+                                                replay <-
+                                                    atomicModifyIORef' usedNonces $ \seen ->
+                                                        if nonce `elem` seen
+                                                            then (seen, True)
+                                                            else (nonce : seen, False)
+                                                if replay
+                                                    then pure (Left "runtime dependency probe nonce has already been consumed")
+                                                    else
+                                                        either
+                                                            (Left . Text.pack . show)
+                                                            (Right . renderRuntimeDependencyProbeResponse package nonce)
+                                                            <$> probeProviderShare backend prepared (managedProviderShareGeneration managed)
+                                pure $ case installed of
+                                    Left refusal -> Left (Failure (failed "register provider share runtime dependency" refusal))
+                                    Right () -> Right package
+
 providerGateCommitment :: PreparedGate -> Text
 providerGateCommitment gate =
     providerCommitment
@@ -679,6 +753,17 @@ providerReadyCommitment binding managed =
         "ready"
         [ preparedProviderBindingCallDigest binding
         , Text.pack (show (managedProviderObservationVersion managed))
+        ]
+
+providerShareCommitment ::
+    PreparedProviderBinding scope planId backendId providerId ->
+    ManagedProviderShareHandle scope planId backendId providerId shareId Provisioned ->
+    Text
+providerShareCommitment binding managed =
+    providerCommitment
+        "share"
+        [ preparedProviderBindingCallDigest binding
+        , Text.pack (show (managedProviderShareObservationVersion managed))
         ]
 
 providerCommitment :: Text -> [Text] -> Text
@@ -1039,6 +1124,41 @@ runProviderShareCall backend prepared = case backend of
     target = providerShareGuestPath shareSpec
     shareSpec = preparedProviderShareSpec prepared
 
+probeProviderShare ::
+    StrongProviderBackend backendId ->
+    PreparedProviderShare scope planId backendId providerId shareId operationKey callDigest attempt journalVersion ->
+    Word64 ->
+    IO (Either ReconcileError Word64)
+probeProviderShare backend prepared expectedGeneration = do
+    ProviderShareCallResult observation <- runProviderShareCall backend prepared
+    pure $ case observation of
+        ProviderShareAttached generation -> accept generation
+        ProviderShareRepaired generation -> accept generation
+        ProviderShareAlreadyReady generation -> accept generation
+        ProviderShareDirectLocal generation -> accept generation
+        ProviderShareForeign generation foreignState ->
+            Left (Conflict (ConflictDetail key ("generation=" <> Text.pack (show expectedGeneration)) ("foreign generation=" <> Text.pack (show generation) <> "; " <> foreignDetail foreignState) "restore the owned provider share before using its dependency"))
+        ProviderShareAbsent -> Left (Failure (failed "reprobe provider share" "the exact provider share is absent"))
+        ProviderShareProviderReplaced generation foreignState ->
+            Left (Conflict (ConflictDetail key ("generation=" <> Text.pack (show expectedGeneration)) ("provider generation=" <> Text.pack (show generation) <> "; " <> foreignDetail foreignState) "reconcile the provider and share before using their dependency"))
+        ProviderShareConflict detail -> Left (Conflict detail)
+        ProviderShareUnsupported detail -> Left (Unsupported detail)
+        ProviderShareFailed detail -> Left (Failure detail)
+  where
+    key = resourceHandleKey (preparedProviderShareHandle prepared)
+    accept generation
+        | generation == expectedGeneration = Right generation
+        | otherwise =
+            Left
+                ( Conflict
+                    ( ConflictDetail
+                        key
+                        ("generation=" <> Text.pack (show expectedGeneration))
+                        ("fresh generation=" <> Text.pack (show generation))
+                        "reconcile the provider share generation before using its dependency"
+                    )
+                )
+
 -- | What one share transaction means, as a total function of its answer.
 classifyProviderShareCall ::
     PreparedProviderShare scope planId backendId providerId shareId operationKey callDigest attempt journalVersion ->
@@ -1151,6 +1271,66 @@ runProviderDeleteCall backend prepared = case backend of
         pure (classifyProviderDeleteCall prepared outcome)
   where
     binding = preparedProviderDeleteBinding prepared
+
+{- | Re-enter the provider's retained ownership record for reverse execution.
+
+The recursive reverse command has the exact retained plan and journal, but no
+forward action-local managed handle.  The protected provider record is the
+durable clause-2/3 authority at this boundary, so these operations derive the
+claim and identity from that record and refuse a replacement.  They are kept
+separate from prepared forward calls: no caller-supplied generation or owner is
+accepted here.
+-}
+runRetainedProviderStop ::
+    StrongProviderBackend backendId ->
+    IO (Either ReconcileError ())
+runRetainedProviderStop backend = case backend of
+    StrongDirectHostBackend _ _ _ ->
+        pure (Left (Unsupported (UnsupportedDetail "stop Direct provider" "the local host is not project-owned and cannot be stopped")))
+    StrongIncusBackend _ cfg spec@(IncusBackendSpec name _ _ _ _ _ _ _) -> do
+        outcome <-
+            withOwnedProviderTransaction cfg spec "" $
+                \session key owned -> stopOwnedInstance cfg session key owned
+        pure $ case outcome of
+            Right (StopStopped _) -> Right ()
+            Right (StopAlreadyStopped _) -> Right ()
+            Right (StopStillRunning reason) -> Left (Failure (failed "stop retained provider" reason))
+            Left fault -> Left (retainedProviderFault "stop retained provider" (Text.pack name) fault)
+    StrongIncusBackend _ _ DirectHostBackendSpec{} ->
+        pure (Left (Failure (failed "stop retained provider" "invalid Incus backend state")))
+
+runRetainedProviderDelete ::
+    StrongProviderBackend backendId ->
+    IO (Either ReconcileError ())
+runRetainedProviderDelete backend = case backend of
+    StrongDirectHostBackend _ _ _ ->
+        pure (Left (Unsupported (UnsupportedDetail "delete Direct provider" "the local host is not project-owned and cannot be deleted")))
+    StrongIncusBackend _ cfg spec@(IncusBackendSpec name _ _ _ _ _ _ _) -> do
+        outcome <-
+            withOwnedProviderTransaction cfg spec "" $
+                \session key owned -> deleteRetainedOwnedInstance cfg session key owned
+        pure $ case outcome of
+            Right DeleteRemoved -> Right ()
+            Right DeleteAlreadyRemoved -> Right ()
+            Right DeleteStillPresent -> Left (Failure (failed "delete retained provider" "the exact managed provider remains present"))
+            Left fault -> Left (retainedProviderFault "delete retained provider" (Text.pack name) fault)
+    StrongIncusBackend _ _ DirectHostBackendSpec{} ->
+        pure (Left (Failure (failed "delete retained provider" "invalid Incus backend state")))
+
+retainedProviderFault :: Text -> Text -> ProviderOwnershipFault -> ReconcileError
+retainedProviderFault operation key fault = case ownedRefusal operation key fault of
+    RefusedForeign _ observation ->
+        Conflict
+            ( ConflictDetail
+                key
+                "the identity bound by the retained provider record"
+                (foreignDetail observation)
+                "inspect the provider name and retained ownership record"
+            )
+    RefusedAbsent -> Failure (failed operation "the retained provider disappeared during the ownership transaction")
+    RefusedConflict detail -> Conflict detail
+    RefusedUnsupported detail -> Unsupported detail
+    RefusedFailed detail -> Failure detail
 
 -- | What one delete transaction means, as a total function of its answer.
 classifyProviderDeleteCall ::
@@ -1444,7 +1624,6 @@ unsupported = UnsupportedDetail
 
 failed :: Text -> Text -> FailureDetail
 failed operation reason = FailureDetail operation reason ReprobeBeforeRetry
-
 
 validWireToken :: String -> Bool
 validWireToken value =

@@ -397,12 +397,17 @@ admissionCases =
                 , "settled <- settleRootedPlanCatalog store catalog"
                 , "authorizeRootProject rootAuthority verb verified bound binding lease plan journal executeCursor lifecycleContext"
                 , "use ( RootUpLifecycleEntry rootAuthority verb plan lifecycleContext journal executeCursor authority catalog )"
-                , "runRootProjectUpLifecycleEntry cfg self scope loadSigningKey runFailedLocal entry@(RootUpLifecycleEntry rootAuthority verb plan lifecycleContext journal cursor authority catalog)"
+                , "runRootProjectUpLifecycleEntry cfg self scope loadSigningKey loadActivationSigningKey runFailedLocal entry@(RootUpLifecycleEntry rootAuthority verb plan lifecycleContext journal cursor authority catalog)"
+                , "case [(digest, service, effects) | (frame, digest, service, effects) <- admittedActivationPlacements, frame == manifestFrame manifest] of"
+                , "activationPlacementsFor plan"
+                , "withRootedPlanCatalogEntriesKernel catalog (\\childPlan _ _ _ _ _ _ _ _ _ _ -> activationPlacementsFor childPlan)"
+                , "withChartWorkloadResource admittedPlan (plannedStepOperationKey planned)"
+                , "(activationFrame, planDigest, role, filter (not . Text.isPrefixOf \"deployment:\") effects)"
                 , "withTeardownLifecycleCursor cursor"
                 ]
             requiredFacade =
                 [ "module HostBootstrap.Command ( coreCommands, coreCommandNames, allReconcilers, LifecycleEntry, lifecycleEntryFrameName, lifecycleEntryVerbName, )"
-                , "withRootProjectUpLifecycleEntry exactSpec rootAuthority Authority.ProjectUp verified bound binding lease plan lifecycleContext (runRootProjectUpLifecycleEntry cfg self handoffScope loadSigningKey runFailedLocal)"
+                , "withRootProjectUpLifecycleEntry exactSpec rootAuthority Authority.ProjectUp verified bound binding lease plan lifecycleContext (runRootProjectUpLifecycleEntry cfg self handoffScope loadSigningKey loadActivationSigningKey runFailedLocal)"
                 ]
         mapM_
             (\fragment -> assertBool ("missing fixed Entry route: " ++ T.unpack fragment) (T.isInfixOf fragment normalizedEntry))
@@ -556,6 +561,43 @@ transactionCases =
             assertLeft "a conflicting resource member was accepted" outcome
             phases <- withProtectedEntry store readOperationPhases
             either (assertFailure . show) (@?= ["EffectOutcomeUnknown"]) phases
+    , testCase "a fresh ownership generation replaces the prior released tombstone" $
+        withChainStore $ \store project -> do
+            outcome <-
+                runFrom
+                    store
+                    project
+                    [ deployKindStep
+                        "reacquire released cluster"
+                        executionFrame
+                        ( \execution -> do
+                            carryClusterHandleAt 6 execution
+                            prewriteReleasedClusterRecordAt 5 store execution
+                            pure StepChanged
+                        )
+                    ]
+            outcome @?= Right ()
+            fields <- readOnlyResourceFields store
+            fields !! 5 @?= "6"
+            fields !! 10 @?= "owned"
+    , testCase "a released tombstone refuses a non-advancing ownership generation" $
+        withChainStore $ \store project -> do
+            outcome <-
+                runFrom
+                    store
+                    project
+                    [ deployKindStep
+                        "refuse stale cluster reacquisition"
+                        executionFrame
+                        ( \execution -> do
+                            carryClusterHandleAt 5 execution
+                            prewriteReleasedClusterRecordAt 5 store execution
+                            pure StepChanged
+                        )
+                    ]
+            assertLeft "a non-advancing resource generation replaced a tombstone" outcome
+            phases <- withProtectedEntry store readOperationPhases
+            either (assertFailure . show) (@?= ["EffectOutcomeUnknown"]) phases
     , testCase "release keeps the stable member and advances it to a tombstone" $
         withChainStore $ \store project -> do
             outcome <-
@@ -648,6 +690,38 @@ transactionCases =
             readIORef ran >>= (@?= 1)
             phases <- withProtectedEntry store readOperationPhases
             either (assertFailure . show) (@?= ["StepObservedTerminal"]) phases
+            readRequiredPlanDigest digest >>= assertExactlyOneClosedSession store
+    , testCase "a synchronous action failure settles terminally before the public command reports it" $
+        withChainStore $ \store project -> do
+            ran <- newIORef (0 :: Int)
+            digest <- newIORef Nothing
+            let failingStep =
+                    countingProbe "failed-action" $ \execution -> do
+                        modifyIORef' ran (+ 1)
+                        writeIORef digest (Just (stepExecutionPlanDigest execution))
+                        ioError (userError "controlled action failure")
+                steps =
+                    [ failingStep
+                    , countingStep "must-not-register" ran StepChanged
+                    ]
+            attempted <- runFrom store project steps
+            assertLeft "the synchronous action failure unexpectedly succeeded" attempted
+            readIORef ran >>= (@?= 1)
+            phases <- withProtectedEntry store readOperationPhases
+            either (assertFailure . show) (@?= ["StepObservedTerminal"]) phases
+            readRequiredPlanDigest digest >>= assertExactlyOneClosedSession store
+    , testCase "a synchronous action failure terminalizes an untaken projected gate" $
+        withChainStore $ \store project -> do
+            digest <- newIORef Nothing
+            let failingStep =
+                    projectsOperation "project:failed-action/relation" $
+                        countingProbe "failed-action" $ \execution -> do
+                            writeIORef digest (Just (stepExecutionPlanDigest execution))
+                            ioError (userError "failure before projected effect")
+            attempted <- runFrom store project [failingStep]
+            assertLeft "the synchronous projected action failure unexpectedly succeeded" attempted
+            phases <- withProtectedEntry store readOperationPhases
+            either (assertFailure . show) (@?= replicate 2 "StepObservedTerminal") phases
             readRequiredPlanDigest digest >>= assertExactlyOneClosedSession store
     ]
 
@@ -953,7 +1027,10 @@ carry it. The gate is the node's own, opened by the interpreter, so this is the
 production route rather than a fixture handle.
 -}
 carryClusterHandle :: StepExecution scope planId -> IO ()
-carryClusterHandle execution = do
+carryClusterHandle = carryClusterHandleAt 5
+
+carryClusterHandleAt :: Word64 -> StepExecution scope planId -> IO ()
+carryClusterHandleAt generation execution = do
     gate <- stepExecutionPreparedGate execution
     case gate of
         Nothing -> assertFailure "the interpreter opened no gate for this node"
@@ -966,14 +1043,14 @@ carryClusterHandle execution = do
         joinReconcile $
             withNodeResourceOfKind execution ClusterResourceKind "core:deploy-kind" $ \planned ->
                 joinReconcile $
-                    withNodeObservedResource execution planned 5 7 $ \observed -> do
+                    withNodeObservedResource execution planned generation 7 $ \observed -> do
                         descriptor <- plannedNodeOperation execution planned observed "cluster:create"
                         preconditionSet <- zeroDependencyPreconditions descriptor
                         joinReconcile $
                             withPreparedOperation descriptor preconditionSet opened $
                                 \prepared preconditions -> do
                                     reconciled <-
-                                        completeReconcile observed prepared preconditions (BackendCreated 5)
+                                        completeReconcile observed prepared preconditions (BackendCreated generation)
                                     withReconcileResult
                                         reconciled
                                         ( \managed receipt _ ->
@@ -1103,6 +1180,20 @@ prewriteOwnedClusterRecord store execution =
             "provisioned"
             "cluster-adapter-1"
             "owned"
+
+prewriteReleasedClusterRecordAt :: Word64 -> ProtectedStore -> StepExecution scope planId -> IO ()
+prewriteReleasedClusterRecordAt generation store execution =
+    prewriteSettlementBytes store execution $
+        resourceBundleBytes
+            (stepExecutionPlanDigest execution)
+            (stepExecutionFrame execution)
+            (stepExecutionOperationKey execution)
+            generation
+            "core:deploy-kind:cluster:create"
+            8
+            "released"
+            "cluster-adapter-1"
+            "released"
 
 prewriteSettlementBytes :: ProtectedStore -> StepExecution scope planId -> ByteString -> IO ()
 prewriteSettlementBytes store execution bytes = do
@@ -1333,8 +1424,8 @@ chainSuite :: Harness.TestSuite
 chainSuite =
     Harness.TestSuite
         (pure (Right ()))
-        (\_ -> pure ())
-        [Harness.Case chainCaseId 1 False]
+        (\_ _ -> pure ())
+        [Harness.Case chainCaseId 1 False Harness.AssertOnce]
         (\_ _ -> pure Harness.Pass)
         (pure ())
 
@@ -1504,7 +1595,9 @@ sourceShapeCases =
                 [ "settledPhaseFor :: PlannedStepObservation scope planId configId -> Text"
                 , "plannedStepObservationSucceeded observation"
                 , "runPlannedStep planned execution"
-                , "plannedStepRefusalObservation planned (Text.pack reason)"
+                , "tryAny (runPlannedStep planned execution)"
+                , "settleNode True runtime session gate afterPrepare \"StepObservedTerminal\""
+                , "available <- if includeOpen then stepRuntimeOpenGates runtime else pure []"
                 , "renderRow :: PlannedStep scope planId configId config -> PlannedStepObservation scope planId configId -> String"
                 , "plannedStepObservationDetail observation"
                 ]
@@ -1535,7 +1628,7 @@ sourceShapeCases =
         assertBool
             "the public Chain names the raw plan-independent StepObservation"
             ("StepObservation" `notElem` chainIdentifiers)
-    , testCase "authenticated child admission seeds only the shared canonical provider registry" $ do
+    , testCase "authenticated child admission seeds only the shared canonical provider dependency registries" $ do
         child <- publicModuleSource ("Command" </> "Child.hs")
         process <- publicModuleSource ("Handoff" </> "Process.hs")
         let normalizedChild = T.unwords (T.words child)
@@ -1549,8 +1642,10 @@ sourceShapeCases =
         mapM_
             (\fragment -> assertBool ("missing Process-owned provider carriage: " <> T.unpack fragment) (T.isInfixOf fragment normalizedProcess))
             [ "providerDependencyProbeRequestFromFields packageWire fields"
-            , "withProviderDependencyReprobeEndpointKernel link packageWire endpoint"
+            , "withProviderDependencyReprobeEndpointKernel link bundleWire endpoint"
             , "withForwardLifecycleChildProcess config installed"
+            , "runtimeDependencyPackageDomain package `notElem` [\"provider\", \"provider-share\"]"
+            , "runtimeDependencyPackageBundleWire"
             , "registerStepRuntimeDependencyPackage runtime package"
             , "replaceStepRuntimeDependencyService runtime package"
             , "stepRuntimeDependencyPackages runtime"

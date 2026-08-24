@@ -6,6 +6,7 @@ module HostBootstrap.Cluster.Backend.Internal (
     strongClusterConfigBytes,
     strongClusterConfigDigest,
     strongClusterOwnershipIdentity,
+    strongClusterKubeconfigPath,
     strongClusterReadinessVersion,
 ) where
 
@@ -17,31 +18,36 @@ import HostBootstrap.Cluster.Lifecycle (ClusterDriver)
 import HostBootstrap.HostConfig (HostConfig)
 
 -- | Hidden capability retaining one exact plan-owned driver discovery.
-data StrongClusterBackend = StrongClusterBackend
-    HostConfig
-    ClusterDriver
-    ByteString
-    Text
-    Text
-    (IORef Word64)
+data StrongClusterBackend
+    = StrongClusterBackend
+        HostConfig
+        ClusterDriver
+        ByteString
+        Text
+        Text
+        FilePath
+        (IORef Word64)
 
-mkStrongClusterBackend :: HostConfig -> ClusterDriver -> ByteString -> Text -> Text -> IORef Word64 -> StrongClusterBackend
+mkStrongClusterBackend :: HostConfig -> ClusterDriver -> ByteString -> Text -> Text -> FilePath -> IORef Word64 -> StrongClusterBackend
 mkStrongClusterBackend = StrongClusterBackend
 
 strongClusterHostConfig :: StrongClusterBackend -> HostConfig
-strongClusterHostConfig (StrongClusterBackend cfg _ _ _ _ _) = cfg
+strongClusterHostConfig (StrongClusterBackend cfg _ _ _ _ _ _) = cfg
 
 strongClusterDriver :: StrongClusterBackend -> ClusterDriver
-strongClusterDriver (StrongClusterBackend _ driver _ _ _ _) = driver
+strongClusterDriver (StrongClusterBackend _ driver _ _ _ _ _) = driver
 
 strongClusterConfigBytes :: StrongClusterBackend -> ByteString
-strongClusterConfigBytes (StrongClusterBackend _ _ bytes _ _ _) = bytes
+strongClusterConfigBytes (StrongClusterBackend _ _ bytes _ _ _ _) = bytes
 
 strongClusterConfigDigest :: StrongClusterBackend -> Text
-strongClusterConfigDigest (StrongClusterBackend _ _ _ digest _ _) = digest
+strongClusterConfigDigest (StrongClusterBackend _ _ _ digest _ _ _) = digest
 
 strongClusterOwnershipIdentity :: StrongClusterBackend -> Text
-strongClusterOwnershipIdentity (StrongClusterBackend _ _ _ _ owner _) = owner
+strongClusterOwnershipIdentity (StrongClusterBackend _ _ _ _ owner _ _) = owner
+
+strongClusterKubeconfigPath :: StrongClusterBackend -> FilePath
+strongClusterKubeconfigPath (StrongClusterBackend _ _ _ _ _ path _) = path
 
 strongClusterReadinessVersion :: StrongClusterBackend -> IORef Word64
-strongClusterReadinessVersion (StrongClusterBackend _ _ _ _ _ version) = version
+strongClusterReadinessVersion (StrongClusterBackend _ _ _ _ _ _ version) = version

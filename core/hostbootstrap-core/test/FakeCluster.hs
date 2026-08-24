@@ -39,6 +39,9 @@ module FakeCluster (
     writeClusters,
     readNodes,
     writeNodes,
+    FakeRelay (..),
+    readRelays,
+    writeRelays,
     recordedClusterMutations,
     recordedKubeconfigPaths,
     fixtureNodeIdentity,
@@ -55,7 +58,7 @@ module FakeCluster (
 
 import Control.Exception (bracket_)
 import Control.Monad (forM_, when)
-import Data.List (isPrefixOf)
+import Data.List (intercalate, isPrefixOf, isSuffixOf, stripPrefix)
 import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
 import System.Environment (setEnv, unsetEnv)
 import System.Exit (ExitCode (ExitFailure), exitWith)
@@ -81,11 +84,19 @@ withFakeClusterClient root =
 -- ---------------------------------------------------------------------------
 -- Declaring the fixture
 
-{- | One node container this fixture's runtime currently holds. -}
+-- | One node container this fixture's runtime currently holds.
 data ClusterNode = ClusterNode
     { nodeIdentity :: String
     , nodeRunning :: Bool
     , nodeLimits :: [String]
+    }
+    deriving (Eq, Read, Show)
+
+data FakeRelay = FakeRelay
+    { relayIdentity :: String
+    , relayName :: String
+    , relayLabels :: [(String, String)]
+    , relayMappings :: [(Int, String, Int)]
     }
     deriving (Eq, Read, Show)
 
@@ -103,6 +114,8 @@ newClusterFixture root nodes = do
     writeFile (kubeconfigPathsPath root) ""
     writeClusters root []
     writeNodes root []
+    writeRelays root []
+    writeFile (root </> "next-host-port") "41000"
     declareNodes root nodes
     pure root
 
@@ -118,6 +131,9 @@ clustersPath root = root </> "clusters"
 
 nodesPath :: FilePath -> FilePath
 nodesPath root = root </> "nodes"
+
+relaysPath :: FilePath -> FilePath
+relaysPath root = root </> "relays"
 
 clusterMutationsPath :: FilePath -> FilePath
 clusterMutationsPath root = root </> "cluster-mutations"
@@ -191,6 +207,12 @@ readNodes root = read <$> readFile' (nodesPath root)
 writeNodes :: FilePath -> [(String, ClusterNode)] -> IO ()
 writeNodes root = writeFile (nodesPath root) . show
 
+readRelays :: FilePath -> IO [FakeRelay]
+readRelays root = read <$> readFile' (relaysPath root)
+
+writeRelays :: FilePath -> [FakeRelay] -> IO ()
+writeRelays root = writeFile (relaysPath root) . show
+
 -- | The mutating verbs this fixture's tools performed, in order.
 recordedClusterMutations :: FilePath -> IO [String]
 recordedClusterMutations root = lines <$> readFile' (clusterMutationsPath root)
@@ -219,17 +241,17 @@ fixtureNodeIdentity = nodeIdentity . freshNode
 -- ---------------------------------------------------------------------------
 -- Serving one command
 
-{- | Serve one cluster command, as a process the one interpreter launched. -}
+-- | Serve one cluster command, as a process the one interpreter launched.
 runFakeClusterClient :: FilePath -> [String] -> IO ()
 runFakeClusterClient root argv = case argv of
     -- The cluster driver
-    ["get", "clusters"] -> readClusters root >>= mapM_ putStrLn
-    ["get", "kubeconfig", "--name", name] -> do
+    ["--quiet", "get", "clusters"] -> readClusters root >>= mapM_ putStrLn
+    ["--quiet", "get", "kubeconfig", "--name", name] -> do
         present <- readClusters root
         if name `elem` present
             then putStrLn ("apiVersion: v1\nclusters: [" <> name <> "]")
             else refuse ("no cluster named " <> name)
-    ("create" : "cluster" : "--name" : name : rest) -> do
+    ("--quiet" : "create" : "cluster" : "--name" : name : rest) -> do
         present <- readClusters root
         recordKubeconfig root rest
         refusing <- doesFileExist (refuseCreatePath root)
@@ -237,20 +259,21 @@ runFakeClusterClient root argv = case argv of
             then do
                 removeFile (refuseCreatePath root)
                 refuse "the cluster client refused the create it was asked for"
-            else if name `elem` present
-                then refuse ("a cluster named " <> name <> " already exists")
-                else do
-                    declared <- readDeclaredNodes root
-                    writeClusters root (name : present)
-                    held <- readNodes root
-                    writeNodes root ([(node, freshNode node) | node <- declared] <> held)
-                    recordMutation root "create"
-                    forM_ declared (replaceIfArmed root "create")
-                    armed <- doesFileExist (crashAfterCreatePath root)
-                    when armed $ do
-                        removeFile (crashAfterCreatePath root)
-                        refuse "the cluster client died after the create it performed"
-    ["delete", "cluster", "--name", name] -> do
+            else
+                if name `elem` present
+                    then refuse ("a cluster named " <> name <> " already exists")
+                    else do
+                        declared <- readDeclaredNodes root
+                        writeClusters root (name : present)
+                        held <- readNodes root
+                        writeNodes root ([(node, freshNode node) | node <- declared] <> held)
+                        recordMutation root "create"
+                        forM_ declared (replaceIfArmed root "create")
+                        armed <- doesFileExist (crashAfterCreatePath root)
+                        when armed $ do
+                            removeFile (crashAfterCreatePath root)
+                            refuse "the cluster client died after the create it performed"
+    ["--quiet", "delete", "cluster", "--name", name] -> do
         present <- readClusters root
         held <- readNodes root
         writeClusters root (filter (/= name) present)
@@ -260,13 +283,37 @@ runFakeClusterClient root argv = case argv of
     -- The container runtime
     ["container", "ls", "--all", "--quiet", "--no-trunc", "--filter", filterArg] ->
         case stripAnchoredName filterArg of
-            Nothing -> refuse ("unrecognized container filter " <> filterArg)
             Just name -> do
                 held <- readNodes root
-                case lookup name held of
-                    Nothing -> pure ()
-                    Just node -> putStrLn (nodeIdentity node)
+                relays <- readRelays root
+                case (lookup name held, [relay | relay <- relays, relayName relay == name]) of
+                    (Just node, _) -> putStrLn (nodeIdentity node)
+                    (Nothing, [relay]) -> putStrLn (relayIdentity relay)
+                    (Nothing, []) -> pure ()
+                    _ -> refuse "duplicate relay names"
                 replaceIfArmed root "listing" name
+            Nothing -> case stripPrefix "id=" filterArg of
+                Just identity -> do
+                    held <- readNodes root
+                    relays <- readRelays root
+                    mapM_ putStrLn ([nodeIdentity node | (_, node) <- held, nodeIdentity node == identity] <> [relayIdentity relay | relay <- relays, relayIdentity relay == identity])
+                Nothing -> refuse ("unrecognized container filter " <> filterArg)
+    ("container" : "run" : rest) -> createRelay root rest
+    ["container", "rm", "--force", identity] -> do
+        relays <- readRelays root
+        if any ((== identity) . relayIdentity) relays
+            then do
+                writeRelays root (filter ((/= identity) . relayIdentity) relays)
+                putStrLn identity
+                recordMutation root "relay-delete"
+            else refuse ("no such relay " <> identity)
+    ["inspect", "--format", template, identity]
+        | "{{\"\\n\"}}" `isSuffixOf` template -> refuse "the relay format duplicates the runtime record terminator"
+        | otherwise ->
+            readRelays root >>= \relays -> case [relay | relay <- relays, relayIdentity relay == identity] of
+                [relay] -> renderRelay relay
+                [] -> refuse ("no such relay " <> identity)
+                _ -> refuse "duplicate relay identities"
     ["inspect", "-f", "{{.Id}}", reference] ->
         nodeReferenced root reference >>= \case
             Nothing -> refuse ("no such container " <> reference)
@@ -304,34 +351,49 @@ runFakeClusterClient root argv = case argv of
         case held of
             [] -> pure ()
             ((name, _) : _) -> replaceIfArmed root "nodes" name
-    ["upgrade", "--install", release, _artifact, "--namespace", _namespace, "--create-namespace=false", "--values", "-", "--set-string", _image, "--atomic", "--wait"] -> do
+    ["--kubeconfig", _kubeconfig, "upgrade", "--install", release, _artifact, "--namespace", _namespace, "--create-namespace=false", "--values", "-", "--set-string", _image, "--rollback-on-failure", "--wait"] -> do
         let noChanges = root </> "helm-no-changes"
             malformed = root </> "helm-malformed"
             installed = root </> ("helm-release-" <> release)
-        ifM (doesFileExist noChanges)
+        ifM
+            (doesFileExist noChanges)
             (removeFile noChanges >> putStrLn "no changes")
-            ( ifM (doesFileExist malformed)
-                (removeFile malformed >> putStrLn "an unfamiliar successful Helm response")
+            ( ifM
+                (doesFileExist malformed)
+                ( do
+                    removeFile malformed
+                    putStrLn ("Release \"" <> release <> "\" does not exist. Installing it now.")
+                    putStrLn ("NAME: " <> release)
+                    putStrLn "STATUS: deployed"
+                    putStrLn "REVISION: 1"
+                )
                 ( do
                     alreadyInstalled <- doesFileExist installed
                     writeFile installed "installed\n"
-                    putStrLn
-                        ( "Release \""
-                            <> release
-                            <> if alreadyInstalled then "\" has been upgraded" else "\" has been installed"
-                        )
+                    if alreadyInstalled
+                        then putStrLn ("Release \"" <> release <> "\" has been upgraded")
+                        else do
+                            putStrLn ("Release \"" <> release <> "\" does not exist. Installing it now.")
+                            putStrLn ("NAME: " <> release)
+                            putStrLn "LAST DEPLOYED: Thu Jan  1 00:00:00 1970"
+                            putStrLn "NAMESPACE: fixture"
+                            putStrLn "STATUS: deployed"
+                            putStrLn "REVISION: 1"
+                            putStrLn "DESCRIPTION: Install complete"
                 )
             )
-    ["rollout", "status", "--namespace", _namespace, target, "--timeout=5m"]
+    ["--kubeconfig", _kubeconfig, "rollout", "status", "--namespace", _namespace, target, "--timeout=5m"]
         | "deployment/" `isPrefixOf` target -> do
             let refusal = root </> "rollout-refusal"
-            ifM (doesFileExist refusal)
+            ifM
+                (doesFileExist refusal)
                 (removeFile refusal >> refuse "deployment did not become ready")
                 (putStrLn "deployment successfully rolled out")
-    ["uninstall", release, "--namespace", _namespace, "--wait"] -> do
+    ["--kubeconfig", _kubeconfig, "uninstall", release, "--namespace", _namespace, "--wait"] -> do
         let malformed = root </> "helm-cleanup-malformed"
             installed = root </> ("helm-release-" <> release)
-        ifM (doesFileExist malformed)
+        ifM
+            (doesFileExist malformed)
             (removeFile malformed >> putStrLn "unfamiliar uninstall success")
             ( do
                 present <- doesFileExist installed
@@ -339,10 +401,67 @@ runFakeClusterClient root argv = case argv of
                     then removeFile installed >> putStrLn ("release \"" <> release <> "\" uninstalled")
                     else refuse ("release " <> release <> " not found")
             )
-    ["status", release, "--namespace", _namespace] -> do
+    ["--kubeconfig", _kubeconfig, "status", release, "--namespace", _namespace] -> do
         present <- doesFileExist (root </> ("helm-release-" <> release))
         if present then putStrLn "deployed" else refuse ("release " <> release <> " not found")
     _ -> refuse ("the cluster fixture does not recognize " <> show argv)
+
+createRelay :: FilePath -> [String] -> IO ()
+createRelay root arguments = case parseRelayRun arguments of
+    Left reason -> refuse reason
+    Right (name, labels, listeners) -> do
+        relays <- readRelays root
+        if any ((== name) . relayName) relays
+            then refuse ("a relay named " <> name <> " already exists")
+            else do
+                nextPort <- read <$> readFile' (root </> "next-host-port")
+                let identity = replicate 56 'e' <> padNumber (length relays + 1)
+                    mappings = [(listener, "127.0.0.1", nextPort + offset) | (offset, listener) <- zip [0 ..] listeners]
+                writeFile (root </> "next-host-port") (show (nextPort + length listeners))
+                writeRelays root (FakeRelay identity name labels mappings : relays)
+                recordMutation root "relay-create"
+                putStrLn identity
+  where
+    padNumber number = replicate (8 - length rendered) '0' <> rendered
+      where
+        rendered = show number
+
+parseRelayRun :: [String] -> Either String (String, [(String, String)], [Int])
+parseRelayRun ("--detach" : "--name" : name : rest) = flags [] [] rest
+  where
+    flags labels listeners ("--label" : assignment : remaining) = case break (== '=') assignment of
+        (key, '=' : value) -> flags ((key, value) : labels) listeners remaining
+        _ -> Left "malformed relay label"
+    flags labels listeners ("--network" : "kind" : remaining) = flags labels listeners remaining
+    flags labels listeners ("--publish" : mapping : remaining) = case reads (takeWhile (/= '/') (drop (length ("127.0.0.1::" :: String)) mapping)) of
+        [(listener, "")] | "127.0.0.1::" `isPrefixOf` mapping -> flags labels (listener : listeners) remaining
+        _ -> Left "malformed relay publication"
+    flags labels listeners (_image : "__hostbootstrap-exposure-relay-v1" : relayArgs) = do
+        declared <- relayListeners relayArgs
+        if reverse listeners == declared
+            then Right (name, reverse labels, declared)
+            else Left "relay arguments and publications differ"
+    flags _ _ _ = Left "malformed relay run"
+
+    relayListeners [] = Right []
+    relayListeners (_service : listener : _target : _port : remaining) = case reads listener of
+        [(parsed, "")] -> (parsed :) <$> relayListeners remaining
+        _ -> Left "malformed relay listener"
+    relayListeners _ = Left "malformed relay target tuple"
+parseRelayRun _ = Left "malformed relay run prefix"
+
+renderRelay :: FakeRelay -> IO ()
+renderRelay relay = do
+    putStrLn (relayIdentity relay)
+    putStrLn ('/' : relayName relay)
+    mapM_ (putStrLn . labelValue) ["io.hostbootstrap.owner", "io.hostbootstrap.cluster", "io.hostbootstrap.generation", "io.hostbootstrap.operation", "io.hostbootstrap.spec"]
+    putStrLn
+        ( "{"
+            <> intercalate "," [show (show listener <> "/tcp") <> ":[{\"HostIp\":" <> show address <> ",\"HostPort\":" <> show (show hostPort) <> "}]" | (listener, address, hostPort) <- relayMappings relay]
+            <> "}"
+        )
+  where
+    labelValue key = maybe "<no value>" id (lookup key (relayLabels relay))
 
 -- ---------------------------------------------------------------------------
 -- What the fixture holds
@@ -429,7 +548,7 @@ recordKubeconfig root arguments = case arguments of
     (_ : rest) -> recordKubeconfig root rest
     [] -> pure ()
 
-{- | Put a different container at one node's name, if this verb was armed for it. -}
+-- | Put a different container at one node's name, if this verb was armed for it.
 replaceIfArmed :: FilePath -> String -> String -> IO ()
 replaceIfArmed root verb name = do
     armed <- doesFileExist (replaceAfterPath root verb)
@@ -453,5 +572,5 @@ refuse reason = do
     hPutStrLn stderr reason
     exitWith (ExitFailure 1)
 
-ifM :: Monad monad => monad Bool -> monad value -> monad value -> monad value
+ifM :: (Monad monad) => monad Bool -> monad value -> monad value -> monad value
 ifM condition whenTrue whenFalse = condition >>= \answer -> if answer then whenTrue else whenFalse

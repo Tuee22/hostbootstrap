@@ -11,21 +11,22 @@ The public teardown forest owns the work and settlement constructors. This
 module binds one constructor-hidden work package to its exact root lifecycle
 entry and records the canonical recovery adapter before an edge exists.
 -}
-module HostBootstrap.Teardown.Internal
-    ( ReverseDescent
-    , withReverseDescentLiftContextKernel
-    , withReverseDescentProcessInputsKernel
-    , withPreparedReverseForestKernel
-    , withPreparedReverseAdmissionsKernel
-    , renderPreparedReverseTerminalOriginKernel
-    , withPreparedReverseDescentKernel
-    , withBoundReverseDescentKernel
-    , withRehydratedBoundReverseDescentKernel
-    , withRehydratedAdoptedReverseDescentKernel
-    , withVerifiedBoundReverseDescentReportKernel
-    , withVerifiedBoundReverseDescentObservationsKernel
-    , withVerifiedReverseAdapterKernel
-    )
+module HostBootstrap.Teardown.Internal (
+    ReverseDescent,
+    withReverseDescentLiftContextKernel,
+    withReverseDescentProcessInputsKernel,
+    withPreparedReverseForestKernel,
+    withPreparedReverseAdmissionsKernel,
+    renderPreparedReverseTerminalOriginKernel,
+    withPreparedReverseDescentKernel,
+    withBoundReverseDescentKernel,
+    withRehydratedBoundReverseDescentKernel,
+    withRehydratedAdoptedReverseDescentKernel,
+    withRehydratedSettledReverseDescentKernel,
+    withVerifiedBoundReverseDescentReportKernel,
+    withVerifiedBoundReverseDescentObservationsKernel,
+    withVerifiedReverseAdapterKernel,
+)
 where
 
 import Data.ByteString (ByteString)
@@ -33,7 +34,9 @@ import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.ByteString.Lazy as LazyByteString
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (nub)
+import qualified Data.List.NonEmpty as NonEmpty
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -41,22 +44,26 @@ import Data.Word (Word64)
 import HostBootstrap.Authority
 import HostBootstrap.Authority.Kernel (rootAuthorityStoreIdentity)
 import HostBootstrap.Handoff
-import HostBootstrap.Handoff.Internal (RecoverySigningKernel, consumeRecoverySigningKernel)
-import HostBootstrap.Handoff.Recovery
-    ( recoveryChildPackageFromWireKernel
-    , recoveryChildPackageKernel
-    , renderRecoveryChildPackageKernel
-    , withRecoveryChildPackageKernel
-    )
+import HostBootstrap.Handoff.Internal (
+    RecoverySigningKernel,
+    consumeRecoverySigningKernel,
+    recoverySigningKernel,
+ )
+import HostBootstrap.Handoff.Recovery (
+    recoveryChildPackageFromWireKernel,
+    recoveryChildPackageKernel,
+    renderRecoveryChildPackageKernel,
+    withRecoveryChildPackageKernel,
+ )
 import HostBootstrap.Lifecycle.Context (ValidatedLifecycleContext)
 import HostBootstrap.Lifecycle.Context.Internal (withValidatedRootLifecycleContext)
 import HostBootstrap.Lifecycle.Mode
-import HostBootstrap.Lifecycle.RootedPlan
-    ( RootedPlanCatalog
-    , withRootedPlanCatalogEdgeKernel
-    )
-import HostBootstrap.Lift.Context (LiftContext)
 import qualified HostBootstrap.Lifecycle.Plan as Plan
+import HostBootstrap.Lifecycle.RootedPlan (
+    RootedPlanCatalog,
+    withRootedPlanCatalogEdgeKernel,
+ )
+import HostBootstrap.Lift.Context (LiftContext (LiftContext))
 import HostBootstrap.ProjectPlan
 import HostBootstrap.ProjectPlan.Frame
 import HostBootstrap.Protected
@@ -69,8 +76,16 @@ canonical adapter, verifier, and durable readback. Bound nests that exact
 package with canonical binding bytes and its exact successor record; the
 live offer remains lexical to the relay callback that attached it.
 -}
-data ReverseDescent
-    state scope planId parentFrame childFrame brokerGeneration verb descentId
+data
+    ReverseDescent
+        state
+        scope
+        planId
+        parentFrame
+        childFrame
+        brokerGeneration
+        verb
+        descentId
     where
     PreparedReverseDescent ::
         RootInvocationAuthority scope brokerGeneration verb ->
@@ -99,12 +114,19 @@ data ReverseDescent
         ByteString ->
         RecordVersion ->
         ByteString ->
-        ReverseDescent (HandoffOffer scope brokerGeneration)
-            scope planId parentFrame childFrame brokerGeneration verb descentId
+        ReverseDescent
+            (HandoffOffer scope brokerGeneration)
+            scope
+            planId
+            parentFrame
+            childFrame
+            brokerGeneration
+            verb
+            descentId
 
 type role ReverseDescent nominal nominal nominal nominal nominal nominal nominal nominal
 
-{- | Derive the exact plan-owned launch context retained by one reverse edge. -}
+-- | Derive the exact plan-owned launch context retained by one reverse edge.
 withReverseDescentLiftContextKernel ::
     ReverseDescent state scope planId parentFrame childFrame brokerGeneration verb descentId ->
     (LiftContext -> IO (Either Text ())) ->
@@ -119,14 +141,35 @@ withReverseDescentLiftContextKernel reverseDescent use = case reverseDescent of
          in withDescentWorkSubtree descent $ \subtree ->
                 case topologyDescentFrom (topology plan) parent of
                     Nothing -> pure (Left "the retained descent parent has no plan-owned lift context")
-                    Just (child, context)
+                    Just (child, _immediateContext)
                         | child /= expectedChild ->
                             pure (Left "the plan-owned lift context enters a different child")
                         | teardownPlanFrameId subtree /= expectedChild ->
                             pure (Left "the retained descent subtree opens at a different child")
                         | teardownPlanVerbName subtree /= projectVerbName verb ->
                             pure (Left "the retained descent subtree has a different reverse verb")
-                        | otherwise -> context `seq` use context
+                        | otherwise ->
+                            case rootedRouteTo (topology plan) expectedChild of
+                                Left failure -> pure (Left failure)
+                                Right context -> context `seq` use context
+  where
+    rootedRouteTo derived target =
+        LiftContext <$> collect target []
+      where
+        root = fst (NonEmpty.head (topologyFrameOrder derived))
+        collect current visited
+            | current == root = Right []
+            | current `elem` visited = Left "the retained topology route contains a cycle"
+            | otherwise = case topologyParentFrame derived current of
+                Nothing -> Left "the retained descent child is not reachable from the root frame"
+                Just parent -> case [ layers
+                                    | (edgeParent, edgeChild, LiftContext layers) <- topologyDescentEdges derived
+                                    , edgeParent == parent
+                                    , edgeChild == current
+                                    ] of
+                    [layers] -> (<> layers) <$> collect parent (current : visited)
+                    [] -> Left "the retained topology route has no lift for one parent edge"
+                    _ -> Left "the retained topology route duplicates one parent edge"
 
 {- | Recover the exact opaque package and route inputs retained by preparation.
 Canonical decoding happens inside the owning module; callers receive neither
@@ -184,30 +227,31 @@ withPreparedReverseAdmissionsKernel
     (PreparedReverseDescent _ _ _plan _ _ _ _ _ descent expectedInput package _ _ _ _ _ _ _)
     use =
         use admitEdge admitRecovery
-  where
-    parent = descentWorkParentFrame descent
-    child = descentWorkChildFrame descent
-    digest = requestedPlanRevision expectedInput
+      where
+        parent = descentWorkParentFrame descent
+        child = descentWorkChildFrame descent
+        digest = requestedPlanRevision expectedInput
 
-    admitEdge observed =
-        pure $
-            if renderHandoffBindingInput observed == renderHandoffBindingInput expectedInput
-                then Right ()
-                else Left "the requested reverse edge differs from its prepared binding input"
+        admitEdge observed =
+            pure $
+                if renderHandoffBindingInput observed == renderHandoffBindingInput expectedInput
+                    then Right ()
+                    else Left "the requested reverse edge differs from its prepared binding input"
 
-    admitRecovery :: forall planDigest recoveryParent recoveryChild.
-        RecoveryProjectionBindingInput planDigest recoveryParent recoveryChild ->
-        IO (Either Text ByteString)
-    admitRecovery observed
-        | requestedRecoveryPlanDigest observed /= digest = refused "the recovery plan digest differs"
-        | requestedRecoveryParentFrame observed /= parent = refused "the recovery parent frame differs"
-        | requestedRecoveryChildFrame observed /= child = refused "the recovery child frame differs"
-        | otherwise =
-            pure $ do
-                recovered <- recoveryChildPackageFromWireKernel package
-                Right (withRecoveryChildPackageKernel recovered (\_ adapter -> adapter))
+        admitRecovery ::
+            forall planDigest recoveryParent recoveryChild.
+            RecoveryProjectionBindingInput planDigest recoveryParent recoveryChild ->
+            IO (Either Text ByteString)
+        admitRecovery observed
+            | requestedRecoveryPlanDigest observed /= digest = refused "the recovery plan digest differs"
+            | requestedRecoveryParentFrame observed /= parent = refused "the recovery parent frame differs"
+            | requestedRecoveryChildFrame observed /= child = refused "the recovery child frame differs"
+            | otherwise =
+                pure $ do
+                    recovered <- recoveryChildPackageFromWireKernel package
+                    Right (withRecoveryChildPackageKernel recovered (\_ adapter -> adapter))
 
-    refused = pure . Left
+        refused = pure . Left
 
 {- | Render the reverse terminal origin predicted by one prepared descent and
 the exact binding the root retained for its Offer. This is the root-side twin
@@ -243,11 +287,11 @@ renderPreparedReverseTerminalOriginKernel
             , TextEncoding.encodeUtf8 closed
             , TextEncoding.encodeUtf8 packageDigest
             ]
-  where
-    word = ByteStringChar8.pack . show
-    require failure accepted
-        | accepted = Right ()
-        | otherwise = Left failure
+      where
+        word = ByteStringChar8.pack . show
+        require failure accepted
+            | accepted = Right ()
+            | otherwise = Left failure
 
 {- | Prepare one exact root-entry descent, or return its unchanged work.
 
@@ -286,211 +330,235 @@ withPreparedReverseDescentKernel admission =
         () -> prepareEntry
   where
     prepareEntry root verb plan catalog lifecycleContext journal cursor retained reauthorize descent use =
-        case
-            withValidatedRootLifecycleContext
-                lifecycleContext
-                (\_ store current frame _ -> prepare store current frame)
-        of
+        case withValidatedRootLifecycleContext
+            lifecycleContext
+            (\_ store current frame _ -> prepare store current frame) of
             Left _ -> refused descent "the lifecycle context is not the exact root"
             Right action -> action
       where
-            prepare store current frame =
-                withDescentWorkSubtree descent $ \childProjection ->
-                    case openTeardownForest childProjection of
-                        Left failure -> pure (Left (failure, descent))
-                        Right childForest ->
-                            let expected = teardownForestOutstanding childForest
-                                snapshot = renderSnapshot plan
-                                specDigest = stablePlanSnapshotSpecDigest snapshot
-                                parent = descentWorkParentFrame descent
-                                child = descentWorkChildFrame descent
-                                invocation = invocationIdText (commandAuthorityInvocation retained)
-                             in case catalogPackage parent child expected of
-                                    Left detail -> pure (Left (refusal detail, descent))
-                                    Right (childPlanDigest, adapter, childConfig, configDigest, package) ->
-                                        let packageDigest = childConfigDigest package
-                                            input =
-                                                HandoffBindingInput
-                                                    { requestedSpecDigest = specDigest
-                                                    , requestedPayloadKind = RecoveryAdapterWire
-                                                    , requestedPlanRevision = childPlanDigest
-                                                    , requestedParentFrame = parent
-                                                    , requestedChildFrame = child
-                                                    , requestedChildConfigDigest = packageDigest
-                                                    , requestedPhase = "teardown"
-                                                    }
-                                            bytes = renderPrepared root journal cursor snapshot invocation input packageDigest configDigest package
-                                         in admitPrepared store current frame childProjection snapshot parent child expected
-                                                adapter childConfig configDigest package packageDigest invocation input bytes
+        prepare store current frame =
+            withDescentWorkSubtree descent $ \childProjection ->
+                case openTeardownForest childProjection of
+                    Left failure -> pure (Left (failure, descent))
+                    Right childForest ->
+                        let expected = teardownForestOutstanding childForest
+                            snapshot = renderSnapshot plan
+                            specDigest = stablePlanSnapshotSpecDigest snapshot
+                            parent = descentWorkParentFrame descent
+                            child = descentWorkChildFrame descent
+                            invocation = invocationIdText (commandAuthorityInvocation retained)
+                         in case catalogPackage parent child expected of
+                                Left detail -> pure (Left (refusal detail, descent))
+                                Right (childPlanDigest, adapter, childConfig, configDigest, package) ->
+                                    let packageDigest = childConfigDigest package
+                                        input =
+                                            HandoffBindingInput
+                                                { requestedSpecDigest = specDigest
+                                                , requestedPayloadKind = RecoveryAdapterWire
+                                                , requestedPlanRevision = childPlanDigest
+                                                , requestedParentFrame = parent
+                                                , requestedChildFrame = child
+                                                , requestedChildConfigDigest = packageDigest
+                                                , requestedPhase = "teardown"
+                                                }
+                                        bytes = renderPrepared root journal cursor snapshot invocation input packageDigest configDigest package
+                                     in admitPrepared
+                                            store
+                                            current
+                                            frame
+                                            childProjection
+                                            snapshot
+                                            parent
+                                            child
+                                            expected
+                                            adapter
+                                            childConfig
+                                            configDigest
+                                            package
+                                            packageDigest
+                                            invocation
+                                            input
+                                            bytes
 
-            catalogPackage parent child expected = do
-                (childPlanDigest, childConfig, configDigest) <-
-                    withRootedPlanCatalogEdgeKernel catalog parent child selectChildConfig
-                let adapter = renderReverseAdapter childPlanDigest verb parent child expected
-                package <- recoveryChildPackageKernel childConfig adapter
-                pure (childPlanDigest, adapter, childConfig, configDigest, renderRecoveryChildPackageKernel package)
+        catalogPackage parent child expected = do
+            (childPlanDigest, childConfig, configDigest) <-
+                withRootedPlanCatalogEdgeKernel catalog parent child selectChildConfig
+            let adapter = renderReverseAdapter childPlanDigest verb parent child expected
+            package <- recoveryChildPackageKernel childConfig adapter
+            pure (childPlanDigest, adapter, childConfig, configDigest, renderRecoveryChildPackageKernel package)
 
-            selectChildConfig _parentCurrent _plan binding _current _raw _route payload configDigest _payloadDigest _keys =
-                (Plan.planDigestBindingDigestKernel binding, payload, configDigest)
+        selectChildConfig _parentCurrent _plan binding _current _raw _route payload configDigest _payloadDigest _keys =
+            (Plan.planDigestBindingDigestKernel binding, payload, configDigest)
 
-            admitPrepared store current frame childProjection snapshot parent child expected adapter childConfig configDigest package packageDigest invocation input bytes =
-                            case validate store current frame childProjection snapshot parent child expected adapter childConfig configDigest package bytes of
-                                    Left failure -> pure (Left (failure, descent))
-                                    Right () -> case keyFor invocation (recoveryWireDigest package) of
-                                        Left failure -> pure (Left (failure, descent))
-                                        Right key -> do
-                                            replayed <- reauthorize
-                                            case replayed of
-                                                Left _ -> refused descent "the exact command reservation is stale"
-                                                Right authority
-                                                    | not (sameCommandAuthority store retained authority) ->
-                                                        refused descent "the replayed command authority differs"
-                                                    | otherwise -> do
-                                                        admitted <- withProtectedEntry store $ \session -> do
-                                                            currentCursor <- validateCurrentLifecycleCursor session cursor
-                                                            case currentCursor of
-                                                                Left _ ->
-                                                                    pure
-                                                                        ( Right
-                                                                            (Left (refusal "the lifecycle cursor is stale"))
-                                                                        )
-                                                                Right () -> admit session key bytes >>= forceProtectedResult
-                                                        case admitted of
-                                                            Left _ -> refused descent "the prepared store entry failed"
-                                                            Right (Left failure) -> pure (Left (failure, descent))
-                                                            Right (Right version) ->
-                                                                Right
-                                                                    <$> use
-                                                                        ( PreparedReverseDescent
-                                                                            root verb plan lifecycleContext journal cursor
-                                                                            retained reauthorize descent input package
-                                                                            packageDigest expected
-                                                                            (verifyChildObservations childProjection)
-                                                                            store key version bytes
-                                                                        )
+        admitPrepared store current frame childProjection snapshot parent child expected adapter childConfig configDigest package packageDigest invocation input bytes =
+            case validate store current frame childProjection snapshot parent child expected adapter childConfig configDigest package bytes of
+                Left failure -> pure (Left (failure, descent))
+                Right () -> case keyFor invocation (recoveryWireDigest package) of
+                    Left failure -> pure (Left (failure, descent))
+                    Right key -> do
+                        replayed <- reauthorize
+                        case replayed of
+                            Left _ -> refused descent "the exact command reservation is stale"
+                            Right authority
+                                | not (sameCommandAuthority store retained authority) ->
+                                    refused descent "the replayed command authority differs"
+                                | otherwise -> do
+                                    admitted <- withProtectedEntry store $ \session -> do
+                                        currentCursor <- validateCurrentLifecycleCursor session cursor
+                                        case currentCursor of
+                                            Left _ ->
+                                                pure
+                                                    ( Right
+                                                        (Left (refusal "the lifecycle cursor is stale"))
+                                                    )
+                                            Right () -> admit session key bytes >>= forceProtectedResult
+                                    case admitted of
+                                        Left _ -> refused descent "the prepared store entry failed"
+                                        Right (Left failure) -> pure (Left (failure, descent))
+                                        Right (Right version) ->
+                                            Right
+                                                <$> use
+                                                    ( PreparedReverseDescent
+                                                        root
+                                                        verb
+                                                        plan
+                                                        lifecycleContext
+                                                        journal
+                                                        cursor
+                                                        retained
+                                                        reauthorize
+                                                        descent
+                                                        input
+                                                        package
+                                                        packageDigest
+                                                        expected
+                                                        (verifyChildObservations childProjection)
+                                                        store
+                                                        key
+                                                        version
+                                                        bytes
+                                                    )
 
-            validate store current frame childProjection snapshot parent child expected adapter childConfig configDigest package preparedBytes = do
-                require "the verb and lifecycle phase cannot prepare cleanup descent" $
-                    case verb of
-                        ProjectUp -> retainedPhase == "execute"
-                        ProjectDown -> retainedPhase == "teardown"
-                        ProjectDestroy -> retainedPhase == "teardown"
-                require "the root verb differs" (verbName == projectVerbName (rootAuthorityVerb root))
-                require "the journal verb differs" (verbName == acquisitionJournalRootVerb journal)
-                require "the cursor verb differs" (verbName == projectVerbName (lifecycleCursorVerb cursor))
-                require "the command verb differs" (verbName == projectVerbName (commandAuthorityVerb retained))
-                require "the cursor and command phases differ" (lifecyclePhaseName (lifecycleCursorPhase cursor) == retainedPhase)
-                require "the project identity differs" (projectPlanProjectName plan == rootAuthorityProjectName root)
-                require "the protected store differs" (storeIdentity == rootAuthorityStoreIdentity root)
-                require "the plan store differs" (Plan.projectPlanProfileStoreIdentityKernel plan == storeIdentity)
-                require "the plan scope differs" (Plan.projectPlanProfileNameKernel plan == acquisitionJournalStableScope journal)
-                require "the plan digest differs" (stablePlanSnapshotDigest snapshot == acquisitionJournalSnapshotDigest journal)
-                require "the canonical plan is empty" (not (ByteString.null (stablePlanSnapshotBytes snapshot)))
-                require "the broker generation differs" (epoch == acquisitionJournalBrokerGeneration journal)
-                require "the plan broker generation differs" (epoch == Plan.projectPlanProfileEpochKernel plan)
-                require "the command broker generation differs" (epoch == brokerEpochWord (commandAuthorityEpoch retained))
-                require "the context current frame differs from its project frame" (currentFrameId current == projectFrameId frame)
-                require "the cursor frame differs from the root context" (lifecycleCursorFrame cursor == currentFrameId current)
-                require "the command frame differs from the root context" (commandAuthorityFrame retained == currentFrameId current)
-                require "the child projection opening frame differs" (teardownPlanFrameId childProjection == child)
-                require "the child projection verb differs" (teardownPlanVerbName childProjection == verbName)
-                require "the parent and child frames are equal" (parent /= child)
-                require "the parent frame is outside the plan" (topologyContainsFrame (topology plan) parent)
-                require "the child frame is outside the plan" (topologyContainsFrame (topology plan) child)
-                require "the descent is not the exact immediate topology edge" $
-                    [ edge
-                    | edge@(_, edgeChild) <- topologyParentEdges (topology plan)
-                    , edgeChild == child
-                    ]
-                        == [(parent, child)]
-                require "the cursor and command origins differ" (lifecycleCursorMatchesCommandAuthority retained cursor)
-                require "the command belongs to a different store" (commandAuthorityMatchesStore retained store)
-                require "the acquisition run is empty" (not (Text.null (acquisitionJournalRunLease journal)))
-                require "the command invocation is empty" (not (Text.null invocation))
-                require "the acquisition version is invalid" (acquisitionJournalRecordVersion journal > 0)
-                require "the cursor version is invalid" (lifecycleCursorRecordVersion cursor > 0)
-                require "the child observation order is empty" (not (null expected))
-                require "the child observation order contains duplicates" (length expected == length (nub expected))
-                require "the recovery adapter is empty" (not (ByteString.null adapter))
-                require "the recovery adapter exceeds the handoff bound" (fromIntegral (ByteString.length adapter) <= maxWireBytes)
-                require "the catalog child configuration is empty" (not (ByteString.null childConfig))
-                require "the catalog child configuration digest differs" (configDigest == childConfigDigest childConfig)
-                require "the recovery package does not carry the exact catalog child configuration and adapter" (package == renderedPackage)
-                require "the recovery package exceeds the handoff bound" (fromIntegral (ByteString.length package) <= maxWireBytes)
-                require "the recovery package and child configuration digests are conflated" (childConfigDigest package /= configDigest)
-                require "the prepared record exceeds the handoff bound" (fromIntegral (ByteString.length preparedBytes) <= maxWireBytes)
-              where
-                storeIdentity = protectedStoreIdentityText (protectedStoreIdentity store)
-                epoch = brokerEpochWord (rootAuthorityEpoch root)
-                verbName = projectVerbName verb
-                retainedPhase = lifecyclePhaseName (commandAuthorityPhase retained)
-                invocation = invocationIdText (commandAuthorityInvocation retained)
-                renderedPackage =
-                    either
-                        (const ByteString.empty)
-                        renderRecoveryChildPackageKernel
-                        (recoveryChildPackageKernel childConfig adapter)
+        validate store current frame childProjection snapshot parent child expected adapter childConfig configDigest package preparedBytes = do
+            require "the verb and lifecycle phase cannot prepare cleanup descent" $
+                case verb of
+                    ProjectUp -> retainedPhase == "execute"
+                    ProjectDown -> retainedPhase == "teardown"
+                    ProjectDestroy -> retainedPhase == "teardown"
+            require "the root verb differs" (verbName == projectVerbName (rootAuthorityVerb root))
+            require "the journal verb differs" (verbName == acquisitionJournalRootVerb journal)
+            require "the cursor verb differs" (verbName == projectVerbName (lifecycleCursorVerb cursor))
+            require "the command verb differs" (verbName == projectVerbName (commandAuthorityVerb retained))
+            require "the cursor and command phases differ" (lifecyclePhaseName (lifecycleCursorPhase cursor) == retainedPhase)
+            require "the project identity differs" (projectPlanProjectName plan == rootAuthorityProjectName root)
+            require "the protected store differs" (storeIdentity == rootAuthorityStoreIdentity root)
+            require "the plan store differs" (Plan.projectPlanProfileStoreIdentityKernel plan == storeIdentity)
+            require "the plan scope differs" (Plan.projectPlanProfileNameKernel plan == acquisitionJournalStableScope journal)
+            require "the plan digest differs" (stablePlanSnapshotDigest snapshot == acquisitionJournalSnapshotDigest journal)
+            require "the canonical plan is empty" (not (ByteString.null (stablePlanSnapshotBytes snapshot)))
+            require "the broker generation differs" (epoch == acquisitionJournalBrokerGeneration journal)
+            require "the plan broker generation differs" (epoch == Plan.projectPlanProfileEpochKernel plan)
+            require "the command broker generation differs" (epoch == brokerEpochWord (commandAuthorityEpoch retained))
+            require "the context current frame differs from its project frame" (currentFrameId current == projectFrameId frame)
+            require "the cursor frame differs from the root context" (lifecycleCursorFrame cursor == currentFrameId current)
+            require "the command frame differs from the root context" (commandAuthorityFrame retained == currentFrameId current)
+            require "the child projection opening frame differs" (teardownPlanFrameId childProjection == child)
+            require "the child projection verb differs" (teardownPlanVerbName childProjection == verbName)
+            require "the parent and child frames are equal" (parent /= child)
+            require "the parent frame is outside the plan" (topologyContainsFrame (topology plan) parent)
+            require "the child frame is outside the plan" (topologyContainsFrame (topology plan) child)
+            require "the descent is not the exact immediate topology edge" $
+                [ edge
+                | edge@(_, edgeChild) <- topologyParentEdges (topology plan)
+                , edgeChild == child
+                ]
+                    == [(parent, child)]
+            require "the cursor and command origins differ" (lifecycleCursorMatchesCommandAuthority retained cursor)
+            require "the command belongs to a different store" (commandAuthorityMatchesStore retained store)
+            require "the acquisition run is empty" (not (Text.null (acquisitionJournalRunLease journal)))
+            require "the command invocation is empty" (not (Text.null invocation))
+            require "the acquisition version is invalid" (acquisitionJournalRecordVersion journal > 0)
+            require "the cursor version is invalid" (lifecycleCursorRecordVersion cursor > 0)
+            require "the child observation order is empty" (not (null expected))
+            require "the child observation order contains duplicates" (length expected == length (nub expected))
+            require "the recovery adapter is empty" (not (ByteString.null adapter))
+            require "the recovery adapter exceeds the handoff bound" (fromIntegral (ByteString.length adapter) <= maxWireBytes)
+            require "the catalog child configuration is empty" (not (ByteString.null childConfig))
+            require "the catalog child configuration digest differs" (configDigest == childConfigDigest childConfig)
+            require "the recovery package does not carry the exact catalog child configuration and adapter" (package == renderedPackage)
+            require "the recovery package exceeds the handoff bound" (fromIntegral (ByteString.length package) <= maxWireBytes)
+            require "the recovery package and child configuration digests are conflated" (childConfigDigest package /= configDigest)
+            require "the prepared record exceeds the handoff bound" (fromIntegral (ByteString.length preparedBytes) <= maxWireBytes)
+          where
+            storeIdentity = protectedStoreIdentityText (protectedStoreIdentity store)
+            epoch = brokerEpochWord (rootAuthorityEpoch root)
+            verbName = projectVerbName verb
+            retainedPhase = lifecyclePhaseName (commandAuthorityPhase retained)
+            invocation = invocationIdText (commandAuthorityInvocation retained)
+            renderedPackage =
+                either
+                    (const ByteString.empty)
+                    renderRecoveryChildPackageKernel
+                    (recoveryChildPackageKernel childConfig adapter)
 
-            keyFor invocation adapterDigest =
-                case
-                    mkRecordKey
-                        ( "reverse-descent."
-                            <> recoveryWireDigest (TextEncoding.encodeUtf8 invocation)
-                            <> "."
-                            <> adapterDigest
-                        )
-                of
-                    Left _ -> Left (refusal "the prepared record key is invalid")
-                    Right key -> Right key
+        keyFor invocation adapterDigest =
+            case mkRecordKey
+                ( "reverse-descent."
+                    <> recoveryWireDigest (TextEncoding.encodeUtf8 invocation)
+                    <> "."
+                    <> adapterDigest
+                ) of
+                Left _ -> Left (refusal "the prepared record key is invalid")
+                Right key -> Right key
 
-            admit session key expected = do
-                observed <- readProtectedRecord session key
-                case observed of
-                    Left _ -> pure (Left (refusal "the prepared record could not be read"))
-                    Right (Just record) -> pure (classifyPrepared expected record)
-                    Right Nothing -> do
-                        written <- compareAndSwapProtectedRecord session key ExpectAbsent expected
-                        case written of
-                            Left _ -> reread
-                            Right version
-                                | recordVersionWord version /= 1 -> pure conflict
-                                | otherwise -> reread
-                      where
-                        reread = do
-                                readback <- readProtectedRecord session key
-                                pure $ case readback of
-                                    Right (Just record) -> classifyPrepared expected record
-                                    _ -> Left (refusal "the prepared record readback differs")
-                        conflict = Left (refusal "a conflicting prepared record exists")
+        admit session key expected = do
+            observed <- readProtectedRecord session key
+            case observed of
+                Left _ -> pure (Left (refusal "the prepared record could not be read"))
+                Right (Just record) -> pure (classifyPrepared expected record)
+                Right Nothing -> do
+                    written <- compareAndSwapProtectedRecord session key ExpectAbsent expected
+                    case written of
+                        Left _ -> reread
+                        Right version
+                            | recordVersionWord version /= 1 -> pure conflict
+                            | otherwise -> reread
+                  where
+                    reread = do
+                        readback <- readProtectedRecord session key
+                        pure $ case readback of
+                            Right (Just record) -> classifyPrepared expected record
+                            _ -> Left (refusal "the prepared record readback differs")
+                    conflict = Left (refusal "a conflicting prepared record exists")
 
-            renderPrepared rootEvidence journalEvidence cursorEvidence snapshot invocation input packageDigest configDigest package =
-                ByteString.concat
-                    [ framedText "hostbootstrap/reverse-descent"
-                    , framedWord 1
-                    , framedText "prepared"
-                    , framedText (acquisitionJournalStableScope journalEvidence)
-                    , framedText (rootAuthorityProjectName rootEvidence)
-                    , framedText (rootAuthorityStoreIdentity rootEvidence)
-                    , framedWord (brokerEpochWord (rootAuthorityEpoch rootEvidence))
-                    , framedText invocation
-                    , framedText (acquisitionJournalRunLease journalEvidence)
-                    , framedWord (acquisitionJournalRecordVersion journalEvidence)
-                    , framedWord (lifecycleCursorRecordVersion cursorEvidence)
-                    , framedText (stablePlanSnapshotSpecDigest snapshot)
-                    , framedText (stablePlanSnapshotConfigDigest snapshot)
-                    , framedText (stablePlanSnapshotDigest snapshot)
-                    , framedText (projectVerbName (rootAuthorityVerb rootEvidence))
-                    , framedText "teardown"
-                    , frameWire (renderHandoffBindingInput input)
-                    , framedText packageDigest
-                    , framedText configDigest
-                    , frameWire package
-                    ]
+        renderPrepared rootEvidence journalEvidence cursorEvidence snapshot invocation input packageDigest configDigest package =
+            ByteString.concat
+                [ framedText "hostbootstrap/reverse-descent"
+                , framedWord 1
+                , framedText "prepared"
+                , framedText (acquisitionJournalStableScope journalEvidence)
+                , framedText (rootAuthorityProjectName rootEvidence)
+                , framedText (rootAuthorityStoreIdentity rootEvidence)
+                , framedWord (brokerEpochWord (rootAuthorityEpoch rootEvidence))
+                , framedText invocation
+                , framedText (acquisitionJournalRunLease journalEvidence)
+                , framedWord (acquisitionJournalRecordVersion journalEvidence)
+                , framedWord (lifecycleCursorRecordVersion cursorEvidence)
+                , framedText (stablePlanSnapshotSpecDigest snapshot)
+                , framedText (stablePlanSnapshotConfigDigest snapshot)
+                , framedText (stablePlanSnapshotDigest snapshot)
+                , framedText (projectVerbName (rootAuthorityVerb rootEvidence))
+                , framedText "teardown"
+                , frameWire (renderHandoffBindingInput input)
+                , framedText packageDigest
+                , framedText configDigest
+                , frameWire package
+                ]
 
-            require _ True = Right ()
-            require detail False = Left (refusal detail)
-            refusal = TeardownReverseDescentRefused
-            refused work detail = pure (Left (refusal detail, work))
+        require _ True = Right ()
+        require detail False = Left (refusal detail)
+        refusal = TeardownReverseDescentRefused
+        refused work detail = pure (Left (refusal detail, work))
 
 {- | Bind one prepared descent to the exact recoverably opened offer.
 
@@ -502,51 +570,64 @@ withBoundReverseDescentKernel ::
     RecoverySigningKernel ->
     ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId ->
     (HandoffBindingInput -> ByteString -> IO (Either failure (HandoffOffer scope brokerGeneration))) ->
-    ( ReverseDescent (HandoffOffer scope brokerGeneration)
-        scope planId parentFrame childFrame brokerGeneration verb descentId ->
+    ( ReverseDescent
+        (HandoffOffer scope brokerGeneration)
+        scope
+        planId
+        parentFrame
+        childFrame
+        brokerGeneration
+        verb
+        descentId ->
       HandoffOffer scope brokerGeneration ->
       IO (Either failure ())
     ) ->
-    IO (Either
-        (TeardownError, ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId)
-        (Either failure ()))
+    IO
+        ( Either
+            (TeardownError, ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId)
+            (Either failure ())
+        )
 {-# OPAQUE withBoundReverseDescentKernel #-}
 withBoundReverseDescentKernel kernel =
-    kernel `seq` consumeRecoverySigningKernel kernel (\prepared open use -> case prepared of
-        PreparedReverseDescent root verb plan _ journal cursor retained reauthorize _ input package _ _ _ store key preparedVersion preparedBytes -> do
-            replayed <- reauthorize
-            case replayed of
-                Left _ -> refused prepared "the exact command reservation is stale"
-                Right authority
-                    | not (sameCommandAuthority store retained authority) ->
-                        refused prepared "the replayed command authority differs"
-                    | otherwise -> do
-                        checked <- withProtectedEntry store $ \session -> do
-                            current <- validateCurrentLifecycleCursor session cursor
-                            case current of
-                                Left _ -> pure (Right (Left (refusal "the lifecycle cursor is stale")))
-                                Right () -> precheckRecord session key preparedVersion preparedBytes >>= forceProtectedResult
-                        case checked of
-                            Left _ -> refused prepared "the prepared store entry failed"
-                            Right (Left failure) -> pure (Left (failure, prepared))
-                            Right (Right ()) -> do
-                                opened <- open input package
-                                case opened of
-                                    Left failure -> pure (Right (Left failure))
-                                    Right offer -> case validateOffer root verb plan journal input package preparedBytes offer of
-                                        Left failure -> pure (Left (failure, prepared))
-                                        Right boundBytes -> do
-                                            entered <- withProtectedEntry store $ \session -> do
-                                                current <- validateCurrentLifecycleCursor session cursor
-                                                case current of
-                                                    Left _ -> pure (Right (Left (refusal "the lifecycle cursor is stale")))
-                                                    Right () -> bindRecord session key preparedVersion preparedBytes boundBytes >>= forceProtectedResult
-                                            case entered of
-                                                Left _ -> refused prepared "the bound store entry failed"
-                                                Right (Left failure) -> pure (Left (failure, prepared))
-                                                Right (Right version) ->
-                                                    let bindingBytes = renderHandoffBinding (handoffOfferBinding offer)
-                                                     in Right <$> use (BoundReverseDescent prepared bindingBytes version boundBytes) offer)
+    kernel `seq`
+        consumeRecoverySigningKernel
+            kernel
+            ( \prepared open use -> case prepared of
+                PreparedReverseDescent root verb plan _ journal cursor retained reauthorize _ input package _ _ _ store key preparedVersion preparedBytes -> do
+                    replayed <- reauthorize
+                    case replayed of
+                        Left _ -> refused prepared "the exact command reservation is stale"
+                        Right authority
+                            | not (sameCommandAuthority store retained authority) ->
+                                refused prepared "the replayed command authority differs"
+                            | otherwise -> do
+                                checked <- withProtectedEntry store $ \session -> do
+                                    current <- validateCurrentLifecycleCursor session cursor
+                                    case current of
+                                        Left _ -> pure (Right (Left (refusal "the lifecycle cursor is stale")))
+                                        Right () -> precheckRecord session key preparedVersion preparedBytes >>= forceProtectedResult
+                                case checked of
+                                    Left _ -> refused prepared "the prepared store entry failed"
+                                    Right (Left failure) -> pure (Left (failure, prepared))
+                                    Right (Right ()) -> do
+                                        opened <- open input package
+                                        case opened of
+                                            Left failure -> pure (Right (Left failure))
+                                            Right offer -> case validateOffer root verb plan journal input package preparedBytes offer of
+                                                Left failure -> pure (Left (failure, prepared))
+                                                Right boundBytes -> do
+                                                    entered <- withProtectedEntry store $ \session -> do
+                                                        current <- validateCurrentLifecycleCursor session cursor
+                                                        case current of
+                                                            Left _ -> pure (Right (Left (refusal "the lifecycle cursor is stale")))
+                                                            Right () -> bindRecord session key preparedVersion preparedBytes boundBytes >>= forceProtectedResult
+                                                    case entered of
+                                                        Left _ -> refused prepared "the bound store entry failed"
+                                                        Right (Left failure) -> pure (Left (failure, prepared))
+                                                        Right (Right version) ->
+                                                            let bindingBytes = renderHandoffBinding (handoffOfferBinding offer)
+                                                             in Right <$> use (BoundReverseDescent prepared bindingBytes version boundBytes) offer
+            )
   where
     validateOffer root verb plan journal input package preparedBytes offer = do
         require "the recovery offer payload differs" (payload == package)
@@ -555,11 +636,7 @@ withBoundReverseDescentKernel kernel =
         require "the recovery offer project differs" (handoffInstalledProject binding == rootAuthorityProjectName root)
         require
             "the recovery offer scope differs"
-            ( handoffScope binding
-                == if acquisitionJournalStableScope journal == "production"
-                    then "Production"
-                    else acquisitionJournalStableScope journal
-            )
+            (handoffScope binding == recoveryHandoffScope (acquisitionJournalStableScope journal))
         require "the recovery offer store differs" (handoffStoreIdentity binding == rootAuthorityStoreIdentity root)
         require "the recovery offer broker differs" (handoffBrokerGeneration binding == brokerEpochWord (rootAuthorityEpoch root))
         require "the recovery offer verb differs" (handoffVerb binding == projectVerbName verb)
@@ -578,40 +655,68 @@ withBoundReverseDescentKernel kernel =
         binding = handoffOfferBinding offer
         snapshot = renderSnapshot plan
 
-    bindingMatchesInput binding input = and
-        [ handoffSpecDigest binding == requestedSpecDigest input
-        , handoffPayloadKind binding == requestedPayloadKind input
-        , handoffPlanRevision binding == requestedPlanRevision input
-        , handoffParentFrame binding == requestedParentFrame input
-        , handoffChildFrame binding == requestedChildFrame input
-        , handoffChildConfigDigest binding == requestedChildConfigDigest input
-        , handoffPhase binding == requestedPhase input
-        ]
+    -- Lifecycle profiles persist the stable mode spelling used by the mode
+    -- journal ("production" or "harness:<run>").  Handoff bindings use their
+    -- signed scope spelling ("Production" or "Harness <run>").  Compare the
+    -- canonical projections, never the two protocol encodings directly.
+    recoveryHandoffScope stableScope
+        | stableScope == "production" = "Production"
+        | Just run <- Text.stripPrefix "harness:" stableScope = "Harness " <> run
+        | otherwise = stableScope
+
+    bindingMatchesInput binding input =
+        and
+            [ handoffSpecDigest binding == requestedSpecDigest input
+            , handoffPayloadKind binding == requestedPayloadKind input
+            , handoffPlanRevision binding == requestedPlanRevision input
+            , handoffParentFrame binding == requestedParentFrame input
+            , handoffChildFrame binding == requestedChildFrame input
+            , handoffChildConfigDigest binding == requestedChildConfigDigest input
+            , handoffPhase binding == requestedPhase input
+            ]
 
     bindRecord session key preparedVersion preparedBytes boundBytes = do
         observed <- readProtectedRecord session key
         case observed of
             Left _ -> pure (Left (refusal "the bound record could not be read"))
             Right (Just record)
-                | exactRecord 2 boundBytes record -> pure (Right (protectedRecordVersion record))
+                | recordVersionWord (protectedRecordVersion record) >= 2
+                , protectedRecordBytes record == boundBytes ->
+                    pure (Right (protectedRecordVersion record))
+                | recordVersionWord (protectedRecordVersion record) >= 2
+                , Right _ <- parseBoundRecord preparedBytes (protectedRecordBytes record) ->
+                    advanceBound session key (protectedRecordVersion record) boundBytes
                 | exactRecord 1 preparedBytes record
                 , protectedRecordVersion record == preparedVersion -> do
                     written <- compareAndSwapProtectedRecord session key (ExpectVersion preparedVersion) boundBytes
                     case written of
-                        Left _ -> rereadBound session key boundBytes
+                        Left _ -> rereadBound session key 2 boundBytes
                         Right version
                             | recordVersionWord version /= 2 -> pure conflict
-                            | otherwise -> rereadBound session key boundBytes
+                            | otherwise -> rereadBound session key 2 boundBytes
                 | otherwise -> pure conflict
             Right Nothing -> pure conflict
       where
         conflict = Left (refusal "the bound record conflicts")
 
-    rereadBound session key bytes = do
+    advanceBound session key current bytes
+        | recordVersionWord current == maxBound = pure (Left (refusal "the bound record version is exhausted"))
+        | otherwise = do
+            written <- compareAndSwapProtectedRecord session key (ExpectVersion current) bytes
+            case written of
+                Left _ -> rereadBound session key (recordVersionWord current + 1) bytes
+                Right version
+                    | recordVersionWord version /= recordVersionWord current + 1 ->
+                        pure (Left (refusal "the rebound record version differs"))
+                    | otherwise -> rereadBound session key (recordVersionWord version) bytes
+
+    rereadBound session key expectedVersion bytes = do
         observed <- readProtectedRecord session key
         pure $ case observed of
             Right (Just record)
-                | exactRecord 2 bytes record -> Right (protectedRecordVersion record)
+                | recordVersionWord (protectedRecordVersion record) == expectedVersion
+                , protectedRecordBytes record == bytes ->
+                    Right (protectedRecordVersion record)
             _ -> Left (refusal "the bound record readback differs")
 
     precheckRecord session key version bytes = do
@@ -620,9 +725,11 @@ withBoundReverseDescentKernel kernel =
             Left _ -> Left (refusal "the prepared record could not be read")
             Right (Just record)
                 | protectedRecordVersion record == version
-                , exactRecord 1 bytes record -> Right ()
-                | recordVersionWord (protectedRecordVersion record) == 2
-                , Right _ <- parseBoundRecord bytes (protectedRecordBytes record) -> Right ()
+                , exactRecord 1 bytes record ->
+                    Right ()
+                | recordVersionWord (protectedRecordVersion record) >= 2
+                , Right _ <- parseBoundRecord bytes (protectedRecordBytes record) ->
+                    Right ()
             Right (Just _) -> Left (refusal "the prepared record is no longer current")
             Right Nothing -> Left (refusal "the prepared record is absent")
 
@@ -640,40 +747,53 @@ and receives no offer, token, binding projection, or mutable store handle.
 withRehydratedBoundReverseDescentKernel ::
     RecoverySigningKernel ->
     ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId ->
-    ( ReverseDescent (HandoffOffer scope brokerGeneration)
-        scope planId parentFrame childFrame brokerGeneration verb descentId ->
+    ( ReverseDescent
+        (HandoffOffer scope brokerGeneration)
+        scope
+        planId
+        parentFrame
+        childFrame
+        brokerGeneration
+        verb
+        descentId ->
       IO (Either Text ())
     ) ->
-    IO (Either
-        (TeardownError, ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId)
-        (Either Text ()))
+    IO
+        ( Either
+            (TeardownError, ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId)
+            (Either Text ())
+        )
 {-# OPAQUE withRehydratedBoundReverseDescentKernel #-}
 withRehydratedBoundReverseDescentKernel kernel =
-    kernel `seq` consumeRecoverySigningKernel kernel (\prepared use -> case prepared of
-        PreparedReverseDescent _ _ _ _ _ cursor retained reauthorize _ _ _ _ _ _ store key _ preparedBytes -> do
-            replayed <- reauthorize
-            case replayed of
-                Left _ -> refused prepared "the exact command reservation is stale"
-                Right authority
-                    | not (sameCommandAuthority store retained authority) ->
-                        refused prepared "the replayed command authority differs"
-                    | otherwise -> do
-                        checked <- withProtectedEntry store $ \session -> do
-                            current <- validateCurrentLifecycleCursor session cursor
-                            case current of
-                                Left _ -> pure (Right (Left (refusal "the lifecycle cursor is stale")))
-                                Right () -> do
-                                    observed <- readProtectedRecord session key
-                                    forceProtectedResult (rehydrateRecord preparedBytes observed)
-                        case checked of
-                            Left _ -> refused prepared "the bound store entry failed"
-                            Right (Left failure) -> pure (Left (failure, prepared))
-                            Right (Right (bindingBytes, version, boundBytes)) ->
-                                Right <$> use (BoundReverseDescent prepared bindingBytes version boundBytes))
+    kernel `seq`
+        consumeRecoverySigningKernel
+            kernel
+            ( \prepared use -> case prepared of
+                PreparedReverseDescent _ _ _ _ _ cursor retained reauthorize _ _ _ _ _ _ store key _ preparedBytes -> do
+                    replayed <- reauthorize
+                    case replayed of
+                        Left _ -> refused prepared "the exact command reservation is stale"
+                        Right authority
+                            | not (sameCommandAuthority store retained authority) ->
+                                refused prepared "the replayed command authority differs"
+                            | otherwise -> do
+                                checked <- withProtectedEntry store $ \session -> do
+                                    current <- validateCurrentLifecycleCursor session cursor
+                                    case current of
+                                        Left _ -> pure (Right (Left (refusal "the lifecycle cursor is stale")))
+                                        Right () -> do
+                                            observed <- readProtectedRecord session key
+                                            forceProtectedResult (rehydrateRecord preparedBytes observed)
+                                case checked of
+                                    Left _ -> refused prepared "the bound store entry failed"
+                                    Right (Left failure) -> pure (Left (failure, prepared))
+                                    Right (Right (bindingBytes, version, boundBytes)) ->
+                                        Right <$> use (BoundReverseDescent prepared bindingBytes version boundBytes)
+            )
   where
     rehydrateRecord expected observed = case observed of
         Right (Just record)
-            | recordVersionWord (protectedRecordVersion record) == 2 -> do
+            | recordVersionWord (protectedRecordVersion record) >= 2 -> do
                 binding <- parseBoundRecord expected (protectedRecordBytes record)
                 pure (binding, protectedRecordVersion record, protectedRecordBytes record)
         _ -> Left (refusal "the exact bound record is absent")
@@ -690,30 +810,157 @@ withRehydratedAdoptedReverseDescentKernel ::
     RecoverySigningKernel ->
     ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId ->
     ByteString ->
-    ( ReverseDescent (HandoffOffer scope brokerGeneration)
-        scope planId parentFrame childFrame brokerGeneration verb descentId ->
+    ( ReverseDescent
+        (HandoffOffer scope brokerGeneration)
+        scope
+        planId
+        parentFrame
+        childFrame
+        brokerGeneration
+        verb
+        descentId ->
       ByteString ->
       IO (Either Text ())
     ) ->
-    IO (Either
-        (TeardownError, ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId)
-        (Either Text ()))
+    IO
+        ( Either
+            (TeardownError, ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId)
+            (Either Text ())
+        )
 {-# OPAQUE withRehydratedAdoptedReverseDescentKernel #-}
 withRehydratedAdoptedReverseDescentKernel kernel prepared report use =
     withRehydratedBoundReverseDescentKernel kernel prepared $ \bound ->
         case bound of
             BoundReverseDescent
                 (PreparedReverseDescent _ _ _ _ _ _ _ _ _ _ _ _ _ _ store _ _ _)
-                binding _ _ -> do
+                binding
+                _
+                _ -> do
                     adopted <-
                         rehydrateAdoptedLifecycleAcknowledgementKernel
-                            kernel store binding report (use bound)
+                            kernel
+                            store
+                            binding
+                            report
+                            (use bound)
                     pure $ either (Left . Text.pack . handoffErrorMessage) id adopted
 
-{- | Revalidate one Bound report coordinate without minting settlement proof. -}
+{- | Recover an already adopted child settlement without launching its frame.
+
+An exact Prepared row or Bound row whose parent acknowledgement has not yet
+reached Adopted returns @False@, allowing the live recovery exchange to resume.
+An exact Adopted row replays its canonical completed report through the same
+Bound observation verifier and returns @True@ only after the supplied
+settlement continuation succeeds. Corrupt, refused, and failed terminal rows
+remain refusals.
+-}
+withRehydratedSettledReverseDescentKernel ::
+    ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId ->
+    (SubtreeSettled scope planId childFrame verb -> IO (Either Text ())) ->
+    IO
+        ( Either
+            (TeardownError, ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId)
+            (Either Text Bool)
+        )
+{-# OPAQUE withRehydratedSettledReverseDescentKernel #-}
+withRehydratedSettledReverseDescentKernel prepared use = do
+    settledRef <- newIORef False
+    rehydrated <- withRehydratedBoundReverseDescentKernel recoverySigningKernel prepared $ \bound ->
+        case bound of
+            BoundReverseDescent
+                opened@(PreparedReverseDescent _ _ _ _ _ _ _ _ _ _ _ _ _ _ store _ _ _)
+                binding
+                version
+                boundBytes -> do
+                    adopted <- rehydrateAdoptedLifecycleReportKernel recoverySigningKernel store binding
+                    case adopted of
+                        Left failure -> pure (Left (Text.pack (handoffErrorMessage failure)))
+                        Right Nothing -> pure (Right ())
+                        Right (Just (adoptedBinding, report)) -> do
+                            rebound <- rebindAdopted opened binding version boundBytes adoptedBinding
+                            case rebound of
+                                Left failure -> pure (Left failure)
+                                Right exact -> replay exact report settledRef
+    case rehydrated of
+        Left (failure@(TeardownReverseDescentRefused detail), retained)
+            | detail == "the exact bound record is absent" -> pure (Right (Right False))
+            | otherwise -> pure (Left (failure, retained))
+        Left failure -> pure (Left failure)
+        Right (Left failure) -> pure (Right (Left failure))
+        Right (Right ()) -> Right . Right <$> readIORef settledRef
+  where
+    replay bound report settledRef =
+        case eliminateLifecycleReport report forwardReport forwardReport forwardReport completed refused failed of
+            Left failure -> pure (Left (Text.pack (handoffErrorMessage failure)))
+            Right action -> action
+      where
+        completed binding _ observations _ verb =
+            case teardownObservationsFromWire observations of
+                Left failure -> pure (Left (Text.pack (teardownErrorMessage failure)))
+                Right rows ->
+                    withVerifiedBoundReverseDescentObservationsKernel
+                        bound
+                        binding
+                        verb
+                        rows
+                        $ \settled -> do
+                            used <- use settled
+                            case used of
+                                Left failure -> pure (Left failure)
+                                Right () -> writeIORef settledRef True >> pure (Right ())
+        refused _ _ _ detail _ = pure (Left ("the adopted reverse child refused: " <> detail))
+        failed _ _ _ detail _ = pure (Left ("the adopted reverse child failed: " <> detail))
+        forwardReport _ _ _ _ _ = pure (Left "the adopted reverse child retained a forward report")
+
+    rebindAdopted opened binding version boundBytes adoptedBinding
+        | binding == adoptedBinding = pure (Right (BoundReverseDescent opened binding version boundBytes))
+        | recordVersionWord version == maxBound = pure (Left "the adopted reverse descent version is exhausted")
+        | otherwise = case opened of
+            PreparedReverseDescent _ _ _ _ _ _ _ _ _ _ _ _ _ _ store key _ preparedBytes -> do
+                let reboundBytes = renderBoundRecord preparedBytes adoptedBinding
+                entered <- withProtectedEntry store $ \session -> do
+                    observed <- readProtectedRecord session key
+                    Right <$> case observed of
+                        Left failure -> pure (Left (protectedErrorMessage failure))
+                        Right (Just record)
+                            | protectedRecordVersion record == version
+                            , protectedRecordBytes record == boundBytes -> do
+                                written <-
+                                    compareAndSwapProtectedRecord
+                                        session
+                                        key
+                                        (ExpectVersion version)
+                                        reboundBytes
+                                case written of
+                                    Left failure -> pure (Left (protectedErrorMessage failure))
+                                    Right reboundVersion -> do
+                                        readback <- readProtectedRecord session key
+                                        pure $ case readback of
+                                            Left failure -> Left (protectedErrorMessage failure)
+                                            Right (Just readbackRecord)
+                                                | protectedRecordVersion readbackRecord == reboundVersion
+                                                , recordVersionWord reboundVersion == recordVersionWord version + 1
+                                                , protectedRecordBytes readbackRecord == reboundBytes ->
+                                                    Right (reboundVersion, reboundBytes)
+                                            _ -> Left "the adopted rebound readback differs"
+                        Right _ -> pure (Left "the bound reverse descent changed before adopted rebind")
+                pure $ case entered of
+                    Left failure -> Left (protectedErrorMessage failure)
+                    Right (Left failure) -> Left failure
+                    Right (Right (reboundVersion, exactBytes)) ->
+                        Right (BoundReverseDescent opened adoptedBinding reboundVersion exactBytes)
+
+-- | Revalidate one Bound report coordinate without minting settlement proof.
 withVerifiedBoundReverseDescentReportKernel ::
-    ReverseDescent (HandoffOffer scope brokerGeneration)
-        scope planId parentFrame childFrame brokerGeneration verb descentId ->
+    ReverseDescent
+        (HandoffOffer scope brokerGeneration)
+        scope
+        planId
+        parentFrame
+        childFrame
+        brokerGeneration
+        verb
+        descentId ->
     ByteString ->
     Text ->
     IO (Either Text ()) ->
@@ -721,7 +968,9 @@ withVerifiedBoundReverseDescentReportKernel ::
 {-# OPAQUE withVerifiedBoundReverseDescentReportKernel #-}
 withVerifiedBoundReverseDescentReportKernel
     (BoundReverseDescent (PreparedReverseDescent _ verb _ _ _ cursor _ _ _ _ _ _ _ _ store key _ _) bindingBytes boundVersion boundBytes)
-    observedBinding observedVerb use
+    observedBinding
+    observedVerb
+    use
         | observedBinding /= bindingBytes = pure (Left "the observed binding differs")
         | observedVerb /= projectVerbName verb = pure (Left "the observed reverse verb differs")
         | otherwise = do
@@ -740,13 +989,21 @@ withVerifiedBoundReverseDescentReportKernel
         checkRecord observed = case observed of
             Right (Just record)
                 | protectedRecordVersion record == boundVersion
-                , protectedRecordBytes record == boundBytes -> Right ()
+                , protectedRecordBytes record == boundBytes ->
+                    Right ()
             _ -> Left "the retained bound reverse descent is stale"
 
-{- | Verify acknowledged terminal observations without exposing Bound state. -}
+-- | Verify acknowledged terminal observations without exposing Bound state.
 withVerifiedBoundReverseDescentObservationsKernel ::
-    ReverseDescent (HandoffOffer scope brokerGeneration)
-        scope planId parentFrame childFrame brokerGeneration verb descentId ->
+    ReverseDescent
+        (HandoffOffer scope brokerGeneration)
+        scope
+        planId
+        parentFrame
+        childFrame
+        brokerGeneration
+        verb
+        descentId ->
     ByteString ->
     Text ->
     [(Text, TeardownOutcome)] ->
@@ -754,7 +1011,10 @@ withVerifiedBoundReverseDescentObservationsKernel ::
     IO (Either Text ())
 withVerifiedBoundReverseDescentObservationsKernel
     (BoundReverseDescent (PreparedReverseDescent _ verb _ _ _ cursor _ _ _ _ _ _ _ verify store key _ _) bindingBytes boundVersion boundBytes)
-    observedBinding observedVerb observations use
+    observedBinding
+    observedVerb
+    observations
+    use
         | observedBinding /= bindingBytes = pure (Left "the observed binding differs")
         | observedVerb /= projectVerbName verb = pure (Left "the observed reverse verb differs")
         | otherwise = do
@@ -787,8 +1047,9 @@ forceProtectedResult outcome = case outcome of
 classifyPrepared :: ByteString -> ProtectedRecord -> Either TeardownError RecordVersion
 classifyPrepared expected record
     | exactRecord 1 expected record = Right (protectedRecordVersion record)
-    | recordVersionWord (protectedRecordVersion record) == 2
-    , Right _ <- parseBoundRecord expected (protectedRecordBytes record) = Right (protectedRecordVersion record)
+    | recordVersionWord (protectedRecordVersion record) >= 2
+    , Right _ <- parseBoundRecord expected (protectedRecordBytes record) =
+        Right (protectedRecordVersion record)
     | otherwise = Left (TeardownReverseDescentRefused "a conflicting prepared record exists")
 
 parseBoundRecord :: ByteString -> ByteString -> Either TeardownError ByteString
@@ -817,13 +1078,14 @@ parseBoundRecord expected raw = do
             (takeHandoffFrame bytes)
 
 renderBoundRecord :: ByteString -> ByteString -> ByteString
-renderBoundRecord prepared binding = ByteString.concat
-    [ framedText "hostbootstrap/reverse-descent"
-    , framedWord 1
-    , framedText "bound"
-    , frameWire prepared
-    , frameWire binding
-    ]
+renderBoundRecord prepared binding =
+    ByteString.concat
+        [ framedText "hostbootstrap/reverse-descent"
+        , framedWord 1
+        , framedText "bound"
+        , frameWire prepared
+        , frameWire binding
+        ]
 
 exactRecord :: Word64 -> ByteString -> ProtectedRecord -> Bool
 exactRecord version bytes record =
@@ -835,17 +1097,17 @@ sameCommandAuthority ::
     CommandAuthority scope planId frame brokerGeneration verb phase ->
     CommandAuthority scope planId frame brokerGeneration verb phase ->
     Bool
-sameCommandAuthority store expected observed = and
-    [ invocationIdText (commandAuthorityInvocation expected)
-        == invocationIdText (commandAuthorityInvocation observed)
-    , commandAuthorityFrame expected == commandAuthorityFrame observed
-    , brokerEpochWord (commandAuthorityEpoch expected) == brokerEpochWord (commandAuthorityEpoch observed)
-    , projectVerbName (commandAuthorityVerb expected) == projectVerbName (commandAuthorityVerb observed)
-    , lifecyclePhaseName (commandAuthorityPhase expected) == lifecyclePhaseName (commandAuthorityPhase observed)
-    , commandAuthorityMatchesStore expected store
-    , commandAuthorityMatchesStore observed store
-    ]
-
+sameCommandAuthority store expected observed =
+    and
+        [ invocationIdText (commandAuthorityInvocation expected)
+            == invocationIdText (commandAuthorityInvocation observed)
+        , commandAuthorityFrame expected == commandAuthorityFrame observed
+        , brokerEpochWord (commandAuthorityEpoch expected) == brokerEpochWord (commandAuthorityEpoch observed)
+        , projectVerbName (commandAuthorityVerb expected) == projectVerbName (commandAuthorityVerb observed)
+        , lifecyclePhaseName (commandAuthorityPhase expected) == lifecyclePhaseName (commandAuthorityPhase observed)
+        , commandAuthorityMatchesStore expected store
+        , commandAuthorityMatchesStore observed store
+        ]
 
 {- | Verify one canonical reverse adapter against its exact local projection.
 
@@ -943,10 +1205,12 @@ verifyChildObservations projection observations =
             (nextTeardownWork forest)
             (\completed -> if null remaining then verifySubtreeSettled projection completed else mismatch forest remaining)
             ( \point ->
-                withTeardownAuthorization point
+                withTeardownAuthorization
+                    point
                     (\preDescent -> replay (attemptPreDescentStep preDescent TeardownReleased) remaining)
                     ( \_ work ->
-                        eliminateTeardownWork work
+                        eliminateTeardownWork
+                            work
                             ( \local -> case remaining of
                                 (key, outcome) : rest
                                     | key == localWorkKey local -> replay (attemptLocalWork local outcome) rest

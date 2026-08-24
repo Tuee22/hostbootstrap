@@ -148,9 +148,33 @@ identity can mint `ClusterReadiness`; a replacement identity is a `Conflict`, an
 phase-observation counter fails rather than wrapping at exhaustion. Constructors for raw backend results,
 managed/cordon/readiness/cleanup authority, and the running dependency remain hidden and nominally indexed.
 
-Alongside it, `HostBootstrap.Cluster.Backend` makes a wildcard exposure unrepresentable: a
-`LoopbackExposure` accepts ports only, always renders `127.0.0.1`, and settles a live binding that is
-wider or different as a `Conflict`.
+Chart reconciliation uses Helm's `--rollback-on-failure` contract together with an explicit `--wait` boundary.
+The captured-command classifier still requires an empty standard-error stream on success; avoiding Helm's
+deprecated `--atomic` spelling keeps the supported rollback behavior without treating a warning as a settled
+workload result. On Helm 4, a first install settles only when the exact install announcement is accompanied by
+the matching release name, `deployed` status, revision 1, and `Install complete` description; an incomplete or
+otherwise unfamiliar zero-exit result remains a failure.
+
+Alongside it, `HostBootstrap.Cluster.Backend` owns automatic local exposure. A plan supplies only
+semantic service identity, protocol, and the stable cluster-internal target. After readiness the backend starts
+an identity-bound relay on the cluster container network and asks the container runtime to publish each relay
+listener on `127.0.0.1` without a host-side number. Runtime creation is therefore both selection and binding;
+there is no scan-then-bind window.
+
+Only inspection of the exact relay/container identity may mint `ResolvedExposure`. It binds the selected port
+to the plan, cluster generation, service, internal target, and ownership operation, and it travels through the
+matching cluster dependency package rather than Dhall or canonical cluster YAML. Recovery re-inspects the
+mapping, while release removes the relay by identity before deleting the cluster. Wildcard, missing,
+additional, duplicate, changed-target, or replacement mappings are `Conflict`.
+
+The caller-selected `LoopbackExposure` preparation and equality settlement are absent. Public preparation
+accepts an applied cluster cordon, an immutable relay image identity, and semantic targets only. The protected
+record is published before runtime creation with a fresh 256-bit operation nonce; managed replacement binds
+the inspected relay identity and complete mapping set. Cluster cleanup refuses while that record exists, so
+release must remove and re-observe the exact relay before cluster deletion can begin. The
+[cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
+closed this boundary with the complete warning-clean static gate and a live concurrent-allocation run on
+2026-08-22.
 
 What remains is legacy wiring. `ensureCluster` still treats any healthy cluster with `clusterName plan` as
 the desired cluster without checking a receipt, and still deletes and recreates an unhealthy same-name

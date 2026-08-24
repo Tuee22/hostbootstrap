@@ -44,7 +44,7 @@ The web application exposes an accelerator-ingress WebSocket endpoint. The daemo
 keeps the connection open. This direction matters:
 
 - in-cluster daemon pods can reach the web service through a normal `ClusterIP` service;
-- host-native Apple and Windows daemons can reach the web service through a local-only `NodePort`;
+- host-native Apple and Windows daemons can reach the web service through a runtime-owned loopback exposure;
 - the web server does not need to know which host port a daemon might be listening on.
 
 The payload is CBOR, not JSON. Arithmetic values are Haskell `Float` and every generated worker uses
@@ -158,21 +158,20 @@ The accelerator ingress is a web-service endpoint, not a daemon service exposed 
 |---|---|
 | Linux CPU daemon pod | `ClusterIP` endpoint for the daemon to dial the web service |
 | Linux GPU daemon pod | `ClusterIP` endpoint for the daemon to dial the web service |
-| Apple host daemon | web service gets a local-only `NodePort` mapping bound to `127.0.0.1` |
-| Windows host daemon | web service gets a local-only `NodePort` mapping bound to `127.0.0.1` |
+| Apple host daemon | web service gets a runtime-owned loopback relay exposure |
+| Windows host daemon | web service gets a runtime-owned loopback relay exposure |
 
-For the demo's kind-based clusters, local-only means the kind `extraPortMappings` entry binds the host
+For the demo's kind-based clusters, local-only means the owned relay's Docker publication binds the host
 listener to `127.0.0.1`, so the daemon can connect from the host without exposing the ingress on the LAN.
 `HostBootstrap.Cluster.Lifecycle.acceleratorIngressPlan` is the pure implementation of this selection.
 The chart renders a distinct accelerator Service: in-cluster daemons use the Dhall-configured `ClusterIP`
-port (default 8081), while host-resident daemons use NodePort 30081. The generated daemon URL carries that
-same configured port. Placement-specific kind configs publish the NodePort only in
-the host-daemon topology, bound to `127.0.0.1`; the in-cluster kind/nvkind configs omit it. The existing
-web, registry, and MinIO NodePorts keep their current bindings.
+port (default 8081), while host-resident daemons target an internal NodePort selected by the plan. The generated
+daemon URL carries the runtime-resolved loopback port, not that internal target. The relay publishes the
+accelerator listener only in the host-daemon topology; in-cluster kind/nvkind routes need no host exposure.
 
 The web pod has two linked listeners sharing one process-local hub: public HTTP on its configured port
-(default 8080) and daemon WebSocket ingress on its distinct configured port (default 8081). Public
-NodePort 30080 cannot upgrade daemon registration, and the private
+(default 8080) and daemon WebSocket ingress on its distinct configured port (default 8081). The public service
+target cannot upgrade daemon registration, and the private
 listener rejects browser `Origin` headers. Local-only binding is network placement, not authentication.
 Because the hub is process-local, the demo rejects `haReplicas /= 1`; a production HA design would require
 authenticated ingress and shared routing state. The accelerator daemon is a `Deployment` with
@@ -194,8 +193,8 @@ Linux CPU keeps the Incus VM path and still runs a separate in-cluster daemon po
 
 The lifecycle primitive is implemented in `HostBootstrap.Cluster.Lifecycle`: Linux GPU accelerator plans
 select `NvkindDriver`, run the official nvkind volume-mount NVIDIA-runtime smoke, and create the cluster
-with `nvkind cluster create --name=<cluster>` plus `nvkind-in-cluster.yaml`. That template keeps the
-public demo mappings on a control-plane and gives a worker the nvkind device-injection mount. The one
+with `nvkind cluster create --name=<cluster>` plus `nvkind-in-cluster.yaml`. That template carries only
+cluster-internal targets on the control-plane and gives a worker the nvkind device-injection mount. The one
 declared cluster envelope is divided across both node containers. Bring-up then installs the pinned
 NVIDIA device-plugin chart only after an initial allocatable probe finds no positive GPU. A cluster with
 positive allocation returns before any Helm or `kubectl` mutation; otherwise bring-up waits for the
@@ -217,7 +216,7 @@ Static tests:
 - CBOR request/result round trips, invalid payload rejection, and request-id correlation.
 - deterministic source generation and artifact-hash stability for Swift/Metal, CUDA, and C++ workers.
 - pure build command builders for Apple, Windows, Linux CPU, and Linux GPU.
-- topology and endpoint selection: ClusterIP for in-cluster daemons, local-only NodePort for host daemons.
+- topology and endpoint selection: ClusterIP for in-cluster daemons, runtime-resolved loopback exposure for host daemons.
 - a guard proving the web server has no in-process accelerator fallback path for the UI add operation.
 - real-socket public/private isolation, request/reply, busy-request, linked-listener failure, idle persistence,
   and graceful shutdown.
@@ -233,10 +232,10 @@ Integration tests:
   base image with NVIDIA runtime visible, CUDA worker built with `nvcc`, add returns through the
   WebSocket path.
 - Apple Silicon: host daemon starts after `project up`, Apple Metal build-stack ensure runs on the host,
-  Swift/Metal worker builds and runs, daemon connects through the local-only NodePort, add returns through
+  Swift/Metal worker builds and runs, daemon connects through the exact resolved loopback exposure, add returns through
   the WebSocket path.
 - Windows GPU: host daemon starts after `project up`, `ensure-cudawin` verifies/installs CUDA + MSVC C++
-  workload + LLVM clang, CUDA worker builds with `nvcc`, daemon connects through the local-only NodePort,
+  workload + LLVM clang, CUDA worker builds with `nvcc`, daemon connects through the exact resolved loopback exposure,
   add returns through the WebSocket path.
 
 Implemented browser e2e specifications:
@@ -262,10 +261,22 @@ Exact static-gate defects, test totals, live substrate evidence, and closure own
 
 The core service entry is now activation-only. A launcher must install one immutable revision, provision its
 public key separately, and pass their absolute paths plus the matching protected-store root. Kubernetes supplies
-pod UID/restart count; a host launcher supplies a fresh invocation nonce. The current demo launch/chart still
-needs to adopt those coordinates and convert its concrete handlers to `serviceProgramDefinition`; that concrete
-readiness and packaging work remains in the worked-demo phase rather than weakening `service run` back to a
-full-config or raw-`IO` compatibility path.
+pod UID/restart count; a host launcher supplies a fresh invocation nonce. The demo chart installs its exact
+root-signed revision in the Kind-shared durable root, mounts that revision and a shared authority store, and reads
+the controller's current restart count through a pod-`get`-only runtime service account. Both concrete demo roles
+are `serviceProgramDefinition` values with explicit role drafts and effect rows; `service run` has no full-config
+or raw-`IO` compatibility path.
+
+The accelerator is not part of the Helm chart transaction, so its own plan step carries a standalone activation
+declaration with the derived daemon frame, `accelerator` role, and canonical `network-listen`/`process` effects. The root
+admits that declaration exactly like the chart-owned web placement. Linux pods mount the immutable revision and
+authority store, query their own `daemon` container restart count, and enter `service run` with the downward-API
+pod UID. Apple and Windows host placements measure the copied daemon executable, install the matching public key
+and revision into durable state, and use a new host invocation nonce for every detached launch.
+
+Web and accelerator share the authority store but not a lifetime-wide transaction lock. Each completes its
+admission transaction before entering the role engine and then retains only its own service/frame generation
+lease, allowing the two long-running roles to serve concurrently.
 
 ### The host-resident launch, and why it has a boundary
 

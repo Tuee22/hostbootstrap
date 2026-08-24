@@ -66,13 +66,15 @@ None.
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
+`core/hostbootstrap-core/internal/harness-lifecycle/HostBootstrap/Harness/Lifecycle/Internal.hs`,
 `core/hostbootstrap-core/test/HarnessSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`
 
 #### Objective
 
-Run the matrix so one variant's failure does not hide another's result.
+Run the matrix so one variant's failure does not hide another's result, while a declaratively restart-spanning
+case retains one report row across two fresh lifecycle generations of the same run.
 
 #### Deliverables
 
@@ -86,18 +88,26 @@ Run the matrix so one variant's failure does not hide another's result.
 - The report card renders every case for every variant, including a suite with no cases.
 - The engine consumes one opaque lifecycle supplied by the command and orders forward, assertions, reverse,
   and post-reverse verification without constructing or reopening a project plan.
+- Each case declares `AssertOnce` or `AssertAcrossRestart`. After all initial assertions pass, the latter class
+  alone drives the opaque lifecycle's intermediate reverse/fresh-forward transition, reopens its assertion
+  environment as `AfterRestart`, and merges that result into the case's existing row.
+- The final reverse and post-reverse verification still run exactly once. A failed initial assertion never
+  requests a restart, and a failed restart or second assertion remains isolated to its variant.
 - A project's `TestSuite` contains only the safety probe, assertion-environment opener, typed cases, case
   assertion, and post-reverse absence assertion. It receives neither lifecycle actions nor a Production plan.
 
 #### Validation
 
 `HarnessSpec` covers per-case classification, each cleanup-failure row, the empty suite, variant sequencing,
-and engine ordering around an opaque lifecycle. The public-signature/source guard proves that `TestSuite`
-cannot invoke project lifecycle operations or obtain a Production plan.
+engine ordering around an opaque lifecycle, and one-row restart-spanning assertion across fresh lifecycle
+generations. The public-signature/source guard proves that `TestSuite` cannot invoke project lifecycle
+operations or obtain a Production plan.
 
 #### Remaining Work
 
-None.
+None. On 2026-08-24 the focused 45-case Harness gate and complete 2,454/2,454 core host-static gate passed;
+the real command-level fixture separately passed both variants across two forward/reverse generations while
+retaining one result row per restart-spanning case.
 
 ### Sprint 19.3: Exact Harness project-plan command adoption [Done]
 

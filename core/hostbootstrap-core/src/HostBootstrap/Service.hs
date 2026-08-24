@@ -46,6 +46,7 @@ module HostBootstrap.Service (
     ServiceActivationError (..),
     serviceActivationErrorMessage,
     installServiceActivationRevision,
+    installRelayedServiceActivationRevision,
     withInstalledServiceActivation,
     ServiceRuntimeError (..),
     serviceRuntimeErrorMessage,
@@ -63,33 +64,33 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TextEncoding
 import Dhall (FromDhall, ToDhall)
 import qualified Dhall
-import HostBootstrap.Activation
-    ( ActivationBroker
-    , ActivationError
-    , ActivationManifest (..)
-    , ActivationVerificationKey
-    , MeasuredInstance
-    , RuntimeMeasurement (..)
-    , VerifiedRuntimeRoleActivation
-    , activationConfigDigest
-    , activationErrorMessage
-    , activationGrantSignature
-    , activationManifestFromWire
-    , activationSecretDigestFromBytes
-    , activationService
-    , activationSpecDigest
-    , activationVerificationKeyBytes
-    , adoptRelayedActivationGrant
-    , renderActivationManifest
-    , signActivationManifest
-    , verifyRuntimeRoleActivation
-    )
+import HostBootstrap.Activation (
+    ActivationBroker,
+    ActivationError,
+    ActivationGrant,
+    ActivationManifest (..),
+    ActivationVerificationKey,
+    MeasuredInstance,
+    RuntimeMeasurement (..),
+    VerifiedRuntimeRoleActivation,
+    activationConfigDigest,
+    activationErrorMessage,
+    activationGrantSignature,
+    activationManifestFromWire,
+    activationSecretDigestFromBytes,
+    activationService,
+    activationSpecDigest,
+    activationVerificationKeyBytes,
+    adoptRelayedActivationGrant,
+    renderActivationManifest,
+    signActivationManifest,
+    verifyRuntimeRoleActivation,
+ )
 import HostBootstrap.Config.Class (
     ProjectCodec,
     projectCodecSpecDigest,
     withFinalizedProjectCodec,
  )
-import HostBootstrap.Config.Schema.Internal (withRecoverySpecReindexKernel)
 import HostBootstrap.Config.Fields (
     LocalContextView,
     ScopeKind (..),
@@ -98,24 +99,36 @@ import HostBootstrap.Config.Fields (
  )
 import HostBootstrap.Config.Fields.Internal (
     FrameworkValidation (..),
-    RoleParams (..),
     RoleCodec (..),
+    RoleParams (..),
     RuntimeRoleWire (..),
     ValidatedServiceRequest (..),
     WireKind (ServiceRoleWire),
  )
+import HostBootstrap.Config.Schema.Internal (withRecoverySpecReindexKernel)
+import HostBootstrap.Dhall.Gen (
+    CodecWitness,
+    autoCodecWitness,
+    codecSchemaText,
+    requireCodecWitness,
+ )
+import HostBootstrap.Protected (
+    ProtectedStore,
+    protectedErrorMessage,
+    withProtectedEntry,
+ )
 import HostBootstrap.RoleLifecycle (
-    RoleAdmissionOutcome (..),
     DeclaredEffects,
-    RoleEngine (..),
+    RoleAdmissionOutcome (..),
     RoleEffect,
+    RoleEngine (..),
     RoleExitReport,
     RoleServeOutcome (..),
     authorizeServiceEffects,
     declaredEffectList,
-    roleLifecycleErrorMessage,
     readyRoleHandleNames,
     resumeRuntimeRolePlanOpenForRequest,
+    roleLifecycleErrorMessage,
     runRoleLifecycle,
     verifyRolePlanDraft,
     withRoleLifecycleAdmission,
@@ -125,38 +138,27 @@ import HostBootstrap.Service.Internal (
     FinalizedServiceDefinition (FinalizedServiceDefinition),
     FinalizedServiceRegistry (FinalizedServiceRegistry),
     ProgramServiceHandler,
-    ServiceResourceBackend (..),
     ServiceAction (LegacyServiceAction, ProgramServiceAction),
     ServiceHandler,
     ServiceId (ServiceId),
+    ServiceResourceBackend (..),
     reindexFinalizedServiceRegistryKernel,
  )
-import HostBootstrap.Dhall.Gen (
-    CodecWitness,
-    autoCodecWitness,
-    codecSchemaText,
-    requireCodecWitness,
+import HostBootstrap.Service.Program (
+    ServiceBackend,
+    ServiceProgram,
+    interpretServiceProgramWithReady,
+    readyServiceHandles,
+    serviceProgramErrorMessage,
  )
-import HostBootstrap.Service.Program
-    ( ServiceBackend
-    , ServiceProgram
-    , interpretServiceProgramWithReady
-    , readyServiceHandles
-    , serviceProgramErrorMessage
-    )
-import HostBootstrap.Protected
-    ( ProtectedStore
-    , protectedErrorMessage
-    , withProtectedEntry
-    )
-import System.Directory
-    ( createDirectory
-    , createDirectoryIfMissing
-    , doesDirectoryExist
-    , doesFileExist
-    , renameDirectory
-    , renameFile
-    )
+import System.Directory (
+    createDirectory,
+    createDirectoryIfMissing,
+    doesDirectoryExist,
+    doesFileExist,
+    renameDirectory,
+    renameFile,
+ )
 import System.FilePath (isAbsolute, takeFileName, (</>))
 import System.IO (BufferMode (NoBuffering), IOMode (WriteMode), hFlush, hSetBuffering, withBinaryFile)
 
@@ -180,9 +182,9 @@ already-selected scope. A definition therefore has to project the same role
 from every @cfg scope@. Finalization instantiates that projection only after its
 caller has selected the Production or exact Harness codec.
 -}
-data ServiceDefinition cfg =
-    forall fields effects.
-    ServiceDefinition
+data ServiceDefinition cfg
+    = forall fields effects.
+        ServiceDefinition
         ServiceId
         (forall scope. cfg scope -> Either String (Maybe fields))
         (DeclaredEffects effects)
@@ -383,7 +385,7 @@ withSelectedServiceRequest ::
         secretDigest
         fields
         service ->
-      -- | the effect row this definition declared
+      -- \| the effect row this definition declared
       [RoleEffect] ->
       IO () ->
       result
@@ -651,41 +653,55 @@ installServiceActivationRevision ::
     ByteString ->
     ByteString ->
     IO (Either ServiceActivationError ServiceActivationRevision)
-installServiceActivationRevision broker verification root manifest roleWire secretBundle
+installServiceActivationRevision broker verification root manifest roleWire secretBundle = do
+    signed <- signActivationManifest broker manifest
+    case signed of
+        Left failure -> pure (Left (ServiceActivationVerification failure))
+        Right grant -> installRelayedServiceActivationRevision verification grant root manifest roleWire secretBundle
+
+{- | Install a revision from the exact grant returned through an admitted
+root relay. The independently provisioned verification key remains a separate
+input; adopting signature bytes does not confer signing authority.
+-}
+installRelayedServiceActivationRevision ::
+    ActivationVerificationKey ->
+    ActivationGrant ->
+    FilePath ->
+    ActivationManifest ->
+    ByteString ->
+    ByteString ->
+    IO (Either ServiceActivationError ServiceActivationRevision)
+installRelayedServiceActivationRevision verification grant root manifest roleWire secretBundle
     | not (isAbsolute root) = pure (Left (ServiceActivationInvalid "the activation root is not absolute"))
     | manifestConfigDigest manifest /= sha256Hex roleWire =
         pure (Left (ServiceActivationInvalid "the manifest config digest does not name the role-wire bytes"))
     | manifestSecretDigest manifest /= activationSecretDigestFromBytes secretBundle =
         pure (Left (ServiceActivationInvalid "the manifest secret digest does not name the private bundle bytes"))
     | otherwise = do
-        signed <- signActivationManifest broker manifest
-        case signed of
-            Left failure -> pure (Left (ServiceActivationVerification failure))
-            Right grant -> do
-                let manifestWire = renderActivationManifest manifest
-                    revision = T.unpack (sha256Hex manifestWire)
-                    target = root </> revision
-                    staging = root </> ("installing-" <> revision)
-                    members =
-                        [ ("expected.manifest", manifestWire)
-                        , ("received.manifest", manifestWire)
-                        , ("activation.sig", activationGrantSignature grant)
-                        , ("activation.pub", activationVerificationKeyBytes verification)
-                        , ("role.dhall", roleWire)
-                        , ("secret.bundle", secretBundle)
-                        ]
-                created <- tryAny (createDirectoryIfMissing True root >> createDirectory staging)
-                case created of
-                    Right () -> publish target staging members
-                    Left _ -> do
-                        targetExists <- doesDirectoryExist target
-                        if targetExists
-                            then verifyRevision target members
-                            else do
-                                stagingExists <- doesDirectoryExist staging
-                                if stagingExists
-                                    then publish target staging members
-                                    else pure (Left (ServiceActivationIO "cannot create the immutable revision staging directory"))
+        let manifestWire = renderActivationManifest manifest
+            revision = T.unpack (sha256Hex manifestWire)
+            target = root </> revision
+            staging = root </> ("installing-" <> revision)
+            members =
+                [ ("expected.manifest", manifestWire)
+                , ("received.manifest", manifestWire)
+                , ("activation.sig", activationGrantSignature grant)
+                , ("activation.pub", activationVerificationKeyBytes verification)
+                , ("role.dhall", roleWire)
+                , ("secret.bundle", secretBundle)
+                ]
+        created <- tryAny (createDirectoryIfMissing True root >> createDirectory staging)
+        case created of
+            Right () -> publish target staging members
+            Left _ -> do
+                targetExists <- doesDirectoryExist target
+                if targetExists
+                    then verifyRevision target members
+                    else do
+                        stagingExists <- doesDirectoryExist staging
+                        if stagingExists
+                            then publish target staging members
+                            else pure (Left (ServiceActivationIO "cannot create the immutable revision staging directory"))
   where
     publish target staging members = do
         exact <- traverse (writeExact staging) members
@@ -821,7 +837,8 @@ serviceRuntimeErrorMessage failure = case failure of
 one-use role lifecycle.  The finalized registry is reindexed only after its
 retained digest equals the signed specification, and plan opening consumes the
 decoded request itself so program and placement share their service/config
-indices. -}
+indices.
+-}
 runInstalledServiceProgram ::
     ProtectedStore ->
     ActivationVerificationKey ->
@@ -842,12 +859,10 @@ runInstalledServiceProgram store verification revision binaryDigest instanceIden
     runActivation activation roleWire =
         case registry of
             FinalizedServiceRegistry retainedDigest _ ->
-                case
-                    withRecoverySpecReindexKernel
-                        (activationSpecDigest activation)
-                        retainedDigest
-                        (\token -> reindexFinalizedServiceRegistryKernel token registry)
-                of
+                case withRecoverySpecReindexKernel
+                    (activationSpecDigest activation)
+                    retainedDigest
+                    (\token -> reindexFinalizedServiceRegistryKernel token registry) of
                     Left (expected, observed) -> registryMismatch expected observed
                     Right (Left (expected, observed)) -> registryMismatch expected observed
                     Right (Right activationRegistry) -> do
@@ -858,7 +873,7 @@ runInstalledServiceProgram store verification revision binaryDigest instanceIden
                                 settings
                                 roleWire
                                 activationRegistry
-                                (\identity _codec request declared resources backend program ->
+                                ( \identity _codec request declared resources backend program ->
                                     runSelected activation identity request declared resources backend program
                                 )
                         case selected of
@@ -875,8 +890,7 @@ runInstalledServiceProgram store verification revision binaryDigest instanceIden
 
     runSelected activation identity request declared resources backend program =
         case verifyRolePlanDraft activation (serviceRolePlanDraft resources) $ \verifiedDraft ->
-            runAdmitted verifiedDraft
-        of
+            runAdmitted verifiedDraft of
             Left failure -> pure (Left (ServiceRuntimeRole (T.pack (roleLifecycleErrorMessage failure))))
             Right run -> run
       where
@@ -894,10 +908,10 @@ runInstalledServiceProgram store verification revision binaryDigest instanceIden
                                     reservation
                                     (T.pack (serviceIdText identity))
                                     request
-                                    (\plan _binding placement cursor -> runPlan plan placement cursor)
+                                    (\plan _binding placement cursor -> pure (runPlan plan placement cursor))
                             pure $ case opened of
                                 Left failure -> Right (Left (ServiceRuntimeRole (T.pack (roleLifecycleErrorMessage failure))))
-                                Right report -> Right (Right report)
+                                Right run -> Right (Right run)
                         RoleAdmissionOpenUnknown key ->
                             do
                                 reopened <-
@@ -907,18 +921,19 @@ runInstalledServiceProgram store verification revision binaryDigest instanceIden
                                         verifiedDraft
                                         (T.pack (serviceIdText identity))
                                         request
-                                        (\plan _binding placement cursor -> runPlan plan placement cursor)
+                                        (\plan _binding placement cursor -> pure (runPlan plan placement cursor))
                                 pure $ case reopened of
                                     Left failure -> Right (Left (ServiceRuntimeRole ("cannot reopen " <> key <> ": " <> T.pack (roleLifecycleErrorMessage failure))))
-                                    Right report -> Right (Right report)
+                                    Right run -> Right (Right run)
                         RoleAdmissionRecoveryRequired key detail ->
                             pure (Right (Left (ServiceRuntimeRole ("predecessor recovery is required at " <> key <> ": " <> detail))))
                         RoleAdmissionRefused detail -> pure (Right (Left (ServiceRuntimeRole detail)))
                         RoleAdmissionUnknown detail ->
                             pure (Right (Left (ServiceRuntimeRole ("lifecycle admission status is unknown: " <> detail))))
-            pure $ case entered of
-                Left failure -> Left (ServiceRuntimeStore (protectedErrorMessage failure))
-                Right result -> result
+            case entered of
+                Left failure -> pure (Left (ServiceRuntimeStore (protectedErrorMessage failure)))
+                Right (Left failure) -> pure (Left failure)
+                Right (Right run) -> Right <$> run
 
         runPlan plan placement cursor = do
             let engine =

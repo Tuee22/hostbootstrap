@@ -230,8 +230,8 @@ describes, exercised end-to-end on real hardware:
   `ConfigArtifact` stream and is split across the current lifecycle seams.
   Stream 4 surfaces through `test init` and `test run`, which drive the standardized harness over the
   demo's case matrix; the harness generates each config variant and directly drives its exact
-  Harness-scoped plan. The demo's same-run durable destroy/up/readback case remains open until Stream 4's
-  engine can interpret a declarative two-phase assertion using a fresh lifecycle-invocation generation.
+  Harness-scoped plan. A declarative two-phase case uses Stream 4's fresh same-run lifecycle generation while
+  assertion code remains unable to invoke lifecycle commands.
 
 `DEVELOPMENT_PLAN/` owns the closure criteria for the extension-stream contract; reconcile any status claim
 here to it rather than treating this document as a parallel status authority.

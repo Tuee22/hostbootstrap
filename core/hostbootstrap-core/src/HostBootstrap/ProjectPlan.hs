@@ -8,163 +8,165 @@ only the authored and admitted type vocabulary plus the narrow bridge a
 finalized static project specification uses to bind its already validated
 steps to one exact root and validated configuration.
 -}
-module HostBootstrap.ProjectPlan
-    ( PlanDraft
-    , ProjectPlan
-    , PlannedStep
-    , OperationKey
-    , operationKeyText
-    , PlannedResource
-    , ProviderResource
-    , DurableShareResource
-    , DurableAliasResource
-    , DockerResource
-    , MinioResource
-    , RegistryResource
-    , ClusterResource
-    , ChartWorkloadResource
-    , PlannedResourceKind (..)
-    , PlannedEdge
-    , DerivedTopology
-    , StablePlanSnapshot
-    , PlanError (..)
-    , planDraftsFromValidatedBuilder
-    , forward
-    , plannedStepLabel
-    , plannedStepFrameId
-    , plannedStepFrameLabel
-    , plannedStepOperationKey
-    , plannedStepDependencyOperations
-    , plannedStepProjectedOperationKeys
-    , plannedStepIdentity
-    , plannedStepRunsAfterHandoff
-    , plannedStepReversePolicy
-    , plannedStepReverseRun
-    , PlannedStepObservation
-    , plannedStepObservationSucceeded
-    , plannedStepObservationDetail
-    , plannedStepRefusalObservation
-    , runPlannedStep
-    , plannedResourceKey
-    , plannedResourceFrame
-    , plannedEdgeTargetKey
-    , plannedEdgeDependencyKey
-    , withPlannedResourceOfKind
-    , withChartWorkloadResource
-    , chartWorkloadResourceKey
-    , chartWorkloadResourceFrame
-    , chartWorkloadReverseIdentity
-    , withPlannedEdge
-    , withProviderGuestAliasProjection
-    , withPlannedStepResourceOfKind
-    , withPlannedStepGuestAliasProjection
-    , topology
-    , topologyFrameOrder
-    , topologyParentEdges
-    , topologyDescentEdges
-    , topologyContainsFrame
-    , topologyFrameLabel
-    , topologyParentFrame
-    , topologyDescentFrom
-    , projectPlanProfileName
-    , projectPlanProjectName
-    , renderSnapshot
-    , stablePlanSnapshotFormatVersion
-    , stablePlanSnapshotRoot
-    , stablePlanSnapshotSpecDigest
-    , stablePlanSnapshotConfigDigest
-    , stablePlanSnapshotBytes
-    , stablePlanSnapshotDigest
-    )
+module HostBootstrap.ProjectPlan (
+    PlanDraft,
+    ProjectPlan,
+    PlannedStep,
+    OperationKey,
+    operationKeyText,
+    PlannedResource,
+    ProviderResource,
+    DurableShareResource,
+    DurableAliasResource,
+    DockerResource,
+    MinioResource,
+    RegistryResource,
+    ClusterResource,
+    ChartWorkloadResource,
+    PlannedResourceKind (..),
+    PlannedEdge,
+    DerivedTopology,
+    StablePlanSnapshot,
+    PlanError (..),
+    planDraftsFromValidatedBuilder,
+    forward,
+    plannedStepLabel,
+    plannedStepFrameId,
+    plannedStepFrameLabel,
+    plannedStepOperationKey,
+    plannedStepDependencyOperations,
+    plannedStepProjectedOperationKeys,
+    plannedStepIdentity,
+    plannedStepRunsAfterHandoff,
+    plannedStepReversePolicy,
+    plannedStepReverseRun,
+    PlannedStepObservation,
+    plannedStepObservationSucceeded,
+    plannedStepObservationDetail,
+    plannedStepRefusalObservation,
+    runPlannedStep,
+    plannedResourceKey,
+    plannedResourceFrame,
+    plannedEdgeTargetKey,
+    plannedEdgeDependencyKey,
+    withPlannedResourceOfKind,
+    withChartWorkloadResource,
+    chartWorkloadResourceKey,
+    chartWorkloadResourceFrame,
+    chartWorkloadActivationFrame,
+    chartWorkloadReverseIdentity,
+    withPlannedEdge,
+    withProviderGuestAliasProjection,
+    withPlannedStepResourceOfKind,
+    withPlannedStepGuestAliasProjection,
+    topology,
+    topologyFrameOrder,
+    topologyParentEdges,
+    topologyDescentEdges,
+    topologyContainsFrame,
+    topologyFrameLabel,
+    topologyParentFrame,
+    topologyDescentFrom,
+    projectPlanProfileName,
+    projectPlanProjectName,
+    renderSnapshot,
+    stablePlanSnapshotFormatVersion,
+    stablePlanSnapshotRoot,
+    stablePlanSnapshotSpecDigest,
+    stablePlanSnapshotConfigDigest,
+    stablePlanSnapshotBytes,
+    stablePlanSnapshotDigest,
+)
 where
 
 import Data.ByteString (ByteString)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Text (Text)
 import Data.Word (Word64)
-import HostBootstrap.Config.Schema
-    ( ValidatedConfig
-    , validatedConfigValue
-    )
-import HostBootstrap.Lifecycle.Execution (StepExecution)
-import HostBootstrap.Lifecycle.Plan
-    ( ChartWorkloadResource
-    , ClusterResource
-    , DerivedTopology
-    , DockerResource
-    , DurableAliasResource
-    , DurableShareResource
-    , MinioResource
-    , PlanDraft
-    , PlanError (..)
-    , PlannedEdge
-    , PlannedResource
-    , PlannedResourceKind (..)
-    , PlannedStep (..)
-    , ProviderResource
-    , ProjectPlan
-    , RegistryResource
-    , StablePlanSnapshot
-    , forwardKernel
-    , chartWorkloadResourceFrameKernel
-    , chartWorkloadResourceKeyKernel
-    , chartWorkloadReverseIdentityKernel
-    , planDraftsFromValidatedStepPlanKernel
-    , plannedStepDependencyOperationsKernel
-    , plannedStepFrameIdKernel
-    , plannedStepFrameLabelKernel
-    , plannedStepLabelKernel
-    , plannedStepOperationKeyKernel
-    , plannedStepProjectedOperationKeysKernel
-    , projectPlanProfileNameKernel
-    , projectPlanProfileProjectNameKernel
-    , plannedEdgeDependencyKeyKernel
-    , plannedEdgeTargetKeyKernel
-    , plannedResourceFrameKernel
-    , plannedResourceKeyKernel
-    , renderSnapshotKernel
-    , runPlannedStepKernel
-    , stablePlanSnapshotBytesKernel
-    , stablePlanSnapshotConfigDigestKernel
-    , stablePlanSnapshotDigestKernel
-    , stablePlanSnapshotFormatVersionKernel
-    , stablePlanSnapshotRootKernel
-    , stablePlanSnapshotSpecDigestKernel
-    , topologyContainsFrameKernel
-    , topologyDescentEdgesKernel
-    , topologyDescentFromKernel
-    , topologyFrameLabelKernel
-    , topologyFrameOrderKernel
-    , topologyKernel
-    , topologyParentEdgesKernel
-    , topologyParentFrameKernel
-    , withPlannedStepGuestAliasProjectionKernel
-    , withPlannedStepResourceOfKindKernel
-    , withProjectPlannedEdgeKernel
-    , withProjectPlannedResourceOfKindKernel
-    , withProjectChartWorkloadResourceKernel
-    , withProjectProviderGuestAliasProjectionKernel
-    )
+import HostBootstrap.Config.Schema (
+    ValidatedConfig,
+    validatedConfigValue,
+ )
 import HostBootstrap.HostConfig (HostConfig)
+import HostBootstrap.Lifecycle.Execution (StepExecution)
+import HostBootstrap.Lifecycle.Plan (
+    ChartWorkloadResource,
+    ClusterResource,
+    DerivedTopology,
+    DockerResource,
+    DurableAliasResource,
+    DurableShareResource,
+    MinioResource,
+    PlanDraft,
+    PlanError (..),
+    PlannedEdge,
+    PlannedResource,
+    PlannedResourceKind (..),
+    PlannedStep (..),
+    ProjectPlan,
+    ProviderResource,
+    RegistryResource,
+    StablePlanSnapshot,
+    chartWorkloadActivationFrameKernel,
+    chartWorkloadResourceFrameKernel,
+    chartWorkloadResourceKeyKernel,
+    chartWorkloadReverseIdentityKernel,
+    forwardKernel,
+    planDraftsFromValidatedStepPlanKernel,
+    plannedEdgeDependencyKeyKernel,
+    plannedEdgeTargetKeyKernel,
+    plannedResourceFrameKernel,
+    plannedResourceKeyKernel,
+    plannedStepDependencyOperationsKernel,
+    plannedStepFrameIdKernel,
+    plannedStepFrameLabelKernel,
+    plannedStepLabelKernel,
+    plannedStepOperationKeyKernel,
+    plannedStepProjectedOperationKeysKernel,
+    projectPlanProfileNameKernel,
+    projectPlanProfileProjectNameKernel,
+    renderSnapshotKernel,
+    runPlannedStepKernel,
+    stablePlanSnapshotBytesKernel,
+    stablePlanSnapshotConfigDigestKernel,
+    stablePlanSnapshotDigestKernel,
+    stablePlanSnapshotFormatVersionKernel,
+    stablePlanSnapshotRootKernel,
+    stablePlanSnapshotSpecDigestKernel,
+    topologyContainsFrameKernel,
+    topologyDescentEdgesKernel,
+    topologyDescentFromKernel,
+    topologyFrameLabelKernel,
+    topologyFrameOrderKernel,
+    topologyKernel,
+    topologyParentEdgesKernel,
+    topologyParentFrameKernel,
+    withPlannedStepGuestAliasProjectionKernel,
+    withPlannedStepResourceOfKindKernel,
+    withProjectChartWorkloadResourceKernel,
+    withProjectPlannedEdgeKernel,
+    withProjectPlannedResourceOfKindKernel,
+    withProjectProviderGuestAliasProjectionKernel,
+ )
 import HostBootstrap.Lift.Context (LiftContext)
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot)
-import HostBootstrap.Step
-    ( CoreStepId (PostHandoffId)
-    , OperationKey
-    , ReversePolicy
-    , StepIdentity (CoreStepIdentity)
-    , StepObservation (..)
-    , StepPlan
-    , StepPlanError
-    , TeardownAction
-    , TeardownOutcome
-    , operationKeyText
-    , observationDetail
-    , observationSucceeded
-    , stepIdentity
-    , stepReverse
-    , stepReversePolicy
-    )
+import HostBootstrap.Step (
+    CoreStepId (PostHandoffId),
+    OperationKey,
+    ReversePolicy,
+    StepIdentity (CoreStepIdentity),
+    StepObservation (..),
+    StepPlan,
+    StepPlanError,
+    TeardownAction,
+    TeardownOutcome,
+    observationDetail,
+    observationSucceeded,
+    operationKeyText,
+    stepIdentity,
+    stepReverse,
+    stepReversePolicy,
+ )
 
 {- | Bind one already validated non-empty step graph to the root and
 configuration that produce it.
@@ -258,6 +260,7 @@ roles are nominal so the result cannot be relabelled onto another admitted
 plan or configuration.
 -}
 type role PlannedStepObservation nominal nominal nominal
+
 newtype PlannedStepObservation scope planId configId
     = PlannedStepObservation StepObservation
 
@@ -340,6 +343,9 @@ chartWorkloadResourceKey = chartWorkloadResourceKeyKernel
 
 chartWorkloadResourceFrame :: ChartWorkloadResource scope planId resourceId frame -> Text
 chartWorkloadResourceFrame = chartWorkloadResourceFrameKernel
+
+chartWorkloadActivationFrame :: ChartWorkloadResource scope planId resourceId frame -> Text
+chartWorkloadActivationFrame = chartWorkloadActivationFrameKernel
 
 chartWorkloadReverseIdentity :: ChartWorkloadResource scope planId resourceId frame -> (Text, Text, Text)
 chartWorkloadReverseIdentity = chartWorkloadReverseIdentityKernel
@@ -456,16 +462,18 @@ topologyDescentFrom ::
     Maybe (Text, LiftContext)
 topologyDescentFrom = topologyDescentFromKernel
 
--- | The exact lifecycle-profile identity retained when this plan was admitted.
--- This is a descriptive projection only; it grants no lifecycle authority.
+{- | The exact lifecycle-profile identity retained when this plan was admitted.
+This is a descriptive projection only; it grants no lifecycle authority.
+-}
 projectPlanProfileName ::
     ProjectPlan scope specDigest planId configId cfg ->
     Text
 projectPlanProfileName = projectPlanProfileNameKernel
 
--- | The installed-project identity retained when this plan was admitted.
--- Consumers use this projection when a provider-local name must be derived
--- from the plan rather than supplied independently by a caller.
+{- | The installed-project identity retained when this plan was admitted.
+Consumers use this projection when a provider-local name must be derived
+from the plan rather than supplied independently by a caller.
+-}
 projectPlanProjectName ::
     ProjectPlan scope specDigest planId configId cfg ->
     Text

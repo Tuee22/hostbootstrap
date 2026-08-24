@@ -26,11 +26,13 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Dhall
+import HostBootstrap.Activation (activationErrorMessage, activationGrantSignature, activationManifestFromWire)
 import HostBootstrap.Authority (
     InstalledProjectIdentity,
     ProjectVerb (ProjectUp),
     VerbUp,
  )
+import HostBootstrap.Command.Child.Reverse (recoveryProfileName, runCoreManagedReverse)
 import HostBootstrap.Config.Authority.Internal (mintAuthenticatedHarnessConfigAuthority)
 import HostBootstrap.Config.Class (
     ProjectCfg (cfgContext),
@@ -93,6 +95,7 @@ import HostBootstrap.Handoff.Recovery (
  )
 import HostBootstrap.Handoff.Relay (
     BrokerLink,
+    linkSignActivation,
     receiveRootedLifecycleResponseThroughLink,
     relayErrorMessage,
     withNestedRecursiveHandoffRuntimeKernel,
@@ -106,6 +109,7 @@ import HostBootstrap.Lifecycle.Execution.Internal (
     newResourceCarrier,
     newStepRuntime,
     openStepRuntimeGate,
+    replaceStepRuntimeActivationSigningService,
     setStepRuntimeOwnGate,
  )
 import HostBootstrap.Lifecycle.FrameExecutor (
@@ -144,17 +148,12 @@ import HostBootstrap.ProjectPlan.Construct (
  )
 import HostBootstrap.ProjectPlan.Frame (CurrentFrame, withCurrentFrame)
 import HostBootstrap.ProjectPlan.Projection.Internal (withImmediateTargetKernel)
-import HostBootstrap.ProjectRoot (withCanonicalProjectRoot)
+import HostBootstrap.ProjectRoot (CanonicalProjectRoot, withCanonicalProjectRoot)
 import HostBootstrap.Reconcile (stepExecutionFor)
-import HostBootstrap.Step (
-    Step,
-    StepObservation,
-    observationDetail,
-    observationSucceeded,
-    runStep,
- )
+import HostBootstrap.Step (Step, StepObservation, TeardownOutcome, observationDetail, observationSucceeded, runStep)
 import HostBootstrap.Substrate (detect)
 import HostBootstrap.Teardown (
+    LocalWork,
     TeardownForest,
     eliminateTeardownProgress,
     nextTeardownWork,
@@ -230,7 +229,7 @@ runHarnessRecovery key production descent sendReport =
             Left failure -> pure (Left failure)
             Right authority ->
                 withHarnessFinalizedProjectSpec authority production $ \finalized ->
-                    runScopedRecovery "harness" key finalized descent sendReport
+                    runScopedRecovery key finalized descent sendReport
 
 harnessConfigAuthorityFromEdge ::
     ReceivedEdge (Harness projectId runId) brokerGeneration ->
@@ -268,11 +267,10 @@ runProductionRecovery ::
     (ByteString -> IO (Either ReceiverError ())) ->
     IO (Either Text ())
 runProductionRecovery key finalized descent sendReport =
-    runScopedRecovery "production" key finalized descent sendReport
+    runScopedRecovery key finalized descent sendReport
 
 runScopedRecovery ::
     (ProjectCfg cfg) =>
-    Text ->
     ProjectVerificationKey ->
     FinalizedProjectSpec scope specDigest cfg ->
     ReceivedRecoveryDescent
@@ -286,7 +284,7 @@ runScopedRecovery ::
         verb ->
     (ByteString -> IO (Either ReceiverError ())) ->
     IO (Either Text ())
-runScopedRecovery scopeKind key finalized descent sendReport =
+runScopedRecovery key finalized descent sendReport =
     withReceivedRecoveryDescent descent $ \edge packageBytes verb adapter _projection _grant ->
         case recoveryChildPackageFromWireKernel packageBytes of
             Left failure -> pure (Left ("reverse child: " <> failure))
@@ -311,12 +309,11 @@ runScopedRecovery scopeKind key finalized descent sendReport =
                                         withValidatedConfig
                                             (finalizedProjectCodec finalized)
                                             value
-                                            (\_wire config -> admitReverse scopeKind key finalized edge verb adapter config sendReport)
+                                            (\_wire config -> admitReverse key finalized edge verb adapter config sendReport)
                                     pure $ either (Left . Text.pack) id admitted
 
 admitReverse ::
     (ProjectCfg cfg) =>
-    Text ->
     ProjectVerificationKey ->
     FinalizedProjectSpec scope specDigest cfg ->
     ReceivedEdge scope brokerGeneration ->
@@ -325,39 +322,41 @@ admitReverse ::
     ValidatedConfig scope specDigest configId (cfg scope) ->
     (ByteString -> IO (Either ReceiverError ())) ->
     IO (Either Text ())
-admitReverse scopeKind key finalized edge verb adapter config sendReport = do
+admitReverse key finalized edge verb adapter config sendReport = do
     configPath <- siblingProjectConfigPath (Context.project context)
     rooted <-
         withCanonicalProjectRoot configPath (Text.unpack (Context.sourceRoot context)) $ \root ->
             case projectPlanDrafts finalized root config of
                 Left failure -> pure (Left ("reverse child: " <> Text.pack (show failure)))
-                Right drafts ->
-                    case LifecyclePlan.withChildProjectPlanKernel
-                        scopeKind
-                        (handoffBrokerGeneration binding)
-                        (handoffInstalledProject binding)
-                        (handoffStoreIdentity binding)
-                        (handoffPlanRevision binding)
-                        config
-                        drafts
-                        ( \plan _digestBinding ->
-                            case withCurrentFrame plan context $ \current _frame _admitted ->
-                                if Context.currentFrame context /= handoffChildFrame binding
-                                    then pure (Left "reverse child: the local frame differs from the authenticated child")
-                                    else case withStorelessReverseExecutorKernel plan current verb adapter id of
-                                        Left failure -> pure (Left (Text.pack (teardownErrorMessage failure)))
-                                        Right projection -> case openTeardownForest projection of
+                Right drafts -> case recoveryProfileName binding of
+                    Left failure -> pure (Left failure)
+                    Right profileName ->
+                        case LifecyclePlan.withChildProjectPlanKernel
+                            profileName
+                            (handoffBrokerGeneration binding)
+                            (handoffInstalledProject binding)
+                            (handoffStoreIdentity binding)
+                            (handoffPlanRevision binding)
+                            config
+                            drafts
+                            ( \plan _digestBinding ->
+                                case withCurrentFrame plan context $ \current _frame _admitted ->
+                                    if Context.currentFrame context /= handoffChildFrame binding
+                                        then pure (Left "reverse child: the local frame differs from the authenticated child")
+                                        else case withStorelessReverseExecutorKernel plan current verb adapter id of
                                             Left failure -> pure (Left (Text.pack (teardownErrorMessage failure)))
-                                            Right forest -> do
-                                                configured <- hostConfig
-                                                case configured of
-                                                    Left failure -> pure (Left failure)
-                                                    Right host -> openReverseFrame key edge host verb plan forest sendReport of
-                                Left failure -> pure (Left (Text.pack (show failure)))
-                                Right action -> action
-                        ) of
-                        Left failure -> pure (Left ("reverse child: " <> Text.pack (show failure)))
-                        Right action -> action
+                                            Right projection -> case openTeardownForest projection of
+                                                Left failure -> pure (Left (Text.pack (teardownErrorMessage failure)))
+                                                Right forest -> do
+                                                    configured <- hostConfig
+                                                    case configured of
+                                                        Left failure -> pure (Left failure)
+                                                        Right host -> openReverseFrame key edge host root context verb plan forest sendReport of
+                                    Left failure -> pure (Left (Text.pack (show failure)))
+                                    Right action -> action
+                            ) of
+                            Left failure -> pure (Left ("reverse child: " <> Text.pack (show failure)))
+                            Right action -> action
     pure $ either (Left . Text.pack . show) id rooted
   where
     binding = verifiedHandoffBinding (receivedEdgeHandoff edge)
@@ -367,12 +366,14 @@ openReverseFrame ::
     ProjectVerificationKey ->
     ReceivedEdge scope brokerGeneration ->
     HostConfig ->
+    CanonicalProjectRoot scope rootId ->
+    Context.BinaryContext ->
     ProjectVerb verb ->
     ProjectPlan scope specDigest planId configId cfg ->
     TeardownForest scope planId frame verb ->
     (ByteString -> IO (Either ReceiverError ())) ->
     IO (Either Text ())
-openReverseFrame key edge host verb plan forest sendReport =
+openReverseFrame key edge host root context verb plan forest sendReport =
     withNestedRecursiveHandoffRuntimeKernel edge verb $ \runtime link -> do
         nonce <- freshNonce
         withLifecycleChildOpeningKernel runtime key nonce (carry key link) $ \request signedOpened ->
@@ -385,7 +386,7 @@ openReverseFrame key edge host verb plan forest sendReport =
                 nodes
                 request
                 signedOpened
-                (driveReverse key link host forest sendReport)
+                (driveReverse key link host (runCoreManagedReverse root context plan host) forest sendReport)
   where
     binding = verifiedHandoffBinding (receivedEdgeHandoff edge)
     frameName = handoffChildFrame binding
@@ -396,11 +397,12 @@ driveReverse ::
     ProjectVerificationKey ->
     BrokerLink scope linkGeneration ->
     HostConfig ->
+    (LocalWork scope planId frame verb -> IO TeardownOutcome) ->
     TeardownForest scope planId frame verb ->
     (ByteString -> IO (Either ReceiverError ())) ->
     FrameExecutor scope rootPlanId executorGeneration catalogId executorFrame sessionId verb ->
     IO (Either Text ())
-driveReverse key link host forest sendReport executor =
+driveReverse key link host runCoreManaged forest sendReport executor =
     eliminateTeardownProgress (nextTeardownWork forest) (const requestClose) (const requestNext)
   where
     requestNext = sendExecutorRequest executor "next-node" Nothing $ \exactRequest signed ->
@@ -414,7 +416,7 @@ driveReverse key link host forest sendReport executor =
                     exactRequest
                     signed
                     ( \node _own _projected _carrier -> do
-                        advanced <- runStorelessReversePreparedKernel host forest (executionNodeOperationKey node)
+                        advanced <- runStorelessReversePreparedKernel host runCoreManaged forest (executionNodeOperationKey node)
                         case advanced of
                             Left failure -> pure (Left (Text.pack (teardownErrorMessage failure)))
                             Right (successor, observation) -> do
@@ -431,7 +433,7 @@ driveReverse key link host forest sendReport executor =
                                         case responseView key settleRequest settled of
                                             Right ("settled", _) ->
                                                 withAdvancedFrameExecutorKernel prepared key settleRequest settled $ \advanced ->
-                                                    driveReverse key link host advancedForest sendReport advanced
+                                                    driveReverse key link host runCoreManaged advancedForest sendReport advanced
                                             Right (family, _) -> unexpected "settle-node" family
                                             Left failure -> pure (Left failure)
                     )
@@ -446,7 +448,7 @@ driveReverse key link host forest sendReport executor =
                                     case responseView key resultRequest settled of
                                         Right ("settled", _) ->
                                             withAdvancedFrameExecutorKernel descending key resultRequest settled $ \advanced ->
-                                                driveReverse key link host advancedForest sendReport advanced
+                                                driveReverse key link host runCoreManaged advancedForest sendReport advanced
                                         Right (family, _) -> unexpected "descend-result" family
                                         Left failure -> pure (Left failure)
             Right ("refused", detail) -> pure (Left ("reverse child: root refused NextNode: " <> decode detail))
@@ -573,19 +575,30 @@ openFrame key finalized edge host config plan current sendReport =
     withNestedRecursiveHandoffRuntimeKernel edge ProjectUp $ \runtime link -> do
         nonce <- freshNonce
         carrier <- newResourceCarrier
+        activationRuntime <- newStepRuntime carrier
+        replaceStepRuntimeActivationSigningService activationRuntime $ \manifestWire ->
+            case activationManifestFromWire manifestWire of
+                Left failure -> pure (Left (Text.pack (activationErrorMessage failure)))
+                Right manifest -> do
+                    signed <- linkSignActivation link manifest
+                    pure (either (Left . Text.pack . relayErrorMessage) (Right . activationGrantSignature) signed)
         let opened = openWith carrier runtime link nonce
-        admitted <- withProviderDependencyClientKernel edge $ \packageWire client ->
-            case packageWire of
+        admitted <- withProviderDependencyClientKernel edge $ \packageWires client ->
+            case packageWires of
                 Nothing -> fmap (either (Left . ReceiverDeclined) Right) opened
-                Just admittedPackage -> do
+                Just admittedPackages -> do
                     seeded <-
-                        seedProviderDependencyCarrierKernel
-                            carrier
-                            admittedPackage
-                            (fmap (either (Left . Text.pack . receiverErrorMessage) Right) . client)
-                    case seeded of
+                        traverse
+                            ( \admittedPackage ->
+                                seedProviderDependencyCarrierKernel
+                                    carrier
+                                    admittedPackage
+                                    (fmap (either (Left . Text.pack . receiverErrorMessage) Right) . client admittedPackage)
+                            )
+                            admittedPackages
+                    case sequence seeded of
                         Left failure -> pure (Left (ReceiverDeclined failure))
-                        Right () -> fmap (either (Left . ReceiverDeclined) Right) opened
+                        Right _ -> fmap (either (Left . ReceiverDeclined) Right) opened
         pure (either (Left . Text.pack . receiverErrorMessage) (const (Right ())) admitted)
   where
     frame = Context.currentFrame (cfgContext (validatedConfigValue config))

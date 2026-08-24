@@ -276,6 +276,10 @@ serveProviderCommand guest root role behaviour argv = case argv of
         alterInstance root name (\held -> held{instanceRunState = "STOPPED"})
         recordMutation root "stop"
         replaceIfArmed root "stop" name
+    ["restart", name, "--force"] -> do
+        alterInstance root name (\held -> held{instanceRunState = "RUNNING"})
+        recordMutation root "restart"
+        replaceIfArmed root "restart" name
     ["delete", name, "--force"] -> do
         instances <- readInstances root
         writeInstances root (filter ((/= name) . fst) instances)

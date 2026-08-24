@@ -219,9 +219,9 @@ the following global shutdown left neither a running distro nor a resident utili
 and test detail belongs in the
 [Windows-and-WSL2-substrate phase](../../DEVELOPMENT_PLAN/phase-27-windows-and-wsl2-substrate.md).
 
-That result does not close the broader WSL2 provider lifecycle. The demo profile/durable-readback defects,
-prepared-operation adoption, recursive teardown, existing-VHDX reconciliation, and the remaining native
-provider matrix stay open in their owning phases.
+That earlier result does not close the current WSL2 hardware acceptance. Existing-VHDX reconciliation,
+fresh verification of recursive teardown and durable readback, and the remaining native provider matrix stay
+open in their owning phase.
 
 Phase status belongs in [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 

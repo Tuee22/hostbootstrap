@@ -75,32 +75,32 @@ import HostBootstrap.Handoff (
     HandoffPayloadKind (NarrowedProjectConfig, RecoveryAdapterWire),
     HandoffScope,
     ProjectVerificationKey,
+    VerifiedHandoff,
     authenticatedConfigDigest,
     challengeBytes,
     frameWire,
     freshChallenge,
-    handoffErrorMessage,
-    handoffGrantFromSignature,
     handoffChildConfigDigest,
     handoffChildFrame,
+    handoffErrorMessage,
+    handoffGrantFromSignature,
     handoffInstalledProject,
     handoffParentFrame,
+    handoffPayloadKind,
     handoffPhase,
     handoffPlanRevision,
-    handoffPayloadKind,
     handoffScope,
     handoffScopeProject,
     handoffScopeTag,
     handoffVerb,
     mkRecoveryProjectionBindingFromRoute,
-    providerDependencyPackageFromFields,
+    providerDependencyPackagesFromFields,
     providerDependencyProbeRequestFields,
     providerDependencyProbeResponseFromFields,
     recoveryWireGrantFromSignature,
     renderRecoveryProjectionBinding,
     takeHandoffFrame,
     verificationKeyDigest,
-    VerifiedHandoff,
     verifiedConfigPayload,
     verifiedHandoffBinding,
     verifiedHandoffRoute,
@@ -117,7 +117,7 @@ import HostBootstrap.Handoff.Protocol (
     HandoffChannel,
     ProtocolError,
     ProtocolMessage,
-    ProtocolTag (AcknowledgedTag, AcceptedTag, ChallengeTag, CompletedTag, GrantTag, OfferTag, ProviderDependencyPackageTag, ProviderDependencyProbeRequestTag, ProviderDependencyProbeResponseTag, RefusedTag),
+    ProtocolTag (AcceptedTag, AcknowledgedTag, ChallengeTag, CompletedTag, GrantTag, OfferTag, ProviderDependencyPackageTag, ProviderDependencyProbeRequestTag, ProviderDependencyProbeResponseTag, RefusedTag),
     channelReceive,
     channelSend,
     childProtocolReceive,
@@ -172,8 +172,14 @@ withIsolatedReceivedHandoffEdge ::
     ) ->
     ( forall receivedGeneration planDigest parentFrame childFrame recoveryWireDigest recoveryWireId verb.
       ReceivedRecoveryDescent
-        (Production projectId) receivedGeneration planDigest parentFrame childFrame
-        recoveryWireDigest recoveryWireId verb ->
+        (Production projectId)
+        receivedGeneration
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest
+        recoveryWireId
+        verb ->
       (ByteString -> IO (Either ReceiverError ())) ->
       IO (Either Text ())
     ) ->
@@ -185,21 +191,34 @@ withIsolatedReceivedHandoffEdge ::
     ) ->
     ( forall runId receivedGeneration planDigest parentFrame childFrame recoveryWireDigest recoveryWireId verb.
       ReceivedRecoveryDescent
-        (Harness projectId runId) receivedGeneration planDigest parentFrame childFrame
-        recoveryWireDigest recoveryWireId verb ->
+        (Harness projectId runId)
+        receivedGeneration
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest
+        recoveryWireId
+        verb ->
       (ByteString -> IO (Either ReceiverError ())) ->
       IO (Either Text ())
     ) ->
     IO (Either ReceiverError ())
 withIsolatedReceivedHandoffEdge
-    project key
-    useProductionConfig useProductionRecovery
-    useHarnessConfig useHarnessRecovery =
-    withPrivateProtocolStdio $ \channel ->
-        withReceivedHandoffEdge
-            project channel key
-            useProductionConfig useProductionRecovery
-            useHarnessConfig useHarnessRecovery
+    project
+    key
+    useProductionConfig
+    useProductionRecovery
+    useHarnessConfig
+    useHarnessRecovery =
+        withPrivateProtocolStdio $ \channel ->
+            withReceivedHandoffEdge
+                project
+                channel
+                key
+                useProductionConfig
+                useProductionRecovery
+                useHarnessConfig
+                useHarnessRecovery
 
 {- | Run the child half of one handoff exchange, then act under it.
 
@@ -229,8 +248,14 @@ withReceivedHandoffEdge ::
     ) ->
     ( forall receivedGeneration planDigest parentFrame childFrame recoveryWireDigest recoveryWireId verb.
       ReceivedRecoveryDescent
-        (Production projectId) receivedGeneration planDigest parentFrame childFrame
-        recoveryWireDigest recoveryWireId verb ->
+        (Production projectId)
+        receivedGeneration
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest
+        recoveryWireId
+        verb ->
       (ByteString -> IO (Either ReceiverError ())) ->
       IO (Either Text ())
     ) ->
@@ -242,50 +267,80 @@ withReceivedHandoffEdge ::
     ) ->
     ( forall runId receivedGeneration planDigest parentFrame childFrame recoveryWireDigest recoveryWireId verb.
       ReceivedRecoveryDescent
-        (Harness projectId runId) receivedGeneration planDigest parentFrame childFrame
-        recoveryWireDigest recoveryWireId verb ->
+        (Harness projectId runId)
+        receivedGeneration
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest
+        recoveryWireId
+        verb ->
       (ByteString -> IO (Either ReceiverError ())) ->
       IO (Either Text ())
     ) ->
     IO (Either ReceiverError ())
 withReceivedHandoffEdge
-    project channel key
-    useProductionConfig useProductionRecovery
-    useHarnessConfig useHarnessRecovery = do
-    active <- newIORef 0
-    let attempt = do
-            (offer, afterOffer) <- receiveMessage channel initialChildProtocolState
-            liftAttempt (writeIORef active (protocolMessageRequestId offer))
-            let requestId = protocolMessageRequestId offer
-            (payload, token, bindingBytes, authentication) <- offerFields offer
-            (scopeWire, authenticationRemainder) <-
-                fromHandoff (takeHandoffFrame authentication)
-            scoped <-
-                fromHandoff
-                    ( withAuthenticatedRootScopeFromWire
-                        project
-                        key
-                        scopeWire
-                        ( \authenticated scope ->
-                            receiveScopedHandoffEdge
-                                authenticated scope channel key afterOffer requestId active
-                                payload token bindingBytes authenticationRemainder
-                                useProductionConfig useProductionRecovery
+    project
+    channel
+    key
+    useProductionConfig
+    useProductionRecovery
+    useHarnessConfig
+    useHarnessRecovery = do
+        active <- newIORef 0
+        let attempt = do
+                (offer, afterOffer) <- receiveMessage channel initialChildProtocolState
+                liftAttempt (writeIORef active (protocolMessageRequestId offer))
+                let requestId = protocolMessageRequestId offer
+                (payload, token, bindingBytes, authentication) <- offerFields offer
+                (scopeWire, authenticationRemainder) <-
+                    fromHandoff (takeHandoffFrame authentication)
+                scoped <-
+                    fromHandoff
+                        ( withAuthenticatedRootScopeFromWire
+                            project
+                            key
+                            scopeWire
+                            ( \authenticated scope ->
+                                receiveScopedHandoffEdge
+                                    authenticated
+                                    scope
+                                    channel
+                                    key
+                                    afterOffer
+                                    requestId
+                                    active
+                                    payload
+                                    token
+                                    bindingBytes
+                                    authenticationRemainder
+                                    useProductionConfig
+                                    useProductionRecovery
+                            )
+                            ( \authenticated scope ->
+                                receiveScopedHandoffEdge
+                                    authenticated
+                                    scope
+                                    channel
+                                    key
+                                    afterOffer
+                                    requestId
+                                    active
+                                    payload
+                                    token
+                                    bindingBytes
+                                    authenticationRemainder
+                                    useHarnessConfig
+                                    useHarnessRecovery
+                            )
                         )
-                        ( \authenticated scope ->
-                            receiveScopedHandoffEdge
-                                authenticated scope channel key afterOffer requestId active
-                                payload token bindingBytes authenticationRemainder
-                                useHarnessConfig useHarnessRecovery
-                        )
-                    )
-            scoped
-    outcome <- runAttempt attempt
-    case outcome of
-        Right value -> pure (Right value)
-        Left failure -> do
-            announceRefusal channel active failure
-            pure (Left failure)
+                scoped
+        outcome <- runAttempt attempt
+        case outcome of
+            Right value -> pure (Right value)
+            Left failure -> do
+                announceRefusal channel active failure
+                pure (Left failure)
 
 {- | Open the hidden child client only for the lifetime of an authenticated
 edge. It permits one in-flight request, consumes each nonce before sending,
@@ -293,7 +348,7 @@ and accepts one exact response carrying the edge's request identity.
 -}
 withProviderDependencyClientKernel ::
     ReceivedEdge scope brokerGeneration ->
-    (Maybe ByteString -> (Text -> IO (Either ReceiverError (Either Text Word64))) -> IO (Either ReceiverError result)) ->
+    (Maybe [ByteString] -> (ByteString -> Text -> IO (Either ReceiverError (Either Text Word64))) -> IO (Either ReceiverError result)) ->
     IO (Either ReceiverError result)
 withProviderDependencyClientKernel edge use = do
     case protocolMessage ProviderDependencyPackageTag requestId [ByteString.empty] of
@@ -316,26 +371,28 @@ withProviderDependencyClientKernel edge use = do
                 | protocolMessageTag message /= ProviderDependencyPackageTag ->
                     pure (Left (ReceiverMalformedMessage (protocolMessageTag message) (length (protocolMessageFields message))))
                 | protocolMessageFields message == [ByteString.empty] ->
-                    use Nothing (const (pure (Left (ReceiverDeclined "no provider dependency package is admitted"))))
-                | otherwise -> case providerDependencyPackageFromFields (protocolMessageFields message) of
+                    use Nothing (\_ _ -> pure (Left (ReceiverDeclined "no provider dependency package is admitted")))
+                | otherwise -> case providerDependencyPackagesFromFields (protocolMessageFields message) of
                     Left failure -> pure (Left (ReceiverDeclined failure))
-                    Right packageWire -> do
+                    Right packageWires -> do
                         state <- newMVar (False, [])
-                        use (Just packageWire) (probe packageWire state)
-    probe packageWire state nonce = do
-        admitted <- modifyMVar state $ \current@(busy, consumed) ->
-            if busy
-                then pure (current, Left (ReceiverDeclined "a provider dependency request is already outstanding"))
-                else
-                    if nonce `elem` consumed
-                        then pure (current, Left (ReceiverDeclined "the provider dependency nonce was replayed"))
-                        else
-                            if length consumed >= providerClientRequestLimit
-                                then pure (current, Left (ReceiverDeclined "the provider dependency client request limit was reached"))
-                                else pure ((True, nonce : consumed), Right ())
-        case admitted of
-            Left failure -> pure (Left failure)
-            Right () -> Exception.finally (exchange packageWire nonce) (modifyMVar state (\(_, consumed) -> pure ((False, consumed), ())))
+                        use (Just packageWires) (probe packageWires state)
+    probe packageWires state packageWire nonce
+        | packageWire `notElem` packageWires = pure (Left (ReceiverDeclined "the provider dependency package is not admitted"))
+        | otherwise = do
+            admitted <- modifyMVar state $ \current@(busy, consumed) ->
+                if busy
+                    then pure (current, Left (ReceiverDeclined "a provider dependency request is already outstanding"))
+                    else
+                        if (packageWire, nonce) `elem` consumed
+                            then pure (current, Left (ReceiverDeclined "the provider dependency nonce was replayed"))
+                            else
+                                if length consumed >= providerClientRequestLimit
+                                    then pure (current, Left (ReceiverDeclined "the provider dependency client request limit was reached"))
+                                    else pure ((True, (packageWire, nonce) : consumed), Right ())
+            case admitted of
+                Left failure -> pure (Left failure)
+                Right () -> Exception.finally (exchange packageWire nonce) (modifyMVar state (\(_, consumed) -> pure ((False, consumed), ())))
     exchange packageWire nonce = case providerDependencyProbeRequestFields packageWire nonce of
         Left failure -> pure (Left (ReceiverDeclined failure))
         Right fields -> case protocolMessage ProviderDependencyProbeRequestTag requestId fields of
@@ -354,14 +411,16 @@ withProviderDependencyClientKernel edge use = do
                                 | protocolMessageTag response /= ProviderDependencyProbeResponseTag ->
                                     pure (Left (ReceiverMalformedMessage (protocolMessageTag response) (length (protocolMessageFields response))))
                                 | otherwise ->
-                                    pure $ either (Left . ReceiverDeclined) Right
-                                        (providerDependencyProbeResponseFromFields packageWire nonce (protocolMessageFields response))
+                                    pure $
+                                        either
+                                            (Left . ReceiverDeclined)
+                                            Right
+                                            (providerDependencyProbeResponseFromFields packageWire nonce (protocolMessageFields response))
 
 providerClientRequestLimit :: Int
 providerClientRequestLimit = 64
 
-
-{- | Continue only after the capsule verifier has fixed the execution scope. -}
+-- | Continue only after the capsule verifier has fixed the execution scope.
 receiveScopedHandoffEdge ::
     AuthenticatedRootScope scope ->
     HandoffScope scope ->
@@ -382,15 +441,32 @@ receiveScopedHandoffEdge ::
     ) ->
     ( forall receivedGeneration planDigest parentFrame childFrame recoveryWireDigest recoveryWireId verb.
       ReceivedRecoveryDescent
-        scope receivedGeneration planDigest parentFrame childFrame
-        recoveryWireDigest recoveryWireId verb ->
+        scope
+        receivedGeneration
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest
+        recoveryWireId
+        verb ->
       (ByteString -> IO (Either ReceiverError ())) ->
       IO (Either Text ())
     ) ->
     Attempt ()
 receiveScopedHandoffEdge
-    authenticated scope channel key afterOffer requestId active
-    payload token bindingBytes authentication useConfig useRecovery = do
+    authenticated
+    scope
+    channel
+    key
+    afterOffer
+    requestId
+    active
+    payload
+    token
+    bindingBytes
+    authentication
+    useConfig
+    useRecovery = do
         requireOfferPayloadBound payload
         (offeredKeyDigest, evidence) <- fromHandoff (takeHandoffFrame authentication)
         requireInstalledKey key offeredKeyDigest
@@ -591,8 +667,14 @@ classifyVerified ::
     ) ->
     ( forall planDigest parentFrame childFrame recoveryWireDigest recoveryWireId verb.
       ReceivedRecoveryDescent
-        scope brokerGeneration planDigest parentFrame childFrame
-        recoveryWireDigest recoveryWireId verb ->
+        scope
+        brokerGeneration
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest
+        recoveryWireId
+        verb ->
       (ByteString -> IO (Either ReceiverError ())) ->
       IO (Either Text ())
     ) ->
@@ -643,45 +725,44 @@ classifyVerified authenticated channel requestId key evidence verified useConfig
                     (handoffParentFrame binding)
                     (handoffChildFrame binding)
                     ( \input ->
-                        case
-                            mkRecoveryProjectionBindingFromRoute
-                                verb
-                                (verifiedHandoffRoute verified)
-                                input
-                                adapter
-                                ( \projection ->
-                                    if renderRecoveryProjectionBinding projection /= projectionBytes
-                                        then Left
+                        case mkRecoveryProjectionBindingFromRoute
+                            verb
+                            (verifiedHandoffRoute verified)
+                            input
+                            adapter
+                            ( \projection ->
+                                if renderRecoveryProjectionBinding projection /= projectionBytes
+                                    then
+                                        Left
                                             ( HandoffBindingMismatch
                                                 "the recovery evidence projection is not canonical for the authenticated adapter"
                                             )
-                                        else do
-                                            grant <- recoveryWireGrantFromSignature projection signature
-                                            withVerifiedRecoveryWire
-                                                key
-                                                projection
-                                                adapter
-                                                grant
-                                                ( \wire sendReport -> do
-                                                        let edge =
-                                                                mkReceivedEdge
-                                                                    authenticated
-                                                                    verified
-                                                                    channel
-                                                                    requestId
-                                                            descent =
-                                                                mkReceivedRecoveryDescent
-                                                                    edge
-                                                                    rooted
-                                                                    package
-                                                                    verb
-                                                                    projection
-                                                                    grant
-                                                                    wire
-                                                        useRecovery descent sendReport
-                                                )
-                                )
-                        of
+                                    else do
+                                        grant <- recoveryWireGrantFromSignature projection signature
+                                        withVerifiedRecoveryWire
+                                            key
+                                            projection
+                                            adapter
+                                            grant
+                                            ( \wire sendReport -> do
+                                                let edge =
+                                                        mkReceivedEdge
+                                                            authenticated
+                                                            verified
+                                                            channel
+                                                            requestId
+                                                    descent =
+                                                        mkReceivedRecoveryDescent
+                                                            edge
+                                                            rooted
+                                                            package
+                                                            verb
+                                                            projection
+                                                            grant
+                                                            wire
+                                                useRecovery descent sendReport
+                                            )
+                            ) of
                             Left failure -> failAttempt (ReceiverHandoffFailure failure)
                             Right result -> fromHandoff result
                     )
@@ -694,8 +775,9 @@ configEvidence evidence = do
     (rooted, trailing) <- fromHandoff (takeHandoffFrame evidence)
     if ByteString.null trailing
         then pure rooted
-        else failAttempt
-            (ReceiverHandoffFailure (HandoffWireTrailingBytes (ByteString.length trailing)))
+        else
+            failAttempt
+                (ReceiverHandoffFailure (HandoffWireTrailingBytes (ByteString.length trailing)))
 
 recoveryEvidence :: ByteString -> Attempt (ByteString, ByteString, ByteString)
 recoveryEvidence evidence = do

@@ -11,9 +11,9 @@ hypothetical.
 -}
 module TeardownSpec (tests) where
 
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Control.Monad (forM_)
 import qualified Data.ByteString as ByteString
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -28,8 +28,8 @@ import HostBootstrap.Authority (
 import HostBootstrap.Config.Vocab (Production)
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.DocValidator (findRepoRoot)
-import HostBootstrap.HostConfig (HostConfig, buildHostConfig)
 import HostBootstrap.Handoff (frameWire, renderLifecycleObservations)
+import HostBootstrap.HostConfig (HostConfig, buildHostConfig)
 import HostBootstrap.Lift (localContext)
 import HostBootstrap.ProjectPlan (
     ProjectPlan,
@@ -47,9 +47,9 @@ import HostBootstrap.Teardown
 import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>))
 import System.IO.Unsafe (unsafePerformIO)
-import Unsafe.Coerce (unsafeCoerce)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Unsafe.Coerce (unsafeCoerce)
 
 tests :: TestTree
 tests =
@@ -159,6 +159,16 @@ sourceShapeTests =
                     </> "HostBootstrap"
                     </> "Command.hs"
                 )
+        internalSource <-
+            TextIO.readFile
+                ( root
+                    </> "core"
+                    </> "hostbootstrap-core"
+                    </> "src"
+                    </> "HostBootstrap"
+                    </> "Teardown"
+                    </> "Internal.hs"
+                )
         let declarations = map Text.strip (Text.lines source)
             normalized = Text.unwords (Text.words source)
             declaration name expected =
@@ -177,7 +187,7 @@ sourceShapeTests =
                 , "attemptLocalWork :: LocalWork scope planId frame verb -> TeardownOutcome -> TeardownForest scope planId frame verb"
                 , "withDescentWorkSubtree :: DescentWork scope planId frame childFrame verb -> (TeardownPlan scope planId childFrame verb -> result) -> result"
                 , "settleDescentWork :: DescentWork scope planId frame childFrame verb -> SubtreeSettled scope planId childFrame verb -> Either TeardownError (TeardownForest scope planId frame verb)"
-                , "driveTeardownForest :: TeardownForest scope planId frame verb -> (PreDescentStep scope planId frame verb -> IO TeardownOutcome) -> (SettledChildren scope planId frame -> LocalWork scope planId frame verb -> IO TeardownOutcome) -> (forall (childFrame :: Type). SettledChildren scope planId frame -> DescentWork scope planId frame childFrame verb -> IO (Either Text (SubtreeSettled scope planId childFrame verb))) -> (Text -> TeardownOutcome -> IO ()) -> IO (Either [Text] (CompletedTeardownForest scope planId frame verb))"
+                , "driveTeardownForest :: TeardownForest scope planId frame verb -> (PreDescentStep scope planId frame verb -> IO TeardownOutcome) -> (SettledChildren scope planId frame -> LocalWork scope planId frame verb -> IO TeardownOutcome) -> ( forall (childFrame :: Type). SettledChildren scope planId frame -> DescentWork scope planId frame childFrame verb -> IO (Either Text (SubtreeSettled scope planId childFrame verb)) ) -> (Text -> TeardownOutcome -> IO ()) -> IO (Either [Text] (CompletedTeardownForest scope planId frame verb))"
                 , "verifySubtreeSettled :: TeardownPlan scope planId frame verb -> CompletedTeardownForest scope planId frame verb -> Either TeardownError (SubtreeSettled scope planId frame verb)"
                 , "verifyDestroySettled :: ProjectPlan scope specDigest planId configId cfg -> CurrentFrame scope planId frame -> SubtreeSettled scope planId frame VerbDestroy -> Either TeardownError (DestroySettled scope planId)"
                 ]
@@ -212,7 +222,7 @@ sourceShapeTests =
             "data TeardownAuthorizationPoint scope planId frame verb"
         declaration
             "PreDescentStep"
-            "newtype PreDescentStep scope planId frame verb ="
+            "newtype PreDescentStep scope planId frame verb"
         declaration
             "SettledChildren"
             "newtype SettledChildren scope planId frame = SettledChildren [Text]"
@@ -221,10 +231,10 @@ sourceShapeTests =
             "data TeardownWork scope planId frame verb where"
         declaration
             "LocalWork"
-            "data LocalWork scope planId frame verb = LocalWork"
+            "data LocalWork scope planId frame verb"
         declaration
             "DescentWork"
-            "data DescentWork scope planId frame (childFrame :: Type) verb = DescentWork"
+            "data DescentWork scope planId frame (childFrame :: Type) verb"
         declaration
             "SubtreeSettled"
             "data SubtreeSettled scope planId frame verb"
@@ -334,7 +344,7 @@ sourceShapeTests =
             ("Authority.projectVerbName verb" `Text.isInfixOf` commandSource)
         assertBool
             "Command must select cluster teardown only from the canonical verb"
-            ( "clusterEffectFor selected = case selected of Authority.ProjectUp -> Nothing Authority.ProjectDown -> Just (clusterDown cfg) Authority.ProjectDestroy -> Just (clusterDelete cfg)"
+            ( "clusterEffectFor selected = case selected of Authority.ProjectUp -> False Authority.ProjectDown -> True Authority.ProjectDestroy -> True"
                 `Text.isInfixOf` Text.unwords (Text.words commandSource)
             )
         assertBool
@@ -344,10 +354,29 @@ sourceShapeTests =
             )
         assertBool
             "Command must not accept an external cluster teardown callback"
-            (not ("ClusterPlan -> IO" `Text.isInfixOf` commandSource))
+            (not ("(ClusterPlan -> IO TeardownOutcome)" `Text.isInfixOf` commandSource))
         assertBool
-            "the exact Harness destroy route must select cluster delete internally"
-            ("clusterDelete cfg (planForRoot root ctx)" `Text.isInfixOf` commandSource)
+            "the exact Harness destroy route must use retained cluster ownership internally"
+            ( "releaseRetainedClusterLifecycle cfg (planForRootWithProfile profile root ctx)"
+                `Text.isInfixOf` commandSource
+            )
+        assertBool
+            "the exact Harness destroy route must derive that profile from its admitted plan"
+            ( "profileFromPlanName (ProjectPlan.projectPlanProfileName destroyPlan)"
+                `Text.isInfixOf` commandSource
+            )
+        assertBool
+            "the recursive child adapter must derive cluster cleanup from its admitted plan profile"
+            ( "profileFromPlanName (ProjectPlan.projectPlanProfileName plan)"
+                `Text.isInfixOf` commandSource
+                && "planForRootWithProfile profile root ctx" `Text.isInfixOf` commandSource
+            )
+        assertBool
+            "Harness recovery offers compare the canonical signed scope, not the lifecycle journal spelling"
+            ( "Text.stripPrefix \"harness:\" stableScope" `Text.isInfixOf` internalSource
+                && "\"Harness \" <> run" `Text.isInfixOf` internalSource
+                && "handoffScope binding == recoveryHandoffScope" `Text.isInfixOf` internalSource
+            )
     ]
 
 {- | The loop a lifecycle verb runs (the recursive-lifecycle-command phase).
@@ -462,7 +491,9 @@ driverTests =
                 Left outstanding -> assertFailure ("did not complete: " ++ show outstanding)
                 Right completed -> do
                     subtree <-
-                        either (assertFailure . teardownErrorMessage) pure
+                        either
+                            (assertFailure . teardownErrorMessage)
+                            pure
                             (verifySubtreeSettled (teardownPlan plan current ProjectDestroy) completed)
                     map snd (subtreeSettledTerminalObservations subtree)
                         @?= [ TeardownForeignRetained "not this run's release"
@@ -481,10 +512,14 @@ driverTests =
             case (destroyDone, downDone) of
                 (Right destroyed, Right downed) -> do
                     downSubtree <-
-                        either (assertFailure . teardownErrorMessage) pure
+                        either
+                            (assertFailure . teardownErrorMessage)
+                            pure
                             (verifySubtreeSettled downProjection downed)
                     destroySubtree <-
-                        either (assertFailure . teardownErrorMessage) pure
+                        either
+                            (assertFailure . teardownErrorMessage)
+                            pure
                             (verifySubtreeSettled destroyProjection destroyed)
                     case settledDestroyEvidence plan current downSubtree of
                         Nothing -> pure ()
@@ -549,6 +584,17 @@ projectionTests =
             )
             "vm-project-container-2"
             ["core:deploy-chart", "core:deploy-kind"]
+    , testCase "same-frame bootstrap work cannot precede its child subtree" $
+        withExactPlan id workedDemoReversePlan $ \plan current -> do
+            forest <- openOrFail (teardownPlan plan current ProjectDestroy)
+            teardownForestOutstanding forest
+                @?= [ "core:deploy-chart"
+                    , "core:deploy-kind"
+                    , "core:context-init"
+                    , "core:copy-source"
+                    , "core:build-pb"
+                    , "core:deploy-vm"
+                    ]
     , testCase "a preserve-on-reverse step is in neither projection" $
         withPlan $ \plan current -> do
             forest <- openOrFail (teardownPlan plan current ProjectDestroy)
@@ -584,7 +630,9 @@ projectionTests =
     , testCase "failed-Up cleanup retains Up while projecting only the exact reached prefix" $
         withPlan $ \plan current -> do
             projected <-
-                either (assertFailure . teardownErrorMessage) pure
+                either
+                    (assertFailure . teardownErrorMessage)
+                    pure
                     (failedUpTeardownPlanKernel plan current ["core:deploy-vm", "core:build-pb"])
             teardownPlanVerbName projected @?= projectVerbName ProjectUp
             forest <- openOrFail projected
@@ -596,6 +644,19 @@ projectionTests =
             case failedUpTeardownPlanKernel plan current ["project:not-in-plan"] of
                 Left (TeardownReverseDescentRefused _) -> pure ()
                 other -> assertFailure ("a foreign reached operation was accepted: " ++ showProjection other)
+    , testCase "failed-Up cleanup filters reached preserved nodes and projected relations" $
+        withExactPlan id failedUpObservedPlan $ \plan current -> do
+            projected <-
+                either (assertFailure . teardownErrorMessage) pure $
+                    failedUpTeardownPlanKernel
+                        plan
+                        current
+                        [ "project:ensure-vm-provider"
+                        , "project:ensure-vm-provider/guest-alias"
+                        , "core:deploy-vm"
+                        ]
+            forest <- openOrFail projected
+            teardownForestOutstanding forest @?= ["core:deploy-vm"]
     , testCase "a plan whose every step preserves projects nothing and cannot open" $
         withPreservedPlan $ \plan current ->
             case openTeardownForest (teardownPlan plan current ProjectDestroy) of
@@ -839,7 +900,9 @@ settlementTests =
                                         childForest <- openOrFail childProjection
                                         childCompleted <- drainToCompletion childForest
                                         childSettled <-
-                                            either (assertFailure . teardownErrorMessage) pure
+                                            either
+                                                (assertFailure . teardownErrorMessage)
+                                                pure
                                                 (verifySubtreeSettled childProjection childCompleted)
                                         terminalKeyTexts
                                             (subtreeSettledTerminalObservations childSettled)
@@ -848,7 +911,9 @@ settlementTests =
                                                 , "core:build-pb"
                                                 ]
                                         joined <-
-                                            either (assertFailure . teardownErrorMessage) pure
+                                            either
+                                                (assertFailure . teardownErrorMessage)
+                                                pure
                                                 (settleDescentWork descent childSettled)
                                         firstWork joined
                                             @?= Just (OfferedLocal "core:deploy-vm" DeleteFrame)
@@ -861,7 +926,9 @@ settlementTests =
             forest <- openOrFail projection
             completed <- drainToCompletion forest
             subtree <-
-                either (assertFailure . teardownErrorMessage) pure
+                either
+                    (assertFailure . teardownErrorMessage)
+                    pure
                     (verifySubtreeSettled projection completed)
             case verifyDestroySettled plan current subtree of
                 Left (TeardownRootFrameMismatch "vm-orchestrator-1" ["host-orchestrator-0"]) -> pure ()
@@ -881,14 +948,18 @@ settlementTests =
                 malformed =
                     [ ("missing", drop 1 exact)
                     , ("extra", exact ++ take 1 exact)
-                    , ("duplicate", case exact of
+                    ,
+                        ( "duplicate"
+                        , case exact of
                             first : _second : rest -> first : first : rest
                             _ -> exact
-                      )
-                    , ("reordered", case exact of
+                        )
+                    ,
+                        ( "reordered"
+                        , case exact of
                             first : second : rest -> second : first : rest
                             _ -> exact
-                      )
+                        )
                     ]
             forM_ malformed $ \(label, observations) ->
                 case verifySubtreeSettled projection (forgeCompleted ProjectDestroy digest frame observations) of
@@ -918,11 +989,12 @@ runtime exact-sequence checks behind the opaque constructor. Ordinary client
 code is separately required to fail compilation when it tries to construct or
 coerce a completion/proof.
 -}
-data CompletedShape verb = CompletedShape
-    (ProjectVerb verb)
-    Text
-    Text
-    [(OperationKey, TeardownOutcome)]
+data CompletedShape verb
+    = CompletedShape
+        (ProjectVerb verb)
+        Text
+        Text
+        [(OperationKey, TeardownOutcome)]
 
 forgeCompleted ::
     ProjectVerb verb ->
@@ -1131,7 +1203,8 @@ drainUntil matches = go (0 :: Int)
     go depth forest
         | depth > 32 = forest
         | Just work <- firstWork forest
-        , matches work = forest
+        , matches work =
+            forest
         | otherwise = go (depth + 1) (attempt forest TeardownReleased)
 
 -- | Release everything still offered.
@@ -1182,10 +1255,33 @@ demoShapedPlan =
         , deployChartStep "chart" containerFrame noop
         ]
 
+-- The worked demo has multiple host-local bootstrap nodes before the provider
+-- and declares its two frame boundaries on later nodes. Its reverse forest is
+-- the regression shape for preserving the flat projection's child-first order.
+workedDemoReversePlan :: StepPlan
+workedDemoReversePlan =
+    mkPlan
+        [ projectStep (demoStep "ensure-vm-provider") PreserveOnReverse "ensure" metalFrame noop
+        , deployVMStep "launch" metalFrame noop
+        , buildPbStep "build" metalFrame noop
+        , descendsVia localContext (copySourceStep "share" metalFrame noop)
+        , descendsVia localContext (contextInitStep "context" vmFrame noop)
+        , deployKindStep "cluster" containerFrame noop
+        , deployChartStep "chart" containerFrame noop
+        ]
+
 allPreservedPlan :: StepPlan
 allPreservedPlan =
     mkPlan
         [ projectStep (demoStep "ensure-vm-provider") PreserveOnReverse "ensure" metalFrame noop
+        ]
+
+failedUpObservedPlan :: StepPlan
+failedUpObservedPlan =
+    mkPlan
+        [ projectsOperation "project:ensure-vm-provider/guest-alias" $
+            projectStep (demoStep "ensure-vm-provider") PreserveOnReverse "ensure" metalFrame noop
+        , deployVMStep "launch" metalFrame noop
         ]
 
 {- | The VM level exists in the exact topology but contributes no removable

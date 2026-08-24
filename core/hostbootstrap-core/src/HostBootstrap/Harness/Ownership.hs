@@ -107,8 +107,6 @@ import HostBootstrap.Harness.GeneratedConfig (
     recoverGeneratedConfig,
     releaseGeneratedConfig,
  )
-import HostBootstrap.Ownership.Primitive (OwnershipRow)
-import HostBootstrap.Ownership.Row (ownershipRowForHost)
 import HostBootstrap.Harness.Ownership.Internal (
     OwnedHarnessCloseControl,
     consumeOwnedHarnessClose,
@@ -118,31 +116,30 @@ import HostBootstrap.Lifecycle.Mode (
     AbandonedHarnessRun,
     BoundRunLease,
     HarnessBoundRecovery (HarnessOpenRevisionRecovery, HarnessPersistedClosing),
+    HarnessCloseRoot,
+    HarnessMode,
     HarnessRoot,
     IncompleteLeaseKind (IncompleteBound, IncompleteUnbound),
     ModeError (ModeOwnershipUnresolved, ModeSessionFailure, ModeStoreFailure),
     OpenRevisionKind (CompletedMigration, IncompleteMigration, NormalRevision),
     ProjectClosureEvidence,
+    ProjectModeLease,
     RecoveredForestSettled,
-    abandonedHarnessBroker,
-    abandonedHarnessAdmission,
-    abandonedHarnessSnapshot,
-    authorizeHarnessClose,
-    activateMigratedPlanConfigless,
-    withMigratedRecoveredProjectFrames,
-    driveRecoveredForest,
-    planSnapshotPlanDigest,
-    recordRecoveredResourceReleased,
-    recoveredDestroySettledClosure,
-    withRehydratedSnapshotResourceSet,
-    withCompletedMigrationRecovery,
     RunId,
     VerifiedIncompleteRunLease,
+    abandonedHarnessAdmission,
+    abandonedHarnessBoundLease,
+    abandonedHarnessBroker,
     abandonedHarnessCloseRoot,
     abandonedHarnessModeLease,
     abandonedHarnessRecovery,
+    abandonedHarnessSnapshot,
+    activateMigratedPlanConfigless,
+    authorizeHarnessClose,
     closeHarnessRun,
     currentHarnessCloseRoot,
+    driveRecoveredForest,
+    finalizeHarnessClose,
     harnessPreconditions,
     harnessRootModeLease,
     harnessRootRunId,
@@ -151,21 +148,27 @@ import HostBootstrap.Lifecycle.Mode (
     incompleteRunLeaseRunText,
     modeErrorMessage,
     openRevisionKind,
+    planSnapshotPlanDigest,
+    recordRecoveredResourceReleased,
     recoverAbandonedHarnessRuns,
-    runIdText,
-    abandonedHarnessBoundLease,
-    finalizeHarnessClose,
+    recoveredDestroySettledClosure,
     resumeHarnessClose,
+    runIdText,
     verifyBoundRunHasNoProjectResourcesAcquired,
     verifyNoProjectResourcesAcquired,
     withAbandonedHarnessRun,
+    withCompletedMigrationRecovery,
     withHarnessRoot,
+    withMigratedRecoveredProjectFrames,
+    withRehydratedSnapshotResourceSet,
  )
-import HostBootstrap.Lifecycle.Session
-    ( RehydratedOwnershipReceipt
-    , RehydratedResourceHandle
-    , verifyAllSessionsClosed
-    )
+import HostBootstrap.Lifecycle.Session (
+    RehydratedOwnershipReceipt,
+    RehydratedResourceHandle,
+    verifyAllSessionsClosed,
+ )
+import HostBootstrap.Ownership.Primitive (OwnershipRow)
+import HostBootstrap.Ownership.Row (ownershipRowForHost)
 import HostBootstrap.ProjectRoot (
     CanonicalProjectRoot,
     canonicalProjectRootPath,
@@ -499,29 +502,41 @@ ownProjectRun recoveryExecutor project storeRoot siblingDirectory dataParent bod
             evidence <- verifyNoProjectResourcesAcquired (harnessRootUnboundLease root)
             case evidence of
                 Left failure -> pure (Left (Text.unpack (modeErrorMessage failure)))
-                Right proof -> closeShort proof
+                Right proof ->
+                    closeShort
+                        (currentHarnessCloseRoot root)
+                        (harnessRootModeLease root)
+                        proof
         closeBound ::
-            forall specDigest planDigest.
+            forall fallbackBrokerGeneration specDigest planDigest.
+            HarnessCloseRoot projectId runId fallbackBrokerGeneration ->
+            ProjectModeLease projectId (HarnessMode runId) fallbackBrokerGeneration ->
             BoundRunLease
                 (Harness projectId runId)
                 specDigest
                 planDigest
-                brokerGeneration ->
+                fallbackBrokerGeneration ->
             IO (Either String ())
-        closeBound bound = do
+        closeBound closeRoot modeLease bound = do
             evidence <- verifyBoundRunHasNoProjectResourcesAcquired bound
             case evidence of
                 Left failure -> pure (Left (Text.unpack (modeErrorMessage failure)))
-                Right proof -> closeShort proof
-        closeShort proof = do
+                Right proof -> closeShort closeRoot modeLease proof
+        closeShort ::
+            forall fallbackBrokerGeneration.
+            HarnessCloseRoot projectId runId fallbackBrokerGeneration ->
+            ProjectModeLease projectId (HarnessMode runId) fallbackBrokerGeneration ->
+            ProjectClosureEvidence (Harness projectId runId) ->
+            IO (Either String ())
+        closeShort closeRoot modeLease proof = do
             closed <-
                 withProtectedEntry store $ \session -> do
                     outcome <-
                         closeHarnessRun
                             session
                             project
-                            (currentHarnessCloseRoot root)
-                            (harnessRootModeLease root)
+                            closeRoot
+                            modeLease
                             proof
                     pure (Right outcome)
             pure $ case closed of
@@ -717,19 +732,19 @@ resolveBoundRun recoveryExecutor store project dataParent configPath lease =
                     project
                     (abandonedHarnessBoundLease reopened)
                     $ \_profile barrier candidateSnapshot oldSnapshot rehydrated ->
-                    case withMigratedRecoveredProjectFrames candidateSnapshot oldSnapshot rehydrated (\_ count -> count + (1 :: Int)) 0 of
-                        Left failure -> pure (Left failure)
-                        Right 0 -> pure (Left (ModeOwnershipUnresolved "completed-migration" "recovered no frames"))
-                        Right _ ->
-                            fmap
-                                (fmap (const ()))
-                                ( activateMigratedPlanConfigless
-                                    session
-                                    barrier
-                                    (abandonedHarnessBoundLease reopened)
-                                    (abandonedHarnessBroker reopened)
-                                    rehydrated
-                                )
+                        case withMigratedRecoveredProjectFrames candidateSnapshot oldSnapshot rehydrated (\_ count -> count + (1 :: Int)) 0 of
+                            Left failure -> pure (Left failure)
+                            Right 0 -> pure (Left (ModeOwnershipUnresolved "completed-migration" "recovered no frames"))
+                            Right _ ->
+                                fmap
+                                    (fmap (const ()))
+                                    ( activateMigratedPlanConfigless
+                                        session
+                                        barrier
+                                        (abandonedHarnessBoundLease reopened)
+                                        (abandonedHarnessBroker reopened)
+                                        rehydrated
+                                    )
         case activated of
             Left failure -> pure (Left failure)
             Right () -> closeOrRecoverResources reopened
@@ -753,7 +768,7 @@ resolveBoundRun recoveryExecutor store project dataParent configPath lease =
                             driveRecoveredForest
                                 (abandonedHarnessSnapshot reopened)
                                 resources
-                                (\frame adapter revision handle receipt -> do
+                                ( \frame adapter revision handle receipt -> do
                                     executed <- executeRecoveredResource recoveryExecutor frame adapter revision handle receipt
                                     case executed of
                                         Left failure -> pure (Left failure)
@@ -764,7 +779,8 @@ resolveBoundRun recoveryExecutor store project dataParent configPath lease =
                                                     (planSnapshotPlanDigest (abandonedHarnessSnapshot reopened))
                                                     handle
                                                     receipt
-                                            pure (either (Left . modeErrorMessage) Right recorded))
+                                            pure (either (Left . modeErrorMessage) Right recorded)
+                                )
                         case settled of
                             Left failure -> pure (Left failure)
                             Right forest -> finishRecoveredClose reopened forest

@@ -68,7 +68,7 @@ library ownership-internal
   build-depends:
       base >=4.18 && <5
     , bytestring
-    , crypton
+    , crypton <1.1
     , directory
     , filepath
     , memory
@@ -141,6 +141,7 @@ library
       HostBootstrap.Detached
       HostBootstrap.Handoff
       HostBootstrap.Handoff.Transaction
+      HostBootstrap.Identity.Install
       HostBootstrap.Lifecycle.Closure
       HostBootstrap.Lifecycle.Context
       HostBootstrap.Lifecycle.Execution
@@ -225,8 +226,10 @@ library
       HostBootstrap.Authority.Kernel
       HostBootstrap.Authority.FailedUp.Internal
       HostBootstrap.Cluster.Backend.Internal
+      HostBootstrap.Cluster.Exposure.Internal
       HostBootstrap.Authority.ProjectPlan.Internal
       HostBootstrap.Command.Child
+      HostBootstrap.Command.Child.Reverse
       HostBootstrap.Command.LifecycleEntry
       HostBootstrap.Cluster.Budget.Internal
       HostBootstrap.Cluster.Observation.Internal
@@ -280,7 +283,7 @@ library
     , base >=4.18 && <5
     , bytestring
     , containers
-    , crypton
+    , crypton <1.1
     , directory
     , dhall
     , filepath
@@ -289,6 +292,7 @@ library
     , hostbootstrap-core:colima-backend-internal
     , hostbootstrap-core:ownership-internal
     , memory
+    , network
     , optparse-applicative
     , process
     , safe-exceptions
@@ -386,6 +390,7 @@ test-suite hostbootstrap-core-test
       LifecycleDependencySpec
       HarnessSpec
       IncusSpec
+      IdentityInstallSpec
       LimaSpec
       Wsl2Spec
       WslGlobalWallSpec
@@ -407,7 +412,7 @@ test-suite hostbootstrap-core-test
       base >=4.18 && <5
     , bytestring
     , containers
-    , crypton
+    , crypton <1.1
     , memory
     , dhall
     , directory

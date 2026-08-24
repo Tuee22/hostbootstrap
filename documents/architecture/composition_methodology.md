@@ -1252,6 +1252,12 @@ returns, and post-handoff suffixes outside deepest-frame-to-root unwind order. G
 properties prove a valid list is preserved exactly and an invalid `A, B, A` shape is rejected rather than
 regrouped.
 
+A step may carry one exact standalone service-activation declaration: activation frame, selected role, and
+non-empty unique permitted effects. These fields are canonical commitments, not runtime authority; image,
+executable, role-wire, secret, and instance measurements remain live signing inputs. Admission requires the
+activation frame to be unique across standalone and chart workload declarations. The rooted signing catalog
+admits both families under the same exact frame, plan-digest, role, and effect comparison.
+
 The public exact Chain is driven by the admitted `ProjectPlan`, matching Execute `CommandAuthority` and
 `LifecycleCursor`, and the plan's `DerivedTopology`; every protected transition rereads the exact cursor
 source/current row. Production dispatch consumes that boundary directly and retains one plan identity.
@@ -1337,6 +1343,22 @@ indices through `VerifiedServicePlacement`. `authorizeServiceEffects` can theref
 for that definition's row, and `interpretServiceProgramWithReady` receives only the resource handles which the
 engine acquired and probed. A lost Reserved→Consumed acknowledgment reopens that same request-indexed plan; a
 different request, frame, service, instance, store, effect ceiling, or specification refuses before acquisition.
+
+The protected-store entry ends after that admission transaction mints the sealed plan, placement, and one-use
+cursor. The runtime executes the returned lifecycle action only after releasing the global store lock. During
+Serve it retains only the named service/frame liveness lease required by its effects. Independent web and
+accelerator roles can therefore share one authority store and run concurrently without weakening either their
+transactional admissions or their distinct generation leases.
+
+The worked demo obtains the image binary digest from the exact built image, projects the narrowed role wire from
+the jointly finalized Production registry, and sends the canonical manifest through the authenticated child
+relay. The root accepts signing only when the manifest names its admitted plan and an exact activation
+placement declared by either a chart workload or an ordinary plan step. The two declaration families share one
+frame namespace and one exact plan-digest/service/effect comparison; neither carries runtime measurements or a
+signing handle. The child installs the returned grant beneath the profile's shared durable root, and the
+workload receives only the immutable revision basename. Kubernetes mounts that revision read-only, mounts the
+separate authority store, supplies pod UID, and reads the matching container restart count through a dedicated
+pod-`get`-only service account before entering `service run`.
 
 ## Foundational Principles
 

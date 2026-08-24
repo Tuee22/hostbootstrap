@@ -3,12 +3,13 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE StandaloneDeriving #-}
 
 {- | Scope-indexed network endpoints and the closed reachability relation
 between them.
 
-A hostname is not evidence. @localhost:30500@ is reachable from the host and
+A hostname is not evidence. @localhost:<runtime-port>@ is reachable from the host and
 meaningless inside a pod; @minio.default.svc:9000@ is reachable from a pod and
 unresolvable on the host. Both are just strings, so any code that decides
 "can this client reach that endpoint?" by inspecting text is guessing — and the
@@ -35,8 +36,6 @@ module HostBootstrap.Network (
     Endpoint,
     endpointAuthority,
     endpointScope,
-    hostLocalEndpoint,
-    vmLocalEndpoint,
     clusterOnlyEndpoint,
     NetworkClient,
     clientScope,
@@ -54,7 +53,10 @@ module HostBootstrap.Network (
     Exposure,
     exposureEndpoint,
     exposurePort,
-    loopbackExposure,
+    exposureService,
+    exposureRuntimeIdentity,
+    resolvedHostExposure,
+    resolvedVmExposure,
     clusterServiceExposure,
 
     -- * Errors
@@ -65,6 +67,16 @@ where
 import Data.Char (isSpace)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Word (Word64)
+import HostBootstrap.Cluster.Backend (
+    ResolvedExposure,
+    resolvedExposureClusterGeneration,
+    resolvedExposureHostPort,
+    resolvedExposureListenAddress,
+    resolvedExposureOwnershipOperation,
+    resolvedExposureRelayIdentity,
+    resolvedExposureService,
+ )
 
 {- | Where a network name resolves. The three scopes the composition chain
 actually crosses (§ U): the metal host, a provider VM guest, and the inside of
@@ -141,14 +153,6 @@ mkEndpoint name authority
   where
     trimmed = Text.strip authority
 
--- | An address the metal host can resolve, e.g. a published @localhost@ port.
-hostLocalEndpoint :: Text -> Either NetworkError (Endpoint 'HostLocal)
-hostLocalEndpoint = mkEndpoint HostLocalName
-
--- | An address the provider VM guest can resolve.
-vmLocalEndpoint :: Text -> Either NetworkError (Endpoint 'VmLocal)
-vmLocalEndpoint = mkEndpoint VmLocalName
-
 -- | An in-cluster address, e.g. a @.svc@ Service DNS name.
 clusterOnlyEndpoint :: Text -> Either NetworkError (Endpoint 'ClusterOnly)
 clusterOnlyEndpoint = mkEndpoint ClusterOnlyName
@@ -222,37 +226,90 @@ reachableFrom _ _ = False
 scope is *made* reachable; it does not by itself grant reachability from another
 scope.
 -}
-data Exposure (scope :: NetworkScope) = Exposure (Endpoint scope) Int
+data Exposure (network :: NetworkScope) lifecycleScope planId clusterId service where
+    ResolvedLocalExposure ::
+        Endpoint network ->
+        Int ->
+        Text ->
+        Text ->
+        Word64 ->
+        Text ->
+        Exposure network lifecycleScope planId clusterId service
+    ClusterServiceExposure ::
+        Endpoint 'ClusterOnly ->
+        Int ->
+        Text ->
+        Exposure 'ClusterOnly lifecycleScope planId clusterId service
 
-deriving instance Eq (Exposure scope)
+type role Exposure nominal nominal nominal nominal nominal
 
-instance Show (Exposure scope) where
-    show (Exposure endpoint port) =
-        "Exposure " ++ show endpoint ++ " " ++ show port
+deriving instance Eq (Exposure network lifecycleScope planId clusterId service)
 
-exposureEndpoint :: Exposure scope -> Endpoint scope
-exposureEndpoint (Exposure endpoint _) = endpoint
+instance Show (Exposure network lifecycleScope planId clusterId service) where
+    show exposure =
+        "Exposure " ++ show (exposureEndpoint exposure) ++ " " ++ show (exposurePort exposure)
 
-exposurePort :: Exposure scope -> Int
-exposurePort (Exposure _ port) = port
+exposureEndpoint :: Exposure network lifecycleScope planId clusterId service -> Endpoint network
+exposureEndpoint (ResolvedLocalExposure endpoint _ _ _ _ _) = endpoint
+exposureEndpoint (ClusterServiceExposure endpoint _ _) = endpoint
+
+exposurePort :: Exposure network lifecycleScope planId clusterId service -> Int
+exposurePort (ResolvedLocalExposure _ port _ _ _ _) = port
+exposurePort (ClusterServiceExposure _ port _) = port
+
+exposureService :: Exposure network lifecycleScope planId clusterId service -> Text
+exposureService (ResolvedLocalExposure _ _ service _ _ _) = service
+exposureService (ClusterServiceExposure _ _ service) = service
+
+{- | The runtime identity retained by a local exposure. Cluster-only service
+addresses need no relay and therefore return 'Nothing'.
+-}
+exposureRuntimeIdentity ::
+    Exposure network lifecycleScope planId clusterId service ->
+    Maybe (Text, Word64, Text)
+exposureRuntimeIdentity (ResolvedLocalExposure _ _ _ relay generation operation) =
+    Just (relay, generation, operation)
+exposureRuntimeIdentity (ClusterServiceExposure _ _ _) = Nothing
 
 validPort :: Int -> Bool
 validPort port = port > 0 && port < 65536
 
-{- | A loopback-published exposure: the authority is fixed to @127.0.0.1@ so a
-project-local service cannot be published on a wildcard address by naming one.
--}
-loopbackExposure :: Int -> Either NetworkError (Exposure 'HostLocal)
-loopbackExposure port
-    | not (validPort port) = Left (InvalidEndpointPort port)
-    | otherwise = do
-        endpoint <- hostLocalEndpoint ("127.0.0.1:" <> Text.pack (show port))
-        Right (Exposure endpoint port)
+resolvedHostExposure ::
+    ResolvedExposure lifecycleScope planId clusterId service ->
+    Exposure 'HostLocal lifecycleScope planId clusterId service
+resolvedHostExposure = resolvedLocalExposure HostLocalName
+
+resolvedVmExposure ::
+    ResolvedExposure lifecycleScope planId clusterId service ->
+    Exposure 'VmLocal lifecycleScope planId clusterId service
+resolvedVmExposure = resolvedLocalExposure VmLocalName
+
+resolvedLocalExposure ::
+    ScopeName network ->
+    ResolvedExposure lifecycleScope planId clusterId service ->
+    Exposure network lifecycleScope planId clusterId service
+resolvedLocalExposure network resolved =
+    ResolvedLocalExposure
+        ( Endpoint
+            network
+            ( resolvedExposureListenAddress resolved
+                <> ":"
+                <> Text.pack (show (resolvedExposureHostPort resolved))
+            )
+        )
+        (resolvedExposureHostPort resolved)
+        (resolvedExposureService resolved)
+        (resolvedExposureRelayIdentity resolved)
+        (resolvedExposureClusterGeneration resolved)
+        (resolvedExposureOwnershipOperation resolved)
 
 -- | An in-cluster Service exposure.
-clusterServiceExposure :: Text -> Int -> Either NetworkError (Exposure 'ClusterOnly)
+clusterServiceExposure ::
+    Text ->
+    Int ->
+    Either NetworkError (Exposure 'ClusterOnly lifecycleScope planId clusterId service)
 clusterServiceExposure service port
     | not (validPort port) = Left (InvalidEndpointPort port)
     | otherwise = do
         endpoint <- clusterOnlyEndpoint (service <> ":" <> Text.pack (show port))
-        Right (Exposure endpoint port)
+        Right (ClusterServiceExposure endpoint port service)

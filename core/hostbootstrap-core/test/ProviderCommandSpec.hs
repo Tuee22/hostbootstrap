@@ -90,6 +90,8 @@ mutationTests =
     , testCase "start and stop name only the instance" $ do
         commandArguments (startInstanceCommand "demo-vm") @?= ["start", "demo-vm"]
         commandArguments (stopInstanceCommand "demo-vm") @?= ["stop", "demo-vm"]
+    , testCase "share activation restarts exactly the owned instance" $
+        commandArguments (restartInstanceCommand "demo-vm") @?= ["restart", "demo-vm", "--force"]
     , testCase "a share is attached as a disk device with both paths" $
         commandArguments
             (attachShareDeviceCommand "demo-vm" "hb-share-0123456789ab" "/host/.data" "/guest/.data")
@@ -160,6 +162,7 @@ everyCommand =
     , launchInstanceCommand "demo-vm" "images:debian/13" sizing "9f3c"
     , startInstanceCommand "demo-vm"
     , stopInstanceCommand "demo-vm"
+    , restartInstanceCommand "demo-vm"
     , attachShareDeviceCommand "demo-vm" "hb-share-0123456789ab" "/host/.data" "/guest/.data"
     ]
         <> either (const []) pure (deleteInstanceCommand "demo-" "demo-vm")

@@ -1,23 +1,9 @@
-# Production kind/nvkind config for in-cluster accelerator-daemon lanes.
-# Public demo/registry/MinIO ports remain reachable from the provider host, but
-# accelerator ingress has no host mapping: the daemon dials its ClusterIP.
+# Production kind config for in-cluster accelerator-daemon lanes. Runtime-owned
+# relays provide any required local endpoint after cluster reconciliation.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
-    extraPortMappings:
-      - containerPort: 30500
-        hostPort: 30500
-        listenAddress: "0.0.0.0"
-        protocol: TCP
-      - containerPort: 30080
-        hostPort: 30080
-        listenAddress: "0.0.0.0"
-        protocol: TCP
-      - containerPort: 30900
-        hostPort: 30900
-        listenAddress: "0.0.0.0"
-        protocol: TCP
     extraMounts:
       - hostPath: /var/tmp/hostbootstrap-demo-data
         containerPath: /var/lib/hostbootstrap-demo-data

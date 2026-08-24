@@ -102,13 +102,12 @@ declares one `control-plane` node; the explicit `nvkind` plan declares `control-
 whose CPU, memory, or storage cannot give every node a positive share. Native CPU/GPU runtime gates and
 dated evidence belong in the development plan. Bare-Linux storage remains uncordoned at runtime.
 
-That all-node split is not proof that the parent-to-cluster partition is valid. The current demo-local
-`clusterSliceOfBudget` uses `max` floors; below the full-lifecycle root floor it can return CPU equal to
-the parent and memory/storage larger than the parent. The ordinary root gate masks those inputs, and
-opaque `Resources` now prevents bypass through direct construction, but the live path still does not
-consume the exact generic `ResourceSlice`. That value can be eliminated only from a `BudgetPartition`
-proving positivity, provider/node minima, and
-`sum concurrent slices + explicit overhead <= EffectiveBudget`.
+The cluster action no longer calculates a second descriptive slice. It authenticates the canonical
+project configuration against the digest retained by its admitted `StepExecution`, validates that exact
+resource envelope as a `ResourceBudget`, and attaches it to the executing planned cluster through
+`withActionResourceSlice`. The resulting opaque `ResourceSlice` carries the plan's actual resource and
+frame indices into cluster ownership and cordon rendering; no caller supplies a parallel name, frame, or
+quantity record.
 
 On direct Apple Docker paths, `HostBootstrap.Ensure.Colima` is deliberately not a config-free reconciler and
 does not appear in `allReconcilers`. Its exact prepared boundary consumes the plan/provider/topology plus the

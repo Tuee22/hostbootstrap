@@ -5,7 +5,7 @@
 **Referenced by**: [documents index](../README.md), [composition methodology](composition_methodology.md), [testing](../engineering/testing.md), [durable state](durable_state.md), [lifecycle state model](lifecycle_state_model.md)
 
 > **Purpose**: Describe the implemented exact-plan test runner, including its command gate,
-> assertion-only suite, owned generated artifacts, terminal close, and remaining same-run restart gap.
+> assertion-only suite, owned generated artifacts, fresh same-run restart, and terminal close.
 
 ## TL;DR
 
@@ -13,10 +13,8 @@ The lifecycle root now gives every Harness acquisition a sealed generative run i
 mode, root, and unbound-lease evidence; its protected profile opener can enter exactly once. Each selected
 variant owns its generated config, admits one exact Harness-scoped project plan, and drives that plan's
 hidden fixed root-Up entry plus exact reverse action. The entry alone reaches the lower Chain. `TestSuite`
-is assertion-only, and the lifecycle constructor is confined to a private Cabal component. The parser still
-does not enforce the documented root gate,
-complete resource-indexed ownership remains downstream work, and the configured durable-readback case is
-honestly red until the engine owns a fresh same-run lifecycle invocation for destroy→up.
+is assertion-only, and the lifecycle constructor is confined to a private Cabal component. A case may
+declaratively span a settled destroy and fresh invocation generation without receiving lifecycle authority.
 
 The [test-harness-and-run-ownership
 phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md) owns this Harness command consumer
@@ -128,7 +126,9 @@ five-field existential `TestSuite` supplies only the safety precondition, assert
 case matrix, per-case assertion, and post-reverse absence assertion. The command-owned `ConfigVariant`
 instead supplies an opaque `HarnessLifecycle` closing over one exact plan's common forward and reverse
 actions. Successful forward interpretation opens the assertion environment and runs the matrix under a
-guaranteed reverse; a non-refusal forward failure runs the same reverse. Only a refusal independently
+guaranteed final reverse. `AssertAcrossRestart` cases alone request an intermediate settled reverse, fresh
+same-run broker generation, exact snapshot/plan rebind, second forward, and `AfterRestart` assertion; their
+two verdicts merge into the same report row. A non-refusal forward failure runs the current reverse. Only a refusal independently
 verified to precede project-resource acquisition takes the no-reverse branch. A late refusal retains its
 refused report classification but still reverses. The demo currently generates two message variants and
 runs the compiled cases for each.
@@ -192,8 +192,9 @@ live matrix loop, reporting, safety probes, and owned-artifact bracket.
 
 The harness owns a self-created `.test_data/<runId>` generation, and the generated demo config carries
 `HarnessRun <runId>`. Demo lifecycle actions currently consume that config-derived profile independently,
-so cluster name, removable state, host-port policy, durable setup, and nested mounts select the run-scoped
-test identity rather than the Production name or `.data`. The
+so cluster name, removable state, semantic exposure intent, durable setup, and nested mounts select the
+run-scoped test identity rather than the Production name or `.data`; selected host ports remain runtime
+results owned by that run. The
 [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) makes those consumers take one retained
 plan-owned profile/root projection instead of rereading independent terms.
 
@@ -379,22 +380,23 @@ creates the exact reacquisition origin and atomically revalidates it with the ne
 membership. Provider reachability can therefore precede retained-child teardown without trusting raw
 persisted receipts, recreating the old normal config, or granting `ProjectUp` authority.
 
-The current self-reference lift is used only by plan-declared child descent and streams the
+The self-reference lift is used only by plan-declared child descent and streams the
 context-adjusted full config record. The standalone authenticated root-scope and recovery-package primitives,
 their Offer/Relay/Receiver adoption, and the bounded keyless rooted request/response route are implemented.
 The generic Harness scope-capsule producer is adopted at the direct Harness root lifecycle's single command
-call site. The storeless executor remains incomplete, so complete cross-process recursive scope remains open.
-No child authority-store rehydration is part of the target.
+call site. The storeless child executor verifies the complete binding, derives the exact Production or
+`harness:<run-id>` profile from it, and executes callback-backed local release plus core-managed retained
+cluster release. A callback-free non-core node remains foreign-retained. No child authority-store rehydration
+is part of this path.
 The full child protocol is specified in
 [lifecycle state model](lifecycle_state_model.md#cross-process-authority-handoff).
 
 ## Teardown
 
-The current root command runs the verb's reverse projection of the one plan: current-frame cluster
-cleanup plus the reverse each acquiring node declared.
-It does not recursively dispatch `project down`/`project destroy` through the child frames before
-unwinding. Deleting a provider VM can remove the nested compute incidentally, but that is not recursive
-lifecycle interpretation and cannot establish that child cleanup ran.
+The root command runs the verb's reverse projection of the one plan child-first. Each reachable child receives
+one authenticated storeless reverse handoff, releases its exact retained cluster and declared local resources,
+and settles before its owning parent provider is stopped or deleted. Provider deletion is therefore the final
+owned parent action, not a substitute for child cleanup.
 
 The Harness reverse action drives that projection from the exact retained plan/current-frame pair and
 returns `DestroySettled`. It independently verifies all ordinary sessions Closed and uses
@@ -407,18 +409,16 @@ cleanup it consumes the control exactly once and calls the trusted finalizer onl
 authorization. Binding-in-progress and Closing-pending states fail closed. A genuinely pre-effect bound
 run instead takes the separate verified no-project-resources short-close path.
 
-The plan's preserved `.test_data/<runId>` root makes a same-run durability check conceptually possible,
-but the current lifecycle cursor is terminal at `Teardown` and has no fresh invocation generation for a
-second `up`. Consequently the configured `durable-readback` assertion performs no lifecycle command and
-returns an honest `Fail`. Completion in the
-[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) requires an engine-owned declarative two-phase
-assertion: write, nonterminal settled destroy, allocate a fresh same-run lifecycle invocation, exact
-forward interpretation, read, then a final settled destroy whose current-version evidence alone may
-authorize terminal close. Adding raw lifecycle IO to `TestSuite` is not that protocol.
+The plan's preserved `.test_data/<runId>` root supports the same-run durability check. After the intermediate
+destroy settles and every session is Closed, `withFreshHarnessInvocation` advances the held Harness mode and
+bound lease to a strictly fresh broker generation, rearms the lifecycle-profile slot and terminal fallback,
+and re-admits the identical canonical plan snapshot under fresh local indices. Released stable resource
+members admit only a canonical owned successor at a strictly greater ownership generation. The final destroy's
+current-generation evidence alone authorizes terminal close. No raw lifecycle IO enters `TestSuite`.
 
-The recursive target still descends into each reachable child, tears it down, and only then stops or
-deletes the parent. Independent failures are aggregated, and destructive actions consume ownership
-receipts. The complete close/recovery algebra is described in
+Recursive reverse descends into each reachable child, tears it down, and only then stops or deletes the
+parent. Independent failures are aggregated, and destructive actions consume ownership receipts. The complete
+close/recovery algebra is described in
 [lifecycle_state_model](lifecycle_state_model.md).
 
 ## Validation
@@ -429,8 +429,9 @@ two-thread races in which exactly one continuation runs. Public compile-fail fix
 sealing, nominal run/mode indices, cross-run and cross-scope refusal, exact snapshot/digest binding, and
 the complete Production/Harness profile evidence sets. Harness/CLI tests also pin exact plan retention,
 forward→assertion→reverse ordering, generated-config lifetime, settled-evidence-required close, and the
-private lifecycle component's absence from the public library. A source guard rejects lifecycle-owned
-`project up`/`project destroy` invocation from the demo assertion suite. The remaining workflow gates are:
+private lifecycle component's absence from the public library. A command-level fixture proves the protected
+generation rotation and exact snapshot rebind, and a source guard rejects lifecycle-owned `project up` or
+`project destroy` invocation from the demo assertion suite. The workflow validation surface is:
 
 - A command-level test proves an off-root invocation is refused before reading or writing lifecycle
   state.
@@ -493,7 +494,7 @@ refusal can take the short close; anything after binding remains available to th
 
 ## Related
 
-- [durable state](durable_state.md) — the preserved run root and remaining destroy/up/readback proof.
+- [durable state](durable_state.md) — the preserved run root and destroy/up/readback proof.
 - [lifecycle state model](lifecycle_state_model.md) — capability and ownership target.
 - [testing](../engineering/testing.md) — fast unit-suite entry points and long demo-gate scope.
 - [composition methodology](composition_methodology.md) — the project chain the harness drives.

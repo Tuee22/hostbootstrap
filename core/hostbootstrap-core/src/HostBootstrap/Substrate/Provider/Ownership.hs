@@ -66,6 +66,7 @@ module HostBootstrap.Substrate.Provider.Ownership (
     readyOwnedInstance,
     stopOwnedInstance,
     deleteOwnedInstance,
+    deleteRetainedOwnedInstance,
     attachOwnedShare,
     execInOwnedInstance,
 
@@ -76,6 +77,7 @@ where
 
 import Crypto.Hash (Digest, SHA256, hash)
 import Data.ByteArray.Encoding (Base (Base16), convertToBase)
+import Data.ByteString (ByteString)
 import Data.List (sort)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -123,7 +125,6 @@ import HostBootstrap.Ownership.Primitive (
     releaseReportedObject,
     reobserveReportedIdentity,
  )
-import Data.ByteString (ByteString)
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
     ProtectedError,
@@ -149,6 +150,7 @@ import HostBootstrap.Substrate.Provider.Command (
     providerOwnerConfigKey,
     readInstanceConfigCommand,
     readShareDeviceCommand,
+    restartInstanceCommand,
     startInstanceCommand,
     stopInstanceCommand,
  )
@@ -540,11 +542,10 @@ unlistedOwnedInstance owned =
             )
         )
 
-
 -- ---------------------------------------------------------------------------
 -- Stopping
 
-{- | What stopping observed. -}
+-- | What stopping observed.
 data ProviderStopOutcome
     = -- | the instance was running and this entry stopped it
       StopStopped ObjectIdentity
@@ -591,7 +592,7 @@ stopOwnedInstance cfg session key owned = do
 -- ---------------------------------------------------------------------------
 -- Deleting
 
-{- | What deleting observed. -}
+-- | What deleting observed.
 data ProviderDeleteOutcome
     = -- | the instance and every record of it are gone, and this entry did it
       DeleteRemoved
@@ -633,6 +634,56 @@ deleteOwnedInstance cfg session key owned = do
                 Just ProviderRunning -> pure (Right DeleteStillPresent)
                 Just ProviderStopped ->
                     withBoundInstance session key owned identity $ \bound ->
+                        case reobserveReportedIdentity bound (OriginPresent identity) of
+                            Left fault -> pure (Left (ProviderOwnershipClause fault))
+                            Right releasable -> removeInstance cfg session key owned identity releasable
+
+{- | Delete the instance named by the exact retained provider record.
+
+Reverse interpretation does not possess a forward action's lexical managed
+handle, but it does possess the provider store whose record is the durable
+clause-2/3 authority.  Re-enter that record, derive its claim rather than
+accepting one from the caller, and mint the clause tokens again before the
+identity-conditional removal.  A running instance is stopped only after the
+record, reported identity, and provider claim agree, then re-observed before
+delete.  This is the reverse counterpart of 'provisionOwnedInstance'; it never
+deletes a same-named instance for which the retained record does not answer.
+-}
+deleteRetainedOwnedInstance ::
+    HostConfig ->
+    ProtectedSession session ->
+    RecordKey ->
+    OwnedProviderInstance ->
+    IO (Either ProviderOwnershipFault ProviderDeleteOutcome)
+deleteRetainedOwnedInstance cfg session key owned = do
+    entered <- standingOf cfg session key owned
+    case entered of
+        Left fault -> pure (Left fault)
+        Right (NothingDone, _) -> pure (Right DeleteAlreadyRemoved)
+        Right (OriginRecorded _, _) -> forgetUnboundRecord session key
+        Right (InstanceCreated _ _, _) -> pure (Left (notYetOwned owned))
+        Right (InstanceOwned claim identity, observation) -> do
+            stopped <- case fmap listedState (observedListing observation) of
+                Nothing -> pure (Left (unlistedOwnedInstance owned))
+                Just ProviderStopped -> pure (Right ())
+                Just ProviderRunning -> do
+                    result <- interpret cfg (stopInstanceCommand (ownedInstanceName owned))
+                    case classifyProviderReport providerReportLineBound result of
+                        Left fault -> pure (Left (ProviderOwnershipReport fault))
+                        Right _ -> do
+                            after <- standingOf cfg session key owned
+                            pure $ case after of
+                                Left fault -> Left fault
+                                Right (InstanceOwned _ observedIdentity, observedState)
+                                    | observedIdentity /= identity ->
+                                        Left (ProviderOwnershipStanding (InstanceReplaced identity observedIdentity))
+                                    | fmap listedState (observedListing observedState) == Just ProviderStopped -> Right ()
+                                    | otherwise -> Left (ProviderOwnershipClause (OwnershipProbeFailed "stop the retained provider instance" "the provider remained running"))
+                                Right _ -> Left (notYetOwned owned)
+            case stopped of
+                Left fault -> pure (Left fault)
+                Right () ->
+                    withBoundInstanceClaim session key owned claim identity $ \bound ->
                         case reobserveReportedIdentity bound (OriginPresent identity) of
                             Left fault -> pure (Left (ProviderOwnershipClause fault))
                             Right releasable -> removeInstance cfg session key owned identity releasable
@@ -737,7 +788,7 @@ shareRecordKeyText owned device = ownedInstanceName owned <> "." <> device
 ownedShareClaim :: OwnedProviderShare -> OwnerClaim
 ownedShareClaim = mkOwnerClaim . TextEncoding.encodeUtf8 . ownedShareOwner
 
-{- | What attaching observed. -}
+-- | What attaching observed.
 data ProviderShareOutcome
     = -- | this entry attached the device and bound its identity
       ShareAttached
@@ -795,7 +846,14 @@ attachOwnedShare cfg session shareKey share = do
                                                 key
                                                 instanceIdentity
                                                 share
-                                                (bindShare session shareKey recorded identity ShareRepaired)
+                                                ( restartShareThenBind
+                                                    cfg
+                                                    session
+                                                    key
+                                                    instanceIdentity
+                                                    share
+                                                    (bindShare session shareKey recorded identity ShareRepaired)
+                                                )
                                     ShareDeviceOwned _ -> pure (Right ShareAlreadyAttached)
   where
     owned = ownedShareInstance share
@@ -833,7 +891,56 @@ attachThenBind cfg session instanceKey instanceIdentity shareKey share =
                             instanceKey
                             instanceIdentity
                             share
-                            (bindShare session shareKey recorded identity ShareAttached)
+                            ( restartShareThenBind
+                                cfg
+                                session
+                                instanceKey
+                                instanceIdentity
+                                share
+                                (bindShare session shareKey recorded identity ShareAttached)
+                            )
+
+{- | Activate an attached Incus VM disk before binding its ownership record.
+
+The provider may accept @config device add@ while the running guest still sees
+the underlying directory at the declared target.  A forced restart is therefore
+part of the share's clause-3 publication: it runs only after the exact device
+has been re-observed, and the instance identity and Running state are rechecked
+before the share record can bind.  Recovery from a lost restart answer repeats
+this idempotent boot boundary while the record remains unbound.
+-}
+restartShareThenBind ::
+    HostConfig ->
+    ProtectedSession session ->
+    RecordKey ->
+    ObjectIdentity ->
+    OwnedProviderShare ->
+    IO (Either ProviderOwnershipFault ProviderShareOutcome) ->
+    IO (Either ProviderOwnershipFault ProviderShareOutcome)
+restartShareThenBind cfg session instanceKey expected share continue = do
+    restarted <- interpret cfg (restartInstanceCommand (ownedInstanceName owned))
+    case classifyProviderReport providerReportLineBound restarted of
+        Left fault -> pure (Left (ProviderOwnershipReport fault))
+        Right _ -> do
+            standing <- ownedStanding cfg session instanceKey owned
+            case standing of
+                Left fault -> pure (Left fault)
+                Right (observed, report)
+                    | observed /= expected ->
+                        pure (Left (replacedUnderShareAttachment expected observed))
+                    | fmap listedState (observedListing report) == Just ProviderRunning -> continue
+                    | otherwise ->
+                        pure
+                            ( Left
+                                ( ProviderOwnershipClause
+                                    ( OwnershipProbeFailed
+                                        "activate the provider share device"
+                                        "the provider accepted the restart but the owned instance is not running"
+                                    )
+                                )
+                            )
+  where
+    owned = ownedShareInstance share
 
 {- | Bind the share only while the instance it hangs in is still the entered one.
 
@@ -1151,7 +1258,21 @@ withBoundInstance ::
     ) ->
     IO (Either ProviderOwnershipFault result)
 withBoundInstance session key owned identity continue =
-    withRecordedOrigin session key owned $ \recorded -> do
+    withBoundInstanceClaim session key owned (ownedInstanceClaim owned) identity continue
+
+withBoundInstanceClaim ::
+    ProtectedSession session ->
+    RecordKey ->
+    OwnedProviderInstance ->
+    OwnerClaim ->
+    ObjectIdentity ->
+    ( forall object.
+      Bound session object ->
+      IO (Either ProviderOwnershipFault result)
+    ) ->
+    IO (Either ProviderOwnershipFault result)
+withBoundInstanceClaim session key owned claim identity continue =
+    withRecordedClaim session key owned claim $ \recorded -> do
         bound <- bindReportedIdentity recorded identity (publishBoundRecord session key)
         case collapseFault bound of
             Left fault -> pure (Left fault)
@@ -1224,17 +1345,30 @@ withRecordedOrigin ::
     ) ->
     IO (Either ProviderOwnershipFault result)
 withRecordedOrigin session key owned continue = do
+    withRecordedClaim session key owned (ownedInstanceClaim owned) continue
+
+withRecordedClaim ::
+    ProtectedSession session ->
+    RecordKey ->
+    OwnedProviderInstance ->
+    OwnerClaim ->
+    ( forall object.
+      Recorded session object ->
+      IO (Either ProviderOwnershipFault result)
+    ) ->
+    IO (Either ProviderOwnershipFault result)
+withRecordedClaim session key owned claim continue = do
     outcome <-
         enterReportedObject session (ownedInstanceName owned) OriginAbsent $ \entered -> do
             recorded <-
                 recordReportedOrigin
                     entered
-                    (ReportedObject (ownedInstanceClaim owned))
+                    (ReportedObject claim)
                     (publishFreshRecord session key)
             traverse continue recorded
     pure (collapseClause outcome)
 
-{- | Bind clause 3's identity and answer with the outcome that describes it. -}
+-- | Bind clause 3's identity and answer with the outcome that describes it.
 bindIdentity ::
     ProtectedSession session ->
     RecordKey ->

@@ -22,6 +22,28 @@ shape from returning.
 
 ## Ownership and reservations
 
+### A free-port probe is not a port allocation
+
+Selecting a conventional host port in source or Dhall makes independent project/run owners contend for one
+global name. Replacing that number with a scan for an unused port does not repair the ownership problem: the
+probe must close its socket before another launcher binds the candidate, and any process may take it in that
+gap. A launcher that interprets zero by performing the same probe has the same race even if its configuration
+looks dynamic.
+
+The process that retains the binding must choose the number. The cluster backend therefore asks the container
+runtime to publish an owned relay listener on loopback without a host-side number; runtime creation binds the
+port atomically, and exact inspection turns the resulting mapping into a plan-/cluster-/service-indexed
+resolved exposure. Dhall describes semantic service targets because those are replayable intent. The selected
+host port is an observed fact tied to a live resource and belongs in authenticated dependency carriage, not in
+configuration or canonical cluster bytes.
+
+This also keeps stable cluster-internal ports distinct from host publication. A Kubernetes Service or relay
+target may retain a fixed internal port without reserving that number on the provider/host namespace.
+
+*Absence guard:* no production Dhall/Haskell/demo manifest supplies a host-port number; no allocation path
+scans or retries candidates; only authenticated inspection of the identity-bound runtime relay mints a local
+endpoint.
+
 ### The four ownership clauses do not demand a protected namespace
 
 A natural first formulation of resource ownership is "an OS-protected namespace plus an identity-bound

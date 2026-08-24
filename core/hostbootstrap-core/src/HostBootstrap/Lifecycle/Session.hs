@@ -1,5 +1,5 @@
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -103,6 +103,7 @@ module HostBootstrap.Lifecycle.Session (
     rootedFrameSessionKeyKernel,
     openRootedFrameSessionRecordKernel,
     attachRootedFrameSessionRecordKernel,
+    cancelOpenedRootedFrameSessionRecordKernel,
     rootedNodeUnknownKeyKernel,
     rootedSettlementKeyKernel,
     publishRootedUnknownRowKernel,
@@ -228,6 +229,10 @@ import HostBootstrap.Lifecycle.Execution (
     stepExecutionOperationKey,
     stepExecutionPlanDigest,
  )
+import HostBootstrap.Lifecycle.Plan (
+    AcquisitionJournalAdmission,
+    consumeAcquisitionJournalAdmissionKernel,
+ )
 import HostBootstrap.Lifecycle.Prepared (
     PreparedGate,
     decodeFields,
@@ -242,9 +247,14 @@ import HostBootstrap.Lifecycle.Prepared (
 import HostBootstrap.Lifecycle.Prepared.Internal (
     mintPreparedGate,
  )
-import HostBootstrap.Lifecycle.Plan (
-    AcquisitionJournalAdmission,
-    consumeAcquisitionJournalAdmissionKernel,
+import HostBootstrap.Lifecycle.ResourceRecord (
+    RehydratedOwnershipReceipt,
+    RehydratedReleasedTombstone,
+    RehydratedResourceHandle,
+    RehydratedResourceSet,
+    VerifiedResourceRecordSet,
+    foldRehydratedResourceSetKernel,
+    rehydrateResourceRecordSetKernel,
  )
 import HostBootstrap.Lifecycle.Transaction (
     TransactionError (..),
@@ -267,15 +277,6 @@ import HostBootstrap.ProjectPlan.Frame (
     ProjectFrame,
     projectFrameId,
  )
-import HostBootstrap.Lifecycle.ResourceRecord
-    ( RehydratedOwnershipReceipt
-    , RehydratedReleasedTombstone
-    , RehydratedResourceHandle
-    , RehydratedResourceSet
-    , VerifiedResourceRecordSet
-    , foldRehydratedResourceSetKernel
-    , rehydrateResourceRecordSetKernel
-    )
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
     ProtectedError,
@@ -284,7 +285,7 @@ import HostBootstrap.Protected (
     ProtectedStore,
     RecordKey,
     RecordVersion,
-    recordKeyText,
+    compareAndDeleteProtectedRecord,
     compareAndSwapProtectedRecord,
     listProtectedRecords,
     mkRecordKey,
@@ -293,6 +294,7 @@ import HostBootstrap.Protected (
     protectedStoreIdentity,
     protectedStoreIdentityText,
     readProtectedRecord,
+    recordKeyText,
     recordNameIdentity,
     recordVersionWord,
     sessionStoreIdentity,
@@ -332,9 +334,10 @@ closed underneath it, because both contend on the same record version.
 -}
 data ProjectJournalState
     = OpenProject
-    | -- | Terminal close is under way, under this exact epoch. A run that
-      -- crashed here resumes /this/ close rather than reopening work, so the
-      -- epoch is part of the state and not a separate flag.
+    | {- | Terminal close is under way, under this exact epoch. A run that
+      crashed here resumes /this/ close rather than reopening work, so the
+      epoch is part of the state and not a separate flag.
+      -}
       ClosingProject Word64
     | ClosedProject
     deriving (Eq, Show)
@@ -364,6 +367,7 @@ data AcquisitionJournalBinding = AcquisitionJournalBinding
 
 -- The existential closed 'LifecyclePhase' retained below is intentionally
 -- separate from 'ProjectJournalState'. Fresh acquisition starts at 'Prepare'.
+
 {- | One exact local view of the durable acquisition journal.
 
 The constructor is hidden and all three indices are nominal.  The retained
@@ -475,12 +479,12 @@ validateAcquisitionJournalBindingKernel
         require "specification digest" specDigest (acquisitionBindingSpecDigest binding)
         require "lease plan digest" leasePlanDigest (acquisitionBindingLeasePlanDigest binding)
         requireWord "broker epoch" brokerEpoch (acquisitionBindingBrokerEpoch binding)
-  where
-    require field expected observed
-        | expected == observed = Right ()
-        | otherwise = Left (SessionAcquisitionBindingMismatch field expected observed)
-    requireWord field expected observed =
-        require field (showWord expected) (showWord observed)
+      where
+        require field expected observed
+            | expected == observed = Right ()
+            | otherwise = Left (SessionAcquisitionBindingMismatch field expected observed)
+        requireWord field expected observed =
+            require field (showWord expected) (showWord observed)
 
 {- | Eliminate the exact closed lifecycle seed decoded from the protected
 acquisition record.
@@ -667,11 +671,28 @@ reopenExistingAcquisitionCursorKernel ::
             SessionError
             ( AcquisitionJournal scope planId brokerGeneration
             , LifecycleCursor
-                scope planId frame brokerGeneration VerbUp phase
+                scope
+                planId
+                frame
+                brokerGeneration
+                VerbUp
+                phase
             )
         )
 reopenExistingAcquisitionCursorKernel
-    admission store session validateLive stableScope project storeId snapshot run spec epoch frame phase =
+    admission
+    store
+    session
+    validateLive
+    stableScope
+    project
+    storeId
+    snapshot
+    run
+    spec
+    epoch
+    frame
+    phase =
         case consumeAcquisitionJournalAdmissionKernel admission of
             () -> do
                 reopened <-
@@ -733,8 +754,18 @@ reopenExistingReverseAcquisitionJournalKernel admission =
         () -> \store session validateLive stableScope project storeId snapshot run spec epoch frame verb ->
             let reopen verbName =
                     reopenExistingAcquisitionJournalInEntry
-                        store session validateLive stableScope project storeId snapshot
-                        run spec epoch verbName (Just ("prepare", 1))
+                        store
+                        session
+                        validateLive
+                        stableScope
+                        project
+                        storeId
+                        snapshot
+                        run
+                        spec
+                        epoch
+                        verbName
+                        (Just ("prepare", 1))
              in case verb of
                     ProjectUp -> pure (Left (SessionCursorVerbMismatch "down or destroy" "up"))
                     ProjectDown -> do
@@ -764,7 +795,18 @@ reopenExistingAcquisitionJournalInEntry ::
     Maybe (Text, Word64) ->
     IO (Either SessionError (AcquisitionJournal scope planId brokerGeneration))
 reopenExistingAcquisitionJournalInEntry
-    store session validateLive stableScope project storeId snapshot run spec epoch verbName required
+    store
+    session
+    validateLive
+    stableScope
+    project
+    storeId
+    snapshot
+    run
+    spec
+    epoch
+    verbName
+    required
         | storeId /= storeIdentity = mismatch "protected store" storeId storeIdentity
         | storeId /= sessionIdentity =
             mismatch "protected session store" storeId sessionIdentity
@@ -805,7 +847,8 @@ reopenExistingAcquisitionJournalInEntry
                         | otherwise -> do
                             let check :: forall liveSession. ProtectedSession liveSession -> IO (Either SessionError ())
                                 check live =
-                                    validateLive live
+                                    validateLive
+                                        live
                                         (acquisitionBindingLeaseRecord binding)
                                         (acquisitionBindingLeaseVersion binding)
                             valid <- check session
@@ -824,10 +867,17 @@ reopenExistingAcquisitionJournalInEntry
                     _ -> pure (Left (SessionRecordCorrupt "acquisition journal"))
         expectedBinding binding =
             AcquisitionJournalBinding
-                stableScope project storeId snapshot
+                stableScope
+                project
+                storeId
+                snapshot
                 (acquisitionBindingLeaseRecord binding)
                 (acquisitionBindingLeaseVersion binding)
-                run spec snapshot epoch verbName
+                run
+                spec
+                snapshot
+                epoch
+                verbName
 
 requireChildCursorPresence ::
     ProtectedSession session ->
@@ -899,12 +949,12 @@ encodeAcquisitionRecord binding phase =
 decodeAcquisitionRecord :: ByteString -> Maybe (AcquisitionJournalBinding, SomeLifecyclePhase)
 decodeAcquisitionRecord raw = case decodeFields raw of
     [schema, scope, project, storeId, snapshot, leaseKey, leaseVersion, run, spec, leasePlan, epoch, verb, phase]
-            | schema == acquisitionSchema -> do
-                version <- readPositiveWord leaseVersion
-                generation <- readPositiveWord epoch
-                parsedPhase <- parseAcquisitionPhase phase
-                let binding = AcquisitionJournalBinding scope project storeId snapshot leaseKey version run spec leasePlan generation verb
-                if validAcquisitionBinding binding then Just (binding, parsedPhase) else Nothing
+        | schema == acquisitionSchema -> do
+            version <- readPositiveWord leaseVersion
+            generation <- readPositiveWord epoch
+            parsedPhase <- parseAcquisitionPhase phase
+            let binding = AcquisitionJournalBinding scope project storeId snapshot leaseKey version run spec leasePlan generation verb
+            if validAcquisitionBinding binding then Just (binding, parsedPhase) else Nothing
     _ -> Nothing
 
 validAcquisitionBinding :: AcquisitionJournalBinding -> Bool
@@ -916,10 +966,14 @@ validAcquisitionBinding binding =
         && all (not . Text.null) textFields
   where
     textFields =
-        [ acquisitionBindingStableScope binding, acquisitionBindingProject binding
-        , acquisitionBindingStore binding, acquisitionBindingSnapshotDigest binding
-        , acquisitionBindingLeaseRecord binding, acquisitionBindingRun binding
-        , acquisitionBindingSpecDigest binding, acquisitionBindingLeasePlanDigest binding
+        [ acquisitionBindingStableScope binding
+        , acquisitionBindingProject binding
+        , acquisitionBindingStore binding
+        , acquisitionBindingSnapshotDigest binding
+        , acquisitionBindingLeaseRecord binding
+        , acquisitionBindingRun binding
+        , acquisitionBindingSpecDigest binding
+        , acquisitionBindingLeasePlanDigest binding
         ]
 
 isAcquisitionRootVerb :: Text -> Bool
@@ -1177,12 +1231,12 @@ withReverseRootTargetLifecycleCursorKernel admission =
                     Teardown -> refuseAcquisition "seed phase" "prepare" "teardown"
                 refuseAcquisition field expected observed = pure (Left (SessionAcquisitionBindingMismatch field expected observed))
              in case verb of
-                ProjectUp -> pure (Left (SessionCursorVerbMismatch "down or destroy" "up"))
-                ProjectDown -> advance
-                ProjectDestroy -> advance
+                    ProjectUp -> pure (Left (SessionCursorVerbMismatch "down or destroy" "up"))
+                    ProjectDown -> advance
+                    ProjectDestroy -> advance
   where
-    checkedVersion expected cursor
-        = cursor
+    checkedVersion expected cursor =
+        cursor
             <$ requireCursorBindingWord
                 "reverse root target cursor version"
                 expected
@@ -1330,32 +1384,31 @@ reserveCurrentLifecycleCommandKernel
         pure $ case entered of
             Left failure -> Left (AuthorityStoreFailure failure)
             Right outcome -> outcome
-  where
-    reserveInEntry ::
-        forall session.
-        ProtectedSession session ->
-        IO
-            ( Either
-                AuthorityError
-                (CommandAuthority scope planId frame brokerGeneration verb phase)
-            )
-    reserveInEntry session = do
-        live <- validateLive session
-        case live of
-            Left failure -> pure (Left (sessionAuthorityFailure failure))
-            Right () -> case validateJournalCursorSource journal cursor of
+      where
+        reserveInEntry ::
+            forall session.
+            ProtectedSession session ->
+            IO
+                ( Either
+                    AuthorityError
+                    (CommandAuthority scope planId frame brokerGeneration verb phase)
+                )
+        reserveInEntry session = do
+            live <- validateLive session
+            case live of
                 Left failure -> pure (Left (sessionAuthorityFailure failure))
-                Right () -> do
-                    source <- requireExactCursorSource session (cursorBinding cursor)
-                    case source of
-                        Left failure -> pure (Left (sessionAuthorityFailure failure))
-                        Right () -> do
-                            current <- requireExactCurrentLifecycleCursor session cursor
-                            case current of
-                                Left failure -> pure (Left (sessionAuthorityFailure failure))
-                                Right () ->
-                                    case
-                                        withInstalledProjectKernel
+                Right () -> case validateJournalCursorSource journal cursor of
+                    Left failure -> pure (Left (sessionAuthorityFailure failure))
+                    Right () -> do
+                        source <- requireExactCursorSource session (cursorBinding cursor)
+                        case source of
+                            Left failure -> pure (Left (sessionAuthorityFailure failure))
+                            Right () -> do
+                                current <- requireExactCurrentLifecycleCursor session cursor
+                                case current of
+                                    Left failure -> pure (Left (sessionAuthorityFailure failure))
+                                    Right () ->
+                                        case withInstalledProjectKernel
                                             (acquisitionBindingProject binding)
                                             ( \project ->
                                                 reserveCommandInvocationKernel
@@ -1363,10 +1416,9 @@ reserveCurrentLifecycleCommandKernel
                                                     project
                                                     reservation
                                                     (pure . Right)
-                                            )
-                                    of
-                                        Left failure -> pure (Left failure)
-                                        Right reserve -> reserve
+                                            ) of
+                                            Left failure -> pure (Left failure)
+                                            Right reserve -> reserve
 
 cursorBinding ::
     LifecycleCursor scope planId frame brokerGeneration verb phase ->
@@ -1550,8 +1602,8 @@ openLifecycleCursorInEntry
             Left failure -> Left failure
             Right
                 ( SomeLifecycleCursor
-                    recordedPhase
-                    (LifecycleCursor store key version bytes binding recordedVerb _)
+                        recordedPhase
+                        (LifecycleCursor store key version bytes binding recordedVerb _)
                     )
                     | lifecyclePhaseName recordedPhase
                         /= lifecyclePhaseName requestedPhase ->
@@ -1744,15 +1796,15 @@ validateLifecycleCursorRequest
             > maxLifecycleCursorPayloadBytes =
             Left (SessionCursorBindingInvalid "payload length")
         | otherwise = () <$ lifecycleCursorKey binding
-  where
-    binding = lifecycleCursorBinding sourceKey sourceVersion sourceBinding sourcePhase frame
-    frameName = cursorBindingFrame binding
-    frameBytes = TextEncoding.encodeUtf8 frameName
-    phasePayloads =
-        [ encodeLifecycleCursorRecord binding Prepare
-        , encodeLifecycleCursorRecord binding Execute
-        , encodeLifecycleCursorRecord binding Teardown
-        ]
+      where
+        binding = lifecycleCursorBinding sourceKey sourceVersion sourceBinding sourcePhase frame
+        frameName = cursorBindingFrame binding
+        frameBytes = TextEncoding.encodeUtf8 frameName
+        phasePayloads =
+            [ encodeLifecycleCursorRecord binding Prepare
+            , encodeLifecycleCursorRecord binding Execute
+            , encodeLifecycleCursorRecord binding Teardown
+            ]
 
 advanceLifecycleCursorInEntry ::
     ProtectedSession session ->
@@ -1971,26 +2023,28 @@ decodeLifecycleCursorRecord raw
         case fields of
             [schemaRaw, sourceKeyRaw, sourceVersionRaw, sourceBytes, frameRaw, verbRaw, phaseRaw] -> do
                 schema <- decodeCursorText schemaRaw
-                if schema /= lifecycleCursorSchema then Nothing else do
-                    sourceKeyText <- decodeCursorText sourceKeyRaw
-                    sourceKey <- either (const Nothing) Just (mkRecordKey sourceKeyText)
-                    sourceVersionText <- decodeCursorText sourceVersionRaw
-                    sourceVersionWord <- readPositiveWord sourceVersionText
-                    frame <- decodeCursorText frameRaw
-                    verb <- decodeCursorText verbRaw
-                    phaseText <- decodeCursorText phaseRaw
-                    phase <- parseAcquisitionPhase phaseText
-                    let binding =
-                            LifecycleCursorBinding
-                                { cursorBindingAcquisitionKey = sourceKey
-                                , cursorBindingAcquisitionVersion = sourceVersionWord
-                                , cursorBindingAcquisitionBytes = sourceBytes
-                                , cursorBindingFrame = frame
-                                , cursorBindingVerb = verb
-                                }
-                    if validLifecycleCursorBinding binding
-                        then Just (binding, phase)
-                        else Nothing
+                if schema /= lifecycleCursorSchema
+                    then Nothing
+                    else do
+                        sourceKeyText <- decodeCursorText sourceKeyRaw
+                        sourceKey <- either (const Nothing) Just (mkRecordKey sourceKeyText)
+                        sourceVersionText <- decodeCursorText sourceVersionRaw
+                        sourceVersionWord <- readPositiveWord sourceVersionText
+                        frame <- decodeCursorText frameRaw
+                        verb <- decodeCursorText verbRaw
+                        phaseText <- decodeCursorText phaseRaw
+                        phase <- parseAcquisitionPhase phaseText
+                        let binding =
+                                LifecycleCursorBinding
+                                    { cursorBindingAcquisitionKey = sourceKey
+                                    , cursorBindingAcquisitionVersion = sourceVersionWord
+                                    , cursorBindingAcquisitionBytes = sourceBytes
+                                    , cursorBindingFrame = frame
+                                    , cursorBindingVerb = verb
+                                    }
+                        if validLifecycleCursorBinding binding
+                            then Just (binding, phase)
+                            else Nothing
             _ -> Nothing
 
 validLifecycleCursorBinding :: LifecycleCursorBinding -> Bool
@@ -2316,18 +2370,18 @@ verifyAllSessionsClosed session planDigest = do
             case listed of
                 Left failure -> pure (Left (SessionStoreFailure failure))
                 Right keys -> case sessionKeyPrefixFor planDigest of
-                  Left failure -> pure (Left failure)
-                  Right prefix -> do
-                    let members =
-                            [ SessionId (recordIdentity (Text.drop (Text.length prefix) raw))
-                            | raw <- map recordKeyText keys
-                            , prefix `Text.isPrefixOf` raw
-                            ]
-                    open <- foldM step (Right []) members
-                    pure $ case open of
-                        Left failure -> Left failure
-                        Right (still : _) -> Left (SessionStillOpen still)
-                        Right [] -> Right (VerifiedAllSessionsClosed planDigest (length members))
+                    Left failure -> pure (Left failure)
+                    Right prefix -> do
+                        let members =
+                                [ SessionId (recordIdentity (Text.drop (Text.length prefix) raw))
+                                | raw <- map recordKeyText keys
+                                , prefix `Text.isPrefixOf` raw
+                                ]
+                        open <- foldM step (Right []) members
+                        pure $ case open of
+                            Left failure -> Left failure
+                            Right (still : _) -> Left (SessionStillOpen still)
+                            Right [] -> Right (VerifiedAllSessionsClosed planDigest (length members))
   where
     step (Left failure) _ = pure (Left failure)
     step (Right acc) sid = do
@@ -2557,6 +2611,30 @@ attachRootedFrameSessionRecordKernel session key openedVersion opened attached =
             _ -> Left (SessionRecordCorrupt "rooted frame session attachment readback differs")
     conflict = Left (SessionRecordCorrupt "the rooted frame session row conflicts")
 
+{- | Remove one exact root-opened session which no child ever attached.
+
+This is the failed-Up counterpart of opening: it accepts only the version-1
+bytes the root itself read back. An attached/replaced row, a different version,
+or absence refuses, so cancellation cannot erase evidence of a child exchange.
+-}
+cancelOpenedRootedFrameSessionRecordKernel ::
+    ProtectedSession session ->
+    RecordKey ->
+    RecordVersion ->
+    ByteString ->
+    IO (Either SessionError ())
+cancelOpenedRootedFrameSessionRecordKernel session key openedVersion opened = do
+    observed <- readProtectedRecord session key
+    case observed of
+        Left failure -> pure (Left (SessionStoreFailure failure))
+        Right Nothing -> pure (Left (SessionRecordCorrupt "the rooted frame session row is absent"))
+        Right (Just record)
+            | exactRootedFrameSessionRow 1 opened record
+            , protectedRecordVersion record == openedVersion -> do
+                deleted <- compareAndDeleteProtectedRecord session key (ExpectVersion openedVersion)
+                pure (either (Left . SessionStoreFailure) Right deleted)
+            | otherwise -> pure (Left (SessionRecordCorrupt "only the exact unattached rooted frame session can be cancelled"))
+
 {- | Derive the durable key one rooted node's unknown row is addressed by.
 
 The key is a function of root lineage, catalog identity, frame, and the
@@ -2698,14 +2776,14 @@ openSessionsFor session planDigest = do
     case listed of
         Left failure -> pure (Left (SessionStoreFailure failure))
         Right keys -> case sessionKeyPrefixFor planDigest of
-          Left failure -> pure (Left failure)
-          Right prefix -> do
-            let candidates =
-                    [ SessionId (recordIdentity (Text.drop (Text.length prefix) raw))
-                    | raw <- map recordKeyText keys
-                    , prefix `Text.isPrefixOf` raw
-                    ]
-            foldM step (Right []) candidates
+            Left failure -> pure (Left failure)
+            Right prefix -> do
+                let candidates =
+                        [ SessionId (recordIdentity (Text.drop (Text.length prefix) raw))
+                        | raw <- map recordKeyText keys
+                        , prefix `Text.isPrefixOf` raw
+                        ]
+                foldM step (Right []) candidates
   where
     step (Left failure) _ = pure (Left failure)
     step (Right acc) sid = do
@@ -2987,8 +3065,7 @@ establishInitialFence ::
     ProtectedSession session ->
     Text ->
     -- | the proposed epoch
-    Word64
-    ->
+    Word64 ->
     IO (Either SessionError (FenceEpoch scope planId))
 establishInitialFence session planDigest proposed
     | proposed == 0 = pure (Left (SessionFenceInvalid "a fence epoch must be positive"))
@@ -3128,8 +3205,9 @@ data OperationDisposition
       UnknownDisposition
     | -- | a pre-call phase; may receive current-fence prepare authority
       Continuable
-    | -- | an already-observed phase on the closed retry whitelist; may receive
-      -- fenced same-key retry authority only
+    | {- | an already-observed phase on the closed retry whitelist; may receive
+      fenced same-key retry authority only
+      -}
       FencedRetryable
     | -- | committed work; no further effect authority
       Settled
@@ -3454,15 +3532,15 @@ enumerateOperationRecords session planDigest = do
         (_, Left failure) -> pure (Left failure)
         (Right keys, Right namespace) ->
             foldM step (Right []) [raw | raw <- map recordKeyText keys, namespace `Text.isPrefixOf` raw]
-      where
-        step (Left failure) _ = pure (Left failure)
-        step (Right acc) raw = do
-            observed <- readOperationRecordAt session raw
-            pure $ case observed of
-                Left failure -> Left failure
-                Right Nothing -> Right acc
-                Right (Just (disposition, opKey, sid)) ->
-                    Right ((disposition, opKey, sid) : acc)
+  where
+    step (Left failure) _ = pure (Left failure)
+    step (Right acc) raw = do
+        observed <- readOperationRecordAt session raw
+        pure $ case observed of
+            Left failure -> Left failure
+            Right Nothing -> Right acc
+            Right (Just (disposition, opKey, sid)) ->
+                Right ((disposition, opKey, sid) : acc)
 
 {- | The @op.\<digest\>.@ prefix every one of this plan's operation records sits
 under.
@@ -4255,9 +4333,10 @@ withOperationAdvance (OperationAdvance result permit) use = use result permit
 -- ---------------------------------------------------------------------------
 -- Failures
 
--- | Lifecycle composition failures currently share Session's closed error
--- vocabulary. This preserves the target signature without introducing a
--- second public error data contract.
+{- | Lifecycle composition failures currently share Session's closed error
+vocabulary. This preserves the target signature without introducing a
+second public error data contract.
+-}
 type LifecycleError = SessionError
 
 lifecycleErrorMessage :: LifecycleError -> String

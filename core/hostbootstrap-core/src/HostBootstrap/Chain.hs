@@ -22,7 +22,7 @@ module HostBootstrap.Chain (
 )
 where
 
-import Control.Exception.Safe (throwIO, try)
+import Control.Exception.Safe (throwIO, tryAny)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (intercalate, partition)
 import Data.List.NonEmpty (NonEmpty)
@@ -44,7 +44,6 @@ import HostBootstrap.Authority (
     lifecyclePhaseName,
     projectVerbName,
  )
-import HostBootstrap.Harness (SafetyRefusal (SafetyRefusal))
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Lifecycle.Execution.Internal (
     ResourceCarrier,
@@ -56,6 +55,7 @@ import HostBootstrap.Lifecycle.Execution.Internal (
     readCarriedResources,
     setStepRuntimeOwnGate,
     stepRuntimeCarrier,
+    stepRuntimeOpenGates,
     stepRuntimeTakenGates,
  )
 import HostBootstrap.Lifecycle.Mode (
@@ -66,7 +66,10 @@ import HostBootstrap.Lifecycle.Mode (
     lifecycleCursorVerb,
     validateCurrentLifecycleCursor,
  )
-import HostBootstrap.Lifecycle.ResourceRecord (resourceRecordKeyKernel)
+import HostBootstrap.Lifecycle.ResourceRecord (
+    resourceRecordKeyKernel,
+    verifyReleasedResourceSuccessorKernel,
+ )
 import HostBootstrap.Lifecycle.Session (
     FenceEpoch,
     IntentOrigin (NoHistory),
@@ -107,7 +110,6 @@ import HostBootstrap.ProjectPlan (
     plannedStepObservationSucceeded,
     plannedStepOperationKey,
     plannedStepProjectedOperationKeys,
-    plannedStepRefusalObservation,
     plannedStepRunsAfterHandoff,
     renderSnapshot,
     runPlannedStep,
@@ -449,41 +451,58 @@ runChainFromFrameWithDescentObserved cfg store plan authority cursor runDescent 
             Left failure -> pure (Left failure)
             Right (gate, afterPrepare) -> do
                 onReached (nodeOperationKeys planned)
-                attempted <- try (runPlannedStep planned execution)
-                let observation = case attempted of
-                        Right observed -> observed
-                        Left (SafetyRefusal reason) ->
-                            plannedStepRefusalObservation planned (Text.pack reason)
-                settled <-
-                    inEntry $ \protected -> do
-                        taken <- stepRuntimeTakenGates runtime
-                        settleProjections
-                            protected
-                            session
-                            runtime
-                            observation
-                            taken
-                            afterPrepare
-                            ( \afterTaken ->
-                                persistThenAcknowledge
-                                    protected
-                                    session
-                                    runtime
-                                    gate
-                                    (settledPhaseFor observation)
-                                    observation
-                                    afterTaken
-                            )
-                case (attempted, settled) of
-                    (_, Left failure) -> pure (Left failure)
-                    (Left refusal, Right advance) ->
-                        withOperationAdvance advance $ \_ afterNode -> do
-                            closed <- closeAfterNode session afterNode
-                            case closed of
-                                Left failure -> pure (Left failure)
-                                Right _ -> throwIO refusal
-                    (Right _, Right advance) ->
-                        pure (Right (withOperationAdvance advance (,)))
+                attempted <- tryAny (runPlannedStep planned execution)
+                case attempted of
+                    Left exception -> do
+                        -- A synchronous callback failure is a definite terminal
+                        -- observation by this still-live interpreter.  Settle the
+                        -- prepared gates before propagating the original exception;
+                        -- otherwise an ordinary command failure is indistinguishable
+                        -- from a process crash and strands EffectOutcomeUnknown.
+                        settled <- settleNode True runtime session gate afterPrepare "StepObservedTerminal"
+                        case settled of
+                            Left failure -> pure (Left failure)
+                            Right advance ->
+                                withOperationAdvance advance $ \_ afterNode -> do
+                                    closed <- closeAfterNode session afterNode
+                                    case closed of
+                                        Left failure -> pure (Left failure)
+                                        Right _ -> throwIO exception
+                    Right observation -> do
+                        settled <-
+                            settleNode
+                                False
+                                runtime
+                                session
+                                gate
+                                afterPrepare
+                                (settledPhaseFor observation)
+                        pure $ case settled of
+                            Left failure -> Left failure
+                            Right advance ->
+                                Right (withOperationAdvance advance (\() afterNode -> (observation, afterNode)))
+
+    settleNode includeOpen runtime session gate afterPrepare phase =
+        inEntry $ \protected -> do
+            taken <- stepRuntimeTakenGates runtime
+            available <- if includeOpen then stepRuntimeOpenGates runtime else pure []
+            settleProjections
+                protected
+                session
+                runtime
+                phase
+                (taken <> available)
+                afterPrepare
+                ( \afterTaken ->
+                    persistThenAcknowledge
+                        protected
+                        session
+                        runtime
+                        gate
+                        phase
+                        ()
+                        afterTaken
+                )
 
     closeAfterNode session permit =
         inEntry (\protected -> closeOperationSession protected session permit)
@@ -504,14 +523,14 @@ runChainFromFrameWithDescentObserved cfg store plan authority cursor runDescent 
             )
 
     settleProjections _ _ _ _ [] permit use = use permit
-    settleProjections protected session runtime observation (projected : rest) permit use = do
+    settleProjections protected session runtime phase (projected : rest) permit use = do
         acknowledged <-
             persistThenAcknowledge
                 protected
                 session
                 runtime
                 projected
-                (settledPhaseFor observation)
+                phase
                 ()
                 permit
         case acknowledged of
@@ -519,7 +538,7 @@ runChainFromFrameWithDescentObserved cfg store plan authority cursor runDescent 
             Right advance ->
                 withOperationAdvance
                     advance
-                    (\() next -> settleProjections protected session runtime observation rest next use)
+                    (\() next -> settleProjections protected session runtime phase rest next use)
 
     persistThenAcknowledge protected session runtime gate phase result permit = do
         persisted <- persistCarriedSettlement protected runtime (preparedGateOperation gate)
@@ -551,6 +570,15 @@ runChainFromFrameWithDescentObserved cfg store plan authority cursor runDescent 
                     Right (Just record)
                         | protectedRecordBytes record == bytes -> pure (Right ())
                         | Just (protectedRecordBytes record) == expected -> do
+                            written <-
+                                compareAndSwapProtectedRecord
+                                    protected
+                                    key
+                                    (ExpectVersion (protectedRecordVersion record))
+                                    bytes
+                            pure (either (Left . SessionStoreFailure) (const (Right ())) written)
+                        | Nothing <- expected
+                        , Right () <- verifyReleasedResourceSuccessorKernel (protectedRecordBytes record) bytes -> do
                             written <-
                                 compareAndSwapProtectedRecord
                                     protected

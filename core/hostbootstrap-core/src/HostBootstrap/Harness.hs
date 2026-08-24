@@ -46,6 +46,8 @@ module HostBootstrap.Harness (
     selectedVariantCaseIds,
     selectTestMatrix,
     Case (..),
+    CaseLifecycle (..),
+    AssertionPhase (..),
     CaseResult (..),
     caseResultPassed,
     caseResultLabel,
@@ -59,6 +61,7 @@ module HostBootstrap.Harness (
     allCasesSelector,
     HarnessLifecycle,
     runHarnessForward,
+    runHarnessRestart,
     runHarnessReverse,
     ConfigVariant (..),
     SafetyRefusal (..),
@@ -93,6 +96,7 @@ import qualified Data.Text as T
 import HostBootstrap.Harness.Lifecycle.Internal (
     HarnessLifecycle,
     runHarnessForward,
+    runHarnessRestart,
     runHarnessReverse,
  )
 import HostBootstrap.Step (
@@ -317,10 +321,21 @@ duplicates = foldr duplicate [] . group . sort
 {- | A test case: an id, a budget-slicing weight, and whether it is indivisible
 (e.g. a GPU case that cannot share a device and runs serially at full budget).
 -}
+data CaseLifecycle
+    = AssertOnce
+    | AssertAcrossRestart
+    deriving (Eq, Show)
+
+data AssertionPhase
+    = BeforeRestart
+    | AfterRestart
+    deriving (Eq, Show)
+
 data Case = Case
     { caseId :: CaseId
     , caseWeight :: Natural
     , caseIndivisible :: Bool
+    , caseLifecycle :: CaseLifecycle
     }
     deriving (Eq, Show)
 
@@ -524,7 +539,7 @@ data TestSuite
     = forall env.
         TestSuite
         (IO (Either String ()))
-        (VariantId -> IO env)
+        (AssertionPhase -> VariantId -> IO env)
         [Case]
         (env -> Case -> IO CaseResult)
         (IO ())
@@ -533,7 +548,7 @@ data TestSuite
 trivial assertion environment over no cases, so @test run all@ renders @0/0 passed@.
 -}
 emptySuite :: TestSuite
-emptySuite = TestSuite (pure (Right ())) (\_ -> pure ()) [] (\_ _ -> pure Pass) (pure ())
+emptySuite = TestSuite (pure (Right ())) (\_ _ -> pure ()) [] (\_ _ -> pure Pass) (pure ())
 
 {- | The case ids in a suite. Used by the CLI layer to reject accidental empty or
 duplicate project suites before command dispatch.
@@ -774,10 +789,46 @@ runSuiteSelection ownership (TestSuite safety openAssertions cases assertCase as
                             )
             Right () ->
                 withReverse lifecycle chosen $ do
-                    eenv <- trySynchronousIO (openAssertions ident)
-                    case eenv of
-                        Left err -> pure (variantBroke chosen err)
-                        Right env -> runMatrix (assertSeams env) chosen
+                    initial <- runAssertions BeforeRestart chosen ident
+                    let restartCases = filter ((== AssertAcrossRestart) . caseLifecycle) chosen
+                    if null restartCases || not (casesPassed restartCases initial)
+                        then pure initial
+                        else do
+                            restarted <- trySynchronousIO (runHarnessRestart lifecycle)
+                            case restarted of
+                                Left err ->
+                                    pure
+                                        ( replaceCaseRows
+                                            initial
+                                            restartCases
+                                            (LifecycleFailed ("same-run restart failed: " ++ displayException err))
+                                        )
+                                Right () -> do
+                                    after <- runAssertions AfterRestart restartCases ident
+                                    pure (mergeCaseRows initial after)
+    runAssertions phase selectedCases ident = do
+        eenv <- trySynchronousIO (openAssertions phase ident)
+        case eenv of
+            Left err -> pure (variantBroke selectedCases err)
+            Right env -> runMatrix (assertSeams env) selectedCases
+    casesPassed selectedCases (Report rows) =
+        all
+            ( \selectedCase ->
+                lookup (T.unpack (caseIdText (caseId selectedCase))) rows == Just Pass
+            )
+            selectedCases
+    replaceCaseRows (Report rows) selectedCases outcome =
+        Report
+            [ if rowId `elem` selectedIds then (rowId, outcome) else row
+            | row@(rowId, _) <- rows
+            ]
+      where
+        selectedIds = map (T.unpack . caseIdText . caseId) selectedCases
+    mergeCaseRows (Report initialRows) (Report replacementRows) =
+        Report
+            [ maybe row (rowId,) (lookup rowId replacementRows)
+            | row@(rowId, _) <- initialRows
+            ]
     {- Reverse interpretation always runs after acquisition.  The suite's
     post-reverse assertion runs only after that interpreter returns success, so
     it can verify absence without becoming a lifecycle effect.  Either failure is a

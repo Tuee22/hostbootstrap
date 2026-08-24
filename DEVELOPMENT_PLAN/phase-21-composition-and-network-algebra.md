@@ -1,6 +1,7 @@
 # Phase 21 — Composition and network algebra
 
 **Status**: Done
+**Current sprint**: None — phase complete
 **Depends on**: Phase 16 (cluster lifecycle, budgets, and cordoning)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`
@@ -18,7 +19,7 @@ callbacks a caller can skip.
 
 ## Sprints
 
-### Sprint 21.1: Scope-indexed endpoints and reachability [Done]
+### Sprint 21.1: Scope-indexed endpoints and resolved reachability [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Network.hs`,
@@ -36,6 +37,12 @@ Make "this client can reach this endpoint" a typed fact.
 - An endpoint is indexed by the scope that can reach it, so a cluster-only address cannot be handed to a host
   client.
 - A reachability proof is produced by observation, not assertion, and carries the scope it was taken in.
+- A host- or provider-local endpoint is projected only from the cluster backend's exact
+  `ResolvedExposure`; configuration and rendered cluster bytes carry semantic service identity and the
+  cluster-internal target, never the selected host port.
+- The selected port is an invocation/runtime result carried in the dependency package with the exact relay,
+  cluster generation, and ownership operation. It is neither serialized back into Dhall nor reconstructed
+  from a conventional port number on restart.
 - The identity-bound readiness value the proof consumes comes from the canonical-quantities phase, so
   reachability and readiness are one observation rather than two.
 - `reachLeaf` is the additive smart constructor that renders the reachability probe through the lower generic
@@ -43,9 +50,11 @@ Make "this client can reach this endpoint" a typed fact.
 
 #### Validation
 
-`RegistrySpec` and the network cases cover each scope pairing, the refusal when scopes do not match, and the
-exact `reachLeaf` argument shape. A source guard distinguishes the later additive helper from the lower Lift
-fold contract.
+`RegistrySpec` and the network cases cover each scope pairing, projection from an exact resolved exposure,
+cross-service/cluster/generation refusal, the refusal when scopes do not match, and the exact `reachLeaf`
+argument shape. Compile-fail coverage rejects a host endpoint made from text or a raw port. Source guards
+distinguish the later additive helper from the lower Lift fold contract and reject conventional host-port
+constants in generic endpoint construction.
 
 #### Completion Evidence
 
@@ -147,6 +156,17 @@ The lifecycle route validates its closed launch policy but derives every provide
 crossing renderer. On 2026-08-22 the exact gate `cabal test all --ghc-options=-Werror` passed all 2,375
 tests in 147.50 seconds. The architecture and engineering documents named below record the resulting
 network, admission, interruption, recovery, and authoring contracts.
+
+That dated evidence covers blob delivery and the role machine. The final resolved-exposure evidence follows.
+
+On 2026-08-22 the final exact gate `cabal test all --ghc-options=-Werror` passed all 2,437 tests in
+225.41 seconds on Linux x86_64 with GHC 9.12.4 and Cabal 3.16.1.0. `RegistryPlanSpec` passed all 21
+network, exposure, finalized-plan, and route-readiness cases. Its real second-process exposure fixtures prove
+that host-local construction retains the inspected service, selected port, relay identity, cluster
+generation, and ownership operation; mismatching any of those terms cannot settle readiness. Compile-fail
+coverage rejects raw host endpoint/port construction and coercion across lifecycle-scope, plan, cluster, or
+service roles. The source guard proves `Network` consumes `Cluster.Backend`, exposes no raw local constructor
+or conventional host-port constant, and leaves `reachLeaf` in the lower generic Lift.
 
 ## Remaining Work
 

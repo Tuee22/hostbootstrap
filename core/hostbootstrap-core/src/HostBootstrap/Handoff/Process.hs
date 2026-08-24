@@ -62,7 +62,7 @@ import Data.ByteString (ByteString)
 import Data.Proxy (Proxy (Proxy))
 import Data.Text (Text)
 import Data.Word (Word64)
-import HostBootstrap.Handoff (HandoffBindingInput, providerDependencyPackageFields, providerDependencyProbeRequestFromFields, withProviderDependencyReprobeKernel)
+import HostBootstrap.Handoff (HandoffBindingInput, providerDependencyPackagesFields, providerDependencyProbeRequestFromFields, withProviderDependencyReprobeKernel)
 import HostBootstrap.Handoff.Process.Route (
     LifecycleProcessRoute,
     withRecoveryLifecycleProcessRouteForKernel,
@@ -184,8 +184,11 @@ withProviderDependencyForwardLifecycleChildProcess config link route request inp
         now
         probe
         $ \endpoint ->
-            withProviderDependencyReprobeEndpointKernel link packageWire endpoint $ \installed ->
-                withForwardLifecycleChildProcess config installed route request input payload
+            case Dependency.runtimeDependencyPackageFromWire packageWire >>= Dependency.runtimeDependencyPackageBundleWire . pure of
+                Left failure -> pure (Left failure)
+                Right bundleWire ->
+                    withProviderDependencyReprobeEndpointKernel link bundleWire endpoint $ \installed ->
+                        withForwardLifecycleChildProcess config installed route request input payload
 
 {- | Carry an already registered invocation-local provider package and its
 fixed live service into one authenticated child exchange. The endpoint checks
@@ -198,21 +201,29 @@ withCarriedProviderDependencyForwardLifecycleChildProcess ::
     Word64 ->
     HandoffBindingInput ->
     ByteString ->
-    ByteString ->
-    (ByteString -> IO (Either Text ByteString)) ->
+    [(ByteString, ByteString -> IO (Either Text ByteString))] ->
     IO (Either Text ())
-withCarriedProviderDependencyForwardLifecycleChildProcess config link route request input payload packageWire service =
-    case providerDependencyPackageFields packageWire of
+withCarriedProviderDependencyForwardLifecycleChildProcess config link route request input payload dependencies =
+    case traverse (Dependency.runtimeDependencyPackageFromWire . fst) dependencies >>= Dependency.runtimeDependencyPackageBundleWire of
         Left failure -> pure (Left failure)
-        Right _ ->
-            withProviderDependencyReprobeEndpointKernel link packageWire endpoint $ \installed ->
-                withForwardLifecycleChildProcess config installed route request input payload
+        Right bundleWire -> case providerDependencyPackagesFields bundleWire of
+            Left failure -> pure (Left failure)
+            Right _ ->
+                withProviderDependencyReprobeEndpointKernel link bundleWire endpoint $ \installed ->
+                    withForwardLifecycleChildProcess config installed route request input payload
   where
-    endpoint fields = case providerDependencyProbeRequestFromFields packageWire fields of
-        Left failure -> pure (Left failure)
-        Right _nonce -> case fields of
+    endpoint fields = case candidates of
+        [] -> pure (Left "provider dependency request names no admitted package")
+        [(_, service)] -> case fields of
             [requestWire] -> fmap (fmap pure) (service requestWire)
             _ -> pure (Left "provider dependency request fields changed after validation")
+        _ -> pure (Left "provider dependency request ambiguously names multiple packages")
+      where
+        candidates =
+            [ dependency
+            | dependency@(packageWire, _) <- dependencies
+            , Right _ <- [providerDependencyProbeRequestFromFields packageWire fields]
+            ]
 
 seedProviderDependencyCarrierKernel ::
     ResourceCarrier scope planId ->
@@ -223,8 +234,8 @@ seedProviderDependencyCarrierKernel carrier packageWire client =
     case Dependency.runtimeDependencyPackageFromWire packageWire of
         Left failure -> pure (Left failure)
         Right package
-            | Dependency.runtimeDependencyPackageDomain package /= "provider" ->
-                pure (Left "forward child: the admitted dependency package is not a provider package")
+            | Dependency.runtimeDependencyPackageDomain package `notElem` ["provider", "provider-share"] ->
+                pure (Left "forward child: the admitted dependency package is not a provider or provider-share package")
             | otherwise -> do
                 -- The authenticated package transfers ownership evidence, but
                 -- not the parent frame's settlement.  Version 1 is only the
@@ -264,9 +275,9 @@ withCarriedProviderDependencyFromCarrierKernel ::
 withCarriedProviderDependencyFromCarrierKernel config link route request input payload carrier = do
     runtime <- newStepRuntime carrier
     packages <- stepRuntimeDependencyPackages runtime
-    case filter ((== "provider") . Dependency.runtimeDependencyPackageDomain) packages of
+    case filter ((`elem` ["provider", "provider-share"]) . Dependency.runtimeDependencyPackageDomain) packages of
         [] -> withForwardLifecycleChildProcess config link route request input payload
-        [package] ->
+        dependencies ->
             withCarriedProviderDependencyForwardLifecycleChildProcess
                 config
                 link
@@ -274,9 +285,9 @@ withCarriedProviderDependencyFromCarrierKernel config link route request input p
                 request
                 input
                 payload
-                (Dependency.runtimeDependencyPackageWire package)
-                (invokeStepRuntimeDependencyService runtime package)
-        _ -> pure (Left "forward child: multiple provider dependency packages are carried")
+                [ (Dependency.runtimeDependencyPackageWire package, invokeStepRuntimeDependencyService runtime package)
+                | package <- dependencies
+                ]
 
 {- | Launch one reverse child and complete its edge on the same terms.
 

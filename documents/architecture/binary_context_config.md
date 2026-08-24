@@ -57,7 +57,7 @@
   consumer adoption makes those one operation.
 - The accelerator daemon reuses this context model: in-cluster Linux daemons receive service/daemon
   configs, while Apple Silicon and Windows GPU host daemons read host-resident daemon configs and connect
-  to the cluster through a local-only NodePort.
+  through the exact runtime-resolved loopback exposure.
 
 ## The Contract
 
@@ -1506,6 +1506,12 @@ to prove locally:
 | `HostDaemonPlacement` | `HOSTBOOTSTRAP_CURRENT_FRAME` equals this frame |
 | `OneShotJobPlacement`, `TestHarnessPlacement` | none |
 
+The VM provider witness is deliberately ephemeral. Initial config delivery
+creates it for guest bootstrap, but provider share attachment can stop/start the
+VM (Incus virtiofs does so). The settled `copy-source` continuation therefore
+re-mints the witness after share and guest-alias reconciliation, immediately
+before descent. A pre-reboot witness is never treated as proof for the child.
+
 The child-context constructors project that set into the generated config, and `validateContext`
 re-derives it from the topology and compares exactly. A **missing**, **extra/irrelevant**, or
 **empty** list is `ContextWitnessSetMismatch`; two entries sharing a witness kind and name — a
@@ -2125,7 +2131,7 @@ The accelerator daemon adds two authority placements:
 - in-cluster Linux CPU/GPU daemon pods receive daemon-role configs the same way service pods do, by
   ConfigMap override, and connect to the web service through `ClusterIP`;
 - Apple Silicon and Windows GPU host daemons receive a host-resident daemon context and connect to the web
-  service through a local-only NodePort after `project up` has made the endpoint available.
+  service through its exact runtime-resolved loopback exposure after `project up` has made it available.
 
 Both are intended leaf roles. A generated daemon context plus independently verified platform/OS-service
 instance identity and signed deployment revision can run the daemon handler through
@@ -2315,10 +2321,9 @@ The implemented context model includes:
 - The `.dhall` is the explicit parameters + context + witness value of a root the chain is a pure function
   of, with structural variation expressed as a root parameter flag.
 
-`project up` uses that context path in the live stack. Current `down`/`destroy` are not recursive
-child-to-parent interpretations. Demo tests select the exact Harness profile and `.test_data/<runId>`, but
-their same-run durable-readback destroy/up choreography remains open until the harness engine owns a fresh
-lifecycle-invocation generation. The phase records in `DEVELOPMENT_PLAN/` own validation status; this
+`project up` uses that context path in the live stack. Demo tests select the exact Harness profile and
+`.test_data/<runId>`; their durable-readback case crosses an engine-owned fresh same-run lifecycle generation
+without receiving command authority. The phase records in `DEVELOPMENT_PLAN/` own validation status; this
 document describes the authority contract.
 
 The accelerator-daemon context substrate is implemented in

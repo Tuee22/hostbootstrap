@@ -177,7 +177,12 @@ renderingCases =
                 , ["test", "-x", "/root/.ghcup/bin/ghcup"]
                 , ["test", "-x", "/root/.local/bin/hostbootstrap"]
                 , ["test", "-x", "/root/hostbootstrap/demo/.build/hostbootstrap-demo"]
-                , ["test", "-x", "/usr/local/bin/hostbootstrap-demo"]
+                ,
+                    [ "cmp"
+                    , "-s"
+                    , "/root/hostbootstrap/demo/.build/hostbootstrap-demo"
+                    , "/usr/local/bin/hostbootstrap-demo"
+                    ]
                 ]
     , testCase "the toolchain step fetches the installer, then runs it" $
         case stepActions (plan !! 1) of
@@ -283,7 +288,7 @@ scriptedRunner journal satisfiedProbes failingActions leaf = do
             , ""
             )
   where
-    isProbe argv = take 1 argv `elem` [["test"], ["dpkg-query"]]
+    isProbe argv = take 1 argv `elem` [["test"], ["dpkg-query"], ["cmp"]]
 
     -- A probe passes once any action ran after the probe's own first failure,
     -- which is exactly "the step settled".
@@ -343,7 +348,7 @@ driverCases =
         -- case a package manager's own "nothing to do" exit hides.
         let neverSettles leaf =
                 pure . Right $
-                    ( if take 1 (argvOf leaf) `elem` [["test"], ["dpkg-query"]]
+                    ( if take 1 (argvOf leaf) `elem` [["test"], ["dpkg-query"], ["cmp"]]
                         then ExitFailure 1
                         else ExitSuccess
                     , ""

@@ -3,6 +3,7 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE StandaloneDeriving #-}
 
 {- | The finalized in-cluster registry plan and its proof-gated blob delivery.
@@ -75,6 +76,8 @@ import HostBootstrap.Network (
     endpointAuthority,
     exposureEndpoint,
     exposurePort,
+    exposureRuntimeIdentity,
+    exposureService,
     reachabilityEndpointScope,
  )
 
@@ -142,36 +145,40 @@ Opaque, and reachable only through a topology-specific constructor, so no caller
 can assemble a registry endpoint and a store endpoint independently and pair
 them by convention.
 -}
-data RegistryPlan (client :: NetworkScope) (store :: NetworkScope) = RegistryPlan
+data RegistryPlan (client :: NetworkScope) (store :: NetworkScope) lifecycleScope planId clusterId service = RegistryPlan
     { planClient :: NetworkClient client
-    , planExposure :: Exposure client
+    , planExposure :: Exposure client lifecycleScope planId clusterId service
     , planStore :: Endpoint store
     , planDelivery :: BlobDelivery client
     , planRevision :: Word64
     }
 
-deriving instance Show (RegistryPlan client store)
+type role RegistryPlan nominal nominal nominal nominal nominal nominal
 
-registryPlanClient :: RegistryPlan client store -> NetworkScope
+deriving instance Show (RegistryPlan client store lifecycleScope planId clusterId service)
+
+registryPlanClient :: RegistryPlan client store lifecycleScope planId clusterId service -> NetworkScope
 registryPlanClient = clientScope . planClient
 
 {- | The exact published exposure the plan answers on. A route witness is bound
 to this, not to a bare authority string, so a plan cannot be validated against
 one published port and then consumed against another.
 -}
-registryPlanExposure :: RegistryPlan client store -> Exposure client
+registryPlanExposure ::
+    RegistryPlan client store lifecycleScope planId clusterId service ->
+    Exposure client lifecycleScope planId clusterId service
 registryPlanExposure = planExposure
 
-registryPlanEndpoint :: RegistryPlan client store -> Endpoint client
+registryPlanEndpoint :: RegistryPlan client store lifecycleScope planId clusterId service -> Endpoint client
 registryPlanEndpoint = exposureEndpoint . planExposure
 
-registryPlanStore :: RegistryPlan client store -> Endpoint store
+registryPlanStore :: RegistryPlan client store lifecycleScope planId clusterId service -> Endpoint store
 registryPlanStore = planStore
 
-registryPlanDelivery :: RegistryPlan client store -> BlobDelivery client
+registryPlanDelivery :: RegistryPlan client store lifecycleScope planId clusterId service -> BlobDelivery client
 registryPlanDelivery = planDelivery
 
-registryPlanRevision :: RegistryPlan client store -> Word64
+registryPlanRevision :: RegistryPlan client store lifecycleScope planId clusterId service -> Word64
 registryPlanRevision = planRevision
 
 {- | The demo's topology: a registry published on the host (or VM) loopback with
@@ -183,10 +190,10 @@ is the defect this sprint exists to make unrepresentable.
 -}
 hostServedRegistryPlan ::
     NetworkClient client ->
-    Exposure client ->
+    Exposure client lifecycleScope planId clusterId service ->
     Endpoint 'ClusterOnly ->
     Word64 ->
-    Either RegistryPlanError (RegistryPlan client 'ClusterOnly)
+    Either RegistryPlanError (RegistryPlan client 'ClusterOnly lifecycleScope planId clusterId service)
 hostServedRegistryPlan client exposure store revision
     | revision == 0 = Left (InvalidRegistryRevision revision)
     | otherwise =
@@ -205,10 +212,10 @@ sound, and the constructor supplies the witness that says so.
 inClusterRegistryPlan ::
     Reachability 'ClusterOnly 'ClusterOnly ->
     NetworkClient 'ClusterOnly ->
-    Exposure 'ClusterOnly ->
+    Exposure 'ClusterOnly lifecycleScope planId clusterId service ->
     Endpoint 'ClusterOnly ->
     Word64 ->
-    Either RegistryPlanError (RegistryPlan 'ClusterOnly 'ClusterOnly)
+    Either RegistryPlanError (RegistryPlan 'ClusterOnly 'ClusterOnly lifecycleScope planId clusterId service)
 inClusterRegistryPlan proof client exposure store revision
     | revision == 0 = Left (InvalidRegistryRevision revision)
     | otherwise =
@@ -229,7 +236,7 @@ There is no raw redirect flag anywhere: a proxying plan renders
 Distribution's default. Because the delivery is the only input, the rendered
 configuration and the reachability proof cannot disagree.
 -}
-renderStorageRedirect :: RegistryPlan client store -> [Text]
+renderStorageRedirect :: RegistryPlan client store lifecycleScope planId clusterId service -> [Text]
 renderStorageRedirect plan =
     case blobDeliveryStrategy (planDelivery plan) of
         ProxyBlobs ->
@@ -251,12 +258,15 @@ data BlobProbe
 -- | One observation of a blob request against the planned registry.
 data BlobRouteObservation = BlobRouteObservation
     { observedProbe :: BlobProbe
-    , -- | the published port the probe actually dialled
-      observedPort :: Int
+    , observedService :: Text
+    , observedPort :: Int
+    -- ^ the published port the probe actually dialled
+    , observedRuntimeIdentity :: Maybe (Text, Word64, Text)
     , observedStatus :: Int
-    , -- | the @Location@ authority and the scope it resolves in, when the
-      -- registry issued a redirect
-      observedRedirect :: Maybe (Text, NetworkScope)
+    , observedRedirect :: Maybe (Text, NetworkScope)
+    {- ^ the @Location@ authority and the scope it resolves in, when the
+    registry issued a redirect
+    -}
     , observedRevision :: Word64
     }
     deriving (Eq, Show)
@@ -264,14 +274,16 @@ data BlobRouteObservation = BlobRouteObservation
 {- | Proof that this exact plan revision's blob route works from this exact
 client. It cannot be reused across a replacement revision.
 -}
-newtype ReadyBlobRoute (client :: NetworkScope) (store :: NetworkScope)
+newtype ReadyBlobRoute (client :: NetworkScope) (store :: NetworkScope) lifecycleScope planId clusterId service
     = ReadyBlobRoute Word64
 
-deriving instance Eq (ReadyBlobRoute client store)
+type role ReadyBlobRoute nominal nominal nominal nominal nominal nominal
 
-deriving instance Show (ReadyBlobRoute client store)
+deriving instance Eq (ReadyBlobRoute client store lifecycleScope planId clusterId service)
 
-readyBlobRouteRevision :: ReadyBlobRoute client store -> Word64
+deriving instance Show (ReadyBlobRoute client store lifecycleScope planId clusterId service)
+
+readyBlobRouteRevision :: ReadyBlobRoute client store lifecycleScope planId clusterId service -> Word64
 readyBlobRouteRevision (ReadyBlobRoute revision) = revision
 
 {- | Settle an observation into a route witness.
@@ -284,9 +296,9 @@ reachable, because the rendered configuration and the running registry have
 diverged.
 -}
 settleBlobRoute ::
-    RegistryPlan client store ->
+    RegistryPlan client store lifecycleScope planId clusterId service ->
     BlobRouteObservation ->
-    Either RegistryPlanError (ReadyBlobRoute client store)
+    Either RegistryPlanError (ReadyBlobRoute client store lifecycleScope planId clusterId service)
 settleBlobRoute plan observation =
     case observedProbe observation of
         ApiVersionProbe -> Left BlobRouteNotABlobProbe
@@ -297,6 +309,14 @@ settleBlobRoute plan observation =
                         (planRevision plan)
                         (observedRevision observation)
                     )
+            | observedService observation /= exposureService (planExposure plan) ->
+                mismatch
+                    ("service " <> exposureService (planExposure plan))
+                    ("service " <> observedService observation)
+            | observedRuntimeIdentity observation /= exposureRuntimeIdentity (planExposure plan) ->
+                mismatch
+                    "the exact relay, cluster generation, and ownership operation"
+                    "a different runtime exposure identity"
             | observedPort observation /= exposurePort (planExposure plan) ->
                 mismatch
                     ("the exposure on port " <> Text.pack (show (exposurePort (planExposure plan))))

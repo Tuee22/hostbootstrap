@@ -45,6 +45,7 @@ module HostBootstrap.Substrate.Provider.Command (
     launchInstanceCommand,
     startInstanceCommand,
     stopInstanceCommand,
+    restartInstanceCommand,
     deleteInstanceCommand,
     attachShareDeviceCommand,
 )
@@ -168,6 +169,16 @@ mistake is an instance that can be started again.
 -}
 stopInstanceCommand :: String -> HostCommand
 stopInstanceCommand instanceName = hostCommand Incus ["stop", instanceName]
+
+{- | Restart an owned running instance after attaching a disk device.
+
+Incus records a disk device on a running VM before its @virtiofs@ mount is
+necessarily visible in the guest.  The share transaction therefore makes the
+provider cross the one boot boundary that activates the declared device before
+the share can be bound and published.
+-}
+restartInstanceCommand :: String -> HostCommand
+restartInstanceCommand instanceName = hostCommand Incus ["restart", instanceName, "--force"]
 
 {- | Remove an instance, through the frame table's one guarded delete.
 

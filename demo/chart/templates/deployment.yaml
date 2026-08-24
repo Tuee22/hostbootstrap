@@ -16,6 +16,7 @@ spec:
       annotations:
         hostbootstrap.io/config-hash: {{ .Values.service.configHash | quote }}
     spec:
+      serviceAccountName: {{ .Release.Name }}-runtime
       volumes:
         - name: demo-config
           configMap:
@@ -23,6 +24,14 @@ spec:
         - name: durable-data
           hostPath:
             path: /var/lib/hostbootstrap-demo-data/web
+            type: DirectoryOrCreate
+        - name: activation-revisions
+          hostPath:
+            path: /var/lib/hostbootstrap-demo-data/activation/revisions
+            type: Directory
+        - name: service-authority
+          hostPath:
+            path: /var/lib/hostbootstrap-demo-data/service-authority
             type: DirectoryOrCreate
       containers:
         - name: web
@@ -32,10 +41,32 @@ spec:
           # runs the demo's `web` service variant — the warp/wai webservice — on
           # the service port (the leaf-frame service run-model, § AA). The pod's
           # cluster-service config arrives as the mounted ConfigMap below.
-          args: ["service", "run"]
+          command: ["/bin/sh", "-c"]
+          args:
+            - >-
+              restart_count="$(kubectl
+              --server="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS}"
+              --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+              --token="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
+              --namespace="$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)"
+              get pod "${HOSTNAME}"
+              --output=jsonpath='{.status.containerStatuses[?(@.name=="web")].restartCount}')"
+              && case "${restart_count}" in ''|*[!0-9]*) exit 64;; esac
+              && export HOSTBOOTSTRAP_CONTAINER_RESTART_COUNT="${restart_count}"
+              && exec /usr/local/bin/hostbootstrap-demo service run
           env:
             - name: HOSTBOOTSTRAP_CURRENT_FRAME
               value: {{ .Values.service.currentFrame | quote }}
+            - name: HOSTBOOTSTRAP_SERVICE_ACTIVATION
+              value: {{ printf "/run/hostbootstrap/activation/revisions/%s" .Values.activation.revision | quote }}
+            - name: HOSTBOOTSTRAP_ACTIVATION_KEY
+              value: /usr/local/bin/hostbootstrap-demo.activation.pub
+            - name: HOSTBOOTSTRAP_AUTHORITY_STORE
+              value: /run/hostbootstrap/authority
+            - name: HOSTBOOTSTRAP_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
           volumeMounts:
             - name: demo-config
               mountPath: /usr/local/bin/hostbootstrap-demo.dhall
@@ -43,6 +74,11 @@ spec:
               readOnly: true
             - name: durable-data
               mountPath: /var/lib/hostbootstrap-demo-data/web
+            - name: activation-revisions
+              mountPath: /run/hostbootstrap/activation/revisions
+              readOnly: true
+            - name: service-authority
+              mountPath: /run/hostbootstrap/authority
           ports:
             - name: web
               containerPort: {{ .Values.service.port }}

@@ -136,6 +136,12 @@ The demo's config includes its own resources, deploy settings, context, and mess
 `ProjectSpec projectId cfg tcfg`, with `cfg :: Type -> Type`:
 `cfg (Production projectId)` cannot be confused with `cfg (Harness projectId runId)`.
 
+Host exposure is intentionally not another Dhall setting. Project config names semantic services and their
+stable cluster-internal targets; after cluster readiness, the container runtime atomically assigns
+loopback-only host ports to an owned relay. Only authenticated inspection of that exact runtime resource
+produces the resolved endpoints used by registry, web, MinIO, accelerator, and test clients. See
+[network reachability](documents/architecture/network_reachability.md).
+
 `SecretRef scope` makes plaintext constructible only with matching
 `HarnessConfigAuthority projectId runId`, and the Production wire schema has no plaintext alternative.
 Root-local assembly and codec validation enforce this now. Normal parent-to-child handoff and
@@ -214,13 +220,13 @@ pipx install --force /path/to/hostbootstrap
 
 [`demo/`](demo/) is the worked `hostbootstrap-core` consumer. Its chain provisions the selected provider,
 builds the project image, creates kind/nvkind, deploys MinIO and the anonymous HTTP in-cluster registry,
-pushes the image, deploys the web and accelerator services, and verifies exposure. In current manifests,
-the registry, web, and MinIO host mappings are not all loopback-only, and MinIO defaults are
-source-hardcoded; the target boundary is plan-owned.
-The current S3 route also permits Distribution to redirect the host Docker client to cluster-only
-`minio.default.svc`, so a repeated push can fail even when `/v2/` is Ready. The target binds
-client scope, exposure, backend, and delivery in one opaque plan; this topology can select only registry
-proxy delivery. See [network reachability](documents/architecture/network_reachability.md) and the
+pushes the image, deploys the web and accelerator services, and verifies exposure. Automatic host exposure is
+runtime-owned: host-port numbers are absent from Dhall and Kind/nvkind rendering, the container runtime
+atomically selects loopback ports for identity-owned relays, and application clients consume only the
+authenticated resolved endpoints. Stable Kubernetes Service/NodePort values remain internal targets.
+The registry route binds client scope, exposure, backend, and delivery in one opaque plan, so the host
+Docker client cannot be redirected to cluster-only MinIO. See
+[network reachability](documents/architecture/network_reachability.md) and the
 [in-cluster registry guide](documents/engineering/in_cluster_registry.md).
 
 The stable `/var/tmp/hostbootstrap-demo-data` pathname is a provider-guest projection of the project's
@@ -240,6 +246,10 @@ hostbootstrap run -- project up
 hostbootstrap run -- context inspect
 hostbootstrap run -- project destroy
 ```
+
+The root `project init` also installs or validates the executable-sibling handoff key pair and the separate
+build-signing key. Rebuilds and `--force` retain valid identities; inconsistent material refuses instead of
+silently rotating the project trust root.
 
 The current `context-init` row's action body is only an announcement. VM config is produced/streamed
 inside the composite VM bootstrap action; container config rides the descent that same `context-init`
@@ -285,17 +295,16 @@ hostbootstrap run -- test run all
 
 Current safety checks refuse an existing sibling project config or detected production cluster. Each
 variant assembles a Harness-scoped config, retains one exact Harness `ProjectPlan` through generated
-config ownership, and invokes the common current-frame Chain and reverse interpreters directly; assertion code has
-no top-level lifecycle subprocess route and durable state is isolated under `.test_data/<runId>`.
-Recursive child teardown and the engine-owned same-run recreate transition remain open, so the demo's
-`durable-readback` case deliberately reports failure until the
-[worked-demo phase](DEVELOPMENT_PLAN/phase-24-worked-demo.md) closes its same-run lifecycle assertion. Run the long gate only on a
+config ownership, and invokes the common recursive forward and reverse interpreters; assertion code has
+no lifecycle route and durable state is isolated under `.test_data/<runId>`. The `durable-readback` case
+declares two assertion phases around an engine-owned settled destroy, protected fresh invocation, exact
+plan rebind, and second forward while retaining one report row. Run the long gate only on a
 disposable host with no production demo state. On Windows the gate also holds the project's full
 CPU/memory budget in the shared WSL2 utility VM while it runs; normal `project down` restores the
 journalled `.wslconfig` origin and then shuts that VM down globally to release the wall (see
 [documents/engineering/wsl2.md](documents/engineering/wsl2.md)). Its Playwright case executes the
 already-built project image with `--network host` in the VM frame and points `BASE_URL` at that VM's
-localhost NodePort.
+exact runtime-resolved web exposure.
 Authoritative current evidence and remaining live substrates are in the
 [development-plan index](DEVELOPMENT_PLAN/README.md).
 

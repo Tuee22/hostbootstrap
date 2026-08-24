@@ -29,16 +29,17 @@ Failures here are all pre-attachment, and pre-attachment failure is an outer
 refusal — the authenticated-handoff transport's existing one. This module
 therefore produces no rooted @Refused@ at all; that form is post-open only.
 -}
-module HostBootstrap.Lifecycle.Rooted
-    ( RootedFrameSession
-    , withRootOpenedFrameSessionKernel
-    , withRootOpenedDirectFrameSessionKernel
-    , withAttachedRootedFrameSessionKernel
-    , withRootedFrameOpeningKernel
-    , withRootedFrameSessionKernel
-    , withAdvancedRootedFrameSessionKernel
-    , withFailedRootedFrameSessionKernel
-    )
+module HostBootstrap.Lifecycle.Rooted (
+    RootedFrameSession,
+    withRootOpenedFrameSessionKernel,
+    withRootOpenedDirectFrameSessionKernel,
+    withAttachedRootedFrameSessionKernel,
+    withRootedFrameOpeningKernel,
+    withRootedFrameSessionKernel,
+    withAdvancedRootedFrameSessionKernel,
+    withFailedRootedFrameSessionKernel,
+    cancelUnattachedRootedFrameSessionKernel,
+)
 where
 
 import Data.ByteString (ByteString)
@@ -51,39 +52,52 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import HostBootstrap.Authority (ProjectVerb, projectVerbName)
-import HostBootstrap.Handoff (childConfigDigest, frameWire, maxWireBytes)
-import HostBootstrap.Handoff.Rooted
-    ( rootedLifecycleRequestFromWireKernel
-    , rootedLifecycleResponseFromWireKernel
-    , rootedOpenedResponseUnsignedKernel
-    , withRootedLifecycleRequestKernel
-    , withRootedLifecycleResponseKernel
-    )
-import HostBootstrap.Handoff.Runtime
-    ( RecursiveHandoffRuntime
-    , withRecursiveHandoffRuntimeKernel
-    , withRootArmRecursiveHandoffRuntimeKernel
-    )
-import HostBootstrap.Lifecycle.RootedPlan
-    ( RootedPlanCatalog
-    , rootedPlanCatalogRecordIdentityKernel
-    , withRootedPlanCatalogEntriesKernel
-    , withRootedPlanCatalogRootKernel
-    )
-import HostBootstrap.Lifecycle.Session
-    ( SessionError
-    , attachRootedFrameSessionRecordKernel
-    , openRootedFrameSessionRecordKernel
-    , rootedFrameSessionKeyKernel
-    , sessionErrorMessage
-    )
+import HostBootstrap.Handoff (
+    childConfigDigest,
+    frameWire,
+    handoffErrorMessage,
+    maxWireBytes,
+    takeHandoffFrame,
+ )
+import HostBootstrap.Handoff.Rooted (
+    rootedLifecycleRequestFromWireKernel,
+    rootedLifecycleResponseFromWireKernel,
+    rootedOpenedResponseUnsignedKernel,
+    withRootedLifecycleRequestKernel,
+    withRootedLifecycleResponseKernel,
+ )
+import HostBootstrap.Handoff.Runtime (
+    RecursiveHandoffRuntime,
+    withRecursiveHandoffRuntimeKernel,
+    withRootArmRecursiveHandoffRuntimeKernel,
+ )
+import HostBootstrap.Lifecycle.RootedPlan (
+    RootedPlanCatalog,
+    rootedPlanCatalogRecordIdentityKernel,
+    withRootedPlanCatalogEntriesKernel,
+    withRootedPlanCatalogRootKernel,
+ )
+import HostBootstrap.Lifecycle.Session (
+    SessionError,
+    attachRootedFrameSessionRecordKernel,
+    cancelOpenedRootedFrameSessionRecordKernel,
+    openRootedFrameSessionRecordKernel,
+    rootedFrameSessionKeyKernel,
+    sessionErrorMessage,
+ )
 import HostBootstrap.ProjectPlan.Frame (currentFrameId)
-import HostBootstrap.Protected
-    ( ProtectedStore
-    , RecordKey
-    , RecordVersion
-    , withProtectedEntry
-    )
+import HostBootstrap.Protected (
+    Expectation (ExpectVersion),
+    ProtectedSession,
+    ProtectedStore,
+    RecordKey,
+    RecordVersion,
+    compareAndDeleteProtectedRecord,
+    protectedRecordBytes,
+    protectedRecordVersion,
+    readProtectedRecord,
+    withProtectedEntry,
+ )
 
 {- | One root-owned frame session through its two durable states.
 
@@ -93,8 +107,15 @@ the first predecessor digest, and its own successor row. Neither constructor
 retains a store, catalog, runtime, request, or response value: what escapes an
 elimination is coordinates, and coordinates authorize nothing.
 -}
-data RootedFrameSession
-    scope rootPlanId brokerGeneration catalogId frame sessionId verb
+data
+    RootedFrameSession
+        scope
+        rootPlanId
+        brokerGeneration
+        catalogId
+        frame
+        sessionId
+        verb
     where
     OpenedRootedFrameSession ::
         ProjectVerb verb ->
@@ -192,19 +213,27 @@ withRootOpenedFrameSessionPathKernel direct runtime catalog store verb rootPlanD
             Left failure -> pure (Left failure)
             Right (path, key, opened) -> do
                 entered <- withProtectedEntry store $ \session ->
-                    Right <$> openRootedFrameSessionRecordKernel session key opened
+                    Right <$> openOrRestartDirect session path key opened
                 case entered of
                     Left failure -> refused (Text.pack (show failure))
-                    Right (Left failure) -> refused (Text.pack (sessionErrorMessage failure))
+                    Right (Left failure) -> refused failure
                     Right (Right (version, present))
                         | present /= opened ->
                             refused "the durable rooted frame session row is not this opening"
                         | otherwise ->
                             use
                                 ( OpenedRootedFrameSession
-                                    verb rootPlanDigest catalogIdentity requestedFrame path
-                                    (sessionTokenFor path) initialStage initialOrdinal
-                                    key version opened
+                                    verb
+                                    rootPlanDigest
+                                    catalogIdentity
+                                    requestedFrame
+                                    path
+                                    (sessionTokenFor path)
+                                    initialStage
+                                    initialOrdinal
+                                    key
+                                    version
+                                    opened
                                 )
   where
     catalogIdentity = rootedPlanCatalogRecordIdentityKernel catalog
@@ -221,7 +250,8 @@ withRootOpenedFrameSessionPathKernel direct runtime catalog store verb rootPlanD
         require "the root frame has no rooted requester path" (not (null path))
         key <- sessionFailure (rootedFrameSessionKeyKernel rootPlanDigest catalogIdentity requestedFrame)
         let opened = renderOpenedRow path
-        require "the rooted frame session row exceeds the durable bound"
+        require
+            "the rooted frame session row exceeds the durable bound"
             (fromIntegral (ByteString.length opened) <= maxWireBytes)
         pure (path, key, opened)
 
@@ -283,7 +313,74 @@ withRootOpenedFrameSessionPathKernel direct runtime catalog store verb rootPlanD
                 ++ map framedText path
             )
 
+    openOrRestartDirect ::
+        forall session.
+        ProtectedSession session ->
+        [Text] ->
+        RecordKey ->
+        ByteString ->
+        IO (Either Text (RecordVersion, ByteString))
+    openOrRestartDirect session path key opened = do
+        observed <- openRootedFrameSessionRecordKernel session key opened
+        case observed of
+            Left failure -> pure (Left (Text.pack (sessionErrorMessage failure)))
+            Right exact@(_version, present)
+                | present == opened -> pure (Right exact)
+            Right (version, present)
+                | direct
+                , Right () <-
+                    validateAttachedRootedFrameSessionRow
+                        rootPlanDigest
+                        catalogIdentity
+                        path
+                        opened
+                        present -> do
+                    current <- readProtectedRecord session key
+                    case current of
+                        Left failure -> pure (Left (Text.pack (show failure)))
+                        Right (Just record)
+                            | protectedRecordVersion record == version
+                            , protectedRecordBytes record == present -> do
+                                deleted <-
+                                    compareAndDeleteProtectedRecord
+                                        session
+                                        key
+                                        (ExpectVersion version)
+                                case deleted of
+                                    Left failure -> pure (Left (Text.pack (show failure)))
+                                    Right () -> do
+                                        restarted <- openRootedFrameSessionRecordKernel session key opened
+                                        pure $ case restarted of
+                                            Left failure -> Left (Text.pack (sessionErrorMessage failure))
+                                            Right exact@(_restartedVersion, restartedBytes)
+                                                | restartedBytes == opened -> Right exact
+                                                | otherwise -> Left "the restarted rooted frame session differs from this opening"
+                        _ -> pure (Left "the abandoned rooted frame session changed before restart")
+            Right _ -> pure (Left "the durable rooted frame session row is not this opening")
+
     refused = pure . Left . rootedFailure
+
+{- | Cancel an exact session which never crossed the attachment boundary.
+
+The durable kernel rechecks the opening's version and bytes under the store
+lock. Attached sessions refuse here and remain subject to terminal-report
+recovery.
+-}
+cancelUnattachedRootedFrameSessionKernel ::
+    ProtectedStore ->
+    RootedFrameSession scope rootPlanId brokerGeneration catalogId frame sessionId verb ->
+    IO (Either Text ())
+cancelUnattachedRootedFrameSessionKernel store session =
+    case session of
+        OpenedRootedFrameSession _ _ _ _ _ _ _ _ key version opened -> do
+            cancelled <- withProtectedEntry store $ \protected ->
+                Right <$> cancelOpenedRootedFrameSessionRecordKernel protected key version opened
+            pure $ case cancelled of
+                Left failure -> Left (rootedFailure (Text.pack (show failure)))
+                Right (Left failure) -> Left (rootedFailure (Text.pack (sessionErrorMessage failure)))
+                Right (Right ()) -> Right ()
+        AttachedRootedFrameSession{} ->
+            pure (Left (rootedFailure "an attached frame session cannot be cancelled as unused"))
 
 {- | Attach one exact 'OpenFrame' to an already opened session, or replay it.
 
@@ -326,14 +423,22 @@ withAttachedRootedFrameSessionKernel runtime opened store envelope request signe
                         entered <- withProtectedEntry store $ \session ->
                             Right
                                 <$> attachRootedFrameSessionRecordKernel
-                                    session key version openedBytes attached
+                                    session
+                                    key
+                                    version
+                                    openedBytes
+                                    attached
                         case entered of
                             Left failure -> refused (Text.pack (show failure))
                             Right (Left failure) -> refused (Text.pack (sessionErrorMessage failure))
                             Right (Right attachedVersion) ->
                                 use
                                     ( AttachedRootedFrameSession
-                                        opened nonce predecessor attachedVersion attached
+                                        opened
+                                        nonce
+                                        predecessor
+                                        attachedVersion
+                                        attached
                                     )
   where
     admit atRoot frame path rootPlanDigest catalogIdentity openedBytes = do
@@ -341,7 +446,8 @@ withAttachedRootedFrameSessionKernel runtime opened store envelope request signe
         require "the runtime is not path-agnostic" (isNothing frame)
         require "the sealed external envelope is not the session's own path" (envelope == path)
         require "the signed Opened response is empty" (not (ByteString.null signedOpened))
-        require "the signed Opened response exceeds the durable bound"
+        require
+            "the signed Opened response exceeds the durable bound"
             (fromIntegral (ByteString.length signedOpened) <= maxWireBytes)
         decoded <- either (Left . rootedFailure) Right (rootedLifecycleRequestFromWireKernel request)
         nonce <-
@@ -354,26 +460,20 @@ withAttachedRootedFrameSessionKernel runtime opened store envelope request signe
                 (\_ _ _ _ _ _ -> postOpen)
                 (\_ _ _ _ _ _ -> postOpen)
         let predecessor = childConfigDigest signedOpened
-            attached = renderAttachedRow rootPlanDigest catalogIdentity path openedBytes nonce predecessor
-        require "the attached rooted frame session row exceeds the durable bound"
+            attached =
+                renderAttachedRootedFrameSessionRow
+                    rootPlanDigest
+                    catalogIdentity
+                    path
+                    openedBytes
+                    nonce
+                    (TextEncoding.encodeUtf8 predecessor)
+        require
+            "the attached rooted frame session row exceeds the durable bound"
             (fromIntegral (ByteString.length attached) <= maxWireBytes)
         pure (nonce, predecessor, attached)
 
     postOpen = Left (rootedFailure "only an OpenFrame request attaches a rooted frame session")
-
-    renderAttachedRow rootPlanDigest catalogIdentity path openedBytes nonce predecessor =
-        ByteString.concat
-            ( [ framedText rootedFrameSessionDomain
-              , framedWord 1
-              , framedText "attached"
-              , frameWire openedBytes
-              , framedText rootPlanDigest
-              , framedText catalogIdentity
-              , framedWord (fromIntegral (length path))
-              ]
-                ++ map framedText path
-                ++ [frameWire nonce, framedText predecessor]
-            )
 
     refused = pure . Left . rootedFailure
 
@@ -464,11 +564,14 @@ withRootedFrameOpeningKernel runtime session store envelope request sign use =
     malformed envelope is refused on its own terms. -}
     requireEnvelopeGrammar = do
         require "the sealed external envelope is empty" (not (null envelope))
-        require "the sealed external envelope exceeds the requester path depth"
+        require
+            "the sealed external envelope exceeds the requester path depth"
             (length envelope <= maxRootedRequesterComponents)
-        require "the sealed external envelope contains an empty component"
+        require
+            "the sealed external envelope contains an empty component"
             (not (any Text.null envelope))
-        require "the sealed external envelope contains an oversized component"
+        require
+            "the sealed external envelope contains an oversized component"
             ( all
                 ( (<= maxRootedRequesterComponentBytes)
                     . ByteString.length
@@ -509,7 +612,10 @@ withRootedFrameSessionKernel session use = case session of
         use False (projectVerbName verb) lineage catalogIdentity frame path token stage ordinal Nothing
     AttachedRootedFrameSession
         (OpenedRootedFrameSession verb lineage catalogIdentity frame path token stage ordinal _ _ _)
-        _ predecessor _ _ ->
+        _
+        predecessor
+        _
+        _ ->
             use True (projectVerbName verb) lineage catalogIdentity frame path token stage ordinal (Just predecessor)
     AttachedRootedFrameSession AttachedRootedFrameSession{} _ _ _ _ ->
         pure (Left (rootedFailure "a rooted frame session cannot nest two attachments"))
@@ -527,9 +633,12 @@ withFailedRootedFrameSessionKernel session use =
     case session of
         AttachedRootedFrameSession
             (OpenedRootedFrameSession verb lineage catalog frame path token stage ordinal _ _ _)
-            _ _ _ _
+            _
+            _
+            _
+            _
                 | projectVerbName verb /= "up" -> refused "the failed session is not an Up session"
-                | stage `notElem` ["refused", "receipt-recorded"] -> refused "the failed session has not reached a closed failure stage"
+                | stage `notElem` ["refused", "frame-complete", "receipt-recorded"] -> refused "the failed session has not reached a terminal failure stage"
                 | otherwise -> Right (use lineage catalog frame path token ordinal)
         OpenedRootedFrameSession{} -> refused "the failed session was never attached"
         AttachedRootedFrameSession AttachedRootedFrameSession{} _ _ _ _ ->
@@ -589,6 +698,103 @@ withAdvancedRootedFrameSessionKernel session request signedResponse use =
         pure (stage, successor)
     outside = Left (rootedFailure "an Opened response cannot advance an attached frame session")
 
+{- | Recognize only the exact attached successor of one known opening.
+
+This parser is deliberately narrower than a general session-row decoder. It is
+used only when a new, mode-exclusive reverse invocation finds the transport
+exchange left by its dead predecessor. Durable node and terminal rows carry
+the lifecycle progress; the attached row carries only the now-unusable child
+nonce and response predecessor. A canonical exact successor may therefore be
+removed and reopened atomically, while an ordinary forward opening, a foreign
+opening, malformed framing, or a changed row still refuses.
+-}
+validateAttachedRootedFrameSessionRow ::
+    Text ->
+    Text ->
+    [Text] ->
+    ByteString ->
+    ByteString ->
+    Either Text ()
+validateAttachedRootedFrameSessionRow rootPlanDigest catalogIdentity path openedBytes raw = do
+    (domain, afterDomain) <- takeAttachedField raw
+    (version, afterVersion) <- takeAttachedField afterDomain
+    (stage, afterStage) <- takeAttachedField afterVersion
+    (opening, afterOpening) <- takeAttachedField afterStage
+    (lineage, afterLineage) <- takeAttachedField afterOpening
+    (catalog, afterCatalog) <- takeAttachedField afterLineage
+    (componentCount, afterComponentCount) <- takeAttachedField afterCatalog
+    afterPath <- takeAttachedPath path afterComponentCount
+    (nonce, afterNonce) <- takeAttachedField afterPath
+    (predecessor, trailing) <- takeAttachedField afterNonce
+    require
+        "the attached rooted frame session domain differs"
+        (domain == TextEncoding.encodeUtf8 rootedFrameSessionDomain)
+    require "the attached rooted frame session version differs" (version == wordBytes 1)
+    require "the rooted frame session is not attached" (stage == "attached")
+    require "the attached rooted frame session nests another opening" (opening == openedBytes)
+    require
+        "the attached rooted frame session has another root plan"
+        (lineage == TextEncoding.encodeUtf8 rootPlanDigest)
+    require
+        "the attached rooted frame session has another catalog"
+        (catalog == TextEncoding.encodeUtf8 catalogIdentity)
+    require
+        "the attached rooted frame session path count differs"
+        (componentCount == wordBytes (fromIntegral (length path)))
+    require "the attached rooted frame session nonce is empty" (not (ByteString.null nonce))
+    require
+        "the attached rooted frame session predecessor is not a digest"
+        (isLowerHexDigest predecessor)
+    require "the attached rooted frame session has trailing bytes" (ByteString.null trailing)
+
+takeAttachedPath :: [Text] -> ByteString -> Either Text ByteString
+takeAttachedPath [] rest = Right rest
+takeAttachedPath (expected : remaining) raw = do
+    (component, rest) <- takeAttachedField raw
+    require
+        "the attached rooted frame session path differs"
+        (component == TextEncoding.encodeUtf8 expected)
+    takeAttachedPath remaining rest
+
+takeAttachedField :: ByteString -> Either Text (ByteString, ByteString)
+takeAttachedField =
+    either
+        (Left . rootedFailure . Text.pack . handoffErrorMessage)
+        Right
+        . takeHandoffFrame
+
+renderAttachedRootedFrameSessionRow ::
+    Text ->
+    Text ->
+    [Text] ->
+    ByteString ->
+    ByteString ->
+    ByteString ->
+    ByteString
+renderAttachedRootedFrameSessionRow rootPlanDigest catalogIdentity path openedBytes nonce predecessor =
+    ByteString.concat
+        ( [ framedText rootedFrameSessionDomain
+          , framedWord 1
+          , framedText "attached"
+          , frameWire openedBytes
+          , framedText rootPlanDigest
+          , framedText catalogIdentity
+          , framedWord (fromIntegral (length path))
+          ]
+            ++ map framedText path
+            ++ [frameWire nonce, frameWire predecessor]
+        )
+
+wordBytes :: Word64 -> ByteString
+wordBytes = LazyByteString.toStrict . Builder.toLazyByteString . Builder.word64BE
+
+isLowerHexDigest :: ByteString -> Bool
+isLowerHexDigest digest =
+    ByteString.length digest == 64
+        && ByteString.all
+            (\byte -> (byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102))
+            digest
+
 rootedFrameSessionDomain :: Text
 rootedFrameSessionDomain = "hostbootstrap/rooted-frame-session"
 
@@ -608,7 +814,7 @@ framedText :: Text -> ByteString
 framedText = frameWire . TextEncoding.encodeUtf8
 
 framedWord :: Word64 -> ByteString
-framedWord = frameWire . LazyByteString.toStrict . Builder.toLazyByteString . Builder.word64BE
+framedWord = frameWire . wordBytes
 
 sessionFailure :: Either SessionError result -> Either Text result
 sessionFailure = either (Left . rootedFailure . Text.pack . sessionErrorMessage) Right

@@ -1,10 +1,10 @@
-{-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
 
 {- | The broker-signed runtime role activation.
 
@@ -24,52 +24,53 @@ import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import qualified Dhall
+import qualified Fixture
 import HostBootstrap.Activation
 import qualified HostBootstrap.Authority as Authority
-import HostBootstrap.Handoff (frameWire)
-import HostBootstrap.Lifecycle.Mode (productionRootAuthority, withProductionRoot)
 import HostBootstrap.Config.Class (ProjectCfg (cfgContext), projectCodecSpecDigest, withProductionProjectCodec)
 import HostBootstrap.Config.Fields (ScopeKind (ProductionScope), inspectLocalContext, localCurrentFrame, renderValidatedServiceRequest)
+import qualified HostBootstrap.Context as Context
+import HostBootstrap.Handoff (frameWire)
+import HostBootstrap.Lifecycle.Mode (productionRootAuthority, withProductionRoot)
 import HostBootstrap.Protected (
     ProtectedStore,
     openProtectedStore,
+    tryProtectedEntry,
  )
-import HostBootstrap.Service
-    ( ServiceActivationError (..)
-    , installServiceActivationRevision
-    , runInstalledServiceProgram
-    , serviceId
-    , serviceProgramDefinition
-    , ServiceResourceBackend (..)
-    , singletonServiceRegistry
-    , serviceActivationErrorMessage
-    , serviceActivationRevisionPath
-    , withInstalledServiceActivation
-    , withFinalizedServiceRegistry
-    , withSelectedServiceProgram
-    )
-import HostBootstrap.Service.Program
-    ( ServiceBackend (..)
-    , ServicePayloads (..)
-    , lookupAcquiredResource
-    , serve
-    , withReadyServiceHandles
-    )
-import HostBootstrap.RoleLifecycle
-    ( DeclaredEffects (NoEffects, WithEffect)
-    , EffectName (NetworkListenName)
-    , RoleAcquireOutcome (Acquired)
-    , RolePrereqOutcome (PrereqSatisfied)
-    , RoleProbeOutcome (ProbeReadyNow)
-    , RoleReleaseOutcome (Released)
-    , mkRoleResourceRequest
-    , roleExitReportOk
-    , rolePlanDraft
-    , rolePlanDraftDigest
-    )
-import qualified Fixture
-import qualified Dhall
-import qualified HostBootstrap.Context as Context
+import HostBootstrap.RoleLifecycle (
+    DeclaredEffects (NoEffects, WithEffect),
+    EffectName (NetworkListenName),
+    RoleAcquireOutcome (Acquired),
+    RolePrereqOutcome (PrereqSatisfied),
+    RoleProbeOutcome (ProbeReadyNow),
+    RoleReleaseOutcome (Released),
+    mkRoleResourceRequest,
+    roleExitReportOk,
+    rolePlanDraft,
+    rolePlanDraftDigest,
+ )
+import HostBootstrap.Service (
+    ServiceActivationError (..),
+    ServiceResourceBackend (..),
+    installServiceActivationRevision,
+    runInstalledServiceProgram,
+    serviceActivationErrorMessage,
+    serviceActivationRevisionPath,
+    serviceId,
+    serviceProgramDefinition,
+    singletonServiceRegistry,
+    withFinalizedServiceRegistry,
+    withInstalledServiceActivation,
+    withSelectedServiceProgram,
+ )
+import HostBootstrap.Service.Program (
+    ServiceBackend (..),
+    ServicePayloads (..),
+    lookupAcquiredResource,
+    serve,
+    withReadyServiceHandles,
+ )
 import System.Directory (createDirectory, createDirectoryIfMissing, removeFile)
 import System.Environment (getExecutablePath)
 import System.FilePath ((</>))
@@ -485,6 +486,7 @@ installedRevisionTests =
     , testCase "a signed narrowed role enters Acquire, Ready, Serve, Drain, and Exit" $
         withSystemTempDirectory "hostbootstrap-service-runtime" $ \directory -> do
             events <- newIORef ([] :: [Text])
+            storeRef <- newIORef Nothing
             request <- either (assertFailure . show) pure (mkRoleResourceRequest "listener" False)
             draft <- either (assertFailure . show) pure (rolePlanDraft [request])
             identity <- either assertFailure pure (serviceId "web")
@@ -499,7 +501,16 @@ installedRevisionTests =
                 backend :: ServiceBackend RuntimePayloads
                 backend =
                     ServiceBackend
-                        { backendServe = \_ -> record events "serve" >> pure (Right ())
+                        { backendServe = \_ -> do
+                            record events "serve"
+                            selectedStore <- readIORef storeRef
+                            case selectedStore of
+                                Nothing -> pure (Left "the fixture did not publish its protected store")
+                                Just selected -> do
+                                    entered <- tryProtectedEntry selected (\_ -> pure (Right ()))
+                                    pure $ case entered of
+                                        Right (Just ()) -> Right ()
+                                        other -> Left (Text.pack ("the service callback still holds the global transaction lock: " <> show other))
                         , backendCall = \_ _ -> pure (Right ())
                         , backendWork = \_ _ -> pure (Right ())
                         }
@@ -510,7 +521,7 @@ installedRevisionTests =
                         (WithEffect NetworkListenName NoEffects)
                         resources
                         backend
-                        (\_ -> withReadyServiceHandles $ \ready -> case lookupAcquiredResource ready "listener" of
+                        ( \_ -> withReadyServiceHandles $ \ready -> case lookupAcquiredResource ready "listener" of
                             Nothing -> pure ()
                             Just listener -> serve [(listener, ())]
                         )
@@ -542,6 +553,7 @@ installedRevisionTests =
                                 , manifestSecretChannel = "/run/hostbootstrap/empty"
                                 }
                     withBrokerFor [manifest] $ \broker store key -> do
+                        writeIORef storeRef (Just store)
                         revision <-
                             expectInstall
                                 =<< installServiceActivationRevision
@@ -758,7 +770,7 @@ externallySignedGrant domain =
 
 data SomeActivationBroker
     = forall scope brokerGeneration verb.
-      SomeActivationBroker (ActivationBroker scope brokerGeneration verb)
+        SomeActivationBroker (ActivationBroker scope brokerGeneration verb)
 
 manifestWireWithSecretDigest :: Text -> ActivationManifest -> ByteString.ByteString
 manifestWireWithSecretDigest secretDigest manifest =

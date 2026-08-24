@@ -9,70 +9,91 @@ The fresh leaf performs the ordered persist, readback, local descriptive
 binding, and lease transition.  The older verification-only functions remain
 available for already-persisted callers.
 -}
-module HostBootstrap.ProjectPlan.Snapshot
-    ( PlanDigestBinding
-    , BoundPlanSnapshot
-    , boundPlanSnapshotBytes
-    , SnapshotError (..)
-    , withPlanDigestBinding
-    , withFreshBoundPlanSnapshot
-    , withPersistedPlanSnapshot
-    , withBoundPlanSnapshot
-    , withReauthorizedBoundPlanSnapshotKernel
-    )
+module HostBootstrap.ProjectPlan.Snapshot (
+    PlanDigestBinding,
+    BoundPlanSnapshot,
+    boundPlanSnapshotBytes,
+    SnapshotError (..),
+    withPlanDigestBinding,
+    withFreshBoundPlanSnapshot,
+    withPersistedPlanSnapshot,
+    withRestartedBoundPlanSnapshot,
+    withBoundPlanSnapshot,
+    withReauthorizedBoundPlanSnapshotKernel,
+)
 where
 
 import Data.ByteString (ByteString)
-import HostBootstrap.Authority
-    ( InstalledProjectIdentity
-    , ProjectVerb (ProjectDestroy, ProjectDown, ProjectUp)
-    , RootInvocationAuthority
-    , TeardownPhase
-    , VerbUp
-    , installedProjectName
-    )
+import qualified Data.Text as Text
+import HostBootstrap.Authority (
+    InstalledProjectIdentity,
+    ProjectVerb (ProjectDestroy, ProjectDown, ProjectUp),
+    RootInvocationAuthority,
+    TeardownPhase,
+    VerbUp,
+    brokerEpochWord,
+    installedProjectName,
+    rootAuthorityEpoch,
+    rootAuthorityProjectName,
+ )
+import HostBootstrap.Authority.Kernel (rootAuthorityStoreIdentity)
 import HostBootstrap.Lifecycle.Context (ValidatedLifecycleContext)
-import HostBootstrap.Lifecycle.Mode
-    ( AcquisitionJournal
-    , BoundInvocationRecovery
-    , BoundRunLease
-    , InvocationCloseKey
-    , LifecycleCursor
-    , LeaseConflict
-    , ModeError (..)
-    , NormalActiveRecovery
-    , ProductionMode
-    , ProjectModeLease
-    , RecoveredProductionLifecycleProfile
-    , UnboundRunLease
-    , VerifiedPlanSnapshot
-    , bindRunLeaseWithPlanRecovery
-    , persistAndVerifyIndexedPlanSnapshotKernel
-    , planSnapshotPlanDigest
-    , validateFreshPlanSnapshotEvidence
-    , verifyIndexedPlanSnapshot
-    , withBoundPlanSnapshotKernel
-    , withFreshExistingBoundReverseRootKernel
-    , withResumedExistingBoundReverseRootKernel
-    )
-import HostBootstrap.Lifecycle.Plan
-    ( BoundPlanSnapshot
-    , ExistingBoundSnapshotAdmission
-    , PlanDigestBinding
-    , boundPlanSnapshotBytesKernel
-    , consumeExistingBoundSnapshotAdmissionKernel
-    , existingBoundSnapshotAdmissionKernel
-    , mintBoundPlanSnapshotKernel
-    , mintPlanDigestBindingKernel
-    , projectPlanIndexedSnapshotKernel
-    )
-import HostBootstrap.ProjectScope (Production)
-import HostBootstrap.Protected
-    ( ProtectedError
-    , ProtectedStore
-    , withRunLiveness
-    )
+import HostBootstrap.Lifecycle.Mode (
+    AcquisitionJournal,
+    BoundInvocationRecovery,
+    BoundRunLease,
+    InvocationCloseKey,
+    LeaseConflict,
+    LifecycleCursor,
+    ModeError (..),
+    NormalActiveRecovery,
+    ProductionMode,
+    ProjectModeLease,
+    RecoveredProductionLifecycleProfile,
+    UnboundRunLease,
+    VerifiedPlanSnapshot,
+    bindRunLeaseWithPlanRecovery,
+    boundRunLeasePlanDigest,
+    boundRunLeaseSpecDigest,
+    persistAndVerifyIndexedPlanSnapshotKernel,
+    planSnapshotCanonicalBytes,
+    planSnapshotConfigDigest,
+    planSnapshotPlanDigest,
+    planSnapshotProjectName,
+    planSnapshotSpecDigest,
+    planSnapshotStoreIdentity,
+    validateFreshPlanSnapshotEvidence,
+    verifyIndexedPlanSnapshot,
+    withBoundPlanSnapshotKernel,
+    withFreshExistingBoundReverseRootKernel,
+    withResumedExistingBoundReverseRootKernel,
+ )
+import HostBootstrap.Lifecycle.Plan (
+    BoundPlanSnapshot,
+    ExistingBoundSnapshotAdmission,
+    PlanDigestBinding,
+    boundPlanSnapshotBytesKernel,
+    canonicalPlanSnapshotBytes,
+    canonicalPlanSnapshotConfigDigest,
+    canonicalPlanSnapshotDigest,
+    canonicalPlanSnapshotSpecDigest,
+    consumeExistingBoundSnapshotAdmissionKernel,
+    existingBoundSnapshotAdmissionKernel,
+    indexedPlanSnapshotCanonicalKernel,
+    mintBoundPlanSnapshotKernel,
+    mintPlanDigestBindingKernel,
+    projectPlanIndexedSnapshotKernel,
+    projectPlanProfileEpochKernel,
+    projectPlanProfileProjectNameKernel,
+    projectPlanProfileStoreIdentityKernel,
+ )
 import HostBootstrap.ProjectPlan (ProjectPlan)
+import HostBootstrap.ProjectScope (Production)
+import HostBootstrap.Protected (
+    ProtectedError,
+    ProtectedStore,
+    withRunLiveness,
+ )
 
 -- | The protected fresh-snapshot protocol refused before yielding authority.
 data SnapshotError
@@ -117,10 +138,11 @@ withPlanDigestBinding unbound plan use = do
   where
     indexed = projectPlanIndexedSnapshotKernel plan
 
--- | The exact canonical bytes retained by a locally bound snapshot.
---
--- This projection is descriptive only.  It exposes no constructor, plan
--- identity, lease transition, or operation authority.
+{- | The exact canonical bytes retained by a locally bound snapshot.
+
+This projection is descriptive only.  It exposes no constructor, plan
+identity, lease transition, or operation authority.
+-}
 boundPlanSnapshotBytes ::
     BoundPlanSnapshot scope specDigest planDigest planId ->
     ByteString
@@ -182,9 +204,7 @@ withPersistedPlanSnapshot ::
     ) ->
     IO (Either SnapshotError result)
 withPersistedPlanSnapshot root unbound plan use =
-    case
-        validateFreshPlanSnapshotEvidence root unbound plan
-    of
+    case validateFreshPlanSnapshotEvidence root unbound plan of
         Left failure -> pure (Left (SnapshotVerificationError failure))
         Right () -> do
             persisted <-
@@ -209,6 +229,54 @@ withPersistedPlanSnapshot root unbound plan use =
                 Right result -> result
   where
     indexed = projectPlanIndexedSnapshotKernel plan
+
+{- | Bind a freshly re-admitted local plan identity to the immutable snapshot
+and already-rotated bound lease of a same-run Harness invocation.
+
+No snapshot or lease mutation occurs here. The restart transition has already
+advanced the broker generation; this leaf compares every stable plan byte and
+all root/profile origins before minting the new local plan binding.
+-}
+withRestartedBoundPlanSnapshot ::
+    RootInvocationAuthority scope brokerGeneration verb ->
+    BoundRunLease scope specDigest planDigest brokerGeneration ->
+    VerifiedPlanSnapshot scope specDigest planDigest ->
+    ProjectPlan scope specDigest planId configId cfg ->
+    ( BoundPlanSnapshot scope specDigest planDigest planId ->
+      PlanDigestBinding scope specDigest planDigest planId ->
+      IO result
+    ) ->
+    IO (Either SnapshotError result)
+withRestartedBoundPlanSnapshot root bound verified plan use =
+    case validate of
+        Left failure -> pure (Left (SnapshotVerificationError failure))
+        Right () -> Right <$> use boundSnapshot binding
+  where
+    indexed = projectPlanIndexedSnapshotKernel plan
+    canonical = indexedPlanSnapshotCanonicalKernel indexed
+    binding = mintPlanDigestBindingKernel indexed (planSnapshotPlanDigest verified)
+    boundSnapshot = mintBoundPlanSnapshotKernel indexed binding
+    validate = do
+        match "root project" (rootAuthorityProjectName root) (projectPlanProfileProjectNameKernel plan)
+        match "root store" (rootAuthorityStoreIdentity root) (projectPlanProfileStoreIdentityKernel plan)
+        matchWord "root epoch" (brokerEpochWord (rootAuthorityEpoch root)) (projectPlanProfileEpochKernel plan)
+        match "snapshot project" (planSnapshotProjectName verified) (rootAuthorityProjectName root)
+        match "snapshot store" (planSnapshotStoreIdentity verified) (rootAuthorityStoreIdentity root)
+        match "snapshot specification" (planSnapshotSpecDigest verified) (canonicalPlanSnapshotSpecDigest canonical)
+        match "snapshot plan" (planSnapshotPlanDigest verified) (canonicalPlanSnapshotDigest canonical)
+        if planSnapshotConfigDigest verified == Just (canonicalPlanSnapshotConfigDigest canonical)
+            then Right ()
+            else Left (ModeEvidenceMismatch "configuration digest" "exact persisted digest" "different digest")
+        if planSnapshotCanonicalBytes verified == Just (canonicalPlanSnapshotBytes canonical)
+            then Right ()
+            else Left (ModeEvidenceMismatch "canonical bytes" "exact persisted bytes" "different bytes")
+        match "bound specification" (planSnapshotSpecDigest verified) (boundRunLeaseSpecDigest bound)
+        match "bound plan" (planSnapshotPlanDigest verified) (boundRunLeasePlanDigest bound)
+    match subject expected observed
+        | expected == observed = Right ()
+        | otherwise = Left (ModeEvidenceMismatch subject expected observed)
+    matchWord subject expected observed =
+        match subject (Text.pack (show expected)) (Text.pack (show observed))
 
 {- | Read-only admission of the existing Production invocation retained in a
 protected store.
@@ -271,11 +339,19 @@ withReauthorizedBoundPlanSnapshotKernel ::
         sourcePlanDigest
         sourceBrokerGeneration ->
       VerifiedPlanSnapshot
-        (Production projectId) sourceSpecDigest sourcePlanDigest ->
+        (Production projectId)
+        sourceSpecDigest
+        sourcePlanDigest ->
       BoundPlanSnapshot
-        (Production projectId) sourceSpecDigest sourcePlanDigest sourcePlanId ->
+        (Production projectId)
+        sourceSpecDigest
+        sourcePlanDigest
+        sourcePlanId ->
       PlanDigestBinding
-        (Production projectId) sourceSpecDigest sourcePlanDigest sourcePlanId ->
+        (Production projectId)
+        sourceSpecDigest
+        sourcePlanDigest
+        sourcePlanId ->
       BoundInvocationRecovery
         (Production projectId)
         sourceSpecDigest
@@ -284,18 +360,28 @@ withReauthorizedBoundPlanSnapshotKernel ::
         sourceBrokerGeneration ->
       ( forall sourceConfigId cfg frame.
         ProjectPlan
-          (Production projectId) sourceSpecDigest sourcePlanId sourceConfigId cfg ->
+            (Production projectId)
+            sourceSpecDigest
+            sourcePlanId
+            sourceConfigId
+            cfg ->
         ValidatedLifecycleContext
-          (Production projectId) sourceSpecDigest sourcePlanId sourceConfigId frame ->
+            (Production projectId)
+            sourceSpecDigest
+            sourcePlanId
+            sourceConfigId
+            frame ->
         AcquisitionJournal
-          (Production projectId) sourcePlanId sourceBrokerGeneration ->
+            (Production projectId)
+            sourcePlanId
+            sourceBrokerGeneration ->
         LifecycleCursor
-          (Production projectId)
-          sourcePlanId
-          frame
-          sourceBrokerGeneration
-          VerbUp
-          TeardownPhase ->
+            (Production projectId)
+            sourcePlanId
+            frame
+            sourceBrokerGeneration
+            VerbUp
+            TeardownPhase ->
         IO (Either SnapshotError sourceResult)
       ) ->
       IO (Either SnapshotError sourceResult)
@@ -305,14 +391,27 @@ withReauthorizedBoundPlanSnapshotKernel ::
       RootInvocationAuthority (Production projectId) targetBrokerGeneration verb ->
       ProjectModeLease projectId ProductionMode targetBrokerGeneration ->
       BoundRunLease
-        (Production projectId) targetSpecDigest targetPlanDigest targetBrokerGeneration ->
+        (Production projectId)
+        targetSpecDigest
+        targetPlanDigest
+        targetBrokerGeneration ->
       VerifiedPlanSnapshot (Production projectId) targetSpecDigest targetPlanDigest ->
       BoundPlanSnapshot
-        (Production projectId) targetSpecDigest targetPlanDigest targetPlanId ->
+        (Production projectId)
+        targetSpecDigest
+        targetPlanDigest
+        targetPlanId ->
       PlanDigestBinding
-        (Production projectId) targetSpecDigest targetPlanDigest targetPlanId ->
+        (Production projectId)
+        targetSpecDigest
+        targetPlanDigest
+        targetPlanId ->
       RecoveredProductionLifecycleProfile
-        projectId targetSpecDigest targetPlanDigest targetPlanId targetBrokerGeneration ->
+        projectId
+        targetSpecDigest
+        targetPlanDigest
+        targetPlanId
+        targetBrokerGeneration ->
       IO result
     ) ->
     IO (Either SnapshotError result)

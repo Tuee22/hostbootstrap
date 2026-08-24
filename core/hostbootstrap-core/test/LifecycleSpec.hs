@@ -186,7 +186,6 @@ tests =
         [ testGroup "resolvePlan" planCases
         , testGroup "cluster drivers" driverCases
         , testGroup "profiles are distinct" profileCases
-        , testGroup "host-port publication" hostPortCases
         , testGroup "accelerator ingress" acceleratorIngressCases
         , testGroup "NVIDIA runtime probe" nvidiaRuntimeCases
         , testGroup "NVIDIA device plugin" nvidiaDevicePluginCases
@@ -263,20 +262,11 @@ driverCases =
         clusterCreateArgs test1 True @?= ["create", "cluster", "--name", "demo-test-case1"]
     , testCase "an explicit non-publishing nvkind topology is still honored" $ do
         let plan = (resolvePlanWithDriver "demo" rootPath (TestCase "gpu") NvkindDriver){clusterConfigFile = Just "nvkind-test.yaml"}
-        publishesHostPorts plan @?= False
         clusterCreateArgs plan True @?= ["cluster", "create", "--name=demo-test-gpu", "--config-template=nvkind-test.yaml"]
     , testCase "an explicit cluster config is required and an intentional default is not" $ do
         clusterConfigPresence Nothing False @?= Right False
         clusterConfigPresence (Just "nvkind.yaml") True @?= Right True
         clusterConfigPresence (Just "nvkind.yaml") False @?= Left "cluster up: required config file is missing: nvkind.yaml"
-    ]
-
-hostPortCases :: [TestTree]
-hostPortCases =
-    [ testCase "production publishes the host NodePorts (kind.yaml)" $
-        publishesHostPorts prod @?= True
-    , testCase "test cluster binds no host port so cases never collide" $
-        publishesHostPorts test1 @?= False
     ]
 
 profileCases :: [TestTree]

@@ -44,8 +44,9 @@
   The generated config is unlinked only while its bound kernel identity **and** recorded payload both
   still match; anything else remains in place and is reported. That guard is
   `HostBootstrap.Harness.GeneratedConfig`, which holds all four § EE ownership clauses over the file rather
-  than relying on a cooperative pathname sidecar. A verified ownership *receipt* for the rest of the lifecycle's
-  resources and the engine-owned same-run destroy/up cycle are still open.
+  than relying on a cooperative pathname sidecar. Restart-spanning cases run their two assertion phases around
+  an engine-owned settled reverse, protected invocation rotation, exact snapshot rebind, and second forward;
+  the assertion surface receives no lifecycle authority.
 - `SecretRef scope` carries references rather than raw secret `Text`, and core never resolves secrets.
   `TestPlaintext` requires exact `HarnessConfigAuthority projectId runId`; the Production schema has no
   plaintext constructor. Root assembly is scope-safe now, and authenticated config refinement can produce
@@ -393,12 +394,10 @@ from the retained plan and lets core test that engine ordering without making a 
 consumer package.
 
 The generated demo config and exact Harness plan carry the run-scoped cluster identity and
-`.test_data/<runId>` root. Demo consumers still accept independently config-derived profile/root terms;
-the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns projecting those arguments
-from the retained plan. The configured
-`durable-readback` case remains deliberately non-passing until the engine can allocate a
-fresh same-run lifecycle-invocation generation and interpret write → nonterminal destroy → exact up →
-read before the final settled destroy authorizes terminal close. See [harness workflow](harness_workflow.md).
+`.test_data/<runId>` root. `durable-readback` declares `AssertAcrossRestart`; the engine allocates a fresh
+same-run lifecycle-invocation generation and interprets write → settled nonterminal destroy → exact rebind
+and forward → read before the final settled destroy authorizes terminal close. The other four cases run once,
+so two variants still yield ten report rows. See [harness workflow](harness_workflow.md).
 
 `ConfigAssembly` can read only declared inputs — for example a project-specific
 `test-secrets.dhall` — and otherwise has no arbitrary `IO`, process, write, backend, or lifecycle escape.
@@ -481,13 +480,14 @@ Every returned member remains the original nominal plan/config-indexed `PlannedS
 one retained config digest. The same projection requires a unique provider-to-cluster immediate edge, one
 cluster operation, one chart, one assertion, non-empty provider/service slices, exact dependency prefixes, and
 cluster-frame-local workloads. Its config companion re-renders canonical bytes and matches the retained digest
-before exposing only the refined resources, replica count, service ports, and profile-owned durable root.
+before exposing only the refined resources, replica count, cluster-internal service targets, and profile-owned durable root.
 
 Cluster consumption then proceeds through two indexed joins. `withPlanOwnedCluster` joins the admitted cluster
 resource to its unique immediate provider, topology, and budget slice without runtime dependency or rendered
 configuration. The demo's canonical renderer feeds those exact bytes into the sole smart binder for opaque
-`PlanOwnedClusterConfig`, which attaches the closed driver, bytes/digest, deterministic paths, loopback set,
-driver-derived node mapping, and workload slice to that same base identity. Reconcile preparation consumes the
+`PlanOwnedClusterConfig`, which attaches the closed driver, bytes/digest, deterministic paths, semantic exposure
+intents, driver-derived node mapping, and workload slice to that same base identity. The selected host ports
+arrive later only as runtime-owned resolved exposures. Reconcile preparation consumes the
 completed package directly; it has no parallel driver, profile, root, path, or config argument. The runtime
 provider dependency is consulted only after this pure package is complete.
 

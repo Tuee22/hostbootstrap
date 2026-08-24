@@ -10,7 +10,7 @@ import Data.Function ((&))
 import Data.List (findIndex, isInfixOf, isSuffixOf, tails)
 import qualified Data.Text as T
 import qualified Dhall
-import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon), AcceleratorIngressPlan (ingressKindListenAddress), ClusterDriver (..), ClusterPlan (clusterConfigFile, clusterDriver, clusterName, dataPath, publishesHostPorts), ClusterProfile (Production, TestCase), acceleratorIngressPlan, profileDataPath, profileDataSegments)
+import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon), AcceleratorIngressPlan (ingressKindListenAddress), ClusterDriver (..), ClusterPlan (clusterConfigFile, clusterDriver, clusterName, dataPath), ClusterProfile (Production, TestCase), acceleratorIngressPlan, profileDataPath, profileDataSegments)
 import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec), projectCodecSpecDigest)
 import HostBootstrap.Config.Fields (
     ScopeKind (ProductionScope),
@@ -36,21 +36,15 @@ import HostBootstrap.Dhall.Gen (artifactName)
 import HostBootstrap.HostTool (absExePath)
 import HostBootstrap.Lift (ContainerLift (clExtraArgs, clMounts), LiftContext (..), LiftLayer (ViaContainer), localContext)
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot, withCanonicalProjectRoot)
-import HostBootstrap.RegistryPlan (
-    BlobProbe (ApiVersionProbe),
-    BlobRouteObservation (..),
-    registryPlanRevision,
-    settleBlobRoute,
- )
-import HostBootstrap.RoleLifecycle (RoleEffect (DurableStore, NetworkListen, ProcessSpawn))
+import HostBootstrap.RoleLifecycle (RoleEffect (DurableStore, NetworkListen, ProcessSpawn), declaredEffectList)
 import HostBootstrap.Service (
     serviceIdText,
     serviceRoleSchemaFamilies,
     serviceVariantNames,
     withFinalizedServiceRegistry,
-    withSelectedServiceRequest,
+    withSelectedServiceProgram,
  )
-import HostBootstrap.Step (Step, StepFrame (..), StepIdentity (..), StepPlan, chainFrames, frameDescent, frameId, mkStepPlan, postHandoffStepsForFrame, projectStepId, providerResourceDeclarationTargetsChild, renderChainPlan, stepFrame, stepIdentity, stepKind, stepKindName, stepLabel, stepPlanSteps, stepProviderResourceDeclarations)
+import HostBootstrap.Step (Step, StepFrame (..), StepIdentity (..), StepPlan, chainFrames, frameDescent, frameId, mkStepPlan, postHandoffStepsForFrame, projectStepId, providerResourceDeclarationTargetsChild, renderChainPlan, stepFrame, stepIdentity, stepKind, stepKindName, stepLabel, stepPlanSteps, stepProviderResourceDeclarations, stepServiceActivationDeclarations)
 import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (Substrate), SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu))
 import HostBootstrapDemo.Commands (
     absoluteHostAcceleratorDaemonExePath,
@@ -62,7 +56,7 @@ import HostBootstrapDemo.Commands (
     demoChainFor,
     demoDirectParentJoin,
     demoForwardChildPlan,
-    demoRegistryPlan,
+    demoImageBuildSpecDigest,
     demoServices,
     demoTestFrameContext,
     directClusterPresence,
@@ -76,10 +70,8 @@ import HostBootstrapDemo.Commands (
     hostDaemonIdentityMatches,
     hostDaemonLifecycleStateConsistent,
     minioClusterEndpoint,
-    parseBlobRouteAnswer,
     readHostAcceleratorDaemonPid,
-    registryConfigYaml,
-    registryEndpoint,
+    renderActivationConfig,
     renderRetainedDaemonOutput,
     renderServiceConfigForContext,
     repoRootOfProjectRoot,
@@ -100,6 +92,7 @@ import HostBootstrapDemo.Config (
     deriveProjectConfigForKind,
     mkPort,
     projectConfigForRole,
+    projectConfigFromContext,
  )
 import HostBootstrapDemo.Container (
     baseDigestArgs,
@@ -143,19 +136,6 @@ validPort = either (error . ("invalid test port: " ++)) id . mkPort
 substringOffset :: String -> String -> Maybe Int
 substringOffset needle = findIndex (isInfixOf needle . take (length needle)) . tails
 
-{- | A @\/v2\/@ answer dressed up as an observation: the status is fine and the
-port is right, but the probe was liveness, not a blob request.
--}
-apiVersionAnswer :: BlobRouteObservation
-apiVersionAnswer =
-    BlobRouteObservation
-        { observedProbe = ApiVersionProbe
-        , observedPort = 30500
-        , observedStatus = 200
-        , observedRedirect = Nothing
-        , observedRevision = registryPlanRevision demoRegistryPlan
-        }
-
 tests :: TestTree
 tests =
     testGroup
@@ -173,7 +153,7 @@ tests =
                     , "frame == T.pack directContainerRuntimeFrameId"
                     , "NvkindDriver"
                     , "KindDriver"
-                    , "renderExactClusterConfig driver digest cfg clusterSlice published"
+                    , "renderExactClusterConfig driver digest cfg clusterSlice"
                     ]
                 positions = traverse (`substringOffset` rendererSource) exactDerivation
             case positions of
@@ -192,7 +172,8 @@ tests =
             commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
             let adopter = maybe "" (`drop` commandsSource) (substringOffset "deployKindAction stepCfg execution" commandsSource)
                 stages =
-                    [ "withFreshCarriedRunningProviderDependency"
+                    [ "canonicalDemoConfigProjection (stepExecutionConfigDigest execution) projectCfg"
+                    , "withFreshCarriedRunningProviderDependency"
                     , "withExecutionOwnedCluster"
                     , "withExactPlanOwnedClusterConfig"
                     , "discoverStrongClusterBackend"
@@ -201,6 +182,7 @@ tests =
                     , "carryClusterReconcileSettlement"
                     , "runClusterCordonCall"
                     , "runClusterReadinessCall"
+                    , "withPreparedClusterExposure"
                     , "registerClusterRuntimeDependencyPackage"
                     ]
             offsets <- maybe (assertFailure "the exact cluster adopter lost a required stage") pure (traverse (`substringOffset` adopter) stages)
@@ -208,22 +190,46 @@ tests =
             assertBool "the VM provider route is absent" ("core:deploy-vm" `isInfixOf` adopter && "runtime://provider/demo-vm-readiness" `isInfixOf` adopter)
             assertBool "the Direct provider route is absent" ("providerKey = \"core:deploy-vm\"" `isInfixOf` adopter && "runtime://provider/demo-direct-readiness" `isInfixOf` adopter)
             assertBool "the adopted action still calls the compatibility cluster mutator" (not ("clusterCreate cfg" `isInfixOf` adopter))
+            assertBool "the adopted action independently derives a descriptive cluster slice" (not ("clusterSliceOfBudget" `isInfixOf` commandsSource))
+        , testCase "application-facing host clients open only their semantic resolved exposure" $ do
+            commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
+            let adopters =
+                    [ ("deployMinioAction stepCfg execution", "deploy-minio", "minio")
+                    , ("deployRegistryAction stepCfg execution", "deploy-registry", "registry")
+                    , ("pushImageAction stepCfg execution", "push-image", "registry")
+                    , ("exposeAction stepCfg execution", "expose-port", "web")
+                    , ("startHostAcceleratorDaemonAction stepCfg execution", "accelerator-daemon", "accelerator")
+                    ]
+            mapM_
+                ( \(function, nonce, service) -> do
+                    let body = maybe "" (`drop` commandsSource) (substringOffset function commandsSource)
+                        exactOpen = "withDemoServiceExposure" ++ if function == "startHostAcceleratorDaemonAction stepCfg execution" then " projectCfg execution" else " stepCfg execution"
+                    assertBool (function ++ " does not open the exact cluster package") (exactOpen `isInfixOf` take 5000 body)
+                    assertBool (function ++ " does not select its semantic service") (("\"" ++ nonce ++ "\" \"" ++ service ++ "\"") `isInfixOf` take 5000 body)
+                    assertBool (function ++ " constructs a fixed local endpoint") (not ("127.0.0.1:" `isInfixOf` take 5000 body || "localhost:" `isInfixOf` take 5000 body))
+                )
+                adopters
         , testCase "the chart action consumes the exact cluster package and generic workload transaction" $ do
             commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
             let adopterTail = maybe "" (`drop` commandsSource) (substringOffset "deployChartAction stepCfg execution" commandsSource)
                 adopter = maybe adopterTail (`take` adopterTail) (substringOffset "{- | The accelerator hub" adopterTail)
                 stages =
                     [ "stepExecutionPreparedGate execution"
+                    , "prepareDemoServiceActivation projectCfg execution"
                     , "withNodeResourceOfKind execution ClusterResourceKind \"core:deploy-kind\""
                     , "withNodeChartWorkloadResource execution"
                     , "withFreshClusterRuntimeDependency execution"
-                    , "withPreparedChartWorkload chart cluster readiness execution values gate"
+                    , "withPreparedActivatedChartWorkload chart cluster readiness execution values activationRevision gate"
                     , "runChartWorkloadCall Nothing"
                     ]
             offsets <- maybe (assertFailure "the exact chart adopter lost a required stage") pure (traverse (`substringOffset` adopter) stages)
             assertBool "chart adoption stages are out of order" (and (zipWith (<) offsets (drop 1 offsets)))
             assertBool "the chart adopter still calls the compatibility mutator" (not ("deployChart cfg" `isInfixOf` adopter))
             assertBool "the chart adopter still applies a caller-built ConfigMap" (not ("runOrDieStdin cfg Kubectl [\"apply\"" `isInfixOf` adopter))
+            let declarationTail = maybe "" (`drop` commandsSource) (substringOffset "declaredChartStep cfg frame" commandsSource)
+                declaration = take 1800 declarationTail
+            assertBool "the chart declaration does not derive its exact service activation frame" ("serviceFrame = snd (renderServiceConfigForContext cfg (context cfg))" `isInfixOf` declaration)
+            assertBool "the exact service activation frame is absent from the chart resource declaration" ("workloadDigest\n        serviceFrame\n        \"web\"" `isInfixOf` declaration)
         , testCase "the reverse command authenticates exact chart ownership without a forward package" $ do
             commandSource <- readFile "../core/hostbootstrap-core/src/HostBootstrap/Command.hs"
             let productionTail = maybe "" (`drop` commandSource) (substringOffset "runProductionTeardown root validated ctx cfg verb = do" commandSource)
@@ -234,11 +240,40 @@ tests =
                     , "resourceRecordKey planDigest frame resource"
                     , "readProtectedRecord session recordKey"
                     , "verifyProjectChartResourceRecordBundle plan chart"
-                    , "runVerifiedChartWorkloadCleanupCall cfg chart bundle"
+                    , "runVerifiedChartWorkloadCleanupCall cfg (planForRoot root ctx) chart bundle"
                     ]
             offsets <- maybe (assertFailure "the reverse chart adopter lost an authenticated stage") pure (traverse (`substringOffset` production) stages)
             assertBool "reverse chart stages are out of order" (and (zipWith (<) offsets (drop 1 offsets)))
             assertBool "reverse adoption reconstructs a forward execution package" (not ("PlanExecutionPackage" `isInfixOf` production))
+        , testCase "reverse releases the recorded relay before cluster deletion in both routes" $ do
+            coreSource <- readFile "../core/hostbootstrap-core/src/HostBootstrap/Command.hs"
+            demoSource <- readFile "src/HostBootstrapDemo/Commands.hs"
+            let coreReverse = maybe "" (`drop` coreSource) (substringOffset "coreManaged _key reverseAction" coreSource)
+                coreRelease = maybe "" (`drop` coreSource) (substringOffset "releaseRetainedClusterLifecycle cfg plan = do" coreSource)
+                directReverse = maybe "" (`drop` demoSource) (substringOffset "demoDirectClusterReverseAt profile root cfg" demoSource)
+                ordered body first second = case (substringOffset first body, substringOffset second body) of
+                    (Just left, Just right) -> left < right
+                    _ -> False
+            assertBool "core reverse does not enter retained ownership release" ("releaseRetainedClusterLifecycle cfg clusterPlan" `isInfixOf` coreReverse)
+            assertBool "core reverse does not release exposure before retained cluster ownership" (ordered coreRelease "releaseRecordedClusterExposure cfg plan" "releaseRetainedCluster cfg plan")
+            assertBool "direct reverse does not release exposure before probing/deleting nvkind" (ordered directReverse "releaseRecordedClusterExposure cfg directPlan" "directClusterExists cfg directPlan")
+        , testCase "pristine guest setup uses the closed probe-first bootstrap before post-bootstrap delivery" $ do
+            commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
+            let bootstrapTail = maybe "" (`drop` commandsSource) (substringOffset "runVmBootstrap stepCfg _execution" commandsSource)
+                bootstrap = maybe bootstrapTail (`take` bootstrapTail) (substringOffset "reportGuestBootstrap outcome" bootstrapTail)
+                stages =
+                    [ "stageSource vmReady cfg provider"
+                    , "streamVMConfig vmReady cfg provider parentCfg ctx"
+                    , "mkGuestBootstrapTarget"
+                    , "runGuestBootstrap cfg (providerLiftContext provider) bootstrapTarget"
+                    , "install the verification key and sibling vm-orchestrator-1 config beside the bootstrapped binary"
+                    , "install Docker in the VM"
+                    ]
+            offsets <- maybe (assertFailure "the guest setup lost a required bootstrap/delivery stage") pure (traverse (`substringOffset` bootstrap) stages)
+            assertBool "guest bootstrap and post-bootstrap delivery are out of order" (and (zipWith (<) offsets (drop 1 offsets)))
+            assertBool "guest setup still carries a manual ghcup installer" (not ("get-ghcup.haskell.org" `isInfixOf` bootstrap))
+            assertBool "guest setup still carries a manual pipx project install" (not ("pipx install --force" `isInfixOf` bootstrap))
+            assertBool "guest Docker install does not provide the authenticated-build frontend" ("docker.io docker-buildx acl" `isInfixOf` bootstrap)
         , testCase "the VM deployment performs exact provider settlement before package registration" $ do
             commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
             let adopterSource =
@@ -256,7 +291,7 @@ tests =
                     , "withPreparedProviderReady execution"
                     , "runProviderReadyCall backend preparedReady"
                     , "settleProviderReady preparedReady readyCall"
-                    , "carryRunningProviderSettlement execution advance \"provisioned\" \"demo-incus-provider-v1\""
+                    , "carryCreatedRunningProviderSettlement execution advance \"demo-incus-provider-v1\""
                     , "registerRunningProviderDependencyPackage"
                     ]
                 positions = traverse (`substringOffset` adopterSource) exactCallsite
@@ -275,6 +310,16 @@ tests =
             assertBool
                 "the provider adopter reconstructed an operation-name fallback"
                 (not ("withNodeResourceOfKind execution ProviderResourceKind \"" `isInfixOf` commandsSource))
+        , testCase "Incus reverse re-enters the retained provider ownership record" $ do
+            commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
+            let reverseSource = maybe "" (`drop` commandsSource) (substringOffset "demoProviderReverse projectCfg cfg action" commandsSource)
+                incusBranch = maybe reverseSource (`take` reverseSource) (substringOffset "else case action of" reverseSource)
+            assertBool "Incus reverse lost strong-backend discovery" ("discoverStrongProviderBackend cfg backendSpec" `isInfixOf` reverseSource)
+            assertBool "Incus destroy bypasses retained ownership" ("runRetainedProviderDelete backend" `isInfixOf` reverseSource)
+            assertBool "Incus down bypasses retained ownership" ("runRetainedProviderStop backend" `isInfixOf` reverseSource)
+            assertBool
+                "Incus reverse still reaches the raw provider delete plan"
+                (not ("planProviderDelete" `isInfixOf` incusBranch))
         , testCase "the Direct reservation settles exactly before CUDA and package consumers" $ do
             commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
             let bootstrapSource =
@@ -341,6 +386,7 @@ tests =
                     , "withProviderShareSettlement"
                     , "withProviderBoundExec backend managedProvider"
                     , "reconcileNodeGuestAlias"
+                    , "carryProviderShareSettlement execution managedShare \"demo-provider-share-v1\""
                     ]
                 positions = traverse (`substringOffset` adopterSource) exactCallsite
             case positions of
@@ -360,13 +406,39 @@ tests =
             assertBool
                 "the managed share was written into a cross-node carrier"
                 (not ("carryManagedResource" `isInfixOf` adopterSource))
+            let chainSource =
+                    maybe
+                        ""
+                        (`drop` commandsSource)
+                        (substringOffset "demoVmBackedStackAt ::" commandsSource)
+            assertBool
+                "the pristine guest binary is not installed before the shipped alias transaction"
+                ( case (substringOffset "runVmBootstrap cfg" chainSource, substringOffset "runCopySource cfg" chainSource) of
+                    (Just bootstrapOffset, Just copyOffset) -> bootstrapOffset < copyOffset
+                    _ -> False
+                )
+            assertBool
+                "the VM descent is not owned by the post-bootstrap copy-source node"
+                ( "descendsVia\n        providerContext\n        ( reversedBy"
+                    `isInfixOf` chainSource
+                )
+            let copySourceTail =
+                    maybe "" (`drop` commandsSource) (substringOffset "runCopySource ::" commandsSource)
+                copySourceBody =
+                    maybe copySourceTail (`take` copySourceTail) (substringOffset "runExactIncusShare ::" copySourceTail)
+            assertBool
+                "copy-source does not re-mint the ephemeral provider witness after the share settles"
+                ( case (substringOffset "runExactIncusShare projectCfg cfg execution durableShare" copySourceBody, substringOffset "mintVmProviderWitness cfg sp" copySourceBody) of
+                    (Just shareOffset, Just witnessOffset) -> shareOffset < witnessOffset
+                    _ -> False
+                )
         , testCase "the guest alias settles inside the managed copy-source continuation" $ do
             commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
             let adopterSource =
                     maybe "" (`drop` commandsSource) (substringOffset "runExactIncusShare ::" commandsSource)
             assertBool
                 "copy-source no longer declares its exact guest-alias projection"
-                ("Step.projectsOperation\n        \"core:copy-source/guest-alias\"" `isInfixOf` commandsSource)
+                ("\"core:deploy-vm/core:copy-source/guest-alias\"" `isInfixOf` commandsSource)
             assertBool
                 "the exact alias does not retain the stable path and provider-selected target"
                 ("mkGuestAliasSpec durableDockerHostPath (hpsGuestPath durableShare)" `isInfixOf` adopterSource)
@@ -377,51 +449,39 @@ tests =
                     _ -> False
                 )
             assertBool
-                "the exact Incus adopter retained the compatibility alias mutator"
-                (not ("mintDurableAlias" `isInfixOf` adopterSource))
-        , testCase "the registry config renders proxy delivery from the plan, not a flag" $ do
-            -- § GG: the boolean is OUTPUT. The topology (host-local client,
-            -- cluster-only store) admits no reachability witness, so the plan
-            -- can only be `Proxy`, and proxy delivery must disable redirects.
-            let rendered = registryConfigYaml
+                "a manual guest alias classifier remains in the demo"
+                ( all
+                    (\legacy -> not (legacy `isInfixOf` commandsSource))
+                    [ "mintDurableAlias"
+                    , "gatherVMAliasFacts"
+                    , "planAliasEnsure"
+                    , "classifyAlias"
+                    ]
+                    && "demoGuestAliasReverse" `isInfixOf` commandsSource
+                    && "ShipGiveBackSymbolicLink" `isInfixOf` commandsSource
+                )
             assertBool
-                ("the redirect stanza is rendered:\n" ++ unlines rendered)
-                ("  redirect:" `elem` rendered && "    disable: true" `elem` rendered)
-            -- Everything addressable comes from the one plan.
+                "Harness teardown restores access to its exact virtiofs run root before giving back the guest alias"
+                ( "TestCase _ ->" `isInfixOf` commandsSource
+                    && "sudo chmod -R a+rwX" `isInfixOf` commandsSource
+                    && "durableDockerHostPath ++ \"/\"" `isInfixOf` commandsSource
+                )
             assertBool
-                ("the s3 endpoint is the plan's store: " ++ unlines rendered)
-                (any (("    regionendpoint: http://" ++ minioClusterEndpoint) ==) rendered)
+                "Incus share readiness accepts a writable underlying directory before virtiofs is mounted"
+                ( "ProviderIncus ->" `isInfixOf` commandsSource
+                    && "findmnt -n -o FSTYPE --mountpoint" `isInfixOf` commandsSource
+                    && "= virtiofs" `isInfixOf` commandsSource
+                )
+        , testCase "the registry plan consumes only a runtime-resolved exposure" $ do
+            commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
+            assertBool
+                "the demo registry plan is not projected from the exact runtime exposure"
+                ( "demoRegistryPlan = registryPlanFromExposure . resolvedHostExposure" `isInfixOf` commandsSource
+                    && "registryConfigYaml plan" `isInfixOf` commandsSource
+                    && "observedRuntimeIdentity = exposureRuntimeIdentity exposure" `isInfixOf` commandsSource
+                    && "settleBlobRoute plan observation" `isInfixOf` commandsSource
+                )
             minioClusterEndpoint @?= "minio.default.svc:9000"
-            registryEndpoint @?= "localhost:30500"
-        , testCase "a served blob settles the route; a redirect to the store refuses" $ do
-            -- Proxy delivery: 200 with no Location.
-            served <- either assertFailure pure (parseBlobRouteAnswer "200 ")
-            case settleBlobRoute demoRegistryPlan served of
-                Right _ -> pure ()
-                other -> assertFailure ("a served blob must settle, got " ++ show other)
-            -- The reproduced defect: the registry redirects a host-local client
-            -- to the cluster-only store, which it cannot resolve.
-            redirected <-
-                either
-                    assertFailure
-                    pure
-                    (parseBlobRouteAnswer "307 http://minio.default.svc:9000/registry/blob")
-            case settleBlobRoute demoRegistryPlan redirected of
-                Left _ -> pure ()
-                other ->
-                    assertFailure ("a redirect to the store must refuse, got " ++ show other)
-        , testCase "a /v2/ answer is not a blob route, and a bad status is not a match" $ do
-            -- Liveness is not readiness: only a blob request can settle a route.
-            case settleBlobRoute demoRegistryPlan apiVersionAnswer of
-                Left _ -> pure ()
-                other -> assertFailure ("a /v2/ probe must refuse, got " ++ show other)
-            missing <- either assertFailure pure (parseBlobRouteAnswer "404 ")
-            case settleBlobRoute demoRegistryPlan missing of
-                Left _ -> pure ()
-                other -> assertFailure ("a 404 must refuse, got " ++ show other)
-            assertBool
-                "an unparseable answer is an error, never a default"
-                (either (const True) (const False) (parseBlobRouteAnswer "not-a-status"))
         , testCase "the upload session Location is resolved absolute or relative" $ do
             -- registry:2 answers absolute, but the API permits relative, so a
             -- relative Location is resolved against the dialled endpoint.
@@ -538,16 +598,27 @@ tests =
                 "an unknown typed project identity was accepted"
                 (isLeft (foldDemoOperationRole (ProjectStepIdentity unknown) () () () () ()))
         , {- The profile a container-frame plan resolves under is the run's own,
-          so a harness run never takes the production cluster name, the durable
-          @.data@ root, or the fixed host ports (the worked-demo phase). -}
+          so a harness run never takes the production cluster name or the durable
+          @.data@ root; neither scope carries a host-port policy (the worked-demo phase). -}
           testCase "a harness run's container plan is scoped to its own run" $ do
             let ctx = Context.deriveContainerContext (Context.deriveVMContextWithProvider Context.IncusVMProvider (context hostCfg) "/vm/demo") "/workspace/demo"
                 production = containerPlan Production ctx
                 harness = containerPlan (TestCase "run-42") ctx
             clusterName production @?= "hostbootstrap-demo"
             clusterName harness @?= "hostbootstrap-demo-test-run-42"
-            publishesHostPorts production @?= True
-            publishesHostPorts harness @?= False
+            commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
+            configSource <- readFile "src/HostBootstrapDemo/Config.hs"
+            assertBool
+                "plan assembly still contains a caller-selected publication table"
+                ( not ("published = case driver" `isInfixOf` commandsSource)
+                    && not ("publishesHostPorts" `isInfixOf` commandsSource)
+                )
+            assertBool
+                "demo config vocabulary contains a host-port field"
+                ( all
+                    (not . (`isInfixOf` configSource))
+                    ["hostPort ::", "hostPort ::", "localPort ::", "publishedPort ::"]
+                )
             -- the durable production root is never the harness run's state
             assertBool
                 "the harness run's state is its own generation"
@@ -629,16 +700,38 @@ tests =
             assertBool "WSL2 provider survives into the service projection" ("Wsl2VMProvider" `T.isInfixOf` wslConfig)
             assertBool "manifest carries every derived config line" $
                 all (\line -> ("    " ++ line) `isInfixOf` manifest) (filter (not . null) (lines (T.unpack directConfig)))
-        , testCase "durable-readback is a lifecycle-free write/read assertion" $ do
+        , testCase "activation rendering projects orchestration once and preserves service leaves" $ do
+            let vmCtx = Context.deriveVMContextWithProvider Context.IncusVMProvider (context hostCfg) "/vm/demo"
+                containerCtx = Context.deriveContainerContext vmCtx "/workspace/demo"
+                containerCfg = projectConfigFromContext hostCfg containerCtx
+                daemonCtx = Context.deriveClusterDaemonContext containerCtx "/workspace/demo"
+                daemonCfg = projectConfigFromContext containerCfg daemonCtx
+                serviceCtx = Context.deriveServiceContext containerCtx "/workspace/demo"
+                serviceCfg = projectConfigFromContext containerCfg serviceCtx
+                (_, projectedWebFrame) = renderActivationConfig containerCfg
+                (daemonWire, preservedDaemonFrame) = renderActivationConfig daemonCfg
+                (serviceWire, preservedServiceFrame) = renderActivationConfig serviceCfg
+            projectedWebFrame @?= "cluster-service-3"
+            preservedDaemonFrame @?= "daemon-3"
+            preservedServiceFrame @?= "cluster-service-3"
+            assertBool "daemon activation was reprojected as a cluster service" ("Daemon" `T.isInfixOf` daemonWire && not ("cluster-service-4" `T.isInfixOf` daemonWire))
+            assertBool "service activation changed its admitted frame" ("cluster-service-3" `T.isInfixOf` serviceWire && not ("cluster-service-4" `T.isInfixOf` serviceWire))
+        , testCase "durable-readback declares restart-spanning lifecycle-free readback" $ do
             commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
-            let assertionTail = maybe "" (`drop` commandsSource) (substringOffset "assertDurableReadback cfg frame" commandsSource)
+            let casesTail = maybe "" (`drop` commandsSource) (substringOffset "demoCases =" commandsSource)
+                cases = maybe casesTail (`take` casesTail) (substringOffset "literalCaseId ::" casesTail)
+                assertionTail = maybe "" (`drop` commandsSource) (substringOffset "assertDurableReadback ::" commandsSource)
                 assertion = maybe assertionTail (`take` assertionTail) (substringOffset "demoProjectImage ::" assertionTail)
-            assertBool "durable-readback does not POST the marker" ("-X POST" `isInfixOf` assertion)
-            assertBool "durable-readback does not read the marker back" ("curl --fail --silent --show-error" `isInfixOf` assertion && "hostbootstrap-destroy-up-v1" `isInfixOf` assertion)
+                onceCases = length (filter (isInfixOf "AssertOnce") (lines cases))
+            assertBool "durable-readback must span the Harness restart" ("Case (literalCaseId \"durable-readback\") 1 False AssertAcrossRestart" `isInfixOf` cases)
+            onceCases @?= 4
+            assertBool "the first assertion phase must POST the marker" ("BeforeRestart ->" `isInfixOf` assertion && "-X POST" `isInfixOf` assertion)
+            assertBool "the second assertion phase must read the same marker" ("AfterRestart -> \"\"" `isInfixOf` assertion && "hostbootstrap-destroy-up-v1" `isInfixOf` assertion)
             assertBool "project-owned assertion code must not invoke lifecycle" (not ("[\"project\", \"destroy\"]" `isInfixOf` assertion || "[\"project\", \"up\"]" `isInfixOf` assertion))
         , testCase "chart and kind configs consume the placement-specific exposure" $ do
             serviceTemplate <- readFile ("chart" ++ "/templates/service.yaml")
             deploymentTemplate <- readFile ("chart" ++ "/templates/deployment.yaml")
+            runtimeRbac <- readFile ("chart" ++ "/templates/runtime-rbac.yaml")
             staticConfigMap <- doesFileExist ("chart" ++ "/templates/configmap.yaml")
             playwrightConfig <- readFile ("playwright" ++ "/playwright.config.ts")
             inClusterKind <- readFile "kind-in-cluster.yaml"
@@ -654,22 +747,24 @@ tests =
             assertBool "the chart exposes the exact deployment readiness target" ("kind: Deployment" `isInfixOf` deploymentTemplate)
             assertBool "the chart consumes the exact planned image identity" (".Values.image.identity" `isInfixOf` deploymentTemplate)
             assertBool "web pod mounts the kind-node durable host path" ("path: /var/lib/hostbootstrap-demo-data/web" `isInfixOf` deploymentTemplate && "type: DirectoryOrCreate" `isInfixOf` deploymentTemplate && "mountPath: /var/lib/hostbootstrap-demo-data/web" `isInfixOf` deploymentTemplate)
+            assertBool "web pod mounts the immutable activation and shared authority roots" (all (`isInfixOf` deploymentTemplate) ["/var/lib/hostbootstrap-demo-data/activation/revisions", "/run/hostbootstrap/activation/revisions", "/var/lib/hostbootstrap-demo-data/service-authority", "/run/hostbootstrap/authority"])
+            assertBool "web pod receives the activation coordinates and measured pod UID" (all (`isInfixOf` deploymentTemplate) ["HOSTBOOTSTRAP_SERVICE_ACTIVATION", "HOSTBOOTSTRAP_ACTIVATION_KEY", "HOSTBOOTSTRAP_AUTHORITY_STORE", "HOSTBOOTSTRAP_POD_UID", "fieldPath: metadata.uid"])
+            assertBool "web pod reads the controller's actual restart count" ("containerStatuses" `isInfixOf` deploymentTemplate && "restartCount" `isInfixOf` deploymentTemplate && not ("HOSTBOOTSTRAP_CONTAINER_RESTART_COUNT\n              value: \"0\"" `isInfixOf` deploymentTemplate))
+            assertBool "the runtime identity reader has only pod-get authority" (all (`isInfixOf` runtimeRbac) ["kind: ServiceAccount", "resources: [\"pods\"]", "verbs: [\"get\"]"] && not ("list" `isInfixOf` runtimeRbac || "watch" `isInfixOf` runtimeRbac))
             assertBool "the service config is owned by the chart transaction" staticConfigMap
             assertBool "browser engines serialize against the single accelerator session" ("workers: 1" `isInfixOf` playwrightConfig)
-            assertBool "in-cluster config has no accelerator host mapping" (not ("hostPort: 30081" `isInfixOf` inClusterKind))
+            assertBool "in-cluster config has no host mappings" (not ("hostPort:" `isInfixOf` inClusterKind || "extraPortMappings:" `isInfixOf` inClusterKind))
             assertBool "nvkind template injects all GPUs into its worker" ("/var/run/nvidia-container-devices/all" `isInfixOf` nvkindTemplate)
             assertBool "nvkind GPU worker is selected by the device-plugin chart" ("nvidia.com/gpu.present: \"true\"" `isInfixOf` nvkindTemplate)
-            assertBool "nvkind accelerator remains ClusterIP-only" (not ("hostPort: 30081" `isInfixOf` nvkindTemplate))
+            assertBool "nvkind config has no host mappings" (not ("hostPort:" `isInfixOf` nvkindTemplate || "extraPortMappings:" `isInfixOf` nvkindTemplate))
             countLines "hostPath: /var/tmp/hostbootstrap-demo-data" hostKind @?= 1
             countLines "containerPath: /var/lib/hostbootstrap-demo-data" hostKind @?= 1
             countLines "hostPath: /var/tmp/hostbootstrap-demo-data" inClusterKind @?= 1
             countLines "containerPath: /var/lib/hostbootstrap-demo-data" inClusterKind @?= 1
             countLines "hostPath: /var/tmp/hostbootstrap-demo-data" nvkindTemplate @?= 2
             countLines "containerPath: /var/lib/hostbootstrap-demo-data" nvkindTemplate @?= 2
-            assertBool "host-daemon config consumes the planned local-only address" $
-                case hostListenAddress of
-                    Just address -> ("listenAddress: \"" ++ address ++ "\"") `isInfixOf` hostKind
-                    Nothing -> False
+            assertBool "host config has no host mappings" (not ("hostPort:" `isInfixOf` hostKind || "extraPortMappings:" `isInfixOf` hostKind))
+            hostListenAddress @?= Just "127.0.0.1"
         , testCase "base image flavor follows the metal lane" $ do
             demoBaseImageFor (Substrate LinuxGpu Amd64)
                 @?= "docker.io/tuee22/hostbootstrap:basecontainer-cuda-amd64"
@@ -703,6 +798,7 @@ tests =
                 )
         , testCase "the derived image receives the independently provisioned verification key" $ do
             let keyHex = replicate 64 'a'
+                activationKeyHex = replicate 64 'b'
                 argv =
                     dockerBuildArgsWithVerificationKey
                         ( projectConfigForRole
@@ -717,7 +813,9 @@ tests =
                         )
                         "docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64"
                         keyHex
+                        activationKeyHex
             assertBool "the public key is a build argument" ("HANDOFF_VERIFICATION_KEY_HEX=" ++ keyHex `elem` argv)
+            assertBool "the activation public key is a build argument" ("ACTIVATION_VERIFICATION_KEY_HEX=" ++ activationKeyHex `elem` argv)
             last argv @?= "."
         , testCase "a published digest pins the repository, not the tag text" $ do
             pinnedBaseReference
@@ -789,18 +887,21 @@ tests =
             repoRootOfProjectRoot ("/workspace" </> "hostbootstrap" </> "demo")
                 @?= ("/workspace" </> "hostbootstrap")
         , testCase "accelerator daemon manifest requests a GPU only in the CUDA lane" $ do
-            let cpuManifest = acceleratorDaemonManifest "hostbootstrap-demo-test-case" False "daemon-3" "config" 8081
-                gpuManifest = acceleratorDaemonManifest "hostbootstrap-demo-test-case" True "daemon-3" "config" 8081
-                customPortManifest = acceleratorDaemonManifest "hostbootstrap-demo-test-case" False "daemon-3" "config" 9091
+            let cpuManifest = acceleratorDaemonManifest False "daemon-3" "activation-7" "config" 8081
+                gpuManifest = acceleratorDaemonManifest True "daemon-3" "activation-7" "config" 8081
+                customPortManifest = acceleratorDaemonManifest False "daemon-3" "activation-7" "config" 9091
             assertBool "CPU pod has no GPU request" (not ("nvidia.com/gpu" `isInfixOf` cpuManifest))
             assertBool "GPU pod requests one GPU" ("nvidia.com/gpu: 1" `isInfixOf` gpuManifest)
             assertBool "GPU pod selects the nvkind NVIDIA runtime" ("runtimeClassName: nvidia" `isInfixOf` gpuManifest)
             assertBool "CPU pod stays on the default runtime" (not ("runtimeClassName: nvidia" `isInfixOf` cpuManifest))
-            assertBool "daemon dials the run-scoped ClusterIP service" ("hostbootstrap-demo-test-case-accelerator:8081" `isInfixOf` gpuManifest)
-            assertBool "daemon dials a configured accelerator port" ("hostbootstrap-demo-test-case-accelerator:9091" `isInfixOf` customPortManifest)
+            assertBool "daemon dials the stable Helm ClusterIP service" ("hostbootstrap-demo-accelerator:8081" `isInfixOf` gpuManifest)
+            assertBool "daemon dials a configured accelerator port" ("hostbootstrap-demo-accelerator:9091" `isInfixOf` customPortManifest)
             assertBool "daemon config changes roll its subPath-mounted pod" ("hostbootstrap.io/config-hash" `isInfixOf` gpuManifest)
             assertBool "daemon rollout cannot overlap reconnecting peers" ("type: Recreate" `isInfixOf` gpuManifest)
             assertBool "daemon rollout waits for its connection readiness marker" ("HOSTBOOTSTRAP_ACCELERATOR_READY_FILE" `isInfixOf` gpuManifest && "readinessProbe:" `isInfixOf` gpuManifest)
+            assertBool "daemon adopts its exact activation revision" ("/run/hostbootstrap/activation/revisions/activation-7" `isInfixOf` gpuManifest)
+            assertBool "daemon mounts the activation and authority roots" ("/var/lib/hostbootstrap-demo-data/activation/revisions" `isInfixOf` gpuManifest && "/var/lib/hostbootstrap-demo-data/service-authority" `isInfixOf` gpuManifest)
+            assertBool "daemon measures its Kubernetes restart-qualified instance under the stable chart RBAC identity" ("HOSTBOOTSTRAP_POD_UID" `isInfixOf` gpuManifest && "HOSTBOOTSTRAP_CONTAINER_RESTART_COUNT" `isInfixOf` gpuManifest && "serviceAccountName: hostbootstrap-demo-runtime" `isInfixOf` gpuManifest)
         , testCase "accelerator topology rejects process-local HA routing" $ do
             validateAcceleratorReplicaCount 1 @?= Right ()
             assertBool "more than one web pod is unsupported" $
@@ -816,15 +917,25 @@ tests =
             -- host-resident post-handoff process as on Apple/Windows.
             map stepLabel (postHandoffStepsForFrame "host-orchestrator-0" plan) @?= []
             stepKindName (stepKind (last steps)) @?= "deploy-accelerator-daemon"
+            case stepServiceActivationDeclarations (last steps) of
+                [(activationFrame, "accelerator", ["network-listen", "process"])] ->
+                    assertBool "the in-cluster activation frame is empty" (not (T.null activationFrame))
+                declarations -> assertFailure ("unexpected in-cluster activation declarations: " ++ show declarations)
         , testCase "apple/windows keep the host-resident accelerator daemon post-handoff hook" $ do
             plan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate AppleSilicon Arm64) root hostCfg)))
-            map stepLabel (postHandoffStepsForFrame "host-orchestrator-0" plan)
+            let hostSteps = postHandoffStepsForFrame "host-orchestrator-0" plan
+            map stepLabel hostSteps
                 @?= ["start the host-resident accelerator daemon after ingress is reachable"]
+            case concatMap stepServiceActivationDeclarations hostSteps of
+                [(activationFrame, "accelerator", ["network-listen", "process"])] ->
+                    assertBool "the host activation frame is empty" (not (T.null activationFrame))
+                declarations -> assertFailure ("unexpected host activation declarations: " ++ show declarations)
             hostAcceleratorSubstrate (Substrate AppleSilicon Arm64) @?= True
             hostAcceleratorSubstrate (Substrate WindowsGpu Amd64) @?= True
         , testCase "windows-cpu has no accelerator worker or host-daemon hook" $ do
             plan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate WindowsCpu Amd64) root hostCfg)))
             map stepLabel (postHandoffStepsForFrame "host-orchestrator-0" plan) @?= []
+            concatMap stepServiceActivationDeclarations (stepPlanSteps plan) @?= []
             hostAcceleratorSubstrate (Substrate WindowsCpu Amd64) @?= False
         , -- The POSIX daemon's invocation *shape* is not asserted here. It is
           -- not this module's to assert: the shape is sealed in
@@ -982,12 +1093,12 @@ tests =
                             baseCodec
                             demoServices
                             ( \_ registry ->
-                                withSelectedServiceRequest
+                                withSelectedServiceProgram
                                     "verified-config-digest"
                                     (inspectLocalContext (context cfg))
                                     cfg
                                     registry
-                                    ( \identity codec request _ _ ->
+                                    ( \identity codec request _ _ _ _ ->
                                         ( serviceIdText identity
                                         , requestVerifiedDigest request
                                         , renderValidatedServiceRequest codec request
@@ -1032,12 +1143,12 @@ tests =
                             baseCodec
                             demoServices
                             ( \_ registry ->
-                                withSelectedServiceRequest
+                                withSelectedServiceProgram
                                     "verified-config-digest"
                                     (inspectLocalContext (context cfg))
                                     cfg
                                     registry
-                                    (\_ _ _ declared _ -> declared)
+                                    (\_ _ _ declared _ _ _ -> declaredEffectList declared)
                             )
             webDeclared <- either (fail . show) pure (declaredFor webCfg)
             acceleratorDeclared <- either (fail . show) pure (declaredFor acceleratorCfg)
@@ -1076,12 +1187,12 @@ tests =
                                     webCfg
                         frameworkWireKind fullValidation @?= FullProjectWire
                         frameworkScopeKind fullValidation @?= ProductionScope
-                        withSelectedServiceRequest
+                        withSelectedServiceProgram
                             "verified-config-digest"
                             (inspectLocalContext (context webCfg))
                             webCfg
                             registry
-                            ( \_ roleCodec request _ _ -> do
+                            ( \_ roleCodec request _ _ _ _ -> do
                                 let roleValidation = requestFrameworkValidation request
                                     rendered = renderValidatedServiceRequest roleCodec request
                                     changedDigest =
@@ -1118,6 +1229,7 @@ tests =
         , testCase "the Direct derived build uses only the authenticated BuildKit channel" $ do
             commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
             dockerfileSource <- readFile "docker/Dockerfile"
+            dockerIgnoreSource <- readFile "../.dockerignore"
             coreCommandSource <- readFile "../core/hostbootstrap-core/src/HostBootstrap/Command.hs"
             let coordinatorTail = maybe "" (`drop` commandsSource) (substringOffset "runAuthenticatedDirectImageBuild ::" commandsSource)
                 coordinator = maybe coordinatorTail (`take` coordinatorTail) (substringOffset "copyBuildTree ::" coordinatorTail)
@@ -1132,21 +1244,47 @@ tests =
                     ]
                 dockerStages =
                     [ "COPY demo /workspace/demo"
-                    , "COPY --from=hostbootstrap-builder hostbootstrap-demo"
+                    , "COPY --from=hostbootstrap-builder hostbootstrap-demo /usr/local/libexec/hostbootstrap-demo"
                     , "id=hostbootstrap-build-channel,required=true"
-                    , "hostbootstrap-demo check-code"
-                    , "cabal build --enable-tests --enable-benchmarks all"
+                    , "/usr/local/libexec/hostbootstrap-demo check-code"
+                    , "cabal build --enable-tests --enable-benchmarks all --ghc-options=-Werror"
+                    , "test -s \"${built_binary}\""
+                    , "esbuild --bundle --minify"
+                    , "dd if=/usr/local/libexec/hostbootstrap-demo of=/usr/local/bin/hostbootstrap-demo bs=4M status=none"
+                    , "dd if=/usr/local/libexec/hostbootstrap-demo.dhall of=/usr/local/bin/hostbootstrap-demo.dhall status=none"
+                    , "dd if=/usr/local/libexec/hostbootstrap-demo.handoff.pub of=/usr/local/bin/hostbootstrap-demo.handoff.pub status=none"
+                    , "dd if=/usr/local/libexec/hostbootstrap-demo.activation.pub of=/usr/local/bin/hostbootstrap-demo.activation.pub status=none"
+                    , "dd if=web/public/app.js of=web/public/app.runtime.js status=none"
+                    , "chmod 0755 /usr/local/bin/hostbootstrap-demo"
+                    , "rm /usr/local/libexec/hostbootstrap-demo"
+                    , "rm /usr/local/libexec/hostbootstrap-demo.dhall"
+                    , "test -s /usr/local/bin/hostbootstrap-demo"
                     ]
             coordinatorOffsets <- maybe (assertFailure "the authenticated coordinator lost a required stage") pure (traverse (`substringOffset` coordinator) coordinatorStages)
             dockerOffsets <- maybe (assertFailure "the Dockerfile lost a required authenticated stage") pure (traverse (`substringOffset` dockerfileSource) dockerStages)
             assertBool "coordinator stages are out of order" (and (zipWith (<) coordinatorOffsets (drop 1 coordinatorOffsets)))
             assertBool "Dockerfile stages are out of order" (and (zipWith (<) dockerOffsets (drop 1 dockerOffsets)))
             assertBool "the Dockerfile still mints its own image-build config" (not ("hostbootstrap-demo project init" `isInfixOf` dockerfileSource))
+            assertBool "the transient builder still occupies the runtime entrypoint path" (not ("hostbootstrap-demo /usr/local/bin/hostbootstrap-demo\n" `isInfixOf` dockerfileSource))
+            assertBool "the runtime entrypoint still aliases the build-only authority" (not ("ln -s /usr/local/libexec/hostbootstrap-demo /usr/local/bin/hostbootstrap-demo" `isInfixOf` dockerfileSource))
+            assertBool "the exported image is not verified after the VM build" ("verifyVmProjectImage cfg provider" `isInfixOf` commandsSource)
+            assertBool "the exported image is not verified after the Direct build" ("verifyDirectProjectImage cfg" `isInfixOf` coordinator)
             assertBool "image-build check-code does not require the fixed channel" ("/run/secrets/hostbootstrap-build-channel" `isInfixOf` coreCommandSource)
-            assertBool "the Direct call site still invokes raw docker build" ("runAuthenticatedDirectImageBuild execution parentCfg cfg repoRoot repoRootCfg pinnedBase verificationKeyHex" `isInfixOf` commandsSource)
+            assertBool "the Direct call site still invokes raw docker build" ("runAuthenticatedDirectImageBuild parentCfg cfg repoRoot repoRootCfg pinnedBase verificationKeyHex" `isInfixOf` commandsSource)
             assertBool "the measured builder is not delivered by named context" ("hostbootstrap-builder=" `isInfixOf` coordinator)
             assertBool "the VM call site omits published-base digest resolution" ("resolvePublishedBaseInVM cfg provider mAuth" `isInfixOf` commandsSource)
-            assertBool "the VM call site omits authenticated BuildKit secrets" ("withAuthenticatedVmBuildSecrets execution parentCfg cfg provider" `isInfixOf` commandsSource)
+            assertBool "the VM call site omits authenticated BuildKit secrets" ("withAuthenticatedVmBuildSecrets parentCfg cfg provider" `isInfixOf` commandsSource)
+            assertBool "authority state is still admitted to the Docker context" (".hostbootstrap/" `isInfixOf` dockerIgnoreSource)
+            assertBool "the measured source still admits authority state" ("\".hostbootstrap\"" `isInfixOf` commandsSource)
+            assertBool "VM source staging still carries host authority state" ("--exclude=.hostbootstrap" `isInfixOf` commandsSource)
+            assertBool "the VM build still hashes and builds two independently filtered trees" ("$ \\guestBuildContext secretArgs ->" `isInfixOf` commandsSource)
+            assertBool "the exact VM build context omits the core source" ("copyBuildTree (repoRoot </> \"core\" </> \"hostbootstrap-core\")" `isInfixOf` commandsSource)
+            assertBool "the VM Docker build does not enter the transferred context" ("shellQuoteArg guestBuildContext" `isInfixOf` commandsSource)
+            assertBool "the VM builder digest still adds a non-canonical sha256 prefix" (not ("remoteDigest = \"sha256:\"" `isInfixOf` commandsSource))
+        , testCase "image-build grants name the finalized Production runtime specification" $
+            withProductionProjectCodec @ProjectConfig @() $ \baseCodec ->
+                withFinalizedServiceRegistry ProductionScope baseCodec demoServices $ \codec _registry ->
+                    demoImageBuildSpecDigest @?= projectCodecSpecDigest codec
         ]
 
 withBridgeTempDirectory :: (FilePath -> IO a) -> IO a

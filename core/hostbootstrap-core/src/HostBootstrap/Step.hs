@@ -1,5 +1,5 @@
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
 {- | The opaque validated step/plan algebra.
@@ -66,6 +66,10 @@ module HostBootstrap.Step (
     declaresChartWorkloadResource,
     stepChartWorkloadResourceDeclarations,
 
+    -- * Plan-authored service activation declarations
+    declaresServiceActivation,
+    stepServiceActivationDeclarations,
+
     -- * Opaque steps
     Step,
     StepAction,
@@ -130,8 +134,8 @@ module HostBootstrap.Step (
 )
 where
 
-import Data.List (elemIndex, group, isPrefixOf, sort)
 import Data.Kind (Type)
+import Data.List (elemIndex, group, isPrefixOf, sort)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
@@ -273,8 +277,9 @@ data CoreStepId
 newtype ProjectStepId = ProjectStepId String
     deriving (Eq, Ord, Show)
 
--- | Validate a project identity. It need not avoid core spellings because its
--- namespace is disjoint, but it must be a stable non-empty token.
+{- | Validate a project identity. It need not avoid core spellings because its
+namespace is disjoint, but it must be a stable non-empty token.
+-}
 projectStepId :: String -> Either String ProjectStepId
 projectStepId raw
     | null raw = Left "project step identity must not be empty"
@@ -390,18 +395,21 @@ data Step = Step
     , internalStepReverseAdapterRevision :: StepReverseAdapterRevision
     , internalStepRun :: StepAction
     , internalStepDescent :: [LiftContext]
-    -- ^ The descent this step declares out of its own frame. A list rather than
-    -- a 'Maybe' so a second declaration is /retained/ as a construction
-    -- conflict and rejected by 'mkStepPlan', instead of silently replacing the
-    -- first.
+    {- ^ The descent this step declares out of its own frame. A list rather than
+    a 'Maybe' so a second declaration is /retained/ as a construction
+    conflict and rejected by 'mkStepPlan', instead of silently replacing the
+    first.
+    -}
     , internalStepReverse :: [HostConfig -> TeardownAction -> IO TeardownOutcome]
     -- ^ The reverse effect this step declares, retained the same way.
     , internalStepProjections :: [String]
-    -- ^ The operations this step projects out of its own. Retained as declared
-    -- so 'mkStepPlan' can reject one that does not live under this step's own
-    -- operation key, or one two steps claim.
+    {- ^ The operations this step projects out of its own. Retained as declared
+    so 'mkStepPlan' can reject one that does not live under this step's own
+    operation key, or one two steps claim.
+    -}
     , internalProviderResourceDeclarations :: [ProviderResourceDeclaration]
-    , internalChartWorkloadResourceDeclarations :: [(Text, Text, Text, Text, Text, Text, Text, Text, [Text])]
+    , internalChartWorkloadResourceDeclarations :: [(Text, Text, Text, Text, Text, Text, Text, Text, Text, [Text])]
+    , internalServiceActivationDeclarations :: [(Text, Text, [Text])]
     }
 
 {- | A closed provider-resource declaration attached to its authoring
@@ -436,16 +444,34 @@ providerResourceDeclarationTargetsChild declaration =
         ProviderResourceAtImmediateChild -> True
 
 declaresChartWorkloadResource ::
-    Text -> Text -> Text -> Text -> Text -> Text -> Text -> Text -> [Text] -> Step -> Step
-declaresChartWorkloadResource artifactDigest release namespace valuesDigest imageIdentity workloadKey workloadDigest serviceRole effects step =
+    Text -> Text -> Text -> Text -> Text -> Text -> Text -> Text -> Text -> [Text] -> Step -> Step
+declaresChartWorkloadResource artifactDigest release namespace valuesDigest imageIdentity workloadKey workloadDigest activationFrame serviceRole effects step =
     step
         { internalChartWorkloadResourceDeclarations =
             internalChartWorkloadResourceDeclarations step
-                ++ [(artifactDigest, release, namespace, valuesDigest, imageIdentity, workloadKey, workloadDigest, serviceRole, effects)]
+                ++ [(artifactDigest, release, namespace, valuesDigest, imageIdentity, workloadKey, workloadDigest, activationFrame, serviceRole, effects)]
         }
 
-stepChartWorkloadResourceDeclarations :: Step -> [(Text, Text, Text, Text, Text, Text, Text, Text, [Text])]
+stepChartWorkloadResourceDeclarations :: Step -> [(Text, Text, Text, Text, Text, Text, Text, Text, Text, [Text])]
 stepChartWorkloadResourceDeclarations = internalChartWorkloadResourceDeclarations
+
+{- | Declare one service activation placement authored by this plan step.
+
+The declaration contains only the service frame, selected role, and permitted
+effect names. Runtime image, binary, config, secret, and instance measurements
+remain outside canonical plan bytes and must still satisfy the root signing
+policy when the step requests a grant.
+-}
+declaresServiceActivation :: Text -> Text -> [Text] -> Step -> Step
+declaresServiceActivation activationFrame serviceRole effects step =
+    step
+        { internalServiceActivationDeclarations =
+            internalServiceActivationDeclarations step
+                ++ [(activationFrame, serviceRole, effects)]
+        }
+
+stepServiceActivationDeclarations :: Step -> [(Text, Text, [Text])]
+stepServiceActivationDeclarations = internalServiceActivationDeclarations
 
 stepLabel :: Step -> String
 stepLabel = internalStepLabel
@@ -472,8 +498,9 @@ implementedAt revision step = step{internalStepImplementationRevision = revision
 stepImplementationRevision :: Step -> StepImplementationRevision
 stepImplementationRevision = internalStepImplementationRevision
 
--- | Replace the explicit reverse-adapter revision for this step. This applies
--- whether the adapter is policy-provided or attached with 'reversedBy'.
+{- | Replace the explicit reverse-adapter revision for this step. This applies
+whether the adapter is policy-provided or attached with 'reversedBy'.
+-}
 reverseAdapterAt :: StepReverseAdapterRevision -> Step -> Step
 reverseAdapterAt revision step = step{internalStepReverseAdapterRevision = revision}
 
@@ -882,9 +909,10 @@ chainFrames plan = foldl addFrame [] normalSteps
         | frameId (stepFrame step) `elem` map frameId frames = frames
         | otherwise = frames ++ [stepFrame step]
 
--- | The exact validated prefix a step depends on. Because plan identities are
--- unique, the target is unambiguous; a step outside the plan has no dependency
--- witness.
+{- | The exact validated prefix a step depends on. Because plan identities are
+unique, the target is unambiguous; a step outside the plan has no dependency
+witness.
+-}
 stepDependencies :: StepPlan -> Step -> [StepIdentity]
 stepDependencies plan target =
     case break ((== stepIdentity target) . stepIdentity) (stepPlanSteps plan) of
@@ -949,6 +977,7 @@ coreStep identity reversePolicy label frame action =
         []
         []
         []
+        []
 
 deployVMStep :: String -> StepFrame -> StepAction -> Step
 deployVMStep = coreStep DeployVMId ProjectManagedReverse
@@ -996,6 +1025,7 @@ projectStep identity reversePolicy label frame action =
         initialStepImplementationRevision
         initialStepReverseAdapterRevision
         action
+        []
         []
         []
         []

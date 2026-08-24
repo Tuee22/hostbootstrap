@@ -132,10 +132,10 @@ the host, OS, architecture, compiler, provider, and duration.
 
 #### Remaining Work
 
-Run the complete acceptance gate after the recursive-lifecycle-command, prepared-operations, step-algebra,
-authenticated-handoff, recovery, and worked-demo dependencies are closed. The run must exercise typed
-frame-indexed teardown descent across the real provider boundary, terminal Harness destroy, and the focused
-exact-plan direct-Colima adapter lane.
+Run the complete acceptance gate on a pristine Apple Silicon host. The lower recursive-lifecycle-command,
+prepared-operations, step-algebra, authenticated-handoff, recovery, and worked-demo dependencies are closed;
+the remaining run must exercise typed frame-indexed teardown descent across the real Lima/Colima provider
+boundary, terminal Harness destroy, and the focused exact-plan direct-Colima adapter lane.
 
 ## Remaining Work
 

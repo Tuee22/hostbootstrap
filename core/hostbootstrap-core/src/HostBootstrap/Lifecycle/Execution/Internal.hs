@@ -42,6 +42,8 @@ module HostBootstrap.Lifecycle.Execution.Internal (
     stepRuntimeDependencyPackages,
     replaceStepRuntimeDependencyService,
     invokeStepRuntimeDependencyService,
+    replaceStepRuntimeActivationSigningService,
+    invokeStepRuntimeActivationSigningService,
 
     -- * The in-process carrier for managed handles
     ResourceCarrier,
@@ -97,7 +99,7 @@ data ExecutionNode = ExecutionNode
     the keys it relates and is therefore nobody's own key, so this is the
     only route by which a node can reach one.
     -}
-    , executionNodeChartWorkload :: Maybe (Text, Text, Text, Text, Text, Text, Text, Text, [Text], Text)
+    , executionNodeChartWorkload :: Maybe (Text, Text, Text, Text, Text, Text, Text, Text, Text, [Text], Text)
     }
     deriving (Eq, Show)
 
@@ -325,7 +327,7 @@ registerStepRuntimeDependencyPackage ::
     RuntimeDependencyPackage scope planId ->
     IO (Either Text ())
 registerStepRuntimeDependencyPackage runtime package =
-    let ResourceCarrier (_, packages, _) = stepRuntimeCarrier runtime
+    let ResourceCarrier (_, packages, _, _) = stepRuntimeCarrier runtime
      in atomicModifyIORef' packages $ \current ->
             case filter ((== runtimeDependencyPackageKey package) . runtimeDependencyPackageKey) current of
                 [] -> (current ++ [package], Right ())
@@ -336,7 +338,7 @@ registerStepRuntimeDependencyPackage runtime package =
 
 stepRuntimeDependencyPackages :: StepRuntime scope planId -> IO [RuntimeDependencyPackage scope planId]
 stepRuntimeDependencyPackages runtime =
-    let ResourceCarrier (_, packages, _) = stepRuntimeCarrier runtime
+    let ResourceCarrier (_, packages, _, _) = stepRuntimeCarrier runtime
      in readIORef packages
 
 {- | Install or replace the live closure for one already-registered exact
@@ -349,7 +351,7 @@ replaceStepRuntimeDependencyService ::
     (ByteString -> IO (Either Text ByteString)) ->
     IO (Either Text ())
 replaceStepRuntimeDependencyService runtime package service = do
-    let ResourceCarrier (_, packages, services) = stepRuntimeCarrier runtime
+    let ResourceCarrier (_, packages, services, _) = stepRuntimeCarrier runtime
         route = runtimeDependencyPackageRoute package
         commitment = runtimeDependencyPackageCommitment package
     canonical <- readIORef packages
@@ -371,7 +373,7 @@ invokeStepRuntimeDependencyService ::
     ByteString ->
     IO (Either Text ByteString)
 invokeStepRuntimeDependencyService runtime package request = do
-    let ResourceCarrier (_, packages, services) = stepRuntimeCarrier runtime
+    let ResourceCarrier (_, packages, services, _) = stepRuntimeCarrier runtime
         route = runtimeDependencyPackageRoute package
         commitment = runtimeDependencyPackageCommitment package
     canonical <- readIORef packages
@@ -384,6 +386,25 @@ invokeStepRuntimeDependencyService runtime package request = do
                 | otherwise -> pure (Left "runtime dependency live commitment mismatch")
             [] -> pure (Left "runtime dependency live service is absent")
             _ -> pure (Left "runtime dependency live route is duplicated")
+
+-- | Install the one invocation-local route to the admitted root activation signer.
+replaceStepRuntimeActivationSigningService ::
+    StepRuntime scope planId ->
+    (ByteString -> IO (Either Text ByteString)) ->
+    IO ()
+replaceStepRuntimeActivationSigningService runtime service =
+    let ResourceCarrier (_, _, _, activation) = stepRuntimeCarrier runtime
+     in atomicModifyIORef' activation (const (Just service, ()))
+
+-- | Ask the admitted root to sign one canonical activation manifest.
+invokeStepRuntimeActivationSigningService ::
+    StepRuntime scope planId ->
+    ByteString ->
+    IO (Either Text ByteString)
+invokeStepRuntimeActivationSigningService runtime request = do
+    let ResourceCarrier (_, _, _, activation) = stepRuntimeCarrier runtime
+    service <- readIORef activation
+    maybe (pure (Left "runtime activation signing service is absent")) ($ request) service
 
 -- ---------------------------------------------------------------------------
 -- The in-process carrier
@@ -445,6 +466,7 @@ newtype ResourceCarrier scope planId
         ( IORef [CarriedResource]
         , IORef [RuntimeDependencyPackage scope planId]
         , IORef [(Text, Text, ByteString -> IO (Either Text ByteString))]
+        , IORef (Maybe (ByteString -> IO (Either Text ByteString)))
         )
 
 type role ResourceCarrier nominal nominal
@@ -454,7 +476,8 @@ newResourceCarrier = do
     carried <- newIORef []
     packages <- newIORef []
     services <- newIORef []
-    pure (ResourceCarrier (carried, packages, services))
+    activation <- newIORef Nothing
+    pure (ResourceCarrier (carried, packages, services, activation))
 
 {- | Carry one managed resource, replacing any earlier entry under the same
 operation key.  A node that re-runs mints a fresh handle for the same key, and
@@ -462,7 +485,7 @@ the dependency-snapshot traversal refuses a key it finds twice, so the newest
 identity is the one that must be visible.
 -}
 pushCarriedResource :: ResourceCarrier scope planId -> CarriedResource -> IO ()
-pushCarriedResource (ResourceCarrier (entries, _, _)) entry =
+pushCarriedResource (ResourceCarrier (entries, _, _, _)) entry =
     atomicModifyIORef'
         entries
         ( \carried ->
@@ -472,4 +495,4 @@ pushCarriedResource (ResourceCarrier (entries, _, _)) entry =
         )
 
 readCarriedResources :: ResourceCarrier scope planId -> IO [CarriedResource]
-readCarriedResources (ResourceCarrier (entries, _, _)) = readIORef entries
+readCarriedResources (ResourceCarrier (entries, _, _, _)) = readIORef entries

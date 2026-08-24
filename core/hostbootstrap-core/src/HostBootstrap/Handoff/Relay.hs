@@ -127,13 +127,13 @@ import HostBootstrap.Handoff (
     RecoveryWireGrant,
     RootBroker,
     RootedLifecycleResponse,
-    renderRootedLifecycleResponse,
-    signRootedLifecycleResponseKernel,
+    adoptLifecycleAcknowledgementKernel,
     brokerRelayFromRouteWire,
     brokerRouteCurrentFrame,
     brokerRouteVerificationKeyDigest,
     challengeBytes,
     childConfigDigest,
+    eliminateLifecycleReport,
     frameWire,
     grantHandoff,
     grantSignature,
@@ -149,29 +149,29 @@ import HostBootstrap.Handoff (
     handoffPayloadKind,
     handoffPhase,
     handoffPlanRevision,
-    handoffVerb,
     handoffTokenBytes,
     handoffTokenFromBytes,
-    eliminateLifecycleReport,
+    handoffVerb,
     mkHandoffOffer,
     mkRecoveryProjectionBindingFromRoute,
+    prepareLifecycleAcknowledgementKernel,
+    providerDependencyPackagesFields,
+    publishLifecycleReportKernel,
+    receiveLifecycleAcknowledgementKernel,
     recoveryRequestFields,
     recoveryRequestFromFields,
     recoveryResponseFields,
     recoveryResponseFromFields,
     recoveryWireGrantSignature,
-    renderLifecycleAcknowledgement,
-    prepareLifecycleAcknowledgementKernel,
-    publishLifecycleReportKernel,
-    receiveLifecycleAcknowledgementKernel,
-    adoptLifecycleAcknowledgementKernel,
     registerAdmittedHandoffEdge,
     registerRecoverableAdmittedHandoffEdgeKernel,
     relayBinding,
     renderAuthenticatedRootScope,
     renderHandoffBinding,
     renderHandoffBindingInput,
+    renderLifecycleAcknowledgement,
     renderRecoveryProjectionBinding,
+    renderRootedLifecycleResponse,
     renderRootedPayloadBinding,
     requestedChildConfigDigest,
     requestedParentFrame,
@@ -181,21 +181,19 @@ import HostBootstrap.Handoff (
     signAuthenticatedRootScopeKernel,
     signRecoveryChildPackageBindingKernel,
     signRecoveryWireKernel,
+    signRootedLifecycleResponseKernel,
     signRootedPayloadBindingKernel,
     takeHandoffFrame,
     verificationKeyDigest,
-    verifyLifecycleAcknowledgement,
+    verifiedConfigPayload,
     verifiedHandoffBinding,
     verifiedHandoffRoute,
-    verifiedConfigPayload,
-    providerDependencyPackageFields,
+    verifyLifecycleAcknowledgement,
     withProviderDependencyReprobeKernel,
-    withVerifiedRootedLifecycleResponse,
     withRecoveryProjectionBindingInput,
+    withVerifiedRootedLifecycleResponse,
  )
 import HostBootstrap.Handoff.Internal (recoverySigningKernel)
-import qualified HostBootstrap.Handoff.Recovery as Recovery
-import qualified HostBootstrap.Handoff.Rooted as Rooted
 import HostBootstrap.Handoff.Protocol (
     HandoffChannel,
     ProtocolError (ProtocolRequestMismatch, ProtocolZeroRequestId),
@@ -215,12 +213,12 @@ import HostBootstrap.Handoff.Protocol (
         OfferRequestTag,
         OfferResponseTag,
         OfferTag,
+        ProviderDependencyPackageTag,
+        ProviderDependencyProbeRequestTag,
+        ProviderDependencyProbeResponseTag,
         RecoveryRequestTag,
         RecoveryResponseTag,
         RefusedTag,
-        ProviderDependencyProbeRequestTag,
-        ProviderDependencyProbeResponseTag,
-        ProviderDependencyPackageTag,
         RootedLifecycleRequestTag,
         RootedLifecycleResponseTag
     ),
@@ -231,11 +229,6 @@ import HostBootstrap.Handoff.Protocol (
     protocolMessageFields,
     protocolMessageRequestId,
     protocolMessageTag,
- )
-import HostBootstrap.Handoff.Runtime (
-    RecursiveHandoffRuntime,
-    nestedRecursiveHandoffRuntimeKernel,
-    withRootArmRecursiveHandoffRuntimeKernel,
  )
 import HostBootstrap.Handoff.Receiver.Internal (
     ReceivedEdge,
@@ -248,15 +241,22 @@ import HostBootstrap.Handoff.Receiver.Internal (
     rootedLifecycleResponsePairPathKernel,
     withReceivedRecoveryDescent,
  )
-import HostBootstrap.Lifecycle.Rooted (
-    RootedFrameSession,
-    withRootedFrameOpeningKernel,
-    withRootedFrameSessionKernel,
+import qualified HostBootstrap.Handoff.Recovery as Recovery
+import qualified HostBootstrap.Handoff.Rooted as Rooted
+import HostBootstrap.Handoff.Runtime (
+    RecursiveHandoffRuntime,
+    nestedRecursiveHandoffRuntimeKernel,
+    withRootArmRecursiveHandoffRuntimeKernel,
  )
 import HostBootstrap.Lifecycle.Prepared.Internal (
     PreparedNodeGrant,
     renderPreparedNodeKeysKernel,
     withPreparedNodeGrantKernel,
+ )
+import HostBootstrap.Lifecycle.Rooted (
+    RootedFrameSession,
+    withRootedFrameOpeningKernel,
+    withRootedFrameSessionKernel,
  )
 import HostBootstrap.Lifecycle.Rooted.Receipt (
     withRootedReceiptConfirmationKernel,
@@ -380,7 +380,7 @@ data BrokerLink scope brokerGeneration = BrokerLink
         RequesterPath ->
         HandoffOffer scope brokerGeneration ->
         IO (Either RelayError ByteString)
-    {- ^ Authenticate one already constructed exact offer at the root. -}
+    -- ^ Authenticate one already constructed exact offer at the root.
     , linkRecoveryFieldsRaw ::
         RequesterPath ->
         [ByteString] ->
@@ -411,7 +411,8 @@ data BrokerLink scope brokerGeneration = BrokerLink
         [ByteString] -> IO (Either RelayError [ByteString])
     {- ^ Carry one exact provider request to the nearest owning live kernel.
     Root links refuse until Process installs that lexical endpoint; keyless
-    links preserve the canonical fields without interpreting them. -}
+    links preserve the canonical fields without interpreting them.
+    -}
     , linkProviderDependencyPackage :: Maybe ByteString
     , linkRejectResponse :: RelayError -> IO ()
     {- ^ Best-effort refusal for a malformed response. It is a no-op at the
@@ -457,7 +458,11 @@ rootBrokerLink broker scope activation admits admitsRecovery serveRooted = do
                 , linkRecoverableOpenRaw = \_ input adapter ->
                     registered
                         <$> registerRecoverableAdmittedHandoffEdgeKernel
-                            recoverySigningKernel broker (admits input) input adapter
+                            recoverySigningKernel
+                            broker
+                            (admits input)
+                            input
+                            adapter
                 , linkGrantRaw = \_ offer challenge ->
                     fmap (either (Left . RelayHandoffFailure) Right) (grantHandoff broker offer challenge)
                 , -- The root signs locally, through the ordinary validating signer: a
@@ -487,17 +492,18 @@ rootBrokerLink broker scope activation admits admitsRecovery serveRooted = do
 {- | The root link used by the recursive forward coordinator.
 
 It carries exactly the capabilities a forward lifecycle child can exercise.
-Activation and recovery signing are closed refusals, so the coordinator does
-not need to manufacture unrelated authority merely to own a child process.
+Activation signing is supplied by the root coordinator for the child's exact
+canonical manifest; recovery signing remains a closed refusal.
 -}
 rootForwardBrokerLink ::
     RootBroker scope brokerGeneration verb ->
     HandoffScope scope ->
+    (ActivationManifest -> IO (Either ActivationError ActivationGrant)) ->
     EdgeAdmission ->
     (HandoffOffer scope brokerGeneration -> IO (Either Text ())) ->
     RootedLifecycleService ->
     IO (Either RelayError (BrokerLink scope brokerGeneration))
-rootForwardBrokerLink broker scope admits retainOffer serveRooted = do
+rootForwardBrokerLink broker scope signActivation admits retainOffer serveRooted = do
     authenticated <- signAuthenticatedRootScopeKernel recoverySigningKernel broker scope
     pure $ do
         rootScope <- either (Left . RelayHandoffFailure) Right authenticated
@@ -513,8 +519,8 @@ rootForwardBrokerLink broker scope admits retainOffer serveRooted = do
                     case retained of
                         Left failure -> pure (Left (RelayEdgeNotPlanned failure))
                         Right () -> fmap (either (Left . RelayHandoffFailure) Right) (grantHandoff broker offer challenge)
-                , linkSignActivationRaw = \_ _ ->
-                    pure (Left (RelayEdgeNotPlanned "the forward coordinator carries no activation signer"))
+                , linkSignActivationRaw = \_ manifest ->
+                    fmap (either (Left . RelayActivationRefused) Right) (signActivation manifest)
                 , linkRootedBindingRaw = \_ -> rootSignRootedBinding broker
                 , linkRecoveryFieldsRaw = \_ _ ->
                     pure (Left (RelayRecoveryNotPlanned "the forward coordinator carries no recovery signer"))
@@ -551,33 +557,39 @@ rootReverseBrokerLink broker scope admits admitsRecovery retainOffer serveRooted
     authenticated <- signAuthenticatedRootScopeKernel recoverySigningKernel broker scope
     pure $ do
         rootScope <- either (Left . RelayHandoffFailure) Right authenticated
-        pure BrokerLink
-            { linkRoute = route
-            , linkAuthenticatedRootScope = rootScope
-            , linkOpenRaw = \_ _ -> pure (Left (RelayEdgeNotPlanned "the reverse coordinator admits no config edge"))
-            , linkRecoverableOpenRaw = \_ input adapter ->
-                registered <$> registerRecoverableAdmittedHandoffEdgeKernel
-                    recoverySigningKernel broker (admits input) input adapter
-            , linkGrantRaw = \_ offer challenge -> do
-                retained <- retainOffer offer
-                case retained of
-                    Left failure -> pure (Left (RelayEdgeNotPlanned failure))
-                    Right () -> fmap (either (Left . RelayHandoffFailure) Right) (grantHandoff broker offer challenge)
-            , linkSignActivationRaw = \_ _ ->
-                pure (Left (RelayEdgeNotPlanned "the reverse coordinator carries no activation signer"))
-            , linkRootedBindingRaw = \_ -> rootSignRootedBinding broker
-            , linkRecoveryFieldsRaw = \_ -> rootSignRecovery broker admitsRecovery
-            , linkLifecycleAcknowledgementRaw = \_ request respond ->
-                rootLifecycleAcknowledgement broker route request respond
-            , linkRootedLifecycleRaw = \path exactRequest ->
-                case rootedRequestPath exactRequest >>= requireRootedRequesterPath True path of
-                    Left failure -> pure (Left failure)
-                    Right () -> serveRooted path exactRequest
-            , linkProviderDependencyRaw = const (pure (Left (RelayEdgeNotPlanned "no provider reprobe endpoint is installed")))
-            , linkProviderDependencyPackage = Nothing
-            , linkRejectResponse = const (pure ())
-            , linkKeyDigest = brokerRouteVerificationKeyDigest route
-            }
+        pure
+            BrokerLink
+                { linkRoute = route
+                , linkAuthenticatedRootScope = rootScope
+                , linkOpenRaw = \_ _ -> pure (Left (RelayEdgeNotPlanned "the reverse coordinator admits no config edge"))
+                , linkRecoverableOpenRaw = \_ input adapter ->
+                    registered
+                        <$> registerRecoverableAdmittedHandoffEdgeKernel
+                            recoverySigningKernel
+                            broker
+                            (admits input)
+                            input
+                            adapter
+                , linkGrantRaw = \_ offer challenge -> do
+                    retained <- retainOffer offer
+                    case retained of
+                        Left failure -> pure (Left (RelayEdgeNotPlanned failure))
+                        Right () -> fmap (either (Left . RelayHandoffFailure) Right) (grantHandoff broker offer challenge)
+                , linkSignActivationRaw = \_ _ ->
+                    pure (Left (RelayEdgeNotPlanned "the reverse coordinator carries no activation signer"))
+                , linkRootedBindingRaw = \_ -> rootSignRootedBinding broker
+                , linkRecoveryFieldsRaw = \_ -> rootSignRecovery broker admitsRecovery
+                , linkLifecycleAcknowledgementRaw = \_ request respond ->
+                    rootLifecycleAcknowledgement broker route request respond
+                , linkRootedLifecycleRaw = \path exactRequest ->
+                    case rootedRequestPath exactRequest >>= requireRootedRequesterPath True path of
+                        Left failure -> pure (Left failure)
+                        Right () -> serveRooted path exactRequest
+                , linkProviderDependencyRaw = const (pure (Left (RelayEdgeNotPlanned "no provider reprobe endpoint is installed")))
+                , linkProviderDependencyPackage = Nothing
+                , linkRejectResponse = const (pure ())
+                , linkKeyDigest = brokerRouteVerificationKeyDigest route
+                }
   where
     route = rootBrokerRoute broker
     registered = either (Left . RelayHandoffFailure) (either (Left . RelayEdgeNotPlanned) Right)
@@ -599,7 +611,10 @@ persistRootedLifecycleCompletionKernel store report acknowledgement = do
         Right () -> do
             received <-
                 receiveLifecycleAcknowledgementKernel
-                    recoverySigningKernel store report acknowledgement
+                    recoverySigningKernel
+                    store
+                    report
+                    acknowledgement
             pure $ either (Left . Text.pack . handoffErrorMessage) Right received
 
 {- | Every other frame's link, derived from its already verified parent edge.
@@ -668,10 +683,11 @@ withProviderDependencyReprobeEndpointKernel ::
     (BrokerLink scope brokerGeneration -> IO result) ->
     IO result
 withProviderDependencyReprobeEndpointKernel link packageWire endpoint use =
-    use link
-        { linkProviderDependencyRaw = fmap (either (Left . RelayEdgeNotPlanned) Right) . endpoint
-        , linkProviderDependencyPackage = Just packageWire
-        }
+    use
+        link
+            { linkProviderDependencyRaw = fmap (either (Left . RelayEdgeNotPlanned) Right) . endpoint
+            , linkProviderDependencyPackage = Just packageWire
+            }
 
 {- | Open a keyless child route only inside the exact config-kind branch.
 
@@ -701,11 +717,23 @@ descent and the derived link, never the edge or its evidence fields.
 -}
 withRecoveryBrokerLink ::
     ReceivedRecoveryDescent
-        scope brokerGeneration planDigest parentFrame childFrame
-        recoveryWireDigest recoveryWireId verb ->
+        scope
+        brokerGeneration
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest
+        recoveryWireId
+        verb ->
     ( ReceivedRecoveryDescent
-        scope brokerGeneration planDigest parentFrame childFrame
-        recoveryWireDigest recoveryWireId verb ->
+        scope
+        brokerGeneration
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest
+        recoveryWireId
+        verb ->
       BrokerLink scope brokerGeneration ->
       IO (Either Text ())
     ) ->
@@ -739,7 +767,7 @@ withNestedRecursiveHandoffRuntimeKernel edge verb use =
     route = verifiedHandoffRoute (receivedEdgeHandoff edge)
     binding = verifiedHandoffBinding (receivedEdgeHandoff edge)
 
-{- | Publish, send, and durably receive one exact child lifecycle report. -}
+-- | Publish, send, and durably receive one exact child lifecycle report.
 withReceivedLifecycleAcknowledgementKernel ::
     ReceivedEdge scope brokerGeneration ->
     ProtectedStore ->
@@ -748,11 +776,17 @@ withReceivedLifecycleAcknowledgementKernel ::
     IO (Either Text ())
 withReceivedLifecycleAcknowledgementKernel = receiveLifecycleAcknowledgementForEdge
 
-{- | The recovery branch first eliminates its complete sealed package. -}
+-- | The recovery branch first eliminates its complete sealed package.
 withReceivedRecoveryLifecycleAcknowledgementKernel ::
     ReceivedRecoveryDescent
-        scope brokerGeneration planDigest parentFrame childFrame
-        recoveryWireDigest recoveryWireId verb ->
+        scope
+        brokerGeneration
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest
+        recoveryWireId
+        verb ->
     ProtectedStore ->
     ByteString ->
     (ByteString -> IO (Either Text ())) ->
@@ -770,8 +804,9 @@ receiveLifecycleAcknowledgementForEdge ::
 receiveLifecycleAcknowledgementForEdge edge store report sender =
     case lifecycleReportBinding report of
         Right binding
-            | binding == renderHandoffBinding
-                (verifiedHandoffBinding (receivedEdgeHandoff edge)) -> do
+            | binding
+                == renderHandoffBinding
+                    (verifiedHandoffBinding (receivedEdgeHandoff edge)) -> do
                 published <- publishLifecycleReportKernel recoverySigningKernel store report
                 case published of
                     Left _ -> unavailable
@@ -784,8 +819,12 @@ receiveLifecycleAcknowledgementForEdge edge store report sender =
                                 case received of
                                     Left reason -> pure (Left reason)
                                     Right acknowledgement -> do
-                                        recorded <- receiveLifecycleAcknowledgementKernel
-                                            recoverySigningKernel store report acknowledgement
+                                        recorded <-
+                                            receiveLifecycleAcknowledgementKernel
+                                                recoverySigningKernel
+                                                store
+                                                report
+                                                acknowledgement
                                         case recorded of
                                             Left _ -> unavailable
                                             Right () -> pure (Right ())
@@ -883,12 +922,19 @@ withRootedPreparedResponseKernel broker session request grant use =
                 Right nonce ->
                     withPreparedNodeGrantKernel grant $ \node dependencies own projected ->
                         signAndUse
-                            broker request
+                            broker
+                            request
                             ( Rooted.rootedPreparedResponseUnsignedKernel
-                                (childConfigDigest request) path token "prepared" (ordinal + 1)
-                                nonce (TextEncoding.encodeUtf8 node)
+                                (childConfigDigest request)
+                                path
+                                token
+                                "prepared"
+                                (ordinal + 1)
+                                nonce
+                                (TextEncoding.encodeUtf8 node)
                                 (renderPreparedNodeKeysKernel dependencies)
-                                own projected
+                                own
+                                projected
                             )
                             use
 
@@ -921,10 +967,22 @@ withRootedPostOpenResponseKernel broker session family request body use =
         "frame-complete" -> opaque Rooted.rootedFrameCompleteResponseUnsignedKernel path token ordinal nonce
         "receipt-recorded" ->
             Rooted.rootedReceiptRecordedResponseUnsignedKernel
-                digest path token "receipt-recorded" (ordinal + 1) nonce (TextEncoding.decodeUtf8Lenient body)
+                digest
+                path
+                token
+                "receipt-recorded"
+                (ordinal + 1)
+                nonce
+                (TextEncoding.decodeUtf8Lenient body)
         "refused" ->
             Rooted.rootedRefusedResponseUnsignedKernel
-                digest path token "refused" (ordinal + 1) nonce (TextEncoding.decodeUtf8Lenient body)
+                digest
+                path
+                token
+                "refused"
+                (ordinal + 1)
+                nonce
+                (TextEncoding.decodeUtf8Lenient body)
         _ -> Left (responseFailure "the post-open response family is not closed")
       where
         digest = childConfigDigest request
@@ -996,7 +1054,13 @@ withRootedTerminalReceiptKernel ::
 withRootedTerminalReceiptKernel runtime session store close signedComplete confirm signedReceipt use =
     withRootedTerminalReportKernel runtime session close signedComplete publish $ \report completion ->
         withRootedReceiptConfirmationKernel
-            runtime session confirm completion signedReceipt (advance report) use
+            runtime
+            session
+            confirm
+            completion
+            signedReceipt
+            (advance report)
+            use
   where
     publish report = do
         published <- publishLifecycleReportKernel recoverySigningKernel store report
@@ -1006,7 +1070,10 @@ withRootedTerminalReceiptKernel runtime session store close signedComplete confi
         Right acknowledgement -> do
             received <-
                 receiveLifecycleAcknowledgementKernel
-                    recoverySigningKernel store report acknowledgement
+                    recoverySigningKernel
+                    store
+                    report
+                    acknowledgement
             pure (durable "receive" received)
     durable stage =
         either
@@ -1099,7 +1166,7 @@ rootedSigningKind raw = do
                     "recovery-package" -> Right (Just RecoveryAdapterWire)
                     _ -> requesterMismatch "the rooted signing kind is not closed"
 
-{- | Route rooted signing for the exact offer already held by this frame. -}
+-- | Route rooted signing for the exact offer already held by this frame.
 rootedBindingThroughLink ::
     BrokerLink scope brokerGeneration ->
     HandoffOffer scope brokerGeneration ->
@@ -1155,7 +1222,9 @@ relayRootedBinding channel request path offer =
                         Left failure -> pure (Left failure)
                         Right [rooted] -> pure (Right rooted)
                         Right fields ->
-                            refuse channel request
+                            refuse
+                                channel
+                                request
                                 (RelayMalformedMessage RecoveryResponseTag (length fields))
 
 {- | Route the exact first acknowledgement stage and consume its closed result.
@@ -1174,11 +1243,24 @@ prepareLifecycleAcknowledgementThroughLink ::
     (ByteString -> IO (Either RelayError ())) ->
     IO (Either RelayError ())
 prepareLifecycleAcknowledgementThroughLink
-    link offer challenge report acknowledgement pending alreadyAdopted =
+    link
+    offer
+    challenge
+    report
+    acknowledgement
+    pending
+    alreadyAdopted =
         routeLifecycleAcknowledgementThroughLink
-            link offer challenge report acknowledgement lifecyclePrepareStage
-            lifecyclePending (pending acknowledgement)
-            lifecycleAlreadyAdopted (alreadyAdopted acknowledgement)
+            link
+            offer
+            challenge
+            report
+            acknowledgement
+            lifecyclePrepareStage
+            lifecyclePending
+            (pending acknowledgement)
+            lifecycleAlreadyAdopted
+            (alreadyAdopted acknowledgement)
 
 {- | Route the exact second acknowledgement stage and consume fresh/replay.
 
@@ -1195,10 +1277,24 @@ adoptLifecycleAcknowledgementThroughLink ::
     IO (Either RelayError ()) ->
     IO (Either RelayError ())
 adoptLifecycleAcknowledgementThroughLink
-    link offer challenge report acknowledgement fresh replay =
+    link
+    offer
+    challenge
+    report
+    acknowledgement
+    fresh
+    replay =
         routeLifecycleAcknowledgementThroughLink
-            link offer challenge report acknowledgement lifecycleAdoptStage
-            lifecycleFresh fresh lifecycleReplay replay
+            link
+            offer
+            challenge
+            report
+            acknowledgement
+            lifecycleAdoptStage
+            lifecycleFresh
+            fresh
+            lifecycleReplay
+            replay
 
 routeLifecycleAcknowledgementThroughLink ::
     BrokerLink scope brokerGeneration ->
@@ -1213,17 +1309,32 @@ routeLifecycleAcknowledgementThroughLink ::
     IO (Either RelayError ()) ->
     IO (Either RelayError ())
 routeLifecycleAcknowledgementThroughLink
-    link offer challenge report acknowledgement stage firstDisposition first secondDisposition second =
+    link
+    offer
+    challenge
+    report
+    acknowledgement
+    stage
+    firstDisposition
+    first
+    secondDisposition
+    second =
         case requireOwnFrame link "lifecycle parent frame" parentFrame
             >> renderLifecycleAcknowledgementRequest stage offer challenge report acknowledgement of
             Left failure -> pure (Left failure)
             Right request ->
                 linkLifecycleAcknowledgementRaw link [] request $ \response ->
                     withLifecycleAcknowledgementResponse
-                        stage report acknowledgement response
-                        firstDisposition first secondDisposition second
-  where
-    parentFrame = handoffParentFrame (handoffOfferBinding offer)
+                        stage
+                        report
+                        acknowledgement
+                        response
+                        firstDisposition
+                        first
+                        secondDisposition
+                        second
+      where
+        parentFrame = handoffParentFrame (handoffOfferBinding offer)
 
 {- | Ask this frame's route to the root to authenticate an exact recovery wire.
 
@@ -1693,7 +1804,11 @@ withLifecycleAcknowledgementRequest route raw prepare adopt =
                 fromHandoff (verifyLifecycleAcknowledgement report acknowledgement)
                 canonical <-
                     renderLifecycleAcknowledgementRequest
-                        stage offer challenge report acknowledgement
+                        stage
+                        offer
+                        challenge
+                        report
+                        acknowledgement
                 requireLifecycleRelay
                     (canonical == raw)
                     "the lifecycle request is not canonical"
@@ -1735,7 +1850,14 @@ withLifecycleAcknowledgementResponse ::
     IO (Either RelayError ()) ->
     IO (Either RelayError ())
 withLifecycleAcknowledgementResponse
-    expectedStage report expectedAcknowledgement raw firstDisposition first secondDisposition second =
+    expectedStage
+    report
+    expectedAcknowledgement
+    raw
+    firstDisposition
+    first
+    secondDisposition
+    second =
         case parse of
             Left failure -> pure (Left failure)
             Right disposition
@@ -1757,7 +1879,10 @@ withLifecycleAcknowledgementResponse
                         "the lifecycle response differs from the exact request"
                     canonical <-
                         renderLifecycleAcknowledgementResponse
-                            stage disposition report acknowledgement
+                            stage
+                            disposition
+                            report
+                            acknowledgement
                     requireLifecycleRelay
                         (canonical == raw)
                         "the lifecycle response is not canonical"
@@ -1776,14 +1901,24 @@ rootLifecycleAcknowledgement broker route raw respond =
     prepare offer challenge report acknowledgement =
         flattenLifecycleKernel
             ( prepareLifecycleAcknowledgementKernel
-                recoverySigningKernel broker offer challenge report acknowledgement
+                recoverySigningKernel
+                broker
+                offer
+                challenge
+                report
+                acknowledgement
                 (respondWith lifecyclePrepareStage lifecyclePending report)
                 (respondWith lifecyclePrepareStage lifecycleAlreadyAdopted report)
             )
     adopt offer challenge report acknowledgement =
         flattenLifecycleKernel
             ( adoptLifecycleAcknowledgementKernel
-                recoverySigningKernel broker offer challenge report acknowledgement
+                recoverySigningKernel
+                broker
+                offer
+                challenge
+                report
+                acknowledgement
                 (respondWith lifecycleAdoptStage lifecycleFresh report acknowledgement)
                 (respondWith lifecycleAdoptStage lifecycleReplay report acknowledgement)
             )
@@ -1808,7 +1943,9 @@ relayLifecycleAcknowledgement ::
     (ByteString -> IO (Either RelayError ())) ->
     IO (Either RelayError ())
 relayLifecycleAcknowledgement route channel request path raw respond =
-    withLifecycleAcknowledgementRequest route raw
+    withLifecycleAcknowledgementRequest
+        route
+        raw
         (relay lifecyclePrepareStage lifecyclePending lifecycleAlreadyAdopted)
         (relay lifecycleAdoptStage lifecycleFresh lifecycleReplay)
   where
@@ -1825,9 +1962,14 @@ relayLifecycleAcknowledgement route channel request path raw respond =
                             Left failure -> pure (Left failure)
                             Right [response] ->
                                 withLifecycleAcknowledgementResponse
-                                    stage report acknowledgement response
-                                    firstDisposition (respond response)
-                                    secondDisposition (respond response)
+                                    stage
+                                    report
+                                    acknowledgement
+                                    response
+                                    firstDisposition
+                                    (respond response)
+                                    secondDisposition
+                                    (respond response)
                             Right fields ->
                                 pure
                                     ( Left
@@ -2232,8 +2374,15 @@ offerReverseDescentKernel ::
     HandoffChannel ->
     Word64 ->
     ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId ->
-    ( ReverseDescent (HandoffOffer scope brokerGeneration)
-        scope planId parentFrame childFrame brokerGeneration verb descentId ->
+    ( ReverseDescent
+        (HandoffOffer scope brokerGeneration)
+        scope
+        planId
+        parentFrame
+        childFrame
+        brokerGeneration
+        verb
+        descentId ->
       ByteString ->
       (ByteString -> ByteString -> IO (Either Text ())) ->
       IO (Either Text ())
@@ -2325,21 +2474,19 @@ offerAuthentication link offer =
                     )
                 )
         Right package -> Recovery.withRecoveryChildPackageKernel package $ \_ adapter ->
-            case
-                withRecoveryProjectionBindingInput
-                    (handoffPlanRevision binding)
-                    (handoffParentFrame binding)
-                    (handoffChildFrame binding)
-                    ( \input ->
-                        withSignedRecoveryThroughLink verb link input adapter $ \projection grant ->
-                            pure
-                                ( authenticationPrelude
-                                    <> frameWire rooted
-                                    <> frameWire (renderRecoveryProjectionBinding projection)
-                                    <> frameWire (recoveryWireGrantSignature grant)
-                                )
-                    )
-            of
+            case withRecoveryProjectionBindingInput
+                (handoffPlanRevision binding)
+                (handoffParentFrame binding)
+                (handoffChildFrame binding)
+                ( \input ->
+                    withSignedRecoveryThroughLink verb link input adapter $ \projection grant ->
+                        pure
+                            ( authenticationPrelude
+                                <> frameWire rooted
+                                <> frameWire (renderRecoveryProjectionBinding projection)
+                                <> frameWire (recoveryWireGrantSignature grant)
+                            )
+                ) of
                 Left failure -> pure (Left (RelayHandoffFailure failure))
                 Right signed -> signed
 
@@ -2460,49 +2607,64 @@ serveMessage ::
     IO (Either RelayError ())
 serveMessage state link channel request offer challenge terminal message =
     case (state, protocolMessageTag message) of
-    (ParentAwaitingAcceptance expectedDigest childFrame, AcceptedTag) ->
-        case protocolMessageFields message of
-            [actualDigest]
-                | actualDigest == expectedDigest ->
-                    serveUntilDone
-                        (ParentServingAdmittedChild childFrame)
-                        link channel request offer challenge terminal
-                | otherwise ->
-                    refuse
+        (ParentAwaitingAcceptance expectedDigest childFrame, AcceptedTag) ->
+            case protocolMessageFields message of
+                [actualDigest]
+                    | actualDigest == expectedDigest ->
+                        serveUntilDone
+                            (ParentServingAdmittedChild childFrame)
+                            link
+                            channel
+                            request
+                            offer
+                            challenge
+                            terminal
+                    | otherwise ->
+                        refuse
+                            channel
+                            request
+                            ( RelayHandoffFailure
+                                (HandoffBindingMismatch "the child accepted a different payload digest")
+                            )
+                fields -> refuse channel request (RelayMalformedMessage AcceptedTag (length fields))
+        (_, RefusedTag) -> pure (Left (refusalFrom message))
+        (ParentServingAdmittedChild _, CompletedTag) ->
+            case protocolMessageFields message of
+                [report] ->
+                    runLifecycleTerminal
+                        link
                         channel
                         request
-                        ( RelayHandoffFailure
-                            (HandoffBindingMismatch "the child accepted a different payload digest")
-                        )
-            fields -> refuse channel request (RelayMalformedMessage AcceptedTag (length fields))
-    (_, RefusedTag) -> pure (Left (refusalFrom message))
-    (ParentServingAdmittedChild _, CompletedTag) ->
-        case protocolMessageFields message of
-            [report] ->
-                runLifecycleTerminal
-                    link channel request offer challenge report terminal
-            _ -> refuse channel request RelayLifecycleFailure
-    (ParentServingAdmittedChild childFrame, OfferRequestTag) ->
-        continueAfter childFrame (serveOpen childFrame link channel request message)
-    (ParentServingAdmittedChild childFrame, GrantRequestTag) ->
-        continueAfter childFrame (serveGrant childFrame link channel request message)
-    (ParentServingAdmittedChild childFrame, ActivationSignRequestTag) ->
-        continueAfter childFrame (serveActivationSigning childFrame link channel request message)
-    (ParentServingAdmittedChild childFrame, RecoveryRequestTag) ->
-        continueAfter childFrame (serveRecoverySigning childFrame link channel request message)
-    (ParentServingAdmittedChild childFrame, LifecycleAckRequestTag) ->
-        continueAfter childFrame
-            (serveLifecycleAcknowledgement childFrame link channel request message)
-    (ParentServingAdmittedChild childFrame, RootedLifecycleRequestTag) ->
-        continueAfter childFrame
-            (serveRootedLifecycle childFrame link channel request message)
-    (ParentServingAdmittedChild childFrame, ProviderDependencyProbeRequestTag) ->
-        continueAfter childFrame
-            (serveProviderDependency link channel request message)
-    (ParentServingAdmittedChild childFrame, ProviderDependencyPackageTag) ->
-        continueAfter childFrame
-            (serveProviderDependencyPackage link channel request message)
-    (_, tag) -> refuse channel request (RelayUnexpectedMessage tag)
+                        offer
+                        challenge
+                        report
+                        terminal
+                _ -> refuse channel request RelayLifecycleFailure
+        (ParentServingAdmittedChild childFrame, OfferRequestTag) ->
+            continueAfter childFrame (serveOpen childFrame link channel request message)
+        (ParentServingAdmittedChild childFrame, GrantRequestTag) ->
+            continueAfter childFrame (serveGrant childFrame link channel request message)
+        (ParentServingAdmittedChild childFrame, ActivationSignRequestTag) ->
+            continueAfter childFrame (serveActivationSigning childFrame link channel request message)
+        (ParentServingAdmittedChild childFrame, RecoveryRequestTag) ->
+            continueAfter childFrame (serveRecoverySigning childFrame link channel request message)
+        (ParentServingAdmittedChild childFrame, LifecycleAckRequestTag) ->
+            continueAfter
+                childFrame
+                (serveLifecycleAcknowledgement childFrame link channel request message)
+        (ParentServingAdmittedChild childFrame, RootedLifecycleRequestTag) ->
+            continueAfter
+                childFrame
+                (serveRootedLifecycle childFrame link channel request message)
+        (ParentServingAdmittedChild childFrame, ProviderDependencyProbeRequestTag) ->
+            continueAfter
+                childFrame
+                (serveProviderDependency link channel request message)
+        (ParentServingAdmittedChild childFrame, ProviderDependencyPackageTag) ->
+            continueAfter
+                childFrame
+                (serveProviderDependencyPackage link channel request message)
+        (_, tag) -> refuse channel request (RelayUnexpectedMessage tag)
   where
     continueAfter childFrame served = do
         outcome <- served
@@ -2511,7 +2673,12 @@ serveMessage state link channel request offer challenge terminal message =
             ( const
                 ( serveUntilDone
                     (ParentServingAdmittedChild childFrame)
-                    link channel request offer challenge terminal
+                    link
+                    channel
+                    request
+                    offer
+                    challenge
+                    terminal
                 )
             )
             outcome
@@ -2556,7 +2723,7 @@ serveProviderDependencyPackage link channel request message =
             | ByteString.null requestField ->
                 case linkProviderDependencyPackage link of
                     Nothing -> transmit channel ProviderDependencyPackageTag request [ByteString.empty]
-                    Just packageWire -> case providerDependencyPackageFields packageWire of
+                    Just packageWire -> case providerDependencyPackagesFields packageWire of
                         Left failure -> refuse channel request (RelayEdgeNotPlanned failure)
                         Right fields -> transmit channel ProviderDependencyPackageTag request fields
         fields -> refuse channel request (RelayMalformedMessage ProviderDependencyPackageTag (length fields))
@@ -2607,8 +2774,13 @@ runLifecycleTerminal link channel request offer challenge report terminal =
                     | otherwise = do
                         prepared <-
                             prepareLifecycleAcknowledgementThroughLink
-                                link offer challenge report acknowledgement
-                                pending alreadyAdopted
+                                link
+                                offer
+                                challenge
+                                report
+                                acknowledgement
+                                pending
+                                alreadyAdopted
                         case prepared of
                             Left _ -> pure fixedPersistFailure
                             Right () -> do
@@ -2622,7 +2794,11 @@ runLifecycleTerminal link channel request offer challenge report terminal =
                     do
                         adopted <-
                             adoptLifecycleAcknowledgementThroughLink
-                                link offer challenge report acknowledgement
+                                link
+                                offer
+                                challenge
+                                report
+                                acknowledgement
                                 (recordDisposition True)
                                 (recordDisposition False)
                         case adopted of
@@ -2649,10 +2825,12 @@ runLifecycleTerminal link channel request offer challenge report terminal =
                     pure (Right ())
 
                 closeGate retained = do
-                    closed <- try
-                        ( modifyMVar gate $ \(_, wasEntered, attempted, fresh) ->
-                            pure ((True, wasEntered, attempted, fresh), wasEntered)
-                        ) :: IO (Either SomeException Bool)
+                    closed <-
+                        try
+                            ( modifyMVar gate $ \(_, wasEntered, attempted, fresh) ->
+                                pure ((True, wasEntered, attempted, fresh), wasEntered)
+                            ) ::
+                            IO (Either SomeException Bool)
                     case closed of
                         Left failure -> closeGate (retainException retained failure)
                         Right entered ->
@@ -2673,12 +2851,17 @@ runLifecycleTerminal link channel request offer challenge report terminal =
                         then pure (Left RelayLifecycleFailure)
                         else refuse channel request RelayLifecycleFailure
 
-            callbackResult <- try (restore (do
-                terminalResult <- terminal report persist
-                case terminalResult of
-                    Left reason -> pure (Left reason)
-                    Right value -> evaluate value >> pure (Right ())))
-                    :: IO (Either SomeException (Either Text ()))
+            callbackResult <-
+                try
+                    ( restore
+                        ( do
+                            terminalResult <- terminal report persist
+                            case terminalResult of
+                                Left reason -> pure (Left reason)
+                                Right value -> evaluate value >> pure (Right ())
+                        )
+                    ) ::
+                    IO (Either SomeException (Either Text ()))
             closeException <- closeGate Nothing
             (_, _, acknowledgementAttempted, disposition) <- readMVar gate
             classified <- case (callbackResult, disposition) of
@@ -2804,7 +2987,12 @@ serveOpen childFrame link channel request message = case protocolMessageFields m
         Right (path, raw) -> case parseRecoverableOpen raw of
             Left failure -> refuse channel request failure
             Right (Just (input, adapter)) ->
-                answerOpen childFrame channel request path input
+                answerOpen
+                    childFrame
+                    channel
+                    request
+                    path
+                    input
                     (linkRecoverableOpenRaw link path input adapter)
             Right Nothing -> case handoffBindingInputFromWire raw of
                 Left failure -> refuse channel request (RelayHandoffFailure failure)
@@ -2814,7 +3002,11 @@ serveOpen childFrame link channel request message = case protocolMessageFields m
     fields -> refuse channel request (RelayMalformedMessage OfferRequestTag (length fields))
 
 answerOpen ::
-    Text -> HandoffChannel -> Word64 -> RequesterPath -> HandoffBindingInput ->
+    Text ->
+    HandoffChannel ->
+    Word64 ->
+    RequesterPath ->
+    HandoffBindingInput ->
     IO (Either RelayError (BrokerRelay scope brokerGeneration, HandoffToken)) ->
     IO (Either RelayError ())
 answerOpen childFrame channel request path input opened =
@@ -2825,7 +3017,10 @@ answerOpen childFrame channel request path input opened =
             case result of
                 Left failure -> refuse channel request failure
                 Right (relay, token) ->
-                    transmit channel OfferResponseTag request
+                    transmit
+                        channel
+                        OfferResponseTag
+                        request
                         [frameWire (renderHandoffBinding (relayBinding relay)) <> frameWire (handoffTokenBytes token)]
 
 -- | Answer a child's request for a grant, through this frame's own link.
@@ -2907,8 +3102,11 @@ serveRecoverySigning childFrame link channel request message = case protocolMess
                 Left failure -> refuse channel request failure
                 Right offer ->
                     if handoffPayloadKind (handoffOfferBinding offer) /= kind
-                        then refuse channel request
-                            (RelayHandoffFailure (HandoffBindingMismatch "the rooted signing kind differs from the exact offer"))
+                        then
+                            refuse
+                                channel
+                                request
+                                (RelayHandoffFailure (HandoffBindingMismatch "the rooted signing kind differs from the exact offer"))
                         else case requireServedRequester
                             childFrame
                             (handoffParentFrame (handoffOfferBinding offer))
@@ -3006,7 +3204,7 @@ protocol failure.
 controlFrameMicros :: Int
 controlFrameMicros = 120 * 1000000
 
-{- | Receive one control frame, or fail rather than wait forever. -}
+-- | Receive one control frame, or fail rather than wait forever.
 receiveControlFrame :: HandoffChannel -> IO (Either RelayError ProtocolMessage)
 receiveControlFrame channel = do
     answered <- timeout controlFrameMicros (receive channel)

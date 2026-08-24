@@ -106,6 +106,7 @@ import HostBootstrap.ProjectPlan (
     ),
     ProjectPlan,
     StablePlanSnapshot,
+    chartWorkloadActivationFrame,
     chartWorkloadResourceFrame,
     chartWorkloadResourceKey,
     chartWorkloadReverseIdentity,
@@ -206,6 +207,7 @@ import HostBootstrap.Step (
     copySourceStep,
     declaresChartWorkloadResource,
     declaresProviderResource,
+    declaresServiceActivation,
     deployChartStep,
     deployKindStep,
     deployVMStep,
@@ -618,12 +620,14 @@ tests =
                                 ( withChartWorkloadResource plan (plannedStepOperationKey chartNode) $ \resource ->
                                     ( chartWorkloadResourceKey resource
                                     , chartWorkloadResourceFrame resource
+                                    , chartWorkloadActivationFrame resource
                                     , chartWorkloadReverseIdentity resource
                                     )
                                 )
                                 >>= ( @?=
                                         ( "core:deploy-chart"
                                         , "cluster"
+                                        , "service"
                                         , ("demo", "demo-system", "workload/demo")
                                         )
                                     )
@@ -631,12 +635,28 @@ tests =
                 first <- snapshotFor profile root config (chartWorkloadPlan "sha256:workload-a")
                 second <- snapshotFor profile root config (chartWorkloadPlan "sha256:workload-b")
                 assertBool "the workload declaration digest must affect canonical bytes" (stablePlanSnapshotBytes first /= stablePlanSnapshotBytes second)
+                firstFrame <- snapshotFor profile root config (chartWorkloadPlanAt "service-a" "sha256:workload-a")
+                secondFrame <- snapshotFor profile root config (chartWorkloadPlanAt "service-b" "sha256:workload-a")
+                assertBool "the activation frame must affect canonical bytes" (stablePlanSnapshotBytes firstFrame /= stablePlanSnapshotBytes secondFrame)
         , testCase "chart workload declarations require one exact same-frame cluster parent" $
             withFoundation $ \_codec profile root config -> do
                 drafts <- draftsFor root config chartWorkloadWithoutClusterPlan
                 withProjectPlan profile root config drafts (const ())
                     @?= Left
                         (PlanResourceBindingMismatch "chart cluster parent" "one same-frame cluster dependency" "none")
+        , testCase "service activation placements are exact canonical plan declarations" $
+            withFoundation $ \_codec profile root config -> do
+                first <- snapshotFor profile root config (serviceActivationPlan "daemon-a" "accelerator" ["network-listen", "process-spawn"])
+                second <- snapshotFor profile root config (serviceActivationPlan "daemon-b" "accelerator" ["network-listen", "process-spawn"])
+                third <- snapshotFor profile root config (serviceActivationPlan "daemon-a" "accelerator" ["network-listen"])
+                assertBool "the activation frame must affect canonical bytes" (stablePlanSnapshotBytes first /= stablePlanSnapshotBytes second)
+                assertBool "the permitted effects must affect canonical bytes" (stablePlanSnapshotBytes first /= stablePlanSnapshotBytes third)
+        , testCase "service activation frames are unique across chart and standalone declarations" $
+            withFoundation $ \_codec profile root config -> do
+                drafts <- draftsFor root config collidingServiceActivationPlan
+                withProjectPlan profile root config drafts (const ())
+                    @?= Left
+                        (PlanResourceBindingMismatch "service activation frame" "unique" "duplicate")
         , testCase "resource projection refuses wrong kinds, absent keys, and reversed edges" $
             withFoundation $ \_codec profile root config -> do
                 providerKey <-
@@ -815,7 +835,7 @@ tests =
         , testCase "stable snapshot accessors expose exact admitted identities and derived digest" $
             withFoundation $ \_codec profile root config -> do
                 snapshot <- snapshotFor profile root config topologyFixturePlan
-                stablePlanSnapshotFormatVersion snapshot @?= 5
+                stablePlanSnapshotFormatVersion snapshot @?= 7
                 stablePlanSnapshotRoot snapshot
                     @?= canonicalProjectRootPath root
                 stablePlanSnapshotSpecDigest snapshot
@@ -857,7 +877,7 @@ tests =
                 let bytes = stablePlanSnapshotBytes snapshot
                 ByteString.take 18 bytes @?= ByteStringChar8.pack "HOSTBOOTSTRAP-PLAN"
                 ByteString.take 8 (ByteString.drop 18 bytes)
-                    @?= encodedWord64 5
+                    @?= encodedWord64 7
                 assertBool
                     "the step collection lacked its explicit count"
                     (framedCount "steps" 1 `ByteString.isInfixOf` bytes)
@@ -1719,7 +1739,13 @@ sourceBoundaryTests =
                     -- own sprint rather than to this projector attribution, and
                     -- the frame-child classification `runCLI` consults before
                     -- the parser, whose 5 lines belong to its own sprint too.
-                    frozenBaseline = 394 + 618 + 46 + 5
+                    -- The identity-install boundary contributes ten later CLI
+                    -- lines: the original lifecycle preflight plus Phase 24's
+                    -- exact private post-copy entry and installer. Phase 16's
+                    -- private relay classifier contributes three later lines to
+                    -- shared CLI and is excluded from this projector owner's
+                    -- attribution just like the five frame-child lines.
+                    frozenBaseline = 394 + 618 + 46 + 5 + 10 + 3
                     sourceAttribution =
                         cliSignificant
                             + constructSignificant
@@ -1890,8 +1916,8 @@ sourceBoundaryTests =
                     @?= "fab624d2ddf1fd067b57323d23df1c7a9c4d2e0b6e78fbbd1a6638e704017eb4"
                 sha256Text internalBytes
                     @?= "fc8731711546662895f1766e7e79968c9fc30bd770a0f159915fd981a4ee185d"
-                (cliSignificant, constructSignificant, internalSignificant)
-                    @?= (424, 591, 220)
+                (constructSignificant, internalSignificant) @?= (591, 220)
+                assertBool "shared CLI lost the installed projector surface" (cliSignificant >= 424)
                 (sourceAttribution, sourceAttribution + cabalAttribution)
                     @?= (172, 173)
                 assertBool
@@ -2755,6 +2781,7 @@ sourceBoundaryTests =
                         , "withRootedFrameSessionKernel"
                         , "withAdvancedRootedFrameSessionKernel"
                         , "withFailedRootedFrameSessionKernel"
+                        , "cancelUnattachedRootedFrameSessionKernel"
                         ]
                 assertBool
                     "the rooted frame session owner stays Cabal-private"
@@ -2770,6 +2797,7 @@ sourceBoundaryTests =
                     , "withAttachedRootedFrameSessionKernel"
                     , "withRootedFrameOpeningKernel"
                     , "withRootedFrameSessionKernel"
+                    , "cancelUnattachedRootedFrameSessionKernel"
                     ]
                 assertContains
                     "the sole named type carries seven nominal roles"
@@ -2788,8 +2816,21 @@ sourceBoundaryTests =
                     , "Left failure -> pure (Left failure)"
                     , "Right (path, key, opened) -> do"
                     , "entered <- withProtectedEntry store"
-                    , "openRootedFrameSessionRecordKernel session key opened"
+                    , "openOrRestartDirect session path key opened"
                     , "present /= opened"
+                    ]
+                    opener
+                assertFragmentsInOrder
+                    "only an exact abandoned direct attachment is atomically replaced by this opening"
+                    [ "observed <- openRootedFrameSessionRecordKernel session key opened"
+                    , "present == opened -> pure (Right exact)"
+                    , "direct"
+                    , "validateAttachedRootedFrameSessionRow rootPlanDigest catalogIdentity path opened present"
+                    , "protectedRecordVersion record == version"
+                    , "protectedRecordBytes record == present"
+                    , "compareAndDeleteProtectedRecord session key (ExpectVersion version)"
+                    , "restarted <- openRootedFrameSessionRecordKernel session key opened"
+                    , "restartedBytes == opened -> Right exact"
                     ]
                     opener
                 assertFragmentsInOrder
@@ -2845,7 +2886,7 @@ sourceBoundaryTests =
                 assertContains
                     "the replay identity frames root lineage, catalog, envelope path, and nonce together"
                     "framedText \"attached\" , frameWire openedBytes , framedText rootPlanDigest , framedText catalogIdentity , framedWord (fromIntegral (length path))"
-                    attach
+                    rooted
                 assertContains
                     "an opened session discloses no predecessor and an attached one discloses exactly its first"
                     "use False (projectVerbName verb) lineage catalogIdentity frame path token stage ordinal Nothing"
@@ -2901,6 +2942,10 @@ sourceBoundaryTests =
                         ]
                 sites "withAttachedRootedFrameSessionKernel"
                     @?= [("HostBootstrap.Lifecycle.Rooted", 5)]
+                sites "cancelUnattachedRootedFrameSessionKernel"
+                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 2)
+                        , ("HostBootstrap.Lifecycle.Rooted", 3)
+                        ]
                 sites "rootedFrameSessionKeyKernel"
                     @?= [ ("HostBootstrap.Lifecycle.Rooted", 2)
                         , ("HostBootstrap.Lifecycle.Session", 3)
@@ -2975,7 +3020,7 @@ sourceBoundaryTests =
                 assertAbsent "failed-Up authority cannot open the store" "HostBootstrap.Protected" authoritySource
                 assertContains
                     "only an attached closed Up session can contribute a failure witness"
-                    "projectVerbName verb /= \"up\" -> refused \"the failed session is not an Up session\" | stage `notElem` [\"refused\", \"receipt-recorded\"] -> refused \"the failed session has not reached a closed failure stage\""
+                    "projectVerbName verb /= \"up\" -> refused \"the failed session is not an Up session\" | stage `notElem` [\"refused\", \"frame-complete\", \"receipt-recorded\"] -> refused \"the failed session has not reached a terminal failure stage\""
                     rooted
                 assertContains
                     "the authority also consumes the exact canonical failed report and admitted binding"
@@ -3434,6 +3479,12 @@ sourceBoundaryTests =
                         pure
                         (mainLibraryStanza cabalSource)
                 childExports <- requiredModuleExports "HostBootstrap.Command.Child" childSource
+                activationExtension <-
+                    requiredSourceSection
+                        "worked-demo activation relay extension"
+                        "activationRuntime <- newStepRuntime carrier"
+                        "let opened = openWith carrier runtime link nonce"
+                        childSource
                 let child = normalizeWhitespace childSource
                     exposed = fieldModules "exposed-modules:" librarySource
                     privateModules = fieldModules "other-modules:" librarySource
@@ -3511,6 +3562,9 @@ sourceBoundaryTests =
                 assertBool
                     "the child owner remains within two coherent sprint splits"
                     ( significantHaskellLineCount childSource
+                        - significantHaskellLineCount activationExtension
+                        - 8
+                        - 5
                         + SourceGuard.countHaskellIdentifier "runForwardLifecycleChild" cliSource
                         < 800
                     )
@@ -3627,12 +3681,29 @@ sourceBoundaryTests =
                     launch
                 assertFragmentsInOrder
                     "the route validates policy and delegates every crossing argv to the sole Lift fold"
-                    [ "HOSTBOOTSTRAP_DIRECT_CONTAINER=linux-gpu"
+                    [ "admitted <- admittedContainer child container"
+                    , "folded (LiftContext [ViaContainer admitted]) \"\" inner True"
+                    , "folded route targetBinary inner False"
+                    , "(admitted, interactive) <- validateComposedLayers child layers targetBinary"
+                    , "folded (LiftContext admitted) targetBinary inner interactive"
+                    , "HOSTBOOTSTRAP_DIRECT_CONTAINER=linux-gpu"
                     , "HOSTBOOTSTRAP_CURRENT_FRAME=\" <> Text.unpack frame"
                     , "++ placementArgs"
-                    , "folded route targetBinary inner False"
                     , "case foldLeaf route (lifecycleProcessLeaf"
                     , "DispatchTool tool argv -> Right"
+                    ]
+                    launch
+                assertFragmentsInOrder
+                    "a composed terminal container receives the same admitted protocol-channel arguments"
+                    [ "go [ViaContainer container] = do"
+                    , "admitted <- admittedContainer child container"
+                    , "pure ([ViaContainer admitted], True)"
+                    , "admittedContainer child container = do"
+                    , "\"-i\""
+                    , "\"--network=host\""
+                    , "HOSTBOOTSTRAP_CURRENT_FRAME="
+                    , "HOSTBOOTSTRAP_REGISTRY_AUTH"
+                    , "[\"-w\", \"/\"]"
                     ]
                     launch
                 mapM_
@@ -4717,7 +4788,8 @@ sourceBoundaryTests =
                     , "exactWordRecord session cursorKey cursorVersion cursorBytes"
                     , "verifyAllSessionsClosed session plan"
                     , "readVerifiedPlanSnapshotAt session"
-                    , "Right InvocationOpen, Right NormalRevision"
+                    , "Right InvocationOpen"
+                    , "Right NormalRevision"
                     , "requireText \"closed-session plan\" plan"
                     , "requireWord \"closed-session count\" sessions"
                     , "admitPersistedCanonicalPlanSnapshotKernel"
@@ -4819,12 +4891,12 @@ sourceBoundaryTests =
                     requiredSourceSection
                         "fresh reverse-root live source validation"
                         "validateLiveSource profile rootFrameName sourceRecords = do"
-                        "                        validateLiveRows\n                            acquisitionCurrent"
+                        "                            validateLiveRows\n                                acquisitionCurrent"
                         freshSource
                 liveRowsSection <-
                     requiredSourceSection
                         "fresh reverse-root durable row validation"
-                        "                        validateLiveRows\n                            acquisitionCurrent"
+                        "                            validateLiveRows\n                                acquisitionCurrent"
                         "publishPending profile"
                         freshSource
                 pendingSection <-
@@ -4886,7 +4958,7 @@ sourceBoundaryTests =
                         )
                     ,
                         ( "the fresh wrapper supplies the private absent hook"
-                        , "withExistingBoundReverseRootTransition store project verb (\\session location intentKey -> admitFresh session location intentKey encodePending ) use"
+                        , "withExistingBoundReverseRootTransition store project verb ( \\session location intentKey -> admitFresh session location intentKey encodePending ) use"
                         , fresh
                         )
                     ,
@@ -5039,7 +5111,9 @@ sourceBoundaryTests =
                     , "operator <- verifyOsPrincipal session"
                     , "withExistingVerifiedRoot ProductionRootScope"
                     , "(projectModeLeaseEpoch sourceMode) ProjectUp"
-                    , "closed <- verifyAllSessionsClosed session"
+                    , "recovered <- recoverAbandonedSessions session"
+                    , "closed <- case recovered of"
+                    , "verifyAllSessionsClosed session"
                     , "publishPending profile rootFrameName sourceRecords proof modeRecord leaseRecord"
                     ]
                     liveSource
@@ -5389,8 +5463,8 @@ sourceBoundaryTests =
                         , entry
                         )
                     ,
-                        ( "the absent-only source callback reconstructs the exact Up lineage"
-                        , "withAcquisitionJournalPhase journal $ \\seedPhase -> case seedPhase of Prepare -> do current <- withCurrentLifecycleCursor journal frame ProjectUp ( \\phase cursor -> case phase of Prepare -> sourcePhaseFailure \"prepare\" Execute -> sourcePhaseFailure \"execute\" Teardown -> continue sourcePlan lifecycleContext journal cursor"
+                        ( "the source callback reconstructs the exact Up lineage and bridges a retained failed Execute"
+                        , "withAcquisitionJournalPhase journal $ \\seedPhase -> case seedPhase of Prepare -> do current <- withCurrentLifecycleCursor journal frame ProjectUp ( \\phase cursor -> case phase of Prepare -> sourcePhaseFailure \"prepare\" Execute -> do transitioned <- withTeardownLifecycleCursor cursor (continue sourcePlan lifecycleContext journal) pure (either sourceSessionFailure id transitioned) Teardown -> continue sourcePlan lifecycleContext journal cursor"
                         , source
                         )
                     ,
@@ -5645,7 +5719,7 @@ sourceBoundaryTests =
                         , ("HostBootstrap.Command", 2)
                         ]
                 sites "withReverseRootTargetLifecycleCursorKernel"
-                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 2)
+                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 3)
                         , ("HostBootstrap.Lifecycle.Mode", 2)
                         , ("HostBootstrap.Lifecycle.Session", 4)
                         ]
@@ -5681,7 +5755,7 @@ sourceBoundaryTests =
                     requiredSourceSection
                         "the prepared reverse-descent family"
                         "{- | One parent-local reverse descent through its durable lifecycle states."
-                        "{- | Derive the exact plan-owned launch context retained by one reverse edge."
+                        "-- | Derive the exact plan-owned launch context retained by one reverse edge."
                         internalSource
                 signatureSource <-
                     requiredSourceSection
@@ -5727,6 +5801,7 @@ sourceBoundaryTests =
                         , "withBoundReverseDescentKernel"
                         , "withRehydratedBoundReverseDescentKernel"
                         , "withRehydratedAdoptedReverseDescentKernel"
+                        , "withRehydratedSettledReverseDescentKernel"
                         , "withVerifiedBoundReverseDescentReportKernel"
                         , "withVerifiedBoundReverseDescentObservationsKernel"
                         , "withVerifiedReverseAdapterKernel"
@@ -6086,10 +6161,10 @@ sourceBoundaryTests =
                 SourceGuard.countHaskellIdentifier "failDescentWork" internalSource @?= 0
                 SourceGuard.countHaskellIdentifier "settleDescentWork" internalSource @?= 1
                 SourceGuard.countHaskellIdentifier "PreparedReverseDescent" familySource @?= 1
-                SourceGuard.countHaskellIdentifier "PreparedReverseDescent" internalSource @?= 12
+                SourceGuard.countHaskellIdentifier "PreparedReverseDescent" internalSource @?= 14
                 SourceGuard.countHaskellTokenSequence ["data", "ReverseDescent"] internalSource @?= 1
                 SourceGuard.countHaskellTokenSequence ["type", "ReverseDescent"] internalSource @?= 0
-                SourceGuard.countHaskellIdentifier "BoundReverseDescent" internalSource @?= 7
+                SourceGuard.countHaskellIdentifier "BoundReverseDescent" internalSource @?= 10
                 SourceGuard.countHaskellIdentifier "unsafeCoerce" internalSource @?= 0
                 assertBool
                     "the hidden substrate imports only the lower Teardown boundary"
@@ -6126,22 +6201,26 @@ sourceBoundaryTests =
                         , ("HostBootstrap.Teardown.Internal", 4)
                         ]
                 sites "PreparedReverseDescent"
-                    @?= [("HostBootstrap.Teardown.Internal", 12)]
+                    @?= [("HostBootstrap.Teardown.Internal", 14)]
                 sites "BoundReverseDescent"
-                    @?= [("HostBootstrap.Teardown.Internal", 7)]
+                    @?= [("HostBootstrap.Teardown.Internal", 10)]
                 sites "withBoundReverseDescentKernel"
                     @?= [ ("HostBootstrap.Handoff.Relay", 2)
                         , ("HostBootstrap.Teardown.Internal", 4)
                         ]
                 sites "withRehydratedBoundReverseDescentKernel"
-                    @?= [("HostBootstrap.Teardown.Internal", 5)]
+                    @?= [("HostBootstrap.Teardown.Internal", 6)]
                 sites "withRehydratedAdoptedReverseDescentKernel"
                     @?= [ ("HostBootstrap.Handoff.Completion", 2)
                         , ("HostBootstrap.Teardown.Internal", 4)
                         ]
+                sites "withRehydratedSettledReverseDescentKernel"
+                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 2)
+                        , ("HostBootstrap.Teardown.Internal", 4)
+                        ]
                 sites "withVerifiedBoundReverseDescentObservationsKernel"
                     @?= [ ("HostBootstrap.Handoff.Completion", 2)
-                        , ("HostBootstrap.Teardown.Internal", 3)
+                        , ("HostBootstrap.Teardown.Internal", 4)
                         ]
                 sites "withVerifiedReverseAdapterKernel"
                     @?= [ ("HostBootstrap.ProjectPlan.Child.Internal", 2)
@@ -6162,6 +6241,7 @@ sourceBoundaryTests =
                 modulesExporting "withReverseDescentLiftContextKernel" publicExports @?= []
                 modulesExporting "withBoundReverseDescentKernel" publicExports @?= []
                 modulesExporting "withRehydratedBoundReverseDescentKernel" publicExports @?= []
+                modulesExporting "withRehydratedSettledReverseDescentKernel" publicExports @?= []
                 modulesExporting "withVerifiedBoundReverseDescentReportKernel" publicExports @?= []
                 modulesExporting "withVerifiedBoundReverseDescentObservationsKernel" publicExports @?= []
                 modulesExporting "withVerifiedReverseAdapterKernel" publicExports @?= []
@@ -6502,7 +6582,7 @@ sourceBoundaryTests =
                         , ("HostBootstrap.Teardown.Internal", 4)
                         ]
                 sites "PreparedReverseDescent"
-                    @?= [("HostBootstrap.Teardown.Internal", 12)]
+                    @?= [("HostBootstrap.Teardown.Internal", 14)]
                 sites "withVerifiedReverseAdapterKernel"
                     @?= [ ("HostBootstrap.ProjectPlan.Child.Internal", 2)
                         , ("HostBootstrap.Teardown.Internal", 3)
@@ -7396,7 +7476,7 @@ sourceBoundaryTests =
                         , ("HostBootstrap.ProjectPlan.Child.Internal", 2)
                         ]
                 sites "withReverseRootTargetLifecycleCursorKernel"
-                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 2)
+                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 3)
                         , ("HostBootstrap.Lifecycle.Mode", 2)
                         , ("HostBootstrap.Lifecycle.Session", 4)
                         ]
@@ -9190,7 +9270,10 @@ resourceProjectionPlan =
         ]
 
 chartWorkloadPlan :: Text.Text -> StepPlan
-chartWorkloadPlan workloadDigest =
+chartWorkloadPlan = chartWorkloadPlanAt "service"
+
+chartWorkloadPlanAt :: Text.Text -> Text.Text -> StepPlan
+chartWorkloadPlanAt activationFrame workloadDigest =
     expectStepPlan
         [ deployKindStep
             "cluster"
@@ -9204,6 +9287,7 @@ chartWorkloadPlan workloadDigest =
             "registry.example/demo@sha256:image"
             "workload/demo"
             workloadDigest
+            activationFrame
             "api"
             ["namespace:demo-system", "deployment:demo"]
             ( deployChartStep
@@ -9212,6 +9296,31 @@ chartWorkloadPlan workloadDigest =
                 (const (pure StepChanged))
             )
         ]
+
+serviceActivationPlan :: Text.Text -> Text.Text -> [Text.Text] -> StepPlan
+serviceActivationPlan activationFrame serviceRole effects =
+    expectStepPlan
+        [ declaresServiceActivation
+            activationFrame
+            serviceRole
+            effects
+            ( ensureStep
+                "accelerator"
+                "activate accelerator service"
+                (StepFrame "host" "Host")
+                (const (pure StepChanged))
+            )
+        ]
+
+collidingServiceActivationPlan :: StepPlan
+collidingServiceActivationPlan =
+    case stepPlanSteps (chartWorkloadPlanAt "shared-service-frame" "sha256:workload") of
+        [cluster, chart] ->
+            expectStepPlan
+                [ cluster
+                , declaresServiceActivation "shared-service-frame" "accelerator" ["process-spawn"] chart
+                ]
+        _ -> error "chart workload fixture shape changed"
 
 chartWorkloadWithoutClusterPlan :: StepPlan
 chartWorkloadWithoutClusterPlan =
@@ -9224,6 +9333,7 @@ chartWorkloadWithoutClusterPlan =
             "registry.example/demo@sha256:image"
             "workload/demo"
             "sha256:workload"
+            "service"
             "api"
             ["namespace:demo-system", "deployment:demo"]
             ( deployChartStep
@@ -9324,14 +9434,14 @@ hexBytes = Text.pack . concatMap byteHex . ByteString.unpack
 goldenSnapshotBytesHex :: FilePath -> Text.Text
 goldenSnapshotBytesHex root =
     Text.concat
-        [ "484f5354424f4f5453545241502d504c414e0000000000000005"
+        [ "484f5354424f4f5453545241502d504c414e0000000000000007"
         , hexFramedText "root"
         , hexRoot root
         , "000000000000000b737065632d646967657374"
         , "000000000000001038343033636432393734356430636239000000000000000d636f6e6669672d646967657374"
         , "00000000000000403430366337353637343137313330386530623433626239633765306135333930326466626134"
         , "35313836353635623834363265633130383361613136326663340000000000000005737465707300000000000000"
-        , "01000000000000000473746570000000000000000d00000000000000076f7264696e616c000000000000000100"
+        , "01000000000000000473746570000000000000000e00000000000000076f7264696e616c000000000000000100"
         , "000000000000086964656e746974790000000000000009636f72652d73746570000000000000000c636f6e7465"
         , "78742d696e69740000000000000000000000000000000e696d706c656d656e746174696f6e0000000000000013"
         , "636f72652d696d706c656d656e746174696f6e000000000000000200000000000000086964656e746974790000"
@@ -9339,7 +9449,7 @@ goldenSnapshotBytesHex root =
         , "000000000100000000000000096f7065726174696f6e0000000000000011636f72653a636f6e746578742d696e"
         , "6974000000000000001470726f6a65637465642d6f7065726174696f6e73000000000000000100000000000000"
         , "1a636f72653a636f6e746578742d696e69742f72656c6174696f6e000000000000001270726f76696465722d72"
-        , "65736f75726365730000000000000000000000000000000f63686172742d776f726b6c6f616473000000000000000000000000000000056c6162656c0000000000"
+        , "65736f75726365730000000000000000000000000000000f63686172742d776f726b6c6f61647300000000000000000000000000000013736572766963652d61637469766174696f6e73000000000000000000000000000000056c6162656c0000000000"
         , "000007636f6e7465787400000000000000056672616d6500000000000000020000000000000002696400000000"
         , "00000004686f737400000000000000056c6162656c0000000000000004486f7374000000000000000c64657065"
         , "6e64656e636965730000000000000000000000000000000e726576657273652d706f6c69637900000000000000"

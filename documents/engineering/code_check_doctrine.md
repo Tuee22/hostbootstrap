@@ -98,7 +98,7 @@ above. Live publication evidence and implementation status remain in the develop
 > ```dockerfile
 > FROM ${BASE_IMAGE}
 > COPY . /workspace/proj
-> RUN cabal build --enable-tests all && install ... /usr/local/bin/proj
+> RUN cabal build --enable-tests all --ghc-options=-Werror && test -s "$(cabal list-bin exe:proj)"
 > RUN proj build native-backend
 > ```
 >
@@ -111,15 +111,20 @@ above. Live publication evidence and implementation status remain in the develop
 > ```dockerfile
 > FROM ${BASE_IMAGE}
 > COPY . /workspace/proj
-> RUN cabal build --enable-tests all && install ... /usr/local/bin/proj
+> RUN cabal build --enable-tests all --ghc-options=-Werror && test -s "$(cabal list-bin exe:proj)"
 > RUN proj check-code
 > RUN proj build native-backend
+> RUN built_binary="$(cabal list-bin exe:proj)" && test -s "${built_binary}" && dd if=/usr/local/libexec/proj of=/usr/local/bin/proj bs=4M status=none && chmod 0755 /usr/local/bin/proj && rm /usr/local/libexec/proj && rm /usr/local/libexec/proj.dhall && test -s /usr/local/bin/proj
 > ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/proj"]
 > ```
 >
-> Code-check sits between the build install and the expensive backend
+> Code-check sits between the source build and the expensive backend
 > compilation. A formatting regression fails the image build in seconds, never
-> burns the PGO budget, and never reaches Docker Hub.
+> burns the PGO budget, and never reaches Docker Hub. The final layer verifies
+> the in-image Cabal product, materializes the source-built and digest-bound
+> authenticated builder bytes as a new regular runtime entrypoint, and checks
+> that file, so runtime does not depend on snapshotting either the in-container
+> link output or a direct large-file named-context copy.
 
 ## What counts as the "canonical code-check" command
 

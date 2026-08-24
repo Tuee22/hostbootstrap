@@ -57,17 +57,18 @@ import HostBootstrap.Authority (
     authorityErrorMessage,
     withInstalledProjectIdentity,
  )
+import HostBootstrap.CLI.Bare (
+    BareConfig,
+    bareAssemble,
+    bareClusterLiveSuite,
+    bareInit,
+    bareStepPlan,
+    bareTestCodec,
+    bareTestInit,
+ )
+import HostBootstrap.Cluster.Exposure.Internal (runExposureRelayEntry)
 import HostBootstrap.Command (coreCommands)
 import HostBootstrap.Command.Child (lifecycleChildArguments, runForwardLifecycleChild)
-import HostBootstrap.CLI.Bare
-    ( BareConfig
-    , bareAssemble
-    , bareClusterLiveSuite
-    , bareInit
-    , bareStepPlan
-    , bareTestCodec
-    , bareTestInit
-    )
 import HostBootstrap.Config.Class (
     AssemblyRequest (..),
     ConfigAssembly,
@@ -86,20 +87,21 @@ import HostBootstrap.Dhall.Gen (
     artifactName,
     coreArtifacts,
  )
-import HostBootstrap.Handoff.Transaction (classifyFrameChild, frameInterpreter, runFrameChildEntry)
-import HostBootstrap.Ownership.Shipped (interpretShippedOwnership)
 import HostBootstrap.Ensure.Colima.Backend.Runner (runShippedCommandEntry, shippedCommandEntryArguments)
-import HostBootstrap.Harness
-    ( TestSuite
-    , caseIdText
-    , testSuiteCaseCount
-    , testSuiteCaseIds
-    )
+import HostBootstrap.Handoff.Transaction (classifyFrameChild, frameInterpreter, runFrameChildEntry)
+import HostBootstrap.Harness (
+    TestSuite,
+    caseIdText,
+    testSuiteCaseCount,
+    testSuiteCaseIds,
+ )
+import HostBootstrap.Identity.Install (provisionInstalledIdentity)
 import HostBootstrap.Lift.Context (LiftContext)
-import HostBootstrap.ProjectPlan.Construct
-    ( FinalizedProjectSpec
-    , withFinalizedProjectSpec
-    )
+import HostBootstrap.Ownership.Shipped (interpretShippedOwnership)
+import HostBootstrap.ProjectPlan.Construct (
+    FinalizedProjectSpec,
+    withFinalizedProjectSpec,
+ )
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot)
 import HostBootstrap.Service (
     ServiceRegistry,
@@ -108,15 +110,15 @@ import HostBootstrap.Service (
     mergeServiceRegistries,
     serviceVariantNames,
  )
-import HostBootstrap.Step
-    ( Step
-    , StepPlan
-    , StepPlanError (..)
-    , mkStepPlan
-    )
+import HostBootstrap.Step (
+    Step,
+    StepPlan,
+    StepPlanError (..),
+    mkStepPlan,
+ )
 import Options.Applicative
 import System.Directory (getCurrentDirectory)
-import System.Environment (getArgs)
+import System.Environment (getArgs, getExecutablePath)
 import System.Exit (die)
 import System.IO (hSetEncoding, stderr, stdout, utf8)
 
@@ -466,6 +468,15 @@ runBareHostBootstrapCLI progName = do
                         )
     either (die . T.unpack . authorityErrorMessage) pure admitted
 
+-- | Exact private entry used only by the thin builder after stable installation.
+installedIdentityEntryArguments :: [String]
+installedIdentityEntryArguments = ["--hostbootstrap-install-identity"]
+
+installIdentityForInvokedExecutable :: IO ()
+installIdentityForInvokedExecutable = do
+    executable <- getExecutablePath
+    provisionInstalledIdentity executable >>= either die pure
+
 configureUtf8Output :: IO ()
 configureUtf8Output = do
     hSetEncoding stdout utf8
@@ -491,14 +502,19 @@ runCLI ::
     IO ()
 runCLI project finalizedSpec testCodec progName projectArtifacts testSuite checkCode assemblyInputs assemble initBuilder testInit = do
     argv <- getArgs
-    if argv == shippedCommandEntryArguments
-        then runShippedCommandEntry
-        else
-            if argv == lifecycleChildArguments
-                then runForwardLifecycleChild project finalizedSpec
-                else case classifyFrameChild argv of
-                    Just entry -> runFrameChildEntry (frameInterpreter interpretShippedOwnership) entry
-                    Nothing -> join (customExecParser (prefs showHelpOnEmpty) opts)
+    if argv == installedIdentityEntryArguments
+        then installIdentityForInvokedExecutable
+        else case runExposureRelayEntry argv of
+            Just relay -> relay
+            Nothing ->
+                if argv == shippedCommandEntryArguments
+                    then runShippedCommandEntry
+                    else
+                        if argv == lifecycleChildArguments
+                            then runForwardLifecycleChild project finalizedSpec
+                            else case classifyFrameChild argv of
+                                Just entry -> runFrameChildEntry (frameInterpreter interpretShippedOwnership) entry
+                                Nothing -> join (customExecParser (prefs showHelpOnEmpty) opts)
   where
     allCommands =
         coreCommands

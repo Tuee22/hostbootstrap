@@ -153,7 +153,74 @@ foldLeafCases =
         @?= DispatchTool Incus ["exec", "demo-vm", "--", "bash", "-lc", "echo hi"],
     testCase "foldLift is the SelfSub special case of foldLeaf" $
       foldLeaf (inVM vm localContext) (SelfSub self sub)
-        @?= foldLift self (inVM vm localContext) sub
+        @?= foldLift self (inVM vm localContext) sub,
+    testCase "a composed Incus lifecycle channel is noninteractive and rooted before Docker" $
+      foldLeaf
+        (inContainer container (inVM vm localContext))
+        (lifecycleProcessLeaf "" ["--hostbootstrap-lifecycle-child"])
+        @?= DispatchTool
+          Incus
+          [ "exec",
+            "demo-vm",
+            "--cwd",
+            "/",
+            "-T",
+            "--",
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            "/var/run/docker.sock:/var/run/docker.sock",
+            "--network=host",
+            "demo:local",
+            "--hostbootstrap-lifecycle-child"
+          ],
+    testCase "a composed Lima lifecycle channel is noninteractive and rooted before Docker" $
+      foldLeaf
+        (inContainer container (inLimaVM limaVM localContext))
+        (lifecycleProcessLeaf "" ["--hostbootstrap-lifecycle-child"])
+        @?= DispatchTool
+          Lima
+          [ "shell",
+            "demo-vm",
+            "--workdir",
+            "/",
+            "--",
+            "sudo",
+            "-n",
+            "-H",
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            "/var/run/docker.sock:/var/run/docker.sock",
+            "--network=host",
+            "demo:local",
+            "--hostbootstrap-lifecycle-child"
+          ],
+    testCase "a composed WSL lifecycle channel is noninteractive and rooted before Docker" $
+      foldLeaf
+        (inContainer container (inWsl2VM wslVM localContext))
+        (lifecycleProcessLeaf "" ["--hostbootstrap-lifecycle-child"])
+        @?= DispatchTool
+          Wsl
+          [ "-d",
+            "hostbootstrap-demo",
+            "--cd",
+            "/",
+            "--",
+            "sudo",
+            "-n",
+            "-H",
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            "/var/run/docker.sock:/var/run/docker.sock",
+            "--network=host",
+            "demo:local",
+            "--hostbootstrap-lifecycle-child"
+          ]
   ]
 
 additiveLeafCases :: [TestTree]

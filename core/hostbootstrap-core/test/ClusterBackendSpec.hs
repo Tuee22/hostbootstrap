@@ -22,13 +22,13 @@ driver to have answered a particular way supplies a program the interpreter can
 launch, which is what "FakeCluster" is, so no case here can pass against a
 substitution point (§ NN).
 -}
-module ClusterBackendSpec (tests) where
+module ClusterBackendSpec (tests, withRuntimeExposure) where
 
 import ClusterReconcileSpec (
+    withAppliedFixtureCordon,
     withClusterFixtureM,
     withHarnessClusterFixtureM,
     withNvkindClusterFixtureM,
-    withPlannedClusterFixture,
  )
 import Control.Monad (forM_)
 import Data.List (isInfixOf, isSuffixOf)
@@ -36,23 +36,24 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified FakeCluster
 import HostBootstrap.Cluster.Backend
+import HostBootstrap.Cluster.Lifecycle (ClusterPlan, ClusterProfile (..), resolvePlan)
 import HostBootstrap.Cluster.Reconcile
+import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Effect.Run (CapturedRun (..))
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (AbsExe, HostTool (Docker, Helm, Kind, Kubectl, Nvkind), mkAbsExe)
-import HostBootstrap.Reconcile
-import HostBootstrap.Substrate (Arch (Amd64), Substrate (..), SubstrateName (LinuxCpu))
-import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Protected (
     RecordKey,
     listProtectedRecords,
     openProtectedStore,
     withProtectedEntry,
  )
+import HostBootstrap.Reconcile
+import HostBootstrap.Substrate (Arch (Amd64), Substrate (..), SubstrateName (LinuxCpu))
 import System.Directory (canonicalizePath, doesFileExist, getCurrentDirectory)
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
-import System.FilePath (isAbsolute, (</>))
+import System.FilePath (isAbsolute, takeDirectory, takeFileName, (</>))
 import System.IO (readFile')
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
@@ -241,6 +242,46 @@ joinCases =
                 _ <- runClusterReconcileCall backend prepared
                 Right . length <$> recordsUnder (preparedClusterStateDirectory prepared)
         outcome @?= Right (1 :: Int)
+    , testCase "retained reverse conditionally deletes the cluster and retires its record" $ do
+        outcome <- withBackend $ \cfg root ->
+            withClusterFixtureM $ \prepared -> do
+                backend <- requireBackend cfg prepared
+                declare root prepared
+                _ <- runClusterReconcileCall backend prepared
+                let stateRoot = preparedClusterStateDirectory prepared
+                    durableRoot = takeDirectory (takeDirectory (takeDirectory stateRoot))
+                    projectRoot = takeDirectory durableRoot
+                    plan = resolvePlan (preparedClusterName prepared) projectRoot Production
+                released <- releaseRetainedCluster cfg plan
+                remaining <- FakeCluster.readClusters root
+                records <- recordsUnder stateRoot
+                mutations <- FakeCluster.recordedClusterMutations root
+                pure (Right (released, remaining, records, mutations))
+        case outcome of
+            Right (Right (), [], [], mutations) -> mutations @?= ["create", "delete"]
+            other -> assertFailure ("expected retained cluster release, got " <> show other)
+    , testCase "retained Harness reverse resolves the exact run-scoped store" $ do
+        outcome <- withBackend $ \cfg root ->
+            withHarnessClusterFixtureM $ \prepared -> do
+                backend <- requireBackend cfg prepared
+                declare root prepared
+                _ <- runClusterReconcileCall backend prepared
+                let stateRoot = preparedClusterStateDirectory prepared
+                    durableRoot = takeDirectory (takeDirectory (takeDirectory stateRoot))
+                    runName = takeFileName durableRoot
+                    projectRoot = takeDirectory (takeDirectory durableRoot)
+                    suffix = Text.pack ("-test-" <> runName)
+                projectName <-
+                    maybe
+                        (assertFailure "the Harness cluster name lacks its exact run suffix")
+                        (pure . Text.unpack)
+                        (Text.stripSuffix suffix (Text.pack (preparedClusterName prepared)))
+                let plan = resolvePlan projectName projectRoot (TestCase runName)
+                released <- releaseRetainedCluster cfg plan
+                remaining <- FakeCluster.readClusters root
+                records <- recordsUnder stateRoot
+                pure (Right (released, remaining, records))
+        outcome @?= Right (Right (), [], [])
     , testCase "the credential the driver wrote lands inside that state directory" $ do
         outcome <- withBackend $ \cfg root ->
             withClusterFixtureM $ \prepared -> do
@@ -389,6 +430,12 @@ sourceCases =
             assertBool
                 (name <> " is not reached from the cluster backend")
                 (name `isInfixOf` source)
+    , testCase "runtime publication has no scan-then-bind or caller-port compatibility path" $ do
+        source <- backendSource
+        forM_ ["mkLoopbackExposure", "PreparedLoopbackExposure", "settleLoopbackExposure", "Network.Socket"] $ \name ->
+            assertBool (name <> " remains in the cluster backend") (not (name `isInfixOf` source))
+        forM_ ["127.0.0.1::", "ResolvedExposure", "getRandomBytes 32", "ExpectAbsent"] $ \name ->
+            assertBool (name <> " is absent from runtime-owned exposure") (name `isInfixOf` source)
     ]
 
 backendSource :: IO String
@@ -436,59 +483,178 @@ reachedNames =
 
 exposureCases :: [TestTree]
 exposureCases =
-    [ testCase "an exposure is always loopback and carries both ports" $
-        case mkLoopbackExposure 30080 30080 of
-            Right exposure -> do
-                loopbackExposureListenAddress exposure @?= "127.0.0.1"
-                loopbackExposureHostPort exposure @?= 30080
-                loopbackExposureNodePort exposure @?= 30080
-            other -> assertFailure ("expected an exposure, got " ++ showEither other)
-    , testCase "an out-of-range port is refused" $
-        forM_ [(0, 30080), (30080, 0), (65536, 30080)] $ \(hostPort, nodePort) ->
-            case mkLoopbackExposure hostPort nodePort of
-                Left (Failure _) -> pure ()
-                other ->
-                    assertFailure ("expected a port refusal, got " ++ showEither other)
-    , testCase "an exact loopback binding settles" $ do
-        outcome <- withExposure 30080 (\prepared -> settleLoopbackExposure prepared (ObservedPortBinding "127.0.0.1" "30080"))
-        case outcome of
-            Right () -> pure ()
-            other -> assertFailure ("expected a settled exposure, got " ++ showEither other)
-    , testCase "a wildcard binding is a Conflict, not a warning" $ do
-        outcome <- withExposure 30080 (\prepared -> settleLoopbackExposure prepared (ObservedPortBinding "0.0.0.0" "30080"))
-        case outcome of
-            Left (Conflict detail) -> conflictObserved detail @?= "0.0.0.0:30080"
-            other -> assertFailure ("expected a wildcard conflict, got " ++ showEither other)
-    , testCase "a different published port is a Conflict" $ do
-        outcome <- withExposure 30080 (\prepared -> settleLoopbackExposure prepared (ObservedPortBinding "127.0.0.1" "31080"))
-        case outcome of
-            Left (Conflict _) -> pure ()
-            other -> assertFailure ("expected a port conflict, got " ++ showEither other)
-    , testCase "an unparseable published port is a Failure, never an assumed match" $ do
-        outcome <- withExposure 30080 (\prepared -> settleLoopbackExposure prepared (ObservedPortBinding "127.0.0.1" ""))
-        case outcome of
+    [ testCase "intent contains only semantic service and cluster target" $
+        case mkExposureIntent "web" "demo-control-plane" 30080 of
+            Right intent -> do
+                exposureIntentService intent @?= "web"
+                exposureIntentTargetHost intent @?= "demo-control-plane"
+                exposureIntentTargetPort intent @?= 30080
+            Left refusal -> assertFailure (show refusal)
+    , testCase "an invalid internal target port is refused" $
+        forM_ [0, 65536] $ \port -> case mkExposureIntent "web" "demo-control-plane" port of
             Left (Failure _) -> pure ()
-            other -> assertFailure ("expected a parse failure, got " ++ showEither other)
-    , testCase "the rendered mapping is the loopback triple" $ do
-        outcome <- withExposure 30080 (Right . preparedLoopbackExposureMapping)
+            other -> assertFailure ("expected an internal-port refusal, got " <> show other)
+    , testCase "the runtime assigns distinct loopback ports and exact inspection mints them" $ do
+        outcome <- withRuntimeExposure $ \_ root _ _ resolved -> do
+            web <- resolvedTuple "web" resolved
+            registry <- resolvedTuple "registry" resolved
+            mutations <- FakeCluster.recordedClusterMutations root
+            pure (web, registry, mutations)
         case outcome of
-            Right mapping -> mapping @?= ("127.0.0.1", 30080, 30080)
-            other -> assertFailure ("expected a mapping, got " ++ showEither other)
+            Right (("127.0.0.1", webPort, webTarget, 30080), ("127.0.0.1", registryPort, registryTarget, 30500), mutations) -> do
+                assertBool "the runtime reused one selected host port" (webPort /= registryPort)
+                assertBool "the services target different cluster nodes" (webTarget == registryTarget && "-control-plane" `Text.isSuffixOf` webTarget)
+                mutations @?= ["create", "update", "relay-create"]
+            other -> assertFailure ("expected runtime-resolved mappings, got " <> show other)
+    , testCase "exact recovery re-inspects the same relay without creating another" $ do
+        outcome <- withRuntimeExposure $ \backend root _ prepared first -> do
+            second <- runClusterExposureCall backend prepared >>= either (assertFailure . show) pure
+            firstWeb <- resolvedTuple "web" first
+            secondWeb <- resolvedTuple "web" second
+            mutations <- FakeCluster.recordedClusterMutations root
+            pure (firstWeb, secondWeb, mutations)
+        case outcome of
+            Right (first, second, mutations) -> do
+                first @?= second
+                mutations @?= ["create", "update", "relay-create"]
+            other -> assertFailure ("expected exact exposure recovery, got " <> show other)
+    , testCase "a wildcard mapping is a Conflict and its ownership record remains" $ do
+        outcome <- withRuntimeExposure $ \backend root stateRoot prepared _ -> do
+            relays <- FakeCluster.readRelays root
+            FakeCluster.writeRelays root [relay{FakeCluster.relayMappings = [(listener, "0.0.0.0", port) | (listener, _, port) <- FakeCluster.relayMappings relay]} | relay <- relays]
+            rerun <- runClusterExposureCall backend prepared
+            records <- recordsUnder stateRoot
+            pure (case rerun of Left (Conflict _) -> True; _ -> False, length records)
+        case outcome of
+            Right (True, 2) -> pure ()
+            other -> assertFailure ("expected a retained wildcard conflict, got " <> showExposureOutcome other)
+    , testCase "a replacement relay is a Conflict and is not adopted" $ do
+        outcome <- withRuntimeExposure $ \backend root _ prepared _ -> do
+            relays <- FakeCluster.readRelays root
+            FakeCluster.writeRelays root [relay{FakeCluster.relayIdentity = Text.unpack (Text.replicate 64 "b")} | relay <- relays]
+            rerun <- runClusterExposureCall backend prepared
+            pure (case rerun of Left (Conflict _) -> True; _ -> False)
+        outcome @?= Right True
+    , testCase "an additional runtime mapping is a Conflict" $ do
+        outcome <- withRuntimeExposure $ \backend root _ prepared _ -> do
+            relays <- FakeCluster.readRelays root
+            FakeCluster.writeRelays root [relay{FakeCluster.relayMappings = (29999, "127.0.0.1", 41999) : FakeCluster.relayMappings relay} | relay <- relays]
+            rerun <- runClusterExposureCall backend prepared
+            pure (case rerun of Left (Conflict _) -> True; _ -> False)
+        outcome @?= Right True
+    , testCase "release removes the exact relay before forgetting its record" $ do
+        outcome <- withRuntimeExposure $ \backend root stateRoot prepared _ -> do
+            released <- releaseClusterExposureCall backend prepared
+            relays <- FakeCluster.readRelays root
+            records <- recordsUnder stateRoot
+            mutations <- FakeCluster.recordedClusterMutations root
+            pure (released, relays, length records, mutations)
+        case outcome of
+            Right (Right (), [], 1, mutations) -> mutations @?= ["create", "update", "relay-create", "relay-delete"]
+            other -> assertFailure ("expected identity-conditional relay release, got " <> showExposureOutcome other)
+    , testCase "reverse recovers and releases the recorded relay without caller-supplied identity or port" $ do
+        outcome <- withRuntimeExposure $ \_ root stateRoot _ resolved -> do
+            self <- getExecutablePath
+            plan <- recordedPlan stateRoot resolved
+            released <- releaseRecordedClusterExposure (clusterHostConfig self) plan
+            relays <- FakeCluster.readRelays root
+            records <- recordsUnder stateRoot
+            mutations <- FakeCluster.recordedClusterMutations root
+            pure (released, relays, length records, mutations)
+        case outcome of
+            Right (Right (), [], 1, mutations) -> mutations @?= ["create", "update", "relay-create", "relay-delete"]
+            other -> assertFailure ("expected recorded reverse exposure release, got " <> showExposureOutcome other)
+    , testCase "reverse refuses a replacement relay and retains the exposure record" $ do
+        outcome <- withRuntimeExposure $ \_ root stateRoot _ resolved -> do
+            relays <- FakeCluster.readRelays root
+            FakeCluster.writeRelays root [relay{FakeCluster.relayIdentity = Text.unpack (Text.replicate 64 "b")} | relay <- relays]
+            self <- getExecutablePath
+            plan <- recordedPlan stateRoot resolved
+            released <- releaseRecordedClusterExposure (clusterHostConfig self) plan
+            records <- recordsUnder stateRoot
+            pure (case released of Left _ -> True; Right () -> False, length records)
+        outcome @?= Right (True, 2)
+    , testCase "cluster cleanup refuses until the owned relay has been released" $ do
+        outcome <- withBackend $ \cfg root ->
+            withClusterFixtureM $ \cluster -> do
+                backend <- requireBackend cfg cluster
+                declare root cluster
+                withAppliedFixtureCordon backend cluster $ \applied -> do
+                    case mkExposureIntent "web" (Text.pack (preparedClusterName cluster <> "-control-plane")) 30080 of
+                        Left refusal -> pure (Left refusal)
+                        Right intent -> case withPreparedClusterExposure applied immutableTestImage [intent] id of
+                            Left refusal -> pure (Left refusal)
+                            Right exposure -> do
+                                exposed <- runClusterExposureCall backend exposure
+                                case exposed of
+                                    Left refusal -> pure (Left refusal)
+                                    Right _ -> case withPreparedClusterCleanup cluster (appliedClusterCordonHandle applied) id of
+                                        Left refusal -> pure (Left refusal)
+                                        Right cleanup -> do
+                                            result <- runClusterCleanupCall backend cleanup
+                                            remaining <- FakeCluster.readClusters root
+                                            pure
+                                                ( Right
+                                                    ( case clusterCleanupResultView result of
+                                                        ClusterCleanupResultFailed (Failure _) -> True
+                                                        _ -> False
+                                                    , not (null remaining)
+                                                    )
+                                                )
+        outcome @?= Right (True, True)
     ]
 
-withExposure ::
-    Int ->
+withRuntimeExposure ::
     ( forall scope planId clusterId clusterFrame.
-      PreparedLoopbackExposure scope planId clusterId clusterFrame ->
-      Either ReconcileError result
+      StrongClusterBackend ->
+      FilePath ->
+      FilePath ->
+      PreparedClusterExposure scope planId clusterId clusterFrame ->
+      [ResolvedExposure scope planId clusterId ()] ->
+      IO result
     ) ->
     IO (Either ReconcileError result)
-withExposure port consume =
-    case mkLoopbackExposure port port of
-        Left err -> pure (Left err)
-        Right exposure ->
-            withPlannedClusterFixture $ \planned ->
-                withPreparedLoopbackExposure planned exposure id >>= consume
+withRuntimeExposure consume =
+    withBackend $ \cfg root ->
+        withClusterFixtureM $ \cluster -> do
+            backend <- requireBackend cfg cluster
+            declare root cluster
+            withAppliedFixtureCordon backend cluster $ \applied -> do
+                web <- pure (mkExposureIntent "web" (Text.pack (preparedClusterName cluster <> "-control-plane")) 30080)
+                registry <- pure (mkExposureIntent "registry" (Text.pack (preparedClusterName cluster <> "-control-plane")) 30500)
+                case (web, registry) of
+                    (Right webIntent, Right registryIntent) ->
+                        case withPreparedClusterExposure applied immutableTestImage [webIntent, registryIntent] id of
+                            Left refusal -> pure (Left refusal)
+                            Right prepared -> do
+                                resolved <- runClusterExposureCall backend prepared
+                                case resolved of
+                                    Left refusal -> pure (Left refusal)
+                                    Right exact -> Right <$> consume backend root (preparedClusterStateDirectory cluster) prepared exact
+                    (Left refusal, _) -> pure (Left refusal)
+                    (_, Left refusal) -> pure (Left refusal)
 
-showEither :: (Show value) => Either ReconcileError value -> String
-showEither = either show show
+recordedPlan :: FilePath -> [ResolvedExposure scope planId clusterId seed] -> IO ClusterPlan
+recordedPlan stateRoot resolved = do
+    (_, _, target, _) <- resolvedTuple "web" resolved
+    name <- maybe (assertFailure "the fixture target lacks its control-plane suffix") (pure . Text.unpack) (Text.stripSuffix "-control-plane" target)
+    pure (resolvePlan name (takeDirectory durableRoot) Production)
+  where
+    durableRoot = takeDirectory (takeDirectory (takeDirectory stateRoot))
+
+immutableTestImage :: Text.Text
+immutableTestImage = "example.invalid/hostbootstrap-test@sha256:" <> Text.replicate 64 "a"
+
+resolvedTuple :: Text.Text -> [ResolvedExposure scope planId clusterId seed] -> IO (Text.Text, Int, Text.Text, Int)
+resolvedTuple service resolved =
+    case withResolvedExposure service resolved $ \exact ->
+        ( resolvedExposureListenAddress exact
+        , resolvedExposureHostPort exact
+        , resolvedExposureTargetHost exact
+        , resolvedExposureTargetPort exact
+        ) of
+        Left refusal -> assertFailure (show refusal)
+        Right tuple -> pure tuple
+
+showExposureOutcome :: value -> String
+showExposureOutcome _ = "opaque exposure outcome"

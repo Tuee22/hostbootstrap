@@ -20,12 +20,11 @@ module HostBootstrap.Cluster.Reconcile (
     preparedClusterName,
     preparedClusterStateDirectory,
     preparedClusterDurableRoot,
-    preparedClusterPublishesHostPorts,
     preparedClusterConfigPath,
     preparedClusterConfigDigest,
     preparedClusterDriver,
     preparedClusterConfigBytes,
-    preparedClusterLoopbackPorts,
+    preparedClusterExposureIntents,
     preparedClusterNodeMappings,
     preparedClusterWorkloadSlice,
     withPreparedPlanOwnedClusterConfig,
@@ -91,12 +90,11 @@ import Crypto.Hash (Digest, SHA256, hash)
 import Data.ByteArray.Encoding (Base (Base16), convertToBase)
 import Data.ByteString (ByteString)
 import Data.Char (digitToInt)
+import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
-import Data.IORef (atomicModifyIORef', newIORef)
-import Numeric.Natural (Natural)
 import HostBootstrap.Authority (ProjectVerb (ProjectDestroy, ProjectDown, ProjectUp))
 import HostBootstrap.Cluster.Cordon.Foundation (
     ResourceBudget,
@@ -106,25 +104,25 @@ import HostBootstrap.Cluster.Cordon.Foundation (
  )
 import HostBootstrap.Cluster.Lifecycle (
     ClusterDriver,
+    ExposureIntent,
     PlanOwnedCluster,
     PlanOwnedClusterConfig,
+    planOwnedClusterBudget,
     planOwnedClusterConfigBase,
     planOwnedClusterConfigBytes,
     planOwnedClusterConfigDigest,
     planOwnedClusterConfigDriver,
-    planOwnedClusterConfigLoopbackPorts,
+    planOwnedClusterConfigExposureIntents,
     planOwnedClusterConfigNodeMappings,
     planOwnedClusterConfigWorkloadSlice,
-    planOwnedRenderedConfigPath,
-    planOwnedClusterBudget,
     planOwnedClusterDurableRoot,
     planOwnedClusterName,
     planOwnedClusterNodeNames,
     planOwnedClusterOwnershipIdentity,
     planOwnedClusterPlacement,
     planOwnedClusterProviderKey,
-    planOwnedClusterPublishesHostPorts,
     planOwnedClusterStateDirectory,
+    planOwnedRenderedConfigPath,
     withPlanOwnedClusterPreparation,
  )
 import HostBootstrap.Cluster.Observation.Internal (
@@ -143,13 +141,13 @@ import HostBootstrap.Cluster.Observation.Internal (
     managedClusterReceipt,
     managedClusterResourceHandle,
  )
+import HostBootstrap.Lifecycle.Execution (StepExecution)
 import HostBootstrap.Lifecycle.Prepared (
     PreparedGate,
     preparedGateJournalVersion,
     preparedGateOperation,
     preparedGatePlan,
  )
-import HostBootstrap.Lifecycle.Execution (StepExecution)
 import HostBootstrap.ProjectPlan (
     ClusterResource,
     ProjectPlan,
@@ -175,9 +173,9 @@ import HostBootstrap.Reconcile (
     RecoveryDisposition (DoNotRetry, ReprobeBeforeRetry),
     ResourceHandle,
     Unclassified,
+    carryManagedResourceSettlement,
     completePreparedUnchanged,
     completeReconcile,
-    carryManagedResourceSettlement,
     dependencyProbe,
     emptyDependencySnapshot,
     plannedNodeOperation,
@@ -194,7 +192,10 @@ import HostBootstrap.Reconcile (
     withReconcileResult,
  )
 import HostBootstrap.Substrate.Provider.Dependency.Internal (
+    ProviderShareDependency,
     RunningProviderDependency,
+    providerShareDependencyHandle,
+    providerShareDependencyReprobe,
     runningProviderDependencyHandle,
     runningProviderDependencyReprobe,
  )
@@ -270,6 +271,7 @@ or independently resolved root.
 withPreparedClusterReconcile ::
     PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId ->
     RunningProviderDependency scope planId providerId ->
+    Maybe (ProviderShareDependency scope planId shareId) ->
     PreparedGate ->
     ( forall operationKey callDigest attempt journalVersion.
       PreparedClusterReconcile
@@ -298,37 +300,47 @@ withPreparedClusterReconcile ::
 withPreparedClusterReconcile
     configured
     runningProvider
+    providerShare
     gate
     consume = do
         withPlanOwnedClusterPreparation
             package
-            (\plan cluster ->
+            ( \plan cluster ->
                 case withObservedProjectResource plan cluster generation version id of
                     Left err -> pure (Left err)
-                    Right observed -> finish observed (plannedProjectOperation plan cluster observed digest))
-            (\execution cluster ->
+                    Right observed -> finish observed (plannedProjectOperation plan cluster observed digest)
+            )
+            ( \execution cluster ->
                 case withNodeObservedResource execution cluster generation version id of
                     Left err -> pure (Left err)
-                    Right observed -> finish observed (plannedNodeOperation execution cluster observed digest))
-  where
-    package = planOwnedClusterConfigBase configured
-    configBinding = Just (PreparedClusterConfig (planOwnedRenderedConfigPath configured) (planOwnedClusterConfigDigest configured))
-    generation = clusterResourceGeneration package
-    version = preparedGateJournalVersion gate
-    digest = clusterCallDigest package configBinding
-    finish observed described = case described of
-        Left err -> pure (Left err)
-        Right descriptor -> do
-            let snapshot =
-                    withDependencySnapshotEntry
-                        (runningProviderDependencyHandle runningProvider)
-                        (dependencyProbe (runningProviderDependencyReprobe runningProvider))
-                        emptyDependencySnapshot
-            sealed <- withOperationPreconditions descriptor snapshot
-            pure $ do
-                preconditionSet <- sealed
-                withPreparedOperation descriptor preconditionSet gate $ \prepared preconditions ->
-                    consume (PreparedClusterReconcile configured configBinding observed prepared preconditions)
+                    Right observed -> finish observed (plannedNodeOperation execution cluster observed digest)
+            )
+      where
+        package = planOwnedClusterConfigBase configured
+        configBinding = Just (PreparedClusterConfig (planOwnedRenderedConfigPath configured) (planOwnedClusterConfigDigest configured))
+        generation = clusterResourceGeneration package
+        version = preparedGateJournalVersion gate
+        digest = clusterCallDigest package configBinding
+        finish observed described = case described of
+            Left err -> pure (Left err)
+            Right descriptor -> do
+                let snapshot =
+                        withDependencySnapshotEntry
+                            (runningProviderDependencyHandle runningProvider)
+                            (dependencyProbe (runningProviderDependencyReprobe runningProvider))
+                            shareSnapshot
+                    shareSnapshot = case providerShare of
+                        Nothing -> emptyDependencySnapshot
+                        Just share ->
+                            withDependencySnapshotEntry
+                                (providerShareDependencyHandle share)
+                                (dependencyProbe (providerShareDependencyReprobe share))
+                                emptyDependencySnapshot
+                sealed <- withOperationPreconditions descriptor snapshot
+                pure $ do
+                    preconditionSet <- sealed
+                    withPreparedOperation descriptor preconditionSet gate $ \prepared preconditions ->
+                        consume (PreparedClusterReconcile configured configBinding observed prepared preconditions)
 
 {- | Stable generation of this exact admitted cluster resource.
 
@@ -379,9 +391,6 @@ preparedClusterStateDirectory (PreparedClusterReconcile package _ _ _ _) = planO
 preparedClusterDurableRoot :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> FilePath
 preparedClusterDurableRoot (PreparedClusterReconcile package _ _ _ _) = planOwnedClusterDurableRoot (planOwnedClusterConfigBase package)
 
-preparedClusterPublishesHostPorts :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> Bool
-preparedClusterPublishesHostPorts (PreparedClusterReconcile package _ _ _ _) = planOwnedClusterPublishesHostPorts (planOwnedClusterConfigBase package)
-
 preparedClusterConfigPath :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> Maybe FilePath
 preparedClusterConfigPath (PreparedClusterReconcile _ config _ _ _) =
     fmap (\(PreparedClusterConfig path _) -> path) config
@@ -396,8 +405,8 @@ preparedClusterDriver (PreparedClusterReconcile configured _ _ _ _) = planOwnedC
 preparedClusterConfigBytes :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> ByteString
 preparedClusterConfigBytes (PreparedClusterReconcile configured _ _ _ _) = planOwnedClusterConfigBytes configured
 
-preparedClusterLoopbackPorts :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> [(Text, Natural)]
-preparedClusterLoopbackPorts (PreparedClusterReconcile configured _ _ _ _) = planOwnedClusterConfigLoopbackPorts configured
+preparedClusterExposureIntents :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> [ExposureIntent]
+preparedClusterExposureIntents (PreparedClusterReconcile configured _ _ _ _) = planOwnedClusterConfigExposureIntents configured
 
 preparedClusterNodeMappings :: PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion -> [(Text, Text)]
 preparedClusterNodeMappings (PreparedClusterReconcile configured _ _ _ _) = planOwnedClusterConfigNodeMappings configured
@@ -902,9 +911,10 @@ withRecoveredClusterReadiness handle version consume
         unused <- newIORef True
         let reprobe = do
                 available <- atomicModifyIORef' unused (\current -> (False, current))
-                pure $ if available
-                    then Right version
-                    else Left (Failure (FailureDetail "recover cluster readiness" "fresh readiness observation has already been consumed" DoNotRetry))
+                pure $
+                    if available
+                        then Right version
+                        else Left (Failure (FailureDetail "recover cluster readiness" "fresh readiness observation has already been consumed" DoNotRetry))
         pure (Right (consume (RecoveredClusterReadiness handle reprobe)))
 
 {- | Rerun the backend-bound read-only readiness probe retained by the opaque

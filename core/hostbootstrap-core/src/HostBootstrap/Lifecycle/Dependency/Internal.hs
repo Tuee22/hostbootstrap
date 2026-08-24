@@ -12,6 +12,7 @@ the exact domain openers below accepts this commitment.
 module HostBootstrap.Lifecycle.Dependency.Internal (
     RuntimeDependencyPackage,
     mkProviderRuntimeDependencyPackage,
+    mkProviderShareRuntimeDependencyPackage,
     mkClusterRuntimeDependencyPackage,
     runtimeDependencyPackageKey,
     runtimeDependencyPackageDomain,
@@ -22,9 +23,12 @@ module HostBootstrap.Lifecycle.Dependency.Internal (
     renderRuntimeDependencyPackage,
     runtimeDependencyPackageWire,
     runtimeDependencyPackageFromWire,
+    runtimeDependencyPackageBundleWire,
+    runtimeDependencyPackagesFromBundleWire,
     withProviderRuntimeDependencyPackage,
     withProviderRuntimeDependencyCoordinates,
     withCarriedProviderRuntimeDependencyCoordinates,
+    withCarriedProviderShareRuntimeDependencyCoordinates,
     withClusterRuntimeDependencyPackage,
     withClusterRuntimeDependencyCoordinates,
     withClusterRuntimeDependencySuccessor,
@@ -34,6 +38,10 @@ module HostBootstrap.Lifecycle.Dependency.Internal (
     renderRuntimeDependencyProbeRefusal,
     verifyRuntimeDependencyProbeOutcome,
     verifyRuntimeDependencyProbeResponse,
+    runtimeDependencyExposureRequest,
+    withRuntimeDependencyExposureRequest,
+    renderRuntimeDependencyExposureResponse,
+    verifyRuntimeDependencyExposureResponse,
     runtimeDependencyChartRequest,
     withRuntimeDependencyChartRequest,
     renderRuntimeDependencyChartResponse,
@@ -56,6 +64,7 @@ client route, and exclusive expiry tick.
 -}
 data RuntimeDependencyPackage scope planId
     = ProviderRuntimeDependencyPackage Text Text Text Text Text Word64 Text Text Text Word64
+    | ProviderShareRuntimeDependencyPackage Text Text Text Text Text Word64 Text Text Text Word64
     | ClusterRuntimeDependencyPackage Text Text Text Text Text Word64 Text Text Text Word64
     deriving (Eq, Show)
 
@@ -64,6 +73,10 @@ type role RuntimeDependencyPackage nominal nominal
 mkProviderRuntimeDependencyPackage ::
     Text -> Text -> Text -> Text -> Text -> Word64 -> Text -> Text -> Text -> Word64 -> Either Text (RuntimeDependencyPackage scope planId)
 mkProviderRuntimeDependencyPackage = makePackage "provider" ProviderRuntimeDependencyPackage
+
+mkProviderShareRuntimeDependencyPackage ::
+    Text -> Text -> Text -> Text -> Text -> Word64 -> Text -> Text -> Text -> Word64 -> Either Text (RuntimeDependencyPackage scope planId)
+mkProviderShareRuntimeDependencyPackage = makePackage "provider-share" ProviderShareRuntimeDependencyPackage
 
 mkClusterRuntimeDependencyPackage ::
     Text -> Text -> Text -> Text -> Text -> Word64 -> Text -> Text -> Text -> Word64 -> Either Text (RuntimeDependencyPackage scope planId)
@@ -122,6 +135,7 @@ runtimeDependencyPackageRoute :: RuntimeDependencyPackage scope planId -> Text
 runtimeDependencyPackageRoute package =
     case package of
         ProviderRuntimeDependencyPackage _ _ _ _ _ _ _ _ route _ -> route
+        ProviderShareRuntimeDependencyPackage _ _ _ _ _ _ _ _ route _ -> route
         ClusterRuntimeDependencyPackage _ _ _ _ _ _ _ _ route _ -> route
 
 -- | Exact canonical bytes used to bind the separate live-service entry.
@@ -162,11 +176,35 @@ runtimeDependencyPackageFromWire raw = do
             expiry <- parsePositiveWord expiryText
             case domain of
                 "provider" -> mkProviderRuntimeDependencyPackage plan scope resource frame origin generation journal receipt route expiry
+                "provider-share" -> mkProviderShareRuntimeDependencyPackage plan scope resource frame origin generation journal receipt route expiry
                 "cluster" -> mkClusterRuntimeDependencyPackage plan scope resource frame origin generation journal receipt route expiry
                 _ -> Left "runtime dependency package domain is unknown"
         _ -> Left "runtime dependency package field count differs"
     require (runtimeDependencyPackageWire package == raw) "runtime dependency package is not canonical"
     pure package
+
+runtimeDependencyPackageBundleWire :: [RuntimeDependencyPackage scope planId] -> Either Text ByteString.ByteString
+runtimeDependencyPackageBundleWire packages = do
+    require (not (null packages)) "runtime dependency package bundle is empty"
+    require (length packages <= maximumBundlePackages) "runtime dependency package bundle has too many packages"
+    require (distinct (map runtimeDependencyPackageKey packages)) "runtime dependency package bundle contains a duplicate key"
+    let wire = wireFields ("hostbootstrap/runtime-dependency-bundle/v1" : map renderRuntimeDependencyPackage packages)
+    require (ByteString.length wire <= maximumBundleBytes) "runtime dependency package bundle exceeds its canonical bound"
+    pure wire
+
+runtimeDependencyPackagesFromBundleWire :: ByteString.ByteString -> Either Text [RuntimeDependencyPackage scope planId]
+runtimeDependencyPackagesFromBundleWire raw = do
+    require (ByteString.length raw <= maximumBundleBytes) "runtime dependency package bundle exceeds its canonical bound"
+    fields <- parseWireFields raw
+    packages <- case fields of
+        "hostbootstrap/runtime-dependency-bundle/v1" : packageFields -> do
+            require (not (null packageFields)) "runtime dependency package bundle is empty"
+            require (length packageFields <= maximumBundlePackages) "runtime dependency package bundle has too many packages"
+            traverse (runtimeDependencyPackageFromWire . TextEncoding.encodeUtf8) packageFields
+        _ -> Left "runtime dependency package bundle domain mismatch"
+    canonical <- runtimeDependencyPackageBundleWire packages
+    require (canonical == raw) "runtime dependency package bundle is not canonical"
+    pure packages
 
 withProviderRuntimeDependencyPackage ::
     Text ->
@@ -230,6 +268,26 @@ withCarriedProviderRuntimeDependencyCoordinates scope resource frame generation 
     -- the authenticated handoff package and selects the paired live service;
     -- successor recovery checks the shared scope and concrete resource
     -- coordinates below rather than equating distinct plan identities.
+    require (scopeOf package == scope) "runtime dependency scope mismatch"
+    require (resourceOf package == resource) "runtime dependency resource mismatch"
+    require (frameOf package == frame) "runtime dependency frame mismatch"
+    require (generationOf package == generation) "runtime dependency generation mismatch"
+    require (runtimeDependencyPackageRoute package == route) "runtime dependency route mismatch"
+    require (now < expiryOf package) "runtime dependency package is expired"
+    pure (use (originOf package) route)
+
+withCarriedProviderShareRuntimeDependencyCoordinates ::
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    Text ->
+    Word64 ->
+    RuntimeDependencyPackage scope planId ->
+    (Text -> Text -> result) ->
+    Either Text result
+withCarriedProviderShareRuntimeDependencyCoordinates scope resource frame generation route now package use = do
+    require (domainOf package == "provider-share") "runtime dependency domain mismatch"
     require (scopeOf package == scope) "runtime dependency scope mismatch"
     require (resourceOf package == resource) "runtime dependency resource mismatch"
     require (frameOf package == frame) "runtime dependency frame mismatch"
@@ -391,6 +449,80 @@ verifyRuntimeDependencyProbeResponse package expectedNonce raw = do
     outcome <- verifyRuntimeDependencyProbeOutcome package expectedNonce raw
     either (Left . ("runtime dependency probe refused: " <>)) Right outcome
 
+runtimeDependencyExposureRequest :: RuntimeDependencyPackage scope planId -> Text -> Either Text ByteString.ByteString
+runtimeDependencyExposureRequest package nonce = do
+    requireNonce nonce
+    pure (wireFields ["hostbootstrap/runtime-dependency-exposure/v1", runtimeDependencyPackageCommitment package, nonce])
+
+withRuntimeDependencyExposureRequest ::
+    RuntimeDependencyPackage scope planId ->
+    ByteString.ByteString ->
+    (Text -> result) ->
+    Either Text result
+withRuntimeDependencyExposureRequest package raw use = do
+    require (ByteString.length raw <= maximumProbeBytes) "runtime dependency exposure request exceeds its canonical bound"
+    fields <- parseWireFields raw
+    case fields of
+        [domain, commitment, nonce] -> do
+            require (domain == "hostbootstrap/runtime-dependency-exposure/v1") "runtime dependency exposure request domain mismatch"
+            require (commitment == runtimeDependencyPackageCommitment package) "runtime dependency exposure request commitment mismatch"
+            requireNonce nonce
+            require (wireFields fields == raw) "runtime dependency exposure request is not canonical"
+            pure (use nonce)
+        _ -> Left "runtime dependency exposure request field count differs"
+
+renderRuntimeDependencyExposureResponse ::
+    RuntimeDependencyPackage scope planId ->
+    Text ->
+    [(Text, Text, Int, Text, Int, Text, Word64, Text)] ->
+    Either Text ByteString.ByteString
+renderRuntimeDependencyExposureResponse package nonce exposures = do
+    requireNonce nonce
+    require (not (null exposures)) "runtime dependency exposure response is empty"
+    require (distinct (map exposureServiceField exposures)) "runtime dependency exposure response duplicates a service"
+    mapM_ validateExposure exposures
+    pure (wireFields (["hostbootstrap/runtime-dependency-exposure-response/v1", runtimeDependencyPackageCommitment package, nonce] <> concatMap exposureFields exposures))
+  where
+    exposureServiceField (service, _, _, _, _, _, _, _) = service
+    validateExposure (service, address, hostPort, target, targetPort, relay, generation, operation) = do
+        mapM_ requireExposureField [("service", service), ("address", address), ("target", target), ("relay", relay), ("operation", operation)]
+        require (address == "127.0.0.1") "runtime dependency exposure address is not loopback"
+        require (validPort hostPort && validPort targetPort) "runtime dependency exposure port is invalid"
+        require (generation > 0) "runtime dependency exposure generation is not positive"
+    requireExposureField (label, value) = do
+        require (not (Text.null value)) ("runtime dependency exposure " <> label <> " is empty")
+        require (encodedLength value <= maximumFieldBytes) ("runtime dependency exposure " <> label <> " exceeds its bound")
+    exposureFields (service, address, hostPort, target, targetPort, relay, generation, operation) =
+        [service, address, Text.pack (show hostPort), target, Text.pack (show targetPort), relay, Text.pack (show generation), operation]
+
+verifyRuntimeDependencyExposureResponse ::
+    RuntimeDependencyPackage scope planId ->
+    Text ->
+    ByteString.ByteString ->
+    Either Text [(Text, Text, Int, Text, Int, Text, Word64, Text)]
+verifyRuntimeDependencyExposureResponse package expectedNonce raw = do
+    requireNonce expectedNonce
+    require (ByteString.length raw <= maximumProbeBytes) "runtime dependency exposure response exceeds its canonical bound"
+    fields <- parseWireFields raw
+    case fields of
+        domain : commitment : nonce : exposureFields -> do
+            require (domain == "hostbootstrap/runtime-dependency-exposure-response/v1") "runtime dependency exposure response domain mismatch"
+            require (commitment == runtimeDependencyPackageCommitment package) "runtime dependency exposure response commitment mismatch"
+            require (nonce == expectedNonce) "runtime dependency exposure response nonce mismatch"
+            exposures <- parseExposures exposureFields
+            canonical <- renderRuntimeDependencyExposureResponse package nonce exposures
+            require (canonical == raw) "runtime dependency exposure response is not canonical"
+            pure exposures
+        _ -> Left "runtime dependency exposure response field count differs"
+  where
+    parseExposures [] = Right []
+    parseExposures (service : address : hostPortText : target : targetPortText : relay : generationText : operation : rest) = do
+        hostPort <- parsePositiveInt hostPortText
+        targetPort <- parsePositiveInt targetPortText
+        generation <- parsePositiveWord generationText
+        ((service, address, hostPort, target, targetPort, relay, generation, operation) :) <$> parseExposures rest
+    parseExposures _ = Left "runtime dependency exposure response field count differs"
+
 runtimeDependencyChartRequest ::
     RuntimeDependencyPackage scope planId ->
     Text ->
@@ -400,26 +532,37 @@ runtimeDependencyChartRequest ::
     Text ->
     Text ->
     Text ->
+    Text ->
     Either Text ByteString.ByteString
-runtimeDependencyChartRequest package callDigest artifact release namespace image deployment values = do
-    require (all (not . Text.null) [callDigest, artifact, release, namespace, image, deployment]) "chart request contains an empty required field"
-    require (encodedLength values <= maximumFieldBytes) "chart values exceed the runtime dependency field bound"
-    pure (wireFields ["hostbootstrap/runtime-dependency-chart/v1", runtimeDependencyPackageCommitment package, callDigest, artifact, release, namespace, image, deployment, values])
+runtimeDependencyChartRequest package callDigest artifact release namespace image deployment activationRevision values = do
+    mapM_ requireChartCoordinate [callDigest, artifact, release, namespace, image, deployment]
+    if Text.null activationRevision then Right () else requireChartCoordinate activationRevision
+    require (encodedLength values <= maximumChartValuesBytes) "chart values exceed the runtime dependency chart-values bound"
+    let wire = wireFields ["hostbootstrap/runtime-dependency-chart/v2", runtimeDependencyPackageCommitment package, callDigest, artifact, release, namespace, image, deployment, activationRevision, values]
+    require (ByteString.length wire <= maximumChartRequestBytes) "runtime dependency chart request exceeds its canonical bound"
+    pure wire
 
 withRuntimeDependencyChartRequest ::
     RuntimeDependencyPackage scope planId ->
     ByteString.ByteString ->
-    (Text -> Text -> Text -> Text -> Text -> Text -> Text -> result) ->
+    (Text -> Text -> Text -> Text -> Text -> Text -> Text -> Text -> result) ->
     Either Text result
 withRuntimeDependencyChartRequest package raw use = do
+    require (ByteString.length raw <= maximumChartRequestBytes) "runtime dependency chart request exceeds its canonical bound"
     fields <- parseWireFields raw
     case fields of
-        [domain, commitment, callDigest, artifact, release, namespace, image, deployment, values] -> do
-            require (domain == "hostbootstrap/runtime-dependency-chart/v1") "runtime dependency chart request domain mismatch"
+        [domain, commitment, callDigest, artifact, release, namespace, image, deployment, activationRevision, values] -> do
+            require (domain == "hostbootstrap/runtime-dependency-chart/v2") "runtime dependency chart request domain mismatch"
             require (commitment == runtimeDependencyPackageCommitment package) "runtime dependency chart request commitment mismatch"
-            require (wireFields fields == raw) "runtime dependency chart request is not canonical"
-            pure (use callDigest artifact release namespace image deployment values)
+            canonical <- runtimeDependencyChartRequest package callDigest artifact release namespace image deployment activationRevision values
+            require (canonical == raw) "runtime dependency chart request is not canonical"
+            pure (use callDigest artifact release namespace image deployment activationRevision values)
         _ -> Left "runtime dependency chart request field count differs"
+
+requireChartCoordinate :: Text -> Either Text ()
+requireChartCoordinate value = do
+    require (not (Text.null value)) "chart request contains an empty required field"
+    require (encodedLength value <= maximumFieldBytes) "chart request coordinate exceeds the runtime dependency field bound"
 
 renderRuntimeDependencyChartResponse :: RuntimeDependencyPackage scope planId -> Text -> Text -> Either Text ByteString.ByteString
 renderRuntimeDependencyChartResponse package callDigest outcome = do
@@ -505,40 +648,56 @@ parsePositiveWord value =
                 Right (fromInteger parsed)
         _ -> Left "runtime dependency probe generation is not canonical"
 
+parsePositiveInt :: Text -> Either Text Int
+parsePositiveInt value = do
+    parsed <- parsePositiveWord value
+    require (parsed <= fromIntegral (maxBound :: Int)) "runtime dependency exposure port exceeds Int"
+    pure (fromIntegral parsed)
+
 domainOf :: RuntimeDependencyPackage scope planId -> Text
 domainOf package = case package of
     ProviderRuntimeDependencyPackage{} -> "provider"
+    ProviderShareRuntimeDependencyPackage{} -> "provider-share"
     ClusterRuntimeDependencyPackage{} -> "cluster"
 
 planOf, scopeOf, resourceOf, frameOf, originOf, journalOf, receiptOf :: RuntimeDependencyPackage scope planId -> Text
 planOf package = case package of
     ProviderRuntimeDependencyPackage value _ _ _ _ _ _ _ _ _ -> value
+    ProviderShareRuntimeDependencyPackage value _ _ _ _ _ _ _ _ _ -> value
     ClusterRuntimeDependencyPackage value _ _ _ _ _ _ _ _ _ -> value
 scopeOf package = case package of
     ProviderRuntimeDependencyPackage _ value _ _ _ _ _ _ _ _ -> value
+    ProviderShareRuntimeDependencyPackage _ value _ _ _ _ _ _ _ _ -> value
     ClusterRuntimeDependencyPackage _ value _ _ _ _ _ _ _ _ -> value
 resourceOf package = case package of
     ProviderRuntimeDependencyPackage _ _ value _ _ _ _ _ _ _ -> value
+    ProviderShareRuntimeDependencyPackage _ _ value _ _ _ _ _ _ _ -> value
     ClusterRuntimeDependencyPackage _ _ value _ _ _ _ _ _ _ -> value
 frameOf package = case package of
     ProviderRuntimeDependencyPackage _ _ _ value _ _ _ _ _ _ -> value
+    ProviderShareRuntimeDependencyPackage _ _ _ value _ _ _ _ _ _ -> value
     ClusterRuntimeDependencyPackage _ _ _ value _ _ _ _ _ _ -> value
 originOf package = case package of
     ProviderRuntimeDependencyPackage _ _ _ _ value _ _ _ _ _ -> value
+    ProviderShareRuntimeDependencyPackage _ _ _ _ value _ _ _ _ _ -> value
     ClusterRuntimeDependencyPackage _ _ _ _ value _ _ _ _ _ -> value
 journalOf package = case package of
     ProviderRuntimeDependencyPackage _ _ _ _ _ _ value _ _ _ -> value
+    ProviderShareRuntimeDependencyPackage _ _ _ _ _ _ value _ _ _ -> value
     ClusterRuntimeDependencyPackage _ _ _ _ _ _ value _ _ _ -> value
 receiptOf package = case package of
     ProviderRuntimeDependencyPackage _ _ _ _ _ _ _ value _ _ -> value
+    ProviderShareRuntimeDependencyPackage _ _ _ _ _ _ _ value _ _ -> value
     ClusterRuntimeDependencyPackage _ _ _ _ _ _ _ value _ _ -> value
 
 generationOf, expiryOf :: RuntimeDependencyPackage scope planId -> Word64
 generationOf package = case package of
     ProviderRuntimeDependencyPackage _ _ _ _ _ value _ _ _ _ -> value
+    ProviderShareRuntimeDependencyPackage _ _ _ _ _ value _ _ _ _ -> value
     ClusterRuntimeDependencyPackage _ _ _ _ _ value _ _ _ _ -> value
 expiryOf package = case package of
     ProviderRuntimeDependencyPackage _ _ _ _ _ _ _ _ _ value -> value
+    ProviderShareRuntimeDependencyPackage _ _ _ _ _ _ _ _ _ value -> value
     ClusterRuntimeDependencyPackage _ _ _ _ _ _ _ _ _ value -> value
 
 frameText :: Text -> Text
@@ -554,6 +713,23 @@ maximumRouteBytes = 512
 maximumPackageBytes, maximumProbeBytes :: Int
 maximumPackageBytes = 64 * 1024
 maximumProbeBytes = 128 * 1024
+
+maximumBundleBytes, maximumBundlePackages :: Int
+maximumBundleBytes = 512 * 1024
+maximumBundlePackages = 16
+
+maximumChartValuesBytes, maximumChartRequestBytes :: Int
+maximumChartValuesBytes = 64 * 1024
+maximumChartRequestBytes = 256 * 1024
+
+validPort :: Int -> Bool
+validPort port = port > 0 && port < 65536
+
+distinct :: (Eq value) => [value] -> Bool
+distinct values = length values == length (unique values)
+  where
+    unique [] = []
+    unique (value : rest) = value : unique (filter (/= value) rest)
 
 require :: Bool -> Text -> Either Text ()
 require True _ = Right ()

@@ -35,7 +35,9 @@ For `doctor`/`build`/`run`, Python owns only work that must happen before a proj
 6. classify the local Cabal index and refresh it only when missing/stale in online mode;
 7. build the executable with a repo-local store and copy it to `.build/<identity>` only when its bytes
    changed;
-8. invoke it with the requested arguments.
+8. invoke the copied binary's exact private identity-install entry, which creates no config and returns no key
+   material to Python;
+9. invoke it with the requested arguments.
 
 The installed distribution also owns the explicit `update` command. In a source checkout, the
 maintainer-only command set additionally exposes base-image build/publish and repository check/test
@@ -47,8 +49,12 @@ On POSIX, handoff uses `exec`. On Windows, Python uses `subprocess.run` and retu
 it does not replace the Python process. Documentation should not claim identical process provenance on
 all platforms.
 
-The Haskell project binary owns config, Docker/runtime reconciliation, provider frames, project-image
-build, cluster/workload lifecycle, services, tests, and teardown.
+The Haskell project binary owns config, installed project cryptography, Docker/runtime reconciliation,
+provider frames, project-image build, cluster/workload lifecycle, services, tests, and teardown. Immediately
+after the stable copy, Python asks that binary to install or validate its handoff secret/public pair, distinct
+build-signing key, and distinct activation secret/public pair. This is an execution handoff, not transferred
+cryptographic ownership: Python neither generates, reads, returns, nor interprets those keys. `project init`
+continues to own only explicit project configuration initialization.
 
 ## Project discovery
 
@@ -97,9 +103,9 @@ GHC/Cabal.
 
 ## Host-native and container builds
 
-The host-native build uses the consumer's host `cabal.project` and `.build/cabal-store`. The later Linux
-container build uses a distinct container-only project file that imports the base image's absolute
-freeze. See [build and run model](build_and_run_model.md). Python does not build the project image.
+The host-native build and later Linux container build both use the consumer's host-compatible
+`cabal.project`; the inherited Cabal store is an opportunistic cache and misses resolve normally. See
+[build and run model](build_and_run_model.md). Python does not build the project image.
 
 ## Config boundary
 

@@ -177,9 +177,6 @@ dispatchCases =
                     ready
                     ready
                     (ProviderObservedNotReady "endpoint warming")
-                    (ProviderObservedReady (GuestFlock "/usr/bin/flock"))
-                    (ProviderObservedReady (GuestGnuStat "/usr/bin/stat"))
-                    (ProviderObservedReady (GuestPython3 "/usr/bin/python3"))
             local = DirectProviderDiscovery ready (ProviderObservedUnavailable "offline")
         ProviderGuestDiscovery guest @?= ProviderGuestDiscovery guest
         ProviderDirectDiscovery local @?= ProviderDirectDiscovery local

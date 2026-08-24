@@ -1,11 +1,12 @@
 # Phase 24 — The worked demo
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 16 (provider, cluster, and guest lifecycle foundations), Phase 17 (proof-complete
 recursive lifecycle command), Phase 22 (service-runtime activation and `service run` semantics), Phase 23
 (base image publication and the opportunistic warm store)
 **Substrates**: linux-cpu
-**Gate**: `cabal build all` and `cabal test all --ghc-options=-Werror` from `demo/`, plus live
+**Gate**: `cabal build all` and `cabal test hostbootstrap-demo-test --ghc-options=-Werror` from `demo/`, the
+core host-static gate from `core/`, plus live
 `hostbootstrap run -- project up`, `hostbootstrap run -- project down`,
 `hostbootstrap run -- project destroy`, and `hostbootstrap run -- test run all` reporting `10/10 passed`
 inside the universal `linux-cpu` realization on any supported outer host
@@ -23,8 +24,8 @@ matrix generated from decoded configuration.
 It is also where the universal-realization contract becomes live: the host-native binary must establish
 native Linux, Lima/Colima, or WSL2 as appropriate and re-enter this same project in `linux-cpu`; a native
 macOS or Windows execution of the commands is not equivalent. The container quality gate lives here because `fourmolu` and `hlint` run only inside the image's
-own `check-code` — see [rationale.md](rationale.md). Sprint 24.30 is the sole worked-demo live confirmation of
-the host-static recursive lifecycle command completed by Phase 17.
+own `check-code` — see [rationale.md](rationale.md). Sprints 24.30 and 24.41 are the worked-demo Production and
+Harness live confirmations of the host-static recursive lifecycle command completed by Phase 17.
 
 ## Sprints
 
@@ -45,21 +46,29 @@ One scope-polymorphic plan the demo instantiates per scope.
 - The demo declares its own config vocabulary and step fragments, finalized into one `StepPlan`; it adds no
   verb of its own.
 - The plan is scope-polymorphic and is instantiated separately for `Production` and for each harness run, so a
-  test run's cluster, data root, and ports derive from its run identity.
+  test run's cluster and data root derive from its run identity while host ports are selected only by the
+  runtime-owned exposure operation.
 - The demo's chain runs on the core interpreter; there is no demo-local deploy interpreter.
 - The pulled rolling base is consumed `FROM` the published tag, and the in-Dockerfile `check-code` stage runs
   the container gate.
 - The decoded config, finalized plan, and generated test vocabulary remain one coherent demo-owned assembly;
   no hidden environment or command-line term changes its topology.
+- Production and Harness Dhall contain stable application/Service ports only. There is no field, default,
+  derived run hash, or numeric convention for a provider-/host-local port; service identity and internal target
+  are the complete exposure intent available before effects.
 
 #### Validation
 
-`CommandsSpec` covers the plan shape, both scope instantiations, and the config vocabulary. The container gate
-runs on every image build.
+`CommandsSpec` covers the plan shape, both scope instantiations, and the config vocabulary. `ConfigSpec` and a
+source guard prove generated/example Dhall has no host-port field and no Haskell default or run-derived host
+number feeds plan construction. The container gate runs on every image build.
 
 #### Remaining Work
 
-None.
+None. Completed 2026-08-23. Production and Harness config/plan projection retains only the four semantic
+service/internal-target declarations; the three canonical Kind/nvkind files contain no host mapping, and
+`ConfigSpec`, `ClusterConfigSpec`, and `CommandsSpec` guard the absence. The complete demo gate passed 142/142
+under `--ghc-options=-Werror`.
 
 ### Sprint 24.2: The application, registry, and accelerator daemon [Done]
 
@@ -80,7 +89,8 @@ A real application with real dependencies.
 - A single-binary in-cluster registry backed by object storage, with a finalized registry plan that renders
   redirect configuration as output and requires a settled route before an image push.
 - An accelerator daemon reached over a private listener with a CBOR round trip, placed per substrate: in-cluster
-  behind a service address on Linux, host-native behind a local-only node port on Apple and Windows.
+  behind a service address on Linux, host-native through its exact runtime-resolved loopback exposure on Apple
+  and Windows.
 - The daemon's readiness is observed rather than slept for, and its launch uses the sealed invocation-shape
   boundary so a pre-readiness failure writes its cause somewhere readable.
 - The application, registry, and accelerator variants expose only their finalized service interfaces; demo
@@ -88,12 +98,16 @@ A real application with real dependencies.
 
 #### Validation
 
-`CommandsSpec` plus the live `10/10` matrix on linux-cpu. Dated evidence: the native Incus/ClusterIP/C++ lane
-reported `10/10 passed`.
+`CommandsSpec` proves every provider-/host-local application, registry, object-store, web, accelerator, and
+test client accepts only the resolved endpoint for its semantic service. The live `10/10` matrix exercises
+those clients after the later exposure adopter closes.
 
 #### Remaining Work
 
-None.
+None. Completed 2026-08-23. MinIO initialization, registry rendering and image push, web exposure, and the
+host-resident accelerator daemon select their semantic service only inside the lexical resolved-exposure
+continuation. The focused `CommandsSpec` source and value checks passed 58/58 and the complete demo gate passed
+142/142 under `--ghc-options=-Werror`.
 
 ### Sprint 24.3: The five-case test matrix from decoded config [Done]
 
@@ -138,7 +152,7 @@ report-card rows, and all malformed, empty, and duplicate declarations refuse be
 while remaining structurally unable to invoke lifecycle commands. `ConfigSpec` and `CommandsSpec` cover the
 matrix and write/read shape, and the complete demo suite passed 138/138 with `--ghc-options=-Werror`.
 
-### Sprint 24.4: Plan-owned profile/root projection and artifact provenance [Done]
+### Sprint 24.4: Plan-owned profile/root and service-target projection [Done]
 
 **Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`,
@@ -159,7 +173,7 @@ provenance boundary without adopting lifecycle consumers in this projection-only
 - Production and Harness command assembly retain one exact `ProjectPlan`; `RunProfile` remains descriptive
   configuration and never becomes independent lifecycle authority.
 - One digest-checked demo projection returns the exact plan's closed provider, cluster, workload, service, and
-  assertion slices together with resources, ports, replica count, and canonical durable host root. Production
+  assertion slices together with resources, semantic service targets, replica count, and canonical durable host root. Production
   projects preserved `.data`; Harness projects `.test_data/<run>` under its run bracket.
 - The guest mount source and `PreserveOnReverse` resource derive from the same canonical durable-root projection;
   this sprint exposes the joined terms but does not adopt later lifecycle call sites.
@@ -177,12 +191,9 @@ overflow is split into a new sprint rather than expanding this one. Sprint 24.30
 
 #### Remaining Work
 
-None. Completed 2026-08-22. `demoExactPlanSlices` admits the demo config only against the exact retained plan
-digest and returns its configuration terms beside closed typed plan slices; `demoExactRenderedClusterConfig`
-derives the driver, ports, paths, and bytes from that projection. Production and Harness roots remain isolated,
-the durable guest mount derives from the run profile, and published-base resolution requires `--pull` plus a
-repository digest without persisting it. `CommandsSpec` and `ConfigSpec` pass within the complete 138/138 demo
-gate under `--ghc-options=-Werror`.
+None. Completed 2026-08-23. The digest-checked projection returns the exact plan slices, canonical durable
+root, and stable cluster-internal targets without a host-local number; both scope projections, base-digest
+pinning, and absence guards pass in the complete 142-case demo gate under `--ghc-options=-Werror`.
 
 ### Sprint 24.5: Authored provider resources and exact direct-parent join [Done]
 
@@ -346,7 +357,7 @@ admitted plan package.
 - The VM and Direct topologies produce distinct but structurally checked slices, including the provider join
   from Sprint 24.5 and the child-local workload suffix below the selected container edge.
 - Canonical demo config is re-rendered through the finalized codec and digest-matched before any cluster,
-  workload, port, or durable-root field is projected.
+  workload, cluster-internal service-target, or durable-root field is projected.
 - Missing, duplicate, out-of-order, cross-scope, wrong-frame, or digest-mismatched entries refuse during pure
   projection, before budget admission or backend effects.
 
@@ -363,7 +374,7 @@ validator passed, and the full demo gate passed 128/128 together with the nested
 None. The closed typed-identity eliminator partitions the exact nominal `PlannedStep` stream into five ordered
 roles without a new contract type; `demoExactPlanSlices` joins the provider/cluster edge, retains each node's
 exact dependency/resource prefix and shared config digest, and refuses cardinality or frame drift. The config
-projection re-renders and digest-matches before returning refined resources, replicas, ports, or durable root.
+projection re-renders and digest-matches before returning refined resources, replicas, service targets, or durable root.
 The two production-module and 400-line caps were retained.
 
 ### Sprint 24.8: Domain-separated runtime dependency package [Done]
@@ -1053,7 +1064,7 @@ two-split 800-significant-line ceiling. The complete core host-static gate passe
 
 None.
 
-### Sprint 24.19: Exact rendered cluster config and loopback set [Done]
+### Sprint 24.19: Exact rendered cluster config and exposure intent [Done]
 
 **Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/ClusterConfig.hs`,
@@ -1069,7 +1080,7 @@ lines. Split before implementation if either cap would be exceeded.
 
 #### Objective
 
-Render the exact canonical Kind/nvkind configuration and loopback publication set from digest-matched plan
+Render exact canonical Kind/nvkind configuration and semantic exposure intent from digest-matched plan
 metadata before any cluster backend is selected.
 
 #### Deliverables
@@ -1078,8 +1089,9 @@ metadata before any cluster backend is selected.
   the retained config digest, and emits canonical bytes plus their digest and deterministic state/config paths.
 - The closed driver value selects only Kind or nvkind rendering; driver-specific node, mount, accelerator,
   network, and kubeconfig fields are total and unknown driver text is unrepresentable.
-- The loopback set is derived from the exact plan-owned published ports and binds only local addresses; duplicate,
-  wildcard, out-of-range, undeclared, or cross-scope ports fail before filesystem or backend work.
+- The projection declares a closed set of service identities, protocols, and stable cluster-internal targets.
+  Canonical Kind/nvkind bytes contain no host-side port number or `extraPortMappings`; host publication is a
+  later owned runtime result rather than configuration.
 - The VM/container render preserves the selected writable durable target and cluster topology, while Direct
   rendering contains no VM/share/alias fiction; both retain the same exact cluster resource identity.
 - Canonical output is stable under map ordering and rejects lexical path escape, unknown fields, noncanonical
@@ -1088,25 +1100,18 @@ metadata before any cluster backend is selected.
 
 #### Validation
 
-`ClusterConfigSpec` and `CommandsSpec` cover Kind/nvkind golden output, both topologies, loopback isolation,
-canonical stability, digest agreement, and all refusal cases. The demo host-static gate must pass. The
+`ClusterConfigSpec` and `CommandsSpec` cover Kind/nvkind golden output, both topologies, exact semantic targets,
+absence of host-port rendering, canonical stability, digest agreement, and all refusal cases. A source guard
+rejects numeric host-port policy in Dhall, Haskell, generated Kind/nvkind YAML, and chart/test client fixtures.
+The demo host-static gate must pass. The
 module/400-line budgets are checked before implementation; any type, adoption, fourth module, or overflow is
 split.
 
-On 2026-08-22 the demo gained a pure closed-driver renderer over the digest-matched singular cluster slice
-and canonical config projection. Kind and nvkind emit byte-for-byte golden configuration, exact config
-digests, deterministic state/config paths, the selected durable mount, and only their complete declared
-`127.0.0.1` publication sets; the nvkind branch alone adds the GPU worker. Digest/slice disagreement,
-duplicate, missing, additional, or out-of-range ports, changed bytes, and noncanonical paths fail before IO.
-`CommandsSpec` proves the command layer derives driver and ports from the exact plan slice and accepts no
-independent driver or publication term. The focused renderer suite passed 2/2 and its command derivation case
-passed 1/1. The complete `cabal test all --ghc-options=-Werror` gate from `demo/` passed all 135 demo tests and
-all 2,403 core tests on `linux-cpu`; the core suite completed in 161.97 seconds. The sprint introduced no
-lifecycle adoption or named contract and remained within its three-module/400-line budget.
-
 #### Remaining Work
 
-None.
+None. Completed 2026-08-23. The pure Kind/nvkind renderer emits canonical host-port-free bytes plus the exact
+semantic service/target set, and refuses digest/slice drift. `ClusterConfigSpec` covers both golden renderings
+and the complete demo gate passed 142/142 under `--ghc-options=-Werror`.
 
 ### Sprint 24.20: Plan-owned cluster driver/config package [Done]
 
@@ -1125,13 +1130,13 @@ production Haskell lines. Split before implementation if either cap would be exc
 
 #### Objective
 
-Bind the exact closed driver, canonical rendered config, mappings, and plan-owned cluster package into the one
+Bind the exact closed driver, canonical rendered config, exposure intents, and plan-owned cluster package into the one
 input accepted by cluster preparation.
 
 #### Deliverables
 
 - Opaque `PlanOwnedClusterConfig` is the sole named type and binds the exact existing `PlanOwnedCluster`, closed
-  Kind/nvkind driver, canonical bytes/digest, config/state paths, loopback set, node mappings, and workload slice.
+  Kind/nvkind driver, canonical bytes/digest, config/state paths, semantic exposure intents, node mappings, and workload slice.
 - `withPlanOwnedCluster` first constructs the existing base `PlanOwnedCluster` from the planned provider
   resource and admitted provider→cluster edge, without runtime dependency or config recursion; a separate
   hidden binder then matches Sprint 24.19 output and produces the wrapper. Runtime dependency is consumed only
@@ -1140,8 +1145,9 @@ input accepted by cluster preparation.
   wrapper and exposes no raw path, driver text, or alternate config argument.
 - `PreparedClusterReconcile` retains that exact package so every reconcile, cordon, readiness, and cleanup
   operation observes one driver, bytes digest, path set, mapping set, and ownership identity.
-- Wrong driver/config pairing, changed bytes or path, sibling provider, stale generation, wildcard publication,
-  mismatched slice, or independently supplied term refuses before backend discovery or mutation.
+- Wrong driver/config pairing, changed bytes or path, sibling provider, stale generation, duplicate/unknown
+  service target, host-port-bearing config, mismatched slice, or independently supplied term refuses before
+  backend discovery or mutation.
 
 #### Validation
 
@@ -1149,24 +1155,14 @@ input accepted by cluster preparation.
 both drivers, all mismatches, and removal of the hardcoded Kind path. Core and demo host-static gates must pass.
 The sole-type/module/line budgets are checked before implementation; overflow is split.
 
-On 2026-08-22 the sole new named contract, opaque `PlanOwnedClusterConfig`, was added around the existing
-plan/provider/topology/budget join. Its continuation binder checks the rendered SHA-256 digest, 1-MiB bound,
-driver-derived state/config paths and exact node mapping, unique in-range loopback publication, and non-empty
-unique workload slice, then retains those terms with the original package. The demo bridge feeds only Sprint
-24.19's canonical renderer output into that binder. `withPreparedClusterReconcile` now accepts the completed
-wrapper rather than plan, resource, topology, slice, or path terms; it consults the live provider dependency
-only after that pure binding and carries the same wrapper through reconcile, cordon, readiness, and cleanup.
-The focused cluster family passed all 56 cases, including 18 `ClusterReconcileSpec` cases and the updated
-constructor/probe compile-fail boundaries; `ClusterConfigSpec` passed 2/2. The complete core gate passed all
-2,404 tests under `-Werror` in 163.36 seconds and the complete demo suite passed all 135 tests. The change used
-the three declared production modules, one named type, no project call-site adoption, and fewer than 400 added
-production Haskell lines.
-
 #### Remaining Work
 
-None.
+None. Completed 2026-08-23. `PlanOwnedClusterConfig` binds the closed driver, canonical bytes/digest, paths,
+node mappings, workload slice, and semantic exposure intents; its hidden binder rejects host publication and
+invalid/duplicate intents. The complete core gate passed 2,428/2,428 and the demo gate passed 142/142 under
+`--ghc-options=-Werror`.
 
-### Sprint 24.21: Closed Kind/nvkind cluster backend [Done]
+### Sprint 24.21: Closed Kind/nvkind cluster and exposure backend [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
@@ -1182,7 +1178,7 @@ lines. Split before implementation if either cap would be exceeded.
 #### Objective
 
 Resolve the plan-owned Kind or nvkind driver into one closed backend that retains every exact host tool and
-config term needed for reconcile, cordon, readiness, and cleanup.
+config term needed for reconcile, runtime-owned relay exposure, cordon, readiness, and cleanup.
 
 #### Deliverables
 
@@ -1198,6 +1194,10 @@ config term needed for reconcile, cordon, readiness, and cleanup.
   state-root escape, backend replacement, unsupported substrate, and ambiguous installation before mutation.
 - Existing reconcile, applied-cordon, readiness, and cleanup calls accept only the resolved closed backend and
   retain their lock, fresh-observation, generation, and exact-identity guarantees.
+- After cluster readiness, the backend realizes Sprint 24.19's service intents through the generic
+  cluster-lifecycle exposure operation. The exact derived project image supplies the hidden relay process;
+  Docker joins it to the cluster network and atomically publishes each relay listener on loopback with no
+  host-side number. Exact inspection returns one resolved mapping per declared service and no others.
 
 #### Validation
 
@@ -1207,17 +1207,12 @@ The module and 400-line budgets are checked before implementation; any new type 
 
 #### Remaining Work
 
-None. Discovery now consumes the opaque plan-owned package and selects exactly its Kind or nvkind branch;
-the hidden strong capability retains that driver, its canonical config bytes/digest and ownership identity,
-the typed identities of the branch driver plus Docker, Kubectl, and Helm, and the clause-holding protected
-store path derived by the prepared operation. Reconcile and status reject driver, config, digest, or owner
-replacement before invoking a command. Focused validation passed all 27 `ClusterBackendSpec` cases, including
-nvkind-without-Kind and cross-driver package refusal, plus the hidden-constructor/import compile-fail cases.
-On 2026-08-22 the complete core gate passed 2,407/2,407 in 156.70 seconds and the demo gate passed 135/135,
-both with `--ghc-options=-Werror`. The change introduced no public named contract, used two production
-modules, and stayed below 400 production Haskell lines.
+None. Completed 2026-08-23. The closed backend creates one identity-labelled immutable-image relay on the Kind
+network, lets Docker select loopback ports, exact-inspects every declared mapping, and conditionally releases
+only the recorded identity. Focused exposure tests passed 11/11, all 519 compile-fail boundaries passed, and
+the complete core gate passed 2,428/2,428 under `--ghc-options=-Werror`.
 
-### Sprint 24.22: Cluster-domain readiness recovery [Done]
+### Sprint 24.22: Cluster-domain readiness and exposure recovery [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
@@ -1235,8 +1230,8 @@ lines. Split before implementation if either cap would be exceeded.
 
 #### Objective
 
-Produce and later open a cluster-domain runtime package so chart work receives a freshly reprobed lexical
-`ClusterReadiness`, never a carried readiness witness.
+Produce and later open a cluster-domain runtime package so successors receive freshly reprobed lexical
+`ClusterReadiness` and exact resolved exposures, never carried witnesses or reconstructed ports.
 
 #### Deliverables
 
@@ -1255,6 +1250,9 @@ Produce and later open a cluster-domain runtime package so chart work receives a
   readiness yields no witness.
 - The package, wire, and canonical registry cannot contain or expose `ClusterReadiness`, an applied-cordon capability, managed
   backend handle, raw probe, journal writer, reusable receipt, or a value escaping the lexical continuation.
+- The package commits each semantic service to its resolved-exposure identity. Its opener re-inspects the exact
+  relay and mappings before exposing endpoints lexically; a port number without matching relay/cluster
+  generation and ownership operation carries no authority.
 
 #### Validation
 
@@ -1264,19 +1262,12 @@ pass. The module and 400-line budgets are checked first; any new type or adoptio
 
 #### Remaining Work
 
-None. The existing closed cluster package domain now has a successor-coordinate opener, while the cluster
-backend registers its canonical package and separate nonce-consuming live service only after applied cordon
-and a newly successful backend-bound readiness reprobe. The package commits the action's plan, scope,
-resource/frame, closed driver/config/owner origin, managed generation, still-pending gate, ready observation,
-route, and expiry; it retains none of the backend, cordon, readiness, probe, receipt, or writer. Recovery
-requires exact canonical membership, every successor-visible coordinate, an unexpired route, and a fresh live
-response, then `Cluster.Reconcile` settles another fresh observation only inside the continuation. Focused
-validation passed 27 `ClusterBackendSpec`, 19 `ClusterReconcileSpec`, 7 `LifecycleDependencySpec`, and 2
-`DocValidatorSpec` cases. On 2026-08-22 the full core gate passed 2,409/2,409 in 160.68 seconds and the demo gate
-passed 135/135, both under `--ghc-options=-Werror`. No named contract was added, the three declared production
-modules stayed below the 400-line budget, and no project call site was adopted.
+None. Completed 2026-08-23. The cluster package commits its exact resolved service set and the live opener
+freshly re-inspects it before yielding readiness and opaque exposures lexically; nonce replay, changed mapping,
+wildcard, malformed response, and cross-service attempts refuse. All 519 compile-fail boundaries and the
+complete 2,428-case core gate passed under `--ghc-options=-Werror`.
 
-### Sprint 24.23: Exact cluster reconcile, cordon, and readiness adoption [Done]
+### Sprint 24.23: Exact cluster reconcile, exposure, cordon, and readiness adoption [Done]
 
 **Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/test/CommandsSpec.hs`
@@ -1289,8 +1280,8 @@ Haskell lines. Split before implementation if either cap would be exceeded.
 
 #### Objective
 
-Adopt one exact demo cluster call site from fresh provider recovery through reconcile, applied cordon, readiness,
-and cluster-package production.
+Adopt one exact demo cluster call site from fresh provider recovery through reconcile, readiness, runtime-owned
+exposure, applied cordon, and cluster-package production.
 
 #### Deliverables
 
@@ -1312,6 +1303,9 @@ and cluster-package production.
   failure, retry, or a fresh invocation destroys both registries.
 - Failure or replacement at any stage produces no readiness/package and unwinds only journal-proven owned work;
   wrong provider/cluster/frame/config/driver/budget/generation or out-of-order cordon is refused before use.
+- Exposure settlement occurs only after exact cluster readiness and before cluster-package publication. The
+  action supplies semantic targets, never candidate host ports; reverse removes the identity-bound relay before
+  cluster deletion.
 - Direct and VM/container lanes reach this same call-site shape through their distinct admitted provider routes;
   no compatibility export, demo-local cluster mutation, hardcoded Kind, or raw tool call is permitted.
 
@@ -1324,20 +1318,10 @@ implementation; overflow is split before the call site lands.
 
 #### Remaining Work
 
-None. The action-side package joins the executing cluster resource, its exact provider dependency, and a
-fresh-indexed closed budget slice from `StepExecution` metadata; it reconstructs no sibling plan. The child
-opens only the authenticated provider package already seeded into its invocation carrier, rebinds its carried
-receipt, and obtains a nonce-serviced fresh generation from the parent without rediscovering the parent
-backend. The single VM/Direct call-site then renders and writes the canonical Kind/nvkind config, discovers
-the closed backend, reconciles and carries cluster ownership, applies the exact cordon, settles fresh
-readiness, and registers the pending cluster package plus separate live service. VM uses the admitted
-`core:deploy-vm` route, and Direct opens the same provider reservation route after its separate
-`core:build-image` node; neither branch calls the compatibility cluster
-mutator or supplies a raw tool/name/path. Focused validation passed 52 `CommandsSpec`, 24
-`ProviderBackendSpec`, 19 `ClusterReconcileSpec`, and 7 dependency-package cases. On 2026-08-22 the complete
-core gate passed 2,410/2,410 in 161.06 seconds and the complete demo gate passed 136/136, all under
-`--ghc-options=-Werror`. The one call-site adoption introduced no named contract, used the seven declared
-production modules, and stayed below 400 added production Haskell lines.
+None. Completed 2026-08-23. The single VM/Direct adopter orders provider recovery, plan/config/backend binding,
+reconcile, cordon, readiness, exposure settlement, and package publication. Both reverse routes recover and
+remove the identity-bound relay before cluster deletion. `CommandsSpec` passed 58/58; the complete core and
+demo gates passed 2,428/2,428 and 142/142 under `--ghc-options=-Werror`.
 
 ### Sprint 24.24: Planned chart/workload resource [Done]
 
@@ -1624,50 +1608,75 @@ the exact chart effect transaction; readiness is reconstructed only inside a ran
 Focused coverage passes for exact execution, chart application, replay, and route substitution, and the complete
 core gate passed 2,429/2,429 with `--ghc-options=-Werror`.
 
-### Sprint 24.26: Readiness-gated chart/workload adoption [Done]
+### Sprint 24.26: Readiness-gated activated chart/workload adoption [Done]
 
 **Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`,
-`demo/chart/`, `demo/hostbootstrap-demo.cabal`, `demo/test/CommandsSpec.hs`
-**Production modules**: `HostBootstrapDemo.Commands` (1; cap 3; chart assets and Cabal metadata are not
-production Haskell modules)
-**Sprint budget**: one chart/workload call-site adoption and no new named contract; at most 400 production
-Haskell lines. Split before implementation if either cap would be exceeded.
+`demo/docker/Dockerfile`, `demo/chart/`, `demo/hostbootstrap-demo.cabal`, `demo/test/CommandsSpec.hs`,
+`hostbootstrap/bootstrap.py`, `tests/test_bootstrap.py`,
+`core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command/Child.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Identity/Install.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Service.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Workload.hs`
+**Production modules**: one demo adopter, the thin Python builder, and twelve existing core boundary modules;
+the activated adoption is split across the owners of identity installation, root-only signing, keyless relay,
+child execution, service installation, and chart preparation rather than introducing a parallel facade.
+**Sprint budget**: one activated chart/workload call-site adoption and no new named contract. The existing
+boundary modules are changed only at their fixed entry/fold; no generic signer or activation carrier is added.
 **Substrates**: linux-cpu
 **Docs to update**: `documents/operations/demo_runbook.md`,
 `documents/architecture/composition_methodology.md`
 
 #### Objective
 
-Replace the legacy demo `deployChart` mutation with the exact planned, readiness-gated workload transaction.
+Run the demo service only from an exact root-signed immutable activation revision, through the planned,
+readiness-gated chart transaction.
 
 #### Deliverables
 
 - The fixed chart successor opens Sprint 24.22's cluster-domain package only after acknowledged producer-node
   sequencing, fresh-reprobes the exact cluster, and keeps `ClusterReadiness` lexical for this one action.
 - The action's own `PreparedGate` and Sprint 24.24's planned resource are joined with that readiness; missing or
-  mismatched evidence refuses before backend work. The service's separately installed runtime activation remains
-  a workload-start concern and is not exposed to this controller action.
+  mismatched evidence refuses before backend work. The prepared workload retains only an exact lowercase
+  activation-revision basename and the backend injects only that basename into Helm.
 - One demo call site prepares, runs, observes, and settles Sprint 24.25's transaction, then returns its generic
   `ChangeView` through the existing `Chain` outcome/journal path.
+- The demo defines both long-running roles as closed `ServiceProgram`s. Before Helm, it measures the exact image
+  and in-image binary, decodes the Production role wire, finalizes the registry, builds the canonical manifest,
+  and asks the invocation-local execution service to sign it. Nested frames relay those canonical bytes to the
+  root; only the root activation key signs, and only when the plan digest plus exact planned service/effect row
+  match.
+- The returned signature is adopted through the existing activation installer under the durable data root.
+  Docker receives only the independently installed public key. The chart mounts the immutable revision and
+  authority store read-only/by exact path and obtains the real Kubernetes pod UID and container restart count;
+  its dedicated service account may only `get` its own pod.
+- After copying a stable project binary, the thin builder invokes one exact private Haskell entry which installs
+  or validates the handoff, build, and activation identities. Python never reads, creates, or interprets key
+  material, and this entry creates no project configuration.
 - The legacy `deployChart` call and independent `clusterProfileOf`/`containerPlan`/filesystem/config terms are
   removed; no Phase 22 sprint is redefined as owning this demo chart mutation.
 
 #### Validation
 
-`CommandsSpec` covers readiness/gate ordering, both demo lanes, exact chart assets, plan projection, and absence
-of `deployChart`. Core and demo host-static gates must pass. The one-adoption/module/
-line budgets are checked before implementation; overflow is split before the call site lands.
+`CommandsSpec` covers readiness/gate/signing/install ordering, both demo lanes, exact chart assets, restricted
+pod-get RBAC, real restart identity, plan projection, and absence of `deployChart`. Core activation, relay,
+identity-install, lifecycle-dependency, and workload tests cover canonical signing, exact policy, key
+separation, bounded protocol v2, basename validation, and refusal. `test_bootstrap` covers the post-copy private
+entry without config initialization. Core, Python, and demo host-static gates must pass before live acceptance.
 
 #### Remaining Work
 
-None. Completed 2026-08-22. Both demo lanes declare the exact chart artifact, release, namespace, canonical
-values digest, image identity, workload identity, role, and Deployment readiness effect. The successor opens
-only its projected chart and cluster resources, consumes the acknowledged cluster package through a fresh
-nonce-bound readiness probe, prepares the generic workload transaction with its own gate, and settles inside
-the existing chain result path. The chart now owns its service ConfigMap and exact image identity; the demo no
-longer calls `deployChart` or performs an out-of-band ConfigMap apply. The complete demo suite passed 137/137
-with `--ghc-options=-Werror`, and the already-completed core gate passed 2,429/2,429 under the same option.
+None. Completed 2026-08-23. The complete core gate passes 2,442/2,442 under `-Werror`, the complete demo suite
+passes 142/142, all 231 Python tests pass, and Ruff, Black, MyPy, and the changed-file Fourmolu check are clean.
+Sprint 24.30 retains the separate live activation evidence rather than duplicating it here.
 
 ### Sprint 24.27: Exact worked-demo reverse command adoption [Done]
 
@@ -1723,7 +1732,10 @@ no named contract, keeps the single Production reverse-command entry, and remain
 None. The sealed root reverse entry lends its reconstructed exact plan to each opaque local-work callback. A
 chart node can therefore open only the record named by its plan digest, frame, and resource key; only a verified
 owned record reaches Helm, and a verified released record is already converged. No forward execution package or
-caller-selected chart identity enters reverse execution.
+caller-selected chart identity enters reverse execution. The authenticated reverse child derives the exact
+Production or `harness:<run-id>` lifecycle profile from its verified handoff binding, executes retained cluster
+release in the child frame, and classifies a callback-free non-core node as foreign-retained rather than as a
+successful release.
 
 ### Sprint 24.28: Exact demo forward-child projector [Done]
 
@@ -1805,6 +1817,9 @@ and published-base provenance boundaries close.
 - The existing build protocol binds project/spec/config, build nonce, source, coordinator, builder, and frame.
   Each build uses a fresh temporary channel, disables Docker layer-cache reuse, and removes pushed VM secret
   files after the build attempt.
+- The binding's specification digest is the jointly finalized Production runtime codec that image
+  `check-code` opens. A Harness lifecycle may request the build, but its separately labelled Harness plan codec
+  is not substituted for the image entrypoint's specification.
 - Every derived build retains `--pull`, uses the within-run repository digest resolved in Sprint 24.4, and runs
   the image's warning-clean `check-code`; a stale local base cannot satisfy the result.
 - Image-build `check-code` accepts only the fixed BuildKit channel/verification/coordinator/config secret mounts
@@ -1812,9 +1827,9 @@ and published-base provenance boundaries close.
   validates the sibling image config, measures `/workspace/demo` and the running installed builder,
   verifies the signed grant, and consumes its at-most-once `CheckCodePhase` authority before the project hook.
 - No environment, argv, Dhall field, source file, or durable project file transports build authority. The
-  Dockerfile installs the coordinator-selected builder from the named build context and the config from a secret,
-  authenticates the warning-clean
-  gate, and only then compiles and installs the source-produced final binary.
+  Dockerfile installs the coordinator-selected, source-built builder from the named build context and the config
+  from a secret, authenticates the warning-clean gate, compiles and verifies the in-image Cabal product, then
+  materializes the digest-bound builder bytes as the export-stable runtime executable.
 
 #### Validation
 
@@ -1832,12 +1847,14 @@ below 400 production Haskell lines.
 
 None. Both derived-image lanes resolve and pull the published base, sign a fresh source/config/builder binding,
 deliver authority material through transient BuildKit secrets and the measured builder through a read-only named
-build context, and run authenticated `check-code` before installing the
-source-produced image binary. Ordinary host developer `check-code` remains a config-gated local action.
+build context, and run authenticated `check-code` before verifying the in-image source build and exposing the
+digest-bound authenticated builder as the runtime image binary. `CommandsSpec` also proves that both lifecycle
+scopes bind image authority to the exact finalized Production runtime specification measured by that entrypoint.
+Ordinary host developer `check-code` remains a config-gated local action.
 
-### Sprint 24.30: Recursive lifecycle worked-demo acceptance [Active]
+### Sprint 24.30: Production recursive-lifecycle acceptance [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: no production change; evidence in this phase and
 `documents/operations/demo_runbook.md`
 **Production modules**: none (0; cap 3)
@@ -1849,7 +1866,7 @@ separate live-substrate confirmation of the preceding host-static changes.
 
 #### Objective
 
-Confirm the proof-complete recursive lifecycle command through the real Production and Harness demo consumer.
+Confirm the proof-complete recursive lifecycle command through the real Production demo consumer.
 
 #### Deliverables
 
@@ -1858,40 +1875,61 @@ Confirm the proof-complete recursive lifecycle command through the real Producti
 - Fresh Production `project up` traverses every declared frame through Phase 17's root-coordinated storeless
   frame executor and reaches exact provider, cluster, workload, service readiness, and read-only endpoint
   assertions.
+- One exact demo owner receives distinct runtime-assigned loopback ports for its registry, web, MinIO, and
+  host-accelerator listeners without candidate scanning, retry-on-collision, or operator configuration. Every
+  probe uses the endpoint resolved for its own exact service and generation. The lower cluster-lifecycle phase's
+  live gate separately proves concurrent same-listener allocation in one Docker namespace.
 - Production `project down` and root-only `project destroy` drive Sprint 24.27's shared child-first reverse
   route, report Direct physical release as `Unsupported`, remove only owned state, and preserve the canonical
   durable-root sentinel required by each command contract.
-- `hostbootstrap run -- test run all` reports exactly `10/10 passed`, including each same-run write → destroy →
-  fresh up → read cycle and terminal Harness close under the retained Harness plan/run/config/durable root.
 - Dated evidence records host/OS/architecture, tool versions, published base and derived image identities,
-  durations, exact command results, `10/10` report, and audited provider/cluster/workload/durable-root end state.
+  exact command results, and audited provider/cluster/workload/durable-root end state.
 
 #### Validation
 
-On fresh linux-cpu, pass `cabal build all` and `cabal test all --ghc-options=-Werror` from `demo/`, then run
-`hostbootstrap run -- project up`, `hostbootstrap run -- project down`,
-`hostbootstrap run -- project destroy`, and `hostbootstrap run -- test run all`. Record evidence only after
-every command exits as specified, the report is exactly `10/10 passed`, owned infrastructure is absent or
-explicitly `Unsupported` as contracted, and durable-root assertions pass. Phase 17 retains only its host-static
-process gate; Phase 19 retains its separately owned Harness/interruption gate.
+On fresh linux-cpu, pass `cabal build all` and
+`cabal test hostbootstrap-demo-test --ghc-options=-Werror` from `demo/` and the core host-static gate from
+`core/`; prove the live demo's distinct authenticated service endpoints; then run
+`hostbootstrap run -- project up`, `hostbootstrap run -- project down`, and
+`hostbootstrap run -- project destroy`. Record evidence only after every command exits as specified, owned
+infrastructure is absent or explicitly `Unsupported` as contracted, and durable-root assertions pass. Phase 17
+retains only its host-static process gate; Phase 19 retains its separately owned Harness/interruption gate.
 
 #### Remaining Work
 
-The complete fresh linux-cpu Production sequence, Harness `10/10` run, end-state audit, and dated evidence.
+None. Completed 2026-08-24 on the disposable `hostbootstrap-phase24-cpu-host` gate host: Ubuntu 24.04.4 LTS,
+Linux 6.8.0-138-generic x86_64, Incus 6.0.0, Docker 29.1.3, Python 3.12.3, GHC 9.12.4, Cabal 3.16.1.0, and
+`hostbootstrap` 0.1.0. Fresh Production `project up`, `project down`, and root-only `project destroy` each
+exited successfully; the sequence reached distinct runtime-assigned registry, web, and MinIO loopback
+endpoints, retained the durable sentinel through both reverse verbs, and removed the owned provider after
+Destroy. The separately owned lower cluster-lifecycle live gate supplies the concurrent same-listener
+allocation proof.
 
-### Sprint 24.31: The guest bootstrap and the guest alias driver [Planned]
+### Sprint 24.31: The guest bootstrap and the guest alias driver [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Alias.hs`
+`demo/docker/Dockerfile`, `.dockerignore`,
+`core/hostbootstrap-core/src/HostBootstrap/Ensure/Docker.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Ensure/GuestBootstrap.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Alias.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Command.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Ownership.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Dependency/Internal.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Ownership/Shipped.hs`,
+`core/hostbootstrap-core/test/ProviderAliasSpec.hs`,
+`core/hostbootstrap-core/test/OwnershipShippedSpec.hs`,
+`core/hostbootstrap-core/test/GuestBootstrapSpec.hs`,
+`demo/test/CommandsSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_invariant.md`,
 `documents/operations/demo_runbook.md`
 
 #### Objective
 
-Establish the project binary inside the pristine guest through the one guest bootstrap vocabulary, then
-let the guest alias hold its clauses the way every other object does.
+Establish the project binary inside a pristine guest through the one guest-bootstrap vocabulary, publish the
+exact provider/share dependencies, and let the guest alias hold and release its four ownership clauses through
+the shipped project binary.
 
 #### Deliverables
 
@@ -1900,6 +1938,9 @@ let the guest alias hold its clauses the way every other object does.
   each an argument vector, ending with the binary installed where the lift expects it.
 - Because the step is probe-first, a re-run of a partially bootstrapped guest completes the steps that are
   outstanding instead of repeating the ones that are not.
+- Linux Docker readiness includes the separately packaged Buildx plugin. Authenticated build #3 consumes one
+  coordinator-created, `.hostbootstrap`-free core-plus-demo archive: the bytes hashed locally are the exact bytes
+  transferred to and built inside the guest, and the builder digest has one canonical unprefixed form.
 - With the binary established there, the guest alias holds its four clauses through the ownership seam,
   over the shipped row addressed at that frame — so the alias's identity is still read by the kernel that
   owns the object, and it is read by this binary.
@@ -1907,32 +1948,464 @@ let the guest alias hold its clauses the way every other object does.
   by the host frame that owns the share.
 - This is the sprint in which a frame crossing carries an ownership transaction for the first time, so it
   is where that row earns its live confirmation.
+- The copy-source action runs only after the guest binary build, retains the VM descent, publishes the exact
+  Provisioned share member and its closed runtime commitment after alias success, and forwards provider plus
+  provider-share commitments as one bounded canonical bundle. The child rebinds each exact receipt through a
+  distinct nonce-bound live service before cluster preconditions.
+- Incus share readiness requires the declared guest target itself to be a writable `virtiofs` mountpoint before
+  alias publication or child descent; a writable directory in the guest's underlying source tree is not share
+  readiness and cannot race Docker's bind-source resolution. The owned share transaction activates a newly
+  attached VM disk through one identity-checked restart before it binds and publishes that share.
+- The VM provider publishes Running from its actual absent acquisition predecessor. The alias operation key is
+  the full provider/share relation declared by the plan, and forward ordering remains bootstrap → shipped alias
+  → provider/share dependency publication → child entry.
 
 #### Validation
 
-The bootstrap plan and the alias transaction are pure and covered by application over values. The live
-confirmation is this phase's own acceptance run: the guest is bootstrapped from pristine, the alias is
-created, survives a stop and restart, and is released, with the durable share intact either side.
+`GuestBootstrapSpec`, `ProviderAliasSpec`, `OwnershipShippedSpec`, provider-dependency tests, and
+`CommandsSpec` cover the five-step probe-first plan, Buildx readiness, deterministic build bytes, exact
+provider/share bundle, full alias relation, ordering, settlement, retry, replacement-safe release, and shipped
+POSIX ownership behavior. The complete core and demo host-static gates must pass. The live confirmation starts
+from the retained pristine-guest state, creates the alias, completes child cluster descent, proves the alias
+survives provider stop/restart, and releases it while the durable share remains intact.
 
 #### Remaining Work
 
-All implementation, adoption, tests, and documentation.
+None. Completed 2026-08-24. A fresh Ubuntu 24.04 linux-cpu/x86_64 Incus run bootstrapped the project binary
+inside a pristine guest, attached the exact host `.data` root as writable `virtiofs`, and completed cluster
+descent. Before and after an explicit provider stop/start, `/var/tmp/hostbootstrap-demo-data` resolved to the
+same owned host root, a write marker remained readable, and both installed activation-revision digests were
+unchanged. Root-only `project destroy` then deleted the provider while preserving that durable root and marker.
+
+### Sprint 24.32: Chart-declared service activation frame [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+`demo/src/HostBootstrapDemo/Commands.hs`
+**Production modules**: `HostBootstrap.Step`, `HostBootstrap.Lifecycle.Plan`,
+`HostBootstrapDemo.Commands` (3; cap 3)
+**Sprint budget**: no new named type and no lifecycle call-site adoption; at most 400 production Haskell
+lines. The existing chart declaration gains one exact canonical field.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/generic_project_model.md`,
+`documents/operations/demo_runbook.md`
+
+#### Objective
+
+Make the derived service-runtime frame part of the exact plan-authored chart workload rather than asking a
+later signer to infer it from the chart execution frame or mounted configuration bytes.
+
+#### Deliverables
+
+- `declaresChartWorkloadResource` retains the exact derived service activation frame beside workload identity,
+  role, and effects; empty frames refuse during plan validation.
+- `ChartWorkloadResource` and the neutral execution package carry that field without exposing a constructor or
+  manufacturing it at reconciliation time.
+- The canonical plan format hashes the activation frame, and the strict structural reader admits the
+  corresponding ten-field chart record.
+- The demo derives the declared frame through the same `renderServiceConfigForContext` projection used to
+  render the mounted service wire and Helm values.
+
+#### Validation
+
+`ProjectPlanSpec` proves exact projection and that changing only the activation frame changes canonical bytes;
+`CommandsSpec` proves the demo declaration consumes the same derived frame. Run the warning-clean core build,
+focused plan gate, complete demo gate, and Sprint 24.30 live acceptance.
+
+#### Remaining Work
+
+None. Completed 2026-08-23. The warning-clean core build, focused `ProjectPlanSpec`, container
+`fourmolu`/`hlint`, focused `CommandsSpec` 58/58, complete demo 142/142 gate, and repeated aggregate core gate
+at 2,446/2,446 pass. The fresh linux-cpu run retained the exact declared activation frame through rooted
+authorization and created its immutable activation revision before Helm entered the workload transaction.
+
+### Sprint 24.33: Exact rooted activation-placement authorization [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
+`core/hostbootstrap-core/test/ChainSpec.hs`
+**Production modules**: `HostBootstrap.Command.LifecycleEntry` (1; cap 3)
+**Sprint budget**: no new named type and one activation-signing call-site correction; at most 200 production
+Haskell lines.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/composition_methodology.md`,
+`documents/operations/demo_runbook.md`
+
+#### Objective
+
+Authorize activation only from an exact chart declaration in the admitted root or child-plan catalog, using
+the service-runtime frame that declaration owns.
+
+#### Deliverables
+
+- The root derives one closed `(activation frame, plan digest, service, permitted effects)` placement from each
+  admitted chart resource in the root plan and recursively admitted child plans.
+- Signing requires the manifest frame to select exactly one placement and then requires exact plan digest,
+  service, and filtered service-effect equality before the existing activation policy and broker can run.
+- A lifecycle-plan frame without a chart-declared activation placement is not authority, and duplicate
+  activation frames refuse rather than selecting one.
+
+#### Validation
+
+`ChainSpec` pins catalog-wide derivation from opaque chart resources and the exact manifest comparison. The
+warning-clean core build and focused 46-case Chain gate must pass before the pristine live rerun.
+
+#### Remaining Work
+
+None. Completed 2026-08-23. The warning-clean build, focused Chain gate at 46/46, and repeated aggregate core
+gate at 2,446/2,446 pass. In the fresh linux-cpu run the root accepted the chart-declared service frame,
+published its signed immutable activation revision, and invoked Helm; no lifecycle frame or mounted config
+bytes supplied signing authority.
+
+### Sprint 24.34: Docker-host durable-root projection [Done]
+
+**Status**: Done
+**Implementation**: `demo/src/HostBootstrapDemo/ClusterConfig.hs`,
+`demo/src/HostBootstrapDemo/Commands.hs`, `demo/test/ClusterConfigSpec.hs`
+**Production modules**: `HostBootstrapDemo.ClusterConfig`, `HostBootstrapDemo.Commands` (2; cap 3)
+**Sprint budget**: no new named type and one cluster-config call-site adoption; at most 200 production Haskell
+lines. The existing owned guest alias becomes the canonical Docker-daemon mount source.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/composition_methodology.md`,
+`documents/operations/demo_runbook.md`
+
+#### Objective
+
+Render the Kind node's durable bind from the path interpreted by the Docker daemon rather than from the
+project container's in-frame durable path.
+
+#### Deliverables
+
+- The exact cluster config keeps its state and config artifacts under the plan-owned in-frame durable root.
+- Kind `extraMounts.hostPath` uses the existing owned Docker-host alias, whose target is the provider-shared
+  durable root, while `containerPath` remains `/var/lib/hostbootstrap-demo-data`.
+- The rendered Kind and nvkind bytes agree with the checked-in topology templates and do not expose a child
+  container path to the sibling Docker daemon.
+- The activation revision and service-authority directories created through the project-container mount are
+  therefore visible inside the Kind node before Helm admits a workload that requires them.
+
+#### Validation
+
+`ClusterConfigSpec` pins the distinct in-frame state paths and Docker-host mount source. Run the focused demo
+gate, complete demo gate, and repeat the fresh Sprint 24.30 linux-cpu sequence through a Ready web deployment.
+
+#### Remaining Work
+
+None. Completed 2026-08-24. The fresh Incus-backed Production run mounted the owned guest alias as the Kind
+node's Docker-host source; the node saw the immutable web and accelerator activation revisions plus the shared
+service-authority directory before both deployments reached `1/1 Running`. The alias remained the same writable
+`virtiofs` projection across an explicit provider stop/start.
+
+### Sprint 24.35: Helm 4 rollback and result contract [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
+`core/hostbootstrap-core/test/FakeCluster.hs`, `core/hostbootstrap-core/test/ClusterBackendSpec.hs`,
+`core/hostbootstrap-core/test/ClusterWorkloadSpec.hs`
+**Production modules**: `HostBootstrap.Cluster.Backend` (1; cap 3)
+**Sprint budget**: no new named contract and one backend command correction; at most 100 production Haskell
+lines.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/cluster_lifecycle.md`,
+`documents/operations/demo_runbook.md`
+
+#### Objective
+
+Invoke Helm's supported rollback-on-failure contract without a deprecation warning, and classify Helm 4's
+first-install status record without weakening the exact captured-command boundary.
+
+#### Deliverables
+
+- The chart reconcile command requests `--rollback-on-failure` and retains its explicit `--wait` readiness
+  boundary.
+- Successful Helm and Kubectl calls remain required to return an empty stderr stream; the backend does not
+  weaken exact command-result classification to hide warnings.
+- A first install is accepted only when Helm 4's exact install announcement is accompanied by the matching
+  release name, deployed status, revision 1, and `Install complete` description. The prior supported install
+  phrase remains admitted, while an incomplete status record is refused.
+- The fake backend accepts only the supported command vector, so a return to the deprecated flag breaks the
+  focused static gate, and it emits Helm 4's status shape so classifier drift breaks the workload gate.
+- The live linux-cpu acceptance records Helm's version and reaches the Ready workload without a command warning.
+
+#### Validation
+
+`ClusterBackendSpec` and `ClusterWorkloadSpec` cover the exact chart reconcile vector, the Helm 4 first-install
+record, and refusal of an incomplete record.
+Run the warning-clean core build, focused backend gates, complete core gate, and repeat the fresh Sprint 24.30
+linux-cpu sequence through a Ready web deployment.
+
+#### Remaining Work
+
+None. Completed 2026-08-23. The warning-clean core build, focused `ClusterBackendSpec` 32/32 and
+`ClusterWorkloadSpec` 10/10 gates, complete core 2,446/2,446 gate, and governed-doc 2/2 gate pass. A fresh
+linux-cpu run using Helm 4.2.3 settled the first-install status record without stderr and reached a 1/1 Ready
+`hostbootstrap-demo-web` pod; the later accelerator-daemon step exposed the separate standalone-activation
+gap.
+
+### Sprint 24.36: Plan-authored standalone service activation placements [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`
+**Production modules**: `HostBootstrap.Step`, `HostBootstrap.Lifecycle.Plan`,
+`HostBootstrap.Command.LifecycleEntry` (3; cap 3)
+**Sprint budget**: no new named type and one standalone declaration field; at most 240 production Haskell
+lines.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/composition_methodology.md`,
+`documents/architecture/hostbootstrap_core_library.md`
+
+#### Objective
+
+Let any exact plan step declare one service activation placement without pretending that every service is a
+Helm-owned chart workload.
+
+#### Deliverables
+
+- `declaresServiceActivation` retains one exact activation frame, role, and non-empty unique effect row on an
+  ordinary opaque `Step`; it does not retain runtime measurements or signing authority.
+- Canonical plan format version 7 hashes a structurally exact standalone-activation list for every step.
+- Admission rejects empty fields, duplicate effects, more than one standalone declaration per step, and an
+  activation frame reused by either a chart or another standalone declaration.
+- The rooted signing catalog derives placements from chart and standalone declarations in admitted root and
+  child plans, then preserves the existing exact frame, plan-digest, role, and effect comparison.
+
+#### Validation
+
+`ProjectPlanSpec` proves canonical sensitivity and collision refusal. Run the warning-clean core build, focused
+plan gate, and complete core host-static gate.
+
+#### Remaining Work
+
+None. Completed 2026-08-23. The warning-clean core build, focused three-case canonical/version/collision gate,
+complete core 2,448/2,448 gate, and governed documentation gate pass. Canonical format version 7 retains the
+standalone declaration and admission rejects activation-frame reuse across chart and standalone placements.
+
+### Sprint 24.37: Accelerator service-activation adoption [Done]
+
+**Status**: Done
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/test/CommandsSpec.hs`
+**Production modules**: `HostBootstrapDemo.Commands` (1; cap 3)
+**Sprint budget**: no new named contract and one additional activation call-site adoption; at most 200
+production Haskell lines.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/accelerator_daemon.md`,
+`documents/operations/demo_runbook.md`
+
+#### Objective
+
+Launch every accelerator placement through the same signed `service run` activation and concrete instance
+boundary as the chart-owned web service.
+
+#### Deliverables
+
+- Linux accelerator steps declare their exact daemon activation placement and install a root-signed immutable
+  revision for the measured in-cluster image and binary before applying the Deployment.
+- The accelerator Deployment mounts the durable activation-revision and service-authority directories and
+  supplies their fixed runtime coordinates.
+- The pod obtains its own UID and exact container restart count through the chart-owned runtime service account
+  before invoking `service run`; neither value is caller-authored configuration.
+- Host-resident Apple and Windows accelerator steps declare the same placement, measure the copied daemon
+  executable, install its verification key and activation revision beside durable state, and mint a fresh
+  invocation nonce for each detached process.
+- Generated-manifest and chain gates fix the activation declarations, mounts, coordinates, and instance-qualified
+  launch shapes.
+
+#### Validation
+
+Run focused `CommandsSpec`, the complete demo gate, warning-clean demo build, formatter and linter checks, and
+the complete core gate. The worked-demo live acceptance confirms the linux-cpu call site through a Ready daemon
+and successful terminal `project up`; hardware acceptance phases confirm the host-resident and GPU call sites.
+
+#### Remaining Work
+
+None. Completed 2026-08-24. A fresh Production run installed the web
+`cluster-service-3` and accelerator `daemon-3` signed revisions, launched both through `service run`, reached
+`1/1 Running` for both deployments, and completed `project up`. Each role held only its distinct
+service/frame generation lease and no serving process retained the shared global transaction lock.
+
+### Sprint 24.38: Declarative same-run durable readback [Done]
+
+**Status**: Done
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/test/CommandsSpec.hs`
+**Production modules**: `HostBootstrapDemo.Commands` (1; cap 3)
+**Sprint budget**: no new named contract and one assertion-policy adoption; at most 120 production Haskell
+lines.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/harness_workflow.md`,
+`documents/engineering/testing.md`, `documents/operations/demo_runbook.md`
+
+#### Objective
+
+Prove durable state by reading it after an engine-owned settled destroy and fresh invocation of the same
+Harness run, without giving project assertion code lifecycle authority.
+
+#### Deliverables
+
+- `durable-readback` declares `AssertAcrossRestart`; the other four cases run only before restart.
+- `BeforeRestart` writes the marker through the live Docker/cluster route and verifies the Docker-host alias.
+- The Harness engine owns intermediate destroy, fresh broker generation, exact snapshot/plan rebind, and the
+  second forward; the assertion callback receives only `AfterRestart`.
+- `AfterRestart` reads the same marker through the recreated workload and host alias, retaining one report row.
+- Both configured variants therefore retain exactly five rows and the complete matrix remains exactly 10 rows.
+
+#### Validation
+
+The command-level core fixture proves real protected generation rotation and exact plan rebind; `HarnessSpec`
+proves one-row phase merging; `CommandsSpec` fixes the demo policy and phase-specific operations. The live
+linux-cpu Harness run must report 10/10 after performing both same-run generations.
+
+#### Remaining Work
+
+None. The implementation and focused core restart gate pass. Sprint 24.41 owns the fresh live Harness matrix
+that confirms this same-run transition on linux-cpu.
+
+### Sprint 24.39: Non-empty derived-image executable [Done]
+
+**Status**: Done
+**Implementation**: `demo/docker/Dockerfile`, `demo/test/CommandsSpec.hs`
+**Production modules**: none; the Dockerfile is the one build call-site adoption
+**Sprint budget**: no new named contract; one Dockerfile build/runtime-artifact correction.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/derived_dockerfile.md`,
+`documents/engineering/derived_project_standards.md`, `documents/operations/demo_runbook.md`
+
+#### Objective
+
+Make successful derived-image construction prove both the in-image source build and the exported runtime
+entrypoint, without depending on BuildKit to snapshot the in-container linked Cabal product.
+
+#### Deliverables
+
+- The final source build uses the same `--ghc-options=-Werror` configuration as the authenticated code-check
+  gate that precedes it, so one Docker build tree is not reconfigured under conflicting GHC option sets.
+- The Dockerfile binds the exact `cabal list-bin` result and requires the in-image source build to be non-empty.
+- The source-built, digest-bound authenticated builder occupies a build-only libexec path. After the web build,
+  the Dockerfile copies its bytes with `dd` into a new regular `/usr/local/bin/hostbootstrap-demo` file, removes
+  the build-only authority, final-materializes the config, public keys, and web bundle, and requires every
+  runtime-critical artifact to be non-empty. The coordinator repeats those checks against the exported image.
+- The post-bootstrap `copy-source` continuation re-mints the ephemeral VM-provider witness only after the exact
+  share and guest alias have settled, because Incus virtiofs attachment stop/starts the guest and clears `/run`.
+- The reference derived-project documentation carries the same warning-clean, final-materialized authenticated
+  runtime artifact, config/key/web materialization, and exported-image probe shape.
+
+#### Validation
+
+`CommandsSpec` fixes authenticated stage order, the final warning-clean build, web build, runtime artifact
+materialization, the exported-image probe, and the post-share witness ordering. The fresh linux-cpu
+Production image build must report a non-empty installed binary before authenticated handoff and complete the
+full workload sequence.
+
+#### Remaining Work
+
+None. Completed 2026-08-24. A fresh Production build pulled base digest
+`sha256:6254553581475f9f54bd2538d4d5a7ba8528732dabb7c437609014ff56a6aead`, produced derived manifest
+`sha256:f5939eb9716a610fbc6e2010392911c2d8eb59df63f6d008bb39e6d0d2730e5b`, and exported a non-empty
+80,028,904-byte `/usr/local/bin/hostbootstrap-demo`. The final config (2,579 bytes), both public keys
+(32 bytes each), and web bundle (102,333 bytes) were also non-empty before authenticated handoff and the
+complete workload sequence succeeded.
+
+### Sprint 24.40: Authenticated reverse-child cluster release [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command/Child.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command/Child/Reverse.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Teardown/Executor/Internal.hs`,
+`core/hostbootstrap-core/test/HandoffSpec.hs`, `core/hostbootstrap-core/test/ProjectPlanSpec.hs`
+**Production modules**: `HostBootstrap.Command.Child`, `HostBootstrap.Command.Child.Reverse`,
+`HostBootstrap.Teardown.Executor.Internal` (3; cap 3)
+**Sprint budget**: no new named contract and one authenticated reverse-child call-site adoption; at most 120
+production Haskell lines.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/harness_workflow.md`, `documents/engineering/testing.md`,
+`documents/operations/demo_runbook.md`
+
+#### Objective
+
+Make callback-free reverse work execute its core-owned retained cluster action in the authenticated child frame
+and preserve exact Production/Harness profile identity.
+
+#### Deliverables
+
+- The storeless executor delegates callback-free work to one caller-owned core reverse action instead of
+  manufacturing a released observation.
+- The authenticated child derives `production` or `harness:<run-id>` only from the verified handoff scope and
+  uses that exact admitted profile to derive retained cluster ownership.
+- `DeleteCluster` releases the exact recorded exposure before the retained cluster; a failed release remains a
+  failed teardown observation.
+- A callback-free non-core node is terminally foreign-retained because the current frame acquired nothing it can
+  release.
+- The reverse action is a Cabal-private module within one 400-line sprint budget; no root store, broker, signing
+  key, lifecycle authority, or caller-selected cluster identity enters it.
+
+#### Validation
+
+`HandoffSpec` fixes callback delegation, exact profile derivation, exposure-before-cluster order, non-core
+classification, private-module ownership, and the line budget. `ProjectPlanSpec` fixes the third sealed
+reverse-cursor use and preserves the existing child owner's two-sprint attribution. The focused gates and the
+complete warning-clean core gate must pass.
+
+#### Remaining Work
+
+None. Completed 2026-08-24. The complete core host-static gate passed 2,457/2,457 under `-Werror`; the reverse
+child source guard proves the private action is the only core callback, and the live Sprint 24.41 run confirms
+its retained-cluster release in four fresh child generations.
+
+### Sprint 24.41: Harness recursive-lifecycle acceptance [Done]
+
+**Status**: Done
+**Implementation**: no production change; evidence in this phase and `documents/operations/demo_runbook.md`
+**Production modules**: none (0; cap 3)
+**Sprint budget**: no new named contract, no call-site adoption, and zero production Haskell lines.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/harness_workflow.md`, `documents/engineering/testing.md`,
+`documents/operations/demo_runbook.md`
+
+#### Objective
+
+Confirm the complete two-variant recursive Harness matrix after every worked-demo capability is present.
+
+#### Deliverables
+
+- Each variant performs pristine recursive Up, all five assertions, settled child-first Destroy, a protected
+  fresh same-run generation, recursive Up, durable readback, and terminal close.
+- Every pristine generation pulls the published rolling base by repository digest and builds its derived image
+  without Docker layer-cache reuse.
+- The report is exactly ten rows and the terminal audit finds no provider VM, cluster, workload, generated run
+  config, or Harness durable root; the operator-owned test config remains.
+- Dated evidence records the gate host, toolchain, duration, run IDs, base digest, and all derived image digests.
+
+#### Validation
+
+Run `hostbootstrap run -- test run all` on a fresh disposable linux-cpu host and require exactly `10/10 passed`.
+Then audit the provider and filesystem end state and repeat the core, demo, and Python host-static gates.
+
+#### Remaining Work
+
+None. Completed 2026-08-24 on the disposable `hostbootstrap-phase24-cpu-host` gate host: Ubuntu 24.04.4 LTS,
+Linux 6.8.0-138-generic x86_64, Incus 6.0.0, Docker 29.1.3, Python 3.12.3, GHC 9.12.4, Cabal 3.16.1.0, and
+`hostbootstrap` 0.1.0. The fresh Harness command completed in 105m12.680s and reported exactly `10/10 passed`.
+Both `hello-world` (`run-6d81c1594f58`) and `hello-universe` (`run-7059dc5c98eb`) performed write → settled
+Destroy → fresh Up → read within one run.
+
+Every one of the four pristine generations pulled published base digest
+`sha256:6254553581475f9f54bd2538d4d5a7ba8528732dabb7c437609014ff56a6aead`; their derived image digests were
+`sha256:d2c003d48ca746e60d9ca96fb20422dca2b65184e09c33f8660c1c81e3df238e`,
+`sha256:c3d185248323121a63b937ae2122020b469eecf824e225035d49bcbe1719d98f`,
+`sha256:72a2064bc698e59832dd0f5f4792323d36dc4b5e3fbecf8539dd3b161cdfe7b0`, and
+`sha256:c274ee1ecb7898acccc74eb7e5ab8b89432eaf9e6b126379c9722ed735dac615`. The terminal audit found no
+`hostbootstrap-demo-vm`, no Harness `.test_data`, and no generated `hostbootstrap-demo.dhall`; the
+operator-owned `hostbootstrap-demo.test.dhall` remained. The post-run gates passed core 2,457/2,457, demo
+145/145, Python 231/231, and Python coverage 1,331/1,331 statements.
 
 ## Remaining Work
 
-Sprint 24.31 establishes the binary in the pristine guest and adopts the ownership seam for the guest
-alias — the one owned object whose driver cannot precede a bootstrapped guest, because § N forbids copying
-a binary into one.
-
-Sprint 24.3 closes the exact same-run durable assertion, and Sprint 24.4 closes plan/profile/root assembly and
-published artifact provenance. Sprints 24.5–24.7 author provider resources, seed neutral exact-plan execution,
-and derive exact slices. Sprints 24.8–24.18 add invocation-owned canonical/live dependency registries,
-provider settlement/recovery, VM and Direct adopters, lexical share/alias settlement, and authenticated
-parent-serviced reprobe transport. Sprints 24.19–24.23 render and bind exact Kind/nvkind config, close backend
-selection, recover cluster readiness, and adopt cluster reconcile/cordon/readiness. Sprints 24.24–24.27 plan,
-settle, adopt, and reverse the chart/workload and full demo lifecycle. The frozen partial projector resumes in
-Sprint 24.28, the derived image adopts the authenticated build route in Sprint 24.29, and only Sprint 24.30 owns
-live Production and Harness evidence.
+None. The Production lifecycle, exact authenticated recursive reverse path, distinct automatic service
+exposures, pristine guest alias, Docker-host durable projection, concurrent signed roles, non-empty derived
+image, and two-variant same-run durable recreate are statically and live confirmed on linux-cpu. Terminal
+Apple, NVIDIA, Windows, and cross-family host-portability confirmation belongs only to Phases 25–28.
 
 No sprint transports a Managed/Running/Readiness witness, handle, authentication key, executable selector, or
 raw probe in canonical bytes or a generic resource carrier. The two invocation-owned registries have separate
@@ -1946,7 +2419,7 @@ not own the demo chart call site.
 
 **Architecture docs to create/update:**
 
-- `documents/architecture/network_reachability.md` — the demo's exact loopback-safe Kind/nvkind rendering.
+- `documents/architecture/network_reachability.md` — runtime-owned loopback exposure and resolved endpoints.
 - `documents/architecture/lifecycle_state_model.md` — the canonical/live dependency registries and fresh
   provider/cluster refinements.
 - `documents/architecture/composition_methodology.md` — the exact provider, cluster, workload, reverse, and

@@ -35,6 +35,7 @@ import HostBootstrap.ProjectPlan (
  )
 import HostBootstrap.ProjectPlan.Frame (CurrentFrame, currentFrameId)
 import HostBootstrap.Teardown (
+    LocalWork,
     SubtreeSettled,
     TeardownError (TeardownReverseDescentRefused, TeardownTerminalObservationsMismatch),
     TeardownForest,
@@ -106,11 +107,11 @@ failedUpExpectedOperations raw = do
                 && version == wordBytes 1
                 && verb == "up"
                 && phase == "teardown" -> do
-                    count <- decodeWord countBytes
-                    let (operations, suffix) = splitAt (fromIntegral count) rest
-                    if suffix /= [wordBytes 3, "released", "foreign-retained", "refused"]
-                        then Left (refusal "the failed-Up adapter suffix differs")
-                        else traverse decode operations
+                count <- decodeWord countBytes
+                let (operations, suffix) = splitAt (fromIntegral count) rest
+                if suffix /= [wordBytes 3, "released", "foreign-retained", "refused"]
+                    then Left (refusal "the failed-Up adapter suffix differs")
+                    else traverse decode operations
         _ -> Left (refusal "the failed-Up adapter header differs")
   where
     collect bytes
@@ -132,10 +133,11 @@ wordBytes = LazyByteString.toStrict . Builder.toLazyByteString . Builder.word64B
 -- | Run only the exact local work named by one verified Prepared response.
 runStorelessReversePreparedKernel ::
     HostConfig ->
+    (LocalWork scope planId frame verb -> IO TeardownOutcome) ->
     TeardownForest scope planId frame verb ->
     Text ->
     IO (Either TeardownError (TeardownForest scope planId frame verb, ByteString))
-runStorelessReversePreparedKernel host forest operation =
+runStorelessReversePreparedKernel host runCoreManaged forest operation =
     eliminateTeardownProgress
         (nextTeardownWork forest)
         (const (pure (Left (refusal "the reverse frame is already complete"))))
@@ -156,7 +158,7 @@ runStorelessReversePreparedKernel host forest operation =
             pure (Left (refusal "the Prepared response names another reverse operation"))
         | otherwise = do
             outcome <- case localWorkRun local of
-                Nothing -> pure TeardownReleased
+                Nothing -> runCoreManaged local
                 Just run -> run host (localWorkAction local)
             pure $ do
                 observation <- renderTeardownObservations [(operation, outcome)]

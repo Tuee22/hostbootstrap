@@ -510,7 +510,15 @@ async def _build_native(
         quiet=True,
         env=_toolchain_env(),
     )
-    _copy_if_changed(Path(located.stdout.strip()), binary_path(spec, project_root))
+    installed_binary = binary_path(spec, project_root)
+    _copy_if_changed(Path(located.stdout.strip()), installed_binary)
+    # Key installation belongs to the Haskell binary.  Invoke its exact private
+    # entry after the stable copy so rebuilds validate/repair the sibling
+    # identity set without teaching Python any cryptography or creating config.
+    await process.run_checked(
+        (str(installed_binary), "--hostbootstrap-install-identity"),
+        cwd=project_root,
+    )
 
 
 async def build_binary(

@@ -1,21 +1,22 @@
--- | Boundary guards for the two carriers that retain a specification index.
---
--- The installed project codec and the jointly finalized service registry each
--- keep a nominal @specDigest@ phantom, so a value admitted under a durably
--- recovered index and one finalized in this invocation are distinct types even
--- when their digests are equal.  Relabelling either one therefore needs its
--- hidden constructor, and both hidden owners accept exactly one authority: the
--- digest-equality token minted by 'HostBootstrap.Config.Schema.Internal'.
---
--- Neither kernel has a public facade, so these are exact source and Cabal
--- placement guards.  The behavioural join — reindex on equal digests, refusal
--- on unequal digests, preservation of every retained term — is reached through
--- the recovered finalized specification the next sprint threads into both root
--- @project up@ entries.
+{- | Boundary guards for the two carriers that retain a specification index.
+
+The installed project codec and the jointly finalized service registry each
+keep a nominal @specDigest@ phantom, so a value admitted under a durably
+recovered index and one finalized in this invocation are distinct types even
+when their digests are equal.  Relabelling either one therefore needs its
+hidden constructor, and both hidden owners accept exactly one authority: the
+digest-equality token minted by 'HostBootstrap.Config.Schema.Internal'.
+
+Neither kernel has a public facade, so these are exact source and Cabal
+placement guards.  The behavioural join — reindex on equal digests, refusal
+on unequal digests, preservation of every retained term — is reached through
+the recovered finalized specification the next sprint threads into both root
+@project up@ entries.
+-}
 module SpecIndexSpec (tests) where
 
 import Data.Char (isSpace)
-import Data.List (isPrefixOf, isInfixOf, sort, stripPrefix)
+import Data.List (isInfixOf, isPrefixOf, sort, stripPrefix)
 import HostBootstrap.DocValidator (findRepoRoot)
 import qualified SourceGuard
 import System.Directory (
@@ -118,7 +119,7 @@ tests =
                     requiredModuleExports "HostBootstrap.Service.Internal" ownerSource
                 let owner = normalizeWhitespace ownerSource
                 exportedNames ownerExports
-                        @?= [ "ServiceId"
+                    @?= [ "ServiceId"
                         , "ServiceHandler"
                         , "ProgramServiceHandler"
                         , "ServiceResourceBackend"
@@ -298,6 +299,7 @@ tests =
                         , "ServiceActivationError"
                         , "serviceActivationErrorMessage"
                         , "installServiceActivationRevision"
+                        , "installRelayedServiceActivationRevision"
                         , "withInstalledServiceActivation"
                         , "ServiceRuntimeError"
                         , "serviceRuntimeErrorMessage"

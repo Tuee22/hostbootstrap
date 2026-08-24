@@ -111,12 +111,13 @@ tests =
             decoded @?= hostCfg
         , testCase "plan config projection requires the exact canonical digest" $ do
             let digest = childConfigDigest (TextEncoding.encodeUtf8 (renderProjectConfig hostCfg <> "\n"))
-            (projectedResources, projectedReplicas, projectedPublic, projectedAccelerator, projectedRoot) <-
+            (projectedResources, projectedReplicas, projectedPublic, projectedAccelerator, projectedTargets, projectedRoot) <-
                 either assertFailure pure (canonicalDemoConfigProjection digest hostCfg)
             projectedResources @?= resources hostCfg
             projectedReplicas @?= 1
             projectedPublic @?= publicPort (webServiceConfig hostCfg)
             projectedAccelerator @?= acceleratorPort (webServiceConfig hostCfg)
+            projectedTargets @?= [("registry", 30500), ("web", 30080), ("minio", 30900), ("accelerator", 30081)]
             projectedRoot @?= "/workspace/demo/.data"
             assertBool
                 "a digest-mismatched config projection was accepted"
@@ -130,6 +131,9 @@ tests =
             assertBool
                 "use sites reference the hoisted binding"
                 ("ContextKind.HostOrchestrator" `T.isInfixOf` rendered)
+            assertBool
+                "rendered Dhall contains a host-port field"
+                (not ("hostport" `T.isInfixOf` T.toLower rendered))
         , testCase "rendered test.dhall decodes back to the same TestConfig" $ do
             let tc = defaultTestConfig (validResources 6 "10GiB" "80GiB")
             decoded <- decodeTestConfigText (renderTestConfig tc)

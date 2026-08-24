@@ -252,7 +252,7 @@ in `binary_context_config`.
 A target recursive `project up` on Incus/Linux interprets the VM-backed branch of
 `demoChainFor :: Substrate -> ProjectConfig -> [Step]` across the three-frame fractal descent and stands up
 the live persistent stack: the cordoned kind cluster, the in-cluster registry, the project image pushed to
-that registry, and the web chart pod serving
-`localhost:30080`. `project down` deletes kind compute and stops the VM; `project destroy` deletes the VM
+that registry, and the web chart pod serving through its runtime-resolved loopback endpoint. `project down`
+deletes kind compute and stops the VM; `project destroy` deletes the VM
 too. Static artifact schema/examples remain under read-only `context`; the project-local schema
 is under config-free `service schema`.

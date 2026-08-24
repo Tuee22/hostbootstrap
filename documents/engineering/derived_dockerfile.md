@@ -12,11 +12,12 @@
   Python bootstrapper: the binary is the builder (see
   [build and run model](../architecture/build_and_run_model.md)).
 - The reference container is `FROM ${BASE_IMAGE}` → copy the project and its ordinary
-  `cabal.project` → build + install the project
-  binary (opportunistically reusing the warm store) → create the image-build sibling
+  `cabal.project` → build the project binary (opportunistically reusing the warm store) →
+  create the image-build sibling
   `<project>.dhall` → `RUN <project> check-code` → web build (`spago build` → `esbuild`
   over the bridge-generated sources the build-image step's `writeBridge` invocation
-  staged into the context) → tini ENTRYPOINT.
+  staged into the context) → verify the in-image Cabal product → expose the
+  digest-bound authenticated builder into the runtime bin path → tini ENTRYPOINT.
 - The in-Dockerfile `check-code` step is a **build-time gate**: an image with
   style or lint violations cannot be produced. See
   [code check doctrine](code_check_doctrine.md).
@@ -27,7 +28,7 @@
 
 The derived Dockerfile (the worked example is `demo/docker/Dockerfile`) inherits the warm-store base
 image, copies both the in-repo core source and demo source, uses the same Cabal project as the host build,
-builds and installs the project binary (reusing the warm store), writes the image-build sibling
+builds the project binary (reusing the warm store), writes the image-build sibling
 `<project>.dhall`, runs the code-check gate, then builds the web bundle, with tini as PID 1. At runtime the
 launch handoff overrides the image entry point with `sh`, streams a freshly minted config on standard
 input, writes it in-place over the baked image-build file, and then executes `<project> project up`.
@@ -44,21 +45,24 @@ COPY core/hostbootstrap-core /workspace/core/hostbootstrap-core
 COPY <project> /workspace/<project>
 WORKDIR /workspace/<project>
 
-# 1. Build/install the project binary. Matching inherited store artifacts are
-#    reused; cache misses resolve and compile normally.
-RUN cabal build --enable-tests --enable-benchmarks all \
-    && install -m 0755 "$(cabal list-bin ... exe:<project>)" /usr/local/bin/<project>
+# 1. Install the coordinator-selected authenticated builder at a path distinct
+#    from the runtime entrypoint. Install the coordinator-supplied image-build
+#    config beside it through a BuildKit secret; do not mint config here.
+COPY --from=hostbootstrap-builder <project> /usr/local/libexec/<project>
+RUN --mount=type=secret,id=hostbootstrap-build-config,required=true \
+    install -m 0644 /run/secrets/hostbootstrap-build-config \
+        /usr/local/libexec/<project>.dhall
 
-# 2. Create the image-build config next to /usr/local/bin/<project>.
-RUN <project> project init \
-    --role image-build-container \
-    --output /usr/local/bin/<project>.dhall \
-    --source-root /workspace/<project> \
-    --dockerfile docker/Dockerfile \
-    ...
+# 2. The mandatory authenticated code-check gate.
+RUN --mount=type=secret,id=hostbootstrap-build-channel,required=true \
+    --mount=type=secret,id=hostbootstrap-build-verification,required=true \
+    --mount=type=secret,id=hostbootstrap-build-coordinator,required=true \
+    /usr/local/libexec/<project> check-code
 
-# 3. The mandatory code-check gate.
-RUN <project> check-code
+# 3. Build the source project under the same warning-clean configuration.
+RUN cabal build --enable-tests --enable-benchmarks all --ghc-options=-Werror \
+    && built_binary="$(cabal list-bin ... exe:<project>)" \
+    && test -s "${built_binary}"
 
 # 4. The web build. The bridge codegen is re-homed into the build-image chain
 #    step's `writeBridge` invocation, which runs BEFORE this image build and
@@ -68,8 +72,36 @@ RUN cd web \
     && spago build \
     && esbuild --bundle --minify --outfile=public/app.js src/index.js
 
+# 5. Verify the in-image product, materialize every runtime-critical artifact
+#    in the final layer, remove the build-only authority, and check the result.
+RUN built_binary="$(cabal list-bin ... exe:<project>)" \
+    && test -s "${built_binary}" \
+    && dd if=/usr/local/libexec/<project> of=/usr/local/bin/<project> \
+        bs=4M status=none \
+    && dd if=/usr/local/libexec/<project>.dhall \
+        of=/usr/local/bin/<project>.dhall status=none \
+    && chmod 0755 /usr/local/bin/<project> \
+    && rm /usr/local/libexec/<project> \
+    && rm /usr/local/libexec/<project>.dhall \
+    && test -s /usr/local/bin/<project> \
+    && test -s /usr/local/bin/<project>.dhall
+
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/<project>"]
 ```
+
+The source build uses the same warning-clean Cabal configuration as the
+project-defined gate. A later invocation must not reconfigure the same build
+tree with different GHC options and then trust only its exit status. Both the
+selected build product and exported entrypoint are required to be non-empty.
+The source-built, digest-bound authenticated builder under `/usr/local/libexec`
+is the byte authority for the runtime artifact. The final layer copies those
+bytes with `dd` into a new regular `/usr/local/bin/<project>` file and removes
+the build-only libexec authority. The same final materialization rule applies to
+the runtime config, public keys, and generated web bundle. After export, the
+coordinator starts a probe container and checks those artifacts again, including
+the exact 32-byte key sizes, before reporting the image complete. Thus the image does not depend on
+BuildKit snapshotting either the in-container linked Cabal product or a direct
+large-file copy from the named context.
 
 ## Parser directive
 
@@ -92,15 +124,13 @@ See [build and release](build_release.md).
 
 ## The `check-code` gate
 
-After the binary is installed, the Dockerfile first runs the bootstrap-only config initialization
-entrypoint, for example
-`RUN <project> project init --role image-build-container --output /usr/local/bin/<project>.dhall`. That
-Dhall file is stored next to the binary and tells subsequent image-build commands that they have
-build-time authority only. The initialization entrypoint is the only command allowed to run before the
-sibling config exists; normal commands fail fast without it. See
-[binary context](../architecture/binary_context_config.md).
+The coordinator supplies an integrity-bound builder through the read-only `hostbootstrap-builder` named
+context and a canonical image-build config through a transient BuildKit secret. The Dockerfile installs both
+under `/usr/local/libexec` and never invokes `project init`; it cannot mint its own build authority or config.
+See [binary context](../architecture/binary_context_config.md).
 
-Then the Dockerfile runs `RUN <project> check-code`. This
+Then the Dockerfile runs `/usr/local/libexec/<project> check-code` with the fresh signed channel,
+verification material, and coordinator identity mounted as required secrets. This
 is the inherited core `check-code` verb whose body is supplied through the project's `ProjectSpec`; the
 demo runs `fourmolu`, `hlint`, and `cabal build --ghc-options=-Werror` through
 `hostbootstrap-demo check-code`. Because it is a `RUN` step, a non-zero
@@ -125,8 +155,8 @@ The web build follows the gate, in three ordered steps:
    `public/app.js`.
 
 The Playwright e2e suite is not part of the image build. It runs in the `test run all` harness's
-`e2e-tabs` case, from the already-built project image on the VM host network against that case's in-cluster
-service via its NodePort. Because the project image inherits the base image's global Playwright install
+`e2e-tabs` case, from the already-built project image on the VM host network against that case's exact
+runtime-resolved web exposure. Because the project image inherits the base image's global Playwright install
 and browser cache, the harness runs the e2e from that baked install: it does not pull a separate
 `mcr.microsoft.com/playwright:*` image and does not run `npm install` or `npx` at test time. See
 [playwright](../languages/playwright.md) and the [demo runbook](../operations/demo_runbook.md).
@@ -138,17 +168,17 @@ The ordering is load-bearing and every derived project preserves it:
 | Order | Step | Why it is here |
 |---|---|---|
 | 1 | `FROM ${BASE_IMAGE}` + `COPY` | Inherit the warm-store base; bring the source in. |
-| 2 | Build + install with the ordinary `cabal.project` | Reuse matching cache artifacts and allow normal online misses. |
-| 3 | `RUN <project> project init --role image-build-container ...` | Store the image-build sibling config before any normal command dispatch. |
-| 4 | `RUN <project> check-code` | Fail fast on violations before the more expensive web build. |
-| 5 | `spago build` → `esbuild` over the `writeBridge`-staged sources | The build-image step's `writeBridge` invocation staged the PureScript types into the context before this build; `spago` compiles them and the bundle is the last artifact. |
-| 6 | tini ENTRYPOINT | tini is PID 1 for correct signal handling. |
+| 2 | Named-context builder at `/usr/local/libexec` + secret config | Authenticate with coordinator-selected bytes while keeping the runtime path absent. |
+| 3 | Authenticated libexec `check-code` | Fail fast on violations before the source and web builds. |
+| 4 | Warning-clean source build | Reuse matching cache artifacts, allow normal online misses, and select a non-empty Cabal product. |
+| 5 | `spago build` → `esbuild` over the `writeBridge`-staged sources | Compile and bundle the generated PureScript types. |
+| 6 | Final runtime materialization + exported-image probe | Rewrite binary, config, keys, and web output in the final layer; remove build-only authority; then verify the exported image. |
+| 7 | tini ENTRYPOINT | tini is PID 1 for correct signal handling. |
 
 ## Current Status
 
-The worked demo Dockerfile follows the current reference ordering and uses a baked descriptive
-image-build config for `check-code`. The target replaces config-derived build authority with a fresh
-ephemeral `BuildInvocationAuthority`. The reusable protocol is implemented by the
+The worked demo Dockerfile follows the current authenticated ordering and consumes a fresh ephemeral
+`BuildInvocationAuthority`; it does not mint its own image-build config. The reusable protocol is implemented by the
 [authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md);
 the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns this reference Dockerfile's
 command/channel adoption and live container evidence.

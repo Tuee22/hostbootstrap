@@ -57,9 +57,6 @@ module HostBootstrap.Substrate.Provider (
     ProviderOperation (..),
     ProviderError (..),
     ProviderObservation (..),
-    GuestLockPrimitive (..),
-    GuestStatDialect (..),
-    GuestPythonCapability (..),
     GuestProviderDiscovery (..),
     DirectProviderDiscovery (..),
     ProviderDiscovery (..),
@@ -74,6 +71,7 @@ module HostBootstrap.Substrate.Provider (
     providerCapabilityKind,
     providerCapabilityDiscovery,
     providerCapabilityGeneration,
+    providerCapabilityLiftContext,
     providerCapabilityGuestExecutor,
     RebootReadyPlan (..),
     planProviderProvision,
@@ -116,9 +114,9 @@ import HostBootstrap.Cluster.Cordon (
     limaSizingArgs,
     wsl2SizingArgs,
  )
-import HostBootstrap.Effect.Vocabulary
 import HostBootstrap.Context (ResourceEnvelope)
 import qualified HostBootstrap.Context as Context
+import HostBootstrap.Effect.Vocabulary
 import HostBootstrap.HostTool (HostTool (Incus, Lima, Wsl))
 import HostBootstrap.Incus (
     IncusVM (..),
@@ -390,29 +388,17 @@ data ProviderObservation value
     | ProviderObservedFailure ProbeFailure
     deriving (Eq, Show)
 
-data GuestLockPrimitive = GuestFlock FilePath | GuestLockf FilePath
-    deriving (Eq, Show)
-
-data GuestStatDialect = GuestGnuStat FilePath | GuestBsdStat FilePath
-    deriving (Eq, Show)
-
-data GuestPythonCapability = GuestPython3 FilePath
-    deriving (Eq, Show)
-
--- | The seven observations that exist only for a real guest provider.
+-- | The four provider observations that exist only for a real guest provider.
 data GuestProviderDiscovery = GuestProviderDiscovery
     { discoveryDaemon :: ProviderObservation ()
     , discoveryPermissions :: ProviderObservation ()
     , discoveryVmCapability :: ProviderObservation ()
     , discoveryEgress :: ProviderObservation ()
-    , discoveryGuestLock :: ProviderObservation GuestLockPrimitive
-    , discoveryGuestStat :: ProviderObservation GuestStatDialect
-    , discoveryGuestPython :: ProviderObservation GuestPythonCapability
     }
     deriving (Eq, Show)
 
 {- | Direct host has exactly its two applicable observations.  There is no
-representable daemon, VM, lock, stat, or guest-Python slot to fill in.
+representable daemon or VM slot to fill in.
 -}
 data DirectProviderDiscovery = DirectProviderDiscovery
     { discoveryDirectPermissions :: ProviderObservation ()
@@ -452,9 +438,6 @@ data ProviderDiscoveryPlan
         (ProbePlan ())
         (ProbePlan ())
         (ProbePlan ())
-        [ProbePlan GuestLockPrimitive]
-        (ProbePlan FilePath)
-        (ProbePlan FilePath)
     | DirectDiscoveryPlan (ProbePlan ()) (ProbePlan ())
 
 {- | Execute only provider-owned closed probe requests against raw outcomes.
@@ -515,6 +498,9 @@ providerCapabilityDiscovery (ProviderCapability _ _ discovery _) = discovery
 providerCapabilityGeneration :: ProviderCapability scope planId providerId backendId capabilityId -> Word64
 providerCapabilityGeneration (ProviderCapability managed _ _ _) = managedProviderGeneration managed
 
+providerCapabilityLiftContext :: ProviderCapability scope planId providerId backendId capabilityId -> LiftContext
+providerCapabilityLiftContext (ProviderCapability _ provider _ _) = providerLiftContext provider
+
 providerCapabilityGuestExecutor ::
     ProviderCapability scope planId providerId backendId capabilityId ->
     Either ProviderError (ProviderGuestExecutor scope planId providerId Running backendId capabilityId)
@@ -536,18 +522,13 @@ providerDiscoveryPlan provider =
                 (unitPlan "provider permissions" (existsRequest provider))
                 (unitPlan "provider VM capability" (guestRequest provider ["true"]))
                 (unitPlan "provider provisioning egress" (egressRequest provider))
-                [ whichPlan "guest flock" (guestRequest provider ["which", "flock"]) "flock" GuestFlock
-                , whichPlan "guest lockf" (guestRequest provider ["which", "lockf"]) "lockf" GuestLockf
-                ]
-                (whichPlan "guest stat executable" (guestRequest provider ["which", "stat"]) "stat" id)
-                (whichPlan "guest Python 3 executable" (guestRequest provider ["which", "python3"]) "python3" id)
 
 runDiscoveryPlan :: ProviderBoundExec scope planId providerId phase backendId -> ProviderDiscoveryPlan -> IO ProviderDiscovery
 runDiscoveryPlan exec plan = case plan of
     DirectDiscoveryPlan permissions egress ->
         ProviderDirectDiscovery
             <$> (DirectProviderDiscovery <$> runProbePlan exec permissions <*> runProbePlan exec egress)
-    GuestDiscoveryPlan daemon permissions vm egress locks statExecutable pythonExecutable -> do
+    GuestDiscoveryPlan daemon permissions vm egress -> do
         retainedDaemon <- runProbePlan exec daemon
         case retainedDaemon of
             ProviderObservedReady () -> do
@@ -558,29 +539,6 @@ runDiscoveryPlan exec plan = case plan of
                         case retainedVm of
                             ProviderObservedReady () -> do
                                 retainedEgress <- runProbePlan exec egress
-                                lock <- runAlternatives exec "guest lock frontend" locks
-                                retainedStatExecutable <- runProbePlan exec statExecutable
-                                statDialect <- case retainedStatExecutable of
-                                    ProviderObservedReady executable ->
-                                        runAlternatives
-                                            exec
-                                            "guest stat dialect"
-                                            [ statPlan "guest GNU stat" (Right (guestProbeRequest [executable, "-c", "%d:%i", "/"])) (GuestGnuStat executable)
-                                            , statPlan "guest BSD stat" (Right (guestProbeRequest [executable, "-f", "%d:%i", "/"])) (GuestBsdStat executable)
-                                            ]
-                                    other -> pure (propagateObservation other)
-                                retainedPythonExecutable <- runProbePlan exec pythonExecutable
-                                python <- case retainedPythonExecutable of
-                                    ProviderObservedReady executable ->
-                                        runProbePlan
-                                            exec
-                                            ( pythonMarkerPlan
-                                                "guest Python 3"
-                                                (Right (guestProbeRequest [executable, "-c", "print('hostbootstrap-python3')"]))
-                                                "hostbootstrap-python3"
-                                                (GuestPython3 executable)
-                                            )
-                                    other -> pure (propagateObservation other)
                                 pure
                                     ( ProviderGuestDiscovery
                                         ( GuestProviderDiscovery
@@ -588,9 +546,6 @@ runDiscoveryPlan exec plan = case plan of
                                             retainedPermissions
                                             retainedVm
                                             retainedEgress
-                                            lock
-                                            statDialect
-                                            python
                                         )
                                     )
                             notReadyVm ->
@@ -636,9 +591,6 @@ blockedGuestDiscovery daemon permissions vm egress =
         (propagateObservation permissions)
         (propagateObservation vm)
         (propagateObservation egress)
-        (propagateObservation vm)
-        (propagateObservation vm)
-        (propagateObservation vm)
 
 propagateObservation :: ProviderObservation source -> ProviderObservation target
 propagateObservation observed = case observed of
@@ -652,19 +604,6 @@ propagateObservation observed = case observed of
     ProviderObservedUnavailable reason -> ProviderObservedUnavailable reason
     ProviderObservedConflict conflict -> ProviderObservedConflict conflict
     ProviderObservedFailure failure -> ProviderObservedFailure failure
-
-runAlternatives :: ProviderBoundExec scope planId providerId phase backendId -> String -> [ProbePlan value] -> IO (ProviderObservation value)
-runAlternatives _ label [] = pure (ProviderObservedUnavailable (label ++ " has no supported probe plan"))
-runAlternatives exec label (candidate : rest) = do
-    observed <- runProbePlan exec candidate
-    case observed of
-        ProviderObservedReady value -> pure (ProviderObservedReady value)
-        ProviderObservedUnavailable _
-            | not (null rest) -> runAlternatives exec label rest
-        ProviderObservedNotReady _ -> pure observed
-        ProviderObservedConflict _ -> pure observed
-        ProviderObservedFailure _ -> pure observed
-        ProviderObservedUnavailable _ -> pure observed
 
 runProbePlan :: ProviderBoundExec scope planId providerId phase backendId -> ProbePlan value -> IO (ProviderObservation value)
 runProbePlan _ (ProbePlan _ (Left reason) _) = pure (ProviderObservedUnavailable reason)
@@ -707,68 +646,6 @@ observationFromPollError pollError = case pollError of
 
 unitPlan :: String -> Either String ProviderProbeRequest -> ProbePlan ()
 unitPlan label request = ProbePlan label request parseUnit
-
-whichPlan :: String -> Either String ProviderProbeRequest -> String -> (FilePath -> value) -> ProbePlan value
-whichPlan label request basename retain =
-    ProbePlan label request $ \raw -> case raw of
-        RawProviderExit ExitSuccess out err ->
-            case exactSuccessfulLine label out err of
-                Right executable
-                    | exactAbsoluteBasename basename executable -> ProbeReady (retain executable)
-                    | otherwise -> malformed label ("expected one absolute " ++ basename ++ " path, observed " ++ show executable)
-                Left reason -> malformed label reason
-        RawProviderExit (ExitFailure code) out err -> candidateUnavailable label code out err
-        RawProviderFailure reason -> rawExecutionFailure label reason
-
-statPlan :: String -> Either String ProviderProbeRequest -> value -> ProbePlan value
-statPlan label request value =
-    ProbePlan label request $ \raw -> case raw of
-        RawProviderExit ExitSuccess out err ->
-            case exactSuccessfulLine label out err of
-                Right identity
-                    | validDeviceInode identity -> ProbeReady value
-                    | otherwise -> malformed label ("invalid device:inode report " ++ show identity)
-                Left reason -> malformed label reason
-        RawProviderExit (ExitFailure code) out err -> candidateUnavailable label code out err
-        RawProviderFailure reason -> rawExecutionFailure label reason
-
-pythonMarkerPlan :: String -> Either String ProviderProbeRequest -> String -> value -> ProbePlan value
-pythonMarkerPlan label request marker value =
-    ProbePlan label request $ \raw -> case raw of
-        RawProviderExit ExitSuccess out err ->
-            case exactSuccessfulLine label out err of
-                Right observed
-                    | observed == marker -> ProbeReady value
-                    | otherwise -> malformed label ("expected exact marker " ++ show marker ++ ", observed " ++ show observed)
-                Left reason -> malformed label reason
-        RawProviderExit (ExitFailure code) out err -> candidateUnavailable label code out err
-        RawProviderFailure reason -> rawExecutionFailure label reason
-
-exactSuccessfulLine :: String -> String -> String -> Either String String
-exactSuccessfulLine label out err
-    | not (null err) = Left (label ++ " wrote unexpected stderr: " ++ show (firstLine err))
-    | length out > 1024 = malformedLine
-    | '\r' `elem` out = malformedLine
-    | null out || last out /= '\n' = malformedLine
-    | length (filter (== '\n') out) /= 1 = malformedLine
-    | otherwise = Right (init out)
-  where
-    malformedLine = Left (label ++ " returned a non-exact single-line report: " ++ show (firstLine out))
-
-candidateUnavailable :: String -> Int -> String -> String -> ProbeResult value
-candidateUnavailable label code out err =
-    Unavailable
-        ( label
-            ++ " candidate exited "
-            ++ show code
-            ++ candidateDiagnostic out err
-        )
-
-candidateDiagnostic :: String -> String -> String
-candidateDiagnostic out err =
-    case firstLine (out ++ err) of
-        "" -> ""
-        diagnostic -> ": " ++ diagnostic
 
 rawExecutionFailure :: String -> String -> ProbeResult value
 rawExecutionFailure label reason = case providerConflictMarker reason of
@@ -840,22 +717,6 @@ asciiLower :: Char -> Char
 asciiLower character
     | character >= 'A' && character <= 'Z' = toEnum (fromEnum character + 32)
     | otherwise = character
-
-validDeviceInode :: String -> Bool
-validDeviceInode value =
-    case break (== ':') value of
-        (device, ':' : inode) -> not (null device) && not (null inode) && all isAsciiDigit device && all isAsciiDigit inode
-        _ -> False
-  where
-    isAsciiDigit digit = digit >= '0' && digit <= '9'
-
-exactAbsoluteBasename :: String -> String -> Bool
-exactAbsoluteBasename basename path =
-    case path of
-        '/' : _ ->
-            all (`notElem` ['\r', '\n']) path
-                && reverse (takeWhile (/= '/') (reverse path)) == basename
-        _ -> False
 
 existsRequest :: SubstrateProvider -> Either String ProviderProbeRequest
 existsRequest provider = case spExists provider of

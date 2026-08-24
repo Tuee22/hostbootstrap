@@ -8,78 +8,98 @@ This owner is Cabal-private.  'HostBootstrap.Reconcile' supplies the indexed
 plan/resource witnesses, wraps refusals in its public error vocabulary, and is
 the only module allowed to mint an ownership receipt from a verified member.
 -}
-module HostBootstrap.Lifecycle.ResourceRecord
-    ( VerifiedResourceRecordBundle
-    , VerifiedResourceRecordSet
-    , RehydratedResourceSet
-    , RehydratedResourceHandle
-    , RehydratedOwnershipReceipt
-    , RehydratedReleasedTombstone
-    , recordSetDigestKernel
-    , renderResourceRecordBundleKernel
-    , verifyResourceRecordBundleKernel
-    , verifyExactResourceRecordBundleKernel
-    , verifyResourceRecordSetKernel
-    , withVerifiedResourceRecordBundleKernel
-    , withVerifiedResourceRecordSetKernel
-    , resourceRecordPrefixKernel
-    , resourceRecordKeyKernel
-    , rehydrateResourceRecordSetKernel
-    , foldRehydratedResourceSetKernel
-    , rehydratedHandleFrameKernel
-    , rehydratedHandleResourceKernel
-    , rehydratedTombstoneFrameKernel
-    , rehydratedTombstoneResourceKernel
-    , rehydratedResourceSetPlanKernel
-    , rehydratedResourceSetDigestKernel
-    , recoveredOwnedReleaseTransitionKernel
-    )
+module HostBootstrap.Lifecycle.ResourceRecord (
+    VerifiedResourceRecordBundle,
+    VerifiedResourceRecordSet,
+    RehydratedResourceSet,
+    RehydratedResourceHandle,
+    RehydratedOwnershipReceipt,
+    RehydratedReleasedTombstone,
+    recordSetDigestKernel,
+    renderResourceRecordBundleKernel,
+    verifyResourceRecordBundleKernel,
+    verifyExactResourceRecordBundleKernel,
+    verifyReleasedResourceSuccessorKernel,
+    verifyResourceRecordSetKernel,
+    withVerifiedResourceRecordBundleKernel,
+    withVerifiedResourceRecordSetKernel,
+    resourceRecordPrefixKernel,
+    resourceRecordKeyKernel,
+    rehydrateResourceRecordSetKernel,
+    foldRehydratedResourceSetKernel,
+    rehydratedHandleFrameKernel,
+    rehydratedHandleResourceKernel,
+    rehydratedTombstoneFrameKernel,
+    rehydratedTombstoneResourceKernel,
+    rehydratedResourceSetPlanKernel,
+    rehydratedResourceSetDigestKernel,
+    recoveredOwnedReleaseTransitionKernel,
+)
 where
 
 import qualified Crypto.Hash as Hash
 import Data.Bits (shiftL, shiftR, (.|.))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
+import Data.List (nub, sort, sortOn)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64, Word8)
-import Data.List (nub, sort, sortOn)
 import HostBootstrap.Protected (mkRecordName, protectedErrorMessage)
 
-data VerifiedResourceRecordBundle scope planId id resource =
-    VerifiedResourceRecordBundle
-        Text Text Text Word64 Text Word64 Text Text Bool ByteString
+data VerifiedResourceRecordBundle scope planId id resource
+    = VerifiedResourceRecordBundle
+        Text
+        Text
+        Text
+        Word64
+        Text
+        Word64
+        Text
+        Text
+        Bool
+        ByteString
 
 type role VerifiedResourceRecordBundle nominal nominal nominal nominal
 
-data ResourceRecordMember = ResourceRecordMember
-    Text Text Text Word64 Text Word64 Text Text Bool ByteString
+data ResourceRecordMember
+    = ResourceRecordMember
+        Text
+        Text
+        Text
+        Word64
+        Text
+        Word64
+        Text
+        Text
+        Bool
+        ByteString
 
-data VerifiedResourceRecordSet scope planId =
-    VerifiedResourceRecordSet Text Text Text [ResourceRecordMember]
+data VerifiedResourceRecordSet scope planId
+    = VerifiedResourceRecordSet Text Text Text [ResourceRecordMember]
 
 type role VerifiedResourceRecordSet nominal nominal
 
-data RehydratedResourceHandle scope planId id brokerGeneration =
-    RehydratedResourceHandle Text Text Word64 Word64 Word64 Text Text ByteString
+data RehydratedResourceHandle scope planId id brokerGeneration
+    = RehydratedResourceHandle Text Text Word64 Word64 Word64 Text Text ByteString
 
 type role RehydratedResourceHandle nominal nominal nominal nominal
 
-data RehydratedOwnershipReceipt scope planId id brokerGeneration =
-    RehydratedOwnershipReceipt Text Word64 Text
+data RehydratedOwnershipReceipt scope planId id brokerGeneration
+    = RehydratedOwnershipReceipt Text Word64 Text
 
 type role RehydratedOwnershipReceipt nominal nominal nominal nominal
 
-data RehydratedReleasedTombstone scope planId id brokerGeneration =
-    RehydratedReleasedTombstone Text Text Word64 Word64 Text Text ByteString
+data RehydratedReleasedTombstone scope planId id brokerGeneration
+    = RehydratedReleasedTombstone Text Text Word64 Word64 Text Text ByteString
 
 type role RehydratedReleasedTombstone nominal nominal nominal nominal
 
 data RehydratedResource = RehydratedResource ResourceRecordMember
 
-data RehydratedResourceSet scope planId brokerGeneration =
-    RehydratedResourceSet Text Text Word64 [RehydratedResource]
+data RehydratedResourceSet scope planId brokerGeneration
+    = RehydratedResourceSet Text Text Word64 [RehydratedResource]
 
 type role RehydratedResourceSet nominal nominal nominal
 
@@ -87,7 +107,15 @@ recordSetDigestKernel :: VerifiedResourceRecordSet scope planId -> Text
 recordSetDigestKernel (VerifiedResourceRecordSet _ _ digest _) = digest
 
 renderResourceRecordBundleKernel ::
-    Text -> Text -> Text -> Word64 -> Text -> Word64 -> Text -> Text -> Bool ->
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    Text ->
+    Word64 ->
+    Text ->
+    Text ->
+    Bool ->
     Either Text ByteString
 renderResourceRecordBundleKernel plan frame resource generation operation version phase adapter owned = do
     require "resource record plan digest is empty" (not (Text.null plan))
@@ -116,10 +144,26 @@ renderResourceRecordBundleKernel plan frame resource generation operation versio
     word = text . Text.pack . show
 
 verifyResourceRecordBundleKernel ::
-    Text -> Text -> Text -> Word64 -> Text -> Word64 -> Text -> Text -> ByteString ->
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    Text ->
+    Word64 ->
+    Text ->
+    Text ->
+    ByteString ->
     Either Text (VerifiedResourceRecordBundle scope planId id resource)
-verifyResourceRecordBundleKernel expectedPlan expectedFrame expectedResource expectedGeneration
-    expectedOperation expectedVersion expectedPhase expectedAdapter raw = do
+verifyResourceRecordBundleKernel
+    expectedPlan
+    expectedFrame
+    expectedResource
+    expectedGeneration
+    expectedOperation
+    expectedVersion
+    expectedPhase
+    expectedAdapter
+    raw = do
         ResourceRecordMember plan frame resource generation operation version phase adapter owned canonical <-
             parseResourceRecord raw
         require "resource record plan digest differs" (plan == expectedPlan)
@@ -141,7 +185,8 @@ verifyResourceRecordSetKernel ::
 verifyResourceRecordSetKernel expectedStore expectedPlan expectedMembers keyedBytes = do
     require "resource record set store identity is empty" (not (Text.null expectedStore))
     require "resource record set plan digest is empty" (not (Text.null expectedPlan))
-    require "resource record set expected membership contains duplicates"
+    require
+        "resource record set expected membership contains duplicates"
         (length expectedMembers == length (nub expectedMembers))
     members <- traverse verifyOne keyedBytes
     let actual = sort [(frame, resource) | ResourceRecordMember _ frame resource _ _ _ _ _ _ _ <- members]
@@ -160,7 +205,10 @@ verifyResourceRecordSetKernel expectedStore expectedPlan expectedMembers keyedBy
         pure member
 
 verifyExactResourceRecordBundleKernel ::
-    Text -> Text -> Text -> ByteString ->
+    Text ->
+    Text ->
+    Text ->
+    ByteString ->
     Either Text (VerifiedResourceRecordBundle scope planId id resource)
 verifyExactResourceRecordBundleKernel expectedPlan expectedFrame expectedResource raw = do
     ResourceRecordMember plan frame resource generation operation version phase adapter owned canonical <- parseResourceRecord raw
@@ -168,6 +216,29 @@ verifyExactResourceRecordBundleKernel expectedPlan expectedFrame expectedResourc
     require "resource record frame differs" (frame == expectedFrame)
     require "resource record identity differs" (resource == expectedResource)
     pure (VerifiedResourceRecordBundle plan frame resource generation operation version phase adapter owned canonical)
+
+{- | Verify the only stable-member replacement that does not carry its exact
+predecessor bytes in-process: a fresh invocation reacquiring a resource whose
+previous invocation durably released it.
+
+Both records are parsed canonically, the stable plan/frame/resource coordinate
+must be unchanged, the predecessor must be released, the successor must be
+owned, and backend ownership generation must advance strictly. This keeps a
+fresh Harness invocation from weakening stable-member CAS into arbitrary
+replacement.
+-}
+verifyReleasedResourceSuccessorKernel :: ByteString -> ByteString -> Either Text ()
+verifyReleasedResourceSuccessorKernel predecessor successor = do
+    ResourceRecordMember oldPlan oldFrame oldResource oldGeneration _ _ _ _ oldOwned _ <-
+        parseResourceRecord predecessor
+    ResourceRecordMember newPlan newFrame newResource newGeneration _ _ _ _ newOwned _ <-
+        parseResourceRecord successor
+    require "resource successor plan differs" (newPlan == oldPlan)
+    require "resource successor frame differs" (newFrame == oldFrame)
+    require "resource successor identity differs" (newResource == oldResource)
+    require "resource successor predecessor is not released" (not oldOwned)
+    require "resource successor is not owned" newOwned
+    require "resource successor generation did not advance" (newGeneration > oldGeneration)
 
 withVerifiedResourceRecordSetKernel ::
     VerifiedResourceRecordSet scope planId ->
@@ -236,7 +307,8 @@ recoveredOwnedReleaseTransitionKernel ::
     RehydratedResourceHandle scope planId id brokerGeneration ->
     RehydratedOwnershipReceipt scope planId id brokerGeneration ->
     Either Text (Text, ByteString, ByteString)
-recoveredOwnedReleaseTransitionKernel plan
+recoveredOwnedReleaseTransitionKernel
+    plan
     (RehydratedResourceHandle frame resource generation _broker version phase adapter ownedBytes)
     (RehydratedOwnershipReceipt receiptResource receiptGeneration operation) = do
         require "the recovered receipt belongs to another resource" (receiptResource == resource)
@@ -302,7 +374,8 @@ withVerifiedResourceRecordBundleKernel ::
     result
 withVerifiedResourceRecordBundleKernel
     (VerifiedResourceRecordBundle _ _ resource generation operation version phase adapter owned raw)
-    onOwned onReleased
+    onOwned
+    onReleased
         | owned = onOwned resource generation operation
         | otherwise = onReleased resource generation operation version phase adapter raw
 

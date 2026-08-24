@@ -8,16 +8,17 @@ import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import HostBootstrap.Command (allReconcilers)
-import HostBootstrap.Ensure
-    ( InstallStep (..)
-    , Reconciler (..)
-    , appliesTo
-    , decide
-    , installAndVerifyWith
-    , reconcilerInstallSteps
-    , requirement
-    , runReconciler
-    )
+import HostBootstrap.DocValidator (findRepoRoot)
+import HostBootstrap.Ensure (
+    InstallStep (..),
+    Reconciler (..),
+    appliesTo,
+    decide,
+    installAndVerifyWith,
+    reconcilerInstallSteps,
+    requirement,
+    runReconciler,
+ )
 import qualified HostBootstrap.Ensure.AppleMetal as AppleMetal
 import qualified HostBootstrap.Ensure.Cuda as Cuda
 import qualified HostBootstrap.Ensure.CudaWin as CudaWin
@@ -27,7 +28,6 @@ import qualified HostBootstrap.Ensure.Homebrew as Homebrew
 import qualified HostBootstrap.Ensure.Incus as EIncus
 import qualified HostBootstrap.Ensure.Lima as Lima
 import qualified HostBootstrap.Ensure.Wsl2 as Wsl2
-import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (..))
 import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..))
@@ -224,14 +224,15 @@ installDriverCases =
         installAndVerifyWith runner refresh "test" probe (const (Right steps)) cpuConfig
         installAndVerifyWith runner refresh "test" probe (const (Right steps)) cpuConfig
         readIORef events
-            >>= ( @?= [ Probed cpu False
-                       , RanStep cpu Brew ["install", "demo"]
-                       , Refreshed cpu
-                       , RanStep gpu Ghcup ["install", "demo"]
-                       , Refreshed gpu
-                       , Probed gpu True
-                       , Probed cpu True
-                       ]
+            >>= ( @?=
+                    [ Probed cpu False
+                    , RanStep cpu Brew ["install", "demo"]
+                    , Refreshed cpu
+                    , RanStep gpu Ghcup ["install", "demo"]
+                    , Refreshed gpu
+                    , Probed gpu True
+                    , Probed cpu True
+                    ]
                 )
     , testCase "post-install verification failure exits after the final probe" $ do
         events <- newIORef []
@@ -293,7 +294,7 @@ installPlanCases =
     , testCase "homebrew: no resolved-tool plan (toolchain root)" $
         assertBool "homebrew Left on apple" (isLeft (Homebrew.installSteps apple))
     , testCase "docker: apt install on linux, defer to colima on apple" $ do
-        let linux = Right [InstallStep Sudo ["apt-get", "install", "-y", "docker.io", "acl"], InstallStep Sudo ["systemctl", "enable", "--now", "docker"]]
+        let linux = Right [InstallStep Sudo ["apt-get", "install", "-y", "docker.io", "docker-buildx", "acl"], InstallStep Sudo ["systemctl", "enable", "--now", "docker"]]
         Docker.installSteps cpu @?= linux
         Docker.installSteps gpu @?= linux
         assertBool "docker Left on apple" (isLeft (Docker.installSteps apple))

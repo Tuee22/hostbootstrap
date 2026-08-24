@@ -14,7 +14,6 @@ module RecursiveLifecycleSpec (
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (finally)
-import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.Text as Text
 import qualified Fixture
@@ -24,14 +23,11 @@ import HostBootstrap.Config.Class (AssemblyRequest (..), ConfigAssembly, pureCon
 import HostBootstrap.Config.Schema (siblingProjectConfigPath, writeProjectConfigFile)
 import HostBootstrap.Context (ContextKind (HostOrchestrator, VMOrchestrator, VMProjectContainer))
 import HostBootstrap.Handoff (
-    projectSigningKeyFromBytes,
-    projectSigningVerificationKey,
     providerDependencyProbeRequestFields,
     providerDependencyProbeResponseFromFields,
-    verificationKeyBytes,
     withProviderDependencyReprobeKernel,
  )
-import HostBootstrap.Harness (Case (Case), CaseResult (Pass), TestSuite (TestSuite), mkCaseId)
+import HostBootstrap.Harness (Case (Case), CaseLifecycle (AssertOnce), CaseResult (Pass), TestSuite (TestSuite), mkCaseId)
 import HostBootstrap.Lift.Context (
     ConfigDelivery (ConfigDelivery),
     ContainerLift (ContainerLift),
@@ -80,9 +76,10 @@ tests =
             withFixtureEnvironment False $ \root _ -> do
                 runPublicProcess root False "up" >>= (@?= ExitSuccess)
                 runPublicProcess root False "destroy" >>= (@?= ExitSuccess)
-        , testCase "failed up preserves its failure while running reached cleanup" $
-            withFixtureEnvironment True $ \root _ ->
+        , testCase "failed up preserves its failure and admits exact reverse recovery" $
+            withFixtureEnvironment True $ \root _ -> do
                 runPublicProcess root True "up" >>= (@?= ExitFailure 1)
+                runPublicProcess root True "destroy" >>= (@?= ExitSuccess)
         , testCase "the local provider reprobe kernel returns only nonce-bound observation data" $ do
             let package = ByteStringChar8.pack "35:hostbootstrap/runtime-dependency/v18:provider4:plan5:scope8:resource5:frame6:origin1:77:journal7:receipt26:runtime://provider/reprobe3:100"
             request <- either (assertFailure . Text.unpack) pure (providerDependencyProbeRequestFields package "recursive-nonce")
@@ -185,18 +182,11 @@ withFixtureEnvironment failContainer use =
         configPath <- siblingProjectConfigPath project
         packageRoot <- fixturePackageRoot
         let fixtureTools = packageRoot </> "test" </> "fixtures" </> "recursive-lifecycle"
-            signingPath = executable <> ".handoff.key"
-            verificationPath = executable <> ".handoff.pub"
-            seed = ByteString.pack [0 .. 31]
-        signing <- either (assertFailure . show) pure (projectSigningKeyFromBytes seed)
-        let restore = do
-                mapM_ removeIfPresent [configPath, signingPath, verificationPath]
+            restore = removeIfPresent configPath
         ( do
                 createDirectory (root </> "vm")
                 createDirectory (root </> "container")
                 writeProjectConfigFile Fixture.projectConfigCodec configPath (Fixture.defaultProjectConfig project (Text.pack root) HostOrchestrator)
-                ByteString.writeFile signingPath seed
-                ByteString.writeFile verificationPath (verificationKeyBytes (projectSigningVerificationKey signing))
                 mapM_ (\tool -> doesFileExist (fixtureTools </> tool) >>= assertBool ("missing fixture tool " <> tool)) ["incus", "docker"]
                 use root (fixtureSpec root failContainer)
             )
@@ -288,7 +278,7 @@ stepId :: String -> ProjectStepId
 stepId = either error id . projectStepId
 
 passingSuite :: TestSuite
-passingSuite = TestSuite (pure (Right ())) (const (pure ())) [Case (either (error . show) id (mkCaseId "ok")) 1 False] (\_ _ -> pure Pass) (pure ())
+passingSuite = TestSuite (pure (Right ())) (\_ _ -> pure ()) [Case (either (error . show) id (mkCaseId "ok")) 1 False AssertOnce] (\_ _ -> pure Pass) (pure ())
 
 fixtureTestInit :: a -> Fixture.TestConfig
 fixtureTestInit _ = Fixture.defaultTestConfig (Fixture.Resources 1 "1GiB" "1GiB")

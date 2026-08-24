@@ -5725,7 +5725,12 @@ The target is not complete until all of these gates pass:
     operation, prepare, fence, receipt, effect, Open session, or non-empty session while accepting only
     terminal empty sessions. Only their exact-version proofs can mint closure evidence; unresolved
     partial ownership cannot close, and Production or another run cannot construct the Harness close
-    plan.
+    plan. An intermediate Harness destroy instead joins that settled closure to the exact live root and bound
+    lease, advances mode and lease to a strictly fresh broker epoch, rearms the lifecycle-profile slot, and
+    rebinds the immutable canonical snapshot to a freshly admitted local plan. The terminal fallback retains
+    the matching current close-root/mode/bound tuple existentially. Stable resource tombstones survive the
+    rotation: only a canonical Released→Owned successor at the same plan/frame/resource coordinate and a
+    strictly greater ownership generation may replace one by exact compare-and-swap.
 26. Production reverse-root terminalization is root-owned and evidence-complete. A sealed root Down entry
     must present the exact root `SubtreeSettled` value and `VerifiedAllSessionsClosed`; Destroy must also
     promote that subtree through `verifyDestroySettled`. Nested frames, incomplete or failed observations,

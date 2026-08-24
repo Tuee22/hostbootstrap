@@ -185,7 +185,8 @@ The model this document describes is the recursive project plan: opaque `StepPla
 interpreted by `project up`, with `project init` writing the root config, the current split seams
 producing child configs, and `context` providing read-only introspection. A single `project up` on Incus/Linux
 stands up the live persistent stack — a cordoned kind cluster, the in-cluster registry, the
-project image pushed to that registry, and the web chart pod serving `localhost:30080` — and
+project image pushed to that registry, and the web chart pod serving through its runtime-resolved loopback
+endpoint — and
 `project down` / `project destroy` tear it back down. The topology data and per-frame fail-fast above
 are the substrate the chain interpreter builds on. Current `test run all` retains one exact Harness plan
 per distinct test config and directly wraps common current-frame forward/reverse interpretation around

@@ -83,6 +83,188 @@ the private module and backend/result construction from a downstream component.
 
 None.
 
+### Sprint 16.1a: Semantic cluster exposure intent [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
+`core/hostbootstrap-core/test/ClusterBackendSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/cluster_lifecycle.md`
+
+#### Objective
+
+Make a stable cluster-internal TCP target the complete pre-effect exposure declaration.
+
+#### Deliverables
+
+- A plan names each exposed service and its stable cluster-internal target; it never contains a selected host
+  port.
+- Opaque `ExposureIntent` retains a bounded service identity and cluster target, fixes TCP as the only admitted
+  protocol, and refuses empty, malformed, or out-of-range terms before backend entry.
+
+#### Validation
+
+`ClusterBackendSpec` covers exact retention and every malformed semantic target. Source and compile-fail
+guards prove the public preparation surface contains no caller-selected host port.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.1b: Plan-bound prepared exposure [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
+`core/hostbootstrap-core/test/ClusterBackendSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/cluster_lifecycle.md`
+
+#### Objective
+
+Bind semantic exposure intent to the exact applied cluster cordon and immutable relay image.
+
+#### Deliverables
+
+- Opaque `PreparedClusterExposure` retains the exact plan resource, cluster name and identity, generation,
+  ownership root, node set, immutable `repository@sha256` image, and non-empty unique semantic service set.
+- Preparation accepts only the already-applied cluster cordon and refuses a mutable image reference, duplicate
+  service, empty set, or over-broad set before effects.
+
+#### Validation
+
+Focused cases cover immutable-image and service-set admission; the complete host-static gate checks the
+nominal cluster indices under `-Werror`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.1c: Opaque runtime-resolved exposure [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
+`core/hostbootstrap-core/test/ClusterBackendSpec.hs`,
+`core/hostbootstrap-core/test/compile-fail/ForgeResolvedExposure.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+Make exact authenticated runtime inspection the only producer of a local endpoint authority.
+
+#### Deliverables
+
+- Authenticated runtime inspection of the exact relay identity is the only producer of
+  `ResolvedExposure scope planId clusterId service`. It binds service identity, loopback address, protocol,
+  selected host port, internal target, relay/container identity, cluster generation, and ownership operation.
+  A rendered request, free-port probe, process output, or caller-supplied number cannot mint it. The constructor
+  is private and service lookup opens it only through a rank-2 continuation.
+
+#### Validation
+
+Focused cases cover exact lookup and cross-service absence. Compile-fail coverage rejects raw construction and
+the removed caller-selected preparation surface.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.1d: Binary-owned bounded relay process [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/cluster-backend/HostBootstrap/Cluster/Exposure/Internal.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/CLI.hs`, `core/hostbootstrap-core/hostbootstrap-core.cabal`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/cluster_lifecycle.md`
+
+#### Objective
+
+Give every derived project binary one private multi-listener TCP relay entry with no shell or ambient proxy.
+
+#### Deliverables
+
+- The hidden marker is classified before public command parsing and is absent from the command tree.
+- Each bounded listener opens its declared cluster target and copies bytes bidirectionally; listener, connection,
+  EOF, and asynchronous-failure paths close their sockets and threads.
+- The implementation uses the already-warmed Haskell `network` dependency and introduces no executable selector,
+  shell, Python program, or caller-supplied command.
+
+#### Validation
+
+The warning-clean build covers the private module on every host; compile-fail coverage rejects downstream
+import of the entry, and shared-surface guards freeze only their own rows.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.1e: Owned relay reconcile, recovery, and release [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
+`core/hostbootstrap-core/test/ClusterBackendSpec.hs`, `core/hostbootstrap-core/test/FakeCluster.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/cluster_lifecycle.md`,
+`documents/architecture/ownership_invariant.md`, `documents/architecture/durable_state.md`
+
+#### Objective
+
+Make the runtime bind, exact inspection, recovery, and release one clause-holding cluster-adjacent operation.
+
+#### Deliverables
+
+- The backend creates one identity-bound relay on the cluster container network and asks the runtime to publish
+  every listener on `127.0.0.1` without a host number; selection and binding are one runtime operation.
+- The relay and every selected mapping are one owned cluster-adjacent resource. Recovery re-inspects the exact
+  identity and mapping set; replacement, wildcard binding, missing/additional mapping, or changed target is a
+  conflict. Cluster release removes the relay by identity before the cluster and retains the ownership record
+  until both absences are observed.
+- The protected record is published before relay creation, binds a fresh 256-bit operation nonce and immutable
+  specification digest, and is replaced with the inspected identity/mapping set by compare-and-swap.
+- Cluster cleanup refuses while the exposure record exists, enforcing relay-before-cluster release under the
+  same exclusive store entry.
+
+#### Validation
+
+`ClusterBackendSpec` drives a real second-process container-runtime fixture through creation, exact inspection,
+recovery, wildcard/mapping/replacement conflict, release ordering, and identity-conditional release. The
+complete warning-clean host-static gate closes the sprint.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.1f: Concurrent runtime allocation acceptance [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/CLI/Bare.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/cluster_lifecycle.md`,
+`documents/engineering/testing.md`
+
+#### Objective
+
+Make automatic host-port allocation and exact cleanup part of the phase's existing live harness case.
+
+#### Deliverables
+
+- After the fresh Kind cluster is ready, `cluster-live` starts two isolated containers concurrently against
+  the same immutable node image and asks Docker to publish the same container listener on `127.0.0.1` with no
+  host-side number.
+- The case inspects both immutable container identities, requires two distinct numeric loopback mappings, and
+  removes both identities in a bracket on every success or failure path.
+- Post-cleanup inspection proves both names absent before the ordinary cluster reverse and durable-root
+  sentinel assertions may pass.
+
+#### Validation
+
+The warning-clean core gate builds the case on every host. The phase-level composed linux-cpu gate executes the
+two concurrent allocations against the live Docker runtime and proves exact end-state absence.
+
+#### Remaining Work
+
+None.
+
 ### Sprint 16.2: Durable cluster ownership namespace [Done]
 
 **Status**: Done
@@ -224,8 +406,9 @@ Join the exact cluster package projected by one admitted `ProjectPlan`.
   consumer accepts no compatibility lifecycle plan, caller profile/root, or independently assembled graph.
 - The package derives the Production or generative Harness cluster identity, removable state directory,
   durable root, placement, ownership binding, node names, and optional absolute driver-config path.
-- This phase selects and binds an existing config path; it does not render the demo's concrete kind/nvkind
-  YAML or choose its NodePort and host-port set. That concrete projection belongs to the worked demo.
+- This phase selects and binds an existing config path; it does not render the demo's concrete Kind/nvkind
+  YAML or choose its internal Service/NodePort targets. That semantic projection belongs to the worked demo;
+  Sprint 16.1 generically owns runtime assignment of the distinct host-side exposure.
 
 #### Validation
 
@@ -2277,6 +2460,21 @@ The static half passed all 2,300 tests in 135.52 seconds. The live half then cre
 `hostbootstrap-test-run-53dce11d81dc3`, reached node readiness, returned the client/server version,
 deleted the cluster through the exact same closed-over plan, proved no matching container remained, and
 re-read the byte-identical sentinel outside the deletion boundary. The harness reported 1/1 passed.
+
+That dated evidence covers cluster ownership/readiness/cordon/release without the active automatic-exposure
+contract. It remains valid for those subjects but does not close Sprint 16.1 or the rewritten phase gate.
+
+**2026-08-22 — passed.** On Linux 7.0.0-28-generic x86_64 with GHC 9.12.4, Cabal 3.16.1.0,
+Docker 29.7.1, Kind 0.32.0, kubectl 1.36.4, and Kubernetes 1.36.1, the final rewritten gate passed.
+The warning-clean static half passed all 2,435 tests in 233.39 seconds; the same tree also passed the
+Python code gate and all 231 Python tests. The live half created and cordoned
+`hostbootstrap-test-run-5a2ebba3ffefc`, reached node readiness, concurrently asked Docker for two
+loopback-only publications of the same container listener without either host port, authenticated two
+distinct runtime-selected mappings, removed both exact container identities, and proved both names absent.
+It then returned the Kubernetes client/server version, deleted the Kind cluster through the retained plan,
+proved no matching node container remained, re-read the byte-identical durable-root sentinel, and reported
+1/1 passed. A prerequisite run without `kubectl` additionally refused before cluster creation with the exact
+missing-tool diagnostic instead of timing out.
 
 ## Remaining Work
 

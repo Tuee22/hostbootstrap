@@ -461,6 +461,7 @@ chartPreparationPlan =
                 "image@sha256:digest"
                 "workload-set:key"
                 "sha256:workload"
+                "service"
                 "api"
                 ["deployment:demo"]
                 (deployChartStep "chart" (StepFrame "cluster" "Cluster") (const (pure StepChanged)))

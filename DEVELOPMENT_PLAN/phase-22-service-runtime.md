@@ -172,6 +172,9 @@ Enter the service through the activation package rather than beside it.
 - `service run` measures its own binary, its mounted role wire, and its private bundle digests plus its instance
   identity, verifies the activation against the independently installed Activation key, and enters the phase machine.
 - A verification failure refuses to start rather than starting unverified.
+- Admission reserves or reopens the exact role plan inside one protected-store transaction, then closes that
+  transaction before the long-running role lifecycle begins. The lifecycle holds only its service/frame-specific
+  generation lease, so independently admitted services sharing one authority store can serve concurrently.
 - This sprint changes only the three declared core modules. It does not edit `HostBootstrapDemo.Commands` or own
   Helm/chart mutation; the worked-demo phase joins these activation semantics to exact cluster readiness.
 
@@ -234,6 +237,12 @@ narrowed installed role wire, reserves or exactly reopens its one-use plan, auth
 effect row against the signed ceiling, and runs the selected program only in Serve with Ready's exact handles.
 It never loads the sibling full project config. A refusal at any join exits before Serve.
 
+The protected entry covers only admission and exact plan opening. Its rank-2 continuation returns the sealed
+lifecycle action without running it; `runInstalledServiceProgram` releases the global transaction lock and only
+then executes Prereq through Exit under the plan's distinct service/frame liveness lease. `ActivationSpec` enters
+the protected store again from Serve, which would refuse or deadlock if the global transaction leaked across the
+callback.
+
 `ActivationSpec` has 35 focused cases, including a genuinely signed narrowed-role execution through
 Prereq → Acquire → Ready → Serve → Drain → Exit and exact consumed-plan reopen. `CLISpec` runs the actual
 `service run` command on linux-cpu against a measured test executable and proves that the signed accelerator
@@ -246,7 +255,9 @@ obvious one.
 
 #### Remaining Work
 
-None.
+None. The aggregate gate and live concurrent-role confirmation pass. Web and accelerator independently enter
+Serve from signed immutable revisions while sharing one authority store; each retains only its own
+service/frame generation lease after admission releases the global transaction lock.
 
 ## Remaining Work
 
@@ -259,6 +270,13 @@ None.
   activation, traversed the role engine, ran only the signed accelerator program, and exited cleanly.
 - 2026-08-22, linux-cpu: `cabal test all --ghc-options=-Werror` passed all 2,383 tests in 148.19 seconds,
   including compile-fail boundaries and `DocValidatorSpec`.
+- 2026-08-24, linux-cpu: focused `ActivationSpec` passed 35/35 under `-Werror`; its signed runtime case proves
+  Serve can enter the same protected store after admission releases the global transaction lock.
+- 2026-08-24, Ubuntu 24.04 linux-cpu/x86_64: `cabal test all --ghc-options=-Werror` passed all 2,454 core
+  tests in 148.82 seconds. A fresh Incus-backed Production run installed distinct signed revisions for web
+  (`cluster-service-3`) and accelerator (`daemon-3`); both deployments reached `1/1 Running` concurrently.
+  Process inspection showed each `service run` holding only its own role-generation lease, while no process
+  held the authority store's global `store.lock` during Serve.
 
 ## Documentation Requirements
 

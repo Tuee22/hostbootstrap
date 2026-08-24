@@ -4,76 +4,81 @@
 {-# LANGUAGE TypeFamilies #-}
 
 -- | The bare binary's owned live-gate configuration, plan, and assertions.
-module HostBootstrap.CLI.Bare
-    ( BareConfig
-    , BareTestConfig
-    , bareTestCodec
-    , bareTestInit
-    , bareAssemble
-    , bareInit
-    , bareStepPlan
-    , bareClusterLiveSuite
-    )
+module HostBootstrap.CLI.Bare (
+    BareConfig,
+    BareTestConfig,
+    bareTestCodec,
+    bareTestInit,
+    bareAssemble,
+    bareInit,
+    bareStepPlan,
+    bareClusterLiveSuite,
+)
 where
 
-import Control.Monad (foldM)
+import Control.Concurrent (forkFinally)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (bracket)
+import Control.Monad (foldM, forM)
+import Data.List (intercalate)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Dhall (FromDhall, ToDhall)
 import qualified Dhall
 import GHC.Generics (Generic)
-import HostBootstrap.Cluster.Lifecycle
-    ( ClusterPlan (clusterName, dataPath)
-    , ClusterProfile (TestCase)
-    , clusterCreate
-    , clusterDelete
-    , resolvePlan
-    )
-import HostBootstrap.Config.Class
-    ( AssemblyRequest (..)
-    , ConfigAssembly
-    , InitArgs (..)
-    , ProjectCfg (..)
-    , TestCfg (..)
-    , failConfigAssembly
-    , pureConfigAssembly
-    , withProjectCodec
-    )
+import HostBootstrap.Cluster.Lifecycle (
+    ClusterPlan (clusterName, dataPath),
+    ClusterProfile (TestCase),
+    clusterCreate,
+    clusterDelete,
+    resolvePlan,
+ )
+import HostBootstrap.Config.Class (
+    AssemblyRequest (..),
+    ConfigAssembly,
+    InitArgs (..),
+    ProjectCfg (..),
+    TestCfg (..),
+    failConfigAssembly,
+    pureConfigAssembly,
+    withProjectCodec,
+ )
 import HostBootstrap.Config.Schema (siblingProjectConfigPath)
 import HostBootstrap.Config.Vocab (harnessRunName)
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (CodecWitness, autoCodecWitness, requireCodecWitness)
 import HostBootstrap.Ensure (runTool)
-import HostBootstrap.Harness
-    ( Case (..)
-    , CaseId
-    , CaseResult (..)
-    , TestMatrixError (..)
-    , TestSuite (..)
-    , VariantId
-    , mkCaseId
-    , mkTestMatrix
-    , mkVariantId
-    , variantDraft
-    , variantDraftId
-    )
-import HostBootstrap.HostConfig (HostConfig, buildHostConfig)
-import HostBootstrap.HostTool (HostTool (Docker, Kind, Kubectl))
+import HostBootstrap.Harness (
+    Case (..),
+    CaseId,
+    CaseLifecycle (AssertOnce),
+    CaseResult (..),
+    TestMatrixError (..),
+    TestSuite (..),
+    VariantId,
+    mkCaseId,
+    mkTestMatrix,
+    mkVariantId,
+    variantDraft,
+    variantDraftId,
+ )
+import HostBootstrap.HostConfig (HostConfig, buildHostConfig, resolveMaybe)
+import HostBootstrap.HostTool (HostTool (Docker, Kind, Kubectl), toolCommandName)
 import HostBootstrap.Lifecycle.Execution (stepExecutionHostConfig)
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot)
-import HostBootstrap.Step
-    ( Step
-    , StepAction
-    , StepFrame (..)
-    , StepObservation (..)
-    , StepPlan
-    , StepPlanError (..)
-    , TeardownOutcome (..)
-    , deployKindStep
-    , mkStepPlan
-    , reversedBy
-    )
+import HostBootstrap.Step (
+    Step,
+    StepAction,
+    StepFrame (..),
+    StepObservation (..),
+    StepPlan,
+    StepPlanError (..),
+    TeardownOutcome (..),
+    deployKindStep,
+    mkStepPlan,
+    reversedBy,
+ )
 import HostBootstrap.Substrate (detect)
 import System.Directory (createDirectoryIfMissing)
 import System.Exit (ExitCode (..), die)
@@ -205,14 +210,16 @@ bareClusterAction plan runName execution = do
 bareClusterLiveSuite :: String -> TestSuite
 bareClusterLiveSuite progName =
     TestSuite
-        (pure (Right ()))
-        (const (readBarePlan progName))
-        [Case bareCaseId 1 True]
+        bareLivePrecondition
+        (\_ _ -> readBarePlan progName)
+        [Case bareCaseId 1 True AssertOnce]
         assertLive
         assertReversed
   where
     assertLive _ _ = do
         host <- resolveBareHostConfig
+        plan <- readBarePlan progName
+        runtimeExposureAssertion host plan >>= either die pure
         version <- runTool host Kubectl ["version", "-o", "json"]
         case version of
             Right (ExitSuccess, out, _) -> putStrLn ("cluster-live: kubectl version " ++ out)
@@ -229,10 +236,15 @@ bareClusterLiveSuite progName =
         plan <- readBarePlan progName
         host <- resolveBareHostConfig
         remaining <-
-            runTool host Docker
-                [ "ps", "-a", "--filter"
+            runTool
+                host
+                Docker
+                [ "ps"
+                , "-a"
+                , "--filter"
                 , "label=io.x-k8s.kind.cluster=" ++ clusterName plan
-                , "--format", "{{.ID}}"
+                , "--format"
+                , "{{.ID}}"
                 ]
         case remaining of
             Right (ExitSuccess, out, _) | null (lines out) -> pure ()
@@ -244,6 +256,18 @@ bareClusterLiveSuite progName =
         case bareHarnessRun cfg of
             Just runName | sentinel == bareSentinelBytes runName -> pure ()
             _ -> die "cluster-live: durable-root sentinel changed across cluster deletion"
+
+bareLivePrecondition :: IO (Either String ())
+bareLivePrecondition = do
+    substrate <- detect
+    case substrate of
+        Left err -> pure (Left err)
+        Right detected -> do
+            host <- buildHostConfig detected
+            let missing = filter ((== Nothing) . resolveMaybe host) [Docker, Kind, Kubectl]
+            pure $ case missing of
+                [] -> Right ()
+                _ -> Left ("cluster-live: missing required host tools: " ++ intercalate ", " (map toolCommandName missing))
 
 readBareConfig :: String -> IO (BareConfig ())
 readBareConfig progName = do
@@ -263,6 +287,100 @@ bareSentinelPath plan = dataPath plan </> "cluster-live.sentinel"
 
 bareSentinelBytes :: Text -> String
 bareSentinelBytes runName = "hostbootstrap-cluster-live:" ++ T.unpack runName ++ "\n"
+
+{- | Exercise Docker's atomic loopback allocation independently of Kind's
+configuration.  Both containers are created at the same time without a host
+port argument, inspected by immutable identity, and removed before the case may
+report success.
+-}
+runtimeExposureAssertion :: HostConfig -> ClusterPlan -> IO (Either String ())
+runtimeExposureAssertion host plan = do
+    imageResult <- runTool host Docker ["inspect", "--format", "{{.Image}}", clusterName plan <> "-control-plane"]
+    case successfulLine "inspect live-gate node image" imageResult of
+        Left refusal -> pure (Left refusal)
+        Right image ->
+            bracket
+                (createBoth image)
+                (cleanupCreated . successfulIdentities)
+                ( \created -> case traverse (successfulLine "create live-gate relay") created of
+                    Left refusal -> pure (Left refusal)
+                    Right identities -> do
+                        mappings <- traverse inspectMapping identities
+                        pure $ do
+                            ports <- sequence mappings
+                            case ports of
+                                [first, second]
+                                    | first /= second -> Right ()
+                                    | otherwise -> Left "cluster-live: concurrent runtime allocations selected the same host port"
+                                _ -> Left "cluster-live: concurrent runtime allocation did not return two mappings"
+                )
+  where
+    names = [clusterName plan <> "-exposure-a", clusterName plan <> "-exposure-b"]
+
+    createBoth image = do
+        answers <- forM names (const newEmptyMVar)
+        _ <-
+            sequence
+                [ forkFinally
+                    ( runTool
+                        host
+                        Docker
+                        [ "container"
+                        , "run"
+                        , "--detach"
+                        , "--name"
+                        , name
+                        , "--publish"
+                        , "127.0.0.1::20000/tcp"
+                        , "--entrypoint"
+                        , "/bin/sleep"
+                        , image
+                        , "infinity"
+                        ]
+                    )
+                    (putMVar answer)
+                | (name, answer) <- zip names answers
+                ]
+        traverse (fmap (either (Left . show) id) . takeMVar) answers
+
+    successfulIdentities = foldr (\answer found -> either (const found) (: found) (successfulLine "create live-gate relay" answer)) []
+
+    inspectMapping identity = do
+        inspected <-
+            runTool
+                host
+                Docker
+                [ "inspect"
+                , "--format"
+                , "{{(index (index .NetworkSettings.Ports \"20000/tcp\") 0).HostIp}}:{{(index (index .NetworkSettings.Ports \"20000/tcp\") 0).HostPort}}"
+                , identity
+                ]
+        pure $ do
+            binding <- successfulLine "inspect live-gate relay mapping" inspected
+            case break (== ':') binding of
+                ("127.0.0.1", ':' : port)
+                    | not (null port) && all (`elem` ['0' .. '9']) port -> Right port
+                _ -> Left ("cluster-live: runtime returned a non-loopback or malformed mapping: " <> binding)
+
+    cleanupCreated identities = do
+        _ <- traverse (\identity -> runTool host Docker ["container", "rm", "--force", identity]) identities
+        remaining <-
+            traverse
+                (\name -> runTool host Docker ["container", "ls", "--all", "--quiet", "--filter", "name=^/" <> name <> "$"])
+                names
+        case traverse (successfulLine "verify live-gate relay absence") remaining of
+            Right ["", ""] -> pure ()
+            _ -> die "cluster-live: an exposure allocation container remains after cleanup"
+
+successfulLine :: String -> Either String (ExitCode, String, String) -> Either String String
+successfulLine operation outcome = case outcome of
+    Left refusal -> Left ("cluster-live: " <> operation <> " failed: " <> refusal)
+    Right (ExitFailure code, _, err) -> Left ("cluster-live: " <> operation <> " failed (exit " <> show code <> "): " <> err)
+    Right (ExitSuccess, stdoutText, "") -> case lines stdoutText of
+        [] | null stdoutText -> Right ""
+        [line] | stdoutText == line <> "\n" -> Right line
+        _ -> Left ("cluster-live: " <> operation <> " returned malformed output")
+    Right (ExitSuccess, _, err) -> Left ("cluster-live: " <> operation <> " wrote stderr on success: " <> err)
 
 resolveBareHostConfig :: IO HostConfig
 resolveBareHostConfig = detect >>= either die buildHostConfig

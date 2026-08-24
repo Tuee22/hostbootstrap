@@ -84,7 +84,8 @@ scope/identity-wrapped target split is described in
 
 `project init` is a config-free writer whose default mode bootstraps the **root** config. With no
 role/output/write-policy flags it writes the executable-sibling host-orchestrator config — the one frame
-with no parent — and refuses an existing output:
+with no parent — provisions or validates that installation's handoff pair and distinct build-signing key,
+and refuses an existing output:
 
 ```sh
 <project> project init --cpu 6 --memory 10GiB --storage 80GiB --ha-replicas 1
@@ -96,6 +97,10 @@ leaves it byte-for-byte untouched; if both flags are supplied, the current imple
 `--force` precedence. Thus fresh-root behavior is the default, not a restriction on every explicit
 writer invocation. The parser uses one shared `InitArgs` value; role additions pass through the closed
 `roleAdditionAllowed` relation and `addRole` validating smart constructor before a config is rendered.
+Identity provisioning is narrower than config generation: it runs only for the root role at the executable's
+actual sibling config path. It retains valid material across `--force`, repairs a missing public half from the
+retained secret, and refuses an orphaned public half, malformed key, or mismatched pair. Explicit child roles,
+`service init`, and arbitrary output paths never mint root secrets.
 
 This ordinary initializer is not resource ownership evidence. Harness-generated config uses the stronger
 `HostBootstrap.Harness.GeneratedConfig` bracket, which binds an exact file identity and payload and

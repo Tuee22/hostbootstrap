@@ -1,4 +1,3 @@
-
 module CompileFailSpec (tests) where
 
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf, stripPrefix)
@@ -1047,7 +1046,7 @@ compileFailCases rejects rejectsWith =
     , rejectsWith
         "CompatibilityClusterInputs.hs"
         [ "with actual type: LifecyclePlan scope planId"
-        , "with actual type: DependencySnapshot scope planId"
+        , "with actual type ‘DependencySnapshot scope planId’"
         ]
     , rejectsWith
         "CallerForgedClusterProbe.hs"
@@ -1094,6 +1093,28 @@ compileFailCases rejects rejectsWith =
     , rejectsWith
         "ImportClusterBackendInternal.hs"
         ["it is a hidden module in the package 'hostbootstrap-core-0.1.0.0'"]
+    , rejectsWith
+        "ImportClusterExposureInternal.hs"
+        ["it is a hidden module in the package 'hostbootstrap-core-0.1.0.0'"]
+    , rejectsWith
+        "ForgeResolvedExposure.hs"
+        ["an item called ‘ResolvedExposure’ is exported, but it does not export any children"]
+    , rejectsWith
+        "PrepareCallerSelectedHostPort.hs"
+        ["Module 'HostBootstrap.Cluster.Backend' does not export 'mkLoopbackExposure'"]
+    , rejectsWith
+        "ConstructRawLocalExposure.hs"
+        ["Module 'HostBootstrap.Network' does not export 'loopbackExposure'"]
+    , rejectsWith
+        "ConstructRawHostEndpoint.hs"
+        ["Module 'HostBootstrap.Network' does not export 'hostLocalEndpoint'"]
+    , rejectsWith
+        "CoerceExposureAuthorityRoles.hs"
+        [ "Couldn't match type 'ScopeA' with 'ScopeB' arising from a use of 'coerce'"
+        , "Couldn't match type 'PlanA' with 'PlanB' arising from a use of 'coerce'"
+        , "Couldn't match type 'ClusterA' with 'ClusterB' arising from a use of 'coerce'"
+        , "Couldn't match type 'ServiceA' with 'ServiceB' arising from a use of 'coerce'"
+        ]
     , rejectsWith
         "OpenClusterBackendExecutor.hs"
         [ "Module 'HostBootstrap.Cluster.Backend' does not export 'ClusterCommandResult(..)'"

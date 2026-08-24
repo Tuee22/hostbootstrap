@@ -342,6 +342,15 @@ foldLeaf (LiftContext layers) leaf = build layers
     build [ViaWsl2VM vm]
         | LifecycleProcessCmd binary argv <- leaf =
             DispatchTool Wsl (["-d", wsl2Distro vm, "--cd", "/", "--", "sudo", "-n", "-H", binary] ++ argv)
+    build (ViaVM vm : rest)
+        | LifecycleProcessCmd{} <- leaf =
+            DispatchTool Incus (["exec", vmName vm, "--cwd", "/", "-T", "--"] ++ insideLifecycleVM rest)
+    build (ViaLimaVM vm : rest)
+        | LifecycleProcessCmd{} <- leaf =
+            DispatchTool Lima (["shell", limaName vm, "--workdir", "/", "--", "sudo", "-n", "-H"] ++ insideLifecycleVM rest)
+    build (ViaWsl2VM vm : rest)
+        | LifecycleProcessCmd{} <- leaf =
+            DispatchTool Wsl (["-d", wsl2Distro vm, "--cd", "/", "--", "sudo", "-n", "-H"] ++ insideLifecycleVM rest)
     build (ViaVM vm : rest) = DispatchTool Incus (execVMArgs vm (insideVM rest))
     build (ViaLimaVM vm : rest) = DispatchTool Lima (shellVMArgs vm (insideVM rest))
     build (ViaWsl2VM vm : rest) = DispatchTool Wsl (wslExecArgs (wsl2Distro vm) (insideVM rest))
@@ -353,6 +362,19 @@ foldLeaf (LiftContext layers) leaf = build layers
     insideVM (ViaLimaVM vm : rest) = toolCommandName Lima : shellVMArgs vm (insideVM rest)
     insideVM (ViaWsl2VM vm : rest) = toolCommandName Wsl : wslExecArgs (wsl2Distro vm) (insideVM rest)
     insideVM (ViaContainer c : _) = toolCommandName Docker : containerRunArgs c (leafContainerInner leaf)
+
+    insideLifecycleVM [] = leafInVMArgv leaf
+    insideLifecycleVM (ViaVM vm : rest) =
+        toolCommandName Incus
+            : (["exec", vmName vm, "--cwd", "/", "-T", "--"] ++ insideLifecycleVM rest)
+    insideLifecycleVM (ViaLimaVM vm : rest) =
+        toolCommandName Lima
+            : (["shell", limaName vm, "--workdir", "/", "--", "sudo", "-n", "-H"] ++ insideLifecycleVM rest)
+    insideLifecycleVM (ViaWsl2VM vm : rest) =
+        toolCommandName Wsl
+            : (["-d", wsl2Distro vm, "--cd", "/", "--", "sudo", "-n", "-H"] ++ insideLifecycleVM rest)
+    insideLifecycleVM (ViaContainer c : _) =
+        toolCommandName Docker : containerRunArgs c (leafContainerInner leaf)
 
 {- | Fold a context stack and a subcommand of /this binary/ into the host
 invocation — the 'SelfSub' special case of 'foldLeaf'.

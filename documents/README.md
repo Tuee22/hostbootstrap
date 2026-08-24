@@ -66,7 +66,7 @@ defers to it rather than re-deriving it. The command surface is summarized in
   parallel execution selector or Dhall representation.
 - [architecture/harness_workflow.md](architecture/harness_workflow.md) — the per-case `runMatrix` loop,
   compiled-case/config-variant split, exact Harness-plan lifecycle, assertion-only `TestSuite`, generated
-  config and run ownership, and the still-open engine-owned same-run recreate assertion.
+  config and run ownership, and the engine-owned same-run recreate assertion protocol.
 - [architecture/durable_state.md](architecture/durable_state.md) — the **canonical home of the
   durable-state contract**: one canonical host-root authority, typed substrate projections,
   provider-local guest aliases, direct-host canonical-path bypass, the clause-holding guest-alias backend
@@ -87,9 +87,9 @@ defers to it rather than re-deriving it. The command surface is summarized in
   idempotent reconcile outcomes, one-use session/fence permits, project-mode exclusion, exhaustive
   migration/close recovery, verified ownership receipts, recursive teardown, and their validation gates.
 - [architecture/network_reachability.md](architecture/network_reachability.md) — the canonical target
-  for scope-indexed endpoints and clients, proof-gated registry blob delivery, opaque finalized
-  registry plans, and route-specific readiness that makes an external client redirect to a
-  cluster-only object store unrepresentable.
+  for scope-indexed endpoints and clients, runtime-owned automatic loopback exposure, authenticated resolved
+  endpoint carriage, proof-gated registry blob delivery, opaque finalized registry plans, and route-specific
+  readiness that makes an external client redirect to a cluster-only object store unrepresentable.
 - [architecture/unrepresentable_state.md](architecture/unrepresentable_state.md) — the **canonical home
   of the method** every boundary above applies: private constructors with validating producers, rank-2
   scope containment, closed sums with total eliminators, and phantom indices — plus the compile-fail
@@ -145,9 +145,9 @@ defers to it rather than re-deriving it. The command surface is summarized in
 - [engineering/durable_windows_runs.md](engineering/durable_windows_runs.md) — why the long demo gate must
   be detached from the Codex/Claude process tree on Windows, the durable launcher and exit-sentinel
   protocol, and why macOS/Linux runs remain ordinary foreground commands.
-- [engineering/cluster_lifecycle.md](engineering/cluster_lifecycle.md) — kind/Helm bring-up and teardown
-  as chain steps under `project up`/`project down`/`project destroy`; `project down` deletes kind clusters
-  while preserving durable state.
+- [engineering/cluster_lifecycle.md](engineering/cluster_lifecycle.md) — Kind/Helm bring-up, runtime-owned
+  exposure, recovery, and teardown as chain steps under `project up`/`project down`/`project destroy`;
+  `project down` deletes owned relays and Kind clusters while preserving durable state.
 - [engineering/base_image.md](engineering/base_image.md) — rolling base selection, contents, native
   architecture, and publication boundary.
 - [engineering/build_release.md](engineering/build_release.md) — base-image build and publish
@@ -205,7 +205,7 @@ stop or remove a provider. Child-to-parent lifecycle interpretation remains a ta
 [architecture/lifecycle_state_model.md](architecture/lifecycle_state_model.md)).
 
 - **The chain is the current forward representation.** Cluster bring-up runs through `deploy-kind`,
-  `deploy-minio`, `deploy-registry`, `push-image`, `deploy-chart`, and port exposure; the
+  `deploy-minio`, `deploy-registry`, `push-image`, `deploy-chart`, and runtime-owned exposure; the
   substrate-specific accelerator daemon then runs in-cluster or on the host. In the current demo,
   `context-init`'s action body is a no-op announcement; VM projection/delivery happens inside the
   composite `build-pb` action and container projection/delivery happens through the descent that
@@ -219,8 +219,8 @@ stop or remove a provider. Child-to-parent lifecycle interpretation remains a ta
   introspect and visualize the current frame, including schema and render output.
 - **`test init` / `test run <case-id>|all`** drive the standardized harness over compiled Haskell cases
   and generated config variants. Each variant retains one exact Harness-scoped plan and its isolated
-  `.test_data/<runId>` root through common forward/reverse interpretation; the same-run durable recreate
-  assertion remains open; see
+  `.test_data/<runId>` root through common recursive forward/reverse interpretation; restart-spanning cases
+  cross a protected fresh invocation and exact plan rebind without receiving lifecycle authority; see
   [harness workflow](architecture/harness_workflow.md).
 - **The demo contributes its `Web` service variant** (run by `service run` in the chart pod; the build-time
   bridge folds into the build-image step). The command surface is fixed, so VM, Incus, web, and other

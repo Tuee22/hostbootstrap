@@ -33,8 +33,7 @@ current-frame Chain brings up the kind cluster, loads the already-built
 NodePort serves before any case runs. The `e2e-tabs` case in the harness's case
 matrix does not bring up its own stack; it only starts the same project image as
 a one-off container with `--network host` (the VM host network). That container
-sets `BASE_URL` to the NodePort the VM publishes on its own localhost
-(`http://localhost:30080`), sets `NODE_PATH` to
+receives `BASE_URL` only from the exact runtime-resolved web exposure in its own scope, sets `NODE_PATH` to
 `/opt/build/node/global/lib/node_modules` as above, and runs `playwright test`
 from `/workspace/demo/playwright`. Its `playwright.config.ts` declares one project
 per engine, so every spec runs on all three browsers the base image installs
