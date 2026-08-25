@@ -99,11 +99,10 @@ defers to it rather than re-deriving it. The command surface is summarized in
 ## Engineering
 
 - [engineering/shared_host_resource_protocol.md](engineering/shared_host_resource_protocol.md) — the
-  target five-project host-sharing topology: a standalone neutral Haskell kernel, independently
-  versioned resource-family and mechanism releases, signed static catalogs, project-local adapters
-  and anchors, direct kernel locks, base/turn leases, progressive MISU assurance, and explicit
-  later amoebius ownership without adding a new seed-to-seed dependency, an early seed-to-amoebius
-  dependency, or a shared daemon.
+  not-adopted record of how hostbootstrap would participate in the operator-installed host claim
+  ledger: `Transient` claims for toolchain installation, native compilation, and base-image builds,
+  attached at the pre-binary minimum-assertion step because the Haskell binary is the thing being
+  built, reusing the same portable file-lock primitive the Windows global wall already opens.
 - [engineering/schema.md](engineering/schema.md) — the project-local `<project>.dhall` schema that
   every project binary reads beside itself.
 - [engineering/secrets.md](engineering/secrets.md) — the implemented `SecretRef` vocabulary and the
