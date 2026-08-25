@@ -4,79 +4,108 @@
 **Supersedes**: N/A
 **Referenced by**: [Documentation index](../README.md)
 
-> **Purpose**: Record how hostbootstrap would participate in the shared host claim ledger installed on a
-> development machine, and the exact seam it would attach to.
-> **Read this if**: you are deciding whether a toolchain install or a base-image build may proceed on a
-> machine shared with another project.
+> **Purpose**: Record what participation in the shared host claim ledger would mean for hostbootstrap, and
+> what adopting it would require.
 
-**Not adopted.** No hostbootstrap code reads or writes the ledger, no command depends on it, and no phase
-owns the work. The ledger is host configuration owned by the machine's operator; its authority is the
-installed root and the `spec-version` that root carries, never a copy of a document in any repository,
-including this one. This file records only what hostbootstrap would do, so no dependency on another project
-is created by writing it.
+## 1. What this records
 
-## Current Status
+No code in this repository reads or writes the ledger, and no command depends on it. This file records what
+participation would mean, so that a later decision starts from a written position rather than from nothing.
+Writing it creates no dependency on another project.
 
-Draft record of an adoption boundary. It establishes no implementation status, no conformance claim, and no
-change to current library relationships, which remain governed by the
-[library hierarchy](../architecture/library_hierarchy.md).
+The ledger is host configuration owned by the machine's operator, in the same category as an `/etc` file or a
+port assignment. Every participant resolves one fixed path and no other: `$HOME/.hostclaim` on Linux and
+Darwin, `%UserProfile%\.hostclaim` on Windows. Its authority is that installed root and the `spec-version`
+the root carries, never a copy of a document in any repository, including this one.
 
-## The problem here
+The path is never repository-relative, never version-suffixed, and never selected by an environment
+variable. Two participants that resolve different paths silently fail to coordinate, which is the one
+failure the ledger exists to prevent, so the resolution rule admits no configuration.
 
-Existing resource handling is project-local by design and says so: direct Linux GPU outer work is uncapped,
-bare-Linux storage has no runtime quota or image-garbage-collection wall, existing VM sizing is not uniformly
-reconciled, and the WSL2 ceiling is one per-user utility-VM wall rather than a per-distribution one. The
-base-image builder divides the host budget across the builds it starts itself and accounts for nothing else
-running on the machine.
+## 2. What the ledger is
 
-Native compilation and base-image builds are among the heaviest operations this project performs, and two of
-them started from two repositories will contend for the same memory with no shared object naming that
-contention.
+A per-user root holding one fixed-size record per claim, plus a budget the operator edits and a single lock
+that serializes admission. Installation is creating a directory. Enrolling a participant is creating one
+directory named after it. There is no privileged installer, no signing ceremony, and no key custody.
 
-## What hostbootstrap would claim
+Five properties carry the design:
 
-`Transient` claims for toolchain installation, native compilation, and base-image builds. `Transient` is the
-honest kind for this work: it is foreground and supervised, and when the process dies the operating system
-has genuinely reclaimed what was charged, so hostbootstrap may release its own stale claim on its next run
-without an operator.
+- **A participant writes only beneath its own directory.** Every record has exactly one writer, so a torn
+  write is the only reachable corruption and its cost falls on its own author.
+- **Free is a positive value a writer must deliberately produce.** A truncated file, an unfamiliar revision,
+  and a corrupted byte all decode as occupied, so no failure of the encoding can release capacity.
+- **Every claim is created inside one short critical section.** Participants never hold a partial set of
+  objects and never acquire objects in different orders, so no ordering rule is needed.
+- **Charges are declared in a frozen set of dimensions**, so two participants that have never heard of each
+  other still add their consumption the same way.
+- **Conflicts are a prefix test over opaque identifiers.** A participant that has never heard of a hardware
+  family still refuses to double-book its domains, so adding hardware costs no revision.
 
-Charges come from the budget the builder already computes, extended to cover the whole invocation rather than
-only its own sibling builds.
+Each claim declares one of two kinds, and the kind is a statement about what the holder's death proves.
+`Transient` means the operating system has reclaimed everything charged. `Persistent` means the holder's
+death proves nothing, and is required for anything that outlives a process — a container, a cluster, a
+virtual machine, a mount, retained bytes, or a request to an external system that may still complete.
 
-Anything that outlives the invoking command — a VM, an Incus or Lima instance, a registered WSL2
-distribution, a retained image store — is `Persistent` if it is ever claimed at all, and is out of scope for a
-first adoption.
+## 3. What a granted claim establishes, and what it does not
 
-## Where it would attach
+A granted claim establishes two things: no other conforming participant holds a conflicting domain, and the
+sum of declared charges plus the operator's reserve fits the budget.
 
-At the pre-binary minimum-assertion step in the Python bootstrapper, before the toolchain is installed and
-before the native build starts.
+That is a statement about **declarations**, not about behaviour. No limit is applied and no device is
+fenced. A participant that declares four gibibytes and then allocates twelve is not detected. The ledger is
+advisory between cooperating programs on one machine, offers no defence against a program that does not
+participate, and none against a hostile process running as the same operating-system user.
 
-This placement is the reason the ledger is specified as a file format rather than a package. The Haskell
-binary does not exist yet at that point in the run — producing it is the work being claimed — so a shared
-Haskell library could never govern it. A reader of the record format is a small amount of Python, and the
-heaviest operations in this repository become claimable on the first day rather than never.
+Stating this plainly is the design rather than an apology for it. The failure the ledger actually prevents
+is the common one: two programs that each observed the machine correctly, and each then started work the
+machine cannot hold together.
 
-The primitive is also already present here. The Windows global wall opens an exclusive per-user store outside
-any repository, using the portable file-lock primitive that is `flock`/`fcntl` on POSIX and `LockFileEx` on
-Windows, with a worked-out ownership and compare-and-swap argument. A ledger participant is that same
-primitive pointed at a shared root, not a new mechanism.
+## 4. Release-directed work is always admissible
 
-## What is not changed
+Work directed at releasing a claim the participant already holds is never refused.
 
-- The root coordinator remains the sole interpreter of project desired state, and the protected store remains
-  the sole authority for mode, plan snapshot, operation journal, ownership binding, and recovery.
-- No new long-lived process is introduced. A claim is a record plus, for `Transient` work, a lock the running
-  process already holds; nothing needs to survive it.
-- No enforcement changes. The uncapped and unreconciled cases listed above stay uncapped and unreconciled; a
-  claim declares demand, it does not bound it.
+Without that rule the protocol deadlocks against itself, because tearing something down is also a mutation
+of the host. A refused admission would prevent cleanup; absent cleanup there is no evidence the effect is
+gone; absent that evidence the claim cannot be released; and the contention persists. A participant must
+therefore never make its own cleanup path conditional on an admission it could be refused.
 
-## Open before adoption
+## 5. What the ledger does not cover
 
-- No phase owns the adapter, the record reader, or the pre-binary placement.
-- A claim inside a guest — an Incus or Lima instance, a WSL2 distribution — coordinates nothing unless the
-  host root is mounted into it at the same path. A guest-local file with the same name is a different object.
-  Work executed inside a guest is honestly out of scope until that is settled.
-- The five substrates and four providers are closed enumerations here. The ledger's families are deliberately
-  not that enumeration, and the adapter must not couple them, or hardware this project does not support could
-  not be accounted for.
+Admission is taken once, when the claim is made. It cannot observe a participant that declares honestly and
+then consumes progressively — a store that fills during a long run, a cache that grows, an image set that
+accumulates. Contention of that shape is the kind a shared development machine produces most often, and it
+is outside what a one-shot admission decision can see.
+
+This is a real limit, not a gap awaiting a patch. A participant that needs a bound on progressive
+consumption applies its own mechanism and does not expect the ledger to supply one.
+
+## 6. The complementary mechanism
+
+Observing foreign work at the point of use is a different mechanism with a different reach, and the two are
+complementary rather than alternatives.
+
+Observation binds a peer that never opted in, needs no installed root and no agreement, and is available to
+any participant unilaterally. What it cannot see is capacity with no process to observe: an idle cluster, a
+stopped virtual machine, a registered guest, or retained bytes on disk. It also does not reach across
+language ecosystems, because it must already know what a peer's processes are called.
+
+The ledger covers exactly what observation cannot — persistent, processless, cross-language capacity — and
+observation covers what a one-shot declaration cannot. Neither subsumes the other, and a participant may
+adopt either without the other.
+
+## 7. What adoption would require
+
+Adoption is not a document change, and the work is a participant's own. Three obligations hold for any
+participant, and none of them is stated here for any particular one:
+
+- **Name the seams.** Every path that acquires capacity needs a claim, and every path that releases it needs
+  a release. A participant that names one seam covers one seam; the paths it did not name stay uncovered,
+  and a claim taken on one of them says nothing about the others.
+- **Derive the charge once.** A participant that already computes what it needs converts that figure rather
+  than authoring a second one. Two independently authored figures drift, and the drift is silent.
+- **Establish release evidence.** A claim is only as good as its release. What counts as established is the
+  participant's business, but a `Persistent` claim released without evidence is worse than no claim, because
+  it reports capacity that is still spent.
+
+A participant that cannot meet these keeps observing the machine and says so, rather than writing a record
+nothing consults.
