@@ -98,11 +98,6 @@ defers to it rather than re-deriving it. The command surface is summarized in
 
 ## Engineering
 
-- [engineering/shared_host_resource_protocol.md](engineering/shared_host_resource_protocol.md) — the
-  host resource coordination policy: kernel scopes rather than machines, an open domain algebra that
-  conflicts by prefix at a segment boundary, one grant held by the supervising process with standing
-  capacity declared as a reserve instead, the measured lock-mechanism results the OFD mandate rests
-  on, and an explicit register of what is not verified.
 - [engineering/schema.md](engineering/schema.md) — the project-local `<project>.dhall` schema that
   every project binary reads beside itself.
 - [engineering/secrets.md](engineering/secrets.md) — the implemented `SecretRef` vocabulary and the
