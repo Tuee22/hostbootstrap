@@ -45,7 +45,7 @@ import HostBootstrap.Step (
     StepFrame (StepFrame),
     StepObservation (StepChanged, StepConflict),
     StepPlan,
-    TeardownOutcome (TeardownReleased),
+    TeardownOutcome (TeardownFailed, TeardownReleased),
     descendsVia,
     mkStepPlan,
     projectStep,
@@ -80,6 +80,12 @@ tests =
             withFixtureEnvironment True $ \root _ -> do
                 runPublicProcess root True "up" >>= (@?= ExitFailure 1)
                 runPublicProcess root True "destroy" >>= (@?= ExitSuccess)
+        , testCase "a failed reverse operation is settled once and terminates the child" $
+            withFixtureEnvironmentFor False True $ \root _ -> do
+                runPublicProcessFor root False True "up" >>= (@?= ExitSuccess)
+                runPublicProcessFor root False True "destroy" >>= (@?= ExitFailure 1)
+                attempts <- lines <$> readFile (root </> "reverse-attempts")
+                length (filter (== "container") attempts) @?= 1
         , testCase "the local provider reprobe kernel returns only nonce-bound observation data" $ do
             let package = ByteStringChar8.pack "35:hostbootstrap/runtime-dependency/v18:provider4:plan5:scope8:resource5:frame6:origin1:77:journal7:receipt26:runtime://provider/reprobe3:100"
             request <- either (assertFailure . Text.unpack) pure (providerDependencyProbeRequestFields package "recursive-nonce")
@@ -143,8 +149,9 @@ runLifecycleChild = do
     project <- normalizeExecutableIdentity <$> getExecutablePath
     root <- getEnv "HOSTBOOTSTRAP_RECURSIVE_FIXTURE_ROOT"
     failContainer <- (== Just "1") <$> lookupEnv "HOSTBOOTSTRAP_RECURSIVE_FIXTURE_FAIL"
+    failCleanup <- (== Just "1") <$> lookupEnv "HOSTBOOTSTRAP_RECURSIVE_FIXTURE_CLEANUP_FAIL"
     withArgs ["--hostbootstrap-lifecycle-child"] $
-        CLI.runHostBootstrapCLI (Text.unpack project) (fixtureSpec root failContainer)
+        CLI.runHostBootstrapCLI (Text.unpack project) (fixtureSpec root failContainer failCleanup)
 
 {- | Re-enter the public command in a process whose host-tool discovery sees
 only the fixture's explicit environment, leaving the suite process alone.
@@ -154,8 +161,9 @@ runLifecycleRoot verb = do
     project <- normalizeExecutableIdentity <$> getExecutablePath
     root <- getEnv "HOSTBOOTSTRAP_RECURSIVE_FIXTURE_ROOT"
     failContainer <- (== Just "1") <$> lookupEnv "HOSTBOOTSTRAP_RECURSIVE_FIXTURE_FAIL"
+    failCleanup <- (== Just "1") <$> lookupEnv "HOSTBOOTSTRAP_RECURSIVE_FIXTURE_CLEANUP_FAIL"
     withArgs ["project", verb] $
-        CLI.runHostBootstrapCLI (Text.unpack project) (fixtureSpec root failContainer)
+        CLI.runHostBootstrapCLI (Text.unpack project) (fixtureSpec root failContainer failCleanup)
 
 runDestroyInterruptionProbe :: FilePath -> IO ()
 runDestroyInterruptionProbe readyPath = do
@@ -166,7 +174,7 @@ runDestroyInterruptionProbe readyPath = do
 spawnDestroyInterruptionProbe :: FilePath -> FilePath -> IO ProcessHandle
 spawnDestroyInterruptionProbe root readyPath = do
     executable <- getExecutablePath
-    childEnvironment <- recursiveFixtureEnvironment root False
+    childEnvironment <- recursiveFixtureEnvironment root False False
     (_, _, _, child) <-
         createProcess
             (proc executable ["--hostbootstrap-destroy-interruption-probe", readyPath])
@@ -175,7 +183,10 @@ spawnDestroyInterruptionProbe root readyPath = do
     pure child
 
 withFixtureEnvironment :: Bool -> (FilePath -> CLI.ProjectSpec Fixture.ProjectConfig Fixture.TestConfig -> IO result) -> IO result
-withFixtureEnvironment failContainer use =
+withFixtureEnvironment failContainer = withFixtureEnvironmentFor failContainer False
+
+withFixtureEnvironmentFor :: Bool -> Bool -> (FilePath -> CLI.ProjectSpec Fixture.ProjectConfig Fixture.TestConfig -> IO result) -> IO result
+withFixtureEnvironmentFor failContainer failCleanup use =
     withSystemTempDirectory "hostbootstrap-recursive-lifecycle" $ \root -> do
         executable <- getExecutablePath
         project <- pure (normalizeExecutableIdentity executable)
@@ -188,21 +199,24 @@ withFixtureEnvironment failContainer use =
                 createDirectory (root </> "container")
                 writeProjectConfigFile Fixture.projectConfigCodec configPath (Fixture.defaultProjectConfig project (Text.pack root) HostOrchestrator)
                 mapM_ (\tool -> doesFileExist (fixtureTools </> tool) >>= assertBool ("missing fixture tool " <> tool)) ["incus", "docker"]
-                use root (fixtureSpec root failContainer)
+                use root (fixtureSpec root failContainer failCleanup)
             )
             `finally` restore
   where
     removeIfPresent path = doesFileExist path >>= \present -> if present then removeFile path else pure ()
 
 runPublicProcess :: FilePath -> Bool -> String -> IO ExitCode
-runPublicProcess root failContainer verb = do
+runPublicProcess root failContainer = runPublicProcessFor root failContainer False
+
+runPublicProcessFor :: FilePath -> Bool -> Bool -> String -> IO ExitCode
+runPublicProcessFor root failContainer failCleanup verb = do
     executable <- getExecutablePath
-    childEnvironment <- recursiveFixtureEnvironment root failContainer
+    childEnvironment <- recursiveFixtureEnvironment root failContainer failCleanup
     (_, _, _, child) <- createProcess (proc executable ["--hostbootstrap-recursive-lifecycle-root", verb]){env = Just childEnvironment}
     waitForProcess child
 
-recursiveFixtureEnvironment :: FilePath -> Bool -> IO [(String, String)]
-recursiveFixtureEnvironment root failContainer = do
+recursiveFixtureEnvironment :: FilePath -> Bool -> Bool -> IO [(String, String)]
+recursiveFixtureEnvironment root failContainer failCleanup = do
     executable <- getExecutablePath
     packageRoot <- fixturePackageRoot
     inherited <- getEnvironment
@@ -213,6 +227,7 @@ recursiveFixtureEnvironment root failContainer = do
             , ("HOSTBOOTSTRAP_RECURSIVE_FIXTURE_EXE", executable)
             , ("HOSTBOOTSTRAP_RECURSIVE_FIXTURE_ROOT", root)
             , ("HOSTBOOTSTRAP_RECURSIVE_FIXTURE_FAIL", if failContainer then "1" else "0")
+            , ("HOSTBOOTSTRAP_RECURSIVE_FIXTURE_CLEANUP_FAIL", if failCleanup then "1" else "0")
             ]
         names = map fst overridden
     pure (overridden <> filter ((`notElem` names) . fst) inherited)
@@ -229,30 +244,35 @@ fixturePackageRoot = do
         (_, True) -> pure (cwd </> "hostbootstrap-core")
         _ -> assertFailure "recursive lifecycle fixture source root is unavailable"
 
-fixtureSpec :: FilePath -> Bool -> CLI.ProjectSpec Fixture.ProjectConfig Fixture.TestConfig
-fixtureSpec fixtureRoot failContainer =
+fixtureSpec :: FilePath -> Bool -> Bool -> CLI.ProjectSpec Fixture.ProjectConfig Fixture.TestConfig
+fixtureSpec fixtureRoot failContainer failCleanup =
     either (error . show) id $
         CLI.finalizeProjectSpec $
-            CLI.addSteps (\_ config -> fixtureSteps fixtureRoot failContainer config) $
-                CLI.addForwardChildPlan (projectChild fixtureRoot failContainer) $
+            CLI.addSteps (\_ config -> fixtureSteps fixtureRoot failContainer failCleanup config) $
+                CLI.addForwardChildPlan (projectChild fixtureRoot failContainer failCleanup) $
                     CLI.projectSpec passingSuite (pure ()) [] Fixture.testConfigCodec fixtureTestInit fixtureAssemble
 
-projectChild :: FilePath -> Bool -> Fixture.ProjectConfig scope -> Text.Text -> Text.Text -> LiftContext -> Either String (FilePath, Fixture.ProjectConfig scope, StepPlan)
-projectChild fixtureRoot failContainer parent _parent child _route = do
+projectChild :: FilePath -> Bool -> Bool -> Fixture.ProjectConfig scope -> Text.Text -> Text.Text -> LiftContext -> Either String (FilePath, Fixture.ProjectConfig scope, StepPlan)
+projectChild fixtureRoot failContainer failCleanup parent _parent child _route = do
     let kind = if child == "vm-orchestrator-1" then VMOrchestrator else VMProjectContainer
         descriptor = if kind == VMOrchestrator then fixtureRoot </> "vm" else fixtureRoot </> "container"
     config <- Fixture.deriveProjectConfigForKind kind parent (Text.pack descriptor)
-    plan <- either (Left . show) Right (mkStepPlan (fixtureSteps fixtureRoot failContainer config))
+    plan <- either (Left . show) Right (mkStepPlan (fixtureSteps fixtureRoot failContainer failCleanup config))
     pure (descriptor, config, plan)
 
-fixtureSteps :: FilePath -> Bool -> Fixture.ProjectConfig scope -> [Step]
-fixtureSteps fixtureRoot failContainer config =
-    [ reversible $ descendsVia (inVM (IncusVM "fixture-vm" "fixture:image") localContext) (node "root" "host-orchestrator-0" StepChanged)
-    , reversible $ descendsVia (inContainer _container localContext) (node "vm" "vm-orchestrator-1" StepChanged)
-    , reversible $ node "container" "vm-project-container-2" (if failContainer then StepConflict "ready" "failed" "fixture failure" else StepChanged)
+fixtureSteps :: FilePath -> Bool -> Bool -> Fixture.ProjectConfig scope -> [Step]
+fixtureSteps fixtureRoot failContainer failCleanup config =
+    [ reversible "root" $ descendsVia (inVM (IncusVM "fixture-vm" "fixture:image") localContext) (node "root" "host-orchestrator-0" StepChanged)
+    , reversible "vm" $ descendsVia (inContainer _container localContext) (node "vm" "vm-orchestrator-1" StepChanged)
+    , reversible "container" $ node "container" "vm-project-container-2" (if failContainer then StepConflict "ready" "failed" "fixture failure" else StepChanged)
     ]
   where
-    reversible = reversedBy (\_ _ -> pure TeardownReleased)
+    reversible name = reversedBy $ \_ _ -> do
+        appendFile (fixtureRoot </> "reverse-attempts") (name <> "\n")
+        pure $
+            if failCleanup && name == "container"
+                then TeardownFailed "fixture cleanup failure"
+                else TeardownReleased
     deliveryPayload =
         case Fixture.deriveProjectConfigForKind VMProjectContainer config (Text.pack (fixtureRoot </> "container")) of
             Right child -> Fixture.renderProjectConfig child <> "\n"

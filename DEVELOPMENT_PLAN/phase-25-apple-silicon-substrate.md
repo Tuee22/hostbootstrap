@@ -1,6 +1,6 @@
 # Phase 25 — Apple Silicon substrate
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: apple-silicon
 **Gate**: live `hostbootstrap run -- test run all` reporting `10/10 passed` on an Apple Silicon host, plus a
@@ -102,10 +102,13 @@ the CBOR round trip are proved live rather than merely started.
 
 None.
 
-### Sprint 25.3: Apple Silicon acceptance [Active]
+### Sprint 25.3: Apple Silicon acceptance [Done]
 
-**Status**: Active
-**Implementation**: the whole tree
+**Status**: Done
+**Implementation**: the whole tree; the focused direct-Colima lane is in
+`core/hostbootstrap-core/test/ColimaSpec.hs`, with its native resolver and exact namespace ownership in
+`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Resolver/Native.hs`
+and `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima/Ownership.hs`
 **Substrates**: apple-silicon
 **Docs to update**: `documents/operations/demo_runbook.md`
 
@@ -127,21 +130,39 @@ Confirm the current build on this substrate.
 
 #### Validation
 
-The `10/10` report, audited end state, and focused live exact-plan direct-Colima result, recorded together with
-the host, OS, architecture, compiler, provider, and duration.
+On 2026-08-26/27, a pristine run on macOS 26.5 (build 25F71), arm64, GHC 9.12.4, Cabal
+3.16.1.0, Lima 2.1.2, and Colima 0.10.3 completed in about 79 minutes and reported `10/10 passed`.
+`test init` began with no `.build`, protected store, generated sibling config, run-data parent, or Lima
+instance. The matrix used Harness runs `run-3f4b674921968` and `run-3f6cfe2de3ad0`; all four fresh guest
+generations pulled base digest
+`sha256:3634916e85b1fda411ae671a4bca2f72745e0bd106e2e9efebccc25415e0bc49`, completed the
+in-container code check/export verification, and produced derived image digests
+`sha256:90395b4f7b0b0a21ebca2907f3e8caed49265667c1e2864ea2580cc9cc7a40d9`,
+`sha256:bcaf9967c427900354364f134b6ef86814712e750c5e771d0a7ec86119dd3018`,
+`sha256:e78a9ea521743bf3f60f3611ceb8c61c5fdc77e263bf29c6a762e67346ddf7fb`, and
+`sha256:4cf7708ae600aebf29410fcc706609d600db3b435e5147da8be9d218358bbe47`.
+
+The terminal audit found both run leases `closed`, no project mode, generated-config, or data-root
+ownership record, no generated `hostbootstrap-demo.dhall`, an empty preserved `.test_data` parent, no
+live accelerator process, and no Lima instance. Both `durable-readback` rows proved the exact durable
+root across the engine-owned destroy/recreate before terminal release. The ambient Docker context remained
+`colima`, and the pre-existing `default` Colima profile remained running with its original 9-CPU,
+48-GiB-memory, 512-GiB-disk wall.
+
+The opt-in native direct-Colima test completed in 38.88 seconds with isolated profile `h-85bdaf`. It
+derived that opaque exact-plan profile, acquired and settled it, refused a same-plan incompatible 9-CPU
+re-entry as `Conflict`, never activated the shared `default` profile, and removed the exact profile,
+Docker context, data, temporary/cache namespaces, and isolated home. The final warning-clean core gate
+passed 2,475/2,475 in 369.23 seconds.
 
 #### Remaining Work
 
-Run the complete acceptance gate on a pristine Apple Silicon host. The lower recursive-lifecycle-command,
-prepared-operations, step-algebra, authenticated-handoff, recovery, and worked-demo dependencies are closed;
-the remaining run must exercise typed frame-indexed teardown descent across the real Lima/Colima provider
-boundary, terminal Harness destroy, and the focused exact-plan direct-Colima adapter lane.
+None. The pristine Apple/Lima matrix, terminal ownership audit, and native exact-plan direct-Colima lane
+are complete.
 
 ## Remaining Work
 
-Sprint 25.3, the acceptance run itself. Sprints 25.1 and 25.2 are closed with their own dated live
-evidence; what is left is the pristine-host re-run of the complete matrix against the current tree,
-which is owed to Apple Silicon hardware and to nothing else.
+None. All three sprints and the Apple Silicon acceptance gate are complete.
 
 ## Documentation Requirements
 

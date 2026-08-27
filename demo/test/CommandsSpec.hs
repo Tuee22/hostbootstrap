@@ -198,17 +198,30 @@ tests =
                     , ("deployRegistryAction stepCfg execution", "deploy-registry", "registry")
                     , ("pushImageAction stepCfg execution", "push-image", "registry")
                     , ("exposeAction stepCfg execution", "expose-port", "web")
-                    , ("startHostAcceleratorDaemonAction stepCfg execution", "accelerator-daemon", "accelerator")
                     ]
             mapM_
                 ( \(function, nonce, service) -> do
                     let body = maybe "" (`drop` commandsSource) (substringOffset function commandsSource)
-                        exactOpen = "withDemoServiceExposure" ++ if function == "startHostAcceleratorDaemonAction stepCfg execution" then " projectCfg execution" else " stepCfg execution"
+                        exactOpen = "withDemoServiceExposure stepCfg execution"
                     assertBool (function ++ " does not open the exact cluster package") (exactOpen `isInfixOf` take 5000 body)
                     assertBool (function ++ " does not select its semantic service") (("\"" ++ nonce ++ "\" \"" ++ service ++ "\"") `isInfixOf` take 5000 body)
                     assertBool (function ++ " constructs a fixed local endpoint") (not ("127.0.0.1:" `isInfixOf` take 5000 body || "localhost:" `isInfixOf` take 5000 body))
                 )
                 adopters
+            let hostHelper = maybe "" (`drop` commandsSource) (substringOffset "withHostAcceleratorExposure ::" commandsSource)
+                hostAction = maybe "" (`drop` commandsSource) (substringOffset "startHostAcceleratorDaemonAction stepCfg execution" commandsSource)
+                stages =
+                    [ "discoverStrongProviderBackend"
+                    , "withFreshRunningProviderHandle"
+                    , "withProviderBoundExec"
+                    , "discoverProvider"
+                    , "observeShippedClusterExposure"
+                    ]
+            offsets <- maybe (assertFailure "the host accelerator lost a provider-frame observation stage") pure (traverse (`substringOffset` hostHelper) stages)
+            assertBool "the host accelerator provider-frame stages are out of order" (and (zipWith (<) offsets (drop 1 offsets)))
+            assertBool "the host accelerator does not select its semantic service in the far frame" ("\"accelerator\"" `isInfixOf` take 5000 hostHelper)
+            assertBool "the host accelerator still expects the child cluster package to survive handoff" (not ("withDemoServiceExposure" `isInfixOf` take 5000 hostAction))
+            assertBool "the host accelerator does not consume the freshly observed port" ("withHostAcceleratorExposure projectCfg execution" `isInfixOf` take 5000 hostAction && "show hostPort" `isInfixOf` take 5000 hostAction)
         , testCase "the chart action consumes the exact cluster package and generic workload transaction" $ do
             commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
             let adopterTail = maybe "" (`drop` commandsSource) (substringOffset "deployChartAction stepCfg execution" commandsSource)
@@ -280,7 +293,7 @@ tests =
                     maybe
                         ""
                         (`drop` commandsSource)
-                        (substringOffset "runExactIncusProvider ::" commandsSource)
+                        (substringOffset "runExactVmProvider ::" commandsSource)
                 exactCallsite =
                     [ "stepExecutionPreparedGate execution"
                     , "withNodeResourceOfKind execution ProviderResourceKind (stepExecutionOperationKey execution)"
@@ -291,12 +304,12 @@ tests =
                     , "withPreparedProviderReady execution"
                     , "runProviderReadyCall backend preparedReady"
                     , "settleProviderReady preparedReady readyCall"
-                    , "carryCreatedRunningProviderSettlement execution advance \"demo-incus-provider-v1\""
+                    , "carryCreatedRunningProviderSettlement execution advance adapterVersion"
                     , "registerRunningProviderDependencyPackage"
                     ]
                 positions = traverse (`substringOffset` adopterSource) exactCallsite
             case positions of
-                Nothing -> assertFailure "the exact Incus provider callsite lost a required lifecycle stage"
+                Nothing -> assertFailure "the exact VM provider callsite lost a required lifecycle stage"
                 Just offsets ->
                     assertBool
                         "provider lifecycle stages are not ordered prepare/provision/ready/carry/register"
@@ -307,6 +320,12 @@ tests =
             assertBool
                 "the provider package route is no longer the fixed invocation-local readiness route"
                 ("\"runtime://provider/demo-vm-readiness\"" `isInfixOf` commandsSource)
+            assertBool
+                "Lima does not enter the same exact VM provider adopter as Incus"
+                ( "ProviderIncus -> runExactVmProvider" `isInfixOf` commandsSource
+                    && "runExactVmProvider projectCfg cfg execution sp envelope durableShare hostDurableRoot" `isInfixOf` commandsSource
+                    && "mkLimaBackendSpec cfg provider envelope durableShare" `isInfixOf` adopterSource
+                )
             assertBool
                 "the provider adopter reconstructed an operation-name fallback"
                 (not ("withNodeResourceOfKind execution ProviderResourceKind \"" `isInfixOf` commandsSource))
@@ -374,7 +393,7 @@ tests =
                     maybe
                         ""
                         (`drop` commandsSource)
-                        (substringOffset "runExactIncusShare ::" commandsSource)
+                        (substringOffset "runExactVmShare ::" commandsSource)
                 exactCallsite =
                     [ "stepExecutionPreparedGate execution"
                     , "mkProviderShareSpec (hpsHostPath durableShare) (hpsGuestPath durableShare)"
@@ -425,17 +444,17 @@ tests =
             let copySourceTail =
                     maybe "" (`drop` commandsSource) (substringOffset "runCopySource ::" commandsSource)
                 copySourceBody =
-                    maybe copySourceTail (`take` copySourceTail) (substringOffset "runExactIncusShare ::" copySourceTail)
+                    maybe copySourceTail (`take` copySourceTail) (substringOffset "runExactVmShare ::" copySourceTail)
             assertBool
                 "copy-source does not re-mint the ephemeral provider witness after the share settles"
-                ( case (substringOffset "runExactIncusShare projectCfg cfg execution durableShare" copySourceBody, substringOffset "mintVmProviderWitness cfg sp" copySourceBody) of
+                ( case (substringOffset "runExactVmShare projectCfg cfg execution durableShare" copySourceBody, substringOffset "mintVmProviderWitness cfg sp" copySourceBody) of
                     (Just shareOffset, Just witnessOffset) -> shareOffset < witnessOffset
                     _ -> False
                 )
         , testCase "the guest alias settles inside the managed copy-source continuation" $ do
             commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
             let adopterSource =
-                    maybe "" (`drop` commandsSource) (substringOffset "runExactIncusShare ::" commandsSource)
+                    maybe "" (`drop` commandsSource) (substringOffset "runExactVmShare ::" commandsSource)
             assertBool
                 "copy-source no longer declares its exact guest-alias projection"
                 ("\"core:deploy-vm/core:copy-source/guest-alias\"" `isInfixOf` commandsSource)
@@ -461,10 +480,12 @@ tests =
                     && "ShipGiveBackSymbolicLink" `isInfixOf` commandsSource
                 )
             assertBool
-                "Harness teardown restores access to its exact virtiofs run root before giving back the guest alias"
+                "Harness teardown restores descendants without chmodding the virtiofs mountpoint before giving back the guest alias"
                 ( "TestCase _ ->" `isInfixOf` commandsSource
-                    && "sudo chmod -R a+rwX" `isInfixOf` commandsSource
-                    && "durableDockerHostPath ++ \"/\"" `isInfixOf` commandsSource
+                    && "sudo find " `isInfixOf` commandsSource
+                    && "shellQuoteArg (durableDockerHostPath ++ \"/\")" `isInfixOf` commandsSource
+                    && "-mindepth 1 ! -type l -exec chmod a+rwX -- {} +" `isInfixOf` commandsSource
+                    && not ("sudo chmod -R a+rwX" `isInfixOf` commandsSource)
                 )
             assertBool
                 "Incus share readiness accepts a writable underlying directory before virtiofs is mounted"

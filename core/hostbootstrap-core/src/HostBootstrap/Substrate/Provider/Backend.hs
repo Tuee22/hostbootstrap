@@ -35,6 +35,7 @@ module HostBootstrap.Substrate.Provider.Backend (
     -- * Descriptive provider request
     ProviderBackendSpec,
     mkIncusBackendSpec,
+    mkLimaBackendSpec,
     mkDirectHostBackendSpec,
 
     -- * The Direct realization's own admission
@@ -89,8 +90,9 @@ import Data.Word (Word64)
 import HostBootstrap.Effect.Interpreter (interpretHostCommand)
 import HostBootstrap.Effect.Run (CapturedRun (capturedExit, capturedStderr, capturedStdout))
 import HostBootstrap.Effect.Vocabulary (HostCommand, hostCommand)
+import HostBootstrap.Context (ResourceEnvelope)
 import HostBootstrap.HostConfig (HostConfig (hcSubstrate), resolveMaybe)
-import HostBootstrap.HostTool (HostTool (Docker, Incus), absExePath)
+import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima), absExePath)
 import HostBootstrap.Lifecycle.Dependency.Internal (
     RuntimeDependencyPackage,
     mkProviderRuntimeDependencyPackage,
@@ -115,6 +117,7 @@ import HostBootstrap.Lifecycle.Prepared (
     preparedGatePlan,
     preparedGateSession,
  )
+import qualified HostBootstrap.Lima as Lima
 import HostBootstrap.Ownership.Object (
     Origin (OriginAbsent, OriginPresent),
     objectIdentityText,
@@ -142,7 +145,25 @@ import HostBootstrap.Reconcile (
     resourceHandleKey,
     validateOwnershipReceipt,
  )
-import HostBootstrap.Substrate (SubstrateName (LinuxCpu), substrateName)
+import HostBootstrap.Substrate (SubstrateName (AppleSilicon, LinuxCpu), substrateName)
+import HostBootstrap.Substrate.Provider (
+    FileTransfer (LimaFileTransfer),
+    HostEffect (RunHostCommand),
+    HostPathShare,
+    ProviderKind (ProviderLima),
+    SubstrateProvider,
+    foldExistsProbe,
+    foldWaitProbe,
+    hpsGuestPath,
+    hpsHostPath,
+    membersOf,
+    planProviderProvision,
+    providerExistsProbe,
+    providerFileTransfer,
+    providerKind,
+    providerVmId,
+    providerWaitProbe,
+ )
 import HostBootstrap.Substrate.Provider.Command (ProviderSizing (ProviderSizing))
 import HostBootstrap.Substrate.Provider.Dependency.Internal (
     RunningProviderDependency (..),
@@ -271,7 +292,19 @@ data ProviderBackendSpec
         String
         String
     | DirectHostBackendSpec FilePath FilePath String
-    deriving (Eq, Show)
+    | LimaBackendSpec SubstrateProvider ResourceEnvelope HostPathShare FilePath
+
+instance Eq ProviderBackendSpec where
+    left == right =
+        backendSemanticFingerprint left == backendSemanticFingerprint right
+            && backendRealizationFingerprint left == backendRealizationFingerprint right
+
+instance Show ProviderBackendSpec where
+    show spec =
+        "ProviderBackendSpec "
+            <> show (backendSemanticFingerprint spec)
+            <> " "
+            <> show (backendRealizationFingerprint spec)
 
 {- | Validate the complete Incus instance declaration.  The executable and
 state directory must already be absolute; discovery proves their usability.
@@ -323,6 +356,42 @@ mkIncusBackendSpec name image guardPrefix hostConfig stateDirectory cpu memory s
                         (Text.pack ("the HostConfig has no resolved " <> show tool <> " executable"))
                     )
                 )
+
+{- | Admit the closed Lima realization used by the Apple host's universal
+@linux-cpu@ route.  The provider value owns its launch, existence, readiness,
+and guest-shell vocabulary; callers supply no executable or argv.  The exact
+resource envelope and writable share are retained in the backend fingerprint,
+so the managed provider settlement cannot be rebound to another VM budget or
+host root.
+-}
+mkLimaBackendSpec ::
+    HostConfig ->
+    SubstrateProvider ->
+    ResourceEnvelope ->
+    HostPathShare ->
+    Either ReconcileError ProviderBackendSpec
+mkLimaBackendSpec hostConfig provider envelope share
+    | substrateName (hcSubstrate hostConfig) /= AppleSilicon =
+        invalid "the Lima provider backend requires an apple-silicon HostConfig"
+    | providerKind provider /= ProviderLima =
+        invalid "the Lima backend requires the closed Lima provider realization"
+    | null (providerVmId provider) || '\0' `elem` providerVmId provider =
+        invalid "the Lima instance name must be non-empty and contain no NUL"
+    | not (hostAbsolutePath (hpsHostPath share)) || not (absolutePath (hpsGuestPath share)) =
+        invalid "the Lima writable share must have absolute host and guest paths"
+    | otherwise = case resolveMaybe hostConfig Lima of
+        Nothing ->
+            Left
+                ( Unsupported
+                    ( UnsupportedDetail
+                        "construct Lima provider backend"
+                        "the HostConfig has no resolved Lima executable"
+                    )
+                )
+        Just executable ->
+            Right (LimaBackendSpec provider envelope share (absExePath executable))
+  where
+    invalid reason = Left (Failure (FailureDetail "validate Lima provider backend" reason DoNotRetry))
 
 -- | Admit the canonical already-local root.  No ownership is implied.
 mkDirectHostBackendSpec :: HostConfig -> FilePath -> String -> Either ReconcileError ProviderBackendSpec
@@ -408,6 +477,7 @@ data
     StrongProviderBackend
         backendId
     = StrongIncusBackend (ProviderBackendBinding backendId) HostConfig ProviderBackendSpec
+    | StrongLimaBackend (ProviderBackendBinding backendId) HostConfig ProviderBackendSpec
     | StrongDirectHostBackend (ProviderBackendBinding backendId) HostConfig ProviderBackendSpec
 
 {- | Admit the declared backend.
@@ -430,10 +500,12 @@ discoverStrongProviderBackend cfg spec consume =
     binding = ProviderBackendBinding (backendSemanticFingerprint spec) (backendRealizationFingerprint spec)
     admitted DirectHostBackendSpec{} = StrongDirectHostBackend binding cfg spec
     admitted IncusBackendSpec{} = StrongIncusBackend binding cfg spec
+    admitted LimaBackendSpec{} = StrongLimaBackend binding cfg spec
 
 providerBackendBinding :: StrongProviderBackend backendId -> ProviderBackendBinding backendId
 providerBackendBinding backend = case backend of
     StrongIncusBackend binding _ _ -> binding
+    StrongLimaBackend binding _ _ -> binding
     StrongDirectHostBackend binding _ _ -> binding
 
 backendSemanticFingerprint :: ProviderBackendSpec -> Text
@@ -454,6 +526,14 @@ backendSemanticFingerprint spec = case spec of
             , Text.pack root
             , Text.pack egressImage
             ]
+    LimaBackendSpec provider envelope share _ ->
+        framed
+            [ "hostbootstrap/provider-backend/lima/v1"
+            , Text.pack (providerVmId provider)
+            , Text.pack (show envelope)
+            , Text.pack (hpsHostPath share)
+            , Text.pack (hpsGuestPath share)
+            ]
   where
     framed = Text.concat . map (\value -> Text.pack (show (Text.length value)) <> ":" <> value)
 
@@ -468,6 +548,11 @@ backendRealizationFingerprint spec = case spec of
         framed
             [ "hostbootstrap/provider-realization/direct/v1"
             , Text.pack docker
+            ]
+    LimaBackendSpec _ _ _ executable ->
+        framed
+            [ "hostbootstrap/provider-realization/lima/v1"
+            , Text.pack executable
             ]
   where
     framed = Text.concat . map (\value -> Text.pack (show (Text.length value)) <> ":" <> value)
@@ -486,6 +571,8 @@ runProviderProvisionCall backend prepared = case backend of
             withOwnedProviderTransaction cfg spec (preparedProviderBindingOwner binding) $
                 \session key owned -> provisionOwnedInstance cfg session key owned
         pure (ProviderProvisionCallResult (provisionObservation binding outcome))
+    StrongLimaBackend _ cfg spec ->
+        ProviderProvisionCallResult <$> runLimaProvision cfg spec binding
   where
     binding = preparedProviderProvisionBinding prepared
 
@@ -541,10 +628,12 @@ runProviderReadyCall backend prepared = case backend of
                             Nothing -> ProviderReadyObserved (preparedProviderBindingGeneration binding)
                         )
                     )
-    StrongDirectHostBackend _ _ (IncusBackendSpec{}) ->
+    StrongDirectHostBackend _ _ _ ->
         pure (ProviderReadyCallResult (ProviderReadyFailed (failed "reconcile Direct provider ready" "invalid Direct backend state")))
     StrongIncusBackend _ cfg spec ->
         ProviderReadyCallResult <$> pollProviderReady cfg spec binding 60
+    StrongLimaBackend _ cfg spec ->
+        ProviderReadyCallResult <$> pollLimaReady cfg spec binding 60
   where
     binding = preparedProviderReadyBinding prepared
 
@@ -788,7 +877,7 @@ probeRunningProvider backend managed = do
                     pure $ case directReadyProbeFailure "reprobe Direct provider provisioning egress" egress of
                         Just failure -> ProviderReadyFailed failure
                         Nothing -> ProviderReadyAlready (managedProviderGeneration managed)
-        StrongDirectHostBackend _ _ (IncusBackendSpec{}) ->
+        StrongDirectHostBackend _ _ _ ->
             pure (ProviderReadyFailed (failed "reprobe Direct provider" "invalid Direct backend state"))
         StrongIncusBackend _ cfg spec -> do
             outcome <-
@@ -800,6 +889,8 @@ probeRunningProvider backend managed = do
                     (managedProviderGeneration managed)
                     outcome
                 )
+        StrongLimaBackend _ cfg spec ->
+            observeLimaReady cfg spec (managedProviderGeneration managed)
     pure (settleRunningProbe managed observation)
 
 managedOriginOwner :: ManagedProviderHandle scope planId backendId providerId phase -> Text
@@ -893,6 +984,156 @@ pollProviderReady cfg spec binding remaining = do
                         >> pollProviderReady cfg spec binding (remaining - 1)
         observation -> pure observation
 
+runLimaProvision ::
+    HostConfig ->
+    ProviderBackendSpec ->
+    PreparedProviderBinding scope planId backendId providerId ->
+    IO ProviderProvisionObservation
+runLimaProvision cfg (LimaBackendSpec provider envelope share _) binding = do
+    existing <- observeLimaExists cfg provider
+    case existing of
+        Left failure -> pure (ProviderProvisionFailed failure)
+        Right True -> pure (ProviderProvisionAlreadyOwned generation)
+        Right False -> case planProviderProvision provider envelope (Just share) of
+            Left refusal -> pure (ProviderProvisionFailed (failed "provision Lima provider" (Text.pack (show refusal))))
+            Right effects -> do
+                launched <- runLimaEffects cfg effects
+                case launched of
+                    Left failure -> pure (ProviderProvisionFailed failure)
+                    Right () -> do
+                        present <- observeLimaExists cfg provider
+                        pure $ case present of
+                            Left failure -> ProviderProvisionFailed failure
+                            Right True -> ProviderProvisionCreated generation
+                            Right False -> ProviderProvisionFailed (failed "provision Lima provider" "the Lima instance is absent after a successful launch")
+  where
+    generation = preparedProviderBindingGeneration binding
+runLimaProvision _ _ binding =
+    pure
+        ( ProviderProvisionFailed
+            (failed "provision Lima provider" ("invalid Lima backend state for " <> preparedProviderBindingResourceKey binding))
+        )
+
+observeLimaExists :: HostConfig -> SubstrateProvider -> IO (Either FailureDetail Bool)
+observeLimaExists cfg provider =
+    foldExistsProbe
+        (pure (Left (failed "observe Lima provider" "the Lima backend received a Direct existence probe")))
+        observe
+        (providerExistsProbe provider)
+  where
+    observe tool args membership = do
+        captured <- interpretHostCommand cfg (hostCommand tool args)
+        pure $ case captured of
+            Left refusal -> Left (failed "observe Lima provider" (Text.pack refusal))
+            Right run -> case capturedExit run of
+                ExitSuccess -> Right (providerVmId provider `elem` membersOf membership (capturedStdout run))
+                ExitFailure code ->
+                    Left
+                        ( failed
+                            "observe Lima provider"
+                            ("the existence probe exited " <> Text.pack (show code) <> ": " <> Text.pack (firstDiagnosticLine (capturedStderr run)))
+                        )
+
+runLimaEffects :: HostConfig -> [HostEffect] -> IO (Either FailureDetail ())
+runLimaEffects _ [] = pure (Right ())
+runLimaEffects cfg (effect : remaining) = case effect of
+    RunHostCommand command -> do
+        captured <- interpretHostCommand cfg command
+        case captured of
+            Left refusal -> pure (Left (failed "run Lima provider effect" (Text.pack refusal)))
+            Right run -> case capturedExit run of
+                ExitSuccess -> runLimaEffects cfg remaining
+                ExitFailure code ->
+                    pure
+                        ( Left
+                            ( failed
+                                "run Lima provider effect"
+                                ("the provider command exited " <> Text.pack (show code) <> ": " <> Text.pack (firstDiagnosticLine (capturedStderr run)))
+                            )
+                        )
+    _ ->
+        pure
+            ( Left
+                (failed "run Lima provider effect" "the Lima backend received an effect outside its closed host-command vocabulary")
+            )
+
+pollLimaReady ::
+    HostConfig ->
+    ProviderBackendSpec ->
+    PreparedProviderBinding scope planId backendId providerId ->
+    Int ->
+    IO ProviderReadyObservation
+pollLimaReady cfg spec binding remaining = do
+    observation <- observeLimaReady cfg spec (preparedProviderBindingGeneration binding)
+    case observation of
+        waiting@(ProviderReadyNotReady _)
+            | remaining > 1 -> case seconds 1 of
+                Left _ -> pure waiting
+                Right delay -> providerBackendWait delay >> pollLimaReady cfg spec binding (remaining - 1)
+        other -> pure other
+
+observeLimaReady :: HostConfig -> ProviderBackendSpec -> Word64 -> IO ProviderReadyObservation
+observeLimaReady cfg (LimaBackendSpec provider _ _ _) generation =
+    foldWaitProbe
+        (pure (ProviderReadyFailed (failed "reprobe Lima provider" "the Lima backend received a Direct readiness probe")))
+        observe
+        (providerWaitProbe provider)
+  where
+    observe tool args = do
+        captured <- interpretHostCommand cfg (hostCommand tool args)
+        pure $ case captured of
+            Left refusal -> ProviderReadyFailed (failed "reprobe Lima provider" (Text.pack refusal))
+            Right run -> case capturedExit run of
+                ExitSuccess -> ProviderReadyAlready generation
+                ExitFailure _ -> ProviderReadyNotReady (Text.pack (firstDiagnosticLine (capturedStderr run)))
+observeLimaReady _ _ _ =
+    pure (ProviderReadyFailed (failed "reprobe Lima provider" "invalid Lima backend state"))
+
+observeLimaShare ::
+    HostConfig ->
+    ProviderBackendSpec ->
+    PreparedProviderShare scope planId backendId providerId shareId operationKey callDigest attempt journalVersion ->
+    IO ProviderShareObservation
+observeLimaShare cfg (LimaBackendSpec provider _ retainedShare _) prepared
+    | source /= hpsHostPath retainedShare || target /= hpsGuestPath retainedShare =
+        pure
+            ( ProviderShareConflict
+                ( ConflictDetail
+                    "lima-provider-share"
+                    (Text.pack (hpsHostPath retainedShare <> " -> " <> hpsGuestPath retainedShare))
+                    (Text.pack (source <> " -> " <> target))
+                    "use the writable share retained by this exact Lima provider backend"
+                )
+            )
+    | otherwise = do
+        captured <- runLimaGuest cfg provider ["bash", "-lc", "test -d \"$1\" && test -w \"$1\"", "--", target]
+        pure $ case captured of
+            RawProviderExit ExitSuccess _ _ -> ProviderShareAlreadyReady generation
+            RawProviderExit (ExitFailure code) _ err ->
+                ProviderShareFailed
+                    (failed "reprobe Lima provider share" ("the guest share probe exited " <> Text.pack (show code) <> ": " <> Text.pack (firstDiagnosticLine err)))
+            RawProviderFailure refusal -> ProviderShareFailed (failed "reprobe Lima provider share" (Text.pack refusal))
+  where
+    shareSpec = preparedProviderShareSpec prepared
+    source = providerShareHostPath shareSpec
+    target = providerShareGuestPath shareSpec
+    generation = resourceHandleGeneration (preparedProviderShareHandle prepared)
+observeLimaShare _ _ prepared =
+    pure
+        ( ProviderShareFailed
+            (failed "reprobe Lima provider share" ("invalid Lima backend state for " <> resourceHandleKey (preparedProviderShareHandle prepared)))
+        )
+
+runLimaGuest :: HostConfig -> SubstrateProvider -> [String] -> IO RawProviderOutcome
+runLimaGuest cfg provider argv =
+    case providerFileTransfer provider of
+        LimaFileTransfer vm ->
+            rawProviderOutcome <$> interpretHostCommand cfg (hostCommand Lima (Lima.shellVMArgs vm argv))
+        _ -> pure (RawProviderFailure "the Lima backend retained a non-Lima guest route")
+
+firstDiagnosticLine :: String -> String
+firstDiagnosticLine = takeWhile (/= '\n')
+
 -- The clause-holding transactions ---------------------------------------------
 
 {- | Run one owned-instance transaction inside the store its state directory
@@ -921,6 +1162,15 @@ withOwnedProviderTransaction _cfg (DirectHostBackendSpec{}) _owner _transaction 
             ( ProviderOwnershipReport
                 ( ProviderCommandUnrun
                     "the Direct realization owns no provider instance to enter"
+                )
+            )
+        )
+withOwnedProviderTransaction _cfg (LimaBackendSpec{}) _owner _transaction =
+    pure
+        ( Left
+            ( ProviderOwnershipReport
+                ( ProviderCommandUnrun
+                    "the Lima realization is journaled by the plan interpreter rather than the Incus ownership store"
                 )
             )
         )
@@ -1049,6 +1299,13 @@ runProviderStopCall backend prepared = case backend of
             withOwnedProviderTransaction cfg spec (preparedProviderBindingOwner binding) $
                 \session key owned -> stopOwnedInstance cfg session key owned
         pure (classifyProviderStopCall prepared outcome)
+    StrongLimaBackend _ _ _ ->
+        pure
+            ( ProviderStopCallResult
+                ( ProviderStopUnsupported
+                    (UnsupportedDetail "stop Lima provider through a forward handle" "Lima reverse is owned by the plan's retained step-declared adapter")
+                )
+            )
   where
     binding = preparedProviderStopBinding prepared
 
@@ -1115,7 +1372,9 @@ runProviderShareCall backend prepared = case backend of
                     source
                     target
             pure (classifyProviderShareCall prepared outcome)
-    StrongDirectHostBackend _ _ (IncusBackendSpec{}) ->
+    StrongLimaBackend _ cfg spec ->
+        ProviderShareCallResult <$> observeLimaShare cfg spec prepared
+    StrongDirectHostBackend _ _ _ ->
         pure (ProviderShareCallResult (ProviderShareFailed (failed "reconcile provider share" "invalid Direct backend state")))
   where
     binding = preparedProviderShareBinding prepared
@@ -1269,6 +1528,13 @@ runProviderDeleteCall backend prepared = case backend of
             withOwnedProviderTransaction cfg spec (preparedProviderBindingOwner binding) $
                 \session key owned -> deleteOwnedInstance cfg session key owned
         pure (classifyProviderDeleteCall prepared outcome)
+    StrongLimaBackend _ _ _ ->
+        pure
+            ( ProviderDeleteCallResult
+                ( ProviderDeleteUnsupported
+                    (UnsupportedDetail "delete Lima provider through a forward handle" "Lima reverse is owned by the plan's retained step-declared adapter")
+                )
+            )
   where
     binding = preparedProviderDeleteBinding prepared
 
@@ -1296,8 +1562,10 @@ runRetainedProviderStop backend = case backend of
             Right (StopAlreadyStopped _) -> Right ()
             Right (StopStillRunning reason) -> Left (Failure (failed "stop retained provider" reason))
             Left fault -> Left (retainedProviderFault "stop retained provider" (Text.pack name) fault)
-    StrongIncusBackend _ _ DirectHostBackendSpec{} ->
+    StrongIncusBackend _ _ _ ->
         pure (Left (Failure (failed "stop retained provider" "invalid Incus backend state")))
+    StrongLimaBackend _ _ _ ->
+        pure (Left (Unsupported (UnsupportedDetail "stop retained Lima provider" "Lima reverse is owned by the plan's retained step-declared adapter")))
 
 runRetainedProviderDelete ::
     StrongProviderBackend backendId ->
@@ -1314,8 +1582,10 @@ runRetainedProviderDelete backend = case backend of
             Right DeleteAlreadyRemoved -> Right ()
             Right DeleteStillPresent -> Left (Failure (failed "delete retained provider" "the exact managed provider remains present"))
             Left fault -> Left (retainedProviderFault "delete retained provider" (Text.pack name) fault)
-    StrongIncusBackend _ _ DirectHostBackendSpec{} ->
+    StrongIncusBackend _ _ _ ->
         pure (Left (Failure (failed "delete retained provider" "invalid Incus backend state")))
+    StrongLimaBackend _ _ _ ->
+        pure (Left (Unsupported (UnsupportedDetail "delete retained Lima provider" "Lima reverse is owned by the plan's retained step-declared adapter")))
 
 retainedProviderFault :: Text -> Text -> ProviderOwnershipFault -> ReconcileError
 retainedProviderFault operation key fault = case ownedRefusal operation key fault of
@@ -1390,6 +1660,15 @@ withProviderBoundExec backend managed@(ManagedProviderHandle origin handle recei
                         providerBackendWait
                     )
                 )
+        StrongLimaBackend _ cfg spec ->
+            Right
+                ( consume
+                    ( bindProviderBoundExec
+                        (providerBoundRouteFor spec)
+                        (runBoundLima cfg spec)
+                        providerBackendWait
+                    )
+                )
 
 validateProviderOrigin ::
     StrongProviderBackend backendId ->
@@ -1430,6 +1709,7 @@ validateProviderOrigin backend (ManagedProviderHandle origin handle _)
   where
     expected = case backend of
         StrongIncusBackend binding _ _ -> binding
+        StrongLimaBackend binding _ _ -> binding
         StrongDirectHostBackend binding _ _ -> binding
 
 sameBackendBinding :: ProviderBackendBinding backendId -> ProviderBackendBinding backendId -> Bool
@@ -1440,6 +1720,7 @@ sameBackendBinding left right =
 providerBoundRouteFor :: ProviderBackendSpec -> ProviderBoundRoute
 providerBoundRouteFor spec = case spec of
     IncusBackendSpec name image _ _ _ _ _ _ -> ProviderBoundIncusRoute name image
+    LimaBackendSpec provider _ _ _ -> ProviderBoundLimaRoute (providerVmId provider)
     DirectHostBackendSpec root _ egressImage -> ProviderBoundDirectRoute root egressImage
 
 runBoundDirect :: HostConfig -> ProviderBackendSpec -> ProviderProbeRequest -> IO RawProviderOutcome
@@ -1454,6 +1735,8 @@ runBoundDirect cfg spec request = case (spec, providerProbeRequestView request) 
     (DirectHostBackendSpec _ _ image, ProviderProvisioningEgressProbe) ->
         rawProviderOutcome <$> interpretHostCommand cfg (directEgressCommand image)
     (IncusBackendSpec{}, _) ->
+        pure (RawProviderFailure "invalid Direct backend state")
+    (LimaBackendSpec{}, _) ->
         pure (RawProviderFailure "invalid Direct backend state")
     (_, ProviderHostToolRequest _ _) ->
         pure (RawProviderFailure "the Direct provider has no host-tool or guest route")
@@ -1561,6 +1844,7 @@ runBoundIncus cfg spec owner request = case providerProbeRequestView request of
     ProviderHostToolRequest Incus argv -> case spec of
         IncusBackendSpec{} -> rawProviderOutcome <$> interpretHostCommand cfg (hostCommand Incus argv)
         DirectHostBackendSpec{} -> pure (RawProviderFailure "invalid Incus backend state")
+        LimaBackendSpec{} -> pure (RawProviderFailure "invalid Incus backend state")
     ProviderHostToolRequest _ _ ->
         pure (RawProviderFailure "the bound Incus backend refused a different host tool")
     ProviderDirectProbeRequest _ ->
@@ -1569,6 +1853,7 @@ runBoundIncus cfg spec owner request = case providerProbeRequestView request of
         IncusBackendSpec _ image _ _ _ _ _ _ ->
             rawProviderOutcome <$> interpretHostCommand cfg (hostCommand Incus ["image", "info", image])
         DirectHostBackendSpec{} -> pure (RawProviderFailure "invalid Incus backend state")
+        LimaBackendSpec{} -> pure (RawProviderFailure "invalid Incus backend state")
     ProviderGuestProbeRequest argv
         | null argv || any ('\0' `elem`) argv ->
             pure (RawProviderFailure "guest probe argv must be non-empty and contain no NUL")
@@ -1577,6 +1862,27 @@ runBoundIncus cfg spec owner request = case providerProbeRequestView request of
                 withOwnedProviderTransaction cfg spec owner $
                     \session key owned -> execInOwnedInstance cfg session key owned argv
             pure (guestOutcome outcome)
+
+runBoundLima ::
+    HostConfig ->
+    ProviderBackendSpec ->
+    ProviderProbeRequest ->
+    IO RawProviderOutcome
+runBoundLima cfg (LimaBackendSpec provider _ _ _) request =
+    case providerProbeRequestView request of
+        ProviderHostToolRequest Lima argv ->
+            rawProviderOutcome <$> interpretHostCommand cfg (hostCommand Lima argv)
+        ProviderHostToolRequest _ _ ->
+            pure (RawProviderFailure "the bound Lima backend refused a different host tool")
+        ProviderDirectProbeRequest _ ->
+            pure (RawProviderFailure "the bound Lima backend refused a Direct-host probe")
+        ProviderProvisioningEgressProbe ->
+            runLimaGuest cfg provider ["bash", "-lc", "getent hosts archive.ubuntu.com >/dev/null"]
+        ProviderGuestProbeRequest argv
+            | null argv || any ('\0' `elem`) argv ->
+                pure (RawProviderFailure "guest probe argv must be non-empty and contain no NUL")
+            | otherwise -> runLimaGuest cfg provider argv
+runBoundLima _ _ _ = pure (RawProviderFailure "invalid Lima backend state")
 
 {- | What a command run inside the owned instance produced.
 

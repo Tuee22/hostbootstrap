@@ -242,10 +242,10 @@ Three properties make it a transport rather than a workflow:
   protocol channel, and its process-group bracket are the authenticated-handoff boundary's, which carries
   one opaque transaction out and one opaque outcome back and interprets neither; the ownership
   interpreter is installed into that entry rather than beside it.
-- **A closed set of acts.** Observe, take a directory, take a file, give back — the four things the seam's
-  producers compose over one object. There is no act that runs a command: an external effect travels as a
-  described command through the one interpreter (§ KK), and an act that could run a string would make the
-  row a shell again.
+- **A closed set of acts.** Observe, take a directory, take a file, and generic give-back are joined by
+  symbolic-link take and give-back for the guest-alias owner. There is no act that runs a command: an external
+  effect travels as a described command through the one interpreter (§ KK), and an act that could run a string
+  would make the row a shell again.
 
 Both directions are exact values. The transaction is length-framed rather than delimited, because a target
 path and a payload are arbitrary bytes and a delimiter would let one of them describe the next field; the
@@ -296,8 +296,12 @@ The transaction is shared; the policy is the owner's own.
 - **The provider-guest alias** keys its record by a digest of an injective owner binding — provider origin,
   share key and generation, alias key and generation, alias, and target — and stores the complete binding
   as well, so the digest is only a bounded filename. Its prepared state records explicit absence plus a
-  fresh nonce before the first mutation, and a correct-looking foreign symlink with no matching durable
-  record is reported foreign. No pathname sidecar participates in ownership.
+  fresh nonce before the first mutation. The shipped row stages the symlink and binds its exact device/inode
+  identity before atomic no-replace publication: Linux uses `link(2)`, while Darwin uses
+  `renamex_np(RENAME_EXCL)` because APFS does not permit hard links to symbolic links. The durable binding
+  therefore identifies the inode in both the bound-staging and bound-published recovery windows. A
+  correct-looking foreign symlink with no matching durable record is reported foreign. No pathname sidecar
+  participates in ownership.
 
 ## Validation
 

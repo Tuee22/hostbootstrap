@@ -213,6 +213,7 @@ library
       HostBootstrap.Cluster.Resume
       HostBootstrap.Cluster.Ownership
       HostBootstrap.Cluster.Backend
+      HostBootstrap.Cluster.Shipped
       HostBootstrap.Harness
       HostBootstrap.Harness.DataRoot
       HostBootstrap.Harness.GeneratedConfig
@@ -381,6 +382,7 @@ test-suite hostbootstrap-core-test
       ClusterOwnershipSpec
       FakeCluster
       ClusterBackendSpec
+      ClusterShippedSpec
       DataRootSpec
       GeneratedConfigSpec
       ProjectRootSpec

@@ -22,18 +22,23 @@ import Data.Word (Word64)
 import qualified FakeProvider
 import qualified Fixture
 import HostBootstrap.Config.Vocab (Production)
+import HostBootstrap.Context (ResourceEnvelope (..))
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Effect.Vocabulary (EffectTarget (ToolTarget), HostCommand (commandArguments, commandTarget))
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool
+import qualified HostBootstrap.Incus as Incus
+import qualified HostBootstrap.Lima as Lima
 import qualified HostBootstrap.Lifecycle.Execution as Execution
 import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 import qualified HostBootstrap.ProjectPlan as ProjectPlan
 import HostBootstrap.Reconcile
 import HostBootstrap.Step
-import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (..), SubstrateName (LinuxCpu, LinuxGpu))
+import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (..), SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu))
+import HostBootstrap.Substrate.Provider (HostPathShare (..), ProviderKind (..), SubstrateProvider, VMHandles (..), selectProviderKind)
 import HostBootstrap.Substrate.Provider.Backend
 import HostBootstrap.Substrate.Provider.Reconcile
+import qualified HostBootstrap.Wsl2 as Wsl2
 import PlatformPath (hostFixturePath)
 import PrepareFixture (gateFor)
 import qualified SourceGuard
@@ -94,6 +99,25 @@ portableCases =
         case mkIncusBackendSpec vmName imageName vmName emptyHostConfig (hostFixturePath "/state") 2 "4GiB" "40GiB" of
             Left (Unsupported _) -> pure ()
             other -> assertFailure ("expected unresolved-tool refusal, got " <> showEither other)
+    , testCase "Lima construction admits only the closed Apple realization" $ do
+        case mkLimaBackendSpec fakeResolvedHostConfig limaProvider limaEnvelope limaShare of
+            Left (Failure _) -> pure ()
+            other -> assertFailure ("expected Lima host-substrate refusal, got " <> showEither other)
+        case mkLimaBackendSpec limaResolvedHostConfig incusProvider limaEnvelope limaShare of
+            Left (Failure _) -> pure ()
+            other -> assertFailure ("expected Lima provider-kind refusal, got " <> showEither other)
+    , testCase "Lima construction refuses an unresolved Lima tool" $
+        case mkLimaBackendSpec limaUnresolvedHostConfig limaProvider limaEnvelope limaShare of
+            Left (Unsupported _) -> pure ()
+            other -> assertFailure ("expected unresolved Lima-tool refusal, got " <> showEither other)
+    , testCase "Lima fingerprints bind the exact budget and writable share" $ do
+        baseline <- either (assertFailure . show) pure (mkLimaBackendSpec limaResolvedHostConfig limaProvider limaEnvelope limaShare)
+        retry <- either (assertFailure . show) pure (mkLimaBackendSpec limaResolvedHostConfig limaProvider limaEnvelope limaShare)
+        changedBudget <- either (assertFailure . show) pure (mkLimaBackendSpec limaResolvedHostConfig limaProvider limaEnvelope{cpu = 3} limaShare)
+        changedShare <- either (assertFailure . show) pure (mkLimaBackendSpec limaResolvedHostConfig limaProvider limaEnvelope limaShare{hpsGuestPath = "/srv/other"})
+        baseline @?= retry
+        assertBool "a changed Lima budget retained the same backend identity" (baseline /= changedBudget)
+        assertBool "a changed Lima share retained the same backend identity" (baseline /= changedShare)
     , testCase "Direct backend discovery is structurally non-mutating" $
         withDirectTools "{}" 0 $ \config root recorded -> do
             spec <- either (assertFailure . show) pure (mkDirectHostBackendSpec config root imageName)
@@ -1021,6 +1045,34 @@ fakeResolvedHostConfig =
                 [(Incus, fixtureExe fixtureIncus)]
         }
 
+limaResolvedHostConfig :: HostConfig
+limaResolvedHostConfig =
+    HostConfig
+        (Substrate AppleSilicon Arm64)
+        (Map.fromList [(Lima, fixtureExe fixtureLima)])
+
+limaUnresolvedHostConfig :: HostConfig
+limaUnresolvedHostConfig = HostConfig (Substrate AppleSilicon Arm64) Map.empty
+
+limaProvider, incusProvider :: SubstrateProvider
+limaProvider = selectProviderKind ProviderLima providerHandles
+incusProvider = selectProviderKind ProviderIncus providerHandles
+
+providerHandles :: VMHandles
+providerHandles =
+    VMHandles
+        { vmhIncus = Incus.IncusVM vmName imageName
+        , vmhLima = Lima.LimaVM vmName
+        , vmhWsl2 = Wsl2.Wsl2VM vmName
+        , vmhGuardPrefix = vmName
+        }
+
+limaEnvelope :: ResourceEnvelope
+limaEnvelope = ResourceEnvelope{cpu = 2, memory = "4GiB", storage = "40GiB"}
+
+limaShare :: HostPathShare
+limaShare = HostPathShare (hostFixturePath "/share") "/srv/hostbootstrap/data" Nothing
+
 {- | The host tools this suite's fixtures name.
 
 Each is rendered onto the host that runs the suite, so the same total 'AbsExe'
@@ -1030,6 +1082,9 @@ POSIX literal the host would call relative.
 -}
 fixtureIncus :: FilePath
 fixtureIncus = hostFixturePath "/usr/bin/incus"
+
+fixtureLima :: FilePath
+fixtureLima = hostFixturePath "/usr/bin/limactl"
 
 providerGate :: Execution.StepExecution scope planId -> IO PreparedGate
 providerGate execution = gateFor (Execution.stepExecutionPlanDigest execution) (Execution.stepExecutionOperationKey execution)

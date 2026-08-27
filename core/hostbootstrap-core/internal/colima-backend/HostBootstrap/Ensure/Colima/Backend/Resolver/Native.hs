@@ -18,7 +18,7 @@ import HostBootstrap.Ensure.Colima.Backend.Resolver.Protocol
     renderSearchPath,
     systemHelperDirectories,
   )
-import System.FilePath (isAbsolute, normalise, splitDirectories, takeDirectory, takeFileName, (</>))
+import System.FilePath (isAbsolute, splitDirectories, takeDirectory, takeFileName, (</>))
 import System.Info (arch, os)
 #if !defined(mingw32_HOST_OS)
 import System.IO.Error (isDoesNotExistError)
@@ -198,8 +198,18 @@ inspectCandidate layout user allowMissing allowLink candidate = do
 
 canonicalTarget :: FilePath -> FilePath -> Either String FilePath
 canonicalTarget source target =
-  let path = normalise (if isAbsolute target then target else takeDirectory source </> target)
-   in if validAbsolute path then Right path else Left "symlink-target"
+  canonicalAbsolute (if isAbsolute target then target else takeDirectory source </> target)
+
+canonicalAbsolute :: FilePath -> Either String FilePath
+canonicalAbsolute path
+  | not (isAbsolute path) || any (`elem` "\NUL\t\r\n") path = Left "symlink-target"
+  | otherwise = do
+      segments <- foldM step [] (filter (`notElem` ["", "/", "."]) (splitDirectories path))
+      pure (foldl (</>) "/" segments)
+  where
+    step [] ".." = Left "symlink-target"
+    step segments ".." = Right (init segments)
+    step segments segment = Right (segments ++ [segment])
 
 validateExecutable :: ResolverLayout -> Word64 -> FilePath -> IO (Either String (Maybe ResolvedTool))
 validateExecutable layout user path = do
@@ -235,8 +245,16 @@ validateDirectoryChain layout user target
         if not (isDirectory status) then Left "directory-type"
         else if not (admittedDirectoryOwner layout user path (fromIntegral (fileOwner status))) then Left "directory-owner"
         else if hasMode status otherWriteMode then Left "directory-world-write"
-        else if hasMode status groupWriteMode && path `notElem` administrativeDirectories layout then Left "directory-group-write"
+        else if hasMode status groupWriteMode && path `notElem` administrativeDirectories layout
+          then Left (groupWriteRefusal layout path)
         else Right ()
+
+groupWriteRefusal :: ResolverLayout -> FilePath -> String
+groupWriteRefusal layout path
+  | layoutFixture layout = "directory-group-write"
+  | (layoutUsers layout ++ "/") `prefixOf` path = "directory-group-write-user"
+  | layoutHomebrew layout `prefixOf` path = "directory-group-write-homebrew"
+  | otherwise = "directory-group-write-system"
 
 helperBindings :: ResolverLayout -> Word64 -> [FilePath] -> IO (Either String String, Either String [TrustedDirectoryBinding])
 helperBindings layout user paths = do
@@ -296,7 +314,7 @@ admittedDirectoryOwner layout user path owner
   | layoutFixture layout = owner == user
   | path == "/" || path == "/opt" || path == layoutApplications layout || path == layoutUsers layout = owner == 0
   | layoutHomebrew layout `prefixOf` path = owner == user
-  | path `prefixOf` layoutUsers layout = owner == 0
+  | (layoutUsers layout ++ "/") `prefixOf` path = owner == user
   | otherwise = owner == 0
 
 administrativeDirectories :: ResolverLayout -> [FilePath]
@@ -318,5 +336,5 @@ pathPrefixes root target
   | otherwise = scanl (</>) root (splitDirectories (drop (length root + 1) target))
 
 validAbsolute :: FilePath -> Bool
-validAbsolute path = isAbsolute path && normalise path == path && all (`notElem` "\NUL\t\r\n") path
+validAbsolute path = canonicalAbsolute path == Right path
 #endif

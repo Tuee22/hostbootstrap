@@ -48,6 +48,8 @@ where
 
 import Data.Bifunctor (first)
 import Control.Exception (IOException, try)
+import Data.List (sortOn)
+import Data.Ord (Down (Down))
 import qualified Data.Text as Text
 import Data.Word (Word64)
 import qualified Data.ByteString.Char8 as ByteString.Char8
@@ -125,6 +127,7 @@ import HostBootstrap.Ownership.Object
     ObjectKind (OwnedDirectory, ReportedObject),
     Origin (OriginAbsent, OriginPresent),
     OwnershipFault (..),
+    bindOriginRecord,
     originRecordOrigin,
     originRecordBinding,
     mkOwnerClaim,
@@ -136,7 +139,10 @@ import HostBootstrap.Ownership.Object
   )
 import HostBootstrap.Ownership.Manifest
   ( OwnershipManifest,
+    manifestEntryIdentity,
+    manifestEntryPath,
     mergeOwnershipManifests,
+    ownershipManifestEntries,
     ownershipDirectoryChainDigest,
     ownershipManifestDigest,
     parseOwnershipManifest,
@@ -161,11 +167,13 @@ import HostBootstrap.Ownership.Row (observeOwnershipManifestForHost, ownershipRo
 import System.Exit (ExitCode (ExitSuccess))
 import System.Directory (listDirectory, removeDirectory)
 import System.IO.Error (isDoesNotExistError)
-import System.FilePath ((</>))
+import System.FilePath (splitDirectories, (</>))
 
 data ColimaOwnershipKeys = ColimaOwnershipKeys
   { colimaStageKey :: RecordKey,
     colimaHomeKey :: RecordKey,
+    colimaCacheKey :: RecordKey,
+    colimaTemporaryKey :: RecordKey,
     colimaContextKey :: RecordKey,
     colimaDiskKey :: RecordKey,
     colimaProfileKey :: RecordKey,
@@ -312,13 +320,21 @@ prepareColimaNamespacesInside session keys owner lineage invocation home context
               | otherwise -> case colimaStageRecordStage record of
                   ColimaReserved -> ensureThenAdvance session keys version home (colimaHomeKey keys) ColimaHomeStaged
                   ColimaHomeStaged -> advanceThenDrive session keys version ColimaHomeReady
-                  ColimaHomeReady -> ensureThenAdvance session keys version context (colimaContextKey keys) ColimaContextStaged
+                  ColimaHomeReady -> do
+                    auxiliaries <- ensureAuxiliaryDirectories session keys home
+                    case auxiliaries of
+                      Left fault -> pure (Left fault)
+                      Right () -> ensureThenAdvance session keys version context (colimaContextKey keys) ColimaContextStaged
                   ColimaContextStaged -> advanceThenDrive session keys version ColimaPrepared
                   ColimaPrepared -> do
                     homeResult <- ensureColimaDirectory session (colimaHomeKey keys) home
                     case homeResult of
                       Left fault -> pure (Left fault)
-                      Right _ -> fmap (fmap (const ())) (ensureColimaDirectory session (colimaContextKey keys) context)
+                      Right _ -> do
+                        auxiliaries <- ensureAuxiliaryDirectories session keys home
+                        case auxiliaries of
+                          Left fault -> pure (Left fault)
+                          Right () -> fmap (fmap (const ())) (ensureColimaDirectory session (colimaContextKey keys) context)
                   _ -> pure (Left (OwnershipMalformed "Colima namespace preparation reached a non-acquisition stage"))
 
     ensureThenAdvance _session _keys version target key successor = do
@@ -342,6 +358,13 @@ prepareColimaNamespacesInside session keys owner lineage invocation home context
                   Right _ -> drive
             Left fault -> pure (Left fault)
             Right Nothing -> pure (Left (OwnershipMalformed "Colima stage vanished before advancement"))
+
+ensureAuxiliaryDirectories :: ProtectedSession session -> ColimaOwnershipKeys -> FilePath -> IO (Either OwnershipFault ())
+ensureAuxiliaryDirectories session keys home = do
+  cache <- ensureColimaDirectory session (colimaCacheKey keys) (home </> "cache")
+  case cache of
+    Left fault -> pure (Left fault)
+    Right _ -> fmap (fmap (const ())) (ensureColimaDirectory session (colimaTemporaryKey keys) (home </> "tmp"))
 
 -- | Perform the outcome-unknown start window while the Prepared record and
 -- both namespace identities remain live. The function deliberately does not
@@ -405,11 +428,13 @@ startPreparedColimaProfileInside interpret session keys profile owner lineage in
               | observed /= expected -> pure (Left (ColimaMutationProfileConflict "prepared stage belongs to another lineage"))
               | otherwise -> do
                   homeResult <- ensureColimaDirectory session (colimaHomeKey keys) home
+                  auxiliaryResult <- ensureAuxiliaryDirectories session keys home
                   contextResult <- ensureColimaDirectory session (colimaContextKey keys) context
-                  case (homeResult, contextResult) of
-                    (Left fault, _) -> pure (Left (ColimaMutationOwnershipRefused fault))
-                    (_, Left fault) -> pure (Left (ColimaMutationOwnershipRefused fault))
-                    (Right _, Right _) -> observeOrStart
+                  case (homeResult, auxiliaryResult, contextResult) of
+                    (Left fault, _, _) -> pure (Left (ColimaMutationOwnershipRefused fault))
+                    (_, Left fault, _) -> pure (Left (ColimaMutationOwnershipRefused fault))
+                    (_, _, Left fault) -> pure (Left (ColimaMutationOwnershipRefused fault))
+                    (Right _, Right (), Right _) -> observeOrStart
 
     observeOrStart = do
       before <- observeProfiles
@@ -742,15 +767,17 @@ settleManagedColimaProfileInside session keys _profile owner lineage invocation 
               machineIdentity <- pure (parseObjectIdentityHex (Text.pack machine))
               profileBinding <- readReportedBinding (colimaProfileKey keys)
               diskBinding <- readReportedBinding (colimaDiskKey keys)
+              auxiliaryDirectories <- ensureAuxiliaryDirectories session keys homePath
               contextIdentity <- ensureColimaDirectory session (colimaContextKey keys) contextPath
               manifest <- revalidateColimaManifest session keys homePath contextPath
-              case (machineIdentity, profileBinding, diskBinding, contextIdentity, manifest) of
-                (Left fault, _, _, _, _) -> pure (Left (ColimaMutationOwnershipRefused fault))
-                (_, Left fault, _, _, _) -> pure (Left (ColimaMutationOwnershipRefused fault))
-                (_, _, Left fault, _, _) -> pure (Left (ColimaMutationOwnershipRefused fault))
-                (_, _, _, Left fault, _) -> pure (Left (ColimaMutationOwnershipRefused fault))
-                (_, _, _, _, Left fault) -> pure (Left (ColimaMutationOwnershipRefused fault))
-                (Right expectedMachine, Right actualMachine, Right _, Right _, Right retainedManifest)
+              case (machineIdentity, profileBinding, diskBinding, auxiliaryDirectories, contextIdentity, manifest) of
+                (Left fault, _, _, _, _, _) -> pure (Left (ColimaMutationOwnershipRefused fault))
+                (_, Left fault, _, _, _, _) -> pure (Left (ColimaMutationOwnershipRefused fault))
+                (_, _, Left fault, _, _, _) -> pure (Left (ColimaMutationOwnershipRefused fault))
+                (_, _, _, Left fault, _, _) -> pure (Left (ColimaMutationOwnershipRefused fault))
+                (_, _, _, _, Left fault, _) -> pure (Left (ColimaMutationOwnershipRefused fault))
+                (_, _, _, _, _, Left fault) -> pure (Left (ColimaMutationOwnershipRefused fault))
+                (Right expectedMachine, Right actualMachine, Right _, Right (), Right _, Right retainedManifest)
                   | expectedMachine /= actualMachine -> pure (Left (ColimaMutationProfileConflict "machine binding differs from settlement"))
                   | otherwise -> case mkColimaManagedEvidence machine epoch contextDigest (ownershipManifestDigest retainedManifest) (ownershipDirectoryChainDigest retainedManifest) cpu memory disk rootDisk of
                       Left refusal -> pure (Left (ColimaMutationProfileConflict refusal))
@@ -1016,7 +1043,38 @@ cleanupManagedColimaProfileWith interpret stateRoot profile owner lineage invoca
           case (profileReleased, diskReleased) of
             (Left fault, _) -> pure (ownershipFailure fault)
             (_, Left fault) -> pure (ownershipFailure fault)
-            (Right (), Right ()) -> finishNamespaces session keys releasingRecord
+            (Right (), Right ()) -> do
+              releasedRemainders <- releaseNamespaceRemainders session home ["cache", "tmp"]
+              case releasedRemainders of
+                Left fault -> pure (ownershipFailure fault)
+                Right () -> finishNamespaces session keys releasingRecord
+
+    releaseNamespaceRemainders session root exclusions = do
+      current <- observeOwnershipManifestForHost True root
+      case current of
+        Left fault -> pure (Left fault)
+        Right observed -> do
+          let currentEntries = ownershipManifestEntries observed
+          releaseEntries session root (sortOn (Down . length . splitPath . fst) [(manifestEntryPath entry, entry) | entry <- currentEntries, manifestEntryPath entry `notElem` exclusions])
+
+    releaseEntries _session _root [] = pure (Right ())
+    releaseEntries session root ((relative, entry) : remaining) = do
+      let target = root </> relative
+          claim = mkOwnerClaim (ByteString.Char8.pack owner)
+          record = bindOriginRecord (manifestEntryIdentity entry) (originRecord (ReportedObject claim) OriginAbsent)
+      released <- case record of
+        Left fault -> pure (Left fault)
+        Right boundRecord ->
+          reenterOwnedObject ownershipRowForHost session target boundRecord $ \bound -> do
+            observed <- reobserveOwnedIdentity ownershipRowForHost bound
+            case observed of
+              Left fault -> pure (Left fault)
+              Right releasable -> releaseOwnedObject ownershipRowForHost releasable (const (pure (Right ())))
+      case released of
+        Left fault -> pure (Left fault)
+        Right () -> releaseEntries session root remaining
+
+    splitPath = filter (`notElem` ["", "/"]) . splitDirectories
 
     finishNamespaces session keys releasingRecord =
       case advanceSettledColimaStageRecord releasingRecord ColimaContextReleased of
@@ -1034,31 +1092,42 @@ cleanupManagedColimaProfileWith interpret stateRoot profile owner lineage invoca
                   case written of
                     Left fault -> pure (ownershipFailure fault)
                     Right nextVersion -> do
-                      releasedContext <- releaseColimaDirectory session (colimaContextKey keys) context
-                      case releasedContext of
+                      clearedContext <- releaseNamespaceRemainders session context []
+                      case clearedContext of
                         Left fault -> pure (ownershipFailure fault)
-                        Right () -> case advanceSettledColimaStageRecord contextReleased ColimaReleased of
-                          Left refusal -> pure (conflict refusal)
-                          Right released -> do
-                            final <- writeColimaStage session keys (ExpectVersion nextVersion) released
-                            case final of
-                              Left fault -> pure (ownershipFailure fault)
-                              Right _ -> do
-                                pruned <- pruneEmptyColimaScaffolding home
-                                case pruned of
-                                  Left fault -> pure (Left fault)
-                                  Right () -> do
-                                    releasedHome <- releaseColimaDirectory session (colimaHomeKey keys) home
-                                    case releasedHome of
-                                      Left fault -> pure (ownershipFailure fault)
-                                      Right () -> do
-                                        retained <- readProtectedRecord session (colimaManifestKey keys)
-                                        case retained of
-                                          Left failure -> pure (ownershipFailure (storeFault "read released Colima manifest" failure))
-                                          Right Nothing -> pure (conflict "released Colima manifest is absent")
-                                          Right (Just stored) -> do
-                                            forgotten <- compareAndDeleteProtectedRecord session (colimaManifestKey keys) (ExpectVersion (protectedRecordVersion stored))
-                                            pure (either (ownershipFailure . storeFault "forget released Colima manifest") (const (Right ())) forgotten)
+                        Right () -> do
+                          releasedContext <- releaseColimaDirectory session (colimaContextKey keys) context
+                          case releasedContext of
+                            Left fault -> pure (ownershipFailure fault)
+                            Right () ->
+                              case advanceSettledColimaStageRecord contextReleased ColimaReleased of
+                                Left refusal -> pure (conflict refusal)
+                                Right released -> do
+                                  final <- writeColimaStage session keys (ExpectVersion nextVersion) released
+                                  case final of
+                                    Left fault -> pure (ownershipFailure fault)
+                                    Right _ -> do
+                                      pruned <- pruneEmptyColimaScaffolding home
+                                      case pruned of
+                                        Left fault -> pure (Left fault)
+                                        Right () -> do
+                                          releasedTemporary <- releaseColimaDirectory session (colimaTemporaryKey keys) (home </> "tmp")
+                                          releasedCache <- releaseColimaDirectory session (colimaCacheKey keys) (home </> "cache")
+                                          case (releasedTemporary, releasedCache) of
+                                            (Left fault, _) -> pure (ownershipFailure fault)
+                                            (_, Left fault) -> pure (ownershipFailure fault)
+                                            (Right (), Right ()) -> do
+                                              releasedHome <- releaseColimaDirectory session (colimaHomeKey keys) home
+                                              case releasedHome of
+                                                Left fault -> pure (ownershipFailure fault)
+                                                Right () -> do
+                                                  retained <- readProtectedRecord session (colimaManifestKey keys)
+                                                  case retained of
+                                                    Left failure -> pure (ownershipFailure (storeFault "read released Colima manifest" failure))
+                                                    Right Nothing -> pure (conflict "released Colima manifest is absent")
+                                                    Right (Just stored) -> do
+                                                      forgotten <- compareAndDeleteProtectedRecord session (colimaManifestKey keys) (ExpectVersion (protectedRecordVersion stored))
+                                                      pure (either (ownershipFailure . storeFault "forget released Colima manifest") (const (Right ())) forgotten)
                 Left fault -> pure (ownershipFailure fault)
                 Right Nothing -> pure (conflict "cleanup stage vanished")
 
@@ -1081,9 +1150,7 @@ cleanupManagedColimaProfileWith interpret stateRoot profile owner lineage invoca
     pruneEmptyColimaScaffolding root = prune
       [ root </> "_lima" </> "_disks",
         root </> "_lima",
-        root </> "_store",
-        root </> "cache",
-        root </> "tmp"
+        root </> "_store"
       ]
       where
         prune [] = pure (Right ())
@@ -1311,6 +1378,8 @@ ownershipKeys profile
       ColimaOwnershipKeys
         <$> key "stage"
         <*> key "home"
+        <*> key "cache"
+        <*> key "temporary"
         <*> key "context"
         <*> key "disk"
         <*> key "profile"

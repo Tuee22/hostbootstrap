@@ -31,6 +31,7 @@ to the [worked-demo phase](phase-24-worked-demo.md).
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
 `core/hostbootstrap-core/test/HarnessSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/harness_workflow.md`
@@ -42,8 +43,9 @@ One bracket that owns everything a run touches, in one order.
 #### Deliverables
 
 - In order, a run takes the project-wide liveness lock and holds it for the whole run; sweeps every abandoned
-  run; takes the Harness mode and its lease in one compare-and-swap with the safety recheck inside it; takes
-  ownership of its own `.test_data/<runId>` generation; and takes ownership of its generated sibling config.
+  run; evaluates the project-supplied Production-state safety probe; takes the Harness mode and its lease in
+  one compare-and-swap with the sibling-config safety recheck inside it; takes ownership of its own
+  `.test_data/<runId>` generation; and takes ownership of its generated sibling config.
 - On exit it settles **both** owned objects and only then closes the lease and releases the mode, because the
   sweep enumerates incomplete *leases* and a record outliving its own lease is unreachable forever — see
   [rationale.md](rationale.md).
@@ -52,15 +54,22 @@ One bracket that owns everything a run touches, in one order.
 - The sole config existence refusal derives its subject from installed project identity and runs *after* the
   sweep, so an interrupted run's own config is reclaimed before anything can refuse on it, while an operator's
   config still refuses the run and survives it untouched.
+- The Production-state probe also runs after the sweep, while project liveness is still held and before any
+  fresh run lease, data root, config, or plan is allocated. Provider state owned by the abandoned Harness run
+  is therefore a recovery subject rather than a false Production conflict, and each later variant repeats the
+  same recovery-then-safety ordering.
 
 #### Validation
 
-`HarnessSpec` covers the acquisition order, both settlements, the conflict reports, the post-sweep refusal
-ordering, a hard kill holding each owned object, and a racing-harness probe converging on one acquisition.
+`HarnessSpec` covers the acquisition order, both settlements, the conflict reports, both post-sweep safety
+refusals, admission after an abandoned provider release, a hard kill holding each owned object, and a
+racing-harness probe converging on one acquisition. The complete core host-static gate must pass.
 
 #### Remaining Work
 
-None.
+None. Completed 2026-08-26 on aarch64 macOS: `HarnessSpec` passed 46/46, including admission only after the
+abandoned provider release, and the complete core host-static gate passed 2,462/2,462 under `-Werror` in
+433.14 seconds. Governed-document validation passed 2/2.
 
 ### Sprint 19.2: The engine and per-variant isolation [Done]
 

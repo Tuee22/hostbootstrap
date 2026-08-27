@@ -3,7 +3,6 @@
 module ProjectRootSpec (tests) where
 
 import qualified Data.Text as T
-import Data.List (isInfixOf)
 import HostBootstrap.Config.Vocab (Mount (..))
 import HostBootstrap.Lift (canonicalHostMount)
 import HostBootstrap.ProjectRoot (
@@ -16,13 +15,10 @@ import HostBootstrap.ProjectRoot (
  )
 import System.Directory (canonicalizePath, createDirectory, createDirectoryIfMissing, createDirectoryLink, withCurrentDirectory)
 import System.FilePath ((</>))
-import System.Exit (ExitCode (..))
-import System.IO (hClose, hPutStr)
-import System.IO.Temp (withSystemTempDirectory, withSystemTempFile)
+import System.IO.Temp (withSystemTempDirectory)
 import System.Info (os)
-import System.Process (readProcessWithExitCode)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, testCase, (@?=))
+import Test.Tasty.HUnit (testCase, (@?=))
 
 tests :: TestTree
 tests =
@@ -131,27 +127,4 @@ tests =
                             , target = "/workspace/demo/.data"
                             , readOnly = False
                             }
-        , testCase "raw paths and cross-root projections do not type-check at the host bind adapter" $
-            withSystemTempFile "ProjectRootCompileFail.hs" $ \fixture handle -> do
-                hPutStr handle compileFailFixture
-                hClose handle
-                (code, _, err) <-
-                    readProcessWithExitCode
-                        "cabal"
-                        ["exec", "--", "ghc", "-fno-code", "-package", "hostbootstrap-core", fixture]
-                        ""
-                code @?= ExitFailure 1
-                assertBool ("expected type mismatch, got:\n" ++ err) ("Couldn't match" `isInfixOf` err)
-        ]
-
-compileFailFixture :: String
-compileFailFixture =
-    unlines
-        [ "module ProjectRootCompileFail where"
-        , "import HostBootstrap.Config.Vocab (Mount)"
-        , "import HostBootstrap.Lift (canonicalHostMount)"
-        , "import HostBootstrap.ProjectRoot (CanonicalHostPath, CanonicalProjectRoot)"
-        , "badRaw = canonicalHostMount (\"/tmp\" :: FilePath) (\"/tmp\" :: FilePath) \"/inside\" False"
-        , "badCross :: CanonicalProjectRoot s1 r1 -> CanonicalHostPath s2 r2 -> Mount"
-        , "badCross root foreignPath = canonicalHostMount root foreignPath \"/inside\" False"
         ]

@@ -54,6 +54,9 @@ import HostBootstrap.Activation (
     ActivationGrant,
     ActivationManifest (..),
     ActivationSigningKey,
+    activationErrorMessage,
+    activationGrantSignature,
+    activationManifestFromWire,
     activationSigningPolicy,
     signActivationManifest,
     withActivationBroker,
@@ -171,6 +174,10 @@ import HostBootstrap.Lifecycle.Context (
  )
 import HostBootstrap.Lifecycle.Context.Internal (
     withValidatedRootLifecycleContext,
+ )
+import HostBootstrap.Lifecycle.Execution.Internal (
+    newStepRuntime,
+    replaceStepRuntimeActivationSigningService,
  )
 import HostBootstrap.Lifecycle.Mode (
     AcquisitionJournal,
@@ -329,6 +336,7 @@ import HostBootstrap.Teardown (
     settleDescentWork,
     subtreeSettledTerminalObservations,
     teardownErrorMessage,
+    teardownForestFailures,
     teardownObservationsFromWire,
     teardownPlan,
     teardownPlanFrameId,
@@ -1840,7 +1848,7 @@ runRootForwardCoordinator cfg self scope loadSigningKey loadActivationSigningKey
                                                 plan
                                                 authority
                                                 cursor
-                                                (launchChild link)
+                                                (launchChild activationSigningKey link)
                                         case driven of
                                             Right () -> pure (Right ())
                                             Left failure@(detail, reached, unresolved) -> do
@@ -1963,7 +1971,14 @@ runRootForwardCoordinator cfg self scope loadSigningKey loadActivationSigningKey
                         else Left "the requested forward edge differs from its catalog package"
                     )
 
-    launchChild link carrier parent child descent =
+    launchChild signingKey link carrier parent child descent = do
+        activationRuntime <- newStepRuntime carrier
+        replaceStepRuntimeActivationSigningService activationRuntime $ \manifestWire ->
+            case activationManifestFromWire manifestWire of
+                Left failure -> pure (Left (Text.pack (activationErrorMessage failure)))
+                Right manifest -> do
+                    signed <- signActivation signingKey manifest
+                    pure (either (Left . Text.pack . activationErrorMessage) (Right . activationGrantSignature) signed)
         fmap (either (Left . Text.unpack) Right) $
             withCatalogForwardHandoffKernel catalog parent child $ \package ->
                 withCatalogForwardProcessInputsKernel package $ \_ input payload ->
@@ -2555,7 +2570,9 @@ withPreparedRootReverseFrameServiceKernel store generation runtime broker prepar
                         eliminateTeardownWork
                             teardownWork
                             ( \local ->
-                                prepare session (localWorkKey local)
+                                case lookup (localWorkKey local) (teardownForestFailures forest) of
+                                    Just detail -> refusedResponseWith respond session detail
+                                    Nothing -> prepare session (localWorkKey local)
                             )
                             ( \descentWork -> do
                                 child <- descend descentWork

@@ -119,7 +119,8 @@ Operator-significant boundaries are:
 - Direct provider reverse terminalizes its journal reservation and reports physical host stop/delete as
   `Unsupported`;
 - bare Linux has no runtime storage quota or image-GC wall;
-- terminal Apple, NVIDIA, and Windows acceptance reruns remain owned by their substrate phases.
+- terminal NVIDIA and Windows acceptance reruns remain owned by their substrate phases; the Apple/Lima/Metal
+  acceptance is complete.
 
 ## Build and Config
 
@@ -223,6 +224,18 @@ After cluster readiness, Docker assigns a distinct host port to every relay list
 registry push, web probes, MinIO setup, accelerator ingress, and harness assertions. Duplicate services,
 wildcard inspection, missing/additional mappings, wrong targets, identity replacement, digest mismatch, or
 noncanonical input refuses. No operator chooses a port and no retry loop scans candidates.
+
+The Apple/Windows host-resident daemon starts after the deployment child frame has exited, so it does not use
+that child's invocation-local cluster package. It crosses the selected VM provider frame with the closed
+read-only exposure request; the guest opens the durable exposure record, re-observes the exact relay identity
+and complete mapping set in its Docker engine, and returns only the accelerator loopback port. A missing,
+pending, replaced, or changed relay fails the host-daemon step before process launch.
+
+The root coordinator installs its admitted activation signing service into the root Chain carrier before that
+descent. The same carrier survives the child close, so the host daemon's post-handoff step can submit its exact
+manifest and receive a signed activation grant without retaining a child service or moving the root signing
+key. Exposure observation and activation signing are therefore separate fresh checks: one returns only a
+loopback port, and the other returns only a signed grant.
 
 MinIO creates the S3 backing and bucket before the registry. The accelerator daemon is in-cluster for
 Linux CPU/GPU and host-native after private ingress for Apple Silicon/Windows GPU. An in-cluster daemon mounts
@@ -346,6 +359,28 @@ The case intentions are:
 Those case assertions do not replace the recursive end-state audit, receipt-bound ownership checks, or
 native-substrate acceptance gates.
 
+### Apple Silicon pristine acceptance
+
+Run the Apple acceptance only from a disposable demo state with no `.build`, `.hostbootstrap`, generated
+`hostbootstrap-demo.dhall`, `.test_data`, or Lima instance. Preserve tracked sources and any unrelated ambient
+Colima profile. From the repository root:
+
+```text
+poetry run hostbootstrap run --project-root demo test init
+poetry run hostbootstrap run --project-root demo test run all
+```
+
+The complete matrix performs four fresh Lima bring-ups and four terminal destroys and normally occupies the
+60–80 minute envelope. Every bring-up installs/builds inside a pristine guest, pulls the published base, and
+runs the image's `check-code`/export verification before workloads start. Success is exactly `10/10 passed`.
+
+After success, verify both run leases encode `closed`; no project mode, generated-config, or data-root record
+remains; `.build/hostbootstrap-demo.dhall` is gone while `.build/hostbootstrap-demo.test.dhall` remains;
+`.test_data` exists and is empty; no accelerator daemon is live; and `limactl list` reports no demo instance.
+The shared Docker context and any pre-existing Colima `default` profile are ambient state and must remain
+unchanged. The dated host, versions, run IDs, duration, image digests, and audit belong in
+[Phase 25](../../DEVELOPMENT_PLAN/phase-25-apple-silicon-substrate.md).
+
 ## Safe Operating Guidance
 
 - Do not run the long harness on a machine carrying production demo state.
@@ -363,9 +398,8 @@ native-substrate acceptance gates.
 
 ## Related
 
-- [harness workflow](../architecture/harness_workflow.md) — exact Harness plan ownership and remaining
-  profile/root consumer adoption.
+- [harness workflow](../architecture/harness_workflow.md) — exact Harness plan, profile, and run-root ownership.
 - [lifecycle state model](../architecture/lifecycle_state_model.md) — typed transition and ownership
   contract.
 - [cluster lifecycle](../engineering/cluster_lifecycle.md) — current kind/nvkind operations.
-- [accelerator daemon](../engineering/accelerator_daemon.md) — service placement and remaining live gates.
+- [accelerator daemon](../engineering/accelerator_daemon.md) — service placement and substrate live gates.

@@ -41,7 +41,7 @@ implements common discovery as closed daemon, permission, VM, egress, and guest-
 outcomes. Private parsers require strict single-line tool/marker/identity reports and bound retry to
 `NotReady`. Discovery runs after provider settlement when guest facts are needed; its generative capability
 is descriptive and indexed to the exact opaque managed provider/backend/generation, never mutation
-authority. Native Lima confirmation remains in the
+authority. Native Lima confirmation is recorded by the completed
 [Apple-Silicon-substrate phase](../../DEVELOPMENT_PLAN/phase-25-apple-silicon-substrate.md).
 
 The pure command shapes are:
@@ -94,12 +94,14 @@ bring-up, stop, and teardown:
   memory, but preserves the instance and its disk; a subsequent `project up` brings the same instance
   back.
 - `project destroy` routes provider deletion through the prefix-guarded `limactl delete` builder. The
-  broader lifecycle does not yet return typed idempotent results or recursively visit every child.
+  recursive lifecycle visits every admitted child first, aggregates independent reverse failures, and
+  deletes the exact retained Lima generation only after its descendants settle.
 
-Teardown is best-effort. `limactl delete --force` removes the instance's own disk, but the demo's
+`limactl delete --force` removes the instance's own disk, but the demo's
 canonical `<project-root>/.data` is a host directory mounted into Lima and is not intentionally removed
-with the VM. The cluster removal set also excludes it. End-to-end reattachment and readback after destroy
-remain unvalidated; see [durable state](../architecture/durable_state.md).
+with the VM. The cluster removal set also excludes it. The Harness `durable-readback` case proves the exact
+host root across an engine-owned destroy/recreate before terminal run-root release; see
+[durable state](../architecture/durable_state.md).
 
 A host directory reaches the Lima guest through the same host-path share primitive the other lanes use.
 Lima declares its **host-side share** as the create-time mount argument on `limactl start` (its
@@ -107,10 +109,8 @@ Lima declares its **host-side share** as the create-time mount argument on `lima
 symlink to the share — uses the common prepared alias boundary. That core boundary accepts only the exact
 opaque managed provider/share authorities, holds its clauses through the row the frame declares rather
 than a front-end process, and recovers `prepared`/`managed`/`releasing` origin states before
-identity-conditional release. The demo's current Lima call site still threads compatibility readiness and
-creates/removes the alias by pathname, so that call site mints no receipt. Replacing it — together with
-establishing the project binary in the guest that the alias's row runs in — belongs to the
-[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md). See
+identity-conditional release. The demo opens the exact plan-owned provider/share resources and executes
+that prepared alias transaction through the project binary installed in the admitted guest frame. See
 [ownership invariant](../architecture/ownership_invariant.md),
 [ownership seam](../architecture/ownership_seam.md), [readiness](../architecture/readiness.md),
 and [durable state](../architecture/durable_state.md).
@@ -157,12 +157,12 @@ through authenticated child entries:
 The VM-provider axis is tracked in the development plan
 ([host providers phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)).
 
-A disposable Apple validation on 2026-07-26 exercised the exact production command shapes with a unique
-instance: 2 CPUs, 4 GiB memory, 20 GiB disk, VZ, containerd disabled, one writable host share, guest DNS
-egress, already-running no-op, stop/start recovery, and exact deletion. The disposable instance and
-mount directory were removed, and no pre-existing Lima instance was present. This evidence covers the
-Lima lifecycle slice only; it does not prove the common prepared alias backend through a real Lima guest,
-the demo's adoption of that backend, or another provider.
+The completed Apple acceptance ran the full ten-row demo matrix through four fresh Lima guests. Each guest
+used the admitted CPU/memory/disk wall, the writable durable share and shipped guest-alias row, pinned GHC,
+Docker, project-image build/check, cluster/workload lifecycle, host Metal daemon, and terminal exact deletion.
+Both variants also destroyed and recreated the guest within one run and read the same durable marker after
+reattachment. Exact host/version/duration evidence lives in the
+[Apple-Silicon-substrate phase](../../DEVELOPMENT_PLAN/phase-25-apple-silicon-substrate.md).
 
 ## See Also
 

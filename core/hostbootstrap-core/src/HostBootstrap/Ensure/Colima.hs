@@ -877,7 +877,7 @@ interpretNativeColima :: HostConfig -> BackendNamespace -> HostCommand -> IO (Ei
 interpretNativeColima config namespace command = case resolveLaunch config command of
   Left refusal -> pure (Left refusal)
   Right (executable, arguments) -> do
-    outcome <- runShippedCommand 120 namespace executable arguments
+    outcome <- runShippedCommand 300 namespace executable arguments
     pure $ case outcome of
       BoundedToolCompleted code out err -> Right (CapturedRun code out err)
       BoundedToolTimedOut -> Left "native Colima command timed out"

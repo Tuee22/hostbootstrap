@@ -73,7 +73,10 @@ module HostBootstrap.Cluster.Ownership (
 )
 where
 
+import Control.Exception (IOException, finally, mask, onException, try)
+import Control.Monad (when)
 import Data.ByteString (ByteString)
+import qualified Data.ByteString.Char8 as ByteStringChar8
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -163,6 +166,9 @@ import HostBootstrap.Protected (
     protectedErrorMessage,
     readProtectedRecord,
  )
+import System.Directory (doesFileExist, getTemporaryDirectory, removeFile, renameFile)
+import System.FilePath (takeDirectory, takeFileName)
+import System.IO (hClose, hFlush, openBinaryTempFile)
 
 -- ---------------------------------------------------------------------------
 -- What is owned
@@ -188,7 +194,7 @@ data OwnedCluster = OwnedCluster
     , ownedClusterConfig :: Maybe FilePath
     -- ^ the declared configuration snapshot, where the plan declares one
     , ownedClusterKubeconfig :: FilePath
-    -- ^ the file this run has opened for the credential
+    -- ^ the durable path where this run atomically publishes the exact credential
     , ownedClusterOwner :: Text
     -- ^ this run's durable owner binding
     }
@@ -317,6 +323,8 @@ data ClusterOwnershipFault
       ClusterOwnershipStanding ClusterStandingConflict
     | -- | a clause could not be held
       ClusterOwnershipClause OwnershipFault
+    | -- | the credential could not be staged or atomically published
+      ClusterOwnershipKubeconfig Text
     deriving (Eq, Show)
 
 -- | One rendering, so no caller writes a second description of a refusal.
@@ -326,6 +334,7 @@ clusterOwnershipFaultMessage fault = case fault of
     ClusterOwnershipReport inner -> clusterReportFaultMessage inner
     ClusterOwnershipStanding inner -> clusterStandingConflictMessage inner
     ClusterOwnershipClause inner -> ownershipFaultMessage inner
+    ClusterOwnershipKubeconfig inner -> "cluster kubeconfig: " <> inner
 
 -- ---------------------------------------------------------------------------
 -- What the authorities are currently reporting
@@ -416,9 +425,7 @@ reconcileOwnedCluster cfg session key owned = do
         Left fault -> pure (Left fault)
         Right (ClusterOwned identity) ->
             requireOwnedWorkers cfg session owned (ClusterAlreadyOwned identity)
-        Right (ClusterCreatedUnbound _) -> do
-            bound <- bindNodeRecords cfg session key owned
-            pure (fmap ClusterRecovered bound)
+        Right (ClusterCreatedUnbound _) -> publishThenBind ClusterRecovered
         Right ClusterNothingDone -> publishThenCreate
         Right ClusterOriginRecorded -> publishThenCreate
   where
@@ -427,6 +434,11 @@ reconcileOwnedCluster cfg session key owned = do
         case published of
             Left fault -> pure (Left fault)
             Right () -> createThenBind cfg session key owned
+    publishThenBind outcome = do
+        published <- publishOwnedClusterKubeconfig cfg owned
+        case published of
+            Left fault -> pure (Left fault)
+            Right () -> fmap outcome <$> bindNodeRecords cfg session key owned
 
 {- | Publish clause 2 over every record this cluster owns, before any mutation.
 
@@ -466,19 +478,99 @@ createThenBind ::
     OwnedCluster ->
     IO (Either ClusterOwnershipFault ClusterReconcileOutcome)
 createThenBind cfg session key owned = do
-    created <-
-        interpret
-            cfg
-            ( createClusterCommand
-                (ownedClusterName owned)
-                (ownedClusterConfig owned)
-                (ownedClusterKubeconfig owned)
+    created <- runCreateCommand cfg owned
+    case created of
+        Left fault -> pure (Left fault)
+        Right captured -> case classifyClusterReport clusterReportLineBound captured of
+            Left fault -> pure (Left (ClusterOwnershipReport fault))
+            Right _ -> do
+                published <- publishOwnedClusterKubeconfig cfg owned
+                case published of
+                    Left fault -> pure (Left fault)
+                    Right () -> do
+                        bound <- bindNodeRecords cfg session key owned
+                        pure (fmap ClusterCreated bound)
+
+{- | Give Kind a unique private local file for only the duration of creation.
+
+The path is selected by the host runtime rather than derived from durable state,
+so a host-provider mount is never asked to implement Kind's sidecar lock. The
+file is opened before its name is handed to Kind, which prevents a competing
+invocation from selecting the same staging object, and cleanup runs on every
+reported or exceptional exit.
+-}
+runCreateCommand ::
+    HostConfig ->
+    OwnedCluster ->
+    IO (Either ClusterOwnershipFault (Either String CapturedRun))
+runCreateCommand cfg owned = do
+    attempted <- tryIO $ mask $ \restore -> do
+        temporaryRoot <- getTemporaryDirectory
+        let template = ".hostbootstrap-kind-" <> ownedClusterName owned <> ".kubeconfig"
+        (staging, handle) <- openBinaryTempFile temporaryRoot template
+        let removeStaging = do
+                present <- doesFileExist staging
+                when present (removeFile staging)
+        hClose handle `onException` removeStaging
+        restore
+            ( interpret
+                cfg
+                ( createClusterCommand
+                    (ownedClusterName owned)
+                    (ownedClusterConfig owned)
+                    staging
+                )
             )
-    case classifyClusterReport clusterReportLineBound created of
+            `finally` removeStaging
+    pure $ case attempted of
+        Left failure -> Left (kubeconfigFileFault "stage the creating command's private credential" failure)
+        Right result -> Right result
+
+{- | Read the exact live credential and atomically replace the durable copy.
+
+The readback is authoritative even after an outcome-unknown create: it asks Kind
+for the cluster that now stands rather than trusting bytes left by the creating
+client. Publication precedes every binding, so a durable ownership row can never
+say the nodes are bound while its credential is absent or partial.
+-}
+publishOwnedClusterKubeconfig ::
+    HostConfig ->
+    OwnedCluster ->
+    IO (Either ClusterOwnershipFault ())
+publishOwnedClusterKubeconfig cfg owned = do
+    credential <- classifyKubeconfig <$> interpret cfg (readKubeconfigCommand (ownedClusterName owned))
+    case credential of
         Left fault -> pure (Left (ClusterOwnershipReport fault))
-        Right _ -> do
-            bound <- bindNodeRecords cfg session key owned
-            pure (fmap ClusterCreated bound)
+        Right kubeconfig -> do
+            published <- atomicPublishKubeconfig (ownedClusterKubeconfig owned) kubeconfig
+            pure $ case published of
+                Left failure -> Left (kubeconfigFileFault "publish the exact durable credential" failure)
+                Right () -> Right ()
+
+{- | Flush complete credential bytes to a private sibling and rename them over
+the destination, so readers observe either the previous complete credential or
+the new complete credential.
+-}
+atomicPublishKubeconfig :: FilePath -> String -> IO (Either IOException ())
+atomicPublishKubeconfig destination kubeconfig = tryIO $ mask $ \restore -> do
+    let directory = takeDirectory destination
+        template = "." <> takeFileName destination <> ".publish"
+    (temporary, handle) <- openBinaryTempFile directory template
+    let removeTemporary = do
+            present <- doesFileExist temporary
+            when present (removeFile temporary)
+        closeAndRemove = hClose handle `finally` removeTemporary
+    restore (ByteStringChar8.hPutStr handle (ByteStringChar8.pack kubeconfig) >> hFlush handle)
+        `onException` closeAndRemove
+    hClose handle `onException` removeTemporary
+    restore (renameFile temporary destination) `onException` removeTemporary
+
+tryIO :: IO value -> IO (Either IOException value)
+tryIO = try
+
+kubeconfigFileFault :: Text -> IOException -> ClusterOwnershipFault
+kubeconfigFileFault operation failure =
+    ClusterOwnershipKubeconfig (operation <> " failed: " <> Text.pack (show failure))
 
 {- | Bind clause 3 over every node, answering with the control plane's identity.
 

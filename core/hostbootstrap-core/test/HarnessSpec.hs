@@ -320,7 +320,8 @@ suiteCases =
         acquisitions <- newIORef (0 :: Int)
         let record e = modifyIORef' events (e :)
             ownership =
-                HarnessRunOwnership $ \body -> do
+                HarnessRunOwnership $ \safety body -> do
+                    either (throwIO . SafetyRefusal) pure =<< safety
                     modifyIORef' acquisitions (+ 1)
                     acquisition <- readIORef acquisitions
                     let runName = "run-" ++ show acquisition
@@ -376,7 +377,8 @@ suiteCases =
         attempts <- newIORef (0 :: Int)
         events <- newIORef []
         let ownership =
-                HarnessRunOwnership $ \body -> do
+                HarnessRunOwnership $ \safety body -> do
+                    either (throwIO . SafetyRefusal) pure =<< safety
                     modifyIORef' attempts (+ 1)
                     attempt <- readIORef attempts
                     if attempt == 1
@@ -475,7 +477,8 @@ suiteCases =
     , testCase "ownership finalizer failures retain the successful report and name the failed stage" $ do
         let checkFailure failure expectedRow expectedReason = do
                 let ownership =
-                        HarnessRunOwnership $ \body -> do
+                        HarnessRunOwnership $ \safety body -> do
+                            either (throwIO . SafetyRefusal) pure =<< safety
                             report <- body "owned-run"
                             pure (Right (report, Just failure))
                 outcome <- runSuiteSelection ownership twoCaseSuite [variant ["a"] "v0"]
@@ -501,7 +504,8 @@ suiteCases =
         events <- newIORef []
         let record event = modifyIORef' events (event :)
             ownership =
-                HarnessRunOwnership $ \body -> do
+                HarnessRunOwnership $ \safety body -> do
+                    either (throwIO . SafetyRefusal) pure =<< safety
                     record "own"
                     report <- body ("owned-run" :: T.Text)
                     record "finalize"
@@ -667,7 +671,8 @@ reporting without taking real project-wide ownership of the working directory.
 -}
 passthroughOwnership :: HarnessRunOwnership T.Text
 passthroughOwnership =
-    HarnessRunOwnership $ \body ->
+    HarnessRunOwnership $ \safety body -> do
+        either (throwIO . SafetyRefusal) pure =<< safety
         fmap (\result -> Right (result, Nothing)) (body "fixture-run")
 
 withProtectedRunOwnership ::
@@ -1222,6 +1227,31 @@ ownershipCases =
                 Left reason -> assertFailure ("the recovered successor was refused: " ++ reason)
                 Right ((), Nothing) -> pure ()
                 Right ((), Just failure) -> assertFailure ("the recovered successor cleanup failed: " ++ show failure)
+            readIORef observed >>= (@?= ["host"])
+    , testCase "suite safety observes the world only after abandoned Harness recovery" $
+        withAbandonedResourceOwnership False $ \observed _refusing ownership -> do
+            let safety = do
+                    released <- readIORef observed
+                    pure $
+                        if released == ["host"]
+                            then Right ()
+                            else Left "the abandoned Harness provider still appears to be Production"
+                suite =
+                    TestSuite
+                        safety
+                        (\_ -> pure)
+                        [fixtureCase "a"]
+                        (\_ _ -> pure Pass)
+                        (pure ())
+                selected =
+                    ConfigVariant
+                        (vid "v0")
+                        (cid "a" :| [])
+                        (\_ body -> body (testingHarnessLifecycle (pure ()) (pure ())))
+            outcome <- runSuiteSelection ownership suite [selected]
+            case outcome of
+                Right (Report [("[v0] a", Pass)]) -> pure ()
+                other -> assertFailure ("post-recovery safety did not admit the successor: " ++ show other)
             readIORef observed >>= (@?= ["host"])
     , testCase "a failed recovered release retains ownership for an exact retry" $
         withAbandonedResourceOwnership False $ \observed refusing succeeding -> do

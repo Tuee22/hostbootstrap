@@ -44,6 +44,7 @@ module FakeCluster (
     writeRelays,
     recordedClusterMutations,
     recordedKubeconfigPaths,
+    fixtureKubeconfig,
     fixtureNodeIdentity,
     armReplacementAfter,
     armApiUnready,
@@ -238,6 +239,10 @@ answered" an equality rather than a shrug.
 fixtureNodeIdentity :: String -> String
 fixtureNodeIdentity = nodeIdentity . freshNode
 
+-- | The exact complete credential body the fake Kind client reports.
+fixtureKubeconfig :: String -> String
+fixtureKubeconfig name = "apiVersion: v1\nclusters: [" <> name <> "]\n"
+
 -- ---------------------------------------------------------------------------
 -- Serving one command
 
@@ -249,7 +254,7 @@ runFakeClusterClient root argv = case argv of
     ["--quiet", "get", "kubeconfig", "--name", name] -> do
         present <- readClusters root
         if name `elem` present
-            then putStrLn ("apiVersion: v1\nclusters: [" <> name <> "]")
+            then putStr (fixtureKubeconfig name)
             else refuse ("no cluster named " <> name)
     ("--quiet" : "create" : "cluster" : "--name" : name : rest) -> do
         present <- readClusters root

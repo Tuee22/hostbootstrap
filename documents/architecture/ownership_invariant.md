@@ -151,8 +151,10 @@ native validation lives.
   opaque alias resource and typed alias-to-share edge only when the durable-share node both depends on the
   provider and declares the derived `<provider>/<share>/guest-alias` operation. The project binary installed
   in the guest interprets a closed shipped symbolic-link transaction over the same ownership row: the shared
-  codec records absence in the host-backed share, a no-replace publication binds the link's kernel identity,
-  retries converge across the unbound and published windows, and destroy releases that exact identity before
+  codec records absence in the host-backed share, stages the link, and durably binds that staging inode before
+  atomic no-replace publication. Linux gives the inode a second name with `link(2)`; Darwin moves that same
+  inode with `renamex_np(RENAME_EXCL)`, because APFS refuses hard links to symbolic links. Retries converge
+  across the unbound, bound-staging, and published windows, and destroy releases that exact identity before
   deleting the provider frame. No guest Python program or `stat`/`flock` front end participates.
 - `HostBootstrap.Cluster.Backend` is the **join** between the plan's prepared cluster package and the driver
   above, not a second holder of the clauses. It derives the owned object from the package — name, declared
@@ -227,6 +229,11 @@ A kernel-held lock is acquired before any mutation and retained across the whole
 observe/mutate/settle bracket. The lock must be released by the operating system on process death, so
 a crashed run cannot strand it. A lock held only by cooperating library code, or one that requires an
 orderly unlock, does not satisfy this clause.
+
+The descriptor or handle carrying that lock is non-inheritable across an executed child. A provider or
+service process may intentionally outlive its launcher, but it is not thereby an owner of the launcher's
+protected-store entry or project-wide liveness extent. On POSIX the store sets `FD_CLOEXEC`; the Windows
+handle row is already non-inheritable.
 
 ### 2. Durable origin record before the first write
 
@@ -345,12 +352,14 @@ evidence for each criterion — and what cannot — is in [testing](../engineeri
 2. Release is refused when the observed identity does not match the receipt's.
 3. A second entry attempt is excluded while the lock is held, and succeeds after the holding process is
    killed (proving the OS released it).
-4. A kill between the origin record and the first write leaves recoverable state, including the
+4. A child that remains alive across `exec` cannot retain the parent's lock; the parent leaves its extent and
+   immediately reacquires it while the child is still running.
+5. A kill between the origin record and the first write leaves recoverable state, including the
    **absent-original** case: the next run restores absence rather than treating generated content as
    the original.
-5. A clean-path run reaches absence, creates the object, and reruns to `Unchanged` with the same
+6. A clean-path run reaches absence, creates the object, and reruns to `Unchanged` with the same
    verified receipt on every supported substrate.
-6. An unsatisfiable clause returns `Unsupported` with its reason, and no receipt is minted.
+7. An unsatisfiable clause returns `Unsupported` with its reason, and no receipt is minted.
 
 Validation status and scheduling belong to
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md); dated evidence lives with the sprint

@@ -32,8 +32,10 @@ blob `HEAD` redirects the host client to cluster-only MinIO. The target chain re
 [network reachability](../architecture/network_reachability.md).
 
 Cluster creation is fail-closed around command exit status. Existing named clusters are health-probed;
-an unhealthy one is deleted before recreation. Kind creation is followed by a bounded node readiness
-wait. Nvkind adds the NVIDIA runtime smoke, a control-plane/GPU-worker topology, per-node CPU/memory
+an unhealthy one is deleted before recreation. Kind creation carries a finite ten-minute driver readiness
+bound, followed by a fresh API and declared-node readiness observation. The bound covers a cold Apple/Lima
+control plane without turning a failed creation into an unbounded wait. Nvkind adds the NVIDIA runtime smoke,
+a control-plane/GPU-worker topology, per-node CPU/memory
 cordons, and a device-plugin/allocatable-GPU gate.
 
 The [cluster-lifecycle-and-cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
@@ -92,8 +94,17 @@ driver. The four
 one interpreter, and every decision above it is a total function of the bytes a tool wrote. What is left
 here is turning a prepared plan-owned package into the object that driver is about — the cluster's name,
 its declared node containers control plane first, the configuration snapshot where the plan declares one,
-the file this run opens for the credential, and this run's durable ownership binding — and turning the
+the durable destination where this run publishes the credential, and this run's durable ownership binding — and turning the
 driver's answer into the observation the reconciler classifies.
+
+Kind creation writes its initial kubeconfig to a unique private file opened under the executing platform's
+local temporary directory. That keeps Kind's client-side sidecar lock off host-provider mounts such as the
+Lima/virtiofs project share. The file exists only for the child invocation and is removed on every exit. Once
+Kind accepts creation, the ownership transaction asks Kind for the exact live kubeconfig, validates the bounded
+report, flushes it to a private sibling of the plan-owned durable destination, and atomically renames it into
+place. Only then may node identities be bound. The same readback-and-publication step precedes binding when a
+later entry recovers `ClusterCreatedUnbound`, so interruption or a durable publication failure leaves a
+convergent unbound row rather than a bound cluster without its credential.
 
 There is no interpreter, no locking front end, and no injected executor. The private component the executor
 lived in is gone, and a source guard holds the absence: it fires on a reintroduced `Python3`, `Flock`,
@@ -175,6 +186,14 @@ release must remove and re-observe the exact relay before cluster deletion can b
 [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
 closed this boundary with the complete warning-clean static gate and a live concurrent-allocation run on
 2026-08-22.
+
+A parent-frame consumer does not retain the child's cluster runtime package after the deployment child exits.
+For that case, `observeRecordedClusterExposure` opens the exact protected `<cluster>.exposure` row read-only,
+admits only a canonical managed record with one requested service, and re-inspects the recorded Docker relay's
+name, immutable identity, operation, specification, and complete loopback mapping set before returning the
+selected port. `HostBootstrap.Cluster.Shipped` carries that observation through the existing frame-child
+transaction into the provider frame that owns Docker. Its bounded response is only the freshly observed port;
+no cluster handle, ownership witness, credential, or executable selector crosses back.
 
 What remains is legacy wiring. `ensureCluster` still treats any healthy cluster with `clusterName plan` as
 the desired cluster without checking a receipt, and still deletes and recreates an unhealthy same-name

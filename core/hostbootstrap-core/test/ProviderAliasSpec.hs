@@ -11,14 +11,18 @@ import HostBootstrap.Ownership.Object (
     ObjectKind (ReportedObject),
     Origin (OriginAbsent),
     OwnershipFault (OwnershipOccupied, OwnershipUnsupported),
+    bindOriginRecord,
+    mkKernelObjectIdentity,
     mkOwnerClaim,
     originRecord,
+    parseOriginRecord,
     renderOriginRecord,
  )
 import HostBootstrap.Ownership.Row (hostOwnershipSupported, ownershipRowForHost)
 import HostBootstrap.Ownership.Shipped
 import HostBootstrap.Protected (
-    Expectation (ExpectAbsent),
+    Expectation (ExpectAbsent, ExpectVersion),
+    ProtectedRecord (protectedRecordBytes, protectedRecordVersion),
     RecordKey,
     compareAndSwapProtectedRecord,
     mkRecordKey,
@@ -44,7 +48,7 @@ import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestName, TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 #ifndef mingw32_HOST_OS
-import System.Posix.Files (createLink, createSymbolicLink)
+import System.Posix.Files (createSymbolicLink, deviceID, fileID, getSymbolicLinkStatus)
 #endif
 
 tests :: TestTree
@@ -110,10 +114,10 @@ ownershipCases =
             ShippedSymbolicLinkRetained _ -> pure ()
             other -> assertFailure ("expected a retained recovery, got " <> show other)
         assertRecordPresent frame True
-    , kernelCase "an interruption after no-replace publication binds that exact inode" $ \frame -> do
+    , kernelCase "an interruption after pre-publication identity binding resumes that exact inode" $ \frame -> do
         createDirectory (frameLinkTarget frame)
         publishUnboundRecord frame
-        publishInterruptedLink frame
+        publishBoundStaging frame
         resumed <- runShippedOwnership ownershipRowForHost (takeTransaction frame)
         identity <- case resumed of
             ShippedSymbolicLinkRetained value -> pure value
@@ -215,13 +219,33 @@ publishUnboundRecord frame = do
         Left failure -> assertFailure (show failure)
         Right _version -> pure ()
 
-publishInterruptedLink :: AliasFrame -> IO ()
+publishBoundStaging :: AliasFrame -> IO ()
 #ifdef mingw32_HOST_OS
-publishInterruptedLink _frame = assertFailure "the Windows row cannot publish a POSIX symbolic link"
+publishBoundStaging _frame = assertFailure "the Windows row cannot publish a POSIX symbolic link"
 #else
-publishInterruptedLink frame = do
+publishBoundStaging frame = do
     createSymbolicLink (frameLinkTarget frame) (stagingPath frame)
-    createLink (stagingPath frame) (frameAlias frame)
+    status <- getSymbolicLinkStatus (stagingPath frame)
+    identity <-
+        either (assertFailure . show) pure $
+            mkKernelObjectIdentity (fromIntegral (deviceID status)) (fromIntegral (fileID status))
+    opened <- openProtectedStore (frameAuthority frame)
+    store <- either (assertFailure . show) pure opened
+    bound <-
+        withProtectedEntry store $ \session -> do
+            stored <- readProtectedRecord session aliasRecordKey
+            case stored of
+                Left failure -> pure (Left failure)
+                Right Nothing -> assertFailure "the pre-publication origin record vanished"
+                Right (Just stamped) -> do
+                    record <- either (assertFailure . show) pure (parseOriginRecord (protectedRecordBytes stamped))
+                    next <- either (assertFailure . show) pure (bindOriginRecord identity record)
+                    compareAndSwapProtectedRecord
+                        session
+                        aliasRecordKey
+                        (ExpectVersion (protectedRecordVersion stamped))
+                        (renderOriginRecord next)
+    either (assertFailure . show) (const (pure ())) bound
 #endif
 
 stagingPath :: AliasFrame -> FilePath

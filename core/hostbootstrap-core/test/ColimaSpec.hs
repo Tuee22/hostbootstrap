@@ -5,6 +5,7 @@
 module ColimaSpec (tests, runShippedOwnerProbe) where
 
 import Control.Concurrent (threadDelay)
+import Control.Exception (finally)
 import Control.Monad (unless)
 import Data.Bifunctor (first)
 import qualified Data.ByteString as ByteString
@@ -13,7 +14,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Maybe (isJust)
 import qualified Data.Map.Strict as Map
-import Data.IORef (atomicModifyIORef', newIORef)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Text as Text
 import Data.Word (Word64)
 import qualified Fixture
@@ -89,7 +90,7 @@ import HostBootstrap.ProjectPlan
     topology,
     withPlannedResourceOfKind,
   )
-import HostBootstrap.Reconcile (withObservedProjectResource)
+import HostBootstrap.Reconcile (ReconcileError (Conflict), withObservedProjectResource)
 import HostBootstrap.Protected
   ( Expectation (ExpectAbsent),
     readProtectedRecord,
@@ -103,6 +104,7 @@ import HostBootstrap.Ownership.Manifest
     renderOwnershipManifest,
   )
 import PrepareFixture (withSuccessorGate)
+import SourceGuard (repoRelativePath)
 import HostBootstrap.Step
   ( StepFrame (StepFrame),
     StepObservation (StepChanged),
@@ -130,7 +132,7 @@ import System.Directory
     setPermissions,
   )
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
-import System.Environment (getExecutablePath)
+import System.Environment (getExecutablePath, lookupEnv)
 import System.FilePath (takeDirectory, (</>))
 import System.Info (os)
 import System.IO.Temp (withSystemTempDirectory)
@@ -561,6 +563,11 @@ tests =
         assertBool
           "default must never become project authority"
           (not (validColimaProjectProfileName "default")),
+      testCase "the opt-in native exact-plan lane acquires, refuses conflict, and cleans up without activating default" $ do
+        enabled <- lookupEnv "HOSTBOOTSTRAP_COLIMA_LIVE"
+        case enabled of
+          Just "1" -> runNativeColimaAcceptance
+          _ -> pure (),
       testGroup
         "trusted resolver"
         [ testCase "the native fixture observer and strict facade settle one closed ready toolchain" $
@@ -938,14 +945,18 @@ setupResolverHarness root = do
       resolverFixtureLimaTarget layout,
       resolverFixtureDockerApp layout
     ]
-  createFileLink (resolverFixtureColimaTarget layout) (resolverFixtureColimaAlias layout)
-  createFileLink (resolverFixtureDockerTarget layout) (resolverFixtureDockerAlias layout)
-  createFileLink (resolverFixtureLimaTarget layout) (resolverFixtureLimaAlias layout)
+  createRelativeFileLink (resolverFixtureColimaTarget layout) (resolverFixtureColimaAlias layout)
+  createRelativeFileLink (resolverFixtureDockerTarget layout) (resolverFixtureDockerAlias layout)
+  createRelativeFileLink (resolverFixtureLimaTarget layout) (resolverFixtureLimaAlias layout)
   pure
     ResolverHarness
       { resolverHarnessLayout = layout,
         resolverHarnessNamespace = namespace
       }
+
+createRelativeFileLink :: FilePath -> FilePath -> IO ()
+createRelativeFileLink target alias =
+  createFileLink (repoRelativePath (takeDirectory alias) target) alias
 
 writeResolverTool :: FilePath -> IO ()
 writeResolverTool path = do
@@ -1186,6 +1197,40 @@ withPreparedTestCallForGate ::
   ) ->
   IO (Either String result)
 withPreparedTestCallForGate plan providerResource clusterResource gate consume = do
+  withPreparedTestCallForGateAndEnvelope exactEnvelope plan providerResource clusterResource gate consume
+
+withPreparedTestCallForGateAndEnvelope ::
+  Context.ResourceEnvelope ->
+  ProjectPlan scope specDigest planId configId Fixture.ProjectConfig ->
+  PlannedResource scope planId providerResourceId ProviderResource providerFrame ->
+  PlannedResource scope planId clusterResourceId ClusterResource clusterFrame ->
+  PreparedGate ->
+  ( forall
+      budgetId
+      capabilityId
+      wallSpecId
+      workloadSetId
+      partitionId
+      reservationId
+      fence.
+    PreparedColimaWallCall
+      scope
+      specDigest
+      planId
+      configId
+      providerResourceId
+      providerFrame
+      budgetId
+      capabilityId
+      wallSpecId
+      workloadSetId
+      partitionId
+      reservationId
+      fence ->
+    IO result
+  ) ->
+  IO (Either String result)
+withPreparedTestCallForGateAndEnvelope envelope plan providerResource clusterResource gate consume = do
   let prepared = do
         workload <- first show (mkWorkload clusterResource 1 1 gib gib)
         overhead <- first show (mkResourceBudget 1 gib gib)
@@ -1193,7 +1238,7 @@ withPreparedTestCallForGate plan providerResource clusterResource gate consume =
         minimumBudget <- first show (mkResourceBudget 1 gib gib)
         request <- first show (mkSliceRequest providerResource sliceBudget minimumBudget)
         flattenBudget $
-          withValidatedBudget plan exactEnvelope $ \validated ->
+          withValidatedBudget plan envelope $ \validated ->
             withProviderBudgetCapability plan providerResource ColimaProviderKey $ \capability ->
               flattenBudget $
                 admitProviderBudget validated capability $ \wall effective ->
@@ -1297,6 +1342,74 @@ withPreparedTestCall ::
   IO (Either String result)
 withPreparedTestCall consume =
   withPreparedTestCallM (\project call -> pure (consume project call))
+
+runNativeColimaAcceptance :: IO ()
+runNativeColimaAcceptance = do
+  colima <- requireExecutable "colima" =<< findExecutable "colima"
+  docker <- requireExecutable "docker" =<< findExecutable "docker"
+  ambientProfilesBefore <- requireNativeCommand colima ["list", "--json"]
+  ambientContextBefore <- requireNativeCommand docker ["context", "show"]
+  accepted <-
+    withPreparedPublicTestCallM $ \plan providerResource clusterResource gate nextGate expectedProject call -> do
+      let profile = preparedColimaProfileName call
+      putStrLn ("direct-colima-live: project=" ++ Text.unpack expectedProject ++ " profile=" ++ profile)
+      observation <- runPreparedColimaWallCall call
+      case settleColimaWallCall call observation $ \live -> do
+        cleanupResult <- newIORef (Left "native direct-Colima cleanup did not run")
+        let cleanup = do
+              result <-
+                case withColimaCleanupAuthority live $ \authority -> do
+                  cleanupGate <- nextGate
+                  prepared <- prepareColimaCleanupCall plan providerResource cleanupGate authority
+                  case prepared of
+                    Left failure -> pure (Left (show failure))
+                    Right cleanupCall -> fmap (first show . fmap (const ())) (runColimaCleanup cleanupCall) of
+                  Nothing -> pure (Left "live direct-Colima wall did not retain cleanup authority")
+                  Just action -> action
+              writeIORef cleanupResult result
+            verify = do
+              assertBool "the exact native profile is derived, not caller-selected" (isPrefixOf "h-" profile && length profile == 8)
+              assertBool "the exact Docker context cannot be the shared default" (liveColimaDockerContext live /= "default")
+              dockerResult <- runLiveColimaDocker live ["version", "--format", "{{.Server.Version}}"]
+              case dockerResult of
+                Right (ExitSuccess, version, "") ->
+                  assertBool "the routed native Docker server returned a version" (not (null version))
+                other -> assertFailure ("the routed native Docker probe failed: " ++ show other)
+              conflict <-
+                withPreparedTestCallForGateAndEnvelope
+                  (Context.ResourceEnvelope 9 "16GiB" "100GiB")
+                  plan
+                  providerResource
+                  clusterResource
+                  gate
+                  ( \conflictingCall -> do
+                      conflictingObservation <- runPreparedColimaWallCall conflictingCall
+                      pure (settleColimaWallCall conflictingCall conflictingObservation (const ()))
+                  )
+              case conflict of
+                Right (Left Conflict {}) -> pure ()
+                other -> assertFailure ("the incompatible same-name native profile was not refused: " ++ show other)
+        verify `finally` cleanup
+        cleaned <- readIORef cleanupResult
+        cleaned @?= Right ()
+       of
+        Left failure -> assertFailure ("the native direct-Colima wall did not settle: " ++ show failure)
+        Right action -> action
+  case accepted of
+    Left failure -> assertFailure failure
+    Right () -> pure ()
+  ambientProfilesAfter <- requireNativeCommand colima ["list", "--json"]
+  ambientContextAfter <- requireNativeCommand docker ["context", "show"]
+  ambientProfilesAfter @?= ambientProfilesBefore
+  ambientContextAfter @?= ambientContextBefore
+  putStrLn "direct-colima-live: conflict refused; exact profile/context/data cleaned; ambient default unchanged"
+
+requireNativeCommand :: FilePath -> [String] -> IO String
+requireNativeCommand executablePath arguments = do
+  (code, out, errOut) <- readProcessWithExitCode executablePath arguments ""
+  case (code, errOut) of
+    (ExitSuccess, "") -> pure out
+    _ -> assertFailure ("native acceptance command failed: " ++ show (executablePath, arguments, code, errOut))
 
 flattenBudget :: Either BudgetError (Either String a) -> Either String a
 flattenBudget = either (Left . show) id

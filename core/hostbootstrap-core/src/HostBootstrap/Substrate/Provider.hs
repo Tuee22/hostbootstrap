@@ -474,6 +474,9 @@ validateBoundProviderRoute provider boundRoute =
         (ProviderIncus, ProviderBoundIncusRoute boundName boundImage, IncusFileTransfer (IncusVM expectedName expectedImage))
             | boundName == expectedName && boundImage == expectedImage -> Right ()
             | otherwise -> mismatch ("Incus route " ++ show (boundName, boundImage)) ("Incus route " ++ show (expectedName, expectedImage))
+        (ProviderLima, ProviderBoundLimaRoute boundName, LimaFileTransfer (LimaVM expectedName))
+            | boundName == expectedName -> Right ()
+            | otherwise -> mismatch ("Lima route " ++ show boundName) ("Lima route " ++ show expectedName)
         (ProviderDirectHost, ProviderBoundDirectRoute _ _, DirectHostTransfer) -> Right ()
         _ -> mismatch (show boundRoute) (show (spProviderKind provider, spVmId provider))
   where

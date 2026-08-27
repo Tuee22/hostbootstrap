@@ -1744,8 +1744,10 @@ sourceBoundaryTests =
                     -- exact private post-copy entry and installer. Phase 16's
                     -- private relay classifier contributes three later lines to
                     -- shared CLI and is excluded from this projector owner's
-                    -- attribution just like the five frame-child lines.
-                    frozenBaseline = 394 + 618 + 46 + 5 + 10 + 3
+                    -- attribution just like the five frame-child lines. The
+                    -- read-only shipped cluster-exposure dispatcher contributes
+                    -- eight more later CLI lines.
+                    frozenBaseline = 394 + 618 + 46 + 5 + 10 + 3 + 8
                     sourceAttribution =
                         cliSignificant
                             + constructSignificant
@@ -6648,7 +6650,9 @@ sourceBoundaryTests =
                     , "complete settled"
                     , "outcome <- runPre pre"
                     , "answerNext respond prepare forestRef descentRef session successor"
-                    , "prepare session (localWorkKey local)"
+                    , "case lookup (localWorkKey local) (teardownForestFailures forest) of"
+                    , "Just detail -> refusedResponseWith respond session detail"
+                    , "Nothing -> prepare session (localWorkKey local)"
                     , "child <- descend descentWork"
                     , "writeIORef descentRef (Just (observations, successor))"
                     , "renderPreparedReverseTerminalOriginKernel descent"

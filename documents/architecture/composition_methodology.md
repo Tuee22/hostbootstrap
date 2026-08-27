@@ -79,13 +79,14 @@
   `expose-port`, `post-handoff`); the project contributes workload step kinds (`deploy-minio`,
   `deploy-registry`, `push-image`, accelerator-daemon placement, …) into the *same* `[Step]`. Host and workload steps interleave freely — this is the
   workload-extension seam.
-- **The Linux CPU VM producer is exact through Ready.** The demo's Incus `deploy-vm` action consumes the
-  interpreter-supplied `StepExecution`, resolves its provider resource by the execution's opaque operation key,
-  and derives observation, provision, and Ready gates from the same prepared journal fence. Only managed Ready
-  settlement is carried with its reverse identity and registered as a pending invocation-local provider
-  dependency package. The package contains commitments and a bounded route rather than a managed handle or
-  readiness witness; later lexical recovery must freshly re-probe the retained backend. Registration follows
-  settlement, so every refusal and provisional branch leaves the dependency registry unchanged.
+- **The VM producer is exact through Ready.** The demo's one `deploy-vm` adopter selects the closed Incus or
+  Lima strong backend, consumes the interpreter-supplied `StepExecution`, resolves its provider resource by the
+  execution's opaque operation key, and derives observation, provision, and Ready gates from the same prepared
+  journal fence. Only managed Ready settlement is carried with its reverse identity and registered as a pending
+  invocation-local provider dependency package. The package contains commitments and a bounded route rather
+  than a managed handle or readiness witness; later lexical recovery freshly re-probes the exact retained
+  backend. Registration follows settlement, so every refusal and provisional branch leaves the dependency
+  registry unchanged.
 - **The Direct producer reserves; it does not deploy a VM.** Its plan-declared provider resource is attached
   to the current metal-frame build node. That node receives its own `StepExecution`, admits the canonical host
   root and configured base-image egress through the Direct backend, and uses the same provision/Ready/carry/
@@ -95,8 +96,10 @@
   node freshly recovers the package-bound Running provider, resolves its plan-owned durable-share resource,
   prepares from a live dependency probe, calls and settles the provider share backend, and keeps the managed
   share lexical through mount/alias work. Its host source is the canonical durable root and its guest target is
-  the unchanged provider projection. Returning closes the continuation; neither execution packages nor the
-  generic carried-resource channel contain the provider/share handles.
+  the unchanged provider projection. Incus may attach and activate the share through its owned instance row;
+  Lima re-probes the writable create-time mount retained by its exact backend. Returning closes the
+  continuation; neither execution packages nor the generic carried-resource channel contain the
+  provider/share handles.
 - **The same algebra expresses deployment and runtime business logic.** "Bring up a cluster" and "run an
   inference/training pipeline" are the same kind of composition over durable external stores at different
   altitudes; both are steps in the one chain.
@@ -299,6 +302,12 @@ provider-domain package and its hidden nonce client are seeded into the child's 
 before the frame executor opens, so all local step runtimes see the same canonical/live pair and a deeper
 descent can relay it unchanged. This is carriage, not refinement: no probe runs and no Running provider,
 managed handle, readiness proof, receipt, or channel enters plan/config bytes or the carrier.
+
+That carrier is invocation-local and directional: a package seeded into a deployment child is not promoted
+back into its parent when the child frame closes. A later parent-frame step that needs a runtime fact must open
+the owning frame again. Cluster exposure readback does this with one bounded frame-child transaction through
+the selected provider lift; the far frame opens the durable exposure row and re-observes the exact relay before
+returning only its loopback port. This is fresh observation, not upward carriage of the child's live package.
 
 The fixed cluster node is the first consumer of that carriage. It selects the one provider package named by
 its authenticated plan prefix, rebinds the carried provider receipt, and asks the parent-serviced nonce route
@@ -1257,6 +1266,11 @@ non-empty unique permitted effects. These fields are canonical commitments, not 
 executable, role-wire, secret, and instance measurements remain live signing inputs. Admission requires the
 activation frame to be unique across standalone and chart workload declarations. The rooted signing catalog
 admits both families under the same exact frame, plan-digest, role, and effect comparison.
+
+The rooted coordinator binds that admitted signer as an invocation-local service in the exact root Chain
+carrier before descent. Each child carrier independently installs its relayed signer, while the root carrier
+survives child close for root-frame post-handoff steps. Callers can submit only a canonical manifest and receive
+only a signed grant; the root activation key is neither a carrier value nor a frame payload.
 
 The public exact Chain is driven by the admitted `ProjectPlan`, matching Execute `CommandAuthority` and
 `LifecycleCursor`, and the plan's `DerivedTopology`; every protected transition rereads the exact cursor

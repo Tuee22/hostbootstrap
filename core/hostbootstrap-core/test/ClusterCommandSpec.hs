@@ -47,7 +47,7 @@ driverTests =
     , testCase "one cluster's kubeconfig is read by name" $
         commandArguments (readKubeconfigCommand "demo") @?= ["--quiet", "get", "kubeconfig", "--name", "demo"]
     , testCase "a declared configuration reaches the creating command" $
-        commandArguments (createClusterCommand "demo" (Just "/state/demo.yaml") "/state/demo.kubeconfig")
+        commandArguments (createClusterCommand "demo" (Just "/state/demo.yaml") "/tmp/private-demo.kubeconfig")
             @?= [ "--quiet"
                 , "create"
                 , "cluster"
@@ -56,20 +56,17 @@ driverTests =
                 , "--config"
                 , "/state/demo.yaml"
                 , "--kubeconfig"
-                , "/state/demo.kubeconfig"
+                , "/tmp/private-demo.kubeconfig"
                 , "--wait"
-                , "5m"
+                , "10m"
                 ]
     , testCase "no declared configuration renders no --config at all" $
-        commandArguments (createClusterCommand "demo" Nothing "/state/demo.kubeconfig")
-            @?= ["--quiet", "create", "cluster", "--name", "demo", "--kubeconfig", "/state/demo.kubeconfig", "--wait", "5m"]
-    , testCase "the kubeconfig destination is always named" $
+        commandArguments (createClusterCommand "demo" Nothing "/tmp/private-demo.kubeconfig")
+            @?= ["--quiet", "create", "cluster", "--name", "demo", "--kubeconfig", "/tmp/private-demo.kubeconfig", "--wait", "10m"]
+    , testCase "the private staging kubeconfig is always named" $
         assertBool
-            "every creation names where the credential lands"
-            ( all
-                (\config -> "--kubeconfig" `elem` commandArguments (createClusterCommand "demo" config "/state/k"))
-                [Nothing, Just "/state/demo.yaml"]
-            )
+            "every creation names the private local file its caller opened"
+            (all (\config -> "--kubeconfig" `elem` commandArguments (createClusterCommand "demo" config "/tmp/private")) [Nothing, Just "/state/demo.yaml"])
     , testCase "removal addresses the cluster by name and nothing else" $
         commandArguments (deleteClusterCommand "demo") @?= ["--quiet", "delete", "cluster", "--name", "demo"]
     ]
@@ -139,8 +136,8 @@ silentCommands :: [(HostTool, HostCommand)]
 silentCommands =
     [ (Kind, listClustersCommand)
     , (Kind, readKubeconfigCommand "demo")
-    , (Kind, createClusterCommand "demo" (Just "/state/demo.yaml") "/state/demo.kubeconfig")
-    , (Kind, createClusterCommand "demo" Nothing "/state/demo.kubeconfig")
+    , (Kind, createClusterCommand "demo" (Just "/state/demo.yaml") "/tmp/private-demo.kubeconfig")
+    , (Kind, createClusterCommand "demo" Nothing "/tmp/private-demo.kubeconfig")
     , (Kind, deleteClusterCommand "demo")
     , (Docker, listNodeContainerCommand "demo-control-plane")
     , (Docker, readNodeContainerIdCommand "abc123")

@@ -12,14 +12,14 @@ consumer claim
 
 The host binary and Linux image use the same Cabal project. The Python host build retains its explicit
 offline option, while image builds are ordinary online distribution builds and may compile Cabal cache
-misses. Published rolling bases are explicitly pulled before compatibility smoke-testing; lifecycle
-readiness/teardown remain incomplete, and demo Harness consumers still need exact plan-owned
-profile/root projection.
+misses. Published rolling bases are explicitly pulled before compatibility smoke-testing. Lifecycle
+readiness and child-first teardown consume one retained exact plan, and the Harness owns its run-scoped
+profile, generated config, and durable root through terminal release.
 
 ## Current Status
 
-The sections below describe the working two-build chain and identify its open lifecycle defects.
-Delivery status and closure evidence live in
+The sections below describe the working two-build chain, provider dispatch, recursive lifecycle, and
+Harness ownership. Delivery status and dated substrate evidence live in
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
 ## One universal floor, multiple hardware contexts
@@ -234,10 +234,9 @@ holds. Direct instead settles a plan-local reservation and identity share withou
 claiming the physical host; its root admission is this binary's own observation of the kernel followed by
 a total decision over it — absolute, unfollowed, a directory, canonical, accessible — and stop, delete,
 guest routing, and guest alias are structured refusals rather than empty effects or a fabricated VM. The
-static gate is closed; native validation remains open until the Linux/x86_64 KVM/Incus gate of the
-[host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
-pass. The [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) separately owns replacing the
-demo's compatibility provider and pathname-alias call sites with this route.
+demo VM lanes open the exact plan-owned provider and share resources, and the guest alias executes the
+shipped POSIX ownership row inside the admitted guest frame. Native provider evidence is recorded by the
+applicable substrate phase.
 
 The pure Context and lower generic-Lift separations and source guards are closed by the
 [Dhall-configuration-and-generic-project-model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md),
@@ -260,12 +259,8 @@ distinct retained facts. Its production backend resolves the exact cluster tools
 helper `PATH`, process-group lifetime, and strict output framing. The durable backend publishes self-bound
 `prepared`/`executing`/`managed` records under one no-follow state/lock namespace. The executing record binds
 the exact config and private-kubeconfig snapshot identities before Kind, so a restart can repair only the
-origin-verified identity and must refuse copied records or replaced snapshots. Legacy/demo consumers are
-intentionally not relabelled through that boundary;
-adoption remains with the
-[recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) and
-[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md). Other live effects are not universally
-type-gated and several still return `IO ()` or consume non-authorizing compatibility observations.
+origin-verified identity and must refuse copied records or replaced snapshots. The demo consumer opens that
+exact package at the child frame, and far-frame clients receive only freshly re-observed resolved exposures.
 
 The same [cluster-lifecycle, budgets, and cordoning
 phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) owns the implemented exact
@@ -280,16 +275,16 @@ artifact manifest. Only the matching closed-backend result can jointly settle th
 start and wall into `LiveColimaWall`; `runLiveColimaDocker` is the sole Docker route through that exact wall.
 Cleanup has a distinct current teardown gate, durably enters `releasing`, executes
 `colima delete --force --data`, proves profile/data/context absence, and only then completes the exact managed
-provider `Running` to `Destroyed` transition and conditionally releases its namespaces and origin. A
+provider `Running` to `Destroyed` transition and conditionally releases its private cache, temporary,
+home, data, and context namespaces and origins. A
 prepared-but-present, replaced, partial, or invocation-mismatched state grants no authority. The source
-phase's focused/full gates are closed; the [recursive-lifecycle-command
-phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) and
-[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) own the remaining command adopters.
+phase's focused/full gates are closed, and the Apple acceptance phase exercises the public exact-plan adapter
+against native Colima without making it the Lima-backed demo's provider path.
 
-Teardown is also not recursive. Root `project down`/`destroy` cleans the current cluster only when that
-frame owns it, and every other node runs the reverse its own step declared. VM deletion or
-direct-container cleanup handles
-nested resources without dispatching the verb through every child frame first.
+Teardown is recursive and child-first. Root `project down`/`destroy` projects the retained plan into a
+typed reverse forest, authenticates each child entry, cleans cluster-local resources only in their owning
+frame, then runs every remaining node's declared reverse. Independent failures are aggregated after all
+eligible siblings run, and an unsettled node remains available for the exact retry.
 
 The target typed transitions, opaque capabilities, ownership tokens, and validation gates live in
 [lifecycle state model](lifecycle_state_model.md).
@@ -297,13 +292,15 @@ The target typed transitions, opaque capabilities, ownership tokens, and validat
 ## Durable and test state
 
 Durable carry is implemented from host `.data` through provider share,
-`/var/tmp/hostbootstrap-demo-data`, kind/nvkind, and the pod. It has not passed a workload write →
-destroy → up → host-and-workload readback gate.
+`/var/tmp/hostbootstrap-demo-data`, kind/nvkind, and the pod. The Harness `durable-readback` case writes a
+marker, performs engine-owned settled destroy, rotates to a fresh protected invocation, rebinds the retained
+snapshot, brings the same run forward again, and reads the exact marker from the recreated workload.
 
 The demo test runner assembles a `HarnessRun` config and an exact Harness-scoped plan, owns
-`.test_data/<runId>`, and selects a run-scoped cluster name. Cluster/provider/mount/teardown consumers
-still receive independently config-derived profile and root terms rather than projections from that
-retained plan, so exact consumer continuity remains open. See [durable state](durable_state.md) and
+`.test_data/<runId>`, and selects a run-scoped cluster name. Cluster, provider, mount, teardown, generated
+config, and data-root consumers are projections of that retained plan and run authority; terminal close
+removes the generated child and its ownership records while preserving the empty `.test_data` parent. See
+[durable state](durable_state.md) and
 [harness workflow](harness_workflow.md).
 
 ## Command surface
@@ -319,10 +316,9 @@ context schema
 context render [--artifact NAME]
 ```
 
-The test-group help describes `test run` as root-only, but neither `test init` nor `test run` currently
-applies a root context gate. The actual demo `<project>.test.dhall` contains a suite-name list and
-resources; compiled Haskell owns the case bodies and the selector (currently one case ID or `all`, despite
-the source help's stale suite terminology).
+`test init` and `test run` are admitted only through the rooted Harness entry. The actual demo
+`<project>.test.dhall` contains resources and stable variant values; compiled Haskell owns the case bodies
+and the selector (one case ID or `all`).
 
 That surface is the whole of what an operator can type, and it is not the whole of how this binary is
 started. A frame crossing launches this binary in the target frame with one marker argument vector,
@@ -335,16 +331,11 @@ vector, the executable, and the frame all come from the one fold rather than fro
 
 ## Validation
 
-Static unit suites validate many pure builders and classifiers. They are the host static gate and are
-expected to pass host-native on every supported outer host; see
-[testing](../engineering/testing.md#gate-kinds). They do not close:
-
-- remaining native rolling-base publication/compatibility lanes;
-- universal readiness/ownership typing;
-- recursive teardown;
-- target `Harness projectId runId` isolation;
-- native Linux CPU/GPU daemon gates;
-- durable destroy/up/readback.
+Static unit suites validate the builders, classifiers, ownership rows, authority boundaries, and compile-time
+seals. They are the host static gate and are expected to pass host-native on every supported outer host; see
+[testing](../engineering/testing.md#gate-kinds). They do not prove a provider, accelerator, browser, or
+container runtime on hardware where the live gate did not run. Those dated acceptance results remain in the
+development-plan phase for each substrate.
 
 Status and sequencing belong in [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 

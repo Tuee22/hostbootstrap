@@ -75,7 +75,7 @@ module HostBootstrap.Harness.Ownership (
     harnessAuthorityStoreDirectory,
 ) where
 
-import Control.Exception.Safe (generalBracket)
+import Control.Exception.Safe (generalBracket, throwIO)
 import Data.ByteString (ByteString)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -89,6 +89,7 @@ import HostBootstrap.Authority (
 import HostBootstrap.Harness (
     HarnessRunCleanupFailure (..),
     HarnessRunOwnership (..),
+    SafetyRefusal (SafetyRefusal),
     testDataGeneration,
  )
 import HostBootstrap.Harness.DataRoot (
@@ -350,15 +351,17 @@ ownRun ::
     FilePath ->
     FilePath ->
     FilePath ->
+    IO (Either String ()) ->
     (Text -> IO result) ->
     IO (Either String (result, Maybe HarnessRunCleanupFailure))
-ownRun project stateRoot siblingDirectory dataParent body =
+ownRun project stateRoot siblingDirectory dataParent safety body =
     ownProjectRun
         refusingRecoveredResourceExecutor
         project
         (stateRoot </> harnessAuthorityStoreDirectory)
         siblingDirectory
         dataParent
+        safety
         ( \owned ->
             withOwnedHarnessRoot owned $ \_store _project root _closeControl ->
                 body (runIdText (harnessRootRunId root))
@@ -371,9 +374,10 @@ ownProjectRun ::
     FilePath ->
     FilePath ->
     FilePath ->
+    IO (Either String ()) ->
     (OwnedHarnessRoot projectId -> IO result) ->
     IO (Either String (result, Maybe HarnessRunCleanupFailure))
-ownProjectRun recoveryExecutor project storeRoot siblingDirectory dataParent body = do
+ownProjectRun recoveryExecutor project storeRoot siblingDirectory dataParent safety body = do
     opened <- openProtectedStore storeRoot
     case opened of
         Left failure -> pure (Left (storeRefused failure))
@@ -404,14 +408,17 @@ ownProjectRun recoveryExecutor project storeRoot siblingDirectory dataParent bod
         case swept of
             Left failure -> pure (Left (modeRefused failure))
             Right proof -> do
+                safe <- safety
+                either (throwIO . SafetyRefusal) pure safe
                 outcome <-
                     withHarnessRoot
                         store
                         project
                         ProjectUp
-                        -- The suite's own probe has already refused a live
-                        -- production cluster; this half rechecks the sibling
-                        -- config inside the same entry that takes the mode.
+                        -- The suite's own probe has just refused any live
+                        -- production cluster after recovery; this half rechecks
+                        -- the sibling config inside the same entry that takes
+                        -- the mode.
                         (harnessPreconditions project siblingDirectory (pure False))
                         proof
                         (runOwned store)

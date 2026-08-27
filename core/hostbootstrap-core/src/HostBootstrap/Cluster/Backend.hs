@@ -79,6 +79,9 @@ module HostBootstrap.Cluster.Backend (
     resolvedExposureOwnershipOperation,
     runClusterExposureCall,
     releaseClusterExposureCall,
+    RecordedClusterExposure,
+    recordedClusterExposureHostPort,
+    observeRecordedClusterExposure,
     releaseRecordedClusterExposure,
 )
 where
@@ -1312,6 +1315,19 @@ data ExposureRecord
 
 data RelayObservation = RelayObservation Text Text Text Text Word64 Text Text [(Int, Text, Int)]
 
+{- | One loopback port minted only after the durable managed-exposure record and
+its Docker relay have been re-observed together.
+
+The constructor stays private: a caller can consume the port, but cannot turn a
+number obtained from configuration or an earlier invocation into a successful
+observation.
+-}
+newtype RecordedClusterExposure = RecordedClusterExposure Int
+    deriving (Eq, Show)
+
+recordedClusterExposureHostPort :: RecordedClusterExposure -> Int
+recordedClusterExposureHostPort (RecordedClusterExposure hostPort) = hostPort
+
 runClusterExposureCall ::
     StrongClusterBackend ->
     PreparedClusterExposure scope planId clusterId clusterFrame ->
@@ -1355,6 +1371,63 @@ releaseClusterExposureCall backend prepared =
                 Left fault -> exposureFailure "release cluster exposure" (clusterCallFaultMessage fault) ReprobeBeforeRetry
                 Right result -> result
 
+{- | Re-open one exact service from a durable exposure row.
+
+This is deliberately read-only. The protected entry gives the record a stable
+read interval, and 'openRecordedRelay' then checks the recorded name, immutable
+identity, operation, specification, and complete loopback mapping set against
+Docker. Only a managed record with one exact service row can mint the result.
+-}
+observeRecordedClusterExposure ::
+    HostConfig ->
+    FilePath ->
+    String ->
+    Text ->
+    IO (Either ReconcileError RecordedClusterExposure)
+observeRecordedClusterExposure cfg stateDirectory name service
+    | not (isAbsolute stateDirectory) = pure (invalid "the cluster state directory is not absolute")
+    | '\0' `elem` stateDirectory = pure (invalid "the cluster state directory contains NUL")
+    | not (safeClusterName name) = pure (invalid "the cluster name is outside the portable alphabet")
+    | not (validExposureService service) = pure (invalid "the service identity is invalid or unbounded")
+    | otherwise = do
+        opened <- openProtectedStore stateDirectory
+        case opened of
+            Left failure -> pure (storeExposureFailure operation failure)
+            Right store -> case mkRecordKey (Text.pack name <> ".exposure") of
+                Left failure -> pure (storeExposureFailure operation failure)
+                Right key -> do
+                    observed <- withProtectedEntry store (\session -> Right <$> readRecorded session key)
+                    pure $ case observed of
+                        Left failure -> storeExposureFailure operation failure
+                        Right result -> result
+  where
+    operation = "observe recorded cluster exposure"
+    invalid reason = exposureFailure operation reason DoNotRetry
+    readRecorded session key = do
+        readBack <- readProtectedRecord session key
+        case readBack of
+            Left failure -> pure (storeExposureFailure operation failure)
+            Right Nothing -> pure (exposureFailure operation "the exact exposure record is absent" ReprobeBeforeRetry)
+            Right (Just protected) -> case parseExposureRecord (protectedRecordBytes protected) of
+                Left reason -> pure (invalid reason)
+                Right (ExposurePending _ _ _) -> pure (exposureFailure operation "the exact exposure is still pending" ReprobeBeforeRetry)
+                Right record@(ExposureManaged digest nonce recordedName identity mappings)
+                    | not (validManagedExposureRecord digest nonce recordedName identity mappings) ->
+                        pure (invalid "the managed exposure record contains invalid fields")
+                    | not (distinct (map firstOfThree mappings)) ->
+                        pure (invalid "the managed exposure record duplicates a service identity")
+                    | otherwise -> do
+                        relay <- openRecordedRelay operation cfg record
+                        pure $ case relay of
+                            Left refusal -> Left refusal
+                            Right Nothing -> exposureFailure operation "the exact exposure relay is absent" ReprobeBeforeRetry
+                            Right (Just _) -> case [hostPort | (candidate, _, hostPort) <- mappings, candidate == service] of
+                                [hostPort] -> Right (RecordedClusterExposure hostPort)
+                                [] -> exposureFailure operation "the requested service is absent" DoNotRetry
+                                _ -> exposureFailure operation "the requested service is duplicated" DoNotRetry
+
+    firstOfThree (value, _, _) = value
+
 {- | Release the exact durable exposure record before compatibility cluster
 teardown. The record, immutable relay identity, nonce-bound labels, and exact
 loopback mapping set provide the four ownership clauses; no caller supplies a
@@ -1385,7 +1458,7 @@ releaseRecordedClusterExposure cfg plan = do
             Right (Just protected) -> case parseExposureRecord (protectedRecordBytes protected) of
                 Left reason -> pure (recordedConflict reason)
                 Right record -> do
-                    openedRelay <- openRecordedRelay cfg record
+                    openedRelay <- openRecordedRelay "release recorded cluster exposure" cfg record
                     case openedRelay of
                         Left refusal -> pure (Left refusal)
                         Right Nothing -> forget session key protected
@@ -1407,8 +1480,8 @@ releaseRecordedClusterExposure cfg plan = do
     recordedConflict reason =
         exposureFailure "release recorded cluster exposure" (Text.pack (clusterName plan) <> ": " <> reason) DoNotRetry
 
-openRecordedRelay :: HostConfig -> ExposureRecord -> IO (Either ReconcileError (Maybe Text))
-openRecordedRelay cfg record = do
+openRecordedRelay :: Text -> HostConfig -> ExposureRecord -> IO (Either ReconcileError (Maybe Text))
+openRecordedRelay operationName cfg record = do
     let (digest, nonce, name, expectedIdentity, expectedMappings) = case record of
             ExposurePending spec operation recordedName -> (spec, operation, recordedName, Nothing, Nothing)
             ExposureManaged spec operation recordedName identity mappings -> (spec, operation, recordedName, Just identity, Just [(listener, hostPort) | (_, listener, hostPort) <- mappings])
@@ -1439,17 +1512,17 @@ openRecordedRelay cfg record = do
                     | Text.pack operation /= nonce -> recordedRelayConflict "the inspected relay operation changed"
                     | Text.pack spec /= digest -> recordedRelayConflict "the inspected relay specification changed"
                     | otherwise -> do
-                        mappings <- parseRecordedPortBindings (TextEncoding.encodeUtf8 (Text.pack ports))
+                        mappings <- parseRecordedPortBindings operationName (TextEncoding.encodeUtf8 (Text.pack ports))
                         case expectedMappings of
                             Just expected | sort expected /= sort mappings -> recordedRelayConflict "the inspected relay mapping set changed"
                             _ -> Right (Just identity)
                 _ -> recordedRelayConflict "the runtime returned malformed relay metadata"
-    recordedRelayConflict reason = exposureFailure "release recorded cluster exposure" reason DoNotRetry
+    recordedRelayConflict reason = exposureFailure operationName reason DoNotRetry
 
-parseRecordedPortBindings :: ByteString.ByteString -> Either ReconcileError [(Int, Int)]
-parseRecordedPortBindings raw = case eitherDecodeStrict' raw of
+parseRecordedPortBindings :: Text -> ByteString.ByteString -> Either ReconcileError [(Int, Int)]
+parseRecordedPortBindings operationName raw = case eitherDecodeStrict' raw of
     Right (Object ports) -> traverse parseOne (AesonKeyMap.toList ports)
-    _ -> exposureFailure "release recorded cluster exposure" "the runtime returned malformed port JSON" ReprobeBeforeRetry
+    _ -> exposureFailure operationName "the runtime returned malformed port JSON" ReprobeBeforeRetry
   where
     parseOne (key, Array bindings)
         | Just listenerText <- Text.stripSuffix "/tcp" (AesonKey.toText key)
@@ -1462,7 +1535,7 @@ parseRecordedPortBindings raw = case eitherDecodeStrict' raw of
         , validPort listener
         , validPort hostPort =
             Right (listener, hostPort)
-    parseOne _ = exposureFailure "release recorded cluster exposure" "the runtime returned a wildcard, duplicate, absent, or malformed relay binding" ReprobeBeforeRetry
+    parseOne _ = exposureFailure operationName "the runtime returned a wildcard, duplicate, absent, or malformed relay binding" ReprobeBeforeRetry
 
 reconcileExposure ::
     HostConfig ->
@@ -1814,6 +1887,27 @@ immutableImage image = repositoryDigest || imageId
 
 validPort :: Int -> Bool
 validPort port = port > 0 && port < 65536
+
+validExposureService :: Text -> Bool
+validExposureService service =
+    not (Text.null service)
+        && Text.length service <= 128
+        && not (Text.any (`elem` ['\0', '/', '\\', ':', '\n', '\r', '\t']) service)
+
+validManagedExposureRecord :: Text -> Text -> Text -> Text -> [(Text, Int, Int)] -> Bool
+validManagedExposureRecord digest nonce name identity mappings =
+    validDigest digest
+        && validDigest nonce
+        && name == "hostbootstrap-exposure-" <> Text.take 32 (digestText (digest <> nonce))
+        && validDigest identity
+        && not (null mappings)
+        && length mappings <= maxExposureCount
+        && all validMapping mappings
+        && distinct [listener | (_, listener, _) <- mappings]
+  where
+    validDigest value = Text.length value == 64 && Text.all lowerHex value
+    validMapping (service, listener, hostPort) =
+        validExposureService service && validPort listener && validPort hostPort
 
 lowerHex :: Char -> Bool
 lowerHex character = isDigit character || character >= 'a' && character <= 'f'

@@ -225,7 +225,7 @@ frameCrossingTests =
                 , "Nothing -> if argv == shippedCommandEntryArguments"
                 , "if argv == lifecycleChildArguments"
                 , "case classifyFrameChild argv of"
-                , "Just entry -> runFrameChildEntry (frameInterpreter interpretShippedOwnership) entry"
+                , "Just entry -> runFrameChildEntry (frameInterpreter interpretFrameTransaction) entry"
                 , "Nothing -> join (customExecParser (prefs showHelpOnEmpty) opts)"
                 ]
                 (normalizeWhitespace cliSource)
@@ -365,7 +365,7 @@ framingTests =
             response <- answer changedGeneration >>= expectRight
             outcome "nonce-4" response @?= Right (Left "provider dependency generation changed")
         timed <- expectRight (providerDependencyProbeRequestFields package "nonce-5")
-        kernel (threadDelay 200000 >> pure (Right 7)) $ \answer -> do
+        kernel (threadDelay 2000000 >> pure (Right 7)) $ \answer -> do
             response <- answer timed >>= expectRight
             outcome "nonce-5" response @?= Right (Left "provider dependency probe timed out")
     , testCase "provider reprobe uses the admitted duplex, keyless relay, and Process bracket only" $

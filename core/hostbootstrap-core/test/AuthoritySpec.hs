@@ -13,10 +13,10 @@ one. Every mode, lease, and invocation decision is a compare-and-swap over a
 durable record, so the crash cases here are the ones an interrupted run
 actually leaves behind.
 -}
-module AuthoritySpec (tests, runEntryProbe, runModeProfileProbe) where
+module AuthoritySpec (tests, runEntryProbe, runLivenessInheritanceProbe, runModeProfileProbe) where
 
-import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (bracket_)
+import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
+import Control.Exception (bracket_, finally)
 import Control.Monad (filterM, replicateM)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
@@ -107,7 +107,7 @@ import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitSuccess, exitWith)
 import System.FilePath (takeExtension, (</>))
 import System.IO.Temp (withSystemTempDirectory)
-import System.Process (readProcessWithExitCode)
+import System.Process (readProcessWithExitCode, spawnProcess, terminateProcess, waitForProcess)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -126,6 +126,10 @@ runEntryProbe storeRoot = do
                 Right (Just ()) -> exitSuccess
                 Right Nothing -> exitWith (ExitFailure 3)
                 Left _ -> exitWith (ExitFailure 4)
+
+-- | Remain alive after the parent leaves its liveness extent.
+runLivenessInheritanceProbe :: IO ()
+runLivenessInheritanceProbe = threadDelay 10000000
 
 {- | The out-of-process half of the **cross-profile** exclusion: open the same
 project's store in a separate process and attempt the named lifecycle profile.
@@ -191,7 +195,25 @@ tests =
 
 storeCases :: [TestTree]
 storeCases =
-    [ testCase "a record round-trips through one exclusive entry" $
+    [ testCase "run liveness is close-on-exec and cannot be retained by a provider child" $
+        withSystemTempDirectory "hostbootstrap-liveness-inheritance" $ \root -> do
+            store <- either (assertFailure . show) pure =<< openProtectedStore root
+            self <- getExecutablePath
+            launched <-
+                withRunLiveness store "inheritance-probe" $
+                    spawnProcess self ["--hostbootstrap-liveness-inheritance-probe"]
+            case launched of
+                Right (Just probe) -> do
+                    reacquired <-
+                        withRunLiveness store "inheritance-probe" (pure ())
+                            `finally` do
+                                terminateProcess probe
+                                _ <- waitForProcess probe
+                                pure ()
+                    reacquired @?= Right (Just ())
+                Left failure -> assertFailure ("the first liveness owner failed: " ++ show failure)
+                Right Nothing -> assertFailure "the first liveness owner was unexpectedly refused"
+    , testCase "a record round-trips through one exclusive entry" $
         withStore $ \store -> do
             key <- expectKey "alpha"
             written <-

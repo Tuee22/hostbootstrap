@@ -491,6 +491,12 @@ interpreters do not yet enforce the complete model end to end:
 - The Incus backend publishes and recovers durable `prepared`/`managed` provider and share origins under
   one protected-store exclusive entry, then revalidates the instance's reported identity, this run's
   owner claim, and share identity around every effect.
+  The Lima backend retains the closed provider row, exact budget, writable share, and resolved tool in one
+  strong origin fingerprint. It observes exact-name absence/presence around the row's launch effect, polls the
+  row's guest readiness probe, and re-probes the retained writable guest mount for share settlement. Its bound
+  route admits only that VM's Lima host/guest/egress requests through the one command interpreter. The plan
+  journal is its durable settlement; destructive stop/delete remains solely with the step-declared reverse
+  adapter rather than a second backend release path.
   The alias backend admits only a retained `GuestFlock`; a discovered `GuestLockf` is descriptive
   `Unsupported` because the lock namespaces are not interchangeable. Alias acquisition/release recover
   exact `prepared`/`managed`/`releasing` records and condition release on the managed symlink identity and

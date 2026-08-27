@@ -605,20 +605,58 @@ package commitment, and the freshly reprobed generation. Only full agreement exp
 `RunningProviderDependency` under the rank-2 continuation; retained reprobes derive fresh nonces, replay and
 expiry refuse, and canonical bytes or backend reachability alone authorize nothing.
 
+### Sprint 24.10a: Exact Lima provider backend realization [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Internal.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`,
+`core/hostbootstrap-core/test/ProviderBackendSpec.hs`
+**Production modules**: `HostBootstrap.Substrate.Provider`,
+`HostBootstrap.Substrate.Provider.Internal`, `HostBootstrap.Substrate.Provider.Backend` (3; cap 3)
+**Sprint budget**: no new named contract and no project call-site adoption; at most 400 production Haskell
+lines. Split before implementation if either cap would be exceeded.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/composition_methodology.md`,
+`documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Realize the Apple host's closed Lima provider row through the same prepared provider backend vocabulary used
+by exact resource settlement.
+
+#### Deliverables
+
+- Construction admits only an Apple-silicon `HostConfig`, the closed Lima provider value, a resolved Lima
+  executable, one exact resource envelope, and absolute writable host/guest share paths.
+- Semantic and realization fingerprints bind the VM identity, budget, share endpoints, and resolved tool; a
+  changed term cannot reopen a package under another backend origin.
+- Provisioning executes only the Lima row's closed launch effects, with exact absence/presence observations
+  before and after mutation; readiness uses the row's bounded guest probe.
+- A provider-bound Lima route admits only that VM and runs host-tool, guest, and provisioning-egress probes
+  through the one host-command interpreter.
+- Share observation requires the backend-retained host/guest endpoints and a live writable guest directory;
+  it mints no independent mount mutation because Lima declares the share at VM creation.
+- Forward stop/delete stay `Unsupported`; step-declared reverse remains the sole destructive Lima route.
+
+#### Validation
+
+`ProviderBackendSpec` covers host/provider/tool admission and exact budget/share fingerprint changes; provider
+route suites cover the closed binding. The focused provider-backend group and complete core host-static gate
+must pass under `--ghc-options=-Werror`. The zero-type/three-module/400-line budgets are checked before Done.
+
+#### Remaining Work
+
+None. Completed 2026-08-26 on aarch64 macOS: the focused provider-backend group passed 29/29, including Lima
+admission and exact fingerprint changes, and the complete core host-static gate passed 2,462/2,462 under
+`-Werror` in 433.14 seconds. The three-module implementation adds no named type or project call site and stays
+below 400 production lines.
+
 ### Sprint 24.11: VM provider provision-to-ready adoption [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Cluster/Reconcile.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Dependency/Internal.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Reconcile.hs`,
-`demo/src/HostBootstrapDemo/Commands.hs`, `demo/test/CommandsSpec.hs`
-**Production modules**: `HostBootstrap.Cluster.Budget`, `HostBootstrap.Cluster.Lifecycle`,
-`HostBootstrap.Cluster.Reconcile`, `HostBootstrap.Lifecycle.Dependency.Internal`,
-`HostBootstrap.Substrate.Provider.Dependency.Internal`, `HostBootstrap.Substrate.Provider.Reconcile`,
-`HostBootstrapDemo.Commands` (7; cap 7)
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/test/CommandsSpec.hs`
+**Production modules**: `HostBootstrapDemo.Commands` (1; cap 3)
 **Sprint budget**: one VM provider call-site adoption and no new named contract; at most 400 production Haskell
 lines. Split before implementation if either cap would be exceeded.
 **Substrates**: linux-cpu
@@ -633,8 +671,9 @@ Adopt the exact VM provider resource through provision, ready settlement, and pr
 
 - The VM topology consumes only the Sprint 24.5 provider declaration resolved at the VM target frame and the
   matching plan execution package/slice; no operation-name fallback or caller-built key is accepted.
-- One demo call site prepares, runs, journals, and settles the Phase 16 VM provider reconciler under the exact
-  budget and lifecycle bracket before any cluster or descent work begins.
+- One demo call site selects the closed Incus or Lima strong backend, then prepares, runs, journals, and
+  settles the provider reconciler under the exact budget and lifecycle bracket before any cluster or descent
+  work begins.
 - Action-local ready settlement proves the observed backend identity/generation and uses Sprint 24.9 to register
   an invocation-only pending provider package/service. Only the fixed later node reached after `Chain`
   acknowledges the producer gate may open it; failure, retry, or fresh invocation clears it.
@@ -650,22 +689,20 @@ static reverse-input projection required by Sprint 24.27, and rejection of wrong
 The demo host-static gate must pass. The one-adoption/module/line budgets are checked before implementation;
 overflow is split before this call site lands.
 
-On 2026-08-22 the Linux CPU Incus `deploy-vm` action was changed from a configuration-only callback to the
-interpreter-supplied exact `StepExecution`. The one 77-line adopter in `HostBootstrapDemo.Commands` resolves
-only the plan-owned provider resource at that execution's opaque operation key, derives its observation from
-the exact prepared fence and journal version, and orders strong-backend discovery, provision call/settlement,
-managed Ready call/settlement, carried reverse identity, and pending dependency-package registration. Foreign,
-failed, and provisional branches return before registration; the existing share attachment, cluster work, and
-descent remain later in the action/chain. No named contract was added, so the one-adoption, one-module, and
-400-line budgets hold. `CommandsSpec` pins the interpreter-fed callsite, exact-resource lookup, complete stage
-ordering, fixed package route/reverse adapter, and absence of an operation-name fallback; the lower provider
-and dependency suites retain the mismatch, replay, lifetime, and unwind matrices. The canonical demo
-host-static gate passed all 129 demo tests and its linked core gate passed all 2,396 core tests under `-Werror`.
-This is static evidence only; live Incus confirmation remains Sprint 24.30.
+The one adopter in `HostBootstrapDemo.Commands` receives the interpreter-supplied exact `StepExecution`,
+selects the Incus or Lima strong backend without changing the lifecycle call shape, resolves only the
+plan-owned provider resource at that execution's opaque operation key, and orders backend discovery,
+provision call/settlement, managed Ready call/settlement, carried reverse identity, and pending dependency
+package registration. Foreign, failed, and provisional branches return before registration; share,
+cluster, and descent remain later in the action/chain. `CommandsSpec` pins both backend branches to this one
+adopter and its fixed route, ordering, and no-fallback resource lookup. On 2026-08-26 the focused 61-case
+`CommandsSpec` group passed under `--ghc-options=-Werror`.
 
 #### Remaining Work
 
-None.
+None. Completed 2026-08-26 on aarch64 macOS: `CommandsSpec` passed 61/61, the complete demo gate passed
+145/145, and both the canonical and demo-linked core gates passed 2,462/2,462 under `-Werror`. Python quality
+checks and all 231 Python tests also passed.
 
 ### Sprint 24.12: Direct provider reservation-to-ready adoption [Done]
 
@@ -744,8 +781,9 @@ managed handle kept lexical for the immediately nested guest-alias action.
 
 - VM/container topology includes the exact plan-declared `copySourceStep` between the settled VM provider and
   child descent; Direct topology has no share or alias step.
-- One demo call site opens the fresh provider dependency, prepares the exact copy-source resource, provisions
-  its share, journals ownership, and settles the backend observation before descent.
+- One demo call site opens the fresh provider dependency through the selected Incus or Lima strong backend,
+  prepares the exact copy-source resource, reconciles its share, journals ownership, and settles the backend
+  observation before descent.
 - The writable source is the canonical host durable root and its unchanged absolute guest target is the
   admitted selected-edge target; image, arguments, remove policy, socket, target, read-only flag, and config
   remain unchanged.
@@ -761,23 +799,20 @@ managed handle kept lexical for the immediately nested guest-alias action.
 and source-shape/non-escape guards. The demo host-static gate must pass. The one-adoption/module/line budgets are
 checked before implementation; overflow is split rather than moving a handle across a node.
 
-On 2026-08-22 the VM topology gained one exact `copy-source` node after `deploy-vm` and before the VM descent;
-the Direct topology retains none. The Incus action freshly opens the producer's package-bound Running provider,
-resolves only its own `DurableShareResource`, prepares with the fresh backend reprobe, attaches and settles the
-share, and keeps the managed provider/share handles lexical through mount validation and the immediately nested
-alias action. The canonical host durable root and `HostPathShare` guest target feed `mkProviderShareSpec`
-unchanged; later image, lift, socket, remove, read-only, arguments, and config terms remain untouched. Failure,
-foreign settlement, replay, and package mismatch return before the continuation can complete, and no managed
-share is written to a carrier or later node. A 31-line no-new-type CPS form of the Sprint 24.10 fresh opener was
-added to retain its already-validated backend index while keeping its provider index rank-2; the demo adopter is
-under 100 lines in one production module, so the sprint budgets hold. `CommandsSpec` pins VM/Direct topology,
-exact source/target construction, recover/prepare/call/settle/mount ordering, and non-carriage. The focused demo
-gate passed all 131 tests and the full core host-static gate passed all 2,396 tests under `-Werror`. Exact alias
-settlement was then completed by Sprint 24.14.
+The VM topology contains one exact `copy-source` node after `deploy-vm` and before the VM descent; Direct
+contains none. The shared Incus/Lima action freshly opens the producer's package-bound Running provider,
+resolves only its own `DurableShareResource`, prepares with the fresh backend reprobe, reconciles and settles
+the exact share, and keeps the managed provider/share handles lexical through mount validation and the nested
+alias action. Incus may attach and restart; Lima proves the writable create-time mount retained by its exact
+backend. Failure, foreign settlement, replay, and package mismatch return before the continuation can complete,
+and no managed share is written to a carrier or later node. On 2026-08-26 the focused 61-case `CommandsSpec`
+group passed under `--ghc-options=-Werror`.
 
 #### Remaining Work
 
-None.
+None. Completed 2026-08-26 on aarch64 macOS: the shared Incus/Lima lexical adopter passed the 61-case focused
+`CommandsSpec`, complete 145-case demo gate, and both 2,462-case core gates under `-Werror`; no managed handle
+or receipt crosses the action boundary.
 
 ### Sprint 24.14: Lexically nested guest-alias adoption [Done]
 
@@ -1912,6 +1947,7 @@ allocation proof.
 `demo/docker/Dockerfile`, `.dockerignore`,
 `core/hostbootstrap-core/src/HostBootstrap/Ensure/Docker.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Ensure/GuestBootstrap.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lift.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Alias.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Ownership.hs`,
@@ -1944,6 +1980,10 @@ the shipped project binary.
 - With the binary established there, the guest alias holds its four clauses through the ownership seam,
   over the shipped row addressed at that frame — so the alias's identity is still read by the kernel that
   owns the object, and it is read by this binary.
+- The shipped row stages the symbolic link and binds that exact device/inode identity in the durable record
+  before atomic no-replace publication. Linux publishes a second name with `link(2)`; Darwin moves the same
+  bound inode with `renamex_np(RENAME_EXCL)`, because APFS does not admit a hard link to a symbolic link.
+  Both the bound-staging and bound-published interruption windows resume without adopting a pathname.
 - The alias's durable record uses the shared record vocabulary, so a record written in a guest is readable
   by the host frame that owns the share.
 - This is the sprint in which a frame crossing carries an ownership transaction for the first time, so it
@@ -1959,6 +1999,9 @@ the shipped project binary.
 - The VM provider publishes Running from its actual absent acquisition predecessor. The alias operation key is
   the full provider/share relation declared by the plan, and forward ordering remains bootstrap → shipped alias
   → provider/share dependency publication → child entry.
+- Lifecycle routes place Lima's `--workdir` flag before the instance operand, matching Lima 2.x's command
+  grammar instead of forwarding that flag to the guest shell. Harness reverse restores access only on
+  non-symlink descendants of its exact virtiofs run share; it never attempts to chmod the Lima mountpoint.
 
 #### Validation
 
@@ -1969,9 +2012,22 @@ POSIX ownership behavior. The complete core and demo host-static gates must pass
 from the retained pristine-guest state, creates the alias, completes child cluster descent, proves the alias
 survives provider stop/restart, and releases it while the durable share remains intact.
 
+On 2026-08-26, macOS arm64 passed the complete warning-clean core gate at 2,474/2,474 in 357.86 seconds,
+`cabal build all` from `demo/`, and the complete warning-clean demo gate at 145/145.
+
 #### Remaining Work
 
-None. Completed 2026-08-24. A fresh Ubuntu 24.04 linux-cpu/x86_64 Incus run bootstrapped the project binary
+None. Completed on 2026-08-26 on macOS 26.5 arm64 with Lima 2.1.2, GHC 9.12.4, Cabal 3.16.1.0, and
+`hostbootstrap` 0.1.0. The fresh Apple/Lima Harness run bootstrapped the project binary and Docker 29.1.3 in
+each of four pristine guests, published the guest alias, completed child cluster descent, survived the
+engine-owned same-run Destroy/recreate boundary for both variants, and released the provider on terminal
+Destroy. Run `run-3ed8c816cf5d0` (`hello-world`) and run `run-3efa98a88f190` (`hello-universe`) contributed
+five passing assertions each to the exact `10/10 passed` report. The terminal audit found no Lima instance,
+generated sibling config, Harness durable root, or live accelerator ownership state; the operator test config,
+project authority store, and build caches remained.
+
+The earlier live evidence for the Incus path also remains part of this sprint's gate: on 2026-08-24, a fresh
+Ubuntu 24.04 linux-cpu/x86_64 Incus run bootstrapped the project binary
 inside a pristine guest, attached the exact host `.data` root as writable `virtiofs`, and completed cluster
 descent. Before and after an explicit provider stop/start, `/var/tmp/hostbootstrap-demo-data` resolved to the
 same owned host root, a write marker remained readable, and both installed activation-revision digests were
@@ -2183,12 +2239,62 @@ None. Completed 2026-08-23. The warning-clean core build, focused three-case can
 complete core 2,448/2,448 gate, and governed documentation gate pass. Canonical format version 7 retains the
 standalone declaration and admission rejects activation-frame reuse across chart and standalone placements.
 
+### Sprint 24.36a: Far-frame recorded exposure observation [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Shipped.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
+`core/hostbootstrap-core/test/ClusterBackendSpec.hs`,
+`core/hostbootstrap-core/test/ClusterShippedSpec.hs`
+**Production modules**: `HostBootstrap.Cluster.Backend`, `HostBootstrap.Cluster.Shipped`,
+`HostBootstrap.CLI` (3; cap 3)
+**Sprint budget**: one opaque exposure-observation result and one read-only frame transaction; at most 400
+production Haskell lines.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/cluster_lifecycle.md`,
+`documents/architecture/composition_methodology.md`
+
+#### Objective
+
+Re-observe one recorded cluster service exposure inside the exact provider frame that owns its Docker engine,
+without carrying a child-frame runtime witness into its parent.
+
+#### Deliverables
+
+- `HostBootstrap.Cluster.Backend` opens the protected exposure row for the exact cluster, refuses absent,
+  pending, malformed, conflicting, or duplicate service facts, and re-observes the recorded relay's exact
+  identity and loopback port mapping before returning the requested host port.
+- `HostBootstrap.Cluster.Shipped` defines one bounded, closed, read-only request and response vocabulary for
+  that observation. The request admits only an absolute POSIX state path, a valid cluster name, and one
+  bounded service name; the response contains no Docker handle, ownership witness, or credential.
+- The near-side function crosses only through `withFrameChildTransaction` and one already-derived lift
+  context; its capability-restricted wrapper projects that context from the exact `ProviderCapability`.
+  Providers whose lifecycle owns the route directly, including WSL2, supply the plan-selected provider lift.
+  The far-side interpreter derives its host configuration locally and performs the backend observation there.
+- The frame-child dispatcher distinguishes this request by its closed prefix and otherwise delegates to the
+  shipped ownership interpreter, preserving one authenticated child entry surface.
+- Focused tests cover canonical round trips, malformed and oversized refusals, wrong-identity and wrong-port
+  rejection, exact service selection, interpreter fall-through, and child-process observation.
+
+#### Validation
+
+Run the warning-clean focused `ClusterBackendSpec` and `ClusterShippedSpec` gates, then the complete
+warning-clean core host-static gate and governed-documentation gate.
+
+#### Remaining Work
+
+None. Completed 2026-08-26. The read-only backend observation, bounded frame vocabulary, shared frame-child
+dispatcher, and focused gates are complete. `ClusterBackendSpec` passed 37/37, `ClusterShippedSpec` passed 8/8,
+the public-consumer bind boundaries passed 2/2, the complete warning-clean core gate passed 2,474/2,474 in
+430.34 seconds on macOS arm64, and the governed-documentation gate passed 2/2.
+
 ### Sprint 24.37: Accelerator service-activation adoption [Done]
 
 **Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/test/CommandsSpec.hs`
 **Production modules**: `HostBootstrapDemo.Commands` (1; cap 3)
-**Sprint budget**: no new named contract and one additional activation call-site adoption; at most 200
+**Sprint budget**: no new named contract and one additional activation call-site adoption; at most 300
 production Haskell lines.
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/accelerator_daemon.md`,
@@ -2210,21 +2316,39 @@ boundary as the chart-owned web service.
 - Host-resident Apple and Windows accelerator steps declare the same placement, measure the copied daemon
   executable, install its verification key and activation revision beside durable state, and mint a fresh
   invocation nonce for each detached process.
+- Before root descent, the rooted coordinator installs its already-admitted activation signer into the exact
+  root Chain carrier. Child frames retain their relayed signer, while the same root carrier survives child close
+  and supplies only signed grants to post-handoff activation; no signing key crosses a frame or enters plan
+  bytes.
+- After the deployment child frame closes, the Apple host-resident accelerator step reopens the exact owned
+  provider and obtains its capability; the WSL2 route uses its plan-selected provider lift. Both use the
+  far-frame observation transaction to recover the accelerator relay's freshly identity-checked loopback port,
+  and neither expects the child's cluster runtime package to survive.
 - Generated-manifest and chain gates fix the activation declarations, mounts, coordinates, and instance-qualified
   launch shapes.
 
 #### Validation
 
-Run focused `CommandsSpec`, the complete demo gate, warning-clean demo build, formatter and linter checks, and
-the complete core gate. The worked-demo live acceptance confirms the linux-cpu call site through a Ready daemon
-and successful terminal `project up`; hardware acceptance phases confirm the host-resident and GPU call sites.
+Run focused `CommandsSpec` and `ChainSpec`, the complete demo gate, warning-clean demo build, formatter and
+linter checks, and the complete core gate. The worked-demo live acceptance confirms the linux-cpu call site
+through a Ready daemon and successful terminal `project up`; hardware acceptance phases confirm the
+host-resident and GPU call sites.
 
 #### Remaining Work
 
-None. Completed 2026-08-24. A fresh Production run installed the web
-`cluster-service-3` and accelerator `daemon-3` signed revisions, launched both through `service run`, reached
-`1/1 Running` for both deployments, and completed `project up`. Each role held only its distinct
-service/frame generation lease and no serving process retained the shared global transaction lock.
+None. Completed 2026-08-26. Far-frame relay observation is adopted for the Apple and Windows host-resident
+daemon launch. `CommandsSpec` fixes the Apple fresh-provider/capability route, the WSL2 plan-selected lift
+route, and port-only endpoint consumption and passed 61/61. `ChainSpec` passed 48/48 with the exact root-carrier
+signer binding, the complete warning-clean core gate passed 2,474/2,474 in 357.86 seconds, and the complete
+warning-clean demo build and 145/145 gate passed on macOS arm64. Each of the four live pristine-image builds
+passed the image's in-container `check-code`; the Apple/Lima Harness gate reported `10/10 passed`, and all four
+post-handoff host daemons reached Ready through the root-signed activation carrier and far-frame exposure.
+The published base digest was
+`sha256:3634916e85b1fda411ae671a4bca2f72745e0bd106e2e9efebccc25415e0bc49`; the four derived-image digests were
+`sha256:c5558991213ee0e6e5aba5f161a3ad4d1d4356582e3d7347f6da87ad6a7d61ec`,
+`sha256:fa0f37a5b15a874f018ac72e1a707e16e220ebb2c6bccf24c334760eebf1dde2`,
+`sha256:3968f151dc0b59c135afc795d0d1dc99c02c3195a7ec2077a2116b1cdc7d0b66`, and
+`sha256:024a9bfaec30e47c81e8cf4f49ce1d2a34c9b1631d3a8f0b6e777c34c2f5c212`.
 
 ### Sprint 24.38: Declarative same-run durable readback [Done]
 
@@ -2402,10 +2526,12 @@ operator-owned `hostbootstrap-demo.test.dhall` remained. The post-run gates pass
 
 ## Remaining Work
 
-None. The Production lifecycle, exact authenticated recursive reverse path, distinct automatic service
-exposures, pristine guest alias, Docker-host durable projection, concurrent signed roles, non-empty derived
-image, and two-variant same-run durable recreate are statically and live confirmed on linux-cpu. Terminal
-Apple, NVIDIA, Windows, and cross-family host-portability confirmation belongs only to Phases 25–28.
+None. Phase 24 is complete. The Production lifecycle, exact authenticated recursive reverse path, distinct
+automatic service exposures, pristine guest alias, Docker-host durable projection, concurrent signed roles,
+non-empty derived image, and two-variant same-run durable recreate are statically and live confirmed on
+linux-cpu. The 2026-08-26 Apple/Lima run supplied the remaining native and in-container evidence at exactly
+`10/10 passed` and ended with an empty live-runtime audit. NVIDIA-, Windows-, and cross-family
+host-portability confirmation belongs only to Phases 26–28.
 
 No sprint transports a Managed/Running/Readiness witness, handle, authentication key, executable selector, or
 raw probe in canonical bytes or a generic resource carrier. The two invocation-owned registries have separate

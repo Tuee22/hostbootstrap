@@ -79,6 +79,7 @@ module HostBootstrap.Harness (
     selfCreatedTestDataRemoval,
     HarnessRunCleanupFailure (..),
     HarnessRunOwnership (..),
+    runWithOwnedRun,
     runMatrix,
     reportCard,
     allPassed,
@@ -481,8 +482,12 @@ data HarnessRunCleanupFailure
     deriving (Eq, Show)
 
 newtype HarnessRunOwnership authority = HarnessRunOwnership
-    { runWithOwnedRun ::
+    { runWithOwnedRunAfterRecovery ::
         forall result.
+        -- The owner runs this only after its abandoned-run sweep has settled,
+        -- while it still holds project liveness, and before allocating a fresh
+        -- run lease or data root. A Left is raised as 'SafetyRefusal'.
+        IO (Either String ()) ->
         -- The value is supplied only after the ownership bracket acquires the
         -- generative root. Production uses an opaque typed root; unit seams may
         -- use a simpler witness while exercising engine behavior.
@@ -493,6 +498,16 @@ newtype HarnessRunOwnership authority = HarnessRunOwnership
         -- must not start a later variant.
         IO (Either String (result, Maybe HarnessRunCleanupFailure))
     }
+
+-- | Enter ownership without an additional post-recovery precondition.
+-- Low-level ownership tests use this seam; the suite engine uses
+-- 'runWithOwnedRunAfterRecovery' so its Production-state probe cannot block
+-- recovery of the prior Harness run that owns the observed state.
+runWithOwnedRun ::
+    HarnessRunOwnership authority ->
+    (authority -> IO result) ->
+    IO (Either String (result, Maybe HarnessRunCleanupFailure))
+runWithOwnedRun ownership = runWithOwnedRunAfterRecovery ownership (pure (Right ()))
 
 {- | Drive the case matrix: per case run setup → body → teardown, guaranteeing
 teardown via 'finally' (the body's exception is recorded as a 'Fail', not
@@ -655,6 +670,12 @@ which derives its subject from installed project identity — a caller cannot
 claim a config is absent — and runs inside the protected transaction that takes
 the mode, after the sweep (the test-harness-and-run-ownership phase).
 
+The owner also runs this cluster probe after settling abandoned Harness work,
+while it still holds project liveness and before it allocates a fresh run lease
+or data root. An abandoned run can itself leave the shared provider present;
+probing before the sweep would mistake that owned recovery subject for
+Production and make the recovery path unreachable.
+
 Pure obstacle reporting: returns @Right ()@ only when the obstacle is absent.
 -}
 testSafetyPreconditions :: IO Bool -> IO (Either String ())
@@ -670,16 +691,19 @@ the command layer supplies.  For each variant the exact-plan bracket generates
 the run config, invokes the common forward interpreter, opens the suite's
 assertion environment, runs the selected assertions, invokes the common reverse
 interpreter, and finally releases the generated config.  Selector parsing and
-total-matrix projection occur before this engine.  A refused safety precondition
-is a 'Left' and **no plan, config, or lifecycle effect is opened**.  The per-case
-loop reuses 'runMatrix', so the harness owns no second bring-up path (§ W).
+total-matrix projection occur before this engine. The ownership bracket first
+settles the prior Harness run, then a refused safety precondition is a 'Left'
+before any fresh plan, config, run lease, data root, or lifecycle effect is
+opened. The per-case loop reuses 'runMatrix', so the harness owns no second
+bring-up path (§ W).
 
 Each 'ConfigVariant' is supplied by the command layer from the project's @tcfg@,
 scope-aware restricted assembler, and one exact Harness 'ProjectPlan'.  Its
-bracket runs after the safety precondition and encloses forward interpretation,
-assertions, reverse interpretation, and generated-config release.  The safety
-precondition is checked once up front; the per-variant reports are aggregated
-into one 'Report', each row identified by its stable variant ID.
+bracket encloses the post-recovery safety precondition, forward interpretation,
+assertions, reverse interpretation, and generated-config release. The probe is
+rechecked after each variant's sweep, closing the race in which operator state
+could appear between variants. Reports are aggregated into one 'Report', each
+row identified by its stable variant ID.
 -}
 runSuiteSelection ::
     HarnessRunOwnership authority ->
@@ -687,28 +711,26 @@ runSuiteSelection ::
     [ConfigVariant authority] ->
     IO (Either String Report)
 runSuiteSelection ownership (TestSuite safety openAssertions cases assertCase assertReversed) variants = do
-    safe <- safety
-    case safe of
-        Left reason -> pure (Left ("test run refused: " ++ reason))
-        -- Every distinct config variant receives its own generative run lease
-        -- and `.test_data/<runId>` lifetime (§ Z). Cases sharing a variant share
-        -- that stack; the next variant cannot start until the preceding ownership
-        -- bracket has resolved. Each variant's generated config and lifecycle are
-        -- nested inside that bracket, and the resulting reports are concatenated.
-        Right () -> do
-            variantReports <- runVariants variants
-            pure (Right (Report (concatMap reportResults variantReports)))
+    variantReports <- runVariants variants
+    pure (Report . concatMap reportResults <$> variantReports)
   where
-    runVariants [] = pure []
+    -- Every distinct config variant receives its own generative run lease and
+    -- `.test_data/<runId>` lifetime (§ Z). Cases sharing a variant share that
+    -- stack; the next variant cannot start until the preceding ownership
+    -- bracket has resolved.
+    runVariants [] = pure (Right [])
     runVariants (cv : rest) = do
-        (report, cleanupFailure) <- safeRunVariant cv
-        case cleanupFailure of
-            Nothing -> (report :) <$> runVariants rest
-            Just failure ->
-                -- A failed finalizer has not proved the prior lease closed. Do
-                -- not even enter another ownership bracket; preserve a total
-                -- report by refusing every still-unstarted variant.
-                pure (report : map (blockedByCleanup failure) rest)
+        attempted <- safeRunVariant cv
+        case attempted of
+            Left refusal -> pure (Left refusal)
+            Right (report, cleanupFailure) ->
+                case cleanupFailure of
+                    Nothing -> fmap (fmap (report :)) (runVariants rest)
+                    Just failure ->
+                        -- A failed finalizer has not proved the prior lease closed. Do
+                        -- not even enter another ownership bracket; preserve a total
+                        -- report by refusing every still-unstarted variant.
+                        pure (Right (report : map (blockedByCleanup failure) rest))
     -- A whole variant is isolated, including its ownership acquisition. An
     -- ownership refusal is a structured refusal for that variant; an unexpected
     -- exception anywhere in the bracket/config/lifecycle fails only that variant.
@@ -718,27 +740,33 @@ runSuiteSelection ownership (TestSuite safety openAssertions cases assertCase as
         let chosen = casesFor selected
         e <-
             trySynchronousIO
-                ( runWithOwnedRun ownership $ \ownedAuthority ->
+                ( runWithOwnedRunAfterRecovery ownership safety $ \ownedAuthority ->
                     runVariant chosen cv ownedAuthority
                 )
         pure $ case e of
-            Right (Right (report, Nothing)) -> (report, Nothing)
+            Right (Right (report, Nothing)) -> Right (report, Nothing)
             Right (Right (report, Just failure)) ->
-                ( addRows report (reportResults (labelReport ident (Report [cleanupFailureRow failure])))
-                , Just failure
-                )
+                Right
+                    ( addRows report (reportResults (labelReport ident (Report [cleanupFailureRow failure])))
+                    , Just failure
+                    )
             Right (Left reason) ->
-                ( labelReport
-                    ident
-                    (allOutcomes chosen (Refused ("ownership refused: " ++ reason)))
-                , Nothing
-                )
-            Left err ->
-                ( labelReport
-                    ident
-                    (allOutcomes chosen (LifecycleFailed ("variant failed: " ++ displayException err)))
-                , Nothing
-                )
+                Right
+                    ( labelReport
+                        ident
+                        (allOutcomes chosen (Refused ("ownership refused: " ++ reason)))
+                    , Nothing
+                    )
+            Left err
+                | Just refusal <- fromException err ->
+                    Left ("test run refused: " ++ safetyRefusalReason refusal)
+                | otherwise ->
+                    Right
+                        ( labelReport
+                            ident
+                            (allOutcomes chosen (LifecycleFailed ("variant failed: " ++ displayException err)))
+                        , Nothing
+                        )
     blockedByCleanup failure (ConfigVariant ident selected _) =
         labelReport
             ident

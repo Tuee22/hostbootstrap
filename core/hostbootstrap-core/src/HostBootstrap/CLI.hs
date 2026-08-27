@@ -49,6 +49,7 @@ module HostBootstrap.CLI (
 where
 
 import Control.Monad (join)
+import Data.ByteString (ByteString)
 import Data.List (group, sort)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -67,6 +68,7 @@ import HostBootstrap.CLI.Bare (
     bareTestInit,
  )
 import HostBootstrap.Cluster.Exposure.Internal (runExposureRelayEntry)
+import HostBootstrap.Cluster.Shipped (interpretShippedClusterExposure)
 import HostBootstrap.Command (coreCommands)
 import HostBootstrap.Command.Child (lifecycleChildArguments, runForwardLifecycleChild)
 import HostBootstrap.Config.Class (
@@ -513,7 +515,7 @@ runCLI project finalizedSpec testCodec progName projectArtifacts testSuite check
                         if argv == lifecycleChildArguments
                             then runForwardLifecycleChild project finalizedSpec
                             else case classifyFrameChild argv of
-                                Just entry -> runFrameChildEntry (frameInterpreter interpretShippedOwnership) entry
+                                Just entry -> runFrameChildEntry (frameInterpreter interpretFrameTransaction) entry
                                 Nothing -> join (customExecParser (prefs showHelpOnEmpty) opts)
   where
     allCommands =
@@ -542,6 +544,13 @@ runCLI project finalizedSpec testCodec progName projectArtifacts testSuite check
             )
     parser :: Parser (IO ())
     parser = hsubparser (mconcat allCommands)
+
+interpretFrameTransaction :: ByteString -> IO (Either Text ByteString)
+interpretFrameTransaction raw = do
+    clusterExposure <- interpretShippedClusterExposure raw
+    case clusterExposure of
+        Just outcome -> pure outcome
+        Nothing -> interpretShippedOwnership raw
 
 duplicates :: (Ord a) => [a] -> [a]
 duplicates names = [name | name : _ : _ <- group (sort names)]

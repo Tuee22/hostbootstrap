@@ -92,6 +92,7 @@ runProviderGuestExecutor (ProviderGuestExecutor execute) = execute
 -- backend to one exact managed provider resource and phase.
 data ProviderBoundRoute
     = ProviderBoundIncusRoute String String
+    | ProviderBoundLimaRoute String
     | ProviderBoundDirectRoute FilePath String
     deriving (Eq, Show)
 

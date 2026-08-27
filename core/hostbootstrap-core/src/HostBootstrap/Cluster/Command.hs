@@ -88,29 +88,31 @@ readKubeconfigCommand :: String -> HostCommand
 readKubeconfigCommand clusterName =
     kindCommand ["get", "kubeconfig", "--name", clusterName]
 
-{- | Create the cluster, writing its kubeconfig where this run already owns a file.
+{- | Create the cluster, writing its initial kubeconfig into one private staging file.
 
-The kubeconfig destination rides on the creating command rather than on a copy
-that follows it, so the credential is never written anywhere this transaction
-does not already hold. A declared configuration is optional because a cluster
-with no declared topology is a legitimate single-node one, and an empty
-@--config@ would name a file that does not exist rather than mean "none". The
-bounded wait keeps a successful create from racing the separate fresh API and
-node-readiness observation that follows it.
+The caller opens the staging file on the local filesystem before this command
+and removes it after the child exits. The authoritative durable credential is a
+fresh exact readback published by the ownership transaction after creation, so
+Kind never takes its client-side lock on a host-provider mount. A declared
+configuration is optional because a cluster with no declared topology is a
+legitimate single-node one, and an empty @--config@ would name a file that does
+not exist rather than mean "none". The bounded wait keeps a successful create
+from racing the separate fresh API and node-readiness observation that follows
+it.
 -}
 createClusterCommand ::
     -- | the cluster's own name
     String ->
     -- | the declared configuration snapshot, where the plan declares one
     Maybe FilePath ->
-    -- | the file this run has opened for the kubeconfig
+    -- | the private local staging file this run has opened for Kind
     FilePath ->
     HostCommand
 createClusterCommand clusterName config kubeconfig =
     kindCommand
         ( ["create", "cluster", "--name", clusterName]
             <> maybe [] (\path -> ["--config", path]) config
-            <> ["--kubeconfig", kubeconfig, "--wait", "5m"]
+            <> ["--kubeconfig", kubeconfig, "--wait", "10m"]
         )
 
 {- | Remove the cluster the driver names.

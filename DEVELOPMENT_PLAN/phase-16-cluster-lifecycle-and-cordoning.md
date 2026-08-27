@@ -1809,6 +1809,12 @@ carrying two contracts, and the rendering is exactly the half a suite can compar
   the distinction a replacement erases.
 - The kubeconfig an API question needs travels on standard input and is named as `/dev/stdin`, so a live
   control-plane credential never appears in a process listing.
+- Creation gives Kind one private, unique staging path on the platform-local filesystem. The command layer
+  never asks Kind to write its initial credential through a provider-mounted durable path; the ownership
+  driver alone decides when the exact credential is ready for durable publication.
+- Creation carries a ten-minute driver-side readiness bound. That bound remains finite, but it covers the
+  observed Apple/Lima cold-start path where a healthy control plane crossed the former five-minute deadline
+  only after Kind had returned failure and left the transaction in its created-unbound recovery standing.
 
 #### Validation
 
@@ -1822,9 +1828,14 @@ Dated 2026-08-20 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0
 `cabal test all --ghc-options=-Werror` from `core/` passed 2,336/2,336 in 300.51 seconds, including the
 eighteen cases of `ClusterCommandSpec`.
 
+On 2026-08-26, Apple Silicon/macOS validation passed the focused described cluster-command gate at 19/19.
+The cases pin the ten-minute readiness bound, private platform-local creation staging, and the exact command
+vocabulary without granting the renderer publication authority.
+
 #### Remaining Work
 
-None.
+None. The rendered creation wait is ten minutes, its exact vectors are frozen, and the focused plus complete
+warning-clean gates pass.
 
 ### Sprint 16.42: The cluster report classifiers [Done]
 
@@ -1965,6 +1976,10 @@ session rather than a second contract inside this one.
 - The cluster-creating effect between the published records and the bound identities travels as a
   described `HostCommand`, so the outcome-unknown window keeps its durable meaning and the driver keeps no
   way to run a string.
+- A successful creation obtains the exact credential from Kind and atomically publishes it at the
+  plan-owned durable kubeconfig path before any node identity is bound. A named publication failure retains
+  the created-unbound standing; recovery from that standing repeats exact readback and publication before
+  binding, without issuing a second create.
 - Reconcile answers with three end states an operator can tell apart: a first creation, a resumed entry
   whose cluster already existed under this record, and an entry that found all clauses held. The
   already-owned path still re-observes every worker, because the cluster's own identity says nothing about
@@ -1992,6 +2007,12 @@ its durable state is ordinary files (§ JJ).
 Dated 2026-08-20 validation evidence (x86_64-windows, GHC 9.12.4, Cabal 3.16.1.0): canonical
 `cabal test all --ghc-options=-Werror` from `core/` passed 2,336/2,336 in 300.51 seconds, including the
 fifteen cases of `ClusterOwnershipSpec`.
+
+On 2026-08-26, macOS arm64 with GHC 9.12.4 and Cabal 3.16.1.0 passed the warning-clean focused
+`ClusterOwnershipSpec` gate at 30/30 and `ClusterBackendSpec` at 34/34. The real-process fixture observed
+exact durable credential bytes, publication before node binding, a named publication refusal, and recovery
+that published and bound without issuing a second create. The complete warning-clean core gate passed all
+2,464 tests in 387.72 seconds.
 
 #### Remaining Work
 

@@ -31,12 +31,12 @@ import ClusterReconcileSpec (
     withNvkindClusterFixtureM,
  )
 import Control.Monad (forM_)
-import Data.List (isInfixOf, isSuffixOf)
+import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified FakeCluster
 import HostBootstrap.Cluster.Backend
-import HostBootstrap.Cluster.Lifecycle (ClusterPlan, ClusterProfile (..), resolvePlan)
+import HostBootstrap.Cluster.Lifecycle (ClusterPlan (clusterName), ClusterProfile (..), resolvePlan)
 import HostBootstrap.Cluster.Reconcile
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Effect.Run (CapturedRun (..))
@@ -50,10 +50,10 @@ import HostBootstrap.Protected (
  )
 import HostBootstrap.Reconcile
 import HostBootstrap.Substrate (Arch (Amd64), Substrate (..), SubstrateName (LinuxCpu))
-import System.Directory (canonicalizePath, doesFileExist, getCurrentDirectory)
+import System.Directory (canonicalizePath, doesFileExist, getCurrentDirectory, getTemporaryDirectory)
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
-import System.FilePath (isAbsolute, takeDirectory, takeFileName, (</>))
+import System.FilePath (dropTrailingPathSeparator, isAbsolute, takeDirectory, takeFileName, (</>))
 import System.IO (readFile')
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
@@ -282,20 +282,28 @@ joinCases =
                 records <- recordsUnder stateRoot
                 pure (Right (released, remaining, records))
         outcome @?= Right (Right (), [], [])
-    , testCase "the credential the driver wrote lands inside that state directory" $ do
+    , testCase "the creating client stages locally and the exact credential lands in durable state" $ do
         outcome <- withBackend $ \cfg root ->
             withClusterFixtureM $ \prepared -> do
                 backend <- requireBackend cfg prepared
                 declare root prepared
                 _ <- runClusterReconcileCall backend prepared
-                written <- FakeCluster.recordedKubeconfigPaths root
-                pure
-                    ( Right
-                        ( not (null written)
-                        , all (preparedClusterStateDirectory prepared `isInfixOf`) written
-                        )
+                stagingPaths <- FakeCluster.recordedKubeconfigPaths root
+                stagingPresent <- traverse doesFileExist stagingPaths
+                temporaryRoot <- getTemporaryDirectory
+                durable <- readFile' (preparedClusterStateDirectory prepared </> "cluster.kubeconfig")
+                pure (Right (preparedClusterName prepared, stagingPaths, stagingPresent, temporaryRoot, durable))
+        case outcome of
+            Right (name, [staging], [False], temporaryRoot, durable) -> do
+                takeDirectory staging @?= dropTrailingPathSeparator temporaryRoot
+                assertBool "the local staging path is absolute" (isAbsolute staging)
+                assertBool
+                    "the staging path names the exact cluster"
+                    ( (".hostbootstrap-kind-" <> name)
+                        `isPrefixOf` takeFileName staging
                     )
-        outcome @?= Right (True, True)
+                durable @?= FakeCluster.fixtureKubeconfig name
+            other -> assertFailure ("expected one removed local stage and one exact durable credential, got " <> show other)
     , testCase "an exact repeat is healthy and creates nothing more" $ do
         outcome <- withBackend $ \cfg root ->
             withClusterFixtureM $ \prepared -> do
@@ -552,6 +560,35 @@ exposureCases =
         case outcome of
             Right (Right (), [], 1, mutations) -> mutations @?= ["create", "update", "relay-create", "relay-delete"]
             other -> assertFailure ("expected identity-conditional relay release, got " <> showExposureOutcome other)
+    , testCase "recorded observation re-inspects the relay and selects one exact service" $ do
+        outcome <- withRuntimeExposure $ \_ _ stateRoot _ resolved -> do
+            self <- getExecutablePath
+            plan <- recordedPlan stateRoot resolved
+            expected <- resolvedTuple "web" resolved
+            observed <- observeRecordedClusterExposure (clusterHostConfig self) stateRoot (clusterName plan) "web"
+            absent <- observeRecordedClusterExposure (clusterHostConfig self) stateRoot (clusterName plan) "absent"
+            pure (expected, recordedClusterExposureHostPort <$> observed, either (const True) (const False) absent)
+        case outcome of
+            Right (("127.0.0.1", expectedPort, _, _), Right actualPort, True) -> actualPort @?= expectedPort
+            other -> assertFailure ("expected one freshly observed service, got " <> showExposureOutcome other)
+    , testCase "recorded observation refuses a replacement relay identity" $ do
+        outcome <- withRuntimeExposure $ \_ root stateRoot _ resolved -> do
+            relays <- FakeCluster.readRelays root
+            FakeCluster.writeRelays root [relay{FakeCluster.relayIdentity = Text.unpack (Text.replicate 64 "b")} | relay <- relays]
+            self <- getExecutablePath
+            plan <- recordedPlan stateRoot resolved
+            observed <- observeRecordedClusterExposure (clusterHostConfig self) stateRoot (clusterName plan) "web"
+            pure (either (const True) (const False) observed)
+        outcome @?= Right True
+    , testCase "recorded observation refuses a changed relay mapping" $ do
+        outcome <- withRuntimeExposure $ \_ root stateRoot _ resolved -> do
+            relays <- FakeCluster.readRelays root
+            FakeCluster.writeRelays root [relay{FakeCluster.relayMappings = [(listener, address, port + 10) | (listener, address, port) <- FakeCluster.relayMappings relay]} | relay <- relays]
+            self <- getExecutablePath
+            plan <- recordedPlan stateRoot resolved
+            observed <- observeRecordedClusterExposure (clusterHostConfig self) stateRoot (clusterName plan) "web"
+            pure (either (const True) (const False) observed)
+        outcome @?= Right True
     , testCase "reverse recovers and releases the recorded relay without caller-supplied identity or port" $ do
         outcome <- withRuntimeExposure $ \_ root stateRoot _ resolved -> do
             self <- getExecutablePath

@@ -182,9 +182,9 @@ foldLeafCases =
         @?= DispatchTool
           Lima
           [ "shell",
-            "demo-vm",
             "--workdir",
             "/",
+            "demo-vm",
             "--",
             "sudo",
             "-n",

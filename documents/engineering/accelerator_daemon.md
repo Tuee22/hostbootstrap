@@ -169,6 +169,19 @@ port (default 8081), while host-resident daemons target an internal NodePort sel
 daemon URL carries the runtime-resolved loopback port, not that internal target. The relay publishes the
 accelerator listener only in the host-daemon topology; in-cluster kind/nvkind routes need no host exposure.
 
+The host daemon is a metal-frame post-handoff step, so the deployment child's cluster runtime package has
+already closed. The Apple path reopens the exact owned Lima provider and crosses through its capability; the
+Windows path crosses through the plan-selected WSL2 lift. Inside that provider frame, the read-only cluster
+observer opens the exact durable exposure row and re-inspects the recorded Docker relay before returning only
+the accelerator listener's loopback port. The host builds its WebSocket URL from that fresh result and never
+copies a child-frame live witness into the parent carrier.
+
+That post-handoff launch still requires a root-signed activation revision. Before descent, the rooted
+coordinator binds its already-admitted activation signing service into the exact root Chain carrier. Child
+frames use their relayed signing service; after they close, the unchanged root carrier lets the metal step
+submit the same canonical manifest and receive only the signed grant. The signing key remains inside the root
+coordinator and never crosses a frame or enters plan bytes.
+
 The web pod has two linked listeners sharing one process-local hub: public HTTP on its configured port
 (default 8080) and daemon WebSocket ingress on its distinct configured port (default 8081). The public service
 target cannot upgrade daemon registration, and the private
@@ -278,18 +291,9 @@ Web and accelerator share the authority store but not a lifetime-wide transactio
 admission transaction before entering the role engine and then retains only its own service/frame generation
 lease, allowing the two long-running roles to serve concurrently.
 
-### The host-resident launch, and why it has a boundary
+### The host-resident launch boundary
 
-The host-resident placement did not start. Its launch closed the child's standard input, output, and
-error rather than pointing them somewhere, which the `process` documentation permits only for a child
-that never uses those descriptors. This child does — it configures buffering and prints its selected
-service before the handler runs — and a threaded-RTS child then claims the freed descriptors for its own
-IO-manager control channel. The daemon wedged or exited before it reached substrate detection, the
-build-stack ensure, the worker build, or the connect loop, and none of the ten failure paths on the way
-there could report why: every one of them wrote to a descriptor that was gone. The launcher observed only
-that the process was no longer running.
-
-The launch is now a sealed boundary — `HostBootstrap.Detached`, under
+The host-resident launch is a sealed boundary — `HostBootstrap.Detached`, under
 [unrepresentable_state](../architecture/unrepresentable_state.md). The demo does not choose a stdio
 disposition any more, because there is no field to choose one in: it supplies the daemon executable, the
 one `hostAcceleratorDaemonArgs` argv both the launch and the process-identity matcher read, the complete
@@ -305,11 +309,11 @@ Two things this does not change. The in-cluster placements were never affected �
 kubelet's streams — and the Windows host placement still takes its separate hidden `Start-Process` path,
 whose short-lived PowerShell parent owns the child's streams and therefore has no sink to quote.
 
-**The Apple Silicon host-daemon row is now a result.** On 2026-08-03 the lane reported `10/10 passed`:
-the daemon reached readiness on every bring-up, and the browser `e2e-tabs` case asserted the
+**The Apple Silicon host-daemon row is a live result.** The completed pristine Apple acceptance reported
+`10/10 passed`: the daemon reached readiness on every bring-up, and the browser `e2e-tabs` case asserted the
 daemon-returned sum, backend, and artifact hash on both config variants — so Apple Metal ensure, the
-Swift/Metal worker build, the WebSocket connect, and the CBOR round trip all ran. The launch shape was
-the only thing wrong with this placement. Dated evidence lives with
+Swift/Metal worker build, the exact loopback WebSocket connection, and the CBOR round trip all ran. Terminal
+teardown left no host daemon process or lifecycle witness. Dated evidence lives with
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md), not here.
 
 ## See Also

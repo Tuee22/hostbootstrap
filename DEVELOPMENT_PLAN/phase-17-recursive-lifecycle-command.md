@@ -1,7 +1,7 @@
 # Phase 17 — The recursive lifecycle command
 
 **Status**: Done
-**Current sprint**: None — phase complete
+**Current sprint**: None
 **Depends on**: Phase 13 (authenticated handoff and rooted lifecycle protocol), Phase 16 (cluster lifecycle,
 budgets, and cordoning)
 **Substrates**: linux-cpu
@@ -2413,6 +2413,10 @@ Build the root-owned service and canonical terminal join used by one authenticat
 - One retained prepared descent owns its exact Offer, rooted frame session, incremental teardown forest, and
   canonical child terminal origin.
 - Rooted next, settle, descend-result, close, and receipt requests advance only the retained reverse work.
+- Once one local reverse operation has durably settled as failed, fresh unrelated siblings may still drain,
+  but selecting that failed operation again returns its retained refusal before another Prepared grant or
+  effect. The child therefore exits through the existing failed-unwind path instead of creating an unbounded
+  sequence of same-operation settlement records.
 - The child terminal join accepts only the exact canonical completed report and returns only its verified
   subtree settlement to the retained parent continuation.
 - Work is limited to the three named production modules, targets at most 400 significant lines, adds no named
@@ -2431,6 +2435,14 @@ local and descent settlement, canonical close, and receipt-bound subtree deliver
 closes config/activation capabilities; the service retains no raw store key, signing key, package bytes, or
 caller-selected plan coordinate, and the rooted transport freeze now covers only its owned sections rather
 than the whole shared Relay module.
+
+Revalidated on 2026-08-26 on Apple Silicon with GHC 9.12.4 and Cabal 3.16.1.0 after live worked-demo
+acceptance exposed an unbounded retry of one durably failed reverse operation. The rooted service now checks
+the retained forest failure before issuing another Prepared grant. The real-process `RecursiveLifecycleSpec`
+gate passed 7/7, including prompt child termination and exactly one cleanup effect for the failed operation;
+the source-order guard passed in `ProjectPlanSpec`, and `TeardownSpec` passed 37/37 with its independent-sibling
+drain coverage. The complete warning-clean core gate passed 2,463/2,463 in 366.69 seconds.
+`DocValidatorSpec` then passed 2/2 against the closed phase and updated index.
 
 #### Remaining Work
 
@@ -2808,7 +2820,8 @@ complete 2,454/2,454 core host-static gate passed.
 
 ## Remaining Work
 
-None. The root entry admits, persists, and strictly re-reads the
+None. Sprint 17.49's retained-failure guard and regression gates are complete. The root entry admits,
+persists, and strictly re-reads the
 recursive catalog under the live global lease; Sprint 17.29 has added the one rank-2 edge fold that selects an
 admitted descent by exact parent and child frame, the storeless `CatalogForwardHandoff` that edge authorizes,
 and the projecting forward-child fixture that gives multi-level admission its behavioural coverage through the

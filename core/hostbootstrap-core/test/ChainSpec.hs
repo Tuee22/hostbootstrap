@@ -403,6 +403,9 @@ admissionCases =
                 , "withRootedPlanCatalogEntriesKernel catalog (\\childPlan _ _ _ _ _ _ _ _ _ _ -> activationPlacementsFor childPlan)"
                 , "withChartWorkloadResource admittedPlan (plannedStepOperationKey planned)"
                 , "(activationFrame, planDigest, role, filter (not . Text.isPrefixOf \"deployment:\") effects)"
+                , "(launchChild activationSigningKey link)"
+                , "replaceStepRuntimeActivationSigningService activationRuntime"
+                , "signed <- signActivation signingKey manifest"
                 , "withTeardownLifecycleCursor cursor"
                 ]
             requiredFacade =

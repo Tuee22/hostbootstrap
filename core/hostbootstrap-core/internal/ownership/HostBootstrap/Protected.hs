@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
@@ -111,6 +112,9 @@ import System.IO (
  )
 import qualified System.IO as IO
 import System.IO.Error (isDoesNotExistError)
+#if !defined(mingw32_HOST_OS)
+import System.Posix.IO (FdOption (CloseOnExec), closeFd, fdToHandle, handleToFd, setFdOption)
+#endif
 
 -- The store --------------------------------------------------------------------
 
@@ -336,7 +340,7 @@ tryStoreLock root mutex holder action =
         bracket open closeIfHeld run
   where
     open = do
-        handle <- openFile (root </> lockFileName) ReadWriteMode
+        handle <- openLockHandle (root </> lockFileName)
         hSetBuffering handle NoBuffering
         taken <- hTryLock handle ExclusiveLock `onException` hClose handle
         pure (handle, taken)
@@ -385,7 +389,7 @@ withRunLiveness store name body = do
     acquire = do
         let directory = protectedStoreRoot store </> livenessDirectoryName
         createDirectoryIfMissing True directory
-        handle <- openFile (directory </> Text.unpack name <.> "lock") ReadWriteMode
+        handle <- openLockHandle (directory </> Text.unpack name <.> "lock")
         hSetBuffering handle NoBuffering
         taken <- hTryLock handle ExclusiveLock `onException` hClose handle
         pure (handle, taken)
@@ -403,7 +407,7 @@ withStoreLock root mutex holder action =
         bracket acquire release (const action)
   where
     acquire = do
-        handle <- openFile (root </> lockFileName) ReadWriteMode
+        handle <- openLockHandle (root </> lockFileName)
         hSetBuffering handle NoBuffering
         hLock handle ExclusiveLock `onException` hClose handle
         self <- myThreadId
@@ -412,6 +416,30 @@ withStoreLock root mutex holder action =
     release handle = do
         writeIORef holder Nothing
         hClose handle
+
+{- | Open a kernel-lock handle that cannot escape into a launched child.
+
+POSIX file descriptors are inherited across @exec@ unless @FD_CLOEXEC@ is set.
+A long-lived provider daemon that inherited the run-liveness descriptor would
+therefore keep the lock alive after the owning Harness process exited, making
+the exact abandoned-run recovery guarded by that lock permanently unreachable.
+Windows @openFile@ handles are non-inheritable; its row is deliberately a total
+no-op rather than a missing platform definition.
+-}
+openLockHandle :: FilePath -> IO IO.Handle
+openLockHandle path = do
+    handle <- openFile path ReadWriteMode
+    markCloseOnExec handle `onException` hClose handle
+
+markCloseOnExec :: IO.Handle -> IO IO.Handle
+#if defined(mingw32_HOST_OS)
+markCloseOnExec = pure
+#else
+markCloseOnExec handle = do
+    descriptor <- handleToFd handle
+    (setFdOption descriptor CloseOnExec True >> fdToHandle descriptor)
+        `onException` closeFd descriptor
+#endif
 
 -- Records -------------------------------------------------------------------------
 

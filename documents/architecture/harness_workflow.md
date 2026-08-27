@@ -174,15 +174,20 @@ installed project identity inside the protected transaction that takes the mode.
 recovery settle an interrupted run's own generated config before deciding whether a foreign Production
 config blocks the next run.
 
+The project-supplied Production-state probe follows the same ordering. For each variant, the ownership
+bracket holds project liveness, settles every abandoned Harness resource, then evaluates the probe before it
+allocates a fresh run lease, data root, generated config, or plan. A provider left by the abandoned run is
+therefore released by recovery before the probe decides whether independently held Production state exists.
+The probe is repeated inside each variant's bracket, so an operator-created obstacle between variants is
+refused before the next acquisition.
+
 Most other lifecycle resources still return `IO ()`, and the runner does not receive opaque ownership
 receipts for the VM, cluster, alias, or daemon. The transitions that consume a satisfying receipt are in
 [lifecycle_state_model](lifecycle_state_model.md).
 
-Some current safety checks are late. VM bring-up can run provider ensure, create the durable path, and
-perform host preflight before its managed-VM refusal; the direct lane can run Docker ensure before its
-cluster refusal. The harness treats `SafetyRefusal` as “skip teardown,” so those preparatory effects can
-remain. The target classifies a true pre-effect refusal separately from post-acquisition conflict/failure
-and rolls back every journaled owned preparation.
+The ownership-bracket safety probe is the only `SafetyRefusal` route: it runs after recovery but before fresh
+acquisition, so it can skip teardown without leaving new run state. Action-local provider and cluster checks
+remain ordinary conflicts or failures after acquisition and therefore enter the exact reverse path.
 
 Execution shape is not selected by the harness. No detached selector or definition-only parallel execution
 surface exists. The harness drives the exact run-scoped `ProjectPlan` the command admits and retains only its
@@ -216,20 +221,21 @@ supported place to run it until the remaining live acceptance phases close.
 `test run` acquires a sealed root-harness capability before lifecycle mutation. The complete target
 contract is:
 
-1. the generated config is owned by this run;
-2. the resolved cluster profile is `Harness projectId runId`;
-3. the cluster identity is run-scoped;
-4. the resolved durable root is `.test_data`;
-5. neither `.data` nor the production cluster is opened, mounted, reconciled, or deleted;
-6. every created resource returns an ownership receipt used by rollback and teardown;
-7. a pre-effect safety refusal owns no lifecycle resources, while any later failure rolls back every
+1. abandoned Harness resources are settled under project liveness before Production-state safety is judged;
+2. the generated config is owned by this run;
+3. the resolved cluster profile is `Harness projectId runId`;
+4. the cluster identity is run-scoped;
+5. the resolved durable root is `.test_data`;
+6. neither `.data` nor the production cluster is opened, mounted, reconciled, or deleted;
+7. every created resource returns an ownership receipt used by rollback and teardown;
+8. a pre-effect safety refusal owns no lifecycle resources, while any later failure rolls back every
    journaled preparation for which this run has an exact receipt;
-8. one project-wide mode compare-and-swap excludes every Production invocation for the full Harness run,
+9. one project-wide mode compare-and-swap excludes every Production invocation for the full Harness run,
    and Harness mode is released only after the old run's lease and close effects settle.
 
 The command boundary implements generated-config and data-root ownership, the Harness mode exclusion, and
 config-derived profile isolation. Most VM/cluster/alias/daemon mutations still lack the receipt coverage in
-clauses 6–7, and the independent profile/root consumers in clauses 2–5 remain work in the
+clauses 7–8, and the independent profile/root consumers in clauses 3–6 remain work in the
 [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
 
 The test config/profile should be explicit in the typed inputs to plan construction. A caller should not

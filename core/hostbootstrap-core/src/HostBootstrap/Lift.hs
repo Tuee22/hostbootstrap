@@ -338,7 +338,7 @@ foldLeaf (LiftContext layers) leaf = build layers
             DispatchTool Incus (["exec", vmName vm, "--cwd", "/", "-T", "--", binary] ++ argv)
     build [ViaLimaVM vm]
         | LifecycleProcessCmd binary argv <- leaf =
-            DispatchTool Lima (["shell", limaName vm, "--workdir", "/", "--", "sudo", "-n", "-H", binary] ++ argv)
+            DispatchTool Lima (["shell", "--workdir", "/", limaName vm, "--", "sudo", "-n", "-H", binary] ++ argv)
     build [ViaWsl2VM vm]
         | LifecycleProcessCmd binary argv <- leaf =
             DispatchTool Wsl (["-d", wsl2Distro vm, "--cd", "/", "--", "sudo", "-n", "-H", binary] ++ argv)
@@ -347,7 +347,7 @@ foldLeaf (LiftContext layers) leaf = build layers
             DispatchTool Incus (["exec", vmName vm, "--cwd", "/", "-T", "--"] ++ insideLifecycleVM rest)
     build (ViaLimaVM vm : rest)
         | LifecycleProcessCmd{} <- leaf =
-            DispatchTool Lima (["shell", limaName vm, "--workdir", "/", "--", "sudo", "-n", "-H"] ++ insideLifecycleVM rest)
+            DispatchTool Lima (["shell", "--workdir", "/", limaName vm, "--", "sudo", "-n", "-H"] ++ insideLifecycleVM rest)
     build (ViaWsl2VM vm : rest)
         | LifecycleProcessCmd{} <- leaf =
             DispatchTool Wsl (["-d", wsl2Distro vm, "--cd", "/", "--", "sudo", "-n", "-H"] ++ insideLifecycleVM rest)
@@ -369,7 +369,7 @@ foldLeaf (LiftContext layers) leaf = build layers
             : (["exec", vmName vm, "--cwd", "/", "-T", "--"] ++ insideLifecycleVM rest)
     insideLifecycleVM (ViaLimaVM vm : rest) =
         toolCommandName Lima
-            : (["shell", limaName vm, "--workdir", "/", "--", "sudo", "-n", "-H"] ++ insideLifecycleVM rest)
+            : (["shell", "--workdir", "/", limaName vm, "--", "sudo", "-n", "-H"] ++ insideLifecycleVM rest)
     insideLifecycleVM (ViaWsl2VM vm : rest) =
         toolCommandName Wsl
             : (["-d", wsl2Distro vm, "--cd", "/", "--", "sudo", "-n", "-H"] ++ insideLifecycleVM rest)

@@ -186,6 +186,7 @@ import HostBootstrap.Cluster.Reconcile (
     withPreparedClusterCordon,
     withPreparedClusterReconcile,
  )
+import HostBootstrap.Cluster.Shipped (observeShippedClusterExposure, observeShippedClusterExposureAt)
 import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec), decodeProjectCodecWithSettings, projectCodecSpecDigest)
 import HostBootstrap.Config.Fields (ScopeKind (ProductionScope), inspectLocalContext, localCurrentFrame, renderValidatedServiceRequest, roleParamsValue)
 import HostBootstrap.Config.Schema (projectConfigSnapshotHash, projectConfigSnapshotHashBytes, renderProjectConfigSnapshotLog, siblingProjectConfigPath, writeProjectConfigFile)
@@ -445,6 +446,7 @@ import HostBootstrap.Substrate.Provider.Backend (
     discoverStrongProviderBackend,
     mkDirectHostBackendSpec,
     mkIncusBackendSpec,
+    mkLimaBackendSpec,
     providerBackendBinding,
     registerProviderShareDependencyPackage,
     registerRunningProviderDependencyPackage,
@@ -2594,11 +2596,84 @@ configMapMountedText value
 indentBlock :: Int -> T.Text -> String
 indentBlock n = unlines . map (replicate n ' ' ++) . lines . T.unpack
 
+{- | Re-open the exact owned VM provider and ask that frame to re-observe the
+accelerator relay it owns. The child cluster package is invocation-local and is
+intentionally gone by the time this post-handoff metal step runs; only the
+freshly checked loopback port returns through this continuation.
+-}
+withHostAcceleratorExposure ::
+    ProjectConfig configScope ->
+    StepExecution scope planId ->
+    (Int -> IO result) ->
+    IO result
+withHostAcceleratorExposure projectCfg execution consume = do
+    gate <- stepExecutionPreparedGate execution >>= maybe (die "accelerator-daemon: the exact provider dependency gate is absent") pure
+    let cfg = stepExecutionHostConfig execution
+        configured = resources projectCfg
+        scopeCommitment = case clusterProfileOf projectCfg of
+            Production -> "production"
+            TestCase runKey -> "harness:" <> T.pack runKey
+        route = "runtime://provider/demo-vm-readiness"
+        now = preparedGateJournalVersion gate
+        nonce = "accelerator-daemon-provider-" <> T.pack (show now)
+        cluster = clusterName (resolvePlan demoProject containerSourceRoot (clusterProfileOf projectCfg))
+        stateDirectory = durableDockerHostPath </> "cluster" </> "kind" </> "state"
+    provider <- demoProvider cfg
+    projectRoot <- makeAbsolute =<< getCurrentDirectory
+    hostDurableRoot <- ensureProfileDataPath (clusterProfileOf projectCfg) projectRoot
+    durableShare <- either (die . show) pure (planProviderShare provider hostDurableRoot)
+    self <- currentSelfRef "/usr/local/bin/hostbootstrap-demo"
+    case providerKind provider of
+        ProviderLima -> do
+            backendSpec <-
+                either (die . show) pure $
+                    mkLimaBackendSpec cfg provider (envelopeOfResources configured) durableShare
+            discovered <- discoverStrongProviderBackend cfg backendSpec $ \backend -> do
+                opened <-
+                    withFreshRunningProviderHandle
+                        execution
+                        scopeCommitment
+                        (providerBackendBinding backend)
+                        "core:deploy-vm"
+                        route
+                        now
+                        nonce
+                        ( \_ managedProvider _ ->
+                            case withProviderBoundExec backend managedProvider $ \bound ->
+                                discoverProvider managedProvider provider bound $ \capability -> do
+                                    observed <-
+                                        observeShippedClusterExposure
+                                            cfg
+                                            self
+                                            capability
+                                            stateDirectory
+                                            cluster
+                                            "accelerator"
+                                    either (die . ("accelerator-daemon: " ++) . T.unpack) consume observed of
+                                Left failure -> die (show failure)
+                                Right discoverAction -> do
+                                    providerResult <- discoverAction
+                                    either (die . show) pure providerResult
+                        )
+                either (die . show) id opened
+            either (die . show) pure discovered
+        ProviderWsl2 -> do
+            observed <-
+                observeShippedClusterExposureAt
+                    cfg
+                    self
+                    (providerLiftContext provider)
+                    stateDirectory
+                    cluster
+                    "accelerator"
+            either (die . ("accelerator-daemon: " ++) . T.unpack) consume observed
+        _ -> die "accelerator-daemon: the host-resident placement requires a VM provider frame"
+
 startHostAcceleratorDaemonAction :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
 startHostAcceleratorDaemonAction stepCfg execution
     | hostAcceleratorSubstrate (hcSubstrate cfg) =
         demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \projectCfg ctx -> do
-            withDemoServiceExposure projectCfg execution "accelerator-daemon" "accelerator" $ \exposure ->
+            withHostAcceleratorExposure projectCfg execution $ \hostPort ->
                 withHostAcceleratorDaemonOperation ctx $ do
                     stopHostAcceleratorDaemonUnlocked cfg ctx
                     daemonExe <- installHostAcceleratorDaemonBinary ctx
@@ -2611,7 +2686,7 @@ startHostAcceleratorDaemonAction stepCfg execution
                                 projectCfg
                                 daemonCtx
                         daemonCfgPath = hostAcceleratorDaemonConfigPath ctx
-                        endpoint = "ws://" ++ T.unpack (endpointAuthority (exposureEndpoint exposure)) ++ "/api/accelerator/daemon"
+                        endpoint = "ws://127.0.0.1:" ++ show hostPort ++ "/api/accelerator/daemon"
                     pidPath <- makeAbsolute (hostAcceleratorDaemonPidPath ctx)
                     _ <- either die pure (configuredServiceVariant daemonCfg)
                     binaryDigest <- measureBinaryDigest daemonExe >>= either (die . buildErrorMessage) pure
@@ -4170,9 +4245,9 @@ runVmUp stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCo
     -- Idempotent reconcile-to-running (§ Y): if the VM already exists, ensure it
     -- is started rather than re-creating it (a create on an existing instance
     -- fails), so a re-run of `project up` reconciles a partially-built stack.
-    if providerKind sp == ProviderIncus
-        then runExactIncusProvider projectCfg cfg execution hostDurableRoot
-        else do
+    case providerKind sp of
+        ProviderIncus -> runExactVmProvider projectCfg cfg execution sp envelope durableShare hostDurableRoot
+        ProviderLima -> do
             exists <- substrateExists cfg sp
             case clusterProfileOf projectCfg of
                 TestCase _ ->
@@ -4184,6 +4259,9 @@ runVmUp stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCo
                                 )
                             )
                 Production -> pure ()
+            runExactVmProvider projectCfg cfg execution sp envelope durableShare hostDurableRoot
+        _ -> do
+            exists <- substrateExists cfg sp
             if exists
                 then do
                     putStrLn ("vm up: " ++ providerVmId sp ++ " already exists; re-applying the cordon + ensuring it is started (idempotent)")
@@ -4206,8 +4284,8 @@ runCopySource stepCfg execution = demoConfigContext stepCfg Context.HostOrchestr
     projectRoot <- makeAbsolute =<< getCurrentDirectory
     hostDurableRoot <- ensureProfileDataPath (clusterProfileOf projectCfg) projectRoot
     durableShare <- either (die . show) pure (planProviderShare sp hostDurableRoot)
-    if providerKind sp == ProviderIncus
-        then runExactIncusShare projectCfg cfg execution durableShare
+    if providerKind sp `elem` [ProviderIncus, ProviderLima]
+        then runExactVmShare projectCfg cfg execution durableShare
         else do
             putStrLn ("copy-source: waiting for " ++ providerVmId sp ++ " to answer")
             vmReady <- substrateWait cfg sp
@@ -4232,13 +4310,13 @@ mintVmProviderWitness cfg provider =
             ++ " | sudo tee /run/hostbootstrap/vm-provider >/dev/null"
         )
 
-runExactIncusShare ::
+runExactVmShare ::
     ProjectConfig configScope ->
     HostConfig ->
     StepExecution scope planId ->
     HostPathShare ->
     IO ()
-runExactIncusShare projectCfg cfg execution durableShare = do
+runExactVmShare projectCfg cfg execution durableShare = do
     gate <- stepExecutionPreparedGate execution >>= maybe (die "copy-source reconcile: the exact producer gate is absent") pure
     self <- currentSelfRef "/usr/local/bin/hostbootstrap-demo"
     sp <- demoProvider cfg
@@ -4253,17 +4331,22 @@ runExactIncusShare projectCfg cfg execution durableShare = do
         now = preparedGateJournalVersion gate
         nonce = "copy-source-" <> T.pack (show now)
     when (cpuNatural > fromIntegral (maxBound :: Word64)) (die "copy-source reconcile: CPU quantity exceeds Word64")
-    backendSpec <-
-        either (die . show) pure $
-            mkIncusBackendSpec
-                name
-                image
-                demoGuardPrefix
-                cfg
-                stateRoot
-                (fromIntegral cpuNatural)
-                (T.unpack (quantityText (memory configured)))
-                (T.unpack (quantityText (storage configured)))
+    backendSpec <- case providerKind sp of
+        ProviderIncus ->
+            either (die . show) pure $
+                mkIncusBackendSpec
+                    name
+                    image
+                    demoGuardPrefix
+                    cfg
+                    stateRoot
+                    (fromIntegral cpuNatural)
+                    (T.unpack (quantityText (memory configured)))
+                    (T.unpack (quantityText (storage configured)))
+        ProviderLima ->
+            either (die . show) pure $
+                mkLimaBackendSpec cfg sp (envelopeOfResources configured) durableShare
+        _ -> die "copy-source reconcile: the exact VM share backend is unavailable on this provider"
     shareSpec <- either (die . show) pure (mkProviderShareSpec (hpsHostPath durableShare) (hpsGuestPath durableShare))
     aliasSpec <- either (die . show) pure (mkGuestAliasSpec durableDockerHostPath (hpsGuestPath durableShare))
     discovered <- discoverStrongProviderBackend cfg backendSpec $ \backend ->
@@ -4344,13 +4427,16 @@ runExactIncusShare projectCfg cfg execution durableShare = do
                 Right action -> action
     either (die . show) (either (die . show) pure) discovered
 
-runExactIncusProvider ::
+runExactVmProvider ::
     ProjectConfig configScope ->
     HostConfig ->
     StepExecution scope planId ->
+    SubstrateProvider ->
+    Context.ResourceEnvelope ->
+    HostPathShare ->
     FilePath ->
     IO ()
-runExactIncusProvider projectCfg cfg execution durableRoot = do
+runExactVmProvider projectCfg cfg execution provider envelope durableShare durableRoot = do
     gate <- stepExecutionPreparedGate execution >>= maybe (die "VM provider reconcile: the exact producer gate is absent") pure
     let configured = resources projectCfg
         IncusVM name image = demoVM
@@ -4361,17 +4447,25 @@ runExactIncusProvider projectCfg cfg execution durableRoot = do
             TestCase runKey -> "harness:" <> T.pack runKey
     when (cpuNatural > fromIntegral (maxBound :: Word64)) (die "VM provider reconcile: CPU quantity exceeds Word64")
     when (preparedGateJournalVersion gate > maxBound - 1024) (die "VM provider reconcile: dependency lifetime overflows")
-    backendSpec <-
-        either (die . show) pure $
-            mkIncusBackendSpec
-                name
-                image
-                demoGuardPrefix
-                cfg
-                stateRoot
-                (fromIntegral cpuNatural)
-                (T.unpack (quantityText (memory configured)))
-                (T.unpack (quantityText (storage configured)))
+    (backendSpec, adapterVersion) <- case providerKind provider of
+        ProviderIncus -> do
+            spec <-
+                either (die . show) pure $
+                    mkIncusBackendSpec
+                        name
+                        image
+                        demoGuardPrefix
+                        cfg
+                        stateRoot
+                        (fromIntegral cpuNatural)
+                        (T.unpack (quantityText (memory configured)))
+                        (T.unpack (quantityText (storage configured)))
+            pure (spec, "demo-incus-provider-v1")
+        ProviderLima -> do
+            spec <- either (die . show) pure (mkLimaBackendSpec cfg provider envelope durableShare)
+            pure (spec, "demo-lima-provider-v1")
+        _ -> die "VM provider reconcile: the exact VM backend is unavailable on this provider"
+    putStrLn ("vm up: reconciling " ++ providerVmId provider ++ " through the exact provider settlement")
     discovered <- discoverStrongProviderBackend cfg backendSpec $ \backend ->
         case withNodeResourceOfKind execution ProviderResourceKind (stepExecutionOperationKey execution) $ \planned ->
             withNodeObservedResource execution planned (preparedGateFence gate) (preparedGateJournalVersion gate) $ \observed ->
@@ -4388,7 +4482,7 @@ runExactIncusProvider projectCfg cfg execution durableRoot = do
                                         case settleProviderReady preparedReady readyCall of
                                             Left failure -> pure (Left failure)
                                             Right advance -> do
-                                                carried <- carryCreatedRunningProviderSettlement execution advance "demo-incus-provider-v1"
+                                                carried <- carryCreatedRunningProviderSettlement execution advance adapterVersion
                                                 case carried of
                                                     Left failure -> pure (Left failure)
                                                     Right () ->
@@ -5207,15 +5301,22 @@ demoGuestAliasReverse projectCfg cfg _action = do
                     -- after the VM reverse has settled.  Container workloads
                     -- can create root-owned descendants through virtiofs, so
                     -- restore traversal/write permission while the authenticated
-                    -- guest alias still names that share.  Production durable
-                    -- state is deliberately never normalized this way.
+                    -- guest alias still names that share.  Do not chmod the
+                    -- virtiofs mountpoint itself: Lima's mount denies that
+                    -- operation even though its descendants are mutable.
+                    -- Production durable state is deliberately never normalized
+                    -- this way, and symlinks are skipped rather than followed.
                     case clusterProfileOf projectCfg of
                         TestCase _ ->
                             runInDemoVM
                                 cfg
                                 provider
-                                ( "sudo chmod -R a+rwX "
+                                ( "sudo find "
+                                    -- The trailing slash dereferences the owned
+                                    -- alias for traversal; -mindepth still keeps
+                                    -- the mountpoint itself out of chmod's argv.
                                     ++ shellQuoteArg (durableDockerHostPath ++ "/")
+                                    ++ " -mindepth 1 ! -type l -exec chmod a+rwX -- {} +"
                                 )
                         Production -> pure ()
                     self <- currentSelfRef "/usr/local/bin/hostbootstrap-demo"

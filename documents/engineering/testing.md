@@ -113,7 +113,9 @@ total. A family whose subject is available everywhere is not declared, because a
 family would be a second copy of the suite. Conditional families name platform rows and the shipped guest
 alias symbolic-link row. On a POSIX gate the alias family exercises create, interruption recovery, exact
 retry, replacement-safe release, and record cleanup against the real kernel; on a gate without POSIX
-symbolic-link ownership the same fixed case family asserts the row's declared refusal. No external
+symbolic-link ownership the same fixed case family asserts the row's declared refusal. The publication cases
+exercise Linux's no-replace hard link and Darwin's `renamex_np(RENAME_EXCL)` move through the same durable
+pre-publication identity binding. No external
 interpreter, `flock`, or `stat` executable is part of that test or production route.
 
 The ownership row's release-on-death case takes the suite's own re-invocation route: the suite spawns
@@ -121,6 +123,11 @@ itself with a probe argument, the probe takes the row's exclusive open and drops
 than closing it, and the parent observes the contention, kills the probe, and re-opens. A raw descriptor
 carries no finalizer, so nothing in the probe can release that lock and the successful re-open is evidence
 about the kernel rather than about a cleanup path.
+
+The protected-store liveness case separately launches an executed child that remains alive after its parent
+leaves the liveness extent. The parent immediately reacquires the same kernel lock before terminating the
+child. That observation proves the lock descriptor is close-on-exec; a subprocess fixture that exited first
+would not distinguish non-inheritance from ordinary process cleanup.
 
 ### What counts as evidence
 
@@ -169,7 +176,9 @@ simulated, and it is a true one. The normative statement is
 The reusable engine runs a compiled, five-field `TestSuite` and aggregates `CaseResult`s into a report.
 Those fields are the safety precondition, assertion-environment opener, case matrix, per-case assertion,
 and post-reverse absence assertion. For each variant, `HostBootstrap.Command` retains one exact
-Harness-scoped plan and supplies an opaque `HarnessLifecycle`; the engine invokes its forward action,
+Harness-scoped plan and supplies an opaque `HarnessLifecycle`. The ownership bracket first recovers abandoned
+Harness state under project liveness, then evaluates the safety precondition before allocating that variant's
+fresh lease, data root, config, or plan. The engine invokes its forward action,
 opens the assertion environment, runs the selected cases, and for `AssertAcrossRestart` cases invokes an
 intermediate reverse, a protected fresh same-run forward, and an `AfterRestart` assertion before its one final
 reverse and absence assertion. Both assertion phases retain one report row. A non-refusal bring-up failure still enters the same reverse path. Only a refusal that

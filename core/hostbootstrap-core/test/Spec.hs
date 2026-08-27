@@ -14,12 +14,15 @@ import qualified ClusterOwnershipSpec
 import qualified ClusterReconcileSpec
 import qualified ClusterReportSpec
 import qualified ClusterResumeSpec
+import qualified ClusterShippedSpec
 import qualified ClusterWorkloadSpec
 import qualified ColimaSpec
 import qualified CompileFailSpec
 import qualified ContextSpec
 import qualified CordonSpec
+import Data.ByteString (ByteString)
 import Data.List (isPrefixOf)
+import Data.Text (Text)
 import qualified DataRootSpec
 import qualified DetachedSpec
 import qualified DhallGenSpec
@@ -34,6 +37,7 @@ import qualified GuestBootstrapSpec
 import qualified HandoffSpec
 import qualified HarnessSpec
 import HostBootstrap.Ensure.Colima.Backend.Runner (runShippedCommandEntry, shippedCommandEntryArguments)
+import HostBootstrap.Cluster.Shipped (interpretShippedClusterExposure)
 import HostBootstrap.Handoff.Transaction (classifyFrameChild, frameInterpreter, runFrameChildEntry)
 import HostBootstrap.Identity.Install (provisionInstalledIdentity)
 import HostBootstrap.Ownership.Shipped (interpretShippedOwnership)
@@ -90,6 +94,13 @@ import qualified WslGlobalWallHostSpec
 import qualified WslGlobalWallSpec
 import qualified WslGlobalWallWindowsSpec
 
+interpretFrameTransaction :: ByteString -> IO (Either Text ByteString)
+interpretFrameTransaction raw = do
+    clusterExposure <- interpretShippedClusterExposure raw
+    case clusterExposure of
+        Just outcome -> pure outcome
+        Nothing -> interpretShippedOwnership raw
+
 {- | Normalize the process's file-creation mask, where the host has one.
 
 Windows has no umask, so there is nothing to normalize and nothing to differ
@@ -140,6 +151,9 @@ main = do
     fakeCluster <- lookupEnv FakeCluster.fakeClusterVariable
     case args of
         _
+            | Just entry <- classifyFrameChild args ->
+                runFrameChildEntry (frameInterpreter interpretFrameTransaction) entry
+        _
             | Just clusterRoot <- fakeCluster
             , not (null args) ->
                 FakeCluster.runFakeClusterClient clusterRoot args
@@ -184,6 +198,10 @@ main = do
         -- in-process exception still runs every finalizer.
         ["--hostbootstrap-harness-abandon-probe", stateRoot, readyPath] ->
             HarnessSpec.runHarnessAbandonProbe stateRoot readyPath
+        -- A provider-shaped child that remains alive after its parent leaves a
+        -- run-liveness extent. It must not inherit the lock descriptor.
+        ["--hostbootstrap-liveness-inheritance-probe"] ->
+            AuthoritySpec.runLivenessInheritanceProbe
         ["--hostbootstrap-recovery-interruption-probe", stateRoot, readyPath, boundary] ->
             HarnessSpec.runRecoveryInterruptionProbe stateRoot readyPath boundary
         ["--hostbootstrap-recovery-interruption-successor", stateRoot, resultPath, boundary] ->
@@ -196,14 +214,6 @@ main = do
         ["--hostbootstrap-colima-shipped-owner-probe", directory, pidPath, python] ->
             ColimaSpec.runShippedOwnerProbe directory pidPath python
         _ | args == shippedCommandEntryArguments -> runShippedCommandEntry
-        -- The far side of a frame crossing, entered through the production
-        -- classifier and running the production child body. Nothing about the
-        -- branch is a fixture: the argument vector is the one the lift fold
-        -- places at the leaf, and what answers on the other end of the pipes is
-        -- the entry a real frame child runs.
-        _
-            | Just entry <- classifyFrameChild args ->
-                runFrameChildEntry (frameInterpreter interpretShippedOwnership) entry
         _ -> do
             executable <- getExecutablePath
             provisionInstalledIdentity executable >>= either fail pure
@@ -265,6 +275,7 @@ main = do
                     , ClusterResumeSpec.tests
                     , ClusterOwnershipSpec.tests
                     , ClusterBackendSpec.tests
+                    , ClusterShippedSpec.tests
                     , DataRootSpec.tests
                     , GeneratedConfigSpec.tests
                     , ProjectRootSpec.tests

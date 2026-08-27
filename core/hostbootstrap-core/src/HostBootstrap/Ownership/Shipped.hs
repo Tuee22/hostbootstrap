@@ -1,3 +1,4 @@
+{-# LANGUAGE CApiFFI #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
@@ -134,9 +135,15 @@ import HostBootstrap.Protected (
  )
 import System.IO.Error (isAlreadyExistsError, isDoesNotExistError)
 #ifndef mingw32_HOST_OS
+#ifdef darwin_HOST_OS
+import Foreign.C.Error (throwErrnoIfMinus1_)
+import Foreign.C.String (CString, withCString)
+import Foreign.C.Types (CInt (..), CUInt (..))
+#else
+import System.Posix.Files (createLink)
+#endif
 import System.Posix.Files
-    ( createLink
-    , createSymbolicLink
+    ( createSymbolicLink
     , deviceID
     , fileID
     , getSymbolicLinkStatus
@@ -170,10 +177,10 @@ data ShippedOwnership = ShippedOwnership
 
 {- | The closed set of acts a shipped transaction may name.
 
-Four, because they are the four things the seam's producers compose over one
-object. There is no act that runs a command, because a described command travels
-through the one interpreter (§ KK) and an act that could run a string would make
-this a shell again.
+Six, because they are the four generic object acts plus symbolic-link take and
+give-back for the guest-alias owner. There is no act that runs a command,
+because a described command travels through the one interpreter (§ KK) and an
+act that could run a string would make this a shell again.
 -}
 data ShippedAct
     = -- | report what is there, and mutate nothing
@@ -414,6 +421,13 @@ inEntry row transaction session = case shippedAct transaction of
                         | current == identity -> do
                             cleaned <- cleanupSymbolicLinkStage row transaction linkTarget identity
                             pure (either ShippedRefused (const (ShippedSymbolicLinkRetained identity)) cleaned)
+                    Right SymbolicLinkAbsent -> do
+                        published <- publishPreparedSymbolicLink row transaction linkTarget identity
+                        case published of
+                            Left fault -> pure (ShippedRefused fault)
+                            Right () -> do
+                                cleaned <- cleanupSymbolicLinkStage row transaction linkTarget identity
+                                pure (either ShippedRefused (const (ShippedSymbolicLinkRetained identity)) cleaned)
                     Right present -> pure (ShippedRefused (symbolicLinkIdentityConflict target identity present))
             Right Nothing -> do
                 outcome <-
@@ -429,16 +443,20 @@ inEntry row transaction session = case shippedAct transaction of
                 pure (settle outcome)
 
     publishSymbolicLink linkTarget recorded answer = do
-        published <- createOrRecoverSymbolicLink row transaction linkTarget
-        case published of
+        prepared <- prepareSymbolicLink row transaction linkTarget
+        case prepared of
             Left fault -> pure (Left fault)
             Right identity -> do
                 bound <- bindReportedIdentity recorded identity (publishBinding session key)
                 case bound of
                     Left fault -> pure (Left fault)
                     Right _ -> do
-                        cleaned <- cleanupSymbolicLinkStage row transaction linkTarget identity
-                        pure (fmap (const (answer identity)) cleaned)
+                        published <- publishPreparedSymbolicLink row transaction linkTarget identity
+                        case published of
+                            Left fault -> pure (Left fault)
+                            Right () -> do
+                                cleaned <- cleanupSymbolicLinkStage row transaction linkTarget identity
+                                pure (fmap (const (answer identity)) cleaned)
 
     giveBackSymbolicLink linkTarget = do
         stored <- readBoundRecord session key
@@ -590,14 +608,13 @@ observeSymbolicLink path linkTarget = do
                                 | otherwise -> Right (SymbolicLinkOther (Just stable))
 #endif
 
-createOrRecoverSymbolicLink :: OwnershipRow -> ShippedOwnership -> FilePath -> IO (Either OwnershipFault ObjectIdentity)
+prepareSymbolicLink :: OwnershipRow -> ShippedOwnership -> FilePath -> IO (Either OwnershipFault ObjectIdentity)
 #ifdef mingw32_HOST_OS
-createOrRecoverSymbolicLink _row _transaction _linkTarget =
+prepareSymbolicLink _row _transaction _linkTarget =
     pure (Left (OwnershipUnsupported "symbolic-link ownership is available only in a POSIX frame"))
 #else
-createOrRecoverSymbolicLink row transaction linkTarget = do
+prepareSymbolicLink row transaction linkTarget = do
     let stage = stagingOf transaction
-        target = shippedTarget transaction
     stageObserved <- observeSymbolicLink stage linkTarget
     case stageObserved of
         Left fault -> pure (Left fault)
@@ -607,34 +624,73 @@ createOrRecoverSymbolicLink row transaction linkTarget = do
                 Left failure -> pure (Left (symbolicLinkProbe "create staging" stage failure))
                 Right () -> do
                     synced <- syncSymbolicLinkParent row stage
-                    either (pure . Left) (const (publishStage stage target)) synced
-        Right (SymbolicLinkExact _) -> publishStage stage target
+                    case synced of
+                        Left fault -> pure (Left fault)
+                        Right () -> do
+                            observed <- observeSymbolicLink stage linkTarget
+                            pure $ case observed of
+                                Right (SymbolicLinkExact identity) -> Right identity
+                                Right other -> Left (symbolicLinkOccupied stage other)
+                                Left fault -> Left fault
+        Right (SymbolicLinkExact identity) -> pure (Right identity)
         Right other -> pure (Left (symbolicLinkOccupied stage other))
-  where
-    publishStage stage target = do
-        staged <- observeSymbolicLink stage linkTarget
-        case staged of
-            Right (SymbolicLinkExact stagedIdentity) -> do
-                linked <- try (createLink stage target)
-                case linked of
+#endif
+
+publishPreparedSymbolicLink :: OwnershipRow -> ShippedOwnership -> FilePath -> ObjectIdentity -> IO (Either OwnershipFault ())
+#ifdef mingw32_HOST_OS
+publishPreparedSymbolicLink _row _transaction _linkTarget _identity =
+    pure (Left (OwnershipUnsupported "symbolic-link ownership is available only in a POSIX frame"))
+#else
+publishPreparedSymbolicLink row transaction linkTarget expectedIdentity = do
+    let stage = stagingOf transaction
+        target = shippedTarget transaction
+    staged <- observeSymbolicLink stage linkTarget
+    case staged of
+        Right (SymbolicLinkExact stagedIdentity)
+            | stagedIdentity == expectedIdentity -> do
+                published <- try (publishSymbolicLinkNoReplace stage target)
+                case published of
                     Left failure
-                        | isAlreadyExistsError failure -> do
-                            synced <- syncSymbolicLinkParent row target
-                            either (pure . Left) (const (confirmPublished stage stagedIdentity target)) synced
+                        | isAlreadyExistsError failure -> confirmPublished target
                         | otherwise -> pure (Left (symbolicLinkProbe "publish" target failure))
                     Right () -> do
                         synced <- syncSymbolicLinkParent row target
-                        either (pure . Left) (const (confirmPublished stage stagedIdentity target)) synced
-            Right other -> pure (Left (symbolicLinkOccupied stage other))
-            Left fault -> pure (Left fault)
-
-    confirmPublished _stage stagedIdentity target = do
+                        either (pure . Left) (const (confirmPublished target)) synced
+        Right other -> pure (Left (symbolicLinkIdentityConflict stage expectedIdentity other))
+        Left fault -> pure (Left fault)
+  where
+    confirmPublished target = do
         observed <- observeSymbolicLink target linkTarget
         pure $ case observed of
             Right (SymbolicLinkExact identity)
-                | identity == stagedIdentity -> Right identity
-            Right other -> Left (symbolicLinkIdentityConflict target stagedIdentity other)
+                | identity == expectedIdentity -> Right ()
+            Right other -> Left (symbolicLinkIdentityConflict target expectedIdentity other)
             Left fault -> Left fault
+#endif
+
+-- | Publish the already-bound staging link without replacing an existing name.
+-- Linux can give the symlink inode a second name with @link(2)@. Darwin/APFS
+-- deliberately refuses that operation for symbolic links, so its equivalent
+-- is @renamex_np(RENAME_EXCL)@; the durable record already binds the staging
+-- inode before this move, which makes both crash windows recoverable.
+publishSymbolicLinkNoReplace :: FilePath -> FilePath -> IO ()
+#if defined(mingw32_HOST_OS)
+publishSymbolicLinkNoReplace _source _target =
+    ioError (userError "symbolic-link publication is unavailable on Windows")
+#elif defined(darwin_HOST_OS)
+publishSymbolicLinkNoReplace source target =
+    withCString source $ \sourcePath ->
+        withCString target $ \targetPath ->
+            throwErrnoIfMinus1_ "renamex_np(RENAME_EXCL)" (c_renamex_np sourcePath targetPath renameExclusive)
+  where
+    renameExclusive = 0x00000004
+#else
+publishSymbolicLinkNoReplace = createLink
+#endif
+
+#ifdef darwin_HOST_OS
+foreign import capi unsafe "stdio.h renamex_np"
+    c_renamex_np :: CString -> CString -> CUInt -> IO CInt
 #endif
 
 cleanupSymbolicLinkStage :: OwnershipRow -> ShippedOwnership -> FilePath -> ObjectIdentity -> IO (Either OwnershipFault ())

@@ -58,7 +58,9 @@ None.
 ### Sprint 4.2: The run-liveness lock [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Protected.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Protected.hs`,
+`core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_invariant.md`
 
@@ -71,6 +73,8 @@ Make "the owner of this record is still alive" an observable fact.
 - `withRunLiveness` takes a project-wide lock and holds it for the caller's whole run, not just one
   transaction.
 - The lock is kernel-released, so a genuinely dead predecessor never blocks a successor.
+- Every protected-store and run-liveness lock handle is non-inheritable across an executed child. A provider
+  daemon may outlive its launcher, but cannot retain the launcher's project-liveness or store-entry lock.
 - This is the primitive that makes an abandoned-record sweep sound. Without it a live owner's record is
   indistinguishable from a dead one's, and a starting run can take a project another run still owns — see
   [rationale.md](rationale.md).
@@ -78,11 +82,15 @@ Make "the owner of this record is still alive" an observable fact.
 
 #### Validation
 
-`AuthoritySpec` covers the held/released branches and an out-of-process probe of the live refusal.
+`AuthoritySpec` covers the held/released branches, an out-of-process probe of the live refusal, and a real
+executed child that remains alive after its parent leaves the liveness extent while immediate reacquisition
+succeeds. The complete core host-static gate must pass.
 
 #### Remaining Work
 
-None.
+None. Completed 2026-08-26 on aarch64 macOS: the real executed-child regression passed in the 113-case
+`AuthoritySpec` group, and the complete core host-static gate passed 2,462/2,462 under `-Werror` in 433.14
+seconds. The child remained alive while the parent immediately reacquired the same liveness lock.
 
 ### Sprint 4.3: Store identity binding [Done]
 
@@ -107,6 +115,10 @@ Bind a store to the project that owns it.
 `AuthoritySpec` covers the binding, the cross-project refusal, and the cross-store refusal.
 
 #### Remaining Work
+
+None.
+
+## Remaining Work
 
 None.
 
