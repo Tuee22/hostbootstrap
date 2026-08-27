@@ -63,15 +63,19 @@ its row here.
 | 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
 | 24 | [The worked demo](phase-24-worked-demo.md) | Done | linux-cpu | — |
 | 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Done | **apple-silicon** | — |
-| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Active | **nvidia** | 26.3 acceptance re-run |
+| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Done | **nvidia** | — |
 | 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | 27.3 acceptance re-run |
 | 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Planned | — | 28.1–28.3 the Windows, macOS, and Linux gate-host runs |
 | 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Planned | — | all |
 
 ## The current frontier
 
-The lowest-numbered open phase is **26**, the NVIDIA GPU substrate. Phase 25's Apple Silicon acceptance is
-complete: the pristine Apple/Lima Harness matrix reported `10/10 passed` in about 79 minutes across four
+The lowest-numbered open phase is **27**, the Windows and WSL2 substrate. Phase 26's native Linux/NVIDIA
+acceptance is complete: the pristine Direct/nvkind Harness matrix reported `10/10 passed` in about 42 minutes
+across four fresh cluster generations, honoured an exact one-GPU request on an RTX 5090, proved same-run durable
+recreation through retained-record teardown, and left no managed runtime or active Harness ownership behind.
+Phase 25's Apple Silicon acceptance is also complete: its pristine Apple/Lima Harness matrix reported `10/10
+passed` in about 79 minutes across four
 fresh guest generations, root-signed post-handoff Metal activation, far-frame relay observation, same-run
 durable recreate, and terminal cleanup. Its focused native direct-Colima lane derived and cleaned one
 isolated exact-plan profile, refused an incompatible same-plan wall, left the shared `default` profile
@@ -81,7 +85,7 @@ a retained reverse failure without selecting it again. Far-frame exposure is re-
 provider frame.
 Phase 24's host-resident accelerator reopens the exact owned provider frame and re-observes the recorded relay
 there; no cluster live package is expected to survive child-frame closure. The warning-clean core graph passes
-2,475/2,475. Host publication is an owned runtime
+2,478/2,478. Host publication is an owned runtime
 relay, concrete clients consume only resolved exposures, the pristine guest consumes the closed bootstrap
 vocabulary, and its durable alias is a shipped ownership-row transaction with identity-conditional destroy.
 The service-runtime

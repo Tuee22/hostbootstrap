@@ -26,6 +26,8 @@ in @argv@, so a credential for a live control plane never appears in a process
 listing.
 -}
 module HostBootstrap.Cluster.Command (
+    ClusterDriver (..),
+
     -- * Asking the cluster driver
     listClustersCommand,
     readKubeconfigCommand,
@@ -48,7 +50,11 @@ module HostBootstrap.Cluster.Command (
 where
 
 import HostBootstrap.Effect.Vocabulary (HostCommand, hostCommand, withCommandStdin)
-import HostBootstrap.HostTool (HostTool (Docker, Kind, Kubectl))
+import HostBootstrap.HostTool (HostTool (Docker, Kind, Kubectl, Nvkind))
+
+-- | The closed cluster-creation driver selected by the finalized plan.
+data ClusterDriver = KindDriver | NvkindDriver
+    deriving (Eq, Show)
 
 -- ---------------------------------------------------------------------------
 -- What the cluster drives
@@ -67,7 +73,7 @@ named here that no command reaches would be an entry the enumeration carries for
 nobody.
 -}
 clusterCommandTools :: [HostTool]
-clusterCommandTools = [Kind, Docker, Kubectl]
+clusterCommandTools = [Kind, Nvkind, Docker, Kubectl]
 
 -- ---------------------------------------------------------------------------
 -- The cluster driver
@@ -101,6 +107,8 @@ from racing the separate fresh API and node-readiness observation that follows
 it.
 -}
 createClusterCommand ::
+    -- | the plan-selected creation driver
+    ClusterDriver ->
     -- | the cluster's own name
     String ->
     -- | the declared configuration snapshot, where the plan declares one
@@ -108,12 +116,21 @@ createClusterCommand ::
     -- | the private local staging file this run has opened for Kind
     FilePath ->
     HostCommand
-createClusterCommand clusterName config kubeconfig =
-    kindCommand
-        ( ["create", "cluster", "--name", clusterName]
-            <> maybe [] (\path -> ["--config", path]) config
-            <> ["--kubeconfig", kubeconfig, "--wait", "10m"]
-        )
+createClusterCommand driver clusterName config kubeconfig =
+    case driver of
+        KindDriver ->
+            kindCommand
+                ( ["create", "cluster", "--name", clusterName]
+                    <> maybe [] (\path -> ["--config", path]) config
+                    <> ["--kubeconfig", kubeconfig, "--wait", "10m"]
+                )
+        NvkindDriver ->
+            hostCommand
+                Nvkind
+                ( ["cluster", "create", "--name", clusterName]
+                    <> maybe [] (\path -> ["--config-template", path]) config
+                    <> ["--kubeconfig", kubeconfig, "--wait", "10m"]
+                )
 
 {- | Remove the cluster the driver names.
 

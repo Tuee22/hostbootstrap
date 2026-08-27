@@ -212,7 +212,14 @@ declared cluster envelope is divided across both node containers. Bring-up then 
 NVIDIA device-plugin chart only after an initial allocatable probe finds no positive GPU. A cluster with
 positive allocation returns before any Helm or `kubectl` mutation; otherwise bring-up waits for the
 plugin pods and refuses to proceed until a node advertises positive allocatable `nvidia.com/gpu`. The CUDA
-daemon Deployment requests `nvidia.com/gpu: 1`.
+daemon Deployment requests `nvidia.com/gpu: 1`. The nvkind creator installs the NVIDIA containerd handler and
+its exact `nvidia` `RuntimeClass`; both plugin and workload select it with `runtimeClassName: nvidia`.
+
+Direct teardown does not issue an unrecorded raw delete. The current child recovers the unique metal-side
+source of its exact profile data bind and mounts it into a short-lived sibling project image. A fixed internal
+entry then runs the core retained-cluster release, so deletion is conditional on the recorded node identities
+and those records are erased only after absence is proved. This is what permits the same Harness run to rotate
+its protected generation and recreate nvkind for durable-readback.
 
 The current context primitive `deriveLinuxGpuContainerContext` represents the host-backed project
 container while the normal VM-backed container context still requires a VM ancestor. Direct-chain

@@ -7,10 +7,11 @@ module CommandsSpec (hostCfg, tests) where
 import Control.Exception (SomeException, bracket, try)
 import Data.Either (isLeft)
 import Data.Function ((&))
-import Data.List (findIndex, isInfixOf, isSuffixOf, tails)
+import Data.List (findIndex, isInfixOf, isPrefixOf, isSuffixOf, tails)
 import qualified Data.Text as T
 import qualified Dhall
 import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon), AcceleratorIngressPlan (ingressKindListenAddress), ClusterDriver (..), ClusterPlan (clusterConfigFile, clusterDriver, clusterName, dataPath), ClusterProfile (Production, TestCase), acceleratorIngressPlan, profileDataPath, profileDataSegments)
+import HostBootstrap.Cluster.Reconcile (ClusterReadinessResultView (..))
 import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec), projectCodecSpecDigest)
 import HostBootstrap.Config.Fields (
     ScopeKind (ProductionScope),
@@ -36,6 +37,8 @@ import HostBootstrap.Dhall.Gen (artifactName)
 import HostBootstrap.HostTool (absExePath)
 import HostBootstrap.Lift (ContainerLift (clExtraArgs, clMounts), LiftContext (..), LiftLayer (ViaContainer), localContext)
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot, withCanonicalProjectRoot)
+import HostBootstrap.Readiness (ProbeConflict (ProbeConflict), ProbeResult (..))
+import HostBootstrap.Reconcile (ConflictDetail (ConflictDetail), FailureDetail (FailureDetail), ReconcileError (Conflict, Failure), RecoveryDisposition (ReprobeBeforeRetry))
 import HostBootstrap.RoleLifecycle (RoleEffect (DurableStore, NetworkListen, ProcessSpawn), declaredEffectList)
 import HostBootstrap.Service (
     serviceIdText,
@@ -50,6 +53,7 @@ import HostBootstrapDemo.Commands (
     absoluteHostAcceleratorDaemonExePath,
     acceleratorDaemonManifest,
     acceleratorHelmValuesForContext,
+    clusterReadinessProbeResult,
     containerPlan,
     demoArtifacts,
     demoBaseImageFor,
@@ -60,7 +64,10 @@ import HostBootstrapDemo.Commands (
     demoServices,
     demoTestFrameContext,
     directClusterPresence,
-    directClusterTeardownArgs,
+    directClusterReleaseArgs,
+    directContainerCandidates,
+    directDurableMountSource,
+    directHarnessDataRootPermissionArgs,
     dockerBuildArgsWithVerificationKey,
     foldDemoOperationRole,
     hostAcceleratorDaemonArgs,
@@ -70,6 +77,7 @@ import HostBootstrapDemo.Commands (
     hostDaemonIdentityMatches,
     hostDaemonLifecycleStateConsistent,
     minioClusterEndpoint,
+    nvidiaAllocatableProbeResult,
     readHostAcceleratorDaemonPid,
     renderActivationConfig,
     renderRetainedDaemonOutput,
@@ -153,7 +161,9 @@ tests =
                     , "frame == T.pack directContainerRuntimeFrameId"
                     , "NvkindDriver"
                     , "KindDriver"
-                    , "renderExactClusterConfig driver digest cfg clusterSlice"
+                    , "dockerHostDataPath = case driver of"
+                    , "NvkindDriver -> durableRoot"
+                    , "renderExactClusterConfig driver dockerHostDataPath digest cfg clusterSlice"
                     ]
                 positions = traverse (`substringOffset` rendererSource) exactDerivation
             case positions of
@@ -181,7 +191,8 @@ tests =
                     , "runClusterReconcileCall"
                     , "carryClusterReconcileSettlement"
                     , "runClusterCordonCall"
-                    , "runClusterReadinessCall"
+                    , "pollUntilReady"
+                    , "ensureDirectNvidiaClusterRuntime"
                     , "withPreparedClusterExposure"
                     , "registerClusterRuntimeDependencyPackage"
                     ]
@@ -258,7 +269,7 @@ tests =
             offsets <- maybe (assertFailure "the reverse chart adopter lost an authenticated stage") pure (traverse (`substringOffset` production) stages)
             assertBool "reverse chart stages are out of order" (and (zipWith (<) offsets (drop 1 offsets)))
             assertBool "reverse adoption reconstructs a forward execution package" (not ("PlanExecutionPackage" `isInfixOf` production))
-        , testCase "reverse releases the recorded relay before cluster deletion in both routes" $ do
+        , testCase "reverse releases the recorded relay before retained cluster ownership in both routes" $ do
             coreSource <- readFile "../core/hostbootstrap-core/src/HostBootstrap/Command.hs"
             demoSource <- readFile "src/HostBootstrapDemo/Commands.hs"
             let coreReverse = maybe "" (`drop` coreSource) (substringOffset "coreManaged _key reverseAction" coreSource)
@@ -269,7 +280,11 @@ tests =
                     _ -> False
             assertBool "core reverse does not enter retained ownership release" ("releaseRetainedClusterLifecycle cfg clusterPlan" `isInfixOf` coreReverse)
             assertBool "core reverse does not release exposure before retained cluster ownership" (ordered coreRelease "releaseRecordedClusterExposure cfg plan" "releaseRetainedCluster cfg plan")
-            assertBool "direct reverse does not release exposure before probing/deleting nvkind" (ordered directReverse "releaseRecordedClusterExposure cfg directPlan" "directClusterExists cfg directPlan")
+            assertBool "direct reverse does not release exposure before retained nvkind ownership" (ordered directReverse "releaseRecordedClusterExposure cfg directPlan" "directClusterReleaseArgs dockerHostDataPath (dataPath directPlan) profile")
+            assertBool "direct reverse no longer bypasses retained ownership with raw kind" (not ("directClusterTeardownArgs" `isInfixOf` directReverse))
+            let childRelease = maybe "" (`drop` demoSource) (substringOffset "runDirectClusterReleaseChild rawProfile = do" demoSource)
+            assertBool "direct child does not use the closed lifecycle profile parser" ("profileFromPlanName (T.pack rawProfile)" `isInfixOf` childRelease)
+            assertBool "direct child does not release the fixed project plan through retained ownership" ("releaseRetainedCluster cfg directPlan" `isInfixOf` childRelease)
         , testCase "pristine guest setup uses the closed probe-first bootstrap before post-bootstrap delivery" $ do
             commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
             let bootstrapTail = maybe "" (`drop` commandsSource) (substringOffset "runVmBootstrap stepCfg _execution" commandsSource)
@@ -895,11 +910,87 @@ tests =
                 case directClusterPresence nodes (Right (ExitFailure 1, "", "daemon unavailable")) of
                     Left _ -> True
                     Right _ -> False
-        , testCase "direct teardown uses the project image's pinned kind against the host socket" $ do
-            assertBool "teardown mounts the Docker socket" ("/var/run/docker.sock:/var/run/docker.sock" `elem` directClusterTeardownArgs)
-            assertBool "teardown bypasses the demo entrypoint" ("/usr/local/bin/kind" `elem` directClusterTeardownArgs)
-            assertBool "teardown deletes the managed name" $
-                ["delete", "cluster", "--name", "hostbootstrap-demo"] `isSuffixOf` directClusterTeardownArgs
+        , testCase "Direct cluster readiness retries only same-identity startup latency" $ do
+            clusterReadinessProbeResult
+                (ClusterReadinessResultReady 1 "managed-id")
+                (Right ())
+                @?= ProbeReady ()
+            clusterReadinessProbeResult
+                (ClusterReadinessResultNotReady "managed-id")
+                (Left (Failure (FailureDetail "settle" "not ready" ReprobeBeforeRetry)) :: Either ReconcileError ())
+                @?= NotReady "managed cluster identity is not ready: managed-id"
+            clusterReadinessProbeResult
+                (ClusterReadinessResultNotReady "replacement-id")
+                (Left (Conflict (ConflictDetail "cluster" "managed-id" "replacement-id" "remove the replacement")) :: Either ReconcileError ())
+                @?= ProbeConflicted (ProbeConflict "managed-id" "replacement-id" "remove the replacement")
+            clusterReadinessProbeResult
+                (ClusterReadinessResultProbeFailed "kubectl did not answer")
+                (Left (Failure (FailureDetail "probe" "kubectl did not answer" ReprobeBeforeRetry)) :: Either ReconcileError ())
+                @?= Unavailable "kubectl did not answer"
+        , testCase "Direct NVIDIA allocation retries only a successful zero-capacity observation" $ do
+            nvidiaAllocatableProbeResult (Right (ExitSuccess, "1\n", "")) @?= ProbeReady ()
+            nvidiaAllocatableProbeResult (Right (ExitSuccess, "0\n", ""))
+                @?= NotReady "nvidia.com/gpu is not yet allocatable"
+            nvidiaAllocatableProbeResult (Right (ExitFailure 1, "", "API unavailable"))
+                @?= Unavailable "kubectl exited 1: API unavailable"
+            nvidiaAllocatableProbeResult (Left "kubectl missing") @?= Unavailable "kubectl missing"
+        , testCase "Direct durable bind selects one exact Docker-visible source for the run profile" $ do
+            directContainerCandidates
+                (Right (ExitSuccess, "0123456789ab\nabcdef012345\n", ""))
+                @?= Right ["0123456789ab", "abcdef012345"]
+            assertBool "a malformed Docker-owned candidate identity was accepted" $
+                isLeft (directContainerCandidates (Right (ExitSuccess, "metal-hostname\n", "")))
+            assertBool "an empty current-container listing was accepted" $
+                isLeft (directContainerCandidates (Right (ExitSuccess, "", "")))
+            directDurableMountSource
+                (TestCase "run-123")
+                "/workspace/demo/.test_data/run-123"
+                (Right (ExitSuccess, "/srv/demo/.test_data/run-123\n", ""))
+                @?= Right "/srv/demo/.test_data/run-123"
+            assertBool "an absent exact destination was accepted" $
+                isLeft
+                    ( directDurableMountSource
+                        (TestCase "run-123")
+                        "/workspace/demo/.test_data/run-123"
+                        (Right (ExitSuccess, "", ""))
+                    )
+            assertBool "a duplicate exact destination was accepted" $
+                isLeft
+                    ( directDurableMountSource
+                        (TestCase "run-123")
+                        "/workspace/demo/.test_data/run-123"
+                        (Right (ExitSuccess, "/srv/one/.test_data/run-123\n/srv/two/.test_data/run-123\n", ""))
+                    )
+            assertBool "a cross-profile source was accepted" $
+                isLeft
+                    ( directDurableMountSource
+                        (TestCase "run-123")
+                        "/workspace/demo/.test_data/run-123"
+                        (Right (ExitSuccess, "/srv/demo/.test_data/run-456\n", ""))
+                    )
+            assertBool "a failed Docker inspection was accepted" $
+                isLeft
+                    ( directDurableMountSource
+                        Production
+                        "/workspace/demo/.data"
+                        (Right (ExitFailure 1, "", "daemon unavailable"))
+                    )
+        , testCase "direct teardown re-enters retained ownership through the exact durable bind" $ do
+            let productionArgs = directClusterReleaseArgs "/srv/demo/.data" "/workspace/demo/.data" Production
+                harnessArgs = directClusterReleaseArgs "/srv/demo/.test_data/run-123" "/workspace/demo/.test_data/run-123" (TestCase "run-123")
+            assertBool "teardown mounts the Docker socket" ("/var/run/docker.sock:/var/run/docker.sock" `elem` productionArgs)
+            assertBool "production teardown mounts only its exact durable profile" ("/srv/demo/.data:/workspace/demo/.data" `elem` productionArgs)
+            assertBool "Harness teardown mounts only its exact durable profile" ("/srv/demo/.test_data/run-123:/workspace/demo/.test_data/run-123" `elem` harnessArgs)
+            assertBool "production teardown enters the closed retained-release route" $
+                ["--hostbootstrap-direct-cluster-release-v1", "production"] `isSuffixOf` productionArgs
+            assertBool "Harness teardown enters the exact run-scoped retained-release route" $
+                ["--hostbootstrap-direct-cluster-release-v1", "harness:run-123"] `isSuffixOf` harnessArgs
+            assertBool "teardown does not bypass retained ownership with raw kind" ("/usr/local/bin/kind" `notElem` harnessArgs)
+        , testCase "direct Harness cleanup restores only non-symlink descendants through an argument vector" $ do
+            let args = directHarnessDataRootPermissionArgs "/tmp/exact-run-root"
+            assertBool "permission restoration starts at only the exact child-visible run root" (["/tmp/exact-run-root", "-mindepth", "1"] `isPrefixOf` args)
+            assertBool "permission restoration does not ask Docker to reinterpret the child path" ("hostbootstrap-demo:local" `notElem` args)
+            assertBool "permission restoration skips symlinks" (["-mindepth", "1", "!", "-type", "l", "-exec", "chmod", "a+rwX", "--", "{}", "+"] `isSuffixOf` args)
         , testCase "the direct Docker build context is the repository root" $
             -- Build the expectation with the same separator the input uses:
             -- 'repoRootOfProjectRoot' is 'takeDirectory', so on Windows both
@@ -913,8 +1004,8 @@ tests =
                 customPortManifest = acceleratorDaemonManifest False "daemon-3" "activation-7" "config" 9091
             assertBool "CPU pod has no GPU request" (not ("nvidia.com/gpu" `isInfixOf` cpuManifest))
             assertBool "GPU pod requests one GPU" ("nvidia.com/gpu: 1" `isInfixOf` gpuManifest)
-            assertBool "GPU pod selects the nvkind NVIDIA runtime" ("runtimeClassName: nvidia" `isInfixOf` gpuManifest)
-            assertBool "CPU pod stays on the default runtime" (not ("runtimeClassName: nvidia" `isInfixOf` cpuManifest))
+            assertBool "GPU pod selects nvkind's NVIDIA runtime" ("runtimeClassName: nvidia" `isInfixOf` gpuManifest)
+            assertBool "CPU pod stays on the default runtime" (not ("runtimeClassName:" `isInfixOf` cpuManifest))
             assertBool "daemon dials the stable Helm ClusterIP service" ("hostbootstrap-demo-accelerator:8081" `isInfixOf` gpuManifest)
             assertBool "daemon dials a configured accelerator port" ("hostbootstrap-demo-accelerator:9091" `isInfixOf` customPortManifest)
             assertBool "daemon config changes roll its subPath-mounted pod" ("hostbootstrap.io/config-hash" `isInfixOf` gpuManifest)

@@ -66,6 +66,8 @@ module HostBootstrap.Cluster.Lifecycle (
     acceleratorIngressPlan,
     nvidiaRuntimeProbeArgs,
     nvidiaRuntimeProbeReady,
+    nvidiaRuntimeClassProbeArgs,
+    nvidiaRuntimeClassObserved,
     nvidiaDevicePluginHelmArgs,
     nvidiaDevicePluginReadyArgs,
     nvidiaAllocatableProbeArgs,
@@ -102,6 +104,7 @@ import HostBootstrap.Cluster.Budget (
     resourceSliceFrame,
     resourceSliceName,
  )
+import HostBootstrap.Cluster.Command (ClusterDriver (..))
 import HostBootstrap.Cluster.Cordon (
     budgetCpu,
     budgetFromResources,
@@ -168,8 +171,6 @@ cluster. The Linux GPU accelerator path creates the cluster through @nvkind@ so
 worker nodes are GPU-enabled, while the rest of the lifecycle still talks to
 the resulting kind cluster through @kind@/@kubectl@.
 -}
-data ClusterDriver = KindDriver | NvkindDriver
-    deriving (Eq, Show)
 
 {- | A resolved cluster plan: the kind cluster name, the durable state path
 teardown never enumerates for removal (@.data@ under 'Production',
@@ -792,6 +793,7 @@ clusterCreate cfg plan resources = do
     -- first @kubectl apply@ / @helm install@ could otherwise hit an API server or CNI
     -- that is not yet up on a busy host. Block here until the nodes are Ready.
     waitNodesReady cfg plan
+    ensureNvidiaRuntimeClass cfg plan
     ensureNvidiaDevicePlugin cfg plan
 
 {- | Ensure a live kind cluster named by the plan exists, creating it if absent and
@@ -928,6 +930,37 @@ probeNvidiaRuntime cfg plan =
         result <- runTool cfg Docker nvidiaRuntimeProbeArgs
         unless (nvidiaRuntimeProbeReady result) $
             die ("linux-gpu cluster up: Docker NVIDIA runtime probe failed; expected `docker " ++ unwords nvidiaRuntimeProbeArgs ++ "` to report a GPU")
+
+-- | Read the exact RuntimeClass created by nvkind without making absence an API error.
+nvidiaRuntimeClassProbeArgs :: [String]
+nvidiaRuntimeClassProbeArgs =
+    [ "get"
+    , "runtimeclass"
+    , "nvidia"
+    , "--ignore-not-found"
+    , "-o"
+    , "jsonpath={.handler}"
+    ]
+
+{- | Classify nvkind's RuntimeClass observation. Absence is distinct from a
+tool/API fault, while an unexpected handler is a foreign-object conflict.
+-}
+nvidiaRuntimeClassObserved :: Either String (ExitCode, String, String) -> Either String Bool
+nvidiaRuntimeClassObserved (Left err) = Left ("NVIDIA RuntimeClass probe failed: " ++ err)
+nvidiaRuntimeClassObserved (Right (ExitFailure code, _, err)) =
+    Left ("NVIDIA RuntimeClass probe exited " ++ show code ++ ": " ++ err)
+nvidiaRuntimeClassObserved (Right (ExitSuccess, out, _)) =
+    case T.strip (T.pack out) of
+        "" -> Right False
+        "nvidia" -> Right True
+        handler -> Left ("NVIDIA RuntimeClass conflict: expected handler nvidia, observed " ++ T.unpack handler)
+
+ensureNvidiaRuntimeClass :: HostConfig -> ClusterPlan -> IO ()
+ensureNvidiaRuntimeClass cfg plan =
+    when (clusterDriver plan == NvkindDriver) $ do
+        observed <- runTool cfg Kubectl nvidiaRuntimeClassProbeArgs >>= either die pure . nvidiaRuntimeClassObserved
+        unless observed $
+            die "linux-gpu cluster up: nvkind returned without its exact nvidia RuntimeClass"
 
 {- | Pinned NVIDIA device-plugin install for an @nvkind@ cluster. The plugin is
 what publishes @nvidia.com/gpu@ into node allocatable resources; creating the

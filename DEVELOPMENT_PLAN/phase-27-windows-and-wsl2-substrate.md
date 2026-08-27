@@ -132,12 +132,17 @@ Confirm the current build on this substrate.
 The `10/10` report plus the audited end state, recorded together with the current matrix size and live applied
 wall observation on the WSL distro.
 
+On 2026-08-27, the current execution workspace identified itself as native Linux and exposed none of
+`powershell.exe`, `wsl.exe`, or `cmd.exe`. It therefore cannot launch the Windows durable-run mechanism,
+exercise the Win32 ownership row, observe the WSL utility-VM wall, or prove restore-before-shutdown. No Linux
+result is substituted for this native Windows acceptance requirement.
+
 #### Remaining Work
 
-Run the complete acceptance gate after the recursive-lifecycle-command, prepared-operations, step-algebra,
-authenticated-handoff, recovery, and worked-demo dependencies are closed. The run must exercise typed
-frame-indexed teardown descent across the real WSL boundary, the complete current test matrix, and a current
-provider-lifecycle observation including wall restoration before shutdown.
+Run the complete acceptance gate from a native Windows host through the documented durable-run launcher. The
+run must exercise typed frame-indexed teardown descent across the real WSL boundary, the complete current test
+matrix, and a current provider-lifecycle observation including wall restoration before shutdown. The present
+Linux workspace cannot discharge this hardware/host boundary.
 
 ## Remaining Work
 

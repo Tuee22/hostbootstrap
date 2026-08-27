@@ -67,8 +67,14 @@ module HostBootstrapDemo.Commands (
     demoBaseImageFor,
     demoImageBuildSpecDigest,
     dockerBuildArgsWithVerificationKey,
+    clusterReadinessProbeResult,
+    nvidiaAllocatableProbeResult,
     directClusterPresence,
-    directClusterTeardownArgs,
+    directContainerCandidates,
+    directDurableMountSource,
+    directHarnessDataRootPermissionArgs,
+    directClusterReleaseArgs,
+    runDirectClusterReleaseChild,
     repoRootOfProjectRoot,
     demoServices,
     demoTestSuite,
@@ -100,7 +106,7 @@ import Crypto.Random (getRandomBytes)
 import Data.Bifunctor (first)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
-import Data.Char (isDigit, isSpace, toLower)
+import Data.Char (isDigit, isHexDigit, isSpace, toLower)
 import Data.List (dropWhileEnd, find, intercalate, isInfixOf, isPrefixOf, isSuffixOf)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Maybe (fromMaybe, listToMaybe)
@@ -139,6 +145,7 @@ import HostBootstrap.Cluster.Backend (
     discoverStrongClusterBackend,
     registerClusterRuntimeDependencyPackage,
     releaseRecordedClusterExposure,
+    releaseRetainedCluster,
     runChartWorkloadCall,
     runClusterCordonCall,
     runClusterReadinessCall,
@@ -164,21 +171,34 @@ import HostBootstrap.Cluster.Lifecycle (
     ClusterDriver (KindDriver, NvkindDriver),
     ClusterPlan (..),
     ClusterProfile (Production, TestCase),
+    NvidiaDevicePluginOps (..),
     acceleratorIngressPlan,
     clusterKubeconfigPath,
     clusterNodeNames,
+    ensureNvidiaDevicePluginWith,
     ensureProfileDataPath,
+    nvidiaAllocatableProbeArgs,
+    nvidiaAllocatableReady,
+    nvidiaDevicePluginHelmArgs,
+    nvidiaDevicePluginReadyArgs,
+    nvidiaRuntimeClassObserved,
+    nvidiaRuntimeClassProbeArgs,
+    nvidiaRuntimeProbeArgs,
+    nvidiaRuntimeProbeReady,
     planOwnedClusterConfigBytes,
     planOwnedClusterConfigExposureIntents,
     planOwnedRenderedConfigPath,
     profileDataPath,
     profileDataSegments,
+    profileFromPlanName,
     resolvePlan,
     resolvePlanWithDriver,
     withExecutionOwnedCluster,
  )
 import HostBootstrap.Cluster.Reconcile (
+    ClusterReadinessResultView (..),
     carryClusterReconcileSettlement,
+    clusterReadinessResultView,
     settleClusterCordon,
     settleClusterReadiness,
     settleClusterReconcile,
@@ -246,7 +266,7 @@ import HostBootstrap.Harness (
     variantIdText,
  )
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
-import HostBootstrap.HostTool (HostTool (Docker, Kill, Kind, Kubectl, Mc, PowerShell, Ps, Tar), mkAbsExe, toolCommandName)
+import HostBootstrap.HostTool (HostTool (Docker, Helm, Kill, Kind, Kubectl, Mc, PowerShell, Ps, Tar), mkAbsExe, toolCommandName)
 import HostBootstrap.Incus (IncusVM (..))
 import HostBootstrap.Lifecycle.Execution (
     StepExecution,
@@ -306,12 +326,14 @@ import HostBootstrap.ProjectRoot (
 import HostBootstrap.Readiness (
     ObservedReady,
     PollPolicy,
+    ProbeConflict (ProbeConflict),
     ProbeFailure (..),
     ProbeResult (..),
     awaitObservedReady,
     awaitObservedReadyWith,
     dockerPoll,
     networkPoll,
+    nodePoll,
     pollUntilReady,
     pollUntilReadyWith,
     pushPoll,
@@ -322,6 +344,8 @@ import HostBootstrap.Readiness (
     withAttempts,
  )
 import HostBootstrap.Reconcile (
+    ConflictDetail (conflictExpected, conflictObserved, conflictRemedy),
+    ReconcileError (Conflict),
     dependencyProbe,
     withNodeChartWorkloadResource,
     withNodeObservedResource,
@@ -528,7 +552,7 @@ import Numeric.Natural (Natural)
 import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, getHomeDirectory, getPermissions, getTemporaryDirectory, listDirectory, makeAbsolute, removeDirectory, removeFile, setPermissions, withCurrentDirectory)
 import System.Environment (getEnvironment, getExecutablePath, setEnv)
 import System.Exit (ExitCode (..), die)
-import System.FilePath (normalise, takeDirectory, takeFileName, (</>))
+import System.FilePath (isAbsolute, normalise, splitDirectories, takeDirectory, takeFileName, (</>))
 import System.IO (hFlush, hPutStr, stderr, stdout)
 import System.IO.Error (tryIOError)
 import System.IO.Temp (withSystemTempDirectory)
@@ -838,12 +862,15 @@ demoExactRenderedClusterConfig ::
     ProjectPlan scope specDigest planId configId ProjectConfig ->
     Either String (BS.ByteString, T.Text, FilePath, FilePath, [ExposureIntent])
 demoExactRenderedClusterConfig cfg plan = do
-    ((digest, _, _, _, _, _, _), (_, clusters, _, _, _)) <- demoExactPlanSlices cfg plan
+    ((digest, _, _, _, _, _, durableRoot), (_, clusters, _, _, _)) <- demoExactPlanSlices cfg plan
     let clusterSlice = [(sliceDigest, plannedStepFrameId planned) | (sliceDigest, planned) <- clusters]
         driver = case clusterSlice of
             [(_, frame)] | frame == T.pack directContainerRuntimeFrameId -> NvkindDriver
             _ -> KindDriver
-    renderExactClusterConfig driver digest cfg clusterSlice
+        dockerHostDataPath = case driver of
+            KindDriver -> durableDockerHostPath
+            NvkindDriver -> durableRoot
+    renderExactClusterConfig driver dockerHostDataPath digest cfg clusterSlice
 
 {- | The VM-backed persistent stack shared by the Apple/Windows host-daemon chain
 ('demoChain') and the Linux CPU in-cluster-daemon chain ('demoLinuxCpuChain') — a
@@ -1357,6 +1384,10 @@ deployKindAction stepCfg execution = demoConfigContext stepCfg Context.ClusterLi
         die "cluster reconcile: the exact provider is absent from the cluster node's admitted prefix"
     unless (direct || shareKey `elem` stepExecutionDependencyKeys execution) $
         die "cluster reconcile: the exact provider share is absent from the cluster node's admitted prefix"
+    dockerHostDataPath <-
+        if direct
+            then discoverDirectDockerHostDataPath cfg projectCfg
+            else pure durableDockerHostPath
     opened <-
         withFreshCarriedRunningProviderDependency execution scopeCommitment providerKey providerRoute now nonce $ \plannedProvider runningProvider ->
             let reconcileCluster :: forall shareId. Maybe (ProviderShareDependency scope planId shareId) -> IO ()
@@ -1366,7 +1397,7 @@ deployKindAction stepCfg execution = demoConfigContext stepCfg Context.ClusterLi
                             case withExecutionOwnedCluster execution plannedCluster plannedProvider resourceSlice of
                                 Left refusal -> die (show refusal)
                                 Right base ->
-                                    case withExactPlanOwnedClusterConfig base driver (stepExecutionConfigDigest execution) projectCfg clusterSlice workload $ \configured -> do
+                                    case withExactPlanOwnedClusterConfig base driver dockerHostDataPath (stepExecutionConfigDigest execution) projectCfg clusterSlice workload $ \configured -> do
                                         createDirectoryIfMissing True (takeDirectory (planOwnedRenderedConfigPath configured))
                                         BS.writeFile (planOwnedRenderedConfigPath configured) (planOwnedClusterConfigBytes configured)
                                         discovered <- discoverStrongClusterBackend cfg configured
@@ -1389,10 +1420,23 @@ deployKindAction stepCfg execution = demoConfigContext stepCfg Context.ClusterLi
                                                                         case settleClusterCordon cordon cordoned of
                                                                             Left failure -> pure (Left failure)
                                                                             Right applied -> do
-                                                                                readyCall <- runClusterReadinessCall backend applied
-                                                                                case settleClusterReadiness applied readyCall of
-                                                                                    Left failure -> pure (Left failure)
+                                                                                readyOutcome <-
+                                                                                    pollUntilReady
+                                                                                        nodePoll
+                                                                                        "cluster reconcile: exact managed cluster readiness"
+                                                                                        ( \_ -> do
+                                                                                            readyCall <- runClusterReadinessCall backend applied
+                                                                                            pure
+                                                                                                ( clusterReadinessProbeResult
+                                                                                                    (clusterReadinessResultView readyCall)
+                                                                                                    (settleClusterReadiness applied readyCall)
+                                                                                                )
+                                                                                        )
+                                                                                        cfg
+                                                                                case readyOutcome of
+                                                                                    Left failure -> die (renderPollError failure)
                                                                                     Right ready -> do
+                                                                                        when direct (ensureDirectNvidiaClusterRuntime cfg (demoClusterKubeconfigPath projectCfg ctx))
                                                                                         imageIdentity <- exactProjectImageIdentity cfg
                                                                                         case withPreparedClusterExposure applied imageIdentity (planOwnedClusterConfigExposureIntents configured) id of
                                                                                             Left failure -> pure (Left failure)
@@ -1416,6 +1460,89 @@ deployKindAction stepCfg execution = demoConfigContext stepCfg Context.ClusterLi
                             Left failure -> die (show failure)
                             Right action -> action
     either (die . show) id opened
+
+{- | Complete the nvkind platform contract before publishing cluster
+readiness to downstream workloads. The metal Docker runtime, device-plugin
+DaemonSet, and positive allocatable capacity are all prerequisites; cluster
+startup alone is not accelerator readiness.
+-}
+ensureDirectNvidiaClusterRuntime :: HostConfig -> FilePath -> IO ()
+ensureDirectNvidiaClusterRuntime cfg kubeconfig = do
+    runtime <- runTool cfg Docker nvidiaRuntimeProbeArgs
+    unless (nvidiaRuntimeProbeReady runtime) $
+        die "cluster reconcile: Docker NVIDIA runtime probe did not report a GPU"
+    runtimeClass <-
+        runTool cfg Kubectl (kubectlWith kubeconfig nvidiaRuntimeClassProbeArgs)
+            >>= either die pure . nvidiaRuntimeClassObserved
+    unless runtimeClass $
+        die "cluster reconcile: nvkind returned without its exact nvidia RuntimeClass"
+    ensureNvidiaDevicePluginWith
+        NvidiaDevicePluginOps
+            { ndpProbeAllocatable = probeExistingAllocatable
+            , ndpReconcilePlugin = do
+                runOrDie cfg Helm ["repo", "add", "nvdp", "https://nvidia.github.io/k8s-device-plugin", "--force-update"]
+                runOrDie cfg Helm (["--kubeconfig", kubeconfig] <> nvidiaDevicePluginHelmArgs)
+            , ndpWaitPluginReady =
+                runOrDie cfg Kubectl (kubectlWith kubeconfig nvidiaDevicePluginReadyArgs)
+            , ndpRequireAllocatable = do
+                outcome <-
+                    pollUntilReady
+                        nodePoll
+                        "cluster reconcile: NVIDIA GPU allocatable"
+                        (\c -> nvidiaAllocatableProbeResult <$> runTool c Kubectl (kubectlWith kubeconfig nvidiaAllocatableProbeArgs))
+                        cfg
+                case outcome of
+                    Left failure -> die (renderPollError failure)
+                    Right () -> putStrLn "cluster reconcile: NVIDIA device plugin and allocatable GPU are ready"
+            }
+  where
+    probeExistingAllocatable = do
+        result <- runTool cfg Kubectl (kubectlWith kubeconfig nvidiaAllocatableProbeArgs)
+        case nvidiaAllocatableProbeResult result of
+            ProbeReady () -> do
+                putStrLn "cluster reconcile: nvidia.com/gpu is already allocatable; NVIDIA device plugin is unchanged"
+                pure True
+            NotReady _ -> pure False
+            Unavailable reason -> die ("cluster reconcile: NVIDIA allocatable probe failed: " ++ reason)
+            Failed failure -> die ("cluster reconcile: NVIDIA allocatable probe failed: " ++ show failure)
+            ProbeConflicted conflict -> die ("cluster reconcile: NVIDIA allocatable probe conflicted: " ++ show conflict)
+
+{- | Only a successful Kubernetes read with zero advertised devices is
+retryable. Tool/API failures are unavailable and therefore fail the bounded
+poll immediately rather than masquerading as device-plugin startup latency.
+-}
+nvidiaAllocatableProbeResult :: Either String (ExitCode, String, String) -> ProbeResult ()
+nvidiaAllocatableProbeResult result
+    | nvidiaAllocatableReady result = ProbeReady ()
+nvidiaAllocatableProbeResult (Left err) = Unavailable err
+nvidiaAllocatableProbeResult (Right (ExitFailure code, _, err)) =
+    Unavailable ("kubectl exited " ++ show code ++ ": " ++ err)
+nvidiaAllocatableProbeResult (Right (ExitSuccess, _, _)) =
+    NotReady "nvidia.com/gpu is not yet allocatable"
+
+{- | Interpret one strong-backend readiness observation for the shared bounded
+poller. Startup latency is retryable only while the same managed identity is
+reported not-ready. A replacement is a conflict and a probe fault is
+unavailable, so neither can be mistaken for ordinary cluster startup.
+-}
+clusterReadinessProbeResult ::
+    ClusterReadinessResultView ->
+    Either ReconcileError readiness ->
+    ProbeResult readiness
+clusterReadinessProbeResult view settled = case (view, settled) of
+    (ClusterReadinessResultReady _ _, Right readiness) -> ProbeReady readiness
+    (ClusterReadinessResultReady _ _, Left failure) ->
+        Failed (ProbeFailure "settle exact cluster readiness" (show failure))
+    (ClusterReadinessResultNotReady _, Left (Conflict detail)) ->
+        ProbeConflicted
+            ( ProbeConflict
+                (T.unpack (conflictExpected detail))
+                (T.unpack (conflictObserved detail))
+                (T.unpack (conflictRemedy detail))
+            )
+    (ClusterReadinessResultNotReady identity, _) ->
+        NotReady ("managed cluster identity is not ready: " ++ T.unpack identity)
+    (ClusterReadinessResultProbeFailed reason, _) -> Unavailable (T.unpack reason)
 
 {- | The in-cluster OCI registry image: the single-binary, natively multi-arch
 CNCF @distribution@ registry. Because it ships one multi-arch manifest, it runs on
@@ -2565,11 +2692,8 @@ acceleratorDaemonManifest gpuDaemon frame activationRevision daemonConfig accele
             , "            initialDelaySeconds: 1"
             , "            periodSeconds: 2"
             ]
-            -- Order matters: the container-level @resources@ (indent 10) must be
-            -- emitted while still inside the container, BEFORE the pod-spec-level
-            -- @runtimeClassName@ (indent 6). Reversing them dedents to the pod
-            -- spec first, so the container @resources:@ then parses as a nested
-            -- mapping under @runtimeClassName@'s scalar and YAML rejects it.
+            -- Order matters: container resources precede the pod-level
+            -- RuntimeClass dedent.
             ++ gpuResources
             ++ gpuRuntimeClass
     gpuRuntimeClass
@@ -3335,6 +3459,82 @@ directClusterPresence expected result = case result of
     Right (ExitSuccess, out, _) -> Right (any (`elem` lines out) expected)
     Right (ExitFailure n, _, err) -> Left ("test safety: Docker cluster probe failed (exit " ++ show n ++ "): " ++ err)
     Left err -> Left ("test safety: Docker cluster probe failed: " ++ err)
+
+{- | Observe the metal-host source of the Direct child's exact durable bind.
+
+The child-visible path is a destination inside the project container and is not
+meaningful to the sibling Docker daemon that creates nvkind nodes. The current
+container is itself the admitted handoff effect, so inspecting its exact mount
+destination recovers the Docker-visible source without inventing a second path
+contract or falling back to the provider-guest alias.
+-}
+discoverDirectDockerHostDataPath :: HostConfig -> ProjectConfig scope -> IO FilePath
+discoverDirectDockerHostDataPath cfg projectCfg =
+    discoverDirectDockerHostDataPathAt
+        cfg
+        (clusterProfileOf projectCfg)
+        (T.unpack (Context.sourceRoot (context projectCfg)))
+
+discoverDirectDockerHostDataPathAt :: HostConfig -> ClusterProfile -> FilePath -> IO FilePath
+discoverDirectDockerHostDataPathAt cfg profile root = do
+    let destinationPath = profileDataPath profile root
+        template = "{{range .Mounts}}{{if eq .Destination " ++ show destinationPath ++ "}}{{println .Source}}{{end}}{{end}}"
+    listed <- runTool cfg Docker ["ps", "--format", "{{.ID}}"]
+    candidates <- either die pure (directContainerCandidates listed)
+    observations <- mapM (\containerId -> runTool cfg Docker ["inspect", "--format", template, containerId]) candidates
+    sources <- either die pure (traverse directContainerMountObservation observations)
+    either die pure (directDurableMountSource profile destinationPath (Right (ExitSuccess, concat sources, "")))
+
+directContainerMountObservation :: Either String (ExitCode, String, String) -> Either String String
+directContainerMountObservation observed = case observed of
+    Left failure -> Left ("direct nvkind durable bind: Docker inspect failed: " ++ failure)
+    Right (ExitFailure n, _, err) ->
+        Left ("direct nvkind durable bind: Docker inspect exited " ++ show n ++ ": " ++ err)
+    Right (ExitSuccess, out, _) -> Right out
+
+{- | Validate the complete current Docker container listing before any member
+is inspected. Host-network containers inherit the metal hostname, so container
+identity comes only from this Docker-owned listing rather than from @HOSTNAME@
+or @/etc/hostname@.
+-}
+directContainerCandidates :: Either String (ExitCode, String, String) -> Either String [String]
+directContainerCandidates result = case result of
+    Left failure -> Left ("direct nvkind durable bind: Docker container listing failed: " ++ failure)
+    Right (ExitFailure n, _, err) ->
+        Left ("direct nvkind durable bind: Docker container listing exited " ++ show n ++ ": " ++ err)
+    Right (ExitSuccess, out, _) -> case lines out of
+        [] -> Left "direct nvkind durable bind: Docker reported no running containers"
+        candidates
+            | all validContainerId candidates -> Right candidates
+            | otherwise -> Left "direct nvkind durable bind: Docker reported a malformed container identity"
+  where
+    validContainerId candidate = length candidate `elem` [12, 64] && all isHexDigit candidate
+
+{- | Select and validate the sole Docker-visible source reported for the exact
+child destination. The source remains profile-scoped and lexical-canonical; an
+absent, duplicate, relative, or cross-profile answer is refused before nvkind
+configuration is rendered.
+-}
+directDurableMountSource ::
+    ClusterProfile ->
+    FilePath ->
+    Either String (ExitCode, String, String) ->
+    Either String FilePath
+directDurableMountSource profile destinationPath result = case result of
+    Left failure -> Left ("direct nvkind durable bind: Docker inspect failed: " ++ failure)
+    Right (ExitFailure n, _, err) ->
+        Left ("direct nvkind durable bind: Docker inspect exited " ++ show n ++ ": " ++ err)
+    Right (ExitSuccess, out, _) -> case filter (not . null) (lines out) of
+        [sourcePath]
+            | not (isAbsolute destinationPath) || normalise destinationPath /= destinationPath ->
+                Left "direct nvkind durable bind: child destination is not absolute lexical-canonical"
+            | not (isAbsolute sourcePath) || normalise sourcePath /= sourcePath ->
+                Left "direct nvkind durable bind: Docker reported a non-canonical source"
+            | not (profileDataSegments profile `isSuffixOf` splitDirectories sourcePath) ->
+                Left "direct nvkind durable bind: Docker source does not retain the exact run profile"
+            | otherwise -> Right sourcePath
+        [] -> Left "direct nvkind durable bind: the admitted child destination is absent"
+        _ -> Left "direct nvkind durable bind: the admitted child destination is duplicated"
 
 {- | Resolve the assertion environment after the command-owned exact forward
 interpreter has brought this Harness variant up.  The variant identity is
@@ -5411,9 +5611,11 @@ demoProviderReverse projectCfg cfg action = do
 {- | The reverse effect of the direct Linux GPU lane's @deploy-kind@ step.
 
 The nvkind cluster lives in a frame the metal host has no kube toolchain for, so
-the core's cluster adapter cannot reach it; the project declares this reverse on
-that node instead and executes the image's pinned @kind@ against the host Docker
-socket. Both verbs delete, because kind has no reliable stop contract.
+the project declares this reverse on that node. It re-enters the project image
+with the exact Docker-visible durable run root: the core retained-cluster
+transaction can then authenticate the bound node identities, delete with the
+pinned toolchain, prove absence, and release the ownership record. Both verbs
+delete, because kind has no reliable stop contract.
 -}
 demoDirectClusterReverseAt ::
     ClusterProfile ->
@@ -5433,15 +5635,32 @@ demoDirectClusterReverseAt profile root cfg _action
         case exposure of
             Left refusal -> die (show refusal)
             Right () -> pure ()
-        exists <- directClusterExists cfg directPlan
-        when exists $ do
-            putStrLn "project teardown: deleting the direct nvkind cluster through the project image"
-            runOrDie cfg Docker directClusterTeardownArgs
+        dockerHostDataPath <- discoverDirectDockerHostDataPathAt cfg profile root
+        putStrLn "project teardown: releasing the direct nvkind cluster through its retained ownership record"
+        runOrDie cfg Docker (directClusterReleaseArgs dockerHostDataPath (dataPath directPlan) profile)
         remaining <- directClusterExists cfg directPlan
-        pure $
-            if remaining
-                then Step.TeardownFailed "direct nvkind node containers remain after deletion"
-                else Step.TeardownReleased
+        if remaining
+            then pure (Step.TeardownFailed "direct nvkind node containers remain after deletion")
+            else do
+                case profile of
+                    Production -> pure ()
+                    TestCase _ -> do
+                        let durableRoot = dataPath directPlan
+                        rootExists <- doesDirectoryExist durableRoot
+                        when rootExists $ do
+                            restored <- runCaptured "/usr/bin/find" (directHarnessDataRootPermissionArgs durableRoot) ""
+                            case restored of
+                                Left failure -> die ("Direct Harness data-root permission restoration: " ++ renderRunFailure failure)
+                                Right run -> case capturedExit run of
+                                    ExitSuccess -> pure ()
+                                    ExitFailure n ->
+                                        die
+                                            ( "Direct Harness data-root permission restoration failed (exit "
+                                                ++ show n
+                                                ++ "): "
+                                                ++ capturedStderr run
+                                            )
+                pure Step.TeardownReleased
 
 {- | The reverse effect of the host-resident accelerator daemon's post-handoff
 step: stop the daemon this frame started. It runs before the VM node in the
@@ -5457,24 +5676,66 @@ demoHostAcceleratorReverse projectCfg cfg _action = do
     stopHostAcceleratorDaemon cfg (context projectCfg)
     pure Step.TeardownReleased
 
-{- | The direct lane deliberately does not require host-installed kind/nvkind.
-Execute the image's pinned @kind@ against the host Docker socket so teardown
-uses the same toolchain image that created the nvkind cluster.
+{- | Re-enter the project image with one exact durable profile root.
+
+The child invokes only the fixed internal retained-cluster release entry. It
+gets the Docker socket needed to re-observe bound identities and the same
+child-visible data path used when those identities were recorded.
 -}
-directClusterTeardownArgs :: [String]
-directClusterTeardownArgs =
+directClusterReleaseArgs :: FilePath -> FilePath -> ClusterProfile -> [String]
+directClusterReleaseArgs dockerHostDataPath childDataPath profile =
     [ "run"
     , "--rm"
     , "--network=host"
     , "-v"
     , "/var/run/docker.sock:/var/run/docker.sock"
-    , "--entrypoint"
-    , "/usr/local/bin/kind"
+    , "-v"
+    , dockerHostDataPath ++ ":" ++ childDataPath
     , demoProjectImage
-    , "delete"
-    , "cluster"
-    , "--name"
-    , demoProject
+    , "--hostbootstrap-direct-cluster-release-v1"
+    , clusterProfileArgument profile
+    ]
+
+clusterProfileArgument :: ClusterProfile -> String
+clusterProfileArgument Production = "production"
+clusterProfileArgument (TestCase runKey) = "harness:" ++ runKey
+
+{- | Fixed internal entry used only by 'directClusterReleaseArgs'.
+
+The closed profile parser rejects arbitrary names, the project and source root
+are constants baked into this image, and 'releaseRetainedCluster' authorizes
+destruction solely from the protected record beneath the mounted profile root.
+-}
+runDirectClusterReleaseChild :: String -> IO ()
+runDirectClusterReleaseChild rawProfile = do
+    profile <- either (die . show) pure (profileFromPlanName (T.pack rawProfile))
+    cfg <- resolveHostConfig
+    let directPlan = resolvePlanWithDriver demoProject containerSourceRoot profile NvkindDriver
+    released <- releaseRetainedCluster cfg directPlan
+    either (die . show) pure released
+
+{- | Exact arguments for restoring removability under one Direct Harness root.
+
+The current project container already sees the admitted durable bind at this
+child-visible path and runs as the owner of the root-created cluster state. It
+therefore traverses only non-symlink descendants in place; it must not ask the
+metal Docker daemon to reinterpret the child path as another bind source.
+Production never calls this argument vector.
+-}
+directHarnessDataRootPermissionArgs :: FilePath -> [String]
+directHarnessDataRootPermissionArgs durableRoot =
+    [ durableRoot
+    , "-mindepth"
+    , "1"
+    , "!"
+    , "-type"
+    , "l"
+    , "-exec"
+    , "chmod"
+    , "a+rwX"
+    , "--"
+    , "{}"
+    , "+"
     ]
 
 {- | The authority @push-image@ dials, projected from the runtime-resolved

@@ -9,7 +9,7 @@ by launching it, and what a launch proves is that /something/ ran (§ NN).
 
 Three properties are asserted over the whole set rather than case by case,
 because each is the kind of thing that is true of every command until one day it
-is not: every command names one of exactly three tools, every command is
+is not: every command names one of exactly four tools, every command is
 interpreted by a process of the outer host, and the only two commands carrying
 standard input are the two that must not put a credential in @argv@.
 -}
@@ -23,7 +23,7 @@ import HostBootstrap.Effect.Vocabulary (
     EffectTarget (ToolTarget),
     HostCommand (commandArguments, commandFrame, commandStdio, commandTarget),
  )
-import HostBootstrap.HostTool (HostTool (Docker, Kind, Kubectl))
+import HostBootstrap.HostTool (HostTool (Docker, Kind, Kubectl, Nvkind))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
@@ -47,7 +47,7 @@ driverTests =
     , testCase "one cluster's kubeconfig is read by name" $
         commandArguments (readKubeconfigCommand "demo") @?= ["--quiet", "get", "kubeconfig", "--name", "demo"]
     , testCase "a declared configuration reaches the creating command" $
-        commandArguments (createClusterCommand "demo" (Just "/state/demo.yaml") "/tmp/private-demo.kubeconfig")
+        commandArguments (createClusterCommand KindDriver "demo" (Just "/state/demo.yaml") "/tmp/private-demo.kubeconfig")
             @?= [ "--quiet"
                 , "create"
                 , "cluster"
@@ -61,12 +61,25 @@ driverTests =
                 , "10m"
                 ]
     , testCase "no declared configuration renders no --config at all" $
-        commandArguments (createClusterCommand "demo" Nothing "/tmp/private-demo.kubeconfig")
+        commandArguments (createClusterCommand KindDriver "demo" Nothing "/tmp/private-demo.kubeconfig")
             @?= ["--quiet", "create", "cluster", "--name", "demo", "--kubeconfig", "/tmp/private-demo.kubeconfig", "--wait", "10m"]
+    , testCase "nvkind creation reaches only the selected GPU driver vocabulary" $
+        commandArguments (createClusterCommand NvkindDriver "demo" (Just "/state/demo.yaml") "/tmp/private-demo.kubeconfig")
+            @?= [ "cluster"
+                , "create"
+                , "--name"
+                , "demo"
+                , "--config-template"
+                , "/state/demo.yaml"
+                , "--kubeconfig"
+                , "/tmp/private-demo.kubeconfig"
+                , "--wait"
+                , "10m"
+                ]
     , testCase "the private staging kubeconfig is always named" $
         assertBool
             "every creation names the private local file its caller opened"
-            (all (\config -> "--kubeconfig" `elem` commandArguments (createClusterCommand "demo" config "/tmp/private")) [Nothing, Just "/state/demo.yaml"])
+            (all (\config -> "--kubeconfig" `elem` commandArguments (createClusterCommand KindDriver "demo" config "/tmp/private")) [Nothing, Just "/state/demo.yaml"])
     , testCase "removal addresses the cluster by name and nothing else" $
         commandArguments (deleteClusterCommand "demo") @?= ["--quiet", "delete", "cluster", "--name", "demo"]
     ]
@@ -136,8 +149,9 @@ silentCommands :: [(HostTool, HostCommand)]
 silentCommands =
     [ (Kind, listClustersCommand)
     , (Kind, readKubeconfigCommand "demo")
-    , (Kind, createClusterCommand "demo" (Just "/state/demo.yaml") "/tmp/private-demo.kubeconfig")
-    , (Kind, createClusterCommand "demo" Nothing "/tmp/private-demo.kubeconfig")
+    , (Kind, createClusterCommand KindDriver "demo" (Just "/state/demo.yaml") "/tmp/private-demo.kubeconfig")
+    , (Kind, createClusterCommand KindDriver "demo" Nothing "/tmp/private-demo.kubeconfig")
+    , (Nvkind, createClusterCommand NvkindDriver "demo" (Just "/state/demo.yaml") "/tmp/private-demo.kubeconfig")
     , (Kind, deleteClusterCommand "demo")
     , (Docker, listNodeContainerCommand "demo-control-plane")
     , (Docker, readNodeContainerIdCommand "abc123")

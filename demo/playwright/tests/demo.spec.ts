@@ -1,11 +1,25 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
+
+async function navigateToDemo(page: Page): Promise<void> {
+  try {
+    await page.goto("/");
+  } catch (error: unknown) {
+    if (!(error instanceof Error) || !error.message.includes("net::ERR_NETWORK_CHANGED")) {
+      throw error;
+    }
+    // Docker network creation/removal elsewhere on a shared host can make
+    // Chromium reject one in-flight navigation even though this exact service
+    // remains Ready. Retry only that explicit transient, once.
+    await page.goto("/");
+  }
+}
 
 // The headline e2e: the Halogen SPA (built from the
 // purescript-bridge types) renders its tabs, and the budget view it fetches
 // from the warp/wai API reports that the demo's pods fit the budget.
 
 test("the SPA renders all three tabs", async ({ page }) => {
-  await page.goto("/");
+  await navigateToDemo(page);
   await expect(page.getByRole("heading", { name: "hostbootstrap-demo" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Overview" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Budget" })).toBeVisible();
@@ -14,7 +28,7 @@ test("the SPA renders all three tabs", async ({ page }) => {
 });
 
 test("the Budget tab shows the fitsBudget verdict", async ({ page }) => {
-  await page.goto("/");
+  await navigateToDemo(page);
   await page.getByRole("button", { name: "Budget" }).click();
   await expect(page.locator("#fits")).toHaveText("fits: true");
 });
@@ -36,7 +50,7 @@ test("GET /api/budget returns the fitsBudget view", async ({ request }) => {
 // e.g. windows-cpu, or a plain code-check render), the web server must NOT
 // compute in process: it reports the no-fallback "unavailable" state.
 test("the Accelerator tab computes via the daemon (or reports no in-process fallback)", async ({ page }) => {
-  await page.goto("/");
+  await navigateToDemo(page);
   await page.getByRole("button", { name: "Accelerator" }).click();
   await page.locator("#add-left").fill("1.5");
   await page.locator("#add-right").fill("2.25");
@@ -67,6 +81,6 @@ test("the Accelerator tab computes via the daemon (or reports no in-process fall
 // passed per-variant by `assertE2EInVM`, so the same spec proves both variants
 // ("Hello, world!" and "Hello, Universe!") really are config-driven end to end.
 test("the SPA renders the config-driven message", async ({ page }) => {
-  await page.goto("/");
+  await navigateToDemo(page);
   await expect(page.locator("#message")).toHaveText(process.env.EXPECTED_MESSAGE!);
 });

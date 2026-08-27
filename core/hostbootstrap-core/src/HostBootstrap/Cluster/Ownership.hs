@@ -81,6 +81,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import HostBootstrap.Cluster.Command (
+    ClusterDriver (..),
     createClusterCommand,
     deleteClusterCommand,
     listApiNodesCommand,
@@ -107,6 +108,7 @@ import HostBootstrap.Cluster.Report (
     classifyKubeconfig,
     classifyNodeContainer,
     classifyNodeContainerIdentity,
+    classifyNvkindCreateReport,
     clusterReportFaultMessage,
     clusterReportLineBound,
     containerReference,
@@ -414,12 +416,13 @@ only order the tokens admit: observe, decide where the transaction stands,
 publish every record, create, re-observe, bind every record.
 -}
 reconcileOwnedCluster ::
+    ClusterDriver ->
     HostConfig ->
     ProtectedSession session ->
     RecordKey ->
     OwnedCluster ->
     IO (Either ClusterOwnershipFault ClusterReconcileOutcome)
-reconcileOwnedCluster cfg session key owned = do
+reconcileOwnedCluster driver cfg session key owned = do
     entered <- ownedClusterStanding cfg session key owned
     case entered of
         Left fault -> pure (Left fault)
@@ -433,7 +436,7 @@ reconcileOwnedCluster cfg session key owned = do
         published <- publishEveryRecord cfg session key owned
         case published of
             Left fault -> pure (Left fault)
-            Right () -> createThenBind cfg session key owned
+            Right () -> createThenBind driver cfg session key owned
     publishThenBind outcome = do
         published <- publishOwnedClusterKubeconfig cfg owned
         case published of
@@ -472,24 +475,28 @@ outcome-unknown window rather than an instruction inside a program written in
 another language.
 -}
 createThenBind ::
+    ClusterDriver ->
     HostConfig ->
     ProtectedSession session ->
     RecordKey ->
     OwnedCluster ->
     IO (Either ClusterOwnershipFault ClusterReconcileOutcome)
-createThenBind cfg session key owned = do
-    created <- runCreateCommand cfg owned
+createThenBind driver cfg session key owned = do
+    created <- runCreateCommand driver cfg owned
     case created of
         Left fault -> pure (Left fault)
-        Right captured -> case classifyClusterReport clusterReportLineBound captured of
+        Right captured -> case classifyCreateReport driver captured of
             Left fault -> pure (Left (ClusterOwnershipReport fault))
-            Right _ -> do
+            Right () -> do
                 published <- publishOwnedClusterKubeconfig cfg owned
                 case published of
                     Left fault -> pure (Left fault)
                     Right () -> do
                         bound <- bindNodeRecords cfg session key owned
                         pure (fmap ClusterCreated bound)
+  where
+    classifyCreateReport KindDriver = fmap (const ()) . classifyClusterReport clusterReportLineBound
+    classifyCreateReport NvkindDriver = classifyNvkindCreateReport
 
 {- | Give Kind a unique private local file for only the duration of creation.
 
@@ -500,10 +507,11 @@ invocation from selecting the same staging object, and cleanup runs on every
 reported or exceptional exit.
 -}
 runCreateCommand ::
+    ClusterDriver ->
     HostConfig ->
     OwnedCluster ->
     IO (Either ClusterOwnershipFault (Either String CapturedRun))
-runCreateCommand cfg owned = do
+runCreateCommand driver cfg owned = do
     attempted <- tryIO $ mask $ \restore -> do
         temporaryRoot <- getTemporaryDirectory
         let template = ".hostbootstrap-kind-" <> ownedClusterName owned <> ".kubeconfig"
@@ -516,6 +524,7 @@ runCreateCommand cfg owned = do
             ( interpret
                 cfg
                 ( createClusterCommand
+                    driver
                     (ownedClusterName owned)
                     (ownedClusterConfig owned)
                     staging

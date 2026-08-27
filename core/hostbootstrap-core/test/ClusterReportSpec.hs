@@ -70,6 +70,11 @@ answerTests =
     , testCase "a success that wrote to standard error is not an answer" $
         classifyClusterListing "demo" (Right (CapturedRun ExitSuccess "demo\n" "warning\n"))
             @?= Left (ClusterCommandNoisy "warning")
+    , testCase "nvkind creation admits noisy success but not a missing or failed child" $ do
+        classifyNvkindCreateReport (Right (CapturedRun ExitSuccess "post-setup\n" "Creating cluster\n")) @?= Right ()
+        classifyNvkindCreateReport (Left "nvkind missing") @?= Left (ClusterCommandUnrun "nvkind missing")
+        classifyNvkindCreateReport (Right (CapturedRun (ExitFailure 1) "" "setup failed\n"))
+            @?= Left (ClusterCommandExited 1 "setup failed")
     , testCase "each fault renders as itself" $ do
         let rendered =
                 map

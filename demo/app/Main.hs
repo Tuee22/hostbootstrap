@@ -13,8 +13,9 @@ module Main (main) where
 import HostBootstrap.CLI (addForwardChildPlan, addServices, addSteps, finalizeProjectSpec, projectSpec, runHostBootstrapCLI)
 import HostBootstrap.Registry (withForwardedRegistryAuth)
 import HostBootstrap.Substrate (detect)
-import HostBootstrapDemo.Commands (demoArtifacts, demoChainFor, demoCheckCode, demoForwardChildPlan, demoServices, demoTestSuite)
+import HostBootstrapDemo.Commands (demoArtifacts, demoChainFor, demoCheckCode, demoForwardChildPlan, demoServices, demoTestSuite, runDirectClusterReleaseChild)
 import HostBootstrapDemo.Config (demoAssemble, demoTestInit, testConfigCodec)
+import System.Environment (getArgs)
 import System.Exit (die)
 import System.IO (BufferMode (LineBuffering), hSetBuffering, stderr, stdout)
 
@@ -25,6 +26,17 @@ main = do
     -- essential for observing a long, lifted `project up`/`test run` in real time.
     hSetBuffering stdout LineBuffering
     hSetBuffering stderr LineBuffering
+    arguments <- getArgs
+    case arguments of
+        ["--hostbootstrap-direct-cluster-release-v1", profile] ->
+            runDirectClusterReleaseChild profile
+        marker : _
+            | marker == "--hostbootstrap-direct-cluster-release-v1" ->
+                die "direct cluster release: the internal entry requires exactly one lifecycle profile"
+        _ -> runOrdinaryCommand
+
+runOrdinaryCommand :: IO ()
+runOrdinaryCommand =
     -- Every copy of the binary, at every level, consumes a forwarded Docker Hub
     -- credential (if a parent set HOSTBOOTSTRAP_REGISTRY_AUTH) into an ephemeral
     -- DOCKER_CONFIG for the run, so its nested kind/docker pulls authenticate;

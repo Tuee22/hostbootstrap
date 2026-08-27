@@ -659,7 +659,7 @@ runClusterReconcileCall backend prepared =
     ClusterReconcileCallResult <$> case validateReconcileBinding backend prepared >> reconcileTarget prepared of
         Left err -> pure (ClusterProbeFailed (Text.pack (show err)))
         Right target -> do
-            outcome <- withClusterTransaction backend target Owned.reconcileOwnedCluster
+            outcome <- withClusterTransaction backend target (Owned.reconcileOwnedCluster (strongClusterDriver backend))
             case outcome of
                 Left fault
                     | standsUnderNoRecord fault -> pure (ClusterForeign (clusterCallFaultMessage fault))

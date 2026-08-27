@@ -21,7 +21,9 @@ import Data.List (isPrefixOf, isSuffixOf)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified FakeCluster
-import HostBootstrap.Cluster.Ownership
+import HostBootstrap.Cluster.Command (ClusterDriver (KindDriver))
+import HostBootstrap.Cluster.Ownership hiding (reconcileOwnedCluster)
+import qualified HostBootstrap.Cluster.Ownership as Ownership
 import HostBootstrap.Cluster.Report (
     ClusterPresence (ClusterAbsent, ClusterPresent),
     ClusterReportFault (ClusterCommandUnrun),
@@ -61,6 +63,14 @@ tests =
         , testGroup "cordoning" cordonTests
         , testGroup "releasing" releaseTests
         ]
+
+reconcileOwnedCluster ::
+    HostConfig ->
+    ProtectedSession session ->
+    RecordKey ->
+    OwnedCluster ->
+    IO (Either ClusterOwnershipFault ClusterReconcileOutcome)
+reconcileOwnedCluster = Ownership.reconcileOwnedCluster KindDriver
 
 -- ---------------------------------------------------------------------------
 -- The owned object

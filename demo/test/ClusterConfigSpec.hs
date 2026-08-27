@@ -23,8 +23,8 @@ tests =
     testGroup
         "ClusterConfigSpec"
         [ testCase "Kind and nvkind render host-port-free topology and semantic exposure intent" $ do
-            kind@(kindBytes, kindDigest, kindState, kindPath, kindIntents) <- expectRight (renderExactClusterConfig KindDriver digest hostCfg [(digest, "vm-project-container-2")])
-            nvkind@(nvBytes, nvDigest, nvState, nvPath, nvIntents) <- expectRight (renderExactClusterConfig NvkindDriver digest hostCfg [(digest, "vm-project-container-1")])
+            kind@(kindBytes, kindDigest, kindState, kindPath, kindIntents) <- expectRight (renderExactClusterConfig KindDriver "/var/tmp/hostbootstrap-demo-data" digest hostCfg [(digest, "vm-project-container-2")])
+            nvkind@(nvBytes, nvDigest, nvState, nvPath, nvIntents) <- expectRight (renderExactClusterConfig NvkindDriver "/srv/demo/.data" digest hostCfg [(digest, "vm-project-container-1")])
             kindDigest @?= childConfigDigest kindBytes
             nvDigest @?= childConfigDigest nvBytes
             assertBool "Kind contains a wildcard publication" (not ("0.0.0.0" `ByteStringChar8.isInfixOf` kindBytes))
@@ -41,14 +41,15 @@ tests =
             nvPath @?= "/workspace/demo/.data/cluster/nvkind/config.yaml"
             map intentSummary kindIntents @?= kindExpected
             map intentSummary nvIntents @?= nvkindExpected
-            verifyExactClusterConfig KindDriver digest hostCfg [(digest, "vm-project-container-2")] kindBytes @?= Right ()
-            assertBool "changed canonical bytes were accepted" (isLeft (verifyExactClusterConfig KindDriver digest hostCfg [(digest, "vm-project-container-2")] (kindBytes <> "unknown: true\n")))
+            verifyExactClusterConfig KindDriver "/var/tmp/hostbootstrap-demo-data" digest hostCfg [(digest, "vm-project-container-2")] kindBytes @?= Right ()
+            assertBool "changed canonical bytes were accepted" (isLeft (verifyExactClusterConfig KindDriver "/var/tmp/hostbootstrap-demo-data" digest hostCfg [(digest, "vm-project-container-2")] (kindBytes <> "unknown: true\n")))
             kind `seq` nvkind `seq` pure ()
         , testCase "digest, slice, and paths fail closed" $ do
-            assertBool "a changed config digest was accepted" (isLeft (renderExactClusterConfig KindDriver "changed" hostCfg [(digest, "vm-project-container-2")]))
-            assertBool "an empty cluster slice was accepted" (isLeft (renderExactClusterConfig KindDriver digest hostCfg []))
-            assertBool "a duplicate cluster slice was accepted" (isLeft (renderExactClusterConfig KindDriver digest hostCfg [(digest, "a"), (digest, "b")]))
-            assertBool "a cluster slice with a different digest was accepted" (isLeft (renderExactClusterConfig KindDriver digest hostCfg [("changed", "a")]))
+            assertBool "a changed config digest was accepted" (isLeft (renderExactClusterConfig KindDriver "/var/tmp/hostbootstrap-demo-data" "changed" hostCfg [(digest, "vm-project-container-2")]))
+            assertBool "an empty cluster slice was accepted" (isLeft (renderExactClusterConfig KindDriver "/var/tmp/hostbootstrap-demo-data" digest hostCfg []))
+            assertBool "a duplicate cluster slice was accepted" (isLeft (renderExactClusterConfig KindDriver "/var/tmp/hostbootstrap-demo-data" digest hostCfg [(digest, "a"), (digest, "b")]))
+            assertBool "a cluster slice with a different digest was accepted" (isLeft (renderExactClusterConfig KindDriver "/var/tmp/hostbootstrap-demo-data" digest hostCfg [("changed", "a")]))
+            assertBool "a relative Docker-visible path was accepted" (isLeft (renderExactClusterConfig NvkindDriver "relative/.data" digest hostCfg [(digest, "vm-project-container-1")]))
         ]
   where
     digest = childConfigDigest (TextEncoding.encodeUtf8 (renderProjectConfig hostCfg <> "\n"))
@@ -72,7 +73,7 @@ tests =
             , "nodes:"
             , "  - role: control-plane"
             , "    extraMounts:"
-            , "      - hostPath: /var/tmp/hostbootstrap-demo-data"
+            , "      - hostPath: /srv/demo/.data"
             , "        containerPath: /var/lib/hostbootstrap-demo-data"
             ]
                 ++ [ "  - role: worker"
@@ -81,7 +82,7 @@ tests =
                    , "    extraMounts:"
                    , "      - hostPath: /dev/null"
                    , "        containerPath: /var/run/nvidia-container-devices/all"
-                   , "      - hostPath: /var/tmp/hostbootstrap-demo-data"
+                   , "      - hostPath: /srv/demo/.data"
                    , "        containerPath: /var/lib/hostbootstrap-demo-data"
                    ]
 

@@ -47,18 +47,20 @@ durableDockerHostPath = "/var/tmp/hostbootstrap-demo-data"
 
 renderExactClusterConfig ::
     ClusterDriver ->
+    FilePath ->
     Text ->
     ProjectConfig scope ->
     [(Text, Text)] ->
     Either String (ByteString, Text, FilePath, FilePath, [ExposureIntent])
-renderExactClusterConfig driver retainedDigest cfg clusterSlice = do
+renderExactClusterConfig driver dockerHostDataPath retainedDigest cfg clusterSlice = do
     (_resources, _replicas, _public, _accelerator, semanticTargets, durableTarget) <-
         canonicalDemoConfigProjection retainedDigest cfg
     require (length clusterSlice == 1) "cluster slice is not singular"
     require (all ((== retainedDigest) . fst) clusterSlice) "cluster slice digest disagrees with the retained config"
     requireCanonicalPath durableTarget
+    requireCanonicalPath dockerHostDataPath
     intents <- exposureIntents driver cfg semanticTargets
-    let bytes = TextEncoding.encodeUtf8 (renderYaml driver)
+    let bytes = TextEncoding.encodeUtf8 (renderYaml driver dockerHostDataPath)
         driverName = case driver of
             KindDriver -> "kind"
             NvkindDriver -> "nvkind"
@@ -68,27 +70,29 @@ renderExactClusterConfig driver retainedDigest cfg clusterSlice = do
 
 verifyExactClusterConfig ::
     ClusterDriver ->
+    FilePath ->
     Text ->
     ProjectConfig scope ->
     [(Text, Text)] ->
     ByteString ->
     Either String ()
-verifyExactClusterConfig driver retainedDigest cfg clusterSlice observed = do
-    (canonical, _, _, _, _) <- renderExactClusterConfig driver retainedDigest cfg clusterSlice
+verifyExactClusterConfig driver dockerHostDataPath retainedDigest cfg clusterSlice observed = do
+    (canonical, _, _, _, _) <- renderExactClusterConfig driver dockerHostDataPath retainedDigest cfg clusterSlice
     require (observed == canonical) "cluster config bytes are not canonical"
 
 withExactPlanOwnedClusterConfig ::
     PlanOwnedCluster scope specDigest planId configId ProjectConfig clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId ->
     ClusterDriver ->
+    FilePath ->
     Text ->
     ProjectConfig configScope ->
     [(Text, Text)] ->
     [Text] ->
     (PlanOwnedClusterConfig scope specDigest planId configId ProjectConfig clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> result) ->
     Either String result
-withExactPlanOwnedClusterConfig base driver retainedDigest cfg clusterSlice workload consume = do
+withExactPlanOwnedClusterConfig base driver dockerHostDataPath retainedDigest cfg clusterSlice workload consume = do
     (bytes, digest, statePath, configPath, intents) <-
-        renderExactClusterConfig driver retainedDigest cfg clusterSlice
+        renderExactClusterConfig driver dockerHostDataPath retainedDigest cfg clusterSlice
     let mappings = case driver of
             KindDriver -> [("control-plane", Text.pack (planOwnedClusterName base ++ "-control-plane"))]
             NvkindDriver ->
@@ -111,15 +115,15 @@ exposureIntents driver cfg semanticTargets = traverse makeIntent services
         (KindDriver, HostResidentDaemon) -> semanticTargets
         _ -> filter ((/= "accelerator") . fst) semanticTargets
 
-renderYaml :: ClusterDriver -> Text
-renderYaml driver =
+renderYaml :: ClusterDriver -> FilePath -> Text
+renderYaml driver dockerHostDataPath =
     Text.pack . unlines $
         [ "kind: Cluster"
         , "apiVersion: kind.x-k8s.io/v1alpha4"
         , "nodes:"
         , "  - role: control-plane"
         , "    extraMounts:"
-        , "      - hostPath: " ++ durableDockerHostPath
+        , "      - hostPath: " ++ dockerHostDataPath
         , "        containerPath: /var/lib/hostbootstrap-demo-data"
         ]
             ++ worker
@@ -133,7 +137,7 @@ renderYaml driver =
             , "    extraMounts:"
             , "      - hostPath: /dev/null"
             , "        containerPath: /var/run/nvidia-container-devices/all"
-            , "      - hostPath: " ++ durableDockerHostPath
+            , "      - hostPath: " ++ dockerHostDataPath
             , "        containerPath: /var/lib/hostbootstrap-demo-data"
             ]
 

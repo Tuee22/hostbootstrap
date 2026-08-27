@@ -318,7 +318,18 @@ nvidiaRuntimeCases =
 
 nvidiaDevicePluginCases :: [TestTree]
 nvidiaDevicePluginCases =
-    [ testCase "pins and installs the NVIDIA device-plugin chart" $
+    [ testCase "requires nvkind's exact NVIDIA RuntimeClass" $ do
+        nvidiaRuntimeClassProbeArgs
+            @?= ["get", "runtimeclass", "nvidia", "--ignore-not-found", "-o", "jsonpath={.handler}"]
+        nvidiaRuntimeClassObserved (Right (ExitSuccess, "", "")) @?= Right False
+        nvidiaRuntimeClassObserved (Right (ExitSuccess, "nvidia", "")) @?= Right True
+        case nvidiaRuntimeClassObserved (Right (ExitSuccess, "foreign", "")) of
+            Left _ -> pure ()
+            Right _ -> assertFailure "a foreign RuntimeClass handler was accepted"
+        case nvidiaRuntimeClassObserved (Right (ExitFailure 1, "", "API unavailable")) of
+            Left _ -> pure ()
+            Right _ -> assertFailure "a failed RuntimeClass probe was accepted as absence"
+    , testCase "pins and installs the NVIDIA device-plugin chart through nvkind's runtime" $
         nvidiaDevicePluginHelmArgs
             @?= [ "upgrade"
                 , "--install"

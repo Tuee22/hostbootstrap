@@ -47,6 +47,7 @@ module HostBootstrap.Cluster.Report (
 
     -- * The shared step and its bounds
     classifyClusterReport,
+    classifyNvkindCreateReport,
     clusterReportLineBound,
     kubeconfigByteBound,
     safeClusterName,
@@ -421,6 +422,19 @@ classifyClusterReport ::
 classifyClusterReport lineBound captured = do
     reported <- capturedReport captured
     reportLines lineBound reported
+
+{- | Classify nvkind's creation result by process outcome. Unlike Kind,
+nvkind has no quiet flag and writes its normal multi-stage progress to both
+captured streams. Those bytes grant no authority: after this success the
+ownership transaction independently reads the kubeconfig and binds every exact
+node-container identity. A missing child or non-zero exit remains the same
+closed fault as every other cluster command.
+-}
+classifyNvkindCreateReport :: Either String CapturedRun -> Either ClusterReportFault ()
+classifyNvkindCreateReport (Left refusal) = Left (ClusterCommandUnrun (Text.pack refusal))
+classifyNvkindCreateReport (Right run) = case capturedExit run of
+    ExitFailure code -> Left (ClusterCommandExited code (firstLine (capturedStderr run)))
+    ExitSuccess -> Right ()
 
 capturedReport :: Either String CapturedRun -> Either ClusterReportFault String
 capturedReport (Left refusal) = Left (ClusterCommandUnrun (Text.pack refusal))

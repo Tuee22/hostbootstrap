@@ -192,7 +192,11 @@ carried `core:deploy-vm` provider through `runtime://provider/demo-vm-readiness`
 `core:deploy-vm` host reservation through `runtime://provider/demo-direct-readiness`, independently of its
 preceding `core:build-image` action. Both then follow the same
 reconcile → ownership carry → cordon → fresh readiness → runtime exposure → cluster-package registration
-sequence.
+sequence. On Direct Linux GPU, fresh node readiness is followed by the Docker NVIDIA-runtime smoke, pinned
+exact `nvidia` RuntimeClass observation, device-plugin reconciliation, DaemonSet readiness, and a positive
+`nvidia.com/gpu` allocatable observation before runtime exposure and package registration. The later
+accelerator Deployment selects that RuntimeClass and requests one `nvidia.com/gpu`; acceptance must observe
+that request on a Running pod rather than infer GPU placement from a successful rollout alone.
 The following `deploy-chart` node carries an exact stable chart declaration. It opens that acknowledged
 cluster package, performs a nonce-bound fresh readiness probe, and sends canonical values to the
 producer-owned Helm/Kubectl service. The chart owns the service ConfigMap, image identity, Deployment rollout,
@@ -311,6 +315,12 @@ every WSL distro. See [wsl2](../engineering/wsl2.md) § Wall release.
 The provider disk may be removed by `destroy`; the canonical host durable root is shared from outside
 that disk and is not intentionally included in cluster removal. Same-run reattachment/readback is a required
 worked-demo acceptance assertion on every lane.
+
+On Direct Linux GPU, reverse first releases any recorded host exposure, then starts the project image with the
+Docker socket and only the exact profile data bind. Its fixed internal retained-release entry authenticates the
+recorded nvkind node identities, deletes and proves them absent, and releases those records. The parent proves
+the declared nodes absent again before Harness permission restoration and removal; Production data permissions
+are never normalized by this route.
 
 ## Demo Harness
 

@@ -35,8 +35,15 @@ Cluster creation is fail-closed around command exit status. Existing named clust
 an unhealthy one is deleted before recreation. Kind creation carries a finite ten-minute driver readiness
 bound, followed by a fresh API and declared-node readiness observation. The bound covers a cold Apple/Lima
 control plane without turning a failed creation into an unbounded wait. Nvkind adds the NVIDIA runtime smoke,
-a control-plane/GPU-worker topology, per-node CPU/memory
-cordons, and a device-plugin/allocatable-GPU gate.
+a control-plane/GPU-worker topology, per-node CPU/memory cordons, and a device-plugin/allocatable-GPU gate.
+The strong backend passes the finalized driver into its creation transaction: Kind receives `--config`, while
+nvkind receives `--config-template` and performs its NVIDIA containerd/RuntimeClass post-setup. Listing,
+kubeconfig readback, identity binding, and conditional deletion use Kind after either creator. Kind's quiet
+creation report remains strictly framed. Nvkind has no quiet mode and emits successful progress on both streams,
+so only that closed creation branch classifies its process outcome; it then derives authority from fresh
+kubeconfig readback and every declared node-container identity, never from the progress text. The accelerator
+gate runs before the cluster package is registered, so downstream workloads cannot confuse Ready nodes with
+accelerator readiness; the plugin and GPU workload both select nvkind's verified `nvidia` RuntimeClass.
 
 The [cluster-lifecycle-and-cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
 has an independent live linux-cpu gate, reached as a case behind the fixed `test` verb:
@@ -259,8 +266,11 @@ frame owns a `deploy-kind` step:
 
 The interpreter does **not** recursively dispatch the lifecycle verb through every child frame before
 unwinding. On VM-backed paths, stopping or deleting the provider VM incidentally stops or removes the
-nested cluster. On the direct Linux GPU path, the demo hook invokes the project image to delete nvkind.
-Those are project-specific cleanup strategies, not recursive descent/ascent.
+nested cluster. On the direct Linux GPU path, the demo hook recovers the exact Docker-visible durable profile
+bind and invokes a fixed internal entry in the project image. That entry runs the core retained-cluster
+transaction: it re-observes the bound node identities, deletes through the pinned Kind client, proves absence,
+and only then releases their protected ownership records. The outer frame separately proves every declared
+node absent. These remain project-specific cleanup strategies, not recursive descent/ascent.
 
 Independent cleanup actions are attempted and their failures are aggregated. `down` stops provider VMs;
 `destroy` deletes them. A failed `project up` invokes best-effort root teardown, but a hard process kill can
