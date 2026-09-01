@@ -124,9 +124,7 @@ import System.Directory
     findExecutable,
     getCurrentDirectory,
     getPermissions,
-#if !defined(mingw32_HOST_OS)
     removePathForcibly,
-#endif
     removeFile,
     renameDirectory,
     setPermissions,
@@ -192,7 +190,7 @@ tests :: TestTree
 tests =
   testGroup
     "ColimaSpec"
-    [ testCase "the direct driver describes every tool effect without running it" $ do
+    [ testCase "the direct driver describes every tool effect without running it" $ onOwnershipHost $ do
         let view command = (commandTarget command, commandArguments command)
         map view
           [ listColimaProfilesCommand,
@@ -361,7 +359,7 @@ tests =
                 step <- atomicModifyIORef' artifactScript (\current -> (current + 1, current))
                 case (step, commandArguments command) of
                   (0, ["disk", "list", "--json"]) ->
-                    pure (Right (CapturedRun ExitSuccess ("{\"name\":\"colima-" ++ profileName ++ "\",\"dir\":\"" ++ diskDirectory ++ "\",\"instance\":\"colima-" ++ profileName ++ "\",\"instanceDir\":\"" ++ instanceDirectory ++ "\",\"format\":\"raw\",\"mountPoint\":\"\",\"size\":" ++ show (80 * gib) ++ "}\n") ""))
+                    pure (Right (CapturedRun ExitSuccess ("{\"name\":\"colima-" ++ profileName ++ "\",\"dir\":" ++ show diskDirectory ++ ",\"instance\":\"colima-" ++ profileName ++ "\",\"instanceDir\":" ++ show instanceDirectory ++ ",\"format\":\"raw\",\"mountPoint\":\"\",\"size\":" ++ show (80 * gib) ++ "}\n") ""))
                   (1, ["context", "inspect", _]) -> pure (Right (CapturedRun ExitSuccess ("[{\"Name\":\"colima-" ++ profileName ++ "\",\"Endpoints\":{\"docker\":{\"Host\":\"unix:///owned.sock\"}}}]\n") ""))
                   _ -> pure (Left "unexpected artifact observation command")
           artifacts <-

@@ -477,6 +477,9 @@ validateBoundProviderRoute provider boundRoute =
         (ProviderLima, ProviderBoundLimaRoute boundName, LimaFileTransfer (LimaVM expectedName))
             | boundName == expectedName -> Right ()
             | otherwise -> mismatch ("Lima route " ++ show boundName) ("Lima route " ++ show expectedName)
+        (ProviderWsl2, ProviderBoundWsl2Route boundName, Wsl2MountTransfer expectedVm)
+            | boundName == Wsl2.wsl2Distro expectedVm -> Right ()
+            | otherwise -> mismatch ("WSL2 route " ++ show boundName) ("WSL2 route " ++ show (Wsl2.wsl2Distro expectedVm))
         (ProviderDirectHost, ProviderBoundDirectRoute _ _, DirectHostTransfer) -> Right ()
         _ -> mismatch (show boundRoute) (show (spProviderKind provider, spVmId provider))
   where

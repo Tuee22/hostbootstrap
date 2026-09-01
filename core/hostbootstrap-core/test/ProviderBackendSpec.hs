@@ -34,7 +34,7 @@ import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 import qualified HostBootstrap.ProjectPlan as ProjectPlan
 import HostBootstrap.Reconcile
 import HostBootstrap.Step
-import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (..), SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu))
+import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (..), SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsGpu))
 import HostBootstrap.Substrate.Provider (HostPathShare (..), ProviderKind (..), SubstrateProvider, VMHandles (..), selectProviderKind)
 import HostBootstrap.Substrate.Provider.Backend
 import HostBootstrap.Substrate.Provider.Reconcile
@@ -110,6 +110,20 @@ portableCases =
         case mkLimaBackendSpec limaUnresolvedHostConfig limaProvider limaEnvelope limaShare of
             Left (Unsupported _) -> pure ()
             other -> assertFailure ("expected unresolved Lima-tool refusal, got " <> showEither other)
+    , testCase "WSL2 construction admits only the closed Windows realization" $ do
+        case mkWsl2BackendSpec fakeResolvedHostConfig wsl2Provider limaEnvelope limaShare of
+            Left (Failure _) -> pure ()
+            other -> assertFailure ("expected WSL2 host-substrate refusal, got " <> showEither other)
+        case mkWsl2BackendSpec wsl2ResolvedHostConfig limaProvider limaEnvelope limaShare of
+            Left (Failure _) -> pure ()
+            other -> assertFailure ("expected WSL2 provider-kind refusal, got " <> showEither other)
+        wslSpec <- either (assertFailure . show) pure (mkWsl2BackendSpec wsl2ResolvedHostConfig wsl2Provider limaEnvelope limaShare)
+        limaSpec <- either (assertFailure . show) pure (mkLimaBackendSpec limaResolvedHostConfig limaProvider limaEnvelope limaShare)
+        assertBool "the WSL2 realization shared Lima's backend identity" (wslSpec /= limaSpec)
+    , testCase "WSL2 construction refuses an unresolved WSL tool" $
+        case mkWsl2BackendSpec wsl2UnresolvedHostConfig wsl2Provider limaEnvelope limaShare of
+            Left (Unsupported _) -> pure ()
+            other -> assertFailure ("expected unresolved WSL-tool refusal, got " <> showEither other)
     , testCase "Lima fingerprints bind the exact budget and writable share" $ do
         baseline <- either (assertFailure . show) pure (mkLimaBackendSpec limaResolvedHostConfig limaProvider limaEnvelope limaShare)
         retry <- either (assertFailure . show) pure (mkLimaBackendSpec limaResolvedHostConfig limaProvider limaEnvelope limaShare)
@@ -1054,9 +1068,19 @@ limaResolvedHostConfig =
 limaUnresolvedHostConfig :: HostConfig
 limaUnresolvedHostConfig = HostConfig (Substrate AppleSilicon Arm64) Map.empty
 
-limaProvider, incusProvider :: SubstrateProvider
+wsl2ResolvedHostConfig :: HostConfig
+wsl2ResolvedHostConfig =
+    HostConfig
+        (Substrate WindowsGpu Amd64)
+        (Map.fromList [(Wsl, fixtureExe fixtureWsl)])
+
+wsl2UnresolvedHostConfig :: HostConfig
+wsl2UnresolvedHostConfig = HostConfig (Substrate WindowsGpu Amd64) Map.empty
+
+limaProvider, incusProvider, wsl2Provider :: SubstrateProvider
 limaProvider = selectProviderKind ProviderLima providerHandles
 incusProvider = selectProviderKind ProviderIncus providerHandles
+wsl2Provider = selectProviderKind ProviderWsl2 providerHandles
 
 providerHandles :: VMHandles
 providerHandles =
@@ -1085,6 +1109,9 @@ fixtureIncus = hostFixturePath "/usr/bin/incus"
 
 fixtureLima :: FilePath
 fixtureLima = hostFixturePath "/usr/bin/limactl"
+
+fixtureWsl :: FilePath
+fixtureWsl = hostFixturePath "/Windows/System32/wsl.exe"
 
 providerGate :: Execution.StepExecution scope planId -> IO PreparedGate
 providerGate execution = gateFor (Execution.stepExecutionPlanDigest execution) (Execution.stepExecutionOperationKey execution)

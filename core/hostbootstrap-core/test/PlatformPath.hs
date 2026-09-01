@@ -25,10 +25,12 @@ through this module.
 module PlatformPath
     ( hostFixtureRoot
     , hostFixturePath
+    , hostPathAsPosixDescriptor
     )
 where
 
-import System.FilePath (joinPath, (</>))
+import System.FilePath (isPathSeparator, joinPath, splitDirectories, splitDrive, (</>))
+import qualified System.FilePath.Posix as Posix
 
 {- | The absolute root of the host running the suite: @\/@ on POSIX and the
 system drive on Windows.
@@ -47,6 +49,11 @@ hostFixtureRoot = "/"
 -}
 hostFixturePath :: FilePath -> FilePath
 hostFixturePath named = hostFixtureRoot </> joinPath (posixSegments named)
+
+-- | Render one absolute host fixture location as the equivalent POSIX descriptor.
+hostPathAsPosixDescriptor :: FilePath -> FilePath
+hostPathAsPosixDescriptor native =
+    "/" <> Posix.joinPath (filter (not . all isPathSeparator) (splitDirectories (snd (splitDrive native))))
 
 -- | Split on @\/@ alone, so the same argument yields the same segments on every host.
 posixSegments :: FilePath -> [String]

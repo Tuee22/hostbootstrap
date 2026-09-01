@@ -386,6 +386,7 @@ def test_native_build_command() -> None:
         "--store-dir",
         str(Path("/proj") / ".build/cabal-store"),
         "build",
+        "-j1",
         "exe:demo",
     )
 
@@ -398,6 +399,7 @@ def test_native_build_command_offline() -> None:
         "--store-dir",
         str(Path("/proj") / ".build/cabal-store"),
         "build",
+        "-j1",
         "--offline",
         "exe:demo",
     )

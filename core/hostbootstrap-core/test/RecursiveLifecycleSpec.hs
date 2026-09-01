@@ -14,9 +14,12 @@ module RecursiveLifecycleSpec (
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (finally)
+import Control.Monad (unless)
+import Data.Char (toUpper)
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.Text as Text
 import qualified Fixture
+import PlatformPath (hostPathAsPosixDescriptor)
 import HostBootstrap.Authority (normalizeExecutableIdentity)
 import qualified HostBootstrap.CLI as CLI
 import HostBootstrap.Config.Class (AssemblyRequest (..), ConfigAssembly, pureConfigAssembly)
@@ -52,11 +55,12 @@ import HostBootstrap.Step (
     projectStepId,
     reversedBy,
  )
-import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, getCurrentDirectory, removeFile)
+import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, removeFile)
 import System.Environment (getEnv, getEnvironment, getExecutablePath, lookupEnv, withArgs)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
-import System.FilePath ((</>))
-import System.IO.Temp (withSystemTempDirectory)
+import System.FilePath ((</>), searchPathSeparator, takeDirectory)
+import System.Info (os)
+import System.IO.Temp (withTempDirectory)
 import System.Process (CreateProcess (env), ProcessHandle, createProcess, proc, waitForProcess)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -65,22 +69,22 @@ tests :: TestTree
 tests =
     testGroup
         "RecursiveLifecycleSpec (real root/VM/container lifecycle)"
-        [ testCase "public up crosses two real authenticated process boundaries" $
+        [ testCase "public up crosses two real authenticated process boundaries" $ onRecursiveLifecycleHost $
             withFixtureEnvironment False $ \root _ ->
                 runPublicProcess root False "up" >>= (@?= ExitSuccess)
-        , testCase "public down unwinds the same two real process boundaries child-first" $
+        , testCase "public down unwinds the same two real process boundaries child-first" $ onRecursiveLifecycleHost $
             withFixtureEnvironment False $ \root _ -> do
                 runPublicProcess root False "up" >>= (@?= ExitSuccess)
                 runPublicProcess root False "down" >>= (@?= ExitSuccess)
-        , testCase "public destroy unwinds the same two real process boundaries child-first" $
+        , testCase "public destroy unwinds the same two real process boundaries child-first" $ onRecursiveLifecycleHost $
             withFixtureEnvironment False $ \root _ -> do
                 runPublicProcess root False "up" >>= (@?= ExitSuccess)
                 runPublicProcess root False "destroy" >>= (@?= ExitSuccess)
-        , testCase "failed up preserves its failure and admits exact reverse recovery" $
+        , testCase "failed up preserves its failure and admits exact reverse recovery" $ onRecursiveLifecycleHost $
             withFixtureEnvironment True $ \root _ -> do
                 runPublicProcess root True "up" >>= (@?= ExitFailure 1)
                 runPublicProcess root True "destroy" >>= (@?= ExitSuccess)
-        , testCase "a failed reverse operation is settled once and terminates the child" $
+        , testCase "a failed reverse operation is settled once and terminates the child" $ onRecursiveLifecycleHost $
             withFixtureEnvironmentFor False True $ \root _ -> do
                 runPublicProcessFor root False True "up" >>= (@?= ExitSuccess)
                 runPublicProcessFor root False True "destroy" >>= (@?= ExitFailure 1)
@@ -186,19 +190,20 @@ withFixtureEnvironment :: Bool -> (FilePath -> CLI.ProjectSpec Fixture.ProjectCo
 withFixtureEnvironment failContainer = withFixtureEnvironmentFor failContainer False
 
 withFixtureEnvironmentFor :: Bool -> Bool -> (FilePath -> CLI.ProjectSpec Fixture.ProjectConfig Fixture.TestConfig -> IO result) -> IO result
-withFixtureEnvironmentFor failContainer failCleanup use =
-    withSystemTempDirectory "hostbootstrap-recursive-lifecycle" $ \root -> do
-        executable <- getExecutablePath
+withFixtureEnvironmentFor failContainer failCleanup use = do
+    executable <- getExecutablePath
+    withTempDirectory (takeDirectory executable) "r" $ \root -> do
         project <- pure (normalizeExecutableIdentity executable)
         configPath <- siblingProjectConfigPath project
         packageRoot <- fixturePackageRoot
-        let fixtureTools = packageRoot </> "test" </> "fixtures" </> "recursive-lifecycle"
-            restore = removeIfPresent configPath
+        fixtureTools <- prepareRecursiveFixtureTools root packageRoot
+        let restore = removeIfPresent configPath
         ( do
                 createDirectory (root </> "vm")
                 createDirectory (root </> "container")
                 writeProjectConfigFile Fixture.projectConfigCodec configPath (Fixture.defaultProjectConfig project (Text.pack root) HostOrchestrator)
-                mapM_ (\tool -> doesFileExist (fixtureTools </> tool) >>= assertBool ("missing fixture tool " <> tool)) ["incus", "docker"]
+                let suffix = if os == "mingw32" then ".exe" else ""
+                mapM_ (\tool -> doesFileExist (fixtureTools </> (tool <> suffix)) >>= assertBool ("missing fixture tool " <> tool)) ["incus", "docker"]
                 use root (fixtureSpec root failContainer failCleanup)
             )
             `finally` restore
@@ -220,17 +225,28 @@ recursiveFixtureEnvironment root failContainer failCleanup = do
     executable <- getExecutablePath
     packageRoot <- fixturePackageRoot
     inherited <- getEnvironment
-    let fixtureTools = packageRoot </> "test" </> "fixtures" </> "recursive-lifecycle"
+    fixtureTools <- prepareRecursiveFixtureTools root packageRoot
+    let
         inheritedPath = maybe "" id (lookup "PATH" inherited)
         overridden =
-            [ ("PATH", fixtureTools <> ":" <> inheritedPath)
+            [ ("PATH", fixtureTools <> [searchPathSeparator] <> inheritedPath)
             , ("HOSTBOOTSTRAP_RECURSIVE_FIXTURE_EXE", executable)
             , ("HOSTBOOTSTRAP_RECURSIVE_FIXTURE_ROOT", root)
             , ("HOSTBOOTSTRAP_RECURSIVE_FIXTURE_FAIL", if failContainer then "1" else "0")
             , ("HOSTBOOTSTRAP_RECURSIVE_FIXTURE_CLEANUP_FAIL", if failCleanup then "1" else "0")
             ]
-        names = map fst overridden
-    pure (overridden <> filter ((`notElem` names) . fst) inherited)
+        names = map (map toUpper . fst) overridden
+    pure (overridden <> filter ((`notElem` names) . map toUpper . fst) inherited)
+
+prepareRecursiveFixtureTools :: FilePath -> FilePath -> IO FilePath
+prepareRecursiveFixtureTools root packageRoot
+    | os /= "mingw32" = pure (packageRoot </> "test" </> "fixtures" </> "recursive-lifecycle")
+    | otherwise = do
+        let tools = root </> "fixture-tools"
+        createDirectoryIfMissing True tools
+        executable <- getExecutablePath
+        mapM_ (\tool -> copyFile executable (tools </> (tool <> ".exe"))) ["incus", "docker"]
+        pure tools
 
 fixturePackageRoot :: IO FilePath
 fixturePackageRoot = do
@@ -255,7 +271,7 @@ fixtureSpec fixtureRoot failContainer failCleanup =
 projectChild :: FilePath -> Bool -> Bool -> Fixture.ProjectConfig scope -> Text.Text -> Text.Text -> LiftContext -> Either String (FilePath, Fixture.ProjectConfig scope, StepPlan)
 projectChild fixtureRoot failContainer failCleanup parent _parent child _route = do
     let kind = if child == "vm-orchestrator-1" then VMOrchestrator else VMProjectContainer
-        descriptor = if kind == VMOrchestrator then fixtureRoot </> "vm" else fixtureRoot </> "container"
+        descriptor = projectDescriptorRoot fixtureRoot <> if kind == VMOrchestrator then "/vm" else "/container"
     config <- Fixture.deriveProjectConfigForKind kind parent (Text.pack descriptor)
     plan <- either (Left . show) Right (mkStepPlan (fixtureSteps fixtureRoot failContainer failCleanup config))
     pure (descriptor, config, plan)
@@ -274,11 +290,11 @@ fixtureSteps fixtureRoot failContainer failCleanup config =
                 then TeardownFailed "fixture cleanup failure"
                 else TeardownReleased
     deliveryPayload =
-        case Fixture.deriveProjectConfigForKind VMProjectContainer config (Text.pack (fixtureRoot </> "container")) of
+        case Fixture.deriveProjectConfigForKind VMProjectContainer config (Text.pack (projectDescriptorRoot fixtureRoot <> "/container")) of
             Right child -> Fixture.renderProjectConfig child <> "\n"
             Left _ ->
-                case Fixture.deriveProjectConfigForKind VMOrchestrator config (Text.pack (fixtureRoot </> "vm"))
-                    >>= \vmConfig -> Fixture.deriveProjectConfigForKind VMProjectContainer vmConfig (Text.pack (fixtureRoot </> "container")) of
+                case Fixture.deriveProjectConfigForKind VMOrchestrator config (Text.pack (projectDescriptorRoot fixtureRoot <> "/vm"))
+                    >>= \vmConfig -> Fixture.deriveProjectConfigForKind VMProjectContainer vmConfig (Text.pack (projectDescriptorRoot fixtureRoot <> "/container")) of
                     Right child -> Fixture.renderProjectConfig child <> "\n"
                     Left _ -> Fixture.renderProjectConfig config <> "\n"
     _container =
@@ -289,6 +305,12 @@ fixtureSteps fixtureRoot failContainer failCleanup config =
             []
             True
             (Just (ConfigDelivery "/workspace/container/project.dhall" "/workspace/container/pb" deliveryPayload))
+
+projectDescriptorRoot :: FilePath -> FilePath
+projectDescriptorRoot = hostPathAsPosixDescriptor
+
+onRecursiveLifecycleHost :: IO () -> IO ()
+onRecursiveLifecycleHost action = unless (os == "mingw32") action
 
 node :: String -> String -> StepObservation -> Step
 node name frame observation =

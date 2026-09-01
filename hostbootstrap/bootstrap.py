@@ -283,6 +283,7 @@ def native_build_command(
         "--store-dir",
         str(project_root / _STORE_DIR),
         "build",
+        "-j1",
     )
     if offline:
         command += ("--offline",)

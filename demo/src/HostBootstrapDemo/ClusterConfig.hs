@@ -34,7 +34,7 @@ import HostBootstrapDemo.Config (
     canonicalDemoConfigProjection,
     clusterProfileOf,
  )
-import System.FilePath (isAbsolute, normalise, splitDirectories, (</>))
+import qualified System.FilePath.Posix as Posix
 
 {- | Stable path interpreted by the Docker daemon when it creates Kind nodes.
 
@@ -64,8 +64,8 @@ renderExactClusterConfig driver dockerHostDataPath retainedDigest cfg clusterSli
         driverName = case driver of
             KindDriver -> "kind"
             NvkindDriver -> "nvkind"
-        statePath = durableTarget </> "cluster" </> driverName </> "state"
-        configPath = durableTarget </> "cluster" </> driverName </> "config.yaml"
+        statePath = durableTarget Posix.</> "cluster" Posix.</> driverName Posix.</> "state"
+        configPath = durableTarget Posix.</> "cluster" Posix.</> driverName Posix.</> "config.yaml"
     pure (bytes, childConfigDigest bytes, statePath, configPath, intents)
 
 verifyExactClusterConfig ::
@@ -143,9 +143,9 @@ renderYaml driver dockerHostDataPath =
 
 requireCanonicalPath :: FilePath -> Either String ()
 requireCanonicalPath path = do
-    require (isAbsolute path) "cluster durable target is not absolute"
-    require (normalise path == path) "cluster durable target is not lexical-canonical"
-    require (all (`notElem` ["..", ".", ""]) (splitDirectories path)) "cluster durable target escapes lexically"
+    require (Posix.isAbsolute path) "cluster durable target is not absolute"
+    require (Posix.normalise path == path) "cluster durable target is not lexical-canonical"
+    require (all (`notElem` ["..", ".", ""]) (Posix.splitDirectories path)) "cluster durable target escapes lexically"
 
 require :: Bool -> String -> Either String ()
 require True _ = Right ()

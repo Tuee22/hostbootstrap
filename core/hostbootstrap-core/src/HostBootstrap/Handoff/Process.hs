@@ -59,13 +59,11 @@ module HostBootstrap.Handoff.Process (
 where
 
 import Data.ByteString (ByteString)
-import Data.Proxy (Proxy (Proxy))
 import Data.Text (Text)
 import Data.Word (Word64)
 import HostBootstrap.Handoff (HandoffBindingInput, providerDependencyPackagesFields, providerDependencyProbeRequestFromFields, withProviderDependencyReprobeKernel)
 import HostBootstrap.Handoff.Process.Route (
     LifecycleProcessRoute,
-    withRecoveryLifecycleProcessRouteForKernel,
  )
 import HostBootstrap.Handoff.Relay (BrokerLink, withProviderDependencyReprobeEndpointKernel)
 import HostBootstrap.HostConfig (HostConfig)
@@ -82,17 +80,16 @@ import HostBootstrap.Lifecycle.Execution.Internal (
  )
 import HostBootstrap.Teardown.Internal (
     ReverseDescent,
-    withReverseDescentProcessInputsKernel,
  )
-#if !defined(mingw32_HOST_OS)
 import Control.Concurrent (threadDelay)
 import qualified Control.Exception as Exception
+import Data.Proxy (Proxy (Proxy))
 import qualified Data.Text as Text
 import HostBootstrap.Handoff.Completion
     ( withAcknowledgedBoundReverseLifecycleCompletionKernel
     , withAcknowledgedForwardLifecycleCompletionKernel
     )
-import HostBootstrap.Handoff.Process.Route (withLifecycleProcessRouteLaunchKernel)
+import HostBootstrap.Handoff.Process.Route (withLifecycleProcessRouteLaunchKernel, withRecoveryLifecycleProcessRouteForKernel)
 import HostBootstrap.Handoff.Protocol (HandoffChannel, handoffChannel)
 import HostBootstrap.Handoff.Relay
     ( RelayError
@@ -101,22 +98,28 @@ import HostBootstrap.Handoff.Relay
     , relayErrorMessage
     )
 import HostBootstrap.HostConfig (resolveMaybe)
-import HostBootstrap.HostTool (absExePath)
+import HostBootstrap.HostTool (absExePath, hostToolProcessArguments)
+import HostBootstrap.Teardown.Internal (withReverseDescentProcessInputsKernel)
 import System.Exit (ExitCode)
 import System.IO (Handle, hClose)
+#if !defined(mingw32_HOST_OS)
 import System.Posix.Signals (Signal, sigKILL, sigTERM, signalProcessGroup)
+#endif
 import System.Process
     ( CreateProcess (close_fds, create_group, std_err, std_in, std_out)
     , ProcessHandle
     , StdStream (CreatePipe, Inherit)
-    , getPid
     , getProcessExitCode
     , proc
     , waitForProcess
     , withCreateProcess
     )
-import System.Timeout (timeout)
+#if defined(mingw32_HOST_OS)
+import System.Process (terminateProcess)
+#else
+import System.Process (getPid)
 #endif
+import System.Timeout (timeout)
 
 {- | Launch one forward child and complete its edge, or leave nothing running.
 
@@ -134,16 +137,11 @@ withForwardLifecycleChildProcess ::
     HandoffBindingInput ->
     ByteString ->
     IO (Either Text ())
-#if defined(mingw32_HOST_OS)
-withForwardLifecycleChildProcess _config _link _route _request _input _payload =
-    pure (Left unsupportedOnThisHost)
-#else
 withForwardLifecycleChildProcess config link route request input payload =
     withLifecycleChild config route $ \channel ->
         offerHandoffEdge link channel request input payload $ \offer report persist ->
             withAcknowledgedForwardLifecycleCompletionKernel offer report persist $
                 \_ -> pure (Right ())
-#endif
 
 {- | Install one lexical provider reprobe service inside the same Process
 exchange that owns the child. Closing the exchange closes both endpoint and
@@ -302,26 +300,6 @@ withReverseLifecycleChildProcess ::
     Word64 ->
     ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId ->
     IO (Either Text ())
-#if defined(mingw32_HOST_OS)
-withReverseLifecycleChildProcess _config _link _route _request _descent =
-    pure (Left unsupportedOnThisHost)
-
-{- | The refusal this row returns on a host without POSIX process groups.
-
-It is a total answer rather than an absence: the caller receives the same
-'Either' it receives everywhere, and the reason names the primitive the
-contract needs rather than the module that is missing.
--}
-unsupportedOnThisHost :: Text
-unsupportedOnThisHost =
-    processFailure
-        "owning a child's process group is a POSIX row, and this host has no group signal"
-#else
-withReverseLifecycleChildProcess config link route request descent =
-    withLifecycleChild config route $ \channel ->
-        offerReverseDescentKernel link channel request descent $ \bound report persist ->
-            withAcknowledgedBoundReverseLifecycleCompletionKernel bound report persist $
-                \_ -> pure (Right ())
 
 {- | Derive and own one reverse child directly from its prepared descent.
 
@@ -337,6 +315,12 @@ withPreparedReverseLifecycleChildProcess ::
     Text ->
     ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId ->
     IO (Either Text ())
+withReverseLifecycleChildProcess config link route request descent =
+    withLifecycleChild config route $ \channel ->
+        offerReverseDescentKernel link channel request descent $ \bound report persist ->
+            withAcknowledgedBoundReverseLifecycleCompletionKernel bound report persist $
+                \_ -> pure (Right ())
+
 withPreparedReverseLifecycleChildProcess config link request targetBinary descent = do
     withReverseDescentProcessInputsKernel descent $ \package route input verb ->
         withRecoveryLifecycleProcessRouteForKernel
@@ -363,19 +347,27 @@ withLifecycleChild config route serve =
         case resolveMaybe config tool of
             Nothing ->
                 pure (Left (processFailure "the route's host tool resolves to no absolute path"))
-            Just exe -> spawned (absExePath exe) (map Text.unpack argv)
+            Just exe ->
+                spawned
+                    (absExePath exe)
+                    (hostToolProcessArguments tool exe (map Text.unpack argv))
   where
-    spawned executable arguments =
-        withCreateProcess (childProcess executable arguments) $
-            \inbound outbound _ child ->
-                case (inbound, outbound) of
-                    (Just childStdin, Just childStdout) ->
-                        Exception.bracket_
-                            (pure ())
-                            (terminateChildGroup child childStdin childStdout)
-                            (exchange childStdin childStdout serve)
-                    _ ->
-                        pure (Left (processFailure "the child was launched without its own pipes"))
+    spawned executable arguments = do
+        attempted <-
+            Exception.try
+                ( withCreateProcess (childProcess executable arguments) $
+                    \inbound outbound _ child ->
+                        case (inbound, outbound) of
+                            (Just childStdin, Just childStdout) ->
+                                Exception.bracket_
+                                    (pure ())
+                                    (terminateChildGroup child childStdin childStdout)
+                                    (exchange childStdin childStdout serve)
+                            _ ->
+                                pure (Left (processFailure "the child was launched without its own pipes"))
+                )
+                :: IO (Either Exception.SomeException (Either Text ()))
+        pure (either (Left . processFailure . Text.pack . Exception.displayException) id attempted)
 
 {- | The only process shape this owner ever launches. -}
 childProcess :: FilePath -> [String] -> CreateProcess
@@ -405,8 +397,16 @@ exchange childStdin childStdout serve = do
     case opened of
         Nothing -> pure (Left (processFailure "the child never opened its protocol channel"))
         Just channel -> do
-            served <- serve channel
-            pure (either (Left . processFailure . Text.pack . relayErrorMessage) Right served)
+            attempted <- Exception.try (serve channel)
+            pure $ case attempted of
+                Left (failure :: Exception.SomeException) ->
+                    Left
+                        ( processFailure
+                            ( "the rooted relay service raised an exception: "
+                                <> Text.pack (Exception.displayException failure)
+                            )
+                        )
+                Right served -> either (Left . processFailure . Text.pack . relayErrorMessage) Right served
 
 {- | End the child's whole group, then reap it, whatever happened above.
 
@@ -421,16 +421,33 @@ descriptor left open outlives the process that justified it.
 -}
 terminateChildGroup :: ProcessHandle -> Handle -> Handle -> IO ()
 terminateChildGroup child childStdin childStdout = do
-    signalChildGroup child sigTERM
+    askChildGroupToStop child
     lingering <- waitFor terminationGraceMicros child
     case lingering of
         Just _ -> pure ()
-        Nothing -> signalChildGroup child sigKILL
+        Nothing -> killChildGroup child
     _ <- Exception.try (waitForProcess child) :: IO (Either Exception.SomeException ExitCode)
     closeQuietly childStdin
     closeQuietly childStdout
 
-{- | Signal the child's own group, or accept that there is no longer one. -}
+{- | Ask the child's own group to stop, or accept that there is no longer one. -}
+askChildGroupToStop :: ProcessHandle -> IO ()
+#if defined(mingw32_HOST_OS)
+askChildGroupToStop child = quietly (terminateProcess child)
+#else
+askChildGroupToStop child = signalChildGroup child sigTERM
+#endif
+
+{- | End the child's group with something it cannot decline. -}
+killChildGroup :: ProcessHandle -> IO ()
+#if defined(mingw32_HOST_OS)
+killChildGroup child = quietly (terminateProcess child)
+#else
+killChildGroup child = signalChildGroup child sigKILL
+#endif
+
+#if !defined(mingw32_HOST_OS)
+{- | Signal the child's POSIX group, or accept that there is no longer one. -}
 signalChildGroup :: ProcessHandle -> Signal -> IO ()
 signalChildGroup child signal = do
     identity <- getPid child
@@ -440,6 +457,14 @@ signalChildGroup child signal = do
             signalled <-
                 Exception.try (signalProcessGroup signal (fromIntegral pid))
             either (\(_ :: Exception.IOException) -> pure ()) pure signalled
+#endif
+
+#if defined(mingw32_HOST_OS)
+quietly :: IO () -> IO ()
+quietly action = do
+    attempted <- Exception.try action
+    either (\(_ :: Exception.IOException) -> pure ()) pure attempted
+#endif
 
 {- | Poll for the child's exit until the grace runs out. -}
 waitFor :: Int -> ProcessHandle -> IO (Maybe ExitCode)
@@ -469,7 +494,6 @@ terminationGraceMicros = 10 * 1000000
 {- | How often the grace is checked. -}
 pollMicros :: Int
 pollMicros = 50 * 1000
-#endif
 
 processFailure :: Text -> Text
 processFailure detail = "lifecycle child process: " <> detail

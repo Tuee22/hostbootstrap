@@ -18,6 +18,7 @@ module HostBootstrap.HostTool (
     AbsExe,
     absExePath,
     mkAbsExe,
+    hostToolProcessArguments,
     discover,
     cudaCandidatePaths,
 )
@@ -26,7 +27,7 @@ where
 import Control.Exception (IOException, catch)
 import System.Directory (doesDirectoryExist, doesFileExist, findExecutable, listDirectory)
 import Data.List (isPrefixOf, sort)
-import System.FilePath (isAbsolute)
+import System.FilePath (isAbsolute, takeFileName)
 import qualified System.FilePath.Posix as Posix
 #ifdef mingw32_HOST_OS
 import HostBootstrap.Effect.Run (CapturedRun (capturedExit, capturedStdout), runCaptured)
@@ -129,6 +130,17 @@ mkAbsExe fp
     | isAbsolute fp = Right (AbsExe fp)
     | otherwise = Left ("not an absolute path: " ++ fp)
 
+{- | Adapt a resolved tool's option vector to its native process parser.
+
+Windows supplies the application path to @CreateProcess@ separately from the
+serialized command line. Most programs reconstruct their program-name token,
+but @wsl.exe@ consumes the first serialized token as @argv[0]@. Prefixing its
+basename keeps its first real option (normally @-d@) in the option position.
+-}
+hostToolProcessArguments :: HostTool -> AbsExe -> [String] -> [String]
+hostToolProcessArguments Wsl executable arguments = takeFileName (absExePath executable) : arguments
+hostToolProcessArguments _tool _executable arguments = arguments
+
 {- | Discover a tool's absolute path. 'System.Directory.findExecutable' returns
 an absolute path when the command is found on the search path; the result is
 re-validated through 'mkAbsExe' so a non-absolute hit is rejected.
@@ -139,10 +151,22 @@ discover Wsl = firstExisting ["C:\\Windows\\System32\\wsl.exe"]
 discover Bcdedit = firstExisting ["C:\\Windows\\System32\\bcdedit.exe"]
 #endif
 discover tool = do
-    found <- findExecutable (toolCommandName tool)
+    found <- findHostExecutable (toolCommandName tool)
     case found of
         Just fp -> pure (either (const Nothing) Just (mkAbsExe fp))
         Nothing -> discoverFallback tool
+
+findHostExecutable :: String -> IO (Maybe FilePath)
+#ifdef mingw32_HOST_OS
+findHostExecutable name = firstFound [name, name <> ".exe", name <> ".com", name <> ".bat", name <> ".cmd"]
+  where
+    firstFound [] = pure Nothing
+    firstFound (candidate : remaining) = do
+      found <- findExecutable candidate
+      maybe (firstFound remaining) (pure . Just) found
+#else
+findHostExecutable = findExecutable
+#endif
 
 discoverFallback :: HostTool -> IO (Maybe AbsExe)
 #ifdef mingw32_HOST_OS

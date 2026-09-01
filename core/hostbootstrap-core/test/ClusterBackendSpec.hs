@@ -159,7 +159,7 @@ admissionCases =
             withHarnessClusterFixtureM
                 (\prepared -> pure (Right (preparedClusterConfigPath prepared)))
         case outcome of
-            Right (Just path) -> assertBool "Harness config is not the exact driver path" ("cluster/kind/config.yaml" `isSuffixOf` path)
+            Right (Just path) -> assertBool "Harness config is not the exact driver path" (("cluster" </> "kind" </> "config.yaml") `isSuffixOf` path)
             other -> assertFailure ("expected an isolated Harness config path, got " ++ show other)
     ]
   where
@@ -295,7 +295,7 @@ joinCases =
                 pure (Right (preparedClusterName prepared, stagingPaths, stagingPresent, temporaryRoot, durable))
         case outcome of
             Right (name, [staging], [False], temporaryRoot, durable) -> do
-                takeDirectory staging @?= dropTrailingPathSeparator temporaryRoot
+                takeDirectory (takeDirectory staging) @?= dropTrailingPathSeparator temporaryRoot
                 assertBool "the local staging path is absolute" (isAbsolute staging)
                 assertBool
                     "the staging path names the exact cluster"

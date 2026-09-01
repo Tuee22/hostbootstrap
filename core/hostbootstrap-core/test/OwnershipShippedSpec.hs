@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 {- | The frame table's third ownership row, exercised as a transport.
@@ -259,7 +260,7 @@ interpreterTests =
         identity <- expectTaken first
         again <- runShippedOwnership ownershipRowForHost (transactionFor frame ShipTakeDirectory)
         again @?= ShippedObjectTaken identity
-    , rowCase "a symbolic link is published, retained on retry, and conditionally given back" $ \frame -> do
+    , symbolicLinkCase "a symbolic link is published, retained on retry, and conditionally given back" $ \frame -> do
         createDirectory (frameLinkTarget frame)
         created <-
             runShippedOwnership
@@ -287,7 +288,7 @@ interpreterTests =
         assertBool "the managed symbolic link was removed" (not remaining)
         targetRemaining <- doesDirectoryExist (frameLinkTarget frame)
         assertBool "the symbolic link target was not removed" targetRemaining
-    , rowCase "an exact-looking symbolic link without this transaction's record remains foreign" $ \frame -> do
+    , symbolicLinkCase "an exact-looking symbolic link without this transaction's record remains foreign" $ \frame -> do
         createDirectory (frameLinkTarget frame)
         createFileLink (frameLinkTarget frame) (frameTarget frame)
         refused <-
@@ -299,7 +300,7 @@ interpreterTests =
             other -> assertFailure ("expected an occupied refusal, got " <> show other)
         linked <- pathIsSymbolicLink (frameTarget frame)
         assertBool "the foreign exact-looking link survived" linked
-    , rowCase "a replacement symbolic link is refused on release and left intact" $ \frame -> do
+    , symbolicLinkCase "a replacement symbolic link is refused on release and left intact" $ \frame -> do
         createDirectory (frameLinkTarget frame)
         _ <-
             runShippedOwnership
@@ -424,6 +425,28 @@ rowCase name body =
                         other ->
                             assertFailure
                                 ("expected this host's row to refuse, got " <> show other)
+
+symbolicLinkCase :: TestName -> (Frame -> IO ()) -> TestTree
+symbolicLinkCase name body =
+    testCase name $
+        withFrame $ \frame ->
+            if symbolicLinkSupported then body frame else assertSymbolicLinkRefusal frame
+  where
+    assertSymbolicLinkRefusal frame = do
+        refused <-
+            runShippedOwnership
+                ownershipRowForHost
+                (transactionFor frame (ShipTakeSymbolicLink (frameLinkTarget frame)))
+        case refused of
+            ShippedRefused (OwnershipUnsupported _) -> pure ()
+            other -> assertFailure ("expected symbolic-link refusal, got " <> show other)
+
+symbolicLinkSupported :: Bool
+#ifdef mingw32_HOST_OS
+symbolicLinkSupported = False
+#else
+symbolicLinkSupported = hostOwnershipSupported
+#endif
 
 transactionFor :: Frame -> ShippedAct -> ShippedOwnership
 transactionFor frame act =

@@ -22,7 +22,7 @@ module HostBootstrap.Chain (
 )
 where
 
-import Control.Exception.Safe (throwIO, tryAny)
+import Control.Exception.Safe (displayException, throwIO, tryAny)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (intercalate, partition)
 import Data.List.NonEmpty (NonEmpty)
@@ -204,8 +204,19 @@ runChainFromFrame cfg self store plan authority cursor =
         result <- liftSubcommandWithStdin cfg self descent handoffArgv (liftStdin descent)
         case result of
             Right (ExitSuccess, out, _) -> putStr out >> pure (Right ())
-            Right (_, out, err) -> putStr out >> pure (Left err)
+            Right (status, out, err) -> do
+                putStr out
+                pure
+                    ( Left
+                        ( "recursive project descent failed with "
+                            ++ show status
+                            ++ diagnostic err
+                        )
+                    )
             Left failure -> pure (Left failure)
+      where
+        diagnostic "" = " and no stderr diagnostic"
+        diagnostic err = ": " ++ err
 
 {- | Interpret a current frame while delegating its one admitted descent.
 
@@ -467,20 +478,36 @@ runChainFromFrameWithDescentObserved cfg store plan authority cursor runDescent 
                                     closed <- closeAfterNode session afterNode
                                     case closed of
                                         Left failure -> pure (Left failure)
-                                        Right _ -> throwIO exception
+                                        Right _ ->
+                                            throwIO
+                                                ( userError
+                                                    ( "prepared project step callback for "
+                                                        ++ operationKeyText (plannedStepOperationKey planned)
+                                                        ++ " raised an exception: "
+                                                        ++ displayException exception
+                                                    )
+                                                )
                     Right observation -> do
-                        settled <-
-                            settleNode
-                                False
-                                runtime
-                                session
-                                gate
-                                afterPrepare
-                                (settledPhaseFor observation)
-                        pure $ case settled of
-                            Left failure -> Left failure
-                            Right advance ->
-                                Right (withOperationAdvance advance (\() afterNode -> (observation, afterNode)))
+                        attemptedSettlement <-
+                            tryAny
+                                ( settleNode
+                                    False
+                                    runtime
+                                    session
+                                    gate
+                                    afterPrepare
+                                    (settledPhaseFor observation)
+                                )
+                        pure $ case attemptedSettlement of
+                            Left failure ->
+                                Left
+                                    ( "settling the prepared project step raised an exception: "
+                                        ++ displayException failure
+                                    )
+                            Right settled -> case settled of
+                                Left failure -> Left failure
+                                Right advance ->
+                                    Right (withOperationAdvance advance (\() afterNode -> (observation, afterNode)))
 
     settleNode includeOpen runtime session gate afterPrepare phase =
         inEntry $ \protected -> do
@@ -593,10 +620,14 @@ runChainFromFrameWithDescentObserved cfg store plan authority cursor runDescent 
         either (Left . SessionStoreFailure) Right (mkRecordKey raw)
 
     descendInto carrier session fence permit postHandoff childFrame descent = do
-        result <- runDescent carrier current childFrame descent
-        case result of
-            Right () -> runPostHandoff carrier session fence permit postHandoff
-            Left failure -> pure (Left failure)
+        attempted <- tryAny (runDescent carrier current childFrame descent)
+        case attempted of
+            Left failure -> pure (Left ("authenticated project descent raised an exception: " ++ displayException failure))
+            Right result -> case result of
+                Right () -> runPostHandoff carrier session fence permit postHandoff
+                Left failure -> do
+                    putStrLn ("project up: authenticated descent refused: " ++ failure)
+                    pure (Left failure)
 
     runPostHandoff carrier session fence permit postHandoff = do
         ran <- runPlanSteps carrier session fence permit postHandoff

@@ -166,10 +166,10 @@ reconcileTests =
                 FakeCluster.recordedKubeconfigPaths root >>= \case
                     [staging] -> do
                         temporaryRoot <- getTemporaryDirectory
-                        takeDirectory staging @?= dropTrailingPathSeparator temporaryRoot
+                        takeDirectory (takeDirectory staging) @?= dropTrailingPathSeparator temporaryRoot
                         assertBool "the staging path is absolute" (isAbsolute staging)
                         assertBool
-                            "the staging name is bounded to this cluster"
+                            ("the staging name is bounded to this cluster: " <> takeFileName staging)
                             ( (".hostbootstrap-kind-" <> clusterName)
                                 `isPrefixOf` takeFileName staging
                                 && ".kubeconfig" `isSuffixOf` takeFileName staging

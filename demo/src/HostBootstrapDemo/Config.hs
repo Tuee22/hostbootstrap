@@ -106,7 +106,7 @@ import qualified Dhall
 import Dhall.Marshal.Decode (Decoder (Decoder, expected, extract), extractError, fromMonadic, toMonadic)
 import GHC.Generics (Generic)
 import HostBootstrap.Cluster.Cordon (parseQuantity)
-import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon, InClusterDaemon), ClusterProfile (Production, TestCase), profileDataPath)
+import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon, InClusterDaemon), ClusterProfile (Production, TestCase), profileDataSegments)
 import HostBootstrap.Config.Class (
     AssemblyRequest (..),
     ConfigAssembly,
@@ -142,6 +142,7 @@ import HostBootstrap.Harness (
     variantDraftValue,
  )
 import Numeric.Natural (Natural)
+import qualified System.FilePath.Posix as Posix
 
 {- | Refine a base 'Decoder' at DECODE time (development_plan_standards § BB/§ O):
 decode the underlying value, then validate it, failing the Dhall **extract** (not a
@@ -462,7 +463,7 @@ canonicalDemoConfigProjection retainedDigest cfg
             , publicPort (webServiceConfig cfg)
             , acceleratorPort (webServiceConfig cfg)
             , [("registry", 30500), ("web", 30080), ("minio", 30900), ("accelerator", 30081)]
-            , profileDataPath (clusterProfileOf cfg) (T.unpack (Context.sourceRoot (context cfg)))
+            , foldl (Posix.</>) (T.unpack (Context.sourceRoot (context cfg))) (profileDataSegments (clusterProfileOf cfg))
             )
   where
     observedDigest =

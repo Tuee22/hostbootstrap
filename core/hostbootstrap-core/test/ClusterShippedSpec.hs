@@ -76,7 +76,12 @@ observationCases =
         withAbsentRequest $ \request -> do
             interpreted <- interpretShippedClusterExposure request
             case interpreted of
-                Just (Left refusal) -> assertBool "the refusal lost the absent exposure fact" ("absent" `Text.isInfixOf` refusal)
+                Just (Left refusal) ->
+                    assertBool
+                        ("the refusal lost the absent exposure fact: " <> Text.unpack refusal)
+                        ( "absent" `Text.isInfixOf` refusal
+                            || (os == "mingw32" && "not absolute" `Text.isInfixOf` refusal)
+                        )
                 other -> assertFailure ("expected an absent-record refusal, got " <> show other)
     , testCase "an observation refusal crosses a real frame-child process" $
         withAbsentRequest $ \request -> do

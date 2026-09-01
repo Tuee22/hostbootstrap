@@ -81,6 +81,7 @@ import qualified SpecIndexSpec
 import qualified StepSpec
 import qualified SubstrateSpec
 import System.Environment (getArgs, getExecutablePath, lookupEnv)
+import System.FilePath (takeBaseName)
 import qualified TeardownSpec
 #if !defined(mingw32_HOST_OS)
 import System.Posix.Files (setFileCreationMask)
@@ -149,7 +150,13 @@ main = do
     -- interpreter launches whatever the host configuration resolves with the
     -- exact argument vector the described command carries.
     fakeCluster <- lookupEnv FakeCluster.fakeClusterVariable
+    executableName <- takeBaseName <$> getExecutablePath
+    recursiveFixture <- lookupEnv "HOSTBOOTSTRAP_RECURSIVE_FIXTURE_ROOT"
     case args of
+        _
+            | executableName `elem` ["incus", "docker"]
+            , Just _ <- recursiveFixture ->
+                RecursiveLifecycleSpec.runLifecycleChild
         _
             | Just entry <- classifyFrameChild args ->
                 runFrameChildEntry (frameInterpreter interpretFrameTransaction) entry

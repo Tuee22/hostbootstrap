@@ -185,7 +185,7 @@ packageCases =
     , testCase "Production preparation binds the exact plan-derived config digest" $
         withClusterFixture (\prepared -> pure (Right (preparedClusterConfigPath prepared, preparedClusterConfigDigest prepared))) >>= \case
             Right (Just path, Just digest) -> do
-                assertBool "config path is the driver-owned config.yaml" ("cluster/kind/config.yaml" `isSuffixOf` path)
+                assertBool "config path is the driver-owned config.yaml" (("cluster" </> "kind" </> "config.yaml") `isSuffixOf` path)
                 assertBool "SHA-256 is lowercase hex" (Text.length digest == 64)
             other -> assertFailure ("expected a bound config path/digest, got " ++ show other)
     , testCase "preparation retains the closed driver, canonical bytes, mappings, ports, and workload slice" $

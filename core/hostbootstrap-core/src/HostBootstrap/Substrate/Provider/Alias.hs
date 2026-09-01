@@ -140,7 +140,7 @@ import HostBootstrap.Substrate.Provider.Observation.Internal (
     providerBackendSemanticFingerprint,
     providerOriginOwner,
  )
-import System.FilePath ((</>))
+import qualified System.FilePath.Posix as Posix
 
 data GuestAliasSpec = GuestAliasSpec FilePath FilePath
     deriving (Eq, Show)
@@ -757,7 +757,7 @@ aliasRecordName spec =
 guestAliasOwnershipTransaction :: GuestAliasSpec -> ShippedAct -> ShippedOwnership
 guestAliasOwnershipTransaction spec act =
     ShippedOwnership
-        { shippedAuthority = guestAliasTarget spec </> ".hostbootstrap-alias-authority-v1"
+        { shippedAuthority = guestAliasTarget spec Posix.</> ".hostbootstrap-alias-authority-v1"
         , shippedRecord =
             either
                 (error . Text.unpack . protectedErrorMessage)

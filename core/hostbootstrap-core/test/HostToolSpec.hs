@@ -17,7 +17,7 @@ import HostBootstrap.HostPrereqs (
  )
 import HostBootstrap.HostTool
 import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..))
-import System.FilePath (isAbsolute)
+import System.FilePath (isAbsolute, takeFileName)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
@@ -49,6 +49,11 @@ absExeCases =
         isLeft (mkAbsExe "docker") @?= True
     , testCase "relative path rejected" $
         isLeft (mkAbsExe "./bin/docker") @?= True
+    , testCase "WSL receives its resolved basename as the serialized program-name token" $ do
+        let executable = mustAbs dockerPath
+        hostToolProcessArguments Wsl executable ["-d", "demo"]
+            @?= [takeFileName dockerPath, "-d", "demo"]
+        hostToolProcessArguments Docker executable ["ps"] @?= ["ps"]
     ]
 
 enumCases :: [TestTree]

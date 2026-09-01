@@ -28,6 +28,7 @@ import HostBootstrap.Effect.Run (CapturedRun (..))
 import HostBootstrap.Ownership.Object (ObjectIdentity, objectIdentityBytes)
 import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath (isAbsolute, normalise)
+import qualified System.FilePath.Posix as Posix
 
 data ColimaInstance = ColimaInstance
   { ciName :: String,
@@ -126,9 +127,11 @@ classifyLimaDiskListing run = do
   where
     validDisk value =
       not (null (limaDiskName value))
-        && isAbsolute (limaDiskDirectory value)
-        && normalise (limaDiskDirectory value) == limaDiskDirectory value
+        && validPath (limaDiskDirectory value)
         && limaDiskSize value > 0
+    validPath path =
+      (isAbsolute path && normalise path == path)
+        || (Posix.isAbsolute path && Posix.normalise path == path && '\\' `notElem` path)
 
 classifyDockerContextListing :: CapturedRun -> Either ColimaReportFault [String]
 classifyDockerContextListing run = do

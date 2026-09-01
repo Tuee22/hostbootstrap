@@ -861,9 +861,18 @@ recordingToolProgram name reported status logPath =
         ( [ "@echo off"
           , "echo " <> name <> ">>\"" <> logPath <> "\""
           ]
-            <> ["echo " <> reported | not (null reported)]
+            <> map ("echo(" <>) (map escapeCmdEcho (lines reported))
             <> ["exit /b " <> show status]
         )
+  where
+    escapeCmdEcho = concatMap escape
+    escape '^' = "^^"
+    escape '%' = "%%"
+    escape '&' = "^&"
+    escape '|' = "^|"
+    escape '<' = "^<"
+    escape '>' = "^>"
+    escape character = [character]
 #else
 recordingToolProgram name reported status logPath =
     unlines

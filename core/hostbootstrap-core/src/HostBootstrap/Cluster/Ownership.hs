@@ -168,9 +168,10 @@ import HostBootstrap.Protected (
     protectedErrorMessage,
     readProtectedRecord,
  )
-import System.Directory (doesFileExist, getTemporaryDirectory, removeFile, renameFile)
-import System.FilePath (takeDirectory, takeFileName)
-import System.IO (hClose, hFlush, openBinaryTempFile)
+import System.Directory (doesFileExist, getTemporaryDirectory, removeDirectory, removeFile, renameFile)
+import System.FilePath ((</>), takeDirectory, takeFileName)
+import System.IO (IOMode (WriteMode), hClose, hFlush, openBinaryFile, openBinaryTempFile)
+import System.IO.Temp (createTempDirectory)
 
 -- ---------------------------------------------------------------------------
 -- What is owned
@@ -514,11 +515,13 @@ runCreateCommand ::
 runCreateCommand driver cfg owned = do
     attempted <- tryIO $ mask $ \restore -> do
         temporaryRoot <- getTemporaryDirectory
-        let template = ".hostbootstrap-kind-" <> ownedClusterName owned <> ".kubeconfig"
-        (staging, handle) <- openBinaryTempFile temporaryRoot template
+        stagingDirectory <- createTempDirectory temporaryRoot ".hostbootstrap-kind"
+        let staging = stagingDirectory </> (".hostbootstrap-kind-" <> ownedClusterName owned <> ".kubeconfig")
+        handle <- openBinaryFile staging WriteMode
         let removeStaging = do
                 present <- doesFileExist staging
                 when present (removeFile staging)
+                removeDirectory stagingDirectory
         hClose handle `onException` removeStaging
         restore
             ( interpret

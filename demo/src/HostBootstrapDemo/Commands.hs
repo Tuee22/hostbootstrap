@@ -471,6 +471,7 @@ import HostBootstrap.Substrate.Provider.Backend (
     mkDirectHostBackendSpec,
     mkIncusBackendSpec,
     mkLimaBackendSpec,
+    mkWsl2BackendSpec,
     providerBackendBinding,
     registerProviderShareDependencyPackage,
     registerRunningProviderDependencyPackage,
@@ -552,7 +553,8 @@ import Numeric.Natural (Natural)
 import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, getHomeDirectory, getPermissions, getTemporaryDirectory, listDirectory, makeAbsolute, removeDirectory, removeFile, setPermissions, withCurrentDirectory)
 import System.Environment (getEnvironment, getExecutablePath, setEnv)
 import System.Exit (ExitCode (..), die)
-import System.FilePath (isAbsolute, normalise, splitDirectories, takeDirectory, takeFileName, (</>))
+import System.FilePath (normalise, takeDirectory, takeFileName, (</>))
+import qualified System.FilePath.Posix as Posix
 import System.IO (hFlush, hPutStr, stderr, stdout)
 import System.IO.Error (tryIOError)
 import System.IO.Temp (withSystemTempDirectory)
@@ -621,7 +623,7 @@ demoCheckCode :: IO ()
 demoCheckCode = do
     runCheck "fourmolu" fourmoluPath ["--mode", "check", "app", "src"]
     runCheck "hlint" hlintPath ["app", "src"]
-    runCheck "cabal -Werror" cabalPath ["build", "--enable-tests", "--enable-benchmarks", "all", "--ghc-options=-Werror"]
+    runCheck "cabal -Werror" cabalPath ["build", "-j1", "--enable-tests", "--enable-benchmarks", "all", "--ghc-options=-Werror"]
   where
     fourmoluPath = "/opt/hostbootstrap/haskell-style/bin/fourmolu"
     hlintPath = "/opt/hostbootstrap/haskell-style/bin/hlint"
@@ -1104,7 +1106,7 @@ demoForwardChildPlan cfg parentId childId suppliedLift = do
                 requireCanonicalRoot current
                 let childCfg = projectConfigFromContext cfg (Context.deriveLinuxGpuContainerContext ctx (T.pack containerSourceRoot))
                     profile = clusterProfileOf childCfg
-                    childDurable = profileDataPath profile containerSourceRoot
+                    childDurable = guestProfileDataPath profile containerSourceRoot
                     steps = demoLinuxGpuChainAt (ProjectedDurable containerSourceRoot childDurable) containerSourceRoot childCfg
                 validateDirectParentLift childDurable (canonicalProjectConfigPayload childCfg) suppliedLift
                 finish containerSourceRoot childCfg steps
@@ -1310,7 +1312,11 @@ runtime exposure operation (the worked-demo phase).
 -}
 containerPlan :: ClusterProfile -> Context.BinaryContext -> ClusterPlan
 containerPlan profile ctx =
-    basePlan{clusterConfigFile = Just configFile}
+    basePlan
+        { dataPath = guestProfileDataPath profile root
+        , derivedPaths = [root Posix.</> ".cluster" Posix.</> clusterName basePlan]
+        , clusterConfigFile = Just configFile
+        }
   where
     root = T.unpack (Context.sourceRoot ctx)
     placement = acceleratorPlacementForContext ctx
@@ -1361,11 +1367,11 @@ kind cluster (at the run's own profile) → the in-cluster registry → the imag
 deployKindAction :: forall configScope scope planId. ProjectConfig configScope -> StepExecution scope planId -> IO ()
 deployKindAction stepCfg execution = demoConfigContext stepCfg Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
     cfg <- resolveHostConfig
-    gate <- stepExecutionPreparedGate execution >>= maybe (die "cluster reconcile: the exact producer gate is absent") pure
+    gate <- stepExecutionPreparedGate execution >>= maybe (failLifecycle "cluster reconcile: the exact producer gate is absent") pure
     (clusterResources, _, _, _, _, _) <-
-        either die pure (canonicalDemoConfigProjection (stepExecutionConfigDigest execution) projectCfg)
-    sliceBudget <- either die pure (budgetFromResources (envelopeOfResources clusterResources))
-    when (preparedGateJournalVersion gate > maxBound - 1024) (die "cluster reconcile: dependency lifetime overflows")
+        either failLifecycle pure (canonicalDemoConfigProjection (stepExecutionConfigDigest execution) projectCfg)
+    sliceBudget <- either failLifecycle pure (budgetFromResources (envelopeOfResources clusterResources))
+    when (preparedGateJournalVersion gate > maxBound - 1024) (failLifecycle "cluster reconcile: dependency lifetime overflows")
     let direct = Context.isExplicitLinuxGpuContainer ctx
         driver = if direct then NvkindDriver else KindDriver
         providerKey = "core:deploy-vm"
@@ -1381,9 +1387,9 @@ deployKindAction stepCfg execution = demoConfigContext stepCfg Context.ClusterLi
         clusterSlice = [(stepExecutionConfigDigest execution, stepExecutionFrame execution)]
         workload = ["project:deploy-minio", "project:deploy-registry", "project:push-image", "core:deploy-chart"]
     unless (providerKey `elem` stepExecutionDependencyKeys execution) $
-        die "cluster reconcile: the exact provider is absent from the cluster node's admitted prefix"
+        failLifecycle "cluster reconcile: the exact provider is absent from the cluster node's admitted prefix"
     unless (direct || shareKey `elem` stepExecutionDependencyKeys execution) $
-        die "cluster reconcile: the exact provider share is absent from the cluster node's admitted prefix"
+        failLifecycle "cluster reconcile: the exact provider share is absent from the cluster node's admitted prefix"
     dockerHostDataPath <-
         if direct
             then discoverDirectDockerHostDataPath cfg projectCfg
@@ -1395,13 +1401,13 @@ deployKindAction stepCfg execution = demoConfigContext stepCfg Context.ClusterLi
                     case withNodeResourceOfKind execution ClusterResourceKind (stepExecutionOperationKey execution) $ \plannedCluster ->
                         withActionResourceSlice plannedCluster sliceBudget $ \resourceSlice ->
                             case withExecutionOwnedCluster execution plannedCluster plannedProvider resourceSlice of
-                                Left refusal -> die (show refusal)
+                                Left refusal -> failLifecycle (show refusal)
                                 Right base ->
                                     case withExactPlanOwnedClusterConfig base driver dockerHostDataPath (stepExecutionConfigDigest execution) projectCfg clusterSlice workload $ \configured -> do
                                         createDirectoryIfMissing True (takeDirectory (planOwnedRenderedConfigPath configured))
                                         BS.writeFile (planOwnedRenderedConfigPath configured) (planOwnedClusterConfigBytes configured)
                                         discovered <- discoverStrongClusterBackend cfg configured
-                                        backend <- either (die . show) pure discovered
+                                        backend <- either (failLifecycle . show) pure discovered
                                         prepared <- withPreparedClusterReconcile configured runningProvider providerShare gate $ \clusterPrepared -> do
                                             observed <- runClusterReconcileCall backend clusterPrepared
                                             case settleClusterReconcile Nothing clusterPrepared observed of
@@ -1434,7 +1440,7 @@ deployKindAction stepCfg execution = demoConfigContext stepCfg Context.ClusterLi
                                                                                         )
                                                                                         cfg
                                                                                 case readyOutcome of
-                                                                                    Left failure -> die (renderPollError failure)
+                                                                                    Left failure -> failLifecycle (renderPollError failure)
                                                                                     Right ready -> do
                                                                                         when direct (ensureDirectNvidiaClusterRuntime cfg (demoClusterKubeconfigPath projectCfg ctx))
                                                                                         imageIdentity <- exactProjectImageIdentity cfg
@@ -1442,13 +1448,13 @@ deployKindAction stepCfg execution = demoConfigContext stepCfg Context.ClusterLi
                                                                                             Left failure -> pure (Left failure)
                                                                                             Right exposure -> fmap void (registerClusterRuntimeDependencyPackage backend execution scopeCommitment gate applied ready exposure clusterRoute (now + 1024))
                                                         )
-                                                        (\_ _ _ _ -> die "cluster reconcile: the cluster remains foreign")
+                                                        (\_ _ _ _ -> failLifecycle "cluster reconcile: the cluster remains foreign")
                                         case prepared of
-                                            Left failure -> die (show failure)
-                                            Right action -> action >>= either (die . show) pure of
-                                        Left refusal -> die refusal
+                                            Left failure -> failLifecycle (show failure)
+                                            Right action -> action >>= either (failLifecycle . show) pure of
+                                        Left refusal -> failLifecycle refusal
                                         Right action -> action of
-                        Left failure -> die (show failure)
+                        Left failure -> failLifecycle (show failure)
                         Right action -> action
              in if direct
                     then reconcileCluster Nothing
@@ -1457,9 +1463,11 @@ deployKindAction stepCfg execution = demoConfigContext stepCfg Context.ClusterLi
                             withFreshCarriedProviderShareDependency execution scopeCommitment shareKey shareRoute now (nonce <> "-share") $ \_plannedShare providerShare ->
                                 reconcileCluster (Just providerShare)
                         case openedShare of
-                            Left failure -> die (show failure)
+                            Left failure -> failLifecycle (show failure)
                             Right action -> action
-    either (die . show) id opened
+    either (failLifecycle . show) id opened
+  where
+    failLifecycle = throwIO . LifecycleFailure
 
 {- | Complete the nvkind platform contract before publishing cluster
 readiness to downstream workloads. The metal Docker runtime, device-plugin
@@ -3477,7 +3485,7 @@ discoverDirectDockerHostDataPath cfg projectCfg =
 
 discoverDirectDockerHostDataPathAt :: HostConfig -> ClusterProfile -> FilePath -> IO FilePath
 discoverDirectDockerHostDataPathAt cfg profile root = do
-    let destinationPath = profileDataPath profile root
+    let destinationPath = guestProfileDataPath profile root
         template = "{{range .Mounts}}{{if eq .Destination " ++ show destinationPath ++ "}}{{println .Source}}{{end}}{{end}}"
     listed <- runTool cfg Docker ["ps", "--format", "{{.ID}}"]
     candidates <- either die pure (directContainerCandidates listed)
@@ -3526,11 +3534,11 @@ directDurableMountSource profile destinationPath result = case result of
         Left ("direct nvkind durable bind: Docker inspect exited " ++ show n ++ ": " ++ err)
     Right (ExitSuccess, out, _) -> case filter (not . null) (lines out) of
         [sourcePath]
-            | not (isAbsolute destinationPath) || normalise destinationPath /= destinationPath ->
+            | not (Posix.isAbsolute destinationPath) || Posix.normalise destinationPath /= destinationPath ->
                 Left "direct nvkind durable bind: child destination is not absolute lexical-canonical"
-            | not (isAbsolute sourcePath) || normalise sourcePath /= sourcePath ->
+            | not (Posix.isAbsolute sourcePath) || Posix.normalise sourcePath /= sourcePath ->
                 Left "direct nvkind durable bind: Docker reported a non-canonical source"
-            | not (profileDataSegments profile `isSuffixOf` splitDirectories sourcePath) ->
+            | not (profileDataSegments profile `isSuffixOf` Posix.splitDirectories sourcePath) ->
                 Left "direct nvkind durable bind: Docker source does not retain the exact run profile"
             | otherwise -> Right sourcePath
         [] -> Left "direct nvkind durable bind: the admitted child destination is absent"
@@ -4056,6 +4064,7 @@ reconcileShippedDurableAlias _mounted cfg provider share = do
     spec <- either (throwIO . LifecycleFailure . show) pure (mkGuestAliasSpec durableDockerHostPath shareTarget)
     let transaction = guestAliasOwnershipTransaction spec (ShipTakeSymbolicLink shareTarget)
     outcome <- shipOwnedTransaction cfg self (providerLiftContext provider) transaction
+    putStrLn ("copy-source: durable alias transaction returned " ++ show outcome)
     case outcome of
         Right (ShippedSymbolicLinkCreated _) ->
             putStrLn ("vm up: owned durable alias " ++ durableDockerHostPath ++ " -> " ++ shareTarget)
@@ -4475,6 +4484,8 @@ runVmUp stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCo
                     when (isWindows (hcSubstrate cfg)) discloseWslShutdown
                     putStrLn ("vm up: launching " ++ providerVmId sp ++ " (cordon #1: the VM is the wall, sized to the budget)")
                     runEffects cfg launch
+            when (providerKind sp == ProviderWsl2) $
+                runExactVmProvider projectCfg cfg execution sp envelope durableShare hostDurableRoot
     putStrLn ("vm up: " ++ providerVmId sp ++ " is up")
 
 runCopySource :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
@@ -4491,13 +4502,19 @@ runCopySource stepCfg execution = demoConfigContext stepCfg Context.HostOrchestr
             vmReady <- substrateWait cfg sp
             reconcileDurableShare vmReady cfg durableShare
             netReady <- waitVMNetwork vmReady cfg sp
+            putStrLn ("copy-source: probing durable share " ++ hpsGuestPath durableShare)
             mounted <- awaitDurableShareMounted netReady cfg sp durableShare
+            putStrLn "copy-source: durable share is mounted and writable"
             reconcileShippedDurableAlias mounted cfg sp durableShare
+            putStrLn "copy-source: durable alias ownership settled"
+            when (providerKind sp == ProviderWsl2) $
+                runExactVmShare projectCfg cfg execution durableShare
     -- Incus attaches the exact virtiofs share through a stop/start transaction.
     -- Re-establish the ephemeral placement witness only after that transaction
     -- (and after the equivalent settled share path on other VM providers), so
     -- the immediate-child context gate cannot observe a pre-reboot /run file.
     mintVmProviderWitness cfg sp
+    putStrLn "copy-source: provider witness minted"
 
 mintVmProviderWitness :: HostConfig -> SubstrateProvider -> IO ()
 mintVmProviderWitness cfg provider =
@@ -4517,7 +4534,7 @@ runExactVmShare ::
     HostPathShare ->
     IO ()
 runExactVmShare projectCfg cfg execution durableShare = do
-    gate <- stepExecutionPreparedGate execution >>= maybe (die "copy-source reconcile: the exact producer gate is absent") pure
+    gate <- stepExecutionPreparedGate execution >>= maybe (failLifecycle "copy-source reconcile: the exact producer gate is absent") pure
     self <- currentSelfRef "/usr/local/bin/hostbootstrap-demo"
     sp <- demoProvider cfg
     let configured = resources projectCfg
@@ -4530,7 +4547,7 @@ runExactVmShare projectCfg cfg execution durableShare = do
         route = "runtime://provider/demo-vm-readiness"
         now = preparedGateJournalVersion gate
         nonce = "copy-source-" <> T.pack (show now)
-    when (cpuNatural > fromIntegral (maxBound :: Word64)) (die "copy-source reconcile: CPU quantity exceeds Word64")
+    when (cpuNatural > fromIntegral (maxBound :: Word64)) (failLifecycle "copy-source reconcile: CPU quantity exceeds Word64")
     backendSpec <- case providerKind sp of
         ProviderIncus ->
             either (die . show) pure $
@@ -4546,6 +4563,9 @@ runExactVmShare projectCfg cfg execution durableShare = do
         ProviderLima ->
             either (die . show) pure $
                 mkLimaBackendSpec cfg sp (envelopeOfResources configured) durableShare
+        ProviderWsl2 ->
+            either (die . show) pure $
+                mkWsl2BackendSpec cfg sp (envelopeOfResources configured) durableShare
         _ -> die "copy-source reconcile: the exact VM share backend is unavailable on this provider"
     shareSpec <- either (die . show) pure (mkProviderShareSpec (hpsHostPath durableShare) (hpsGuestPath durableShare))
     aliasSpec <- either (die . show) pure (mkGuestAliasSpec durableDockerHostPath (hpsGuestPath durableShare))
@@ -4594,7 +4614,7 @@ runExactVmShare projectCfg cfg execution durableShare = do
                                                     Right discoverAction -> do
                                                         aliasResult <- discoverAction
                                                         case aliasResult of
-                                                            Left providerFailure -> die (show providerFailure)
+                                                            Left providerFailure -> failLifecycle (show providerFailure)
                                                             Right _settledAlias ->
                                                                 do
                                                                     carried <- carryProviderShareSettlement execution managedShare "demo-provider-share-v1"
@@ -4612,7 +4632,7 @@ runExactVmShare projectCfg cfg execution durableShare = do
                                                                                     "runtime://provider-share/demo-vm-share-readiness"
                                                                                     (now + 1024)
                                             )
-                                            (\_ _ _ _ -> die "copy-source reconcile: the share remains foreign")
+                                            (\_ _ _ _ -> failLifecycle "copy-source reconcile: the share remains foreign")
                         )
                 case opened of
                     Left failure -> pure (Left failure)
@@ -4625,7 +4645,9 @@ runExactVmShare projectCfg cfg execution durableShare = do
             Right observed -> case observed of
                 Left failure -> pure (Left failure)
                 Right action -> action
-    either (die . show) (either (die . show) pure) discovered
+    either (failLifecycle . show) (either (failLifecycle . show) pure) discovered
+  where
+    failLifecycle = throwIO . LifecycleFailure
 
 runExactVmProvider ::
     ProjectConfig configScope ->
@@ -4664,6 +4686,9 @@ runExactVmProvider projectCfg cfg execution provider envelope durableShare durab
         ProviderLima -> do
             spec <- either (die . show) pure (mkLimaBackendSpec cfg provider envelope durableShare)
             pure (spec, "demo-lima-provider-v1")
+        ProviderWsl2 -> do
+            spec <- either (die . show) pure (mkWsl2BackendSpec cfg provider envelope durableShare)
+            pure (spec, "demo-wsl2-provider-v1")
         _ -> die "VM provider reconcile: the exact VM backend is unavailable on this provider"
     putStrLn ("vm up: reconciling " ++ providerVmId provider ++ " through the exact provider settlement")
     discovered <- discoverStrongProviderBackend cfg backendSpec $ \backend ->
@@ -5122,6 +5147,7 @@ runVmBootstrap :: ProjectConfig configScope -> StepExecution scope planId -> IO 
 runVmBootstrap stepCfg _execution = demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \parentCfg ctx -> do
     cfg <- resolveHostConfig
     provider <- demoProvider cfg
+    executable <- getExecutablePath
     verificationKeyHex <- installedProjectVerificationKeyHex
     activationVerificationKeyHex <- installedActivationVerificationKeyHex
     -- Discovered on the metal host (the only place the credential lives); forwarded
@@ -5156,19 +5182,27 @@ runVmBootstrap stepCfg _execution = demoConfigContext stepCfg Context.HostOrches
                 (PinnedToolchain "9.12.4")
     bootstrap <- runGuestBootstrap cfg (providerLiftContext provider) bootstrapTarget >>= either die pure
     mapM_ reportGuestBootstrap bootstrap
+    let stagedHandoff = stageFileEffects (providerFileTransfer provider) (executable ++ ".handoff.pub") "/tmp/hostbootstrap-demo.handoff.pub"
+        stagedActivation = stageFileEffects (providerFileTransfer provider) (executable ++ ".activation.pub") "/tmp/hostbootstrap-demo.activation.pub"
+        stagedKeys = [stagedHandoff, stagedActivation]
+        pushedKeys = [sfGuestPath staged | staged <- stagedKeys, sfPushedTemp staged]
+        cleanupKeys = unless (null pushedKeys) (runInDemoVM cfg provider ("rm -f " ++ unwords (map shellQuoteArg pushedKeys)))
+    mapM_ (runEffects cfg . sfHostEffects) stagedKeys
     guestStep
         vmReady
         cfg
         provider
         "install the verification key and sibling vm-orchestrator-1 config beside the bootstrapped binary"
-        ( "python3 -c \"import binascii,sys; open('/tmp/hostbootstrap-demo.handoff.pub','wb').write(binascii.unhexlify(sys.argv[1])); open('/tmp/hostbootstrap-demo.activation.pub','wb').write(binascii.unhexlify(sys.argv[2]))\" "
-            ++ shellQuoteArg verificationKeyHex
-            ++ " "
-            ++ shellQuoteArg activationVerificationKeyHex
-            ++ " && sudo install -m 0644 /tmp/hostbootstrap-demo.handoff.pub /usr/local/bin/hostbootstrap-demo.handoff.pub && sudo install -m 0644 /tmp/hostbootstrap-demo.activation.pub /usr/local/bin/hostbootstrap-demo.activation.pub && rm /tmp/hostbootstrap-demo.handoff.pub /tmp/hostbootstrap-demo.activation.pub && sudo cp "
-            ++ shellQuoteArg (vmRepoRoot ++ "/demo/.build/hostbootstrap-demo.dhall")
+        ( "sudo install -m 0644 "
+            ++ shellQuoteArg (sfGuestPath stagedHandoff)
+            ++ " /usr/local/bin/hostbootstrap-demo.handoff.pub && sudo install -m 0644 "
+            ++ shellQuoteArg (sfGuestPath stagedActivation)
+            ++ " /usr/local/bin/hostbootstrap-demo.activation.pub && sudo cp "
+            ++ vmRepoRoot
+            ++ "/demo/.build/hostbootstrap-demo.dhall"
             ++ " /usr/local/bin/hostbootstrap-demo.dhall"
         )
+        `finally` cleanupKeys
     guestStep
         vmReady
         cfg
@@ -5776,8 +5810,11 @@ demoDeployImage profile durableBind =
         case durableBind of
             CanonicalHostDurable root hostPath -> canonicalHostMount root hostPath targetPath False
             ProviderGuestDurable -> Mount (T.pack durableDockerHostPath) (T.pack targetPath) False
-            ProjectedDurable descriptor childPath -> Mount (T.pack childPath) (T.pack (profileDataPath profile descriptor)) False
-    targetPath = profileDataPath profile containerSourceRoot
+            ProjectedDurable descriptor childPath -> Mount (T.pack childPath) (T.pack (guestProfileDataPath profile descriptor)) False
+    targetPath = guestProfileDataPath profile containerSourceRoot
+
+guestProfileDataPath :: ClusterProfile -> FilePath -> FilePath
+guestProfileDataPath profile root = foldl (Posix.</>) root (profileDataSegments profile)
 
 demoDeployImageWithMount :: Mount -> String -> Bool -> T.Text -> ContainerLift
 demoDeployImageWithMount durableMount _currentFrameId directLinuxGpu payload =

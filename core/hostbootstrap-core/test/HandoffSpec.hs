@@ -249,7 +249,7 @@ frameCrossingTests =
                 , "getArgs"
                 , "unsafeCoerce"
                 ]
-            significantHaskellLineCount transactionSource @?= 299
+            significantHaskellLineCount transactionSource @?= 302
             assertBool
                 "shared CLI lost the frame-child classifier"
                 (significantHaskellLineCount cliSource >= 424)
@@ -8147,7 +8147,7 @@ sealedFacadeTests =
                 [ "withLifecycleProcessRouteLaunchKernel route $ \\tool argv _interactive ->"
                 , "case resolveMaybe config tool of"
                 , "\"the route's host tool resolves to no absolute path\""
-                , "Just exe -> spawned (absExePath exe) (map Text.unpack argv)"
+                , "Just exe -> spawned (absExePath exe) (hostToolProcessArguments tool exe (map Text.unpack argv))"
                 ]
                 owner
             assertContains
@@ -8163,9 +8163,9 @@ sealedFacadeTests =
                 (SourceGuard.countHaskellIdentifier "timeout" processSource == 2)
             assertFragmentsInOrder
                 "the group is terminated, graced, escalated, reaped unconditionally, and only then are the pipes closed"
-                [ "signalChildGroup child sigTERM"
+                [ "askChildGroupToStop child"
                 , "lingering <- waitFor terminationGraceMicros child"
-                , "Nothing -> signalChildGroup child sigKILL"
+                , "Nothing -> killChildGroup child"
                 , "Exception.try (waitForProcess child)"
                 , "closeQuietly childStdin"
                 , "closeQuietly childStdout"
@@ -8174,6 +8174,12 @@ sealedFacadeTests =
             assertContains
                 "the whole group is signalled rather than the process alone"
                 "Just pid -> do signalled <- Exception.try (signalProcessGroup signal (fromIntegral pid))"
+                owner
+            assertFragmentsInOrder
+                "the Windows row terminates the owned process before and after its bounded grace"
+                [ "askChildGroupToStop child = quietly (terminateProcess child)"
+                , "killChildGroup child = quietly (terminateProcess child)"
+                ]
                 owner
             assertContains
                 "termination runs on every exit from the exchange"

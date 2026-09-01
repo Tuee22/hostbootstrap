@@ -971,10 +971,18 @@ withFreshCarriedRunningProviderDependency execution scopeCommitment dependencyKe
                     Right rebound -> either (pure . Left) id rebound of
                 Left failure -> pure (Left failure)
                 Right opened -> opened
-        [] -> pure (dependencyFailure "the exact provider package is absent")
+        [] ->
+            pure
+                ( dependencyFailure
+                    ( "the exact provider package is absent; admitted dependency keys: "
+                        <> admittedKeys packages
+                    )
+                )
         _ -> pure (dependencyFailure "the provider package registry contains duplicate resource keys")
   where
     dependencyFailure reason = Left (Failure (FailureDetail "recover carried provider runtime dependency" reason ReprobeBeforeRetry))
+    admittedKeys [] = "<none>"
+    admittedKeys admitted = Text.intercalate ", " (map runtimeDependencyPackageKey admitted)
 
 {- | Recover a provider-derived durable share carried from the parent frame.
 Both its managed receipt and its closed @provider-share@ package must name the

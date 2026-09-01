@@ -74,7 +74,7 @@ import HostBootstrap.Handoff.Protocol
     , withPrivateProtocolStdio
     )
 import HostBootstrap.HostConfig (HostConfig, resolveMaybe)
-import HostBootstrap.HostTool (absExePath)
+import HostBootstrap.HostTool (absExePath, hostToolProcessArguments)
 import HostBootstrap.Lift
     ( LiftContext
     , LiftDispatch (DispatchLocal, DispatchTool)
@@ -95,7 +95,7 @@ import System.Process
     )
 import System.Timeout (timeout)
 #if defined(mingw32_HOST_OS)
-import System.Process (interruptProcessGroupOf, terminateProcess)
+import System.Process (terminateProcess)
 #else
 import System.Posix.Signals (Signal, sigKILL, sigTERM, signalProcessGroup)
 import System.Process (getPid)
@@ -280,7 +280,10 @@ withFrameChildTransaction config self context transaction =
                         ( Left
                             (frameChildFailure "the crossing's host tool resolves to no absolute path")
                         )
-                Just executable -> spawned (absExePath executable) arguments
+                Just executable ->
+                    spawned
+                        (absExePath executable)
+                        (hostToolProcessArguments tool executable arguments)
   where
     spawned executable arguments =
         withCreateProcess (frameChildProcess executable arguments) $
@@ -449,7 +452,7 @@ child's group, because the launch put the child in its own.
 -}
 askChildGroupToStop :: ProcessHandle -> IO ()
 #if defined(mingw32_HOST_OS)
-askChildGroupToStop child = quietly (interruptProcessGroupOf child)
+askChildGroupToStop child = quietly (terminateProcess child)
 #else
 askChildGroupToStop child = signalChildGroup child sigTERM
 #endif

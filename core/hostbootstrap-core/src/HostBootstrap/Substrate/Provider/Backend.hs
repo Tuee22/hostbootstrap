@@ -36,6 +36,7 @@ module HostBootstrap.Substrate.Provider.Backend (
     ProviderBackendSpec,
     mkIncusBackendSpec,
     mkLimaBackendSpec,
+    mkWsl2BackendSpec,
     mkDirectHostBackendSpec,
 
     -- * The Direct realization's own admission
@@ -92,7 +93,7 @@ import HostBootstrap.Effect.Run (CapturedRun (capturedExit, capturedStderr, capt
 import HostBootstrap.Effect.Vocabulary (HostCommand, hostCommand)
 import HostBootstrap.Context (ResourceEnvelope)
 import HostBootstrap.HostConfig (HostConfig (hcSubstrate), resolveMaybe)
-import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima), absExePath)
+import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima, Wsl), absExePath)
 import HostBootstrap.Lifecycle.Dependency.Internal (
     RuntimeDependencyPackage,
     mkProviderRuntimeDependencyPackage,
@@ -118,6 +119,7 @@ import HostBootstrap.Lifecycle.Prepared (
     preparedGateSession,
  )
 import qualified HostBootstrap.Lima as Lima
+import qualified HostBootstrap.Wsl2 as Wsl2
 import HostBootstrap.Ownership.Object (
     Origin (OriginAbsent, OriginPresent),
     objectIdentityText,
@@ -145,12 +147,12 @@ import HostBootstrap.Reconcile (
     resourceHandleKey,
     validateOwnershipReceipt,
  )
-import HostBootstrap.Substrate (SubstrateName (AppleSilicon, LinuxCpu), substrateName)
+import HostBootstrap.Substrate (SubstrateName (AppleSilicon, LinuxCpu, WindowsGpu), substrateName)
 import HostBootstrap.Substrate.Provider (
-    FileTransfer (LimaFileTransfer),
+    FileTransfer (LimaFileTransfer, Wsl2MountTransfer),
     HostEffect (RunHostCommand),
     HostPathShare,
-    ProviderKind (ProviderLima),
+    ProviderKind (ProviderLima, ProviderWsl2),
     SubstrateProvider,
     foldExistsProbe,
     foldWaitProbe,
@@ -393,6 +395,41 @@ mkLimaBackendSpec hostConfig provider envelope share
   where
     invalid reason = Left (Failure (FailureDetail "validate Lima provider backend" reason DoNotRetry))
 
+{- | Admit the Windows WSL2 realization through the same closed guest-VM
+backend used after provisioning by Lima.  WSL's global wall and distro creation
+remain owned by the host-effect transaction; this backend is opened only after
+that transaction has established the exact provider and supplies the typed
+readiness/share reprobe capability carried to child frames.
+-}
+mkWsl2BackendSpec ::
+    HostConfig ->
+    SubstrateProvider ->
+    ResourceEnvelope ->
+    HostPathShare ->
+    Either ReconcileError ProviderBackendSpec
+mkWsl2BackendSpec hostConfig provider envelope share
+    | substrateName (hcSubstrate hostConfig) /= WindowsGpu =
+        invalid "the WSL2 provider backend requires a windows-gpu HostConfig"
+    | providerKind provider /= ProviderWsl2 =
+        invalid "the WSL2 backend requires the closed WSL2 provider realization"
+    | null (providerVmId provider) || '\0' `elem` providerVmId provider =
+        invalid "the WSL2 distro name must be non-empty and contain no NUL"
+    | not (hostAbsolutePath (hpsHostPath share)) || not (absolutePath (hpsGuestPath share)) =
+        invalid "the WSL2 writable share must have absolute host and guest paths"
+    | otherwise = case resolveMaybe hostConfig Wsl of
+        Nothing ->
+            Left
+                ( Unsupported
+                    ( UnsupportedDetail
+                        "construct WSL2 provider backend"
+                        "the HostConfig has no resolved WSL executable"
+                    )
+                )
+        Just executable ->
+            Right (LimaBackendSpec provider envelope share (absExePath executable))
+  where
+    invalid reason = Left (Failure (FailureDetail "validate WSL2 provider backend" reason DoNotRetry))
+
 -- | Admit the canonical already-local root.  No ownership is implied.
 mkDirectHostBackendSpec :: HostConfig -> FilePath -> String -> Either ReconcileError ProviderBackendSpec
 mkDirectHostBackendSpec hostConfig root egressImage
@@ -528,7 +565,8 @@ backendSemanticFingerprint spec = case spec of
             ]
     LimaBackendSpec provider envelope share _ ->
         framed
-            [ "hostbootstrap/provider-backend/lima/v1"
+            [ "hostbootstrap/provider-backend/guest-vm/v1"
+            , Text.pack (show (providerKind provider))
             , Text.pack (providerVmId provider)
             , Text.pack (show envelope)
             , Text.pack (hpsHostPath share)
@@ -549,9 +587,10 @@ backendRealizationFingerprint spec = case spec of
             [ "hostbootstrap/provider-realization/direct/v1"
             , Text.pack docker
             ]
-    LimaBackendSpec _ _ _ executable ->
+    LimaBackendSpec provider _ _ executable ->
         framed
-            [ "hostbootstrap/provider-realization/lima/v1"
+            [ "hostbootstrap/provider-realization/guest-vm/v1"
+            , Text.pack (show (providerKind provider))
             , Text.pack executable
             ]
   where
@@ -1089,47 +1128,49 @@ observeLimaReady cfg (LimaBackendSpec provider _ _ _) generation =
 observeLimaReady _ _ _ =
     pure (ProviderReadyFailed (failed "reprobe Lima provider" "invalid Lima backend state"))
 
-observeLimaShare ::
+observeGuestVmShare ::
     HostConfig ->
     ProviderBackendSpec ->
     PreparedProviderShare scope planId backendId providerId shareId operationKey callDigest attempt journalVersion ->
     IO ProviderShareObservation
-observeLimaShare cfg (LimaBackendSpec provider _ retainedShare _) prepared
+observeGuestVmShare cfg (LimaBackendSpec provider _ retainedShare _) prepared
     | source /= hpsHostPath retainedShare || target /= hpsGuestPath retainedShare =
         pure
             ( ProviderShareConflict
                 ( ConflictDetail
-                    "lima-provider-share"
+                    "guest-vm-provider-share"
                     (Text.pack (hpsHostPath retainedShare <> " -> " <> hpsGuestPath retainedShare))
                     (Text.pack (source <> " -> " <> target))
-                    "use the writable share retained by this exact Lima provider backend"
+                    "use the writable share retained by this exact guest-VM provider backend"
                 )
             )
     | otherwise = do
-        captured <- runLimaGuest cfg provider ["bash", "-lc", "test -d \"$1\" && test -w \"$1\"", "--", target]
+        captured <- runGuestVm cfg provider ["bash", "-lc", "test -d \"$1\" && test -w \"$1\"", "--", target]
         pure $ case captured of
             RawProviderExit ExitSuccess _ _ -> ProviderShareAlreadyReady generation
             RawProviderExit (ExitFailure code) _ err ->
                 ProviderShareFailed
-                    (failed "reprobe Lima provider share" ("the guest share probe exited " <> Text.pack (show code) <> ": " <> Text.pack (firstDiagnosticLine err)))
-            RawProviderFailure refusal -> ProviderShareFailed (failed "reprobe Lima provider share" (Text.pack refusal))
+                    (failed "reprobe guest-VM provider share" ("the guest share probe exited " <> Text.pack (show code) <> ": " <> Text.pack (firstDiagnosticLine err)))
+            RawProviderFailure refusal -> ProviderShareFailed (failed "reprobe guest-VM provider share" (Text.pack refusal))
   where
     shareSpec = preparedProviderShareSpec prepared
     source = providerShareHostPath shareSpec
     target = providerShareGuestPath shareSpec
     generation = resourceHandleGeneration (preparedProviderShareHandle prepared)
-observeLimaShare _ _ prepared =
+observeGuestVmShare _ _ prepared =
     pure
         ( ProviderShareFailed
-            (failed "reprobe Lima provider share" ("invalid Lima backend state for " <> resourceHandleKey (preparedProviderShareHandle prepared)))
+            (failed "reprobe guest-VM provider share" ("invalid guest-VM backend state for " <> resourceHandleKey (preparedProviderShareHandle prepared)))
         )
 
-runLimaGuest :: HostConfig -> SubstrateProvider -> [String] -> IO RawProviderOutcome
-runLimaGuest cfg provider argv =
+runGuestVm :: HostConfig -> SubstrateProvider -> [String] -> IO RawProviderOutcome
+runGuestVm cfg provider argv =
     case providerFileTransfer provider of
         LimaFileTransfer vm ->
             rawProviderOutcome <$> interpretHostCommand cfg (hostCommand Lima (Lima.shellVMArgs vm argv))
-        _ -> pure (RawProviderFailure "the Lima backend retained a non-Lima guest route")
+        Wsl2MountTransfer vm ->
+            rawProviderOutcome <$> interpretHostCommand cfg (hostCommand Wsl (Wsl2.wslExecArgs (Wsl2.wsl2Distro vm) argv))
+        _ -> pure (RawProviderFailure "the guest-VM backend retained a non-VM guest route")
 
 firstDiagnosticLine :: String -> String
 firstDiagnosticLine = takeWhile (/= '\n')
@@ -1373,7 +1414,7 @@ runProviderShareCall backend prepared = case backend of
                     target
             pure (classifyProviderShareCall prepared outcome)
     StrongLimaBackend _ cfg spec ->
-        ProviderShareCallResult <$> observeLimaShare cfg spec prepared
+        ProviderShareCallResult <$> observeGuestVmShare cfg spec prepared
     StrongDirectHostBackend _ _ _ ->
         pure (ProviderShareCallResult (ProviderShareFailed (failed "reconcile provider share" "invalid Direct backend state")))
   where
@@ -1720,7 +1761,10 @@ sameBackendBinding left right =
 providerBoundRouteFor :: ProviderBackendSpec -> ProviderBoundRoute
 providerBoundRouteFor spec = case spec of
     IncusBackendSpec name image _ _ _ _ _ _ -> ProviderBoundIncusRoute name image
-    LimaBackendSpec provider _ _ _ -> ProviderBoundLimaRoute (providerVmId provider)
+    LimaBackendSpec provider _ _ _ -> case providerKind provider of
+        ProviderLima -> ProviderBoundLimaRoute (providerVmId provider)
+        ProviderWsl2 -> ProviderBoundWsl2Route (providerVmId provider)
+        _ -> ProviderBoundLimaRoute (providerVmId provider)
     DirectHostBackendSpec root _ egressImage -> ProviderBoundDirectRoute root egressImage
 
 runBoundDirect :: HostConfig -> ProviderBackendSpec -> ProviderProbeRequest -> IO RawProviderOutcome
@@ -1870,18 +1914,19 @@ runBoundLima ::
     IO RawProviderOutcome
 runBoundLima cfg (LimaBackendSpec provider _ _ _) request =
     case providerProbeRequestView request of
-        ProviderHostToolRequest Lima argv ->
-            rawProviderOutcome <$> interpretHostCommand cfg (hostCommand Lima argv)
+        ProviderHostToolRequest tool argv
+            | (providerKind provider, tool) `elem` [(ProviderLima, Lima), (ProviderWsl2, Wsl)] ->
+                rawProviderOutcome <$> interpretHostCommand cfg (hostCommand tool argv)
         ProviderHostToolRequest _ _ ->
-            pure (RawProviderFailure "the bound Lima backend refused a different host tool")
+            pure (RawProviderFailure "the bound guest-VM backend refused a different host tool")
         ProviderDirectProbeRequest _ ->
-            pure (RawProviderFailure "the bound Lima backend refused a Direct-host probe")
+            pure (RawProviderFailure "the bound guest-VM backend refused a Direct-host probe")
         ProviderProvisioningEgressProbe ->
-            runLimaGuest cfg provider ["bash", "-lc", "getent hosts archive.ubuntu.com >/dev/null"]
+            runGuestVm cfg provider ["bash", "-lc", "getent hosts archive.ubuntu.com >/dev/null"]
         ProviderGuestProbeRequest argv
             | null argv || any ('\0' `elem`) argv ->
                 pure (RawProviderFailure "guest probe argv must be non-empty and contain no NUL")
-            | otherwise -> runLimaGuest cfg provider argv
+            | otherwise -> runGuestVm cfg provider argv
 runBoundLima _ _ _ = pure (RawProviderFailure "invalid Lima backend state")
 
 {- | What a command run inside the owned instance produced.

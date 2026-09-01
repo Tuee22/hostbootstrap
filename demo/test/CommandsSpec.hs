@@ -676,14 +676,14 @@ tests =
           testCase "the durable host root is the run's own, and is the path teardown preserves" $ do
             profileDataSegments Production @?= [".data"]
             profileDataSegments (TestCase "run-42") @?= [".test_data", "run-42"]
-            profileDataPath Production "/srv/demo" @?= "/srv/demo/.data"
-            profileDataPath (TestCase "run-42") "/srv/demo" @?= "/srv/demo/.test_data/run-42"
+            profileDataPath Production "host-root" @?= "host-root" </> ".data"
+            profileDataPath (TestCase "run-42") "host-root" @?= "host-root" </> ".test_data" </> "run-42"
             -- the mount and the preserved path are one directory by construction
             let ctx = Context.deriveContainerContext (Context.deriveVMContextWithProvider Context.IncusVMProvider (context hostCfg) "/vm/demo") "/workspace/demo"
             dataPath (containerPlan (TestCase "run-42") ctx)
-                @?= profileDataPath (TestCase "run-42") "/workspace/demo"
+                @?= "/workspace/demo/.test_data/run-42"
             dataPath (containerPlan Production ctx)
-                @?= profileDataPath Production "/workspace/demo"
+                @?= "/workspace/demo/.data"
         , testCase "accelerator Helm values follow validated daemon placement" $ do
             let directCtx = Context.deriveLinuxGpuContainerContext (context hostCfg) "/workspace/demo"
                 incusCtx = Context.deriveContainerContext (Context.deriveVMContextWithProvider Context.IncusVMProvider (context hostCfg) "/vm/demo") "/workspace/demo"
@@ -1061,8 +1061,8 @@ tests =
             let daemonEnv = [("HOSTBOOTSTRAP_ACCELERATOR_WS_URL", "ws://127.0.0.1:30081")]
                 buildLaunch exe workDir sink =
                     hostAcceleratorDaemonLaunch exe hostAcceleratorDaemonArgs daemonEnv workDir sink
-                absExe = "/repo/.build/accelerator-daemon/hostbootstrap-demo"
-                absDir = "/repo/.build/accelerator-daemon"
+                absExe = if os == "mingw32" then "C:\\repo\\.build\\accelerator-daemon\\hostbootstrap-demo.exe" else "/repo/.build/accelerator-daemon/hostbootstrap-demo"
+                absDir = if os == "mingw32" then "C:\\repo\\.build\\accelerator-daemon" else "/repo/.build/accelerator-daemon"
                 absSink = absDir </> "hostbootstrap-demo.accelerator.output"
             hostAcceleratorDaemonArgs @?= ["service", "run"]
             case buildLaunch absExe absDir absSink of
@@ -1359,7 +1359,7 @@ tests =
                     , "COPY --from=hostbootstrap-builder hostbootstrap-demo /usr/local/libexec/hostbootstrap-demo"
                     , "id=hostbootstrap-build-channel,required=true"
                     , "/usr/local/libexec/hostbootstrap-demo check-code"
-                    , "cabal build --enable-tests --enable-benchmarks all --ghc-options=-Werror"
+                    , "cabal build -j1 --enable-tests --enable-benchmarks all --ghc-options=-Werror"
                     , "test -s \"${built_binary}\""
                     , "esbuild --bundle --minify"
                     , "dd if=/usr/local/libexec/hostbootstrap-demo of=/usr/local/bin/hostbootstrap-demo bs=4M status=none"

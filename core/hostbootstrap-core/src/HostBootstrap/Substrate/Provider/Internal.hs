@@ -93,6 +93,7 @@ runProviderGuestExecutor (ProviderGuestExecutor execute) = execute
 data ProviderBoundRoute
     = ProviderBoundIncusRoute String String
     | ProviderBoundLimaRoute String
+    | ProviderBoundWsl2Route String
     | ProviderBoundDirectRoute FilePath String
     deriving (Eq, Show)
 

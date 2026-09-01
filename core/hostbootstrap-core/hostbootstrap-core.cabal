@@ -297,6 +297,7 @@ library
     , optparse-applicative
     , process
     , safe-exceptions
+    , temporary
     , text
   reexported-modules:
       HostBootstrap.Protected

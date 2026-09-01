@@ -11,18 +11,14 @@ import HostBootstrap.Ownership.Object (
     ObjectKind (ReportedObject),
     Origin (OriginAbsent),
     OwnershipFault (OwnershipOccupied, OwnershipUnsupported),
-    bindOriginRecord,
-    mkKernelObjectIdentity,
     mkOwnerClaim,
     originRecord,
-    parseOriginRecord,
     renderOriginRecord,
  )
-import HostBootstrap.Ownership.Row (hostOwnershipSupported, ownershipRowForHost)
+import HostBootstrap.Ownership.Row (ownershipRowForHost)
 import HostBootstrap.Ownership.Shipped
 import HostBootstrap.Protected (
-    Expectation (ExpectAbsent, ExpectVersion),
-    ProtectedRecord (protectedRecordBytes, protectedRecordVersion),
+    Expectation (ExpectAbsent),
     RecordKey,
     compareAndSwapProtectedRecord,
     mkRecordKey,
@@ -48,6 +44,9 @@ import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestName, TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 #ifndef mingw32_HOST_OS
+import HostBootstrap.Ownership.Object (bindOriginRecord, mkKernelObjectIdentity, parseOriginRecord)
+import HostBootstrap.Ownership.Row (hostOwnershipSupported)
+import HostBootstrap.Protected (Expectation (ExpectVersion), ProtectedRecord (protectedRecordBytes, protectedRecordVersion))
 import System.Posix.Files (createSymbolicLink, deviceID, fileID, getSymbolicLinkStatus)
 #endif
 
@@ -72,6 +71,10 @@ descriptorCases =
     , rejected "the target itself" "/srv/data" "/srv/data"
     , testCase "distinct canonical absolute POSIX paths are admitted" $
         assertRight (mkGuestAliasSpec "/srv/hostbootstrap" "/srv/hostbootstrap/data")
+    , testCase "the shipped authority stays in the guest's POSIX grammar" $ do
+        spec <- either (assertFailure . show) pure (mkGuestAliasSpec "/srv/hostbootstrap" "/mnt/c/demo/data")
+        shippedAuthority (guestAliasOwnershipTransaction spec (ShipTakeSymbolicLink "/mnt/c/demo/data"))
+            @?= "/mnt/c/demo/data/.hostbootstrap-alias-authority-v1"
     , testCase "the alias adapter contains no guest interpreter or tool-discovery fallback" $ do
         source <- readFile "src/HostBootstrap/Substrate/Provider/Alias.hs"
         providerSource <- readFile "src/HostBootstrap/Substrate/Provider.hs"
@@ -173,7 +176,7 @@ kernelCase name body =
                         , frameLinkTarget = root </> "durable-target"
                         , frameAuthority = root </> "durable-target" </> ".hostbootstrap-alias-authority-v1"
                         }
-            if hostOwnershipSupported
+            if localGuestAliasSupported
                 then body frame
                 else do
                     outcome <- runShippedOwnership ownershipRowForHost (takeTransaction frame)
@@ -276,4 +279,8 @@ aliasGuest _root _name _role argv =
     pure (RawProviderFailure ("the legacy alias guest driver is unavailable: " <> show argv))
 
 localGuestAliasSupported :: Bool
+#ifdef mingw32_HOST_OS
+localGuestAliasSupported = False
+#else
 localGuestAliasSupported = hostOwnershipSupported
+#endif

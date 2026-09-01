@@ -56,7 +56,9 @@ module HostBootstrap.Ownership.Shipped (
 )
 where
 
+#ifndef mingw32_HOST_OS
 import Control.Exception (IOException, displayException, try)
+#endif
 import Data.Bits (shiftL, (.|.))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
@@ -85,7 +87,9 @@ import HostBootstrap.Ownership.Object (
         OwnershipUnsupported
     ),
     Payload,
+#ifndef mingw32_HOST_OS
     mkKernelObjectIdentity,
+#endif
     mkObjectIdentity,
     mkOwnerClaim,
     mkPayload,
@@ -114,8 +118,10 @@ import HostBootstrap.Ownership.Primitive (
     releaseReportedObject,
     reobserveOwnedIdentity,
     reobserveReportedIdentity,
+#ifndef mingw32_HOST_OS
     rowSyncParent,
     withOwnershipRow,
+#endif
  )
 import HostBootstrap.Ownership.Row (ownershipRowForHost)
 import HostBootstrap.Protected (
@@ -133,8 +139,8 @@ import HostBootstrap.Protected (
     recordKeyText,
     withProtectedEntry,
  )
-import System.IO.Error (isAlreadyExistsError, isDoesNotExistError)
 #ifndef mingw32_HOST_OS
+import System.IO.Error (isAlreadyExistsError, isDoesNotExistError)
 #ifdef darwin_HOST_OS
 import Foreign.C.Error (throwErrnoIfMinus1_)
 import Foreign.C.String (CString, withCString)
@@ -673,11 +679,9 @@ publishPreparedSymbolicLink row transaction linkTarget expectedIdentity = do
 -- deliberately refuses that operation for symbolic links, so its equivalent
 -- is @renamex_np(RENAME_EXCL)@; the durable record already binds the staging
 -- inode before this move, which makes both crash windows recoverable.
+#ifndef mingw32_HOST_OS
 publishSymbolicLinkNoReplace :: FilePath -> FilePath -> IO ()
-#if defined(mingw32_HOST_OS)
-publishSymbolicLinkNoReplace _source _target =
-    ioError (userError "symbolic-link publication is unavailable on Windows")
-#elif defined(darwin_HOST_OS)
+#if defined(darwin_HOST_OS)
 publishSymbolicLinkNoReplace source target =
     withCString source $ \sourcePath ->
         withCString target $ \targetPath ->
@@ -686,6 +690,7 @@ publishSymbolicLinkNoReplace source target =
     renameExclusive = 0x00000004
 #else
 publishSymbolicLinkNoReplace = createLink
+#endif
 #endif
 
 #ifdef darwin_HOST_OS
@@ -721,6 +726,7 @@ removeExactSymbolicLink row path = do
         Right () -> syncSymbolicLinkParent row path
 #endif
 
+#ifndef mingw32_HOST_OS
 syncSymbolicLinkParent :: OwnershipRow -> FilePath -> IO (Either OwnershipFault ())
 syncSymbolicLinkParent row path =
     withOwnershipRow row (\primitives -> rowSyncParent primitives path)
@@ -730,6 +736,7 @@ symbolicLinkProbe operation path failure =
     OwnershipProbeFailed
         (operation <> " symbolic link " <> Text.pack path)
         (Text.pack (displayException failure))
+#endif
 
 -- ---------------------------------------------------------------------------
 -- Clause 2, in the far frame's own store

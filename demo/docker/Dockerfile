@@ -57,7 +57,7 @@ RUN --mount=type=secret,id=hostbootstrap-build-channel,required=true \
 
 # Build the source-produced binary only after the independently selected
 # builder has authenticated and passed the warning-clean gate.
-RUN cabal build --enable-tests --enable-benchmarks all --ghc-options=-Werror \
+RUN cabal build -j1 --enable-tests --enable-benchmarks all --ghc-options=-Werror \
     && built_binary="$(cabal list-bin --enable-tests --enable-benchmarks exe:hostbootstrap-demo)" \
     && test -s "${built_binary}"
 
