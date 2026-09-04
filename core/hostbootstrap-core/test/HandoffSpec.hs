@@ -3551,7 +3551,7 @@ lifecycleAcknowledgementSubstrateTests =
                 terminal
             assertContains
                 "pending durably adopts before sending the acknowledgement"
-                "pending storedAcknowledgement = do adopted <- adoptLifecycleAcknowledgementThroughLink link offer challenge report acknowledgement (recordDisposition True) (recordDisposition False) case adopted of Left _ -> pure (Left RelayLifecycleFailure) Right () -> sendAcknowledgement storedAcknowledgement (pure (Right ()))"
+                "pending storedAcknowledgement = do adopted <- adoptLifecycleAcknowledgementThroughLink link offer challenge report acknowledgement (recordDisposition True) (recordDisposition False) case adopted of Left _ -> pure (Left RelayLifecycleAdoptionFailure) Right () -> sendAcknowledgement storedAcknowledgement (pure (Right ()))"
                 terminal
             assertContains
                 "already-Adopted records acknowledgement-only replay"
@@ -3576,7 +3576,7 @@ lifecycleAcknowledgementSubstrateTests =
                 terminal
             assertContains
                 "post-attempt failure is local and only a pre-ack failure refuses"
-                "fixedResult attempted = if attempted then pure (Left RelayLifecycleFailure) else refuse channel request RelayLifecycleFailure"
+                "fixedResult attempted = if attempted then pure (Left RelayLifecycleCallbackAfterAcknowledgement) else refuse channel request RelayLifecycleCallbackBeforeAcknowledgement"
                 terminal
             assertFragmentsInOrder
                 "callback exceptions are classified before an async exit is rethrown"
@@ -3651,10 +3651,10 @@ lifecycleAcknowledgementSubstrateTests =
                 ]
             assertContains
                 "Relay lifecycle failures carry no hostile text"
-                "RelayLifecycleFailure -> \"handoff relay: lifecycle acknowledgement failed\""
+                "RelayLifecycleAdoptionFailure -> \"handoff relay: lifecycle acknowledgement failed at durable acknowledgement adoption\""
                 failures
-            SourceGuard.countHaskellTokenSequence ["RelayLifecycleFailure", "Text"] failureSource @?= 0
-            SourceGuard.countHaskellTokenSequence ["RelayLifecycleFailure", "String"] failureSource @?= 0
+            SourceGuard.countHaskellTokenSequence ["RelayLifecycleAdoptionFailure", "Text"] failureSource @?= 0
+            SourceGuard.countHaskellTokenSequence ["RelayLifecycleAdoptionFailure", "String"] failureSource @?= 0
             namedDeclarations
                 @?= [ "type EdgeAdmission = HandoffBindingInput -> IO (Either Text ())"
                     , "type RecoveryAdmission ="
@@ -3758,7 +3758,15 @@ lifecycleAcknowledgementSubstrateTests =
             SourceGuard.countHaskellIdentifier "receiveLifecycleAcknowledgementForEdge" relaySource @?= 4
             SourceGuard.countHaskellIdentifier "runLifecycleTerminal" relaySource @?= 3
             SourceGuard.countHaskellIdentifier "AcknowledgedTag" relaySource @?= 3
-            SourceGuard.countHaskellIdentifier "RelayLifecycleFailure" terminalSource @?= 6
+            mapM_
+                (\identifier -> SourceGuard.countHaskellIdentifier identifier terminalSource @?= 1)
+                [ "RelayLifecycleInvalidReport"
+                , "RelayLifecycleAdoptionFailure"
+                , "RelayLifecycleStoredMismatch"
+                , "RelayLifecycleTransmissionFailure"
+                , "RelayLifecycleCallbackBeforeAcknowledgement"
+                , "RelayLifecycleCallbackAfterAcknowledgement"
+                ]
             (frozenTerminalRelaySignificantLines, frozenTerminalRelaySignificantLines - frozenRouteRelaySignificantLines)
                 @?= (1852, 389)
     ]

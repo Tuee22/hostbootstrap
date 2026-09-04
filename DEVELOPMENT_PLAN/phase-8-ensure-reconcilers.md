@@ -255,6 +255,9 @@ frame, before any of the binary's own typed operations can run there.
   drive-qualified outer-host path cannot reach a Linux guest process as a relative path.
 - `runGuestBootstrapWith` is the probe-first driver — probe, act on absence, re-probe, stop at the first step
   that will not settle — the control flow `installAndVerify` holds for a host reconciler (§ L), over a frame.
+- The pinned-toolchain probe requires the installer, the exact versioned GHC executable, and Cabal together;
+  an interrupted installer therefore remains absent and the same step resumes instead of admitting a partial
+  toolchain to the host-native build.
 - Every leaf folds through `HostBootstrap.Lift`, so the crossing into the frame is the one fold's (§ LL) and
   this module renders none of it.
 
@@ -271,6 +274,11 @@ Cabal 3.16.1.0 passed `cabal test all --ghc-options=-Werror` from `core/` host-n
 `poetry run python -m hostbootstrap.test_all` at 231 passed. That run is evidence for the one gate host that
 produced it (§ II); confirming the same gate on the remaining gate host families belongs to the
 [host-portability acceptance phase](phase-28-host-portability-acceptance.md).
+
+On 2026-09-01, after tightening the interrupted-toolchain probe, the Windows host-static gate passed again:
+`cabal test all --ghc-options=-Werror` reported 2,477/2,477 in 725.28 seconds,
+`poetry run python -m hostbootstrap.check_code` passed, and
+`poetry run python -m hostbootstrap.test_all` reported 231/231.
 
 #### Remaining Work
 

@@ -74,6 +74,7 @@ import HostBootstrapDemo.Commands (
     hostAcceleratorDaemonLaunch,
     hostAcceleratorDaemonPowerShellScript,
     hostAcceleratorSubstrate,
+    hostClusterStateDirectory,
     hostDaemonIdentityMatches,
     hostDaemonLifecycleStateConsistent,
     minioClusterEndpoint,
@@ -231,6 +232,7 @@ tests =
             offsets <- maybe (assertFailure "the host accelerator lost a provider-frame observation stage") pure (traverse (`substringOffset` hostHelper) stages)
             assertBool "the host accelerator provider-frame stages are out of order" (and (zipWith (<) offsets (drop 1 offsets)))
             assertBool "the host accelerator does not select its semantic service in the far frame" ("\"accelerator\"" `isInfixOf` take 5000 hostHelper)
+            hostClusterStateDirectory @?= "/var/tmp/hostbootstrap-demo-data/cluster/kind/state"
             assertBool "the host accelerator still expects the child cluster package to survive handoff" (not ("withDemoServiceExposure" `isInfixOf` take 5000 hostAction))
             assertBool "the host accelerator does not consume the freshly observed port" ("withHostAcceleratorExposure projectCfg execution" `isInfixOf` take 5000 hostAction && "show hostPort" `isInfixOf` take 5000 hostAction)
         , testCase "the chart action consumes the exact cluster package and generic workload transaction" $ do
@@ -508,6 +510,24 @@ tests =
                     && "findmnt -n -o FSTYPE --mountpoint" `isInfixOf` commandsSource
                     && "= virtiofs" `isInfixOf` commandsSource
                 )
+            let readinessSource =
+                    maybe "" (`drop` commandsSource) (substringOffset "awaitDurableShareMounted ::" commandsSource)
+            assertBool
+                "share readiness can be forged by a writable guest-local directory"
+                ( all
+                    (`isInfixOf` readinessSource)
+                    [ "TIO.writeFile hostProbe nonce"
+                    , "cat "
+                    , "guestProbe"
+                    , "guestReturn"
+                    , "TIO.readFile hostReturn"
+                    , "observed == nonce"
+                    , "`finally` cleanup"
+                    ]
+                )
+            assertBool
+                "share readiness retained the old guest-writable-only success path"
+                (not ("_ -> \"test -d \" ++ q ++ \" && test -w \" ++ q" `isInfixOf` readinessSource))
         , testCase "the registry plan consumes only a runtime-resolved exposure" $ do
             commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
             assertBool

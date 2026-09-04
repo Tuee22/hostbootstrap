@@ -244,8 +244,18 @@ caller.
 stepProbe :: GuestBootstrapStep -> LiftLeaf
 stepProbe (InstallGuestPackages packages) =
     RawCmd ("dpkg-query" : "-W" : map guestPackageName packages)
-stepProbe (InstallPinnedToolchain _ toolchainHome) =
-    RawCmd ["test", "-x", toolchainHome Posix.</> "bin" Posix.</> "ghcup"]
+stepProbe (InstallPinnedToolchain toolchain toolchainHome) =
+    RawCmd
+        [ "test"
+        , "-x"
+        , toolchainHome Posix.</> "bin" Posix.</> "ghcup"
+        , "-a"
+        , "-x"
+        , toolchainHome Posix.</> "ghc" Posix.</> toolchainGhcVersion toolchain Posix.</> "bin" Posix.</> "ghc"
+        , "-a"
+        , "-x"
+        , toolchainHome Posix.</> "bin" Posix.</> "cabal"
+        ]
 stepProbe (InstallGuestBootstrapper _ bootstrapper) =
     RawCmd ["test", "-x", bootstrapper]
 stepProbe (BuildGuestProjectBinary _ _ _ built) =

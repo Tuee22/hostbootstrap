@@ -174,7 +174,17 @@ renderingCases =
     , testCase "each probe answers with its exit status alone" $
         map (argvOf . stepProbe) plan
             @?= [ "dpkg-query" : "-W" : map guestPackageName allGuestPackages
-                , ["test", "-x", "/root/.ghcup/bin/ghcup"]
+                ,
+                    [ "test"
+                    , "-x"
+                    , "/root/.ghcup/bin/ghcup"
+                    , "-a"
+                    , "-x"
+                    , "/root/.ghcup/ghc/9.12.4/bin/ghc"
+                    , "-a"
+                    , "-x"
+                    , "/root/.ghcup/bin/cabal"
+                    ]
                 , ["test", "-x", "/root/.local/bin/hostbootstrap"]
                 , ["test", "-x", "/root/hostbootstrap/demo/.build/hostbootstrap-demo"]
                 ,

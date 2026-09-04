@@ -54,6 +54,7 @@ module HostBootstrapDemo.Commands (
     hostAcceleratorDaemonLaunch,
     renderRetainedDaemonOutput,
     hostAcceleratorDaemonPowerShellScript,
+    hostClusterStateDirectory,
     hostAcceleratorSubstrate,
     hostDaemonLifecycleStateConsistent,
     hostDaemonIdentityMatches,
@@ -556,7 +557,7 @@ import System.Exit (ExitCode (..), die)
 import System.FilePath (normalise, takeDirectory, takeFileName, (</>))
 import qualified System.FilePath.Posix as Posix
 import System.IO (hFlush, hPutStr, stderr, stdout)
-import System.IO.Error (tryIOError)
+import System.IO.Error (isAlreadyExistsError, tryIOError)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Info (os)
 
@@ -2749,7 +2750,7 @@ withHostAcceleratorExposure projectCfg execution consume = do
         now = preparedGateJournalVersion gate
         nonce = "accelerator-daemon-provider-" <> T.pack (show now)
         cluster = clusterName (resolvePlan demoProject containerSourceRoot (clusterProfileOf projectCfg))
-        stateDirectory = durableDockerHostPath </> "cluster" </> "kind" </> "state"
+        stateDirectory = hostClusterStateDirectory
     provider <- demoProvider cfg
     projectRoot <- makeAbsolute =<< getCurrentDirectory
     hostDurableRoot <- ensureProfileDataPath (clusterProfileOf projectCfg) projectRoot
@@ -2790,25 +2791,57 @@ withHostAcceleratorExposure projectCfg execution consume = do
                 either (die . show) id opened
             either (die . show) pure discovered
         ProviderWsl2 -> do
+            putStrLn "accelerator-daemon: probing the WSL2 cluster exposure"
+            attempted <-
+                try
+                    ( observeShippedClusterExposureAt
+                        cfg
+                        self
+                        (providerLiftContext provider)
+                        stateDirectory
+                        cluster
+                        "accelerator"
+                    ) ::
+                    IO (Either SomeException (Either T.Text Int))
             observed <-
-                observeShippedClusterExposureAt
-                    cfg
-                    self
-                    (providerLiftContext provider)
-                    stateDirectory
-                    cluster
-                    "accelerator"
-            either (die . ("accelerator-daemon: " ++) . T.unpack) consume observed
+                either
+                    (die . ("accelerator-daemon: WSL2 cluster exposure probe raised an exception: " ++) . displayException)
+                    pure
+                    attempted
+            case observed of
+                Left refusal -> do
+                    let refusalMessage = "accelerator-daemon: WSL2 cluster exposure refused: " ++ T.unpack refusal
+                    -- This callback executes across the prepared-step handoff.  Keep
+                    -- its semantic refusal on the parent's streamed stdout before
+                    -- throwing: the outer lifecycle exception can otherwise retain
+                    -- only @ExitFailure 1@ and erase the actionable child cause.
+                    putStrLn refusalMessage
+                    hFlush stdout
+                    die refusalMessage
+                Right hostPort -> do
+                    putStrLn "accelerator-daemon: WSL2 cluster exposure resolved"
+                    hFlush stdout
+                    consume hostPort
         _ -> die "accelerator-daemon: the host-resident placement requires a VM provider frame"
+
+{- | The provider-child path of the Kind ownership store.  It remains POSIX
+even when the process constructing the frame transaction runs on Windows.
+-}
+hostClusterStateDirectory :: FilePath
+hostClusterStateDirectory = durableDockerHostPath Posix.</> "cluster" Posix.</> "kind" Posix.</> "state"
 
 startHostAcceleratorDaemonAction :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
 startHostAcceleratorDaemonAction stepCfg execution
     | hostAcceleratorSubstrate (hcSubstrate cfg) =
         demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \projectCfg ctx -> do
-            withHostAcceleratorExposure projectCfg execution $ \hostPort ->
+            withHostAcceleratorExposure projectCfg execution $ \hostPort -> do
+                putStrLn "accelerator-daemon: entering the host-daemon lifecycle operation"
                 withHostAcceleratorDaemonOperation ctx $ do
+                    putStrLn "accelerator-daemon: clearing any prior host-daemon lifecycle"
                     stopHostAcceleratorDaemonUnlocked cfg ctx
+                    putStrLn "accelerator-daemon: prior host-daemon lifecycle is clear"
                     daemonExe <- installHostAcceleratorDaemonBinary ctx
+                    putStrLn "accelerator-daemon: host-daemon binary installed"
                     shutdownPath <- makeAbsolute (hostAcceleratorDaemonShutdownPath ctx)
                     readyPath <- makeAbsolute (hostAcceleratorDaemonReadyPath ctx)
                     outputPath <- makeAbsolute (hostAcceleratorDaemonOutputPath ctx)
@@ -2822,7 +2855,9 @@ startHostAcceleratorDaemonAction stepCfg execution
                     pidPath <- makeAbsolute (hostAcceleratorDaemonPidPath ctx)
                     _ <- either die pure (configuredServiceVariant daemonCfg)
                     binaryDigest <- measureBinaryDigest daemonExe >>= either (die . buildErrorMessage) pure
+                    putStrLn "accelerator-daemon: host-daemon binary measured"
                     activationRevision <- prepareDemoServiceActivationFor daemonCfg execution binaryDigest binaryDigest
+                    putStrLn "accelerator-daemon: host-daemon activation installed"
                     sourceRoot <- makeAbsolute (T.unpack (Context.sourceRoot (context daemonCfg)))
                     invocationNonce <- sha256Bytes <$> getRandomBytes 24
                     let activationPath =
@@ -2900,6 +2935,7 @@ startHostAcceleratorDaemonAction stepCfg execution
                                             `onException` abortTracked
                         if isWindows (hcSubstrate cfg)
                             then do
+                                putStrLn "accelerator-daemon: launching the hidden Windows host daemon"
                                 let abortWindowsLaunch = do
                                         tracked <- doesFileExist pidPath
                                         if tracked
@@ -3014,7 +3050,18 @@ withHostAcceleratorDaemonOperation ctx action =
         createDirectoryIfMissing True (hostAcceleratorDaemonDir ctx)
         claimed <- tryIOError (createDirectory operationPath)
         case claimed of
-            Left _ -> die ("accelerator-daemon: lifecycle operation already active at " ++ operationPath)
+            Left err
+                | isAlreadyExistsError err ->
+                    die ("accelerator-daemon: lifecycle operation already active at " ++ operationPath)
+                | otherwise ->
+                    ioError
+                        ( userError
+                            ( "accelerator-daemon: could not acquire the lifecycle operation at "
+                                ++ operationPath
+                                ++ ": "
+                                ++ show err
+                            )
+                        )
             Right () -> restore action `finally` removeDirectory operationPath
 
 claimHostAcceleratorDaemon :: Context.BinaryContext -> IO ()
@@ -3783,7 +3830,41 @@ assertDurableReadback phase cfg frame node = do
                 ++ shellQuoteArg (durableDockerHostPath ++ "/web/marker")
                 ++ ")\" = "
                 ++ shellQuoteArg marker
-    observed <- liftLeaf cfg frame (RawCmd ["bash", "-lc", script])
+        diagnostics =
+            "status=$?; printf '%s\\n' 'durable-readback diagnostics:' >&2; "
+                ++ "printf 'alias-target=' >&2; readlink -f "
+                ++ shellQuoteArg durableDockerHostPath
+                ++ " >&2 || true; "
+                ++ "ls -ld "
+                ++ shellQuoteArg durableDockerHostPath
+                ++ " "
+                ++ shellQuoteArg (durableDockerHostPath ++ "/web")
+                ++ " >&2 || true; "
+                ++ "printf 'alias-marker=' >&2; cat "
+                ++ shellQuoteArg (durableDockerHostPath ++ "/web/marker")
+                ++ " >&2 || true; "
+                ++ "docker exec "
+                ++ shellQuoteArg node
+                ++ " sh -lc "
+                ++ shellQuoteArg
+                    ( "findmnt -T /var/lib/hostbootstrap-demo-data || true; "
+                        ++ "ls -ld /var/lib/hostbootstrap-demo-data /var/lib/hostbootstrap-demo-data/web || true; "
+                        ++ "printf 'node-marker='; cat /var/lib/hostbootstrap-demo-data/web/marker || true"
+                    )
+                ++ " >&2 || true; "
+                ++ "docker exec "
+                ++ shellQuoteArg node
+                ++ " kubectl get pods -o wide >&2 || true; "
+                ++ "docker exec "
+                ++ shellQuoteArg node
+                ++ " kubectl exec deployment/hostbootstrap-demo-web -- sh -lc "
+                ++ shellQuoteArg
+                    ( "ls -ld /var/lib/hostbootstrap-demo-data/web || true; "
+                        ++ "printf 'pod-marker='; cat /var/lib/hostbootstrap-demo-data/web/marker || true"
+                    )
+                ++ " >&2 || true; exit \"$status\""
+        diagnosedScript = "(" ++ script ++ ") || { " ++ diagnostics ++ "; }"
+    observed <- liftLeaf cfg frame (RawCmd ["bash", "-lc", diagnosedScript])
     pure $ case observed of
         Right (ExitSuccess, _, _) -> Pass
         Right (ExitFailure code, out, err) ->
@@ -4014,42 +4095,75 @@ reconcileDurableShare _vmReady cfg share =
                 )
                 probe
 
-{- | Prove the host-backed durable share is a writable directory INSIDE the guest,
-then mint the 'Ready DurableShareMounted' witness the alias step requires
+{- | Prove the durable share is the /same writable directory/ on the host and in
+the guest, then mint the 'Ready DurableShareMounted' witness the alias step requires
 (development_plan_standards § CC/§ DD). The probe is a single trivial guest command
 and is retried within the network poll budget so a not-yet-visible drvfs/disk mount
-is tolerated rather than raced. Incus additionally requires the target itself to be
+is tolerated rather than raced. A host-created nonce must be readable in the guest,
+and the guest must write the same nonce back where the host can read it. Merely
+finding a writable directory at the expected guest path is insufficient: an
+unmounted WSL @/mnt/c@ directory or an underlying pre-virtiofs directory is
+writable but disposable with the VM. Incus additionally requires the target itself to be
 an exact @virtiofs@ mountpoint: the guest source tree can already contain a writable
 directory at the same absolute path, and admitting that underlying directory would
-let Docker retain non-durable bytes across the later mount transition. The other
-providers retain the portable @test -d X && test -w X@ probe.
+let Docker retain non-durable bytes across the later mount transition.
 Consumes the 'Ready NetworkReady' witness, so it cannot run before the network is up.
 -}
 awaitDurableShareMounted ::
     ObservedReady NetworkReady -> HostConfig -> SubstrateProvider -> HostPathShare -> IO (ObservedReady DurableShareMounted)
 awaitDurableShareMounted _net cfg provider share =
-    case demoGuestShellArgs provider ["bash", "-lc", mountProbe] of
-        Left refusal ->
-            throwIO
-                ( LifecycleFailure
-                    ("vm up: durable-share guest probe is unsupported: " ++ show refusal)
-                )
-        Right (tool, args) -> do
-            outcome <- awaitObservedReady networkPoll ("vm up: durable share mounted in " ++ providerVmId provider) (exitZeroProbe tool args) cfg
-            either
-                (\e -> throwIO (LifecycleFailure ("vm up: durable share not mounted/writable in " ++ providerVmId provider ++ ": " ++ renderPollError e)))
-                pure
-                outcome
-  where
-    q = shellQuoteArg (hpsGuestPath share)
-    mountProbe = case providerKind provider of
-        ProviderIncus ->
-            "test -w "
-                ++ q
-                ++ " && test \"$(findmnt -n -o FSTYPE --mountpoint "
-                ++ q
-                ++ ")\" = virtiofs"
-        _ -> "test -d " ++ q ++ " && test -w " ++ q
+    do
+        nonce <- T.drop (T.length "sha256:") . sha256Bytes <$> getRandomBytes 24
+        let probeName = ".hostbootstrap-share-host-" ++ T.unpack nonce
+            returnName = ".hostbootstrap-share-guest-" ++ T.unpack nonce
+            hostProbe = hpsHostPath share </> probeName
+            hostReturn = hpsHostPath share </> returnName
+            guestProbe = hpsGuestPath share Posix.</> probeName
+            guestReturn = hpsGuestPath share Posix.</> returnName
+            q = shellQuoteArg (hpsGuestPath share)
+            identityProbe =
+                "test -d "
+                    ++ q
+                    ++ " && test -w "
+                    ++ q
+                    ++ " && test \"$(cat "
+                    ++ shellQuoteArg guestProbe
+                    ++ ")\" = "
+                    ++ shellQuoteArg (T.unpack nonce)
+                    ++ " && printf %s "
+                    ++ shellQuoteArg (T.unpack nonce)
+                    ++ " > "
+                    ++ shellQuoteArg guestReturn
+            mountProbe = case providerKind provider of
+                ProviderIncus ->
+                    identityProbe
+                        ++ " && test \"$(findmnt -n -o FSTYPE --mountpoint "
+                        ++ q
+                        ++ ")\" = virtiofs"
+                _ -> identityProbe
+            cleanup = mapM_ removeIfExists [hostProbe, hostReturn]
+        TIO.writeFile hostProbe nonce
+        ( case demoGuestShellArgs provider ["bash", "-lc", mountProbe] of
+                Left refusal ->
+                    throwIO
+                        ( LifecycleFailure
+                            ("vm up: durable-share guest probe is unsupported: " ++ show refusal)
+                        )
+                Right (tool, args) -> do
+                    outcome <- awaitObservedReady networkPoll ("vm up: durable share mounted in " ++ providerVmId provider) (exitZeroProbe tool args) cfg
+                    ready <-
+                        either
+                            (\e -> throwIO (LifecycleFailure ("vm up: durable share identity/read-write probe failed in " ++ providerVmId provider ++ ": " ++ renderPollError e)))
+                            pure
+                            outcome
+                    returned <- tryIOError (TIO.readFile hostReturn)
+                    case returned of
+                        Right observed
+                            | observed == nonce -> pure ready
+                            | otherwise -> throwIO (LifecycleFailure "vm up: durable-share guest-to-host probe returned different bytes")
+                        Left err -> throwIO (LifecycleFailure ("vm up: durable-share guest write was not visible on the host: " ++ show err))
+            )
+            `finally` cleanup
 
 {- | Reconcile the compatibility alias through the same shipped ownership row
 used by the exact Incus path.  This route remains for provider families whose
@@ -5180,7 +5294,13 @@ runVmBootstrap stepCfg _execution = demoConfigContext stepCfg Context.HostOrches
                 (vmDemoRoot ++ "/.build/hostbootstrap-demo")
                 "/usr/local/bin/hostbootstrap-demo"
                 (PinnedToolchain "9.12.4")
-    bootstrap <- runGuestBootstrap cfg (providerLiftContext provider) bootstrapTarget >>= either die pure
+    bootstrapResult <- runGuestBootstrap cfg (providerLiftContext provider) bootstrapTarget
+    bootstrap <- case bootstrapResult of
+        Right outcomes -> pure outcomes
+        Left err -> do
+            putStrLn ("pristine-bootstrap: guest bootstrap FAILED: " ++ err)
+            hFlush stdout
+            die err
     mapM_ reportGuestBootstrap bootstrap
     let stagedHandoff = stageFileEffects (providerFileTransfer provider) (executable ++ ".handoff.pub") "/tmp/hostbootstrap-demo.handoff.pub"
         stagedActivation = stageFileEffects (providerFileTransfer provider) (executable ++ ".activation.pub") "/tmp/hostbootstrap-demo.activation.pub"

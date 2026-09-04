@@ -2639,7 +2639,7 @@ serveMessage state link channel request offer challenge terminal message =
                         challenge
                         report
                         terminal
-                _ -> refuse channel request RelayLifecycleFailure
+                _ -> refuse channel request RelayLifecycleMalformed
         (ParentServingAdmittedChild childFrame, OfferRequestTag) ->
             continueAfter childFrame (serveOpen childFrame link channel request message)
         (ParentServingAdmittedChild childFrame, GrantRequestTag) ->
@@ -2749,7 +2749,7 @@ runLifecycleTerminal ::
     IO (Either RelayError ())
 runLifecycleTerminal link channel request offer challenge report terminal =
     case canonicalTerminal of
-        Left _ -> refuse channel request RelayLifecycleFailure
+        Left _ -> refuse channel request RelayLifecycleInvalidReport
         Right acknowledgement -> mask $ \restore -> do
             gate <- newMVar (False, False, False, Nothing :: Maybe Bool)
             completed <- newEmptyMVar
@@ -2802,7 +2802,7 @@ runLifecycleTerminal link channel request offer challenge report terminal =
                                 (recordDisposition True)
                                 (recordDisposition False)
                         case adopted of
-                            Left _ -> pure (Left RelayLifecycleFailure)
+                            Left _ -> pure (Left RelayLifecycleAdoptionFailure)
                             Right () -> sendAcknowledgement storedAcknowledgement (pure (Right ()))
 
                 alreadyAdopted storedAcknowledgement =
@@ -2810,13 +2810,13 @@ runLifecycleTerminal link channel request offer challenge report terminal =
 
                 sendAcknowledgement storedAcknowledgement after
                     | storedAcknowledgement /= acknowledgement =
-                        pure (Left RelayLifecycleFailure)
+                        pure (Left RelayLifecycleStoredMismatch)
                     | otherwise = do
                         modifyMVar_ gate $ \(closed, entered, _, fresh) ->
                             pure (closed, entered, True, fresh)
                         sent <- transmit channel AcknowledgedTag request [acknowledgement]
                         case sent of
-                            Left _ -> pure (Left RelayLifecycleFailure)
+                            Left _ -> pure (Left RelayLifecycleTransmissionFailure)
                             Right () -> after
 
                 recordDisposition fresh = do
@@ -2848,8 +2848,8 @@ runLifecycleTerminal link channel request offer challenge report terminal =
 
                 fixedResult attempted =
                     if attempted
-                        then pure (Left RelayLifecycleFailure)
-                        else refuse channel request RelayLifecycleFailure
+                        then pure (Left RelayLifecycleCallbackAfterAcknowledgement)
+                        else refuse channel request RelayLifecycleCallbackBeforeAcknowledgement
 
             callbackResult <-
                 try
@@ -3260,7 +3260,13 @@ refusalCode failure = case failure of
     RelayRefusedByPeer _ _ -> "peer-refused"
     RelayActivationRefused _ -> "activation-refused"
     RelayRecoveryNotPlanned _ -> "recovery-not-planned"
-    RelayLifecycleFailure -> "lifecycle-failed"
+    RelayLifecycleMalformed -> "lifecycle-failed"
+    RelayLifecycleInvalidReport -> "lifecycle-failed"
+    RelayLifecycleAdoptionFailure -> "lifecycle-failed"
+    RelayLifecycleStoredMismatch -> "lifecycle-failed"
+    RelayLifecycleTransmissionFailure -> "lifecycle-failed"
+    RelayLifecycleCallbackBeforeAcknowledgement -> "lifecycle-failed"
+    RelayLifecycleCallbackAfterAcknowledgement -> "lifecycle-failed"
     RelayControlFrameTimeout -> "control-frame-timeout"
 
 refusalDetail :: RelayError -> ByteString
@@ -3283,8 +3289,14 @@ data RelayError
       RelayActivationRefused ActivationError
     | -- | the root plan does not admit this recovery projection
       RelayRecoveryNotPlanned Text
-    | -- | fixed/redacted terminal acknowledgement failure
-      RelayLifecycleFailure
+    | -- | fixed/redacted terminal acknowledgement failures
+      RelayLifecycleMalformed
+    | RelayLifecycleInvalidReport
+    | RelayLifecycleAdoptionFailure
+    | RelayLifecycleStoredMismatch
+    | RelayLifecycleTransmissionFailure
+    | RelayLifecycleCallbackBeforeAcknowledgement
+    | RelayLifecycleCallbackAfterAcknowledgement
     | -- | a frame the peer owed immediately never arrived
       RelayControlFrameTimeout
     deriving (Eq, Show)
@@ -3304,7 +3316,13 @@ relayErrorMessage failure = case failure of
         "handoff relay: activation signing refused: " <> activationErrorMessage detail
     RelayRecoveryNotPlanned reason ->
         "handoff relay: the plan names no such recovery projection: " <> Text.unpack reason
-    RelayLifecycleFailure -> "handoff relay: lifecycle acknowledgement failed"
+    RelayLifecycleMalformed -> "handoff relay: lifecycle acknowledgement failed at malformed terminal message"
+    RelayLifecycleInvalidReport -> "handoff relay: lifecycle acknowledgement failed at terminal report validation"
+    RelayLifecycleAdoptionFailure -> "handoff relay: lifecycle acknowledgement failed at durable acknowledgement adoption"
+    RelayLifecycleStoredMismatch -> "handoff relay: lifecycle acknowledgement failed at stored acknowledgement comparison"
+    RelayLifecycleTransmissionFailure -> "handoff relay: lifecycle acknowledgement failed at acknowledgement transmission"
+    RelayLifecycleCallbackBeforeAcknowledgement -> "handoff relay: lifecycle acknowledgement failed at terminal callback before acknowledgement"
+    RelayLifecycleCallbackAfterAcknowledgement -> "handoff relay: lifecycle acknowledgement failed at terminal callback after acknowledgement"
     RelayControlFrameTimeout -> "handoff relay: the peer owed a control frame and sent none"
 
 fromHandoff :: Either HandoffError a -> Either RelayError a
