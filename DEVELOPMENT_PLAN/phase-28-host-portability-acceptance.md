@@ -69,9 +69,16 @@ Record the host static gate passing host-native on a Windows gate host.
 
 The dated run.
 
+Preflight evidence on 2026-09-04: while validating the Phase 27 plan update on native x86_64 Windows with
+GHC 9.12.4, the warning-clean test build stopped in the Cabal-private Colima backend before
+`DocValidatorSpec` could start. Windows-unused imports and helpers in `Resolver.Native`, `Runner`, and
+`Resolver` were promoted to errors by `-Werror`. Rebuilding without warning promotion allowed the focused
+documentation validator to pass 2/2, which confirms the plan edit but does not satisfy this sprint or the
+host static gate.
+
 #### Remaining Work
 
-The run.
+Make the complete Windows graph warning-clean, then run and record the complete host static gate.
 
 ### Sprint 28.2: macOS gate-host acceptance [Planned]
 

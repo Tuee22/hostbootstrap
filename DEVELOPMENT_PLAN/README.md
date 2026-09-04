@@ -64,8 +64,8 @@ its row here.
 | 24 | [The worked demo](phase-24-worked-demo.md) | Done | linux-cpu | — |
 | 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Done | **apple-silicon** | — |
 | 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Done | **nvidia** | — |
-| 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | 27.3 acceptance re-run |
-| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Planned | — | 28.1–28.3 the Windows, macOS, and Linux gate-host runs |
+| 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | 27.3 recovery and acceptance re-run |
+| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Planned | — | 28.1 Windows warning-clean build and run; 28.2–28.3 macOS and Linux runs |
 | 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Planned | — | all |
 
 ## The current frontier
@@ -83,6 +83,15 @@ unactivated and unchanged, and left no isolated namespace behind. Kind stages it
 platform-locally and publishes the exact readback before node binding, while recursive lifecycle entry refuses
 a retained reverse failure without selecting it again. Far-frame exposure is re-observed through the exact
 provider frame.
+
+The 2026-09-04 Windows acceptance attempt passed all five `hello-world` cases and observed the real Windows
+accelerator daemon, distro destroy, global-wall release, and `.wslconfig` restoration. Its `hello-universe`
+bring-up failed while Docker extracted a freshly pulled published-base layer whose gzip CRC32 was corrupt; the
+run reported `5/11 passed`, five `BROKEN` cases, and one `LEAKED?` teardown row with retained reverse work. A
+durable retry exited 1 immediately after `Up to date` without an acceptance report. Phase 27 therefore remains
+active at recovery of that retained lifecycle state followed by a pristine durable `10/10` rerun and end-state
+audit; the failed run is not completion evidence.
+
 Phase 24's host-resident accelerator reopens the exact owned provider frame and re-observes the recorded relay
 there; no cluster live package is expected to survive child-frame closure. The warning-clean core graph passes
 2,478/2,478. Host publication is an owned runtime

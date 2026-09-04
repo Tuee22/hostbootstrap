@@ -137,18 +137,31 @@ On 2026-08-27, the current execution workspace identified itself as native Linux
 exercise the Win32 ownership row, observe the WSL utility-VM wall, or prove restore-before-shutdown. No Linux
 result is substituted for this native Windows acceptance requirement.
 
+On 2026-09-04, a native Windows run used the documented WMI durable launcher after `test init` completed.
+The `hello-world` variant passed all five cases, including the Windows host accelerator daemon and the
+destroy path that removed `hostbootstrap-demo-vm`, released the global WSL2 wall, and restored the original
+`.wslconfig`. The `hello-universe` variant then failed while Docker extracted the freshly pulled published
+base image: `unpigz` reported a corrupted layer with a CRC32 mismatch. The report was `5/11 passed`: its five
+`hello-universe` cases were `BROKEN`, and its additional teardown row was `LEAKED?` because reverse lifecycle
+retained unsettled work after the failed bring-up. This is failure evidence, not the phase gate.
+
+A durable retry on the same date exited 1 immediately after reporting `Up to date` and produced no acceptance
+report. It therefore supplies no replacement gate evidence and leaves the interrupted lifecycle state to be
+diagnosed through the repository's supported recovery path.
+
 #### Remaining Work
 
-Run the complete acceptance gate from a native Windows host through the documented durable-run launcher. The
-run must exercise typed frame-indexed teardown descent across the real WSL boundary, the complete current test
-matrix, and a current provider-lifecycle observation including wall restoration before shutdown. The present
-Linux workspace cannot discharge this hardware/host boundary.
+Diagnose the immediate retry refusal and reconcile the retained failed-`hello-universe` lifecycle through the
+supported recovery path, without deleting the distro or durable records by pathname. Then rerun the complete
+acceptance gate from a pristine state through the documented durable-run launcher. The passing run must
+exercise typed frame-indexed teardown descent across the real WSL boundary, report `10/10 passed`, and finish
+with a current provider-lifecycle observation including wall restoration before shutdown and distro removal.
 
 ## Remaining Work
 
-Sprint 27.3, the acceptance run itself. Sprints 27.1 and 27.2 are closed; what is left is the
-pristine-host re-run of the complete matrix against the current tree, together with the end-state audit
-that the host wall is restored to its prior body and the distribution is gone.
+Sprint 27.3. Sprints 27.1 and 27.2 are closed. The failed `hello-universe` bring-up first requires supported
+recovery of its retained lifecycle state; the complete matrix then requires a pristine durable rerun and the
+end-state audit that the host wall is restored to its prior body and the distribution is gone.
 
 ## Documentation Requirements
 
