@@ -1,6 +1,6 @@
 # Phase 28 — Host-portability acceptance
 
-**Status**: Planned
+**Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: none (static)
 **Gate**: the host static gate — `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/`,
@@ -45,9 +45,9 @@ confirmations, and each keeps its own declared gate.
 
 ## Sprints
 
-### Sprint 28.1: Windows gate-host acceptance [Planned]
+### Sprint 28.1: Windows gate-host acceptance [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: none — this sprint changes no source
 **Substrates**: none
 **Docs to update**: `documents/engineering/testing.md`
@@ -69,16 +69,21 @@ Record the host static gate passing host-native on a Windows gate host.
 
 The dated run.
 
-Preflight evidence on 2026-09-04: while validating the Phase 27 plan update on native x86_64 Windows with
-GHC 9.12.4, the warning-clean test build stopped in the Cabal-private Colima backend before
-`DocValidatorSpec` could start. Windows-unused imports and helpers in `Resolver.Native`, `Runner`, and
-`Resolver` were promoted to errors by `-Werror`. Rebuilding without warning promotion allowed the focused
-documentation validator to pass 2/2, which confirms the plan edit but does not satisfy this sprint or the
-host static gate.
+Completed 2026-09-05 on native x86_64 Microsoft Windows 11 Home 10.0.26200 with GHC 9.12.4,
+Cabal 3.16.1.0, Python 3.12.10, and Poetry 2.4.1. `cabal build all --ghc-options=-Werror` passed,
+`cabal test all --ghc-options=-Werror` passed 2,477/2,477, the Python code check passed, and the Python
+suite passed 231/231. The reported component durations totalled 6 minutes: 20 seconds for the Cabal build,
+327 seconds for the Haskell suite, 7 seconds for the Python code check, and 5 seconds for the Python suite.
+
+The fixed coverage manifest reported the expected Windows realization: all POSIX ownership and shipped
+guest-alias cases asserted their rows' declared refusal, while the Windows ownership families exercised the
+Win32 kernel, `WslGlobalWallHostSpec` exercised its Windows host row, and three of four
+`WslGlobalWallWindowsSpec` cases exercised the Windows kernel. The manifest and total remained fixed; no case
+was skipped.
 
 #### Remaining Work
 
-Make the complete Windows graph warning-clean, then run and record the complete host static gate.
+None.
 
 ### Sprint 28.2: macOS gate-host acceptance [Planned]
 
@@ -106,11 +111,13 @@ The dated run.
 
 #### Remaining Work
 
-The run.
+The run. As of 2026-09-05 the active Windows workspace has no configured macOS SSH target and this
+repository has no GitHub Actions workflow or other macOS runner, so obtaining the dated host-native
+evidence requires access to an Apple gate host.
 
-### Sprint 28.3: Linux gate-host acceptance [Planned]
+### Sprint 28.3: Linux gate-host acceptance [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: none — this sprint changes no source
 **Substrates**: none
 **Docs to update**: `documents/engineering/testing.md`
@@ -130,17 +137,33 @@ Record the host static gate passing host-native on a Linux gate host.
 
 #### Validation
 
-The dated run.
+Completed 2026-09-05 on x86_64 Ubuntu 24.04.4 LTS under WSL2, identified as a Linux gate host by
+the guest OS rather than by its substrate, with GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, and
+Poetry 2.4.3. A cold `cabal build all` passed, `cabal test all --ghc-options=-Werror` passed
+2,482/2,482, the Python code check passed, and the Python suite passed 231/231. The recorded
+successful component durations totalled 17 minutes 17 seconds: 863 seconds for the cold Cabal
+build, 168 seconds for the Haskell suite, 3 seconds for the Python code check, and 2 seconds for
+the Python suite.
+
+The fixed coverage manifest reported the expected Linux realization: every `WslGlobalWallHostSpec`
+POSIX-row case, every POSIX ownership case, and every shipped guest-alias case exercised its row
+against the Linux kernel. Every Windows ownership case and the three platform-row cases in
+`WslGlobalWallWindowsSpec` asserted their declared refusal; that family's fourth, platform-neutral
+case remained in the fixed family total. No case was skipped.
 
 #### Remaining Work
 
-The run.
+None.
 
 These are three sprints rather than one because the three runs are independent evidence obtained on
 independent machines. Bundled into a single sprint, a family that is available cannot be recorded until the
 family that is not becomes available, and the phase reports nothing while holding two thirds of its answer.
 A family whose run is not available is named as owed rather than assumed, because a dated run is evidence
 for the gate host that produced it and for no other (§ II).
+
+## Remaining Work
+
+Sprint 28.2 must record the macOS host-static run.
 
 ## Documentation Requirements
 

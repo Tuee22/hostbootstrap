@@ -64,8 +64,8 @@ its row here.
 | 24 | [The worked demo](phase-24-worked-demo.md) | Done | linux-cpu | — |
 | 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Done | **apple-silicon** | — |
 | 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Done | **nvidia** | — |
-| 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | 27.3 recovery and acceptance re-run |
-| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Planned | — | 28.1 Windows warning-clean build and run; 28.2–28.3 macOS and Linux runs |
+| 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Done | **windows** | — |
+| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | 28.2 macOS run |
 | 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Planned | — | all |
 
 ## The current frontier

@@ -1,6 +1,6 @@
 # Phase 27 — Windows and WSL2 substrate
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: windows
 **Gate**: live `hostbootstrap run -- test run all` reporting `10/10 passed` on a native Windows host
@@ -106,9 +106,9 @@ evidence: the row passed its focused entrypoint gate and passed inside the compl
 
 None.
 
-### Sprint 27.3: Windows acceptance [Active]
+### Sprint 27.3: Windows acceptance [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: the whole tree
 **Substrates**: windows
 **Docs to update**: `documents/engineering/durable_windows_runs.md`,
@@ -137,31 +137,20 @@ On 2026-08-27, the current execution workspace identified itself as native Linux
 exercise the Win32 ownership row, observe the WSL utility-VM wall, or prove restore-before-shutdown. No Linux
 result is substituted for this native Windows acceptance requirement.
 
-On 2026-09-04, a native Windows run used the documented WMI durable launcher after `test init` completed.
-The `hello-world` variant passed all five cases, including the Windows host accelerator daemon and the
-destroy path that removed `hostbootstrap-demo-vm`, released the global WSL2 wall, and restored the original
-`.wslconfig`. The `hello-universe` variant then failed while Docker extracted the freshly pulled published
-base image: `unpigz` reported a corrupted layer with a CRC32 mismatch. The report was `5/11 passed`: its five
-`hello-universe` cases were `BROKEN`, and its additional teardown row was `LEAKED?` because reverse lifecycle
-retained unsettled work after the failed bring-up. This is failure evidence, not the phase gate.
-
-A durable retry on the same date exited 1 immediately after reporting `Up to date` and produced no acceptance
-report. It therefore supplies no replacement gate evidence and leaves the interrupted lifecycle state to be
-diagnosed through the repository's supported recovery path.
+On 2026-09-05, a native Windows run used the documented WMI durable launcher and passed the complete
+`10/10` matrix in 2 hours 54 minutes. Both `hello-world` and `hello-universe` passed pristine bootstrap,
+web build, end-to-end tabs, registry persistence, and durable readback. The run exercised the Windows host
+accelerator daemon and typed frame-indexed teardown across the WSL boundary. Its final destroy removed
+`hostbootstrap-demo-vm`, released the global WSL2 wall before shutdown, restored the exact prior CRLF
+`.wslconfig` body, and left no WSL distribution or utility-VM process.
 
 #### Remaining Work
 
-Diagnose the immediate retry refusal and reconcile the retained failed-`hello-universe` lifecycle through the
-supported recovery path, without deleting the distro or durable records by pathname. Then rerun the complete
-acceptance gate from a pristine state through the documented durable-run launcher. The passing run must
-exercise typed frame-indexed teardown descent across the real WSL boundary, report `10/10 passed`, and finish
-with a current provider-lifecycle observation including wall restoration before shutdown and distro removal.
+None.
 
 ## Remaining Work
 
-Sprint 27.3. Sprints 27.1 and 27.2 are closed. The failed `hello-universe` bring-up first requires supported
-recovery of its retained lifecycle state; the complete matrix then requires a pristine durable rerun and the
-end-state audit that the host wall is restored to its prior body and the distribution is gone.
+None.
 
 ## Documentation Requirements
 
