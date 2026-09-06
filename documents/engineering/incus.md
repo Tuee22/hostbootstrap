@@ -15,7 +15,7 @@ and adds Incus-specific lifecycle probes/builders. The project selects an abstra
 whose narrow projections retain the complete `LiftContext` and pure lifecycle plans without exposing
 construction or record update. Generic Lift remains below that realization and imports no Incus lifecycle
 module. Real Incus mutation enters through the exact prepared provider backend. The demo's adoption of that
-route remains work for the
+consumer is owned by the
 [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md). For Incus the optional cordon reconcile
 is absent. The prepared route:
 
@@ -164,25 +164,22 @@ a name the guard would have refused. An instance outside the project's namespace
 degenerate inputs that make the guard vacuous: an empty prefix, which is a prefix of every name, and an empty
 instance name. `incus stop` carries no guard because it is not destructive.
 
-## Lifecycle caveat
+## Recursive Lifecycle And Durable State
 
-The current root teardown does not recursively enter the Incus child and invoke the lifecycle verb before
-stopping/deleting the VM. It runs the verb's reverse projection: current-frame cluster cleanup, then the
-reverse the demo declared on its own `deploy-vm` node.
-Deleting the VM removes nested compute incidentally. See
+The root coordinator enters the authenticated child reverse route before stopping or deleting its Incus
+provider. Cluster/workload teardown follows the same exact child-first forest as other providers; deleting
+the VM is the provider operation after nested settlement, not a substitute for that settlement. See
 [cluster lifecycle](cluster_lifecycle.md).
 
-The host durable root is carried into Incus through a disk device and exposed to Docker through
-`/var/tmp/hostbootstrap-demo-data`; it is not merely guest-root-disk state. The destroy/up/readback
-guarantee remains unvalidated. The demo guest alias is still created and removed by pathname, so it holds
-no receipt at that legacy demo call site. The guest alias driver — a separate driver, running inside the
-provider guest rather than on the outer host — is implemented above Incus/Lima/WSL2: under the retained
-guest lock it publishes an explicit-absence origin record inside the
-host-backed durable target with a fresh 256-bit nonce, flushes and reads it back, publishes the alias by a
-no-replace hard link from a nonce staging symlink, binds the symlink's exact device/inode, and releases only
-after re-observing that identity. Crash retries recover the prepared or managed record rather than adopting
-an exact-looking pathname. The [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns
-replacing the legacy demo call site with this prepared route; see
+The host durable root is carried into Incus through an owned disk device and exposed to Docker through
+`/var/tmp/hostbootstrap-demo-data`. The prepared guest-alias driver runs inside the provider guest. Under
+its retained guest lock it publishes an explicit-absence origin record in the host-backed target with a
+fresh nonce, flushes and reads it back, publishes the alias without replacement, and binds the symlink's
+exact device/inode identity. Release re-observes that identity; crash retries recover the prepared or
+managed record rather than adopting an exact-looking pathname.
+
+The [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) records adoption of that route,
+Production durable-root preservation, and same-run Harness destroy/up/readback. See
 [ownership invariant](../architecture/ownership_invariant.md) and
 [durable state](../architecture/durable_state.md).
 

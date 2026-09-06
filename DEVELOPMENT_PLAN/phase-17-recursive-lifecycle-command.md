@@ -621,52 +621,35 @@ the original 323-line public codec slice plus the 62-line hidden bound-observati
 
 None.
 
-### Sprint 17.20: Lower sealed completion ownership split [Done]
+### Sprint 17.20: Lower sealed completion ownership [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Completion.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Lifecycle.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Handoff/Receiver.hs`,
-`core/hostbootstrap-core/hostbootstrap-core.cabal` (build metadata only)
+`core/hostbootstrap-core/hostbootstrap-core.cabal` (completion module registration)
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`,
 `documents/architecture/lifecycle_state_model.md`
 
 #### Objective
 
-Separate lower semantic completion evidence from upper lifecycle reporting without adding process ownership.
+Keep semantic completion evidence inside the lower authenticated handoff owner.
 
 #### Deliverables
 
-- Hidden `Handoff.Completion` owns nominal `LifecycleCompletion` and its exact five-symbol lower surface.
-- Hidden `Handoff.Lifecycle` owns exactly the two upper completed-forward/completed-reverse reporters.
-- Forward completion requires the terminal-origin/config-offer binding; reverse completion requires exact Bound
-  verification and `SubtreeSettled`.
-- Receiver accepts one strict owner-supplied terminal-report action and constructs no completion evidence.
-- Receiver retains only the strict owner-supplied terminal-report action; the complete reviewed attribution is
-  337 significant lines and adds no process caller.
+- Hidden `Handoff.Completion` owns nominal `LifecycleCompletion` and its sealed lower surface.
+- Forward completion requires the terminal-origin/config-offer binding; reverse completion requires exact
+  Bound verification and the same plan's subtree settlement.
+- Canonical report bytes carry observations, not a child-local store, acquisition cursor, or command authority.
+- Receiver consumes the authenticated terminal-report action and constructs no completion evidence.
+- The root `LifecycleEntry` is reachable only by the command owner; nested execution uses rooted grants.
 
 #### Validation
 
-Dated 2026-08-12 evidence includes `HandoffSpec` 68/68, `ProjectPlanSpec` 68/68, compile-fail 452/452, the
-complete suite 1913/1913 in 388.65 seconds, and `DocValidatorSpec` 2/2. Frozen SHA-256 values are
-`2f85e79d42290b22b1ed69522dcdfd1b5e84bf1d3f94b12a150765e0bf444070` for
-`HostBootstrap.Handoff.Completion`,
-`203bbc49082d7e094bfed17d0630897b11523875092e5d1c0f60ca8326e85a32` for
-`HostBootstrap.Handoff.Lifecycle`, and
-`e800aae27a5db74a7e94dfa828bf80013ac25ddbf7f2c98131a15153ed029449` for the Cabal file. Attribution is
-148 + 120 + 67 source lines plus two Cabal rows = 337; the lower 62-line bound-observation verifier belongs
-to the preceding canonical-wire sprint.
-
-`CLISpec` pins the two importers this split leaves the Cabal-private `LifecycleEntry` — `Command.hs` and
-`Handoff/Lifecycle.hs` — as a separator-neutral repo-relative allow-list, so the same two modules are
-named on every supported outer host realization (§ JJ). It builds those names with
-`SourceGuard.repoRelativePath`, the helper the
-[Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md) owns; the module ownership the
-sprint states is unchanged. On 2026-08-17 the gate passed host-native on Windows 11 Home 10.0.26200
-x86_64 (GHC 9.12.4, Cabal 3.16.1.0) at 1,877/1,877, which is the first run to exercise this allow-list
-from a native-separator gate host. Cross-family confirmation is the
-[host-portability acceptance phase](phase-28-host-portability-acceptance.md)'s (§ JJ).
+`HandoffSpec` exercises canonical report and acknowledgement codecs, exact bindings, and the rooted terminal
+receipt. `ProjectPlanSpec` guards root-only lifecycle entry and storeless child execution, including negative
+source fixtures. `CLISpec` checks the separator-neutral `LifecycleEntry` importer set. Compile-fail fixtures
+refuse public construction and import of private completion authority.
 
 #### Remaining Work
 
@@ -2012,15 +1995,11 @@ command gate once Sprints 17.41–17.51 have adopted it.
 lines and `Handoff.Process.Route` at 398; the relay increment is 13 lines, so every owner is inside the
 sprint's 400-line bound.
 
-The owner's placement is what makes its fixture platform-conditional. `Handoff.Process` is a
-POSIX-conditional module, so on a Windows outer host it is unreachable because the package does not build
-it rather than because it is hidden, and `ImportHandoffProcess.hs` expects the diagnostic its host
-actually produces (§ JJ): `Could not load module … it is a hidden module` on POSIX, and
-`Could not find module …` on Windows. The guard asserts unreachability from a public importer on both,
-and the sibling `ImportHandoffProcessRoute.hs` stays unconditional because `Handoff.Process.Route` is
-built and hidden everywhere. On 2026-08-17 the gate passed host-native on Windows 11 Home 10.0.26200
-x86_64 (GHC 9.12.4, Cabal 3.16.1.0) at 1,877/1,877, including both fixtures. Cross-family confirmation is
-the [host-portability acceptance phase](phase-28-host-portability-acceptance.md)'s (§ JJ).
+`Handoff.Process` and `Handoff.Process.Route` are built as private modules on every gate host. The
+compile-fail fixtures therefore require the same hidden-module diagnostic everywhere. Platform-specific
+signal and termination primitives live behind the shared process owner; they do not remove the module or
+its command entry from Windows. Native gate evidence belongs to this phase and the
+[host-portability acceptance phase](phase-28-host-portability-acceptance.md).
 
 #### Remaining Work
 
@@ -2067,9 +2046,17 @@ Cabal 3.16.1.0. The complete `cabal test all --ghc-options=-Werror` gate then pa
 new private owner stands at 351 significant lines; together with its four-line CLI adoption it remains below
 the sprint's 400-line limit.
 
+On 2026-09-05, `cabal test all --ghc-options=-Werror` passed all 2,482 tests on native arm64
+macOS 26.6.2 with GHC 9.12.4 and Cabal 3.16.1.0 in 382.92 seconds. The gate includes the complete
+real-process forward/reverse matrix, root-only durable admission, storeless child observations and
+terminal receipts. Absence guards cover child durable authority, and the compile-fail admission fixture
+exercises the active reverse-root kernel.
+
 #### Remaining Work
 
-None.
+None. On 2026-09-05 the complete native Windows gate passed 2,477/2,477 in 318.23 seconds,
+and the Linux gate passed 2,482/2,482 in 139.04 seconds, with GHC 9.12.4 and Cabal 3.16.1.0.
+The macOS gate and rationale-linked absence guards also pass.
 
 ### Sprint 17.42: Root coordinator and Chain adoption [Done]
 
@@ -2150,8 +2137,8 @@ Produce canonical semantic completion only after the root coordinator settles th
 #### Deliverables
 
 - New lower `Handoff.TerminalReport` accepts only canonical terminal-origin bytes plus exact typed settlement
-  input and imports no `Command`, `LifecycleEntry`, `Chain`, process, or store owner; the implemented upper
-  `Handoff.Lifecycle` package remains unchanged and is never imported by Process or Chain.
+  input and imports no `Command`, `LifecycleEntry`, `Chain`, process, or store owner.
+  Root-coordinator settlement is the sole report origin; a child returns authenticated observations.
 - `LifecycleEntry` is the sole origin producer/caller and invokes `TerminalReport` only after exact rooted
   frame-session completion.
 - Completion joins forward state to its authenticated binding and reverse state to exact subtree settlement,
@@ -2657,8 +2644,8 @@ None.
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/test/RecursiveLifecycleSpec.hs`,
-`core/hostbootstrap-core/test/CompileFailSpec.hs`,
-`core/hostbootstrap-core/test/fixtures/recursive-lifecycle/`
+`core/hostbootstrap-core/test/Spec.hs`,
+`core/hostbootstrap-core/test/EffectSpec.hs`, `core/hostbootstrap-core/test/CoverageManifest.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
 `documents/architecture/hostbootstrap_core_library.md`,
@@ -2672,10 +2659,15 @@ Close the recursive command with static proofs and real local process-boundary b
 
 - One local root/VM/container fixture exercises forward, Down, Destroy, and failed-Up unwind.
 - Tests use real child processes, duplex pipes, installed root identity, the root store, and public command gate.
+- Each fixture installs the compiled binary, fresh identities, sibling config, and project tree under one
+  temporary anchor. Native compiled clients forward the private protocol pipes to that binary.
+- Every case remains present on every host. The POSIX row runs the recursive transitions; where that row
+  is unavailable, the case asserts its declared refusal and the real receiver's rejection of the different
+  native canonical root. The coverage manifest reports five such outcomes without counting them as guest execution.
 - Adversarial cases cover every scope/catalog/session/frame/node/key/nonce/ordinal/digest and protocol mismatch.
 - Crash, timeout, cancellation, partial failure, descriptor isolation, process-group cleanup, and reap are proven.
-- This sprint changes no production module, adds no production type or call-site adoption, and keeps test work
-  within three named test areas and the 400-line-per-coherent-split rule.
+- This sprint changes no production module and adds no production type or call-site adoption. The process
+  fixture remains one bounded module; script detection and case accounting extend the existing shared guards.
 
 #### Validation
 
@@ -2690,6 +2682,16 @@ propagation and reached cleanup, and the proof-matrix guard. The complete warnin
 On 2026-08-23, the six-case group passed with the failed-Up immediate reverse-recovery case included; the
 complete warning-clean core suite passed 2,442/2,442 in 179.14 seconds.
 
+On 2026-09-05, `cabal test all --ghc-options=-Werror` passed all 2,483 tests in 142.11 seconds
+on native x86_64 Linux (GHC 9.12.4, Cabal 3.16.1.0). The seven recursive cases use compiled
+clients and a temporary installed identity; the shared case manifest accounts for five POSIX guest-frame
+cases on every host. The recursive/manifest selection passed 23/23 on native macOS arm64 in 26.87 seconds
+and native Windows x86_64 in 11.45 seconds; Windows asserts the declared row refusal and the real receiver
+digest refusal. The shebang guard exercises both an extension-bearing script and an extensionless script
+in its negative fixture. The ownership replacement fixture retains the original object and independently
+checks that the replacement has a different kernel identity; ownership/documentation checks passed 28/28
+on macOS. Python checks and all 231 tests passed on both native Linux and Windows.
+
 #### Objective boundary
 
 Consuming root `DestroySettled` as `ProjectClosureEvidence SettledDestroyClose` also requires the bound run
@@ -2699,9 +2701,7 @@ one and nothing beyond it.
 
 #### Remaining Work
 
-None. On 2026-08-24 the narrow handoff and reverse-plan source guards pass with their final recursive handoff,
-reverse-descent, and fresh-generation shapes; the complete warning-clean core gate passes 2,454/2,454 in
-148.82 seconds.
+None.
 
 ### Sprint 17.55: Protected fresh Harness invocation [Done]
 
@@ -2820,41 +2820,7 @@ complete 2,454/2,454 core host-static gate passed.
 
 ## Remaining Work
 
-None. Sprint 17.49's retained-failure guard and regression gates are complete. The root entry admits,
-persists, and strictly re-reads the
-recursive catalog under the live global lease; Sprint 17.29 has added the one rank-2 edge fold that selects an
-admitted descent by exact parent and child frame, the storeless `CatalogForwardHandoff` that edge authorizes,
-and the projecting forward-child fixture that gives multi-level admission its behavioural coverage through the
-real `project up` entry. Sprint 17.30 has closed both halves of the reverse edge: both root reverse entries
-retain their admitted catalog, durable reverse-descent preparation names the complete catalog-derived
-`RecoveryChildPackage` everywhere it named the adapter, and the private relay opens that package recoverably,
-routes its exact Offer to the installed root signer, and enters the existing challenge loop. Sprint 17.31
-has installed the recursive handoff runtime, so every frame can now say which arm it holds without holding a
-capability, and Sprint 17.32 has opened the root-owned frame session that admits an `OpenFrame` and records
-its first predecessor, and Sprint 17.33 has added the prepared node grant that follows every exact durable
-unknown row, and Sprint 17.34 has split the rooted owner and added settlement. Sprint 17.35 has split the
-terminal exchanges into their own storeless owner and closed the receipt: a `CloseFrame` publishes and reads
-back the exact canonical report before its complete-response digest exists, and only a `ReceiptConfirm` naming
-that digest advances Published to Received. Sprint 17.36 then adds the Phase 13 rooted relay, and Sprint 17.37 the
-storeless frame executor that answer builds. Sprint 17.38 derives the sanitized process route that can carry
-the exchange over a child's standard input and output at all, Sprint 17.39 gives the dedicated receiver
-private protocol descriptors before any callback can touch those streams, and Sprint 17.40 holds one real
-child, its group, and its descriptors for exactly one edge — bounding the launch, the termination grace, and
-the frames a peer owes immediately, and leaving the admitted effect's own wait alone. Sprint 17.41 installs
-the forward receiver, Sprint 17.42 installs the root coordinator and Chain descent adoption, Sprint 17.43
-integrates semantic completion, and Sprint 17.44 rehydrates exact reverse proof after restart or response
-loss. Sprint 17.45 adds reverse receiver adoption, Sprint 17.46 binds exact cluster cleanup, and Sprint 17.47
-terminalizes and rearms the durable reverse root, and Sprint 17.48 binds prepared descent to its process route.
-The failed-Up cleanup authority participates in the shared unwind, and the proof-complete host-static
-real-process gate is closed. Live worked-demo confirmation remains Phase 24 work.
-
-Two of this phase's own guards are stated for one outer host and hold on every supported one (§ JJ):
-Sprint 17.20's `LifecycleEntry` importer allow-list takes the separator-neutral repo-relative path
-helper, and Sprint 17.40's `ImportHandoffProcess.hs` fixture takes the platform-conditional expectation
-its POSIX-conditional owner requires. Both follow the harness foundation the
-[Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md) owns. Sprint 17.54's gate drives
-real local child processes through that POSIX-conditional owner, so it runs on a POSIX outer host or a
-realized Linux substrate; the sprints between close on the host static gate.
+None.
 
 ## Documentation Requirements
 

@@ -55,30 +55,21 @@ arranges itself. The case does not invoke the demo; demo lifecycle integration a
 readback remain owned by the
 [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md), not by this phase gate.
 
-This does not yet satisfy universal typed readiness. `waitNodesReady` and several related waits return
-`IO ()`, and downstream mutations do not all consume the opaque plan/resource-indexed readiness and
-prepared-operation foundation. Those constructors are now private; the open work is live interpreter
-integration, not witness sealing. See
-[readiness](../architecture/readiness.md) and
-[lifecycle state model](../architecture/lifecycle_state_model.md).
+The exact prepared cluster adapter produces plan/resource-indexed readiness and ownership settlement.
+Convenience `IO ()` waits are descriptive and cannot mint those authorities. See
+[readiness](../architecture/readiness.md) and the [lifecycle state model](../architecture/lifecycle_state_model.md).
 
 ## Current reconciliation semantics
 
-The implementation behaves idempotently in several common cases, but most reconcilers return `IO ()`.
-They do not return `Either ReconcileError ReconcileResult`, where a `ManagedResult` carries a
-`Managed` handle, receipt, and changed/no-op outcome while a `ForeignResult` carries only a
-non-authorizing `Unmanaged` handle. Consequently “idempotent” here means empirically converge-or-fail,
-not the stronger typed contract.
-
-The target result and ownership algebra is defined once in
-[lifecycle state model](../architecture/lifecycle_state_model.md).
+Managed reconciliation retains the exact handle, receipt, operation fence, and changed/no-op observation.
+Foreign, conflicting, and unsupported state remain disjoint from managed success. Convenience actions that
+only return `IO ()` claim completion rather than typed idempotence.
 
 ### The ownership backend
 
 The
 [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)'s
-typed exact consumer and clause-holding backend are implemented. Legacy command/demo lifecycle call sites
-remain deliberately separate until their owning recursive and worked-demo phases adopt it. The source
+typed exact consumer and clause-holding backend are implemented. The root coordinator and worked demo consume that exact adapter. The source
 boundary plus its focused, full-static, and linux-cpu live gates are closed; call-site adoption belongs to
 the [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) and
 the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
@@ -341,10 +332,8 @@ CPU and memory are divided across kind/nvkind nodes and applied with `docker upd
 sets `--memory-swap` to twice the memory limit, not equal to it. Bare Linux has no implemented storage
 quota or image-garbage-collection cap; storage is only capacity-checked before bring-up. VM-backed lanes
 receive provider storage walls when a new Lima/Incus VM or WSL distro is created, but existing VM/VHDX
-sizes are not uniformly observed, resized, or refused when config changes. The complete workload set is
-not yet derived or checked with `fitsBudget`;
-the demo's static `demoPods` view contains only the web example and the web chart lacks corresponding
-CPU/memory requests/limits. See [resource budgeting](resource_budgeting.md).
+sizes are not uniformly observed, resized, or refused when config changes. The exact plan consumer checks the declared complete workload and budget partition through `Cluster.Budget`;
+the static `fitsBudget`/`demoPods` example is not the applied authority. See [resource budgeting](resource_budgeting.md).
 
 ## Validation
 
@@ -355,7 +344,7 @@ admitted plan digest, the prepared operation key, and a `LocalWork` whose plan-d
 closed verb: Down selects the retained/down cleanup operation and Destroy selects deletion, with no Boolean
 or textual policy input. An exception becomes the ordinary typed failed teardown observation, so the shared
 reverse driver can settle or continue siblings without a second cluster-specific control path. The driver
-adoption itself is owned by recursive-lifecycle Sprint 17.48.
+adoption is owned by the [recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
 
 From the repository root, the exact
 [cluster-lifecycle-and-cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)

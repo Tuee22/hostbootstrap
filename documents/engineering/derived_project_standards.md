@@ -16,13 +16,13 @@
 - It builds host-native for host execution and derives its project image from the published base.
 - Forward steps and each frame's declared descent are one opaque validated `StepPlan`; teardown is a
   checked single-assignment slot beside it. Receipt-driven recursive teardown and harness root isolation
-  remain plan-owned target work.
+  are interpreted from that same exact admitted plan.
 
 This is the single page a derived project's author reads before writing their `docker/Dockerfile`,
 `cabal.project`, and project binary. It is the union of the doctrine docs under
 [`engineering/`](.), in the form of rules with one-line explanations and a link to the authoritative
 source. The model these rules instantiate — the chain-is-the-project, the exact current-frame Chain and
-target recursive `project up` interpreter, fractal bootstrap — is defined once in
+recursive `project up` interpreter, fractal bootstrap — is defined once in
 [composition_methodology](../architecture/composition_methodology.md); this page defers to it and never
 re-derives it.
 
@@ -325,8 +325,7 @@ The implemented binary surface is the `project` chain, and the core command tree
 `test`, `service`, `context`, and `check-code`. Hardware evidence and closure status belong in the
 development plan:
 
-- opaque validated `StepPlan` is consumed by the exact current-frame Chain. Current Production refuses a
-  nested entry; recursive forward descent and child-to-parent teardown remain target work.
+- opaque validated `StepPlan` is consumed by the exact current-frame Chain. Production admits authenticated storeless children through the root catalog; reverse traversal is child-first.
 - `context` is read-only introspection: `inspect` renders the lift composition with the current frame
   marked, `show` decodes a selected project-local config, `path` prints its canonical filename, and
   `schema`/`render` expose the separate static `ConfigArtifact` registry. The validated-codec
@@ -348,8 +347,7 @@ fixed, so it adds no verbs. The image-build hook runs as `project init --role im
 A single `project up` is intended to stand up the live persistent stack — a cordoned kind cluster → the
 runtime-owned loopback relay and its resolved registry endpoint → the in-cluster registry → the project image
 pushed to that registry → the web chart pod → its resolved web endpoint serving HTTP 200. Stable
-Service/NodePort targets remain cluster-internal and never select the host-side number. Current teardown performs owned current-frame cleanup plus a project
-hook; the target recursive child-first inverse remains open.
+Service/NodePort targets remain cluster-internal and never select the host-side number. Teardown traverses the same plan child-first and conditionally releases each exact managed resource.
 The target registry step is contributed from an opaque finalized plan that jointly binds client scope,
 verified exposure, backing endpoint, and blob delivery. A consumer must not pass raw endpoints or
 choose `storage.redirect.disable` independently; see
@@ -361,7 +359,7 @@ that realizes it.
 
 ## See also
 
-* [composition_methodology](../architecture/composition_methodology.md) — the canonical model: chain-is-the-project, current-frame Chain, target recursive `project up`, and fractal bootstrap
+* [composition_methodology](../architecture/composition_methodology.md) — the canonical model: chain-is-the-project, current-frame Chain, recursive `project up`, and fractal bootstrap
 * [authoring_project_binaries](authoring_project_binaries.md) — how a consumer authors its `chain` and step actions
 * [library_hierarchy](../architecture/library_hierarchy.md) — the extension-stream contract (stream 1 = the lift chain)
 * [base_image.md](base_image.md) — what the base image ships, including the warm core closure

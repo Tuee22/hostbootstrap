@@ -1,7 +1,7 @@
 # Phase 16 — Cluster lifecycle, budgets, and cordoning
 
 **Status**: Done
-**Current sprint**: None — phase complete
+**Current sprint**: None
 **Depends on**: Phase 12 (the generic plan-indexed budget boundary), Phase 14 (the four ownership clauses
 and the ownership seam), Phase 15 (host providers and the self-reference lift)
 **Substrates**: linux-cpu
@@ -28,18 +28,6 @@ adoption of these consumers belongs to the
 closes on any POSIX gate host once its classification is pure, so no sprint here waits on Apple hardware;
 only the live confirmation does, and the
 [Apple-Silicon-substrate phase](phase-25-apple-silicon-substrate.md) lists it among what it confirms.
-
-The Phase 16 whole-graph build also revalidates several already-owned generic boundaries after adjacent
-exact-plan callbacks were generalized and rebuilt with GHC 9.12: Phase 12.2's Type-kinded `StepAction`,
-Phase 12.30's existential budget-slice traversal,
-Phase 12.15–12.18's `ProjectPlan.Snapshot` callbacks, the nine rank-2 lifecycle-mode callbacks owned by
-completed Phase 9, Phase 12, and Phase 18.1–18.3 contracts,
-Phase 12.25's existential protected-session capture, and Phase 19.1/19.3's Harness ownership callback. It
-likewise widens only the existing Phase 7.5/22.2 `ServiceHandler`/`withSelectedServiceRequest` boundary. These
-are mechanical integration repairs to `HostBootstrap.Step`, `HostBootstrap.Cluster.Budget`,
-`HostBootstrap.ProjectPlan.Snapshot`, `HostBootstrap.Lifecycle.Mode`, `HostBootstrap.Lifecycle.Session`,
-`HostBootstrap.Harness.Ownership.Internal`, and `HostBootstrap.Service`; they do not re-own those contracts,
-advance a lower or later phase's status, or adopt Phase 22 service execution.
 
 ## Sprints
 
@@ -1626,36 +1614,34 @@ success. Compile-fail fixtures reject cleanup construction, backend import, and 
 
 None.
 
-### Sprint 16.38: Independent Linux cluster gate runner [Done]
+### Sprint 16.38: Independent Linux cluster gate [Done]
 
 **Status**: Done
-**Implementation**: `scripts/run-live-cluster-gate.sh`
+**Implementation**: `core/hostbootstrap-core/app/Main.hs`,
+`core/hostbootstrap-core/test/EffectSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/cluster_lifecycle.md`
 
 #### Objective
 
-Provide the independent bounded runner used by the phase-level Linux acceptance gate.
+Expose the independent bounded cluster acceptance case through the binary's fixed test command.
 
 #### Deliverables
 
-- The executable POSIX runner refuses a non-Linux host or a host missing Docker, grep, kind, kubectl, or the
-  process-level timeout utility before it creates infrastructure.
-- Every run selects a fresh collision-resistant kind name, isolated kubeconfig, and durable-root sentinel,
-  with a trap that deletes a cluster left by an interrupted or failed run.
-- Creation and node readiness use explicit 180-second process bounds; daemon/status checks have shorter
-  process bounds so an unresponsive backend cannot hang the gate.
-- The post-readiness status observation is read-only: `kubectl get nodes --output=name` performs no mutation.
-- Teardown deletes the fresh cluster and verifies that no node container carrying its kind-cluster label
-  remains.
-- The sentinel lives outside the cluster deletion boundary and must retain its exact contents after teardown.
-- The phase gate composes the core warnings-as-errors suite with this runner from the repository root; it has
-  no demo binary, demo configuration, or demo lifecycle dependency.
+- `hostbootstrap test run cluster-live` owns one isolated Harness plan and resolves Docker, Kind, and
+  kubectl before resource creation.
+- The plan prepares creation, readiness, cordoning, and exact reverse cleanup through the shared cluster
+  backend, with its bounded process and polling policies.
+- The assertion observes the Kubernetes client/server versions and runtime-selected loopback publications.
+  It supplies no host port number and proves both exact relay containers absent after release.
+- The exact reverse proves labelled-node absence and re-reads the durable sentinel outside cluster state.
+- `EffectSpec` requires the repository's non-ignored source tree to contain no shell, PowerShell, batch,
+  or command script. The operator reaches the gate through the same five-verb command tree as other work.
 
 #### Validation
 
-`sh -n scripts/run-live-cluster-gate.sh`, ShellCheck when available, and source/diff checks validate the runner
-without creating infrastructure. Live execution belongs only to the phase-level baseline acceptance below.
+`EffectSpec` checks the script-free tree. The phase-level composed baseline acceptance below records the
+binary's complete owned cluster lifecycle and absence/readback assertions.
 
 #### Remaining Work
 
@@ -1677,19 +1663,18 @@ host realization.
 
 #### Deliverables
 
-- Every host `HostConfig` tool table in the phase's suites — the Python, Docker, kind, and kubectl
-  entries the exact cluster package projects — builds its paths through the fixture-path constructor the
-  [Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md) owns.
-- The runner dispatch that selects a fake backend response by executable compares that same constructed
-  value, so the absolute-backend-path projection guard keeps asserting exactly what it asserts today.
+- Every host `HostConfig` tool table in the phase's suites uses native absolute paths. Pure projection
+  cases use the fixture-path constructor from the
+  [Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md); process cases use the running
+  test executable as the cluster client.
+- Process cases drive the shipped interpreter and real protected store. Their client reports describe
+  observations for protocol and transaction tests; real Kind and Docker acceptance remains the live gate.
 - In-container and in-cluster paths stay POSIX. A kubeconfig path inside a node container, a mounted
   durable root, the injected kind/runtime/kubectl triple, and a guest command name files on a different
   machine, and only the host side moves.
-- The POSIX-only backend cases the suites already separate — the real process-group, signal, and
-  output-bound probes that drive `/bin/sh` — keep their existing platform conditions and are skipped
-  rather than failed on an outer host that cannot run them. `ClusterReconcileSpec` splits on the same
-  line: its package and projection cases are host-portable, while every case that admits a `ClusterSpec`
-  is Linux-frame and carries the condition.
+- Every `ClusterBackendSpec` and `ClusterReconcileSpec` case runs on every gate host. Guest path
+  descriptors remain POSIX while real fixture files use the native filesystem grammar. A Linux-frame
+  descriptor does not make a pure admission or local protocol case conditional on Linux (§§ JJ/MM).
 - The work is test-harness only: no production module, no named type, and no change to any cluster
   contract the phase already states.
 
@@ -1701,26 +1686,23 @@ itself Linux-only. When the cluster step runs, the machine the binary calls "hos
 so the host `</>` that derives the directory from the canonical project root and the POSIX check that
 admits it agree.
 
-They only come apart on a native Windows outer host, where the fixture's canonical project root is a
-Windows path because it is a real directory on the machine running the suite. That combination is not a
-configuration the architecture has: a native Windows process establishes WSL2 and re-establishes the
-binary inside it before any cluster work. Those cases are therefore Linux-frame cases and are skipped on
-Windows rather than failed (§ JJ) — the contract is unchanged, and the gate that proves it is the
-`linux-cpu` one.
+On Windows, the fixture keeps that descriptor separate from the native directory used for its real
+protected store. The test client implements the protocol locally; the live command establishes WSL2 and
+re-enters the binary there before cluster work. Local protocol coverage and Linux substrate acceptance
+therefore have distinct gates without silently omitting static cases.
 
 #### Validation
 
 `cabal test all --ghc-options=-Werror` from `core/`, run host-native and recorded against the outer host
 that ran it (§ II), on a POSIX outer host and on Windows. The phase's existing static evidence below
-records the POSIX side. The live cluster gate is unaffected: `scripts/run-live-cluster-gate.sh` refuses a
-non-Linux host by design and keeps its own declared bound.
+records the POSIX side. The separate live cluster gate runs `hostbootstrap test run cluster-live` inside the realized Linux
+substrate and uses the cluster backend’s bounded execution policy.
 
 Dated evidence: on 2026-08-17, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0
 passed `cabal test all --ghc-options=-Werror` from `core/` host-native at 1,877/1,877 in 211.76 seconds.
-The eleven Linux-frame reconcile, readiness, and cleanup cases are absent from that count and present in
-the POSIX one, which is the difference the split above describes — a declared difference, which is what
-the [host-portability acceptance phase](phase-28-host-portability-acceptance.md) confirms across families
-(§ JJ) rather than this sprint.
+That historical total predates the shared native client fixture. Current cross-host evidence and fixed
+case-family accounting are recorded by the
+[host-portability acceptance phase](phase-28-host-portability-acceptance.md).
 
 #### Remaining Work
 
@@ -2327,9 +2309,18 @@ seconds, including the hard-parent-death group kill, native resolver adversarial
 absence guard for interpreter sources and stand-in behavior. `git diff --check` passed and the tree
 contained no `.log` artifact.
 
+On 2026-09-05, native Windows 11 10.0.26200 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0 passed
+`cabal build all --ghc-options=-Werror` and the complete warning-clean core suite at 2,477/2,477 in
+318.23 seconds. POSIX-only imports and private helpers are conditional; every Colima case on Windows
+checks the resolver’s `apple-silicon-required` result and the shipped entry’s explicit refusal. Native
+Linux 7.0.0-28-generic x86_64 passed the same suite at 2,482/2,482 in 139.04 seconds. The focused
+macOS arm64 Colima/effect/documentation gate passed 36/36 in 5.29 seconds. Both remote hosts also
+passed the Python code gate and 231 tests. The remote runs used isolated working-tree copies.
+
 #### Remaining Work
 
-None.
+None. The backend builds warning-clean on native Windows, its Windows cases assert the native resolver
+and shipped-entry refusals, and the POSIX ownership/process cases pass.
 
 ### Sprint 16.48: The live cluster gate as a harness case [Done]
 

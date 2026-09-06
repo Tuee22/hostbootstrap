@@ -84,6 +84,8 @@ module HostBootstrap.Lifecycle.Session (
     readProjectJournalState,
     beginClosingProject,
     recordClosedProject,
+    productionProjectCloseTargetKernel,
+    reopenClosedProductionJournalKernel,
 
     -- * Completeness proofs
     VerifiedAllSessionsClosed,
@@ -193,7 +195,7 @@ module HostBootstrap.Lifecycle.Session (
     sessionErrorMessage,
 ) where
 
-import Control.Monad (foldM)
+import Control.Monad (foldM, void)
 import qualified Crypto.Hash as Hash
 import qualified Data.ByteArray as ByteArray
 import Data.ByteString (ByteString)
@@ -2330,6 +2332,70 @@ recordClosedProject session planDigest epoch (ClosingProjectPermit presented) =
                                                 (encodeJournalState ClosedProject)
                                             ]
                                     pure (ClosedProjectPermit <$> advanced)
+
+{- | Package-only finalization preparation. The returned target and permit are
+consumed by Mode through the hidden transaction runner while this protected
+entry remains held. Session opening contends on this same coordinator.
+-}
+productionProjectCloseTargetKernel ::
+    AcquisitionJournalAdmission ->
+    ProtectedSession session ->
+    Text ->
+    Bool ->
+    IO (Either SessionError (TransactionPermit, TransactionTarget))
+productionProjectCloseTargetKernel admission session planDigest allowAbsent = do
+    consumeAcquisitionJournalAdmissionKernel admission `seq` pure ()
+    closed <- verifyAllSessionsClosed session planDigest
+    case closed of
+        Left failure -> pure (Left failure)
+        Right _ -> case projectKey planDigest of
+            Left failure -> pure (Left failure)
+            Right key -> do
+                coordinated <- ensureCoordinator session planDigest
+                case coordinated of
+                    Left failure -> pure (Left failure)
+                    Right permit -> do
+                        observed <- readTransactionRecord session key
+                        pure $ case observed of
+                            Left failure -> Left (transactionFailure failure)
+                            Right Nothing | allowAbsent -> Right (permit, projectTransactionTarget key Nothing (encodeJournalState ClosedProject))
+                            Right Nothing -> Left (SessionProjectMissing planDigest)
+                            Right (Just record) -> case decodeJournalState (transactionRecordPayload record) of
+                                Just OpenProject -> Right (permit, projectTransactionTarget key (Just record) (encodeJournalState ClosedProject))
+                                Just ClosedProject -> Left (SessionProjectClosed planDigest)
+                                Just (ClosingProject _) -> Left (SessionProjectClosing planDigest)
+                                Nothing -> Left (SessionRecordCorrupt "project journal")
+
+{- | A Mode-authorized fresh Production Up reopens only a terminal journal.
+The caller has already checked the closed invocation lease and fresh broker.
+Old permits remain stale because the existing coordinator is advanced.
+-}
+reopenClosedProductionJournalKernel :: AcquisitionJournalAdmission -> ProtectedSession session -> Text -> IO (Either SessionError ())
+reopenClosedProductionJournalKernel admission session planDigest =
+    consumeAcquisitionJournalAdmissionKernel admission `seq` case projectKey planDigest of
+        Left failure -> pure (Left failure)
+        Right key -> do
+            coordinated <- ensureCoordinator session planDigest
+            case coordinated of
+                Left failure -> pure (Left failure)
+                Right permit -> do
+                    observed <- readTransactionRecord session key
+                    case observed of
+                        Left failure -> pure (Left (transactionFailure failure))
+                        Right Nothing -> pure (Right ())
+                        Right (Just record) -> case decodeJournalState (transactionRecordPayload record) of
+                            Just ClosedProject -> do
+                                reopened <-
+                                    runTransaction
+                                        session
+                                        planDigest
+                                        permit
+                                        TxnReopenProductionProject
+                                        [projectTransactionTarget key (Just record) (encodeJournalState OpenProject)]
+                                pure (void reopened)
+                            Just OpenProject -> pure (Right ())
+                            Just (ClosingProject _) -> pure (Left (SessionProjectClosing planDigest))
+                            Nothing -> pure (Left (SessionRecordCorrupt "project journal"))
 
 {- | Proof that every session for a plan was observed Closed at one store
 version, with the count it covered.

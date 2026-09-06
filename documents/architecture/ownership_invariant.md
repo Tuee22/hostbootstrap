@@ -215,8 +215,7 @@ dependency edge independently; the selected backend must still satisfy all four 
 may mutate the named object or mint ownership evidence.
 
 Phase and sprint ownership is in
-[the development-plan index](../../DEVELOPMENT_PLAN/README.md). Where a clause below has no live
-consumer yet, it is a target contract for the named sprint rather than a current claim.
+[the development-plan index](../../DEVELOPMENT_PLAN/README.md). The clauses below apply to every managed backend; unsupported rows refuse before mutation.
 
 ## The four clauses
 

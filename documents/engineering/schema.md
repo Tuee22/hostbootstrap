@@ -116,7 +116,7 @@ has two conceptual sections:
 | Section | Owner | Purpose |
 |---|---|---|
 | Project settings | project binary | user-editable inputs such as Dockerfile path, resource budget, deploy knobs, replicas, ports, feature flags, and any project-extended field (the demo's `message`) |
-| Runtime context | `hostbootstrap-core` / project binary | declared identity, parent chain, topology frames, current frame, runtime witnesses, context kind, role name, capabilities, allowed command classes, and child-context rules; opaque authority remains a target |
+| Runtime context | `hostbootstrap-core` / project binary | declared identity, parent chain, topology frames, current frame, runtime witnesses, context kind, role name, capabilities, allowed command classes, and child-context rules; independent installed or authenticated evidence supplies opaque authority |
 
 The record decode is strict about field presence: every field in the project's config type is mandatory,
 so a missing field fails the `FromDhall` decode. That does not make semantic validation total. The demo
@@ -129,7 +129,7 @@ budget-wall consumers still must adopt that authority. The lifecycle provider bo
 opaque nominal managed provider/share/alias authorities are minted only by prepared backend settlement.
 The Dhall `ProviderKind` below is descriptive topology data; it cannot construct a provider descriptor,
 choose a raw probe, mint a managed wrapper, or turn Direct into physical-host stop/delete/guest authority.
-The demo's prepared provider/alias call-site adoption remains work for the
+The demo's prepared provider/alias consumer is owned by the
 [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md). See
 [config_generation.md](config_generation.md) and the
 [generic_project_model.md](../architecture/generic_project_model.md) design). The on-disk config a normal
@@ -306,57 +306,30 @@ default.
 Values may need to flow from the host config to children: resource limits, image names, ports, HA replica
 counts, chart values, storage sizes, and feature flags. The child must not read the host config directly.
 
-Current helpers select a child frame and generate local witnesses, but they retain the full demo
-`ProjectConfig` record, the parent's complete resource envelope/topology, and host/build/deploy fields
-that a service or daemon does not need. This is structurally a context-adjusted copy, not yet a
-least-authority payload.
+The root catalog derives each lifecycle child configuration from the exact admitted parent plan and
+validates its frame, topology, payload digest, and one-layer route. Lifecycle children may retain project
+fields needed to rebuild their plan; they receive no root store or signing authority.
 
-The target parent reads and validates one config snapshot, computes one typed plan, and emits a
-role-specific child payload at the boundary where the child process becomes real. Its validated topology
-proof identifies the exact child frame, and its closed required-witness relation cannot be weakened by
-omitting a witness. Service/daemon payload types cannot contain host-only settings or authority.
+Service and daemon activation instead carries a narrowed role wire. Its codec contains only framework
+validation and the selected service's projected fields. The handler receives that exact immutable
+`RoleParams` bundle and cannot inspect the sibling full project configuration.
 
 ## Mutation And Reload
 
-The target treats each active local file as one immutable startup snapshot. A parent reads/canonicalizes
-its full config once, validates it to a fresh parent `configId`, and derives plan inputs plus a
-role-specific descriptive wire. The runtime process verifies the exact mounted wire through
-`RoleCodec scope specDigest fields` plus the matching verified secret bundle, mints a different fresh
-local `configId`, and only then constructs
-`ValidatedServiceRequest specDigest configId secretDigest fields service` with matching
-`RoleParams specDigest configId secretDigest fields service` for a closed `ServiceProgram`. The hidden field row assigns each
-field a closed `VisibleTo consumers` set, so framework/control fields can validate the wire while
-plan-only fields never cross and never enter the handler payload. Current `service run` meets that
-snapshot/role boundary: it canonically verifies one sibling value and closes the selected handler over
-typed role fields plus a safe framework view. General `project up` lifecycle actions do not yet all
-consume one plan-owned validated snapshot, so that wider guarantee remains target work.
+A lifecycle invocation validates one exact configuration and retains its plan/snapshot lineage through
+root coordination. A child independently decodes the authenticated projected payload and compares its
+reconstructed plan with the catalog binding. Editing a sibling file does not mutate an already admitted plan.
 
-Allowed writes are explicit and narrow: `project init` (re-run with `--force` to overwrite),
-user-requested config-edit commands, and parent commands generating child configs. The canonical example of a parent generating a
-child config is project-container handoff inside `project up`: the descent the demo's `context-init`
-step declares carries the payload and the lift streams it, while that step's action body only announces
-the boundary. The target gives projection and delivery one plan operation. Runtime status, discovered endpoints, locks, leader
-election, build IDs, and secrets live in state stores or mounted secrets, not by silently mutating the
-active config.
+A service opens one immutable signed activation revision. Runtime verification measures the role wire,
+private bundle, executable, and instance before typed selection constructs its request and program from the
+same decoded role fields. The declared effect row is checked against the signed ceiling, and Ready supplies
+its acquired resource handles. There is no second config projection beside the request and no unrestricted
+IO handler selector.
 
-The
-[step algebra and project plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)
-passes one `ValidatedConfig scope specDigest configId (cfg scope)` snapshot through parent plan
-construction and closed operations; no production step reopens the sibling config. The
-[service runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md) verifies the child role
-wire/private bundle into a different local request and internally
-packages it only with its matching closed handler program and
-`ServiceSelection scope specDigest planId configId secretDigest frame revision instanceId ServePhase
-service effects`. The core-owned masked run-to-Exit operation privately invokes
-`selectAndRunService`, consumes identity-indexed ready handles plus the retained receipt/lease package,
-and always reaches Drain on selection/run outcomes; mutating effects additionally require journaled
-target/operation-key/call-digest/fence authority minted from the live retained lease and exact Ready
-session. The adapter receives no raw target/arguments beside its sealed prepared value; prepare or call
-unknown retains the indexed session/package for exact reprobe and Drain/recovery. The parent/full config
-and raw config-reading `IO` cannot cross that boundary.
-Long-running daemons/services then require restart or an explicit typed reconcile to observe changes. A
-future live-reload path must never replace authority fields such as context kind, capabilities, allowed
-commands, parent chain, or project/binary identity in place.
+Reload requires the supported new revision/admission path; changed files or a mixed activation revision
+refuse. See [binary context](../architecture/binary_context_config.md),
+[composition methodology](../architecture/composition_methodology.md), and the
+[lifecycle state model](../architecture/lifecycle_state_model.md).
 
 ## See Also
 

@@ -49,8 +49,6 @@ module HostBootstrap.Handoff.Relay (
     -- * Handing an edge to a child
     offerHandoffEdge,
     offerReverseDescentKernel,
-    withReceivedLifecycleAcknowledgementKernel,
-    withReceivedRecoveryLifecycleAcknowledgementKernel,
 
     -- * Opening one rooted frame exchange
     withRootedOpenedResponseKernel,
@@ -766,83 +764,6 @@ withNestedRecursiveHandoffRuntimeKernel edge verb use =
   where
     route = verifiedHandoffRoute (receivedEdgeHandoff edge)
     binding = verifiedHandoffBinding (receivedEdgeHandoff edge)
-
--- | Publish, send, and durably receive one exact child lifecycle report.
-withReceivedLifecycleAcknowledgementKernel ::
-    ReceivedEdge scope brokerGeneration ->
-    ProtectedStore ->
-    ByteString ->
-    (ByteString -> IO (Either Text ())) ->
-    IO (Either Text ())
-withReceivedLifecycleAcknowledgementKernel = receiveLifecycleAcknowledgementForEdge
-
--- | The recovery branch first eliminates its complete sealed package.
-withReceivedRecoveryLifecycleAcknowledgementKernel ::
-    ReceivedRecoveryDescent
-        scope
-        brokerGeneration
-        planDigest
-        parentFrame
-        childFrame
-        recoveryWireDigest
-        recoveryWireId
-        verb ->
-    ProtectedStore ->
-    ByteString ->
-    (ByteString -> IO (Either Text ())) ->
-    IO (Either Text ())
-withReceivedRecoveryLifecycleAcknowledgementKernel descent store report sender =
-    withReceivedRecoveryDescent descent $ \edge _recovery _verb _adapter _projection _grant ->
-        receiveLifecycleAcknowledgementForEdge edge store report sender
-
-receiveLifecycleAcknowledgementForEdge ::
-    ReceivedEdge scope brokerGeneration ->
-    ProtectedStore ->
-    ByteString ->
-    (ByteString -> IO (Either Text ())) ->
-    IO (Either Text ())
-receiveLifecycleAcknowledgementForEdge edge store report sender =
-    case lifecycleReportBinding report of
-        Right binding
-            | binding
-                == renderHandoffBinding
-                    (verifiedHandoffBinding (receivedEdgeHandoff edge)) -> do
-                published <- publishLifecycleReportKernel recoverySigningKernel store report
-                case published of
-                    Left _ -> unavailable
-                    Right () -> do
-                        sent <- sender report
-                        case sent of
-                            Left reason -> pure (Left reason)
-                            Right () -> do
-                                received <- receiveAcknowledgement
-                                case received of
-                                    Left reason -> pure (Left reason)
-                                    Right acknowledgement -> do
-                                        recorded <-
-                                            receiveLifecycleAcknowledgementKernel
-                                                recoverySigningKernel
-                                                store
-                                                report
-                                                acknowledgement
-                                        case recorded of
-                                            Left _ -> unavailable
-                                            Right () -> pure (Right ())
-        _ -> unavailable
-  where
-    unavailable = pure (Left lifecycleAcknowledgementUnavailable)
-    receiveAcknowledgement = do
-        incoming <- channelReceive (receivedEdgeChannel edge)
-        pure $ case incoming of
-            Right message
-                | protocolMessageRequestId message == receivedEdgeRequestId edge
-                , protocolMessageTag message == AcknowledgedTag ->
-                    case protocolMessageFields message of
-                        [acknowledgement]
-                            | Right () <- verifyLifecycleAcknowledgement report acknowledgement ->
-                                Right acknowledgement
-                        _ -> Left lifecycleAcknowledgementUnavailable
-            _ -> Left lifecycleAcknowledgementUnavailable
 
 lifecycleAcknowledgementUnavailable :: Text
 lifecycleAcknowledgementUnavailable = "lifecycle acknowledgement unavailable"

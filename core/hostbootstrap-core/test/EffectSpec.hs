@@ -14,6 +14,7 @@ consumer that composes commands against it.
 module EffectSpec (tests) where
 
 import Control.Monad (forM_)
+import qualified Data.ByteString as ByteString
 import Data.List (isSuffixOf, sort)
 import qualified Data.Map.Strict as Map
 import HostBootstrap.DocValidator (findRepoRoot)
@@ -46,6 +47,8 @@ import PlatformPath (hostFixturePath)
 import qualified SourceGuard
 import System.Directory (doesDirectoryExist, getCurrentDirectory, listDirectory)
 import System.FilePath ((</>))
+import System.IO (IOMode (ReadMode), withBinaryFile)
+import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
 
@@ -156,9 +159,16 @@ tests =
                                     ++ " vocabulary it runs"
                                 )
         , testCase "the tree carries no script" $ do
+            -- rationale.md: repository scripts split the execution model. A
+            -- filename without an extension must not evade this boundary.
+            withSystemTempDirectory "hostbootstrap-script-guard" $ \fixture -> do
+                writeFile (fixture </> ".gitignore") ""
+                writeFile (fixture </> "extension.sh") "true\n"
+                writeFile (fixture </> "no-extension") "#!/bin/sh\ntrue\n"
+                trackedScriptFiles fixture >>= (@?= ["extension.sh", "no-extension"])
             root <- repoRoot
             tracked <- trackedScriptFiles root
-            sort tracked @?= sort remainingScripts
+            tracked @?= []
         , testCase "a described command resolves to the executable and argv the host launches" $ do
             let dockerPath = hostFixturePath "/usr/bin/docker"
                 selfPath = hostFixturePath "/opt/hb/bin/hostbootstrap"
@@ -259,20 +269,6 @@ colimaRunnerPath = "core/hostbootstrap-core/internal/colima-backend/HostBootstra
 interpreterPath :: FilePath
 interpreterPath = "core/hostbootstrap-core/src/HostBootstrap/Effect/Interpreter.hs"
 
-{- | Every script file still in the tree, and the phase that removes each.
-
-§ KK says the repository contains no script: a capability an operator or an
-agent needs is a surface on the binary, and scaffolding that belongs to one
-development harness lives in that harness's own configuration rather than here.
-This list is what is left, so a new script cannot arrive unnamed — and each
-entry is removed by the phase beside it, not by whoever notices it.
-
-  * @scripts/run-live-cluster-gate.sh@ — the live kind/Helm gate, owned by the
-    cluster-lifecycle, budgets, and cordoning phase.
--}
-remainingScripts :: [FilePath]
-remainingScripts = ["scripts/run-live-cluster-gate.sh"]
-
 -- | The extensions § KK names as scripts.
 scriptExtensions :: [String]
 scriptExtensions = [".sh", ".ps1", ".bat", ".cmd", ".psm1"]
@@ -298,10 +294,11 @@ trackedScriptFiles root = do
                 nested <- doesDirectoryExist path
                 if nested
                     then collect path
-                    else
+                    else do
+                        header <- withBinaryFile path ReadMode (`ByteString.hGet` 2)
                         pure
                             [ SourceGuard.repoRelativePath root path
-                            | any (`isSuffixOf` entry) scriptExtensions
+                            | any (`isSuffixOf` entry) scriptExtensions || header == ByteString.pack [35, 33]
                             ]
     collect root
 

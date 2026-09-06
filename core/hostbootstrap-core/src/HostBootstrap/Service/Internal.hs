@@ -13,58 +13,44 @@ finalized in this invocation are distinct types even when their digests are
 equal, and the only authority that can join them is the digest-equality token
 minted by 'HostBootstrap.Config.Schema.Internal'.
 -}
-module HostBootstrap.Service.Internal
-    ( ServiceId (..)
-    , ServiceHandler
-    , ProgramServiceHandler
-    , ServiceResourceBackend (..)
-    , ServiceAction (..)
-    , FinalizedServiceDefinition (..)
-    , FinalizedServiceRegistry (..)
-    , reindexFinalizedServiceRegistryKernel
-    )
+module HostBootstrap.Service.Internal (
+    ServiceId (..),
+    ProgramServiceHandler,
+    ServiceResourceBackend (..),
+    ServiceAction (..),
+    FinalizedServiceDefinition (..),
+    FinalizedServiceRegistry (..),
+    reindexFinalizedServiceRegistryKernel,
+)
 where
 
 import Data.Text (Text)
-import HostBootstrap.Config.Fields.Internal
-    ( RoleCodec (..)
-    , RoleParams
-    )
-import HostBootstrap.Config.Schema.Internal
-    ( RecoverySpecReindex
-    , recoverySpecReindexDigestKernel
-    )
-import HostBootstrap.RoleLifecycle
-    ( DeclaredEffects
-    , RoleAcquireOutcome
-    , RolePlanDraft
-    , RolePrereqOutcome
-    , RoleProbeOutcome
-    , RoleReleaseOutcome
-    , RoleResourceRequest
-    )
+import HostBootstrap.Config.Fields.Internal (
+    RoleCodec (..),
+    RoleParams,
+ )
+import HostBootstrap.Config.Schema.Internal (
+    RecoverySpecReindex,
+    recoverySpecReindexDigestKernel,
+ )
+import HostBootstrap.RoleLifecycle (
+    DeclaredEffects,
+    RoleAcquireOutcome,
+    RolePlanDraft,
+    RolePrereqOutcome,
+    RoleProbeOutcome,
+    RoleReleaseOutcome,
+    RoleResourceRequest,
+ )
 import HostBootstrap.Service.Program (ServiceBackend, ServiceProgram)
 
 -- | A validated service identity. Its constructor stays below this boundary.
 newtype ServiceId = ServiceId String
     deriving (Eq, Ord, Show)
 
-{- | What a service handler is handed: only the opaque 'RoleParams' bundle its
-own role's projection produced, indexed by the finalized specification, the
-config and secret identities, and the service it belongs to.
-
-The indices are universally quantified, so a handler sees them as skolems it
-cannot choose and cannot pair a bundle from one finalization with another's.
--}
-type ServiceHandler fields =
-    forall specDigest configId secretDigest service.
-    RoleParams specDigest configId secretDigest fields service ->
-    IO ()
-
-{- | The target handler boundary: one immutable role-parameter bundle in and
-one closed effect-indexed program out.  The payload family and declared effect
-row are fixed by the enclosing definition; the service identity stays
-generative with the selected role codec.
+{- | One immutable role-parameter bundle in and one closed effect-indexed
+program out. The specification, config, secret, and service indices remain
+universally quantified; the enclosing definition fixes the payload and row.
 -}
 type ProgramServiceHandler payload effects fields =
     forall specDigest configId secretDigest service.
@@ -87,9 +73,8 @@ data ServiceResourceBackend = ServiceResourceBackend
     }
 
 data ServiceAction fields effects
-    = LegacyServiceAction (ServiceHandler fields)
-    | forall payload.
-      ProgramServiceAction
+    = forall payload.
+        ProgramServiceAction
         ServiceResourceBackend
         (ServiceBackend payload)
         (ProgramServiceHandler payload effects fields)
@@ -97,9 +82,9 @@ data ServiceAction fields effects
 {- | One finalized service's identity, scope-specialized projection, declared
 effect row, handler, and role codec, all sharing one specification index.
 -}
-data FinalizedServiceDefinition scope specDigest cfg =
-    forall fields effects service.
-    FinalizedServiceDefinition
+data FinalizedServiceDefinition scope specDigest cfg
+    = forall fields effects service.
+        FinalizedServiceDefinition
         ServiceId
         (cfg -> Either String (Maybe fields))
         (DeclaredEffects effects)

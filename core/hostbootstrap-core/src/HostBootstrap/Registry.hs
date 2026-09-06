@@ -60,20 +60,17 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import HostBootstrap.Ensure (runToolWithStdin)
 import HostBootstrap.HostConfig (HostConfig)
-import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima, Wsl), toolCommandName)
+import HostBootstrap.HostTool (HostTool (Docker), toolCommandName)
 import HostBootstrap.Lift
   ( SelfRef,
-    containerRunArgs,
+    LiftDispatch (DispatchTool),
+    LiftLeaf (RawCmd),
+    foldLeaf,
     liftSubcommand,
     shellQuoteArgs,
   )
 import HostBootstrap.Lift.Context
   ( LiftContext (..),
-    LiftLayer (..),
-    execVMArgs,
-    shellVMArgs,
-    wsl2Distro,
-    wslExecArgs,
   )
 import System.Directory
   ( doesFileExist,
@@ -198,22 +195,19 @@ dockerAuthStdinWrapper inner =
 registryAuthLiftPlan :: LiftContext -> [String] -> Maybe (HostTool, [String])
 registryAuthLiftPlan context subcommand =
   case liftLayers context of
-    [ViaLimaVM vm, ViaContainer container] ->
-      forward Lima (shellVMArgs vm) container
-    [ViaVM vm, ViaContainer container] ->
-      forward Incus (execVMArgs vm) container
-    [ViaWsl2VM vm, ViaContainer container] ->
-      forward Wsl (wslExecArgs (wsl2Distro vm)) container
-    _ -> Nothing
-  where
-    forward tool vmShell container =
-      let inner = toolCommandName Docker : containerRunArgs container subcommand
-          script =
+    [provider, container] -> do
+      -- The fold owns both crossings. Registry inserts only the credential
+      -- policy between them: read stdin in the provider before Docker starts.
+      DispatchTool Docker containerArgs <- pure (foldLeaf (LiftContext [container]) (RawCmd subcommand))
+      let script =
             "export "
               ++ registryAuthEnvVar
               ++ "=\"$(cat)\"; exec "
-              ++ shellQuoteArgs inner
-       in Just (tool, vmShell ["bash", "-lc", script])
+              ++ shellQuoteArgs (toolCommandName Docker : containerArgs)
+      case foldLeaf (LiftContext [provider]) (RawCmd ["bash", "-lc", script]) of
+        DispatchTool tool args | tool /= Docker -> Just (tool, args)
+        _ -> Nothing
+    _ -> Nothing
 
 -- | Execute a registry-aware lift planned by 'registryAuthLiftPlan'. The pure
 -- plan contains only the stable environment-variable name; the opaque payload

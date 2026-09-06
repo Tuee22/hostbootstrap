@@ -1,0 +1,3 @@
+module ForgeProductionClosureAuthorization where
+
+import HostBootstrap.Lifecycle.Mode (ProductionClosureAuthorization (SettledProductionClosure))

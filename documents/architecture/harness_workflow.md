@@ -234,8 +234,7 @@ contract is:
    and Harness mode is released only after the old run's lease and close effects settle.
 
 The command boundary implements generated-config and data-root ownership, the Harness mode exclusion, and
-config-derived profile isolation. Most VM/cluster/alias/daemon mutations still lack the receipt coverage in
-clauses 7–8, and the independent profile/root consumers in clauses 3–6 remain work in the
+config-derived profile isolation. VM/cluster/alias/daemon consumers retain their exact managed receipts and plan-derived profile/root evidence through the
 [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
 
 The test config/profile should be explicit in the typed inputs to plan construction. A caller should not
@@ -294,7 +293,7 @@ journal, cursor, settlement, and receipt transition. No raw projection or public
 never reuses its parent's exact-byte identity or receives root/Harness-root/signing/store authority. The
 [authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
 owns the implemented generic authenticated root-scope primitive and scope-first receiver; this Harness phase
-supplies the live generative producer evidence at the single command call site. Recursive process adoption remains
+supplies the live generative producer evidence at the single command call site. Recursive process adoption is owned by
 with the
 [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
 

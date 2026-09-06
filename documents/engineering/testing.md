@@ -37,7 +37,7 @@ of thing, and none substitutes for another.
 
 | Gate | Command | Where it runs | What it proves | What it cannot prove |
 |---|---|---|---|---|
-| Host static gate | `cabal test all --ghc-options=-Werror` from `core/`; `poetry run python -m hostbootstrap.check_code`; `poetry run python -m hostbootstrap.test_all` | an ordinary process of the outer host — macOS, Linux, or Windows | type boundaries, compile-fail diagnostics, codecs, source-shape guards, plan projections, argv builders, the documentation validator | anything about a provider, a container, a cluster, or a real POSIX process boundary |
+| Host static gate | `cabal test all --ghc-options=-Werror` from `core/`; `poetry run python -m hostbootstrap.check_code`; `poetry run python -m hostbootstrap.test_all` | an ordinary process of the outer host — macOS, Linux, or Windows | type boundaries, compile-fail diagnostics, codecs, source guards, plans, argv, documentation, and exercised native kernel/process protocols | live provider, container, cluster, or accelerator acceptance |
 | `linux-cpu` substrate gate | the phase's own declared command | inside the realized Linux substrate — native Linux, a Lima/Colima VM, or WSL2 | that the gated process and its POSIX/container effects actually ran on the baseline substrate | that the same sources build and self-test on another outer host |
 | Container `check-code` | `<project> check-code` in the derived image | inside the built container | the formatter (`fourmolu`) and linter (`hlint`), which are installed in the base image only | behaviour; it is a build-time guardrail |
 | Live demo gate | `hostbootstrap run -- test init` then `test run all` | a disposable host with real Docker, provider, and cluster state | end-to-end lifecycle over real infrastructure | anything on a host it did not run on |
@@ -52,9 +52,13 @@ then proves labelled-node absence plus survival of the run's durable sentinel.
 The host static gate is not the complete quality gate: `fourmolu` and `hlint` live only in the container
 `check-code`. See [code-check doctrine](code_check_doctrine.md).
 
-A host static gate run is evidence for the one outer host that ran it. Dated results therefore name that
-host, and a pass on macOS is not a claim about Windows. Delivery status, exact totals, and dated evidence
-live in [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
+A host static gate run is evidence for its **gate host**: the operating system, architecture, and toolchain
+of the process running the gate. Bare metal, a virtual machine, a container, and a WSL2 distribution each
+count as a gate host of their own OS family. This is distinct from the outer host's provider and substrate;
+a macOS static pass proves neither Windows portability nor a Linux/container lifecycle. The
+[host-portability acceptance phase](../../DEVELOPMENT_PLAN/phase-28-host-portability-acceptance.md) owns the
+separate dated Windows, macOS, and Linux runs, including component durations, totals, and platform-row
+coverage. The [development-plan index](../../DEVELOPMENT_PLAN/README.md) owns completion status.
 
 ### Harness portability
 
@@ -195,154 +199,19 @@ Production and Harness enter the lower Chain only through the Cabal-private fixe
 the [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) owns
 the root-coordinated extension across child frames.
 
-Phase 19's realized-linux acceptance is deliberately narrower than the live demo gate: on 2026-08-22 a
-disposable Ubuntu 24.04 amd64 Incus VM ran the deterministic recovery-interruption group (5/5) and the
-complete warnings-as-errors core gate (2366/2366 in 151.83 seconds). Those runs exercise the Harness
-ownership, process, interruption, exact-plan, and report-engine rows available by Phase 19. The
-provider/cluster/workload lifecycle, exact recursive demo
-reverse adopter, and live same-run durable recreate remain the worked-demo phase's own acceptance; making
-the earlier harness phase wait for them would invert the development-plan order.
+Its static process fixture installs a temporary binary with fresh identity keys and sibling config,
+then drives real duplex channels through compiled local clients. On a POSIX gate host it executes the
+root/VM/container protocol locally. Where the POSIX row is unavailable, the same five cases assert the
+row's refusal and the native receiver's rejection of a guest snapshot with a different canonical root.
+`CoverageManifest` counts all seven cases and reports which outcomes are refusals. These are local
+protocol tests; live provider and container execution has its separate substrate gate.
 
-The Phase 20 command-surface acceptance ran the phase-owned concrete parser fixture in that same realized
-Linux VM: `CLISpec` passed 57/57 and the `ContextSpec`/`LiftContextSpec` selection passed 84/84, both with
-warnings as errors. These are live filesystem/process invocations of the real generic command machinery,
-not a provider demo substitute; the long provider/cluster sequence remains the worked-demo acceptance.
-
-The lifecycle constructor is not a consumer surface. `HostBootstrap.Harness.Lifecycle.Internal` lives in
-the private `harness-lifecycle-internal` Cabal component. The main library uses it at the command boundary,
-and `HarnessSpec` depends on the same private component for controlled ordering/failure fixtures;
-downstream packages cannot construct a second lifecycle package.
-
-The run's generated project config is owned rather than merely guarded: it is published create-if-absent
-inside the protected store's exclusive entry, after a durable record naming the intended payload, and
-bound to the created file's own kernel identity — the four
-[ownership_invariant](../architecture/ownership_invariant.md) clauses, the same ones the run's
-`.test_data` generation holds. Cleanup unlinks it only when both that identity and the payload still
-match, so a non-cooperating writer is detected rather than clobbered, and an abandoned run's config is
-reclaimed by the next run's sweep instead of blocking it. A precondition also refuses a known running
-production cluster. The direct Harness plan boundary never opens Production authority; its same-run transition
-rotates only the held Harness mode and exact bound lease after settled destroy.
-
-### Out-of-process races
-
-Cross-process ownership exclusion is a property of a durable record contended by real competitors, so the
-cases that prove that boundary run in **separate processes** rather than separate threads. Most probes
-re-invoke the test executable with an
-argument that `test/Spec.hs` dispatches before the suite runs. The command-reservation case instead forks
-only after the parent holds the opaque root/plan values, allowing two processes to present the exact same
-non-serializable reservation without adding a raw epoch reopener for the sake of a test. A probe's only
-report is its own outcome — an exit code plus, where the distinction matters, the name it was refused by.
-None of them exports a read-only observer of the holder's state, which is what
-[ownership_invariant](../architecture/ownership_invariant.md) rules out.
-
-| Probe | What it contends on | Reports |
-|---|---|---|
-| `--hostbootstrap-protected-entry-probe` | the store's exclusive entry (a real kernel lock) | acquired / contended |
-| `--hostbootstrap-harness-acquire-probe` | a whole harness run reservation, held long enough to overlap every competitor | acquired / refused, with the reason |
-| `--hostbootstrap-harness-abandon-probe` | a run plus its installed generated config, then blocks so the parent can hard-kill it | readiness only; only a real kill leaves the state the sweep resolves |
-| `--hostbootstrap-mode-profile-probe` | the project-wide **mode** record, from the other lifecycle profile | acquired / refused, with the held mode's name |
-| `--hostbootstrap-fence-delay-probe` | the plan's **fence** record: it takes the generation token, releases the store while the parent rotates, then presents the delayed token | accepted, with the fence it prepared under / refused as superseded, with the presented and live epochs |
-| POSIX forked command-reservation contender | the canonical installed-project/store/plan/frame/epoch/verb/phase reservation retained from one root | exactly one reserved / exactly one already consumed |
-
-The mode probe is the cross-*profile* half. The composite root brackets take the mode inside one exclusive
-entry and then release the entry, so a holder's body runs with the entry free; what a competitor reaches is
-the mode compare-and-swap, and it is refused there by name — `production` against a live Production
-invocation, `harness:<runId>` against a live run.
-
-The fence probe is the delayed-permit half. It runs in **two entries** with the store free between them,
-which is what makes the generation boundary real: the parent rotates the fence in an ordinary protected
-transaction while the competitor holds nothing, and the competitor then presents a token issued before that
-rotation. Both outcomes the protocol distinguishes are covered — a delayed *prepare* is refused as
-superseded, naming the presented and live epochs, while a delayed *initial-fence proposal* is deduplicated
-to the observed epoch instead of opening a second generation.
-
-Every refusal case has a control that runs the same probe with nothing to be refused by — an empty store
-for the mode probe, an uncrossed boundary for the fence probe — and requires it to *succeed*, so a refusal
-exit code cannot be satisfied vacuously.
-
-### The interruption matrix
-
-A process death inside a lifecycle transaction is not an event the suite reproduces; it is a **value** the
-store is left holding. The redo coordinator publishes an `Applying` descriptor, materializes that
-descriptor's targets in order, then publishes `Idle`, so the only durable states a death is distinguishable
-in are "the descriptor is published and no target is materialized", "the first *n* targets are
-materialized", and "every target is materialized and the commit has not happened".
-
-`SessionSpec` writes those states directly and re-enters the ordinary entry point. The descriptor it writes
-is the transition's own: the fixture snapshots the store's directory, runs the real transition once, reads
-the records it stamped — their keys, their roles, their exact payloads, and its transaction id — restores
-the directory from the snapshot, and rebuilds the descriptor against those same pre-transition versions. The
-snapshot restore is what makes the expectations faithful, because a store rebuilt through the API would
-carry later record versions than the coordinator saw. One case pins that faithfulness directly: the
-reproduced state carries the exact bytes the completed transition wrote, under the same transaction id.
-
-The coordinator therefore carries no crash point, and no shipped module installs one. That is not a smaller
-claim than an injected exception would support — it is a larger one, because the recovery driver under test
-needs no cooperation from the code under test, and there is no branch in production that only a gate takes.
-`HostBootstrap.Lifecycle.Session.Testing` exposes the vocabulary that state is written in and mints no
-authority: a compile-fail fixture proves a descriptor cannot become a transaction permit.
-
-The separate top-level `recovery-interruption` group proves the process boundary around that state model. Its
-producer subprocesses reach five real durable boundaries, publish a managed ready sentinel, and then block
-until the parent hard-kills them. A separately exec'd successor reopens the same protected store. The matrix is:
-
-| Boundary | Successor proof |
-|---|---|
-| owned-resource settlement | the recovered backend is called child-first exactly once, its release is recorded, and a second successor performs no duplicate effect |
-| migration freeze | the incomplete pre-activation revision closes and admits the successor |
-| migration commit | the completed revision retains its exact missing-candidate refusal rather than being guessed closed |
-| root Destroy settlement | the public recursive lifecycle has released its terminal lease/mode, a fresh Up rearms the retained terminal intent under a newer broker, and a later Destroy succeeds |
-| persisted `Closing` | the successor observes the exact closing epoch and cannot mint a new open permit |
-
-These probes are test-executable entry modes only. Production lifecycle modules still contain no crash point,
-fault token, or test-only branch. Sentinels, results, and backend-call traces live only under the fixture's
-managed temporary directory and use no `.log` files.
-
-### Authority-kernel evidence
-
-`AuthoritySpec` exercises the lower authority boundary against real protected stores. It verifies the
-executable-path identity match and `.exe` normalization, rejects invalid or non-ASCII stable names,
-performs an actual create/remove write probe in the exact records directory for OS-principal evidence,
-and checks that evidence and roots remain bound to one durable store. Broker counters advance
-monotonically and malformed or exhausted encodings refuse rather than reuse a generation. Root scope,
-verb, project, store, and epoch remain opaque and nominal.
-
-Reservation cases cover replay, concurrent protected entries, the POSIX cross-process one-winner race,
-and every stable key coordinate reachable through the current lifecycle adapter: project/store, plan
-digest, frame key, broker epoch, verb, and phase. The record key is a SHA-256 digest of a canonical
-length-prefixed encoding, while the stored full encoding detects a key collision rather than treating a
-different invocation as consumed.
-
-The compile-fail suite pins one contiguous GHC diagnostic for constructor forgery, rank-2 identity
-escape, nominal-role coercion, cross-scope/plan/frame substitution, public raw-opener absence, and hidden
-kernel import. A source-surface guard keeps the kernel free of configuration and reconciliation imports
-and allow-lists its package-internal consumers. These checks prove only the lower vocabulary and atomic
-primitive; proof-complete plan/lease/frame/cursor/context admission is owned by the later lifecycle
-command gates.
-
-### Lifecycle mode and profile evidence
-
-`AuthoritySpec` separately exercises the protected lifecycle-mode boundary. Successive Harness root
-acquisitions must expose distinct diagnostic run identities, while every typed value inside one
-continuation retains that acquisition's nominal `runId`. Production and Harness acquisitions contend on
-one project-wide mode record, and exact-mode narrowing preserves the originating broker epoch.
-
-The profile-slot race is intentionally a two-thread same-process test: both workers retain the *same*
-otherwise-valid root/mode/lease evidence and call the same Production or Harness opener concurrently.
-Exactly one callback enters, while the other observes the protected slot as consumed. A sequential replay
-test proves the same durable result without scheduling, and the callback runs only after the
-compare-and-swap releases the protected-store lock.
-
-The public compile-fail registry complements those runtime races. It pins opaque mode, lease, run, active
-mode, snapshot, and profile constructors; nominal-role coercion refusal; cross-Production/Harness and
-cross-run substitution; cross-digest lease binding; and wrong-root/wrong-broker profile evidence. Each
-fixture matches the intended contiguous GHC diagnostic so an unrelated compile error cannot satisfy the
-boundary. The dated full-suite and compile-fail totals live only in
-[the lifecycle-modes-and-run-leases phase](../../DEVELOPMENT_PLAN/phase-9-lifecycle-modes-and-run-leases.md),
-as required by the development-plan evidence rule.
-
-Delivery status, exact test totals, dated hardware evidence, and phase closure belong in
-[the development-plan index](../../DEVELOPMENT_PLAN/README.md).
+The [test harness and run ownership phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md)
+records realized-Linux acceptance of its recovery, ownership, process, interruption, exact-plan, and report
+engine. The [test and context commands phase](../../DEVELOPMENT_PLAN/phase-20-test-and-context-commands.md)
+records the concrete parser and filesystem command checks. These exercise the generic command machinery;
+the [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns the live provider, cluster,
+workload, recursive reverse, and same-run durable recreate gate. Dated totals belong in those phase records.
 
 ## Supported Fast Test Entries
 

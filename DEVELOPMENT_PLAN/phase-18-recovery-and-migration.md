@@ -1,7 +1,7 @@
 # Phase 18 — Recovery and migration
 
 **Status**: Done
-**Current sprint**: None — phase complete
+**Current sprint**: None
 **Depends on**: Phase 17 (the recursive lifecycle command)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`
@@ -695,28 +695,41 @@ Consume the recursive destroy proof at the Production closure boundary and nowhe
 
 #### Deliverables
 
-- Reverse projection returns its typed terminal result to the production ownership bracket instead of
-  discarding `DestroySettled` after reporting.
-- A completed destroy independently proves all sessions Closed, then `destroySettledClosure` combines that
-  proof with the lease so only the destroy root and `ProjectClosureEvidence SettledDestroyClose` can call
-  `releaseProductionMode`.
-- Down, partial destroy, retained resources, or open sessions cannot release; retry observes the durable
-  terminal state without minting a second invocation close or mode release.
+- A sealed `ProductionClosureAuthorization` retains the exact Production root and invocation lease.
+  Settled closure requires `ProjectDestroy`, the unique-root `DestroySettled` proof, the bound canonical
+  snapshot and an independently complete Closed session set. True-pre-effect closure retains the complete
+  unbound Production root and verifies that no acquisition or effect record exists.
+- The protected finalizer revalidates project, store, broker epoch, lease version and bytes, snapshot,
+  current project journal and all sessions before admitting closure. Stale, substituted, partial or
+  open-session evidence refuses without releasing ownership.
+- The existing lifecycle redo coordinator commits Closed, the invocation lease close, the retained terminal
+  intent and mode release as one logical transaction. Session opening competes on the same coordinator
+  version, and ordinary admission recovers an interrupted materialization before exposing authority.
+- A fresh, authorized Up can begin a new project journal generation after completed Destroy. Retained
+  closure evidence cannot close that successor, and exact close retry performs no second transition.
+- The public Production bracket consumes true-pre-effect closure on an unbound refusal or exception;
+  bound failures retain their durable recovery state.
 
 #### Validation
 
 `LifecycleSpec` and `AuthoritySpec` cover settled destroy closure, down and partial-destroy refusal, wrong-lease
 and open-session refusal, retry convergence, and absence of a second close or mode release.
 
-On 2026-08-22, the settled Destroy boundary was completed. The sealed root entry first validates the exact
-root subtree, promotes it through `verifyDestroySettled`, and joins it with the bound lease and independently
-verified closed-session set through `destroySettledClosure`. Reverse terminalization now carries that proof,
-the Destroy-only close root, and the resulting closure evidence into one exclusive protected-store entry: the
-retained terminal-intent CAS is read back before the bound lease and Production mode are released. Down carries
-no closure package, and every incomplete, wrong-plan, wrong-lease, open-session, or mismatched-close path
-refuses before release. The focused Authority (112), Lifecycle excluding the separately named recursive group
-(141), and Handoff (107) suites passed; `cabal test all --ghc-options=-Werror` then passed all 2,359 tests on
+On 2026-08-22, the focused Authority (112), Lifecycle excluding the separately named recursive group
+(141), and Handoff (107) suites passed; `cabal test all --ghc-options=-Werror` passed all 2,359 tests on
 linux-cpu.
+
+On 2026-09-05, the native macOS arm64 warning-clean focused lifecycle, session, handoff and interruption
+selection passed all 345 cases in 75.40 seconds. Production close interruption fixtures reconstruct every
+physical prefix of the finalizer's own three-target pre-effect transaction, recover through Session and Mode
+entries, and compare exact terminal record versions and bytes with uninterrupted completion. The final
+Authority, closure compile-fail, documentation and platform manifest selection passed 141/141 in 2.35 seconds.
+
+On 2026-09-05 (America/Toronto), the complete `cabal test all --ghc-options=-Werror` gate passed
+2,492/2,492 in 143.58 seconds on native x86_64 Linux, GHC 9.12.4 and Cabal 3.16.1.0. The reverse
+protocol guards cover their owned section while the sealed finalizer consumes that protocol through the
+existing transaction coordinator. The focused indexed-plan guards passed 92/92 on macOS in 22.16 seconds.
+The changed production lines introduce no HLint findings; the wider scanned modules carry 46 existing findings.
 
 #### Remaining Work
 
@@ -770,8 +783,7 @@ None.
 
 ## Remaining Work
 
-None. Phase 18 passed its host-static gate and its governed documentation aligns; the later test-harness phase
-owns the named live linux-cpu acceptance rerun.
+None.
 
 ## Documentation Requirements
 

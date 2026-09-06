@@ -4,17 +4,16 @@
 {-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-{- | Package-private root/child lifecycle entries and fixed interpreters.
+{- | Package-private root lifecycle entries and fixed interpreters.
 
 The public command facade exposes this type only abstractly.  Its sole
 root constructor joins the exact root @up@ authority, plan, lifecycle context,
-acquisition journal, Execute cursor, and command reservation.  Its child
-constructor retains one inseparable authorized child package.  No caller can
+acquisition journal, Execute cursor, and command reservation. Child execution
+uses the storeless frame executor and cannot inhabit this entry. No caller can
 project those retained values or substitute a raw Chain invocation.
 -}
 module HostBootstrap.Command.LifecycleEntry (
     LifecycleEntry,
-    AuthorizedChildCursor,
     lifecycleEntryFrameName,
     lifecycleEntryVerbName,
     withRootProjectUpLifecycleEntry,
@@ -28,13 +27,8 @@ module HostBootstrap.Command.LifecycleEntry (
     withFailedUpTeardownForestForEntryKernel,
     runPreparedRootClusterCleanupKernel,
     terminalizeRootReverseLifecycleEntryKernel,
-    withReceivedRecoveryChildLifecycleEntry,
-    withChildRecoveryTerminalOrigin,
-    withChildProjectUpLifecycleEntry,
     runRootProjectUpLifecycleEntry,
     runRootProjectReverseLifecycleEntry,
-    runChildProjectUpLifecycleEntry,
-    renderForwardTerminalOrigin,
 )
 where
 
@@ -91,12 +85,6 @@ import HostBootstrap.Authority.FailedUp.Internal (
  )
 import HostBootstrap.Authority.Kernel (rootAuthorityStoreIdentity)
 import qualified HostBootstrap.Authority.ProjectPlan as ProjectAuthority
-import HostBootstrap.Authority.ProjectPlan.Internal (
-    ChildRecoveryOrigin,
-    childRecoveryOriginFrameNameKernel,
-    childRecoveryOriginVerbNameKernel,
-    withChildRecoveryTerminalOriginKernel,
- )
 import HostBootstrap.Chain (
     runChainFromFrameWithDescentFailure,
  )
@@ -104,8 +92,6 @@ import HostBootstrap.Cluster.Reconcile (runExactClusterCleanupKernel)
 import HostBootstrap.Config.Class (ProjectCfg)
 import HostBootstrap.Config.Schema (
     ValidatedConfig,
-    VerifiedConfigHandoff,
-    verifiedConfigHandoffPhase,
  )
 import HostBootstrap.Config.Vocab (Production)
 import qualified HostBootstrap.Context as Context
@@ -140,7 +126,6 @@ import HostBootstrap.Handoff.Process (
     withPreparedReverseLifecycleChildProcess,
  )
 import HostBootstrap.Handoff.Process.Route (withForwardLifecycleProcessRouteKernel)
-import HostBootstrap.Handoff.Receiver (ReceivedRecoveryDescent)
 import HostBootstrap.Handoff.Relay (
     RelayError,
     persistRootedLifecycleCompletionKernel,
@@ -166,7 +151,6 @@ import HostBootstrap.Harness (
     safetyRefusalMarker,
  )
 import HostBootstrap.HostConfig (HostConfig)
-import HostBootstrap.Lifecycle.Closure (destroyCloseRoot)
 import HostBootstrap.Lifecycle.Context (
     ValidatedLifecycleContext,
     lifecycleContextErrorMessage,
@@ -186,7 +170,7 @@ import HostBootstrap.Lifecycle.Mode (
     ModeError (..),
     VerifiedPlanSnapshot,
     acquisitionJournalRecordVersion,
-    destroySettledClosure,
+    authorizeProductionDestroy,
     lifecycleCursorFrame,
     lifecycleCursorRecordVersion,
     lifecycleErrorMessage,
@@ -265,20 +249,8 @@ import HostBootstrap.ProjectPlan (
     topologyDescentFrom,
     withChartWorkloadResource,
  )
-import HostBootstrap.ProjectPlan.Child.Internal (
-    AuthorizedChildCursor,
-    ChildPlanAuthority,
-    authorizeAuthenticatedChildCursorKernel,
-    authorizedChildCursorFrameNameKernel,
-    authorizedChildCursorVerbNameKernel,
-    renderForwardTerminalOriginKernel,
-    runAuthorizedChildCursorKernel,
-    withAuthenticatedChildCursor,
-    withReceivedRecoveryChildOriginKernel,
- )
 import HostBootstrap.ProjectPlan.Construct (
     FinalizedProjectSpec,
-    projectPlanDrafts,
     withRecoveredProductionProjectPlan,
     withRecoveredProductionProjectPlanInputs,
  )
@@ -373,31 +345,6 @@ data LifecycleEntry scope planId frame brokerGeneration verb where
         CommandAuthority scope planId frame brokerGeneration VerbUp ExecutePhase ->
         RootedPlanCatalog scope planId brokerGeneration catalogId ->
         LifecycleEntry scope planId frame brokerGeneration VerbUp
-    ChildUpLifecycleEntry ::
-        AuthorizedChildCursor
-            scope
-            specDigest
-            planDigest
-            brokerGeneration
-            parentFrame
-            planId
-            configId
-            frame
-            VerbUp
-            ExecutePhase ->
-        LifecycleEntry scope planId frame brokerGeneration VerbUp
-    ChildRecoveryLifecycleEntry ::
-        ChildRecoveryOrigin
-            scope
-            specDigest
-            planDigest
-            brokerGeneration
-            parentFrame
-            planId
-            configId
-            frame
-            verb ->
-        LifecycleEntry scope planId frame brokerGeneration verb
     RootDownLifecycleEntry ::
         RootInvocationAuthority scope brokerGeneration VerbDown ->
         ProjectVerb VerbDown ->
@@ -435,10 +382,6 @@ type role LifecycleEntry nominal nominal nominal nominal nominal
 lifecycleEntryFrameName :: LifecycleEntry scope planId frame broker verb -> Text
 lifecycleEntryFrameName (RootUpLifecycleEntry _ _ _ _ _ cursor _ _) =
     lifecycleCursorFrame cursor
-lifecycleEntryFrameName (ChildUpLifecycleEntry authorized) =
-    authorizedChildCursorFrameNameKernel authorized
-lifecycleEntryFrameName (ChildRecoveryLifecycleEntry origin) =
-    childRecoveryOriginFrameNameKernel origin
 lifecycleEntryFrameName (RootDownLifecycleEntry _ _ _ _ _ cursor _ _ _) =
     lifecycleCursorFrame cursor
 lifecycleEntryFrameName (RootDestroyLifecycleEntry _ _ _ _ _ cursor _ _ _) =
@@ -448,10 +391,6 @@ lifecycleEntryFrameName (RootDestroyLifecycleEntry _ _ _ _ _ cursor _ _ _) =
 lifecycleEntryVerbName :: LifecycleEntry scope planId frame broker verb -> Text
 lifecycleEntryVerbName (RootUpLifecycleEntry _ verb _ _ _ _ _ _) =
     projectVerbName verb
-lifecycleEntryVerbName (ChildUpLifecycleEntry authorized) =
-    authorizedChildCursorVerbNameKernel authorized
-lifecycleEntryVerbName (ChildRecoveryLifecycleEntry origin) =
-    childRecoveryOriginVerbNameKernel origin
 lifecycleEntryVerbName (RootDownLifecycleEntry _ verb _ _ _ _ _ _ _) =
     projectVerbName verb
 lifecycleEntryVerbName (RootDestroyLifecycleEntry _ verb _ _ _ _ _ _ _) =
@@ -1054,18 +993,11 @@ withRootRecursiveHandoffRuntimeKernel entry broker scope use = case entry of
     RootUpLifecycleEntry root verb _ _ _ _ _ _ -> install root verb
     RootDownLifecycleEntry root verb _ _ _ _ _ _ _ -> install root verb
     RootDestroyLifecycleEntry root verb _ _ _ _ _ _ _ -> install root verb
-    ChildUpLifecycleEntry{} -> keylessArmRefusal
-    ChildRecoveryLifecycleEntry{} -> keylessArmRefusal
   where
     install root verb =
         case rootRecursiveHandoffRuntimeKernel broker scope (rootBrokerRoute broker) root verb of
             Left failure -> pure (Left failure)
             Right runtime -> use runtime
-    keylessArmRefusal =
-        pure
-            ( Left
-                "lifecycle entry: only a sealed root entry installs the root recursive handoff runtime"
-            )
 
 {- | Admit the recursive catalog one reverse root entry stands on, then seal
 that entry.
@@ -1183,8 +1115,6 @@ withPreparedRootReverseDescentKernel ::
 withPreparedRootReverseDescentKernel entry descent use =
     case entry of
         RootUpLifecycleEntry{} -> refused
-        ChildUpLifecycleEntry{} -> refused
-        ChildRecoveryLifecycleEntry{} -> refused
         RootDownLifecycleEntry root verb plan lifecycleContext journal cursor authority reauthorize catalog ->
             prepare root verb plan catalog lifecycleContext journal cursor authority reauthorize descent use
         RootDestroyLifecycleEntry root verb plan lifecycleContext journal cursor authority reauthorize catalog ->
@@ -1273,16 +1203,6 @@ withPreparedFailedUpReverseDescentKernel entry failedAuthority descent use =
                 (pure (Right authority))
                 descent
                 use
-        ChildUpLifecycleEntry{} -> refused
-        ChildRecoveryLifecycleEntry{} -> refused
-  where
-    refused =
-        pure
-            ( Left
-                ( TeardownReverseDescentRefused "only a failed root Up entry can prepare cleanup descent"
-                , descent
-                )
-            )
 
 {- | Derive failed-Up cleanup authority only from a sealed root Up entry.
 
@@ -1305,10 +1225,6 @@ withFailedUpUnwindAuthorityForEntryKernel entry failed report binding reached un
     case entry of
         RootUpLifecycleEntry root _ _ _ _ _ _ catalog ->
             withFailedUpUnwindAuthorityKernel root catalog failed report binding reached unresolved use
-        ChildUpLifecycleEntry{} -> refused "a child Up entry is not the root failure owner"
-        ChildRecoveryLifecycleEntry{} -> refused "a recovery child is not the root failure owner"
-  where
-    refused detail = Left ("failed-Up unwind authority: " <> detail)
 
 {- | Open only the failed-Up cleanup forest authorized for this sealed root
 entry. The forest retains VerbUp and therefore cannot enter Destroy closure.
@@ -1328,10 +1244,6 @@ withFailedUpTeardownForestForEntryKernel entry authority use =
                     pure (use forest) of
                 Left failure -> Left (Text.pack (lifecycleContextErrorMessage failure))
                 Right result -> either (Left . Text.pack . teardownErrorMessage) Right result
-        ChildUpLifecycleEntry{} -> refused "a child Up entry is not the root failure owner"
-        ChildRecoveryLifecycleEntry{} -> refused "a recovery child is not the root failure owner"
-  where
-    refused detail = Left ("failed-Up unwind forest: " <> detail)
 
 -- | Run cluster cleanup only through the exact sealed root reverse entry.
 runPreparedRootClusterCleanupKernel ::
@@ -1348,147 +1260,6 @@ runPreparedRootClusterCleanupKernel entry gate local runDown runDestroy =
         RootDestroyLifecycleEntry _ verb plan _ _ _ _ _ _ ->
             runExactClusterCleanupKernel plan verb gate local runDown runDestroy
         RootUpLifecycleEntry{} -> pure (TeardownFailed "cluster cleanup: root Up has no reverse work")
-        ChildUpLifecycleEntry{} -> pure (TeardownFailed "cluster cleanup: a child entry is not the root owner")
-        ChildRecoveryLifecycleEntry{} -> pure (TeardownFailed "cluster cleanup: a recovery child is not the root owner")
-
-{- | Seal one authenticated recovery child as an opaque lifecycle entry.
-
-The received descent is forced before Entry derives the typed drafts.  The
-child substrate retains every admitted term; this wrapper receives only its
-sealed origin and cannot project it.
--}
-withReceivedRecoveryChildLifecycleEntry ::
-    (ProjectCfg cfg) =>
-    ReceivedRecoveryDescent
-        (Production projectId)
-        brokerGeneration
-        planDigest
-        parentFrame
-        signedChildFrame
-        recoveryWireDigest
-        recoveryWireId
-        verb ->
-    ProtectedStore ->
-    CanonicalProjectRoot (Production projectId) rootId ->
-    FinalizedProjectSpec (Production projectId) specDigest cfg ->
-    ValidatedConfig
-        (Production projectId)
-        specDigest
-        configId
-        (cfg (Production projectId)) ->
-    Context.BinaryContext ->
-    ( forall localPlanId localFrame.
-      LifecycleEntry
-        (Production projectId)
-        localPlanId
-        localFrame
-        brokerGeneration
-        verb ->
-      IO (Either Text ())
-    ) ->
-    IO (Either Text ())
-{-# OPAQUE withReceivedRecoveryChildLifecycleEntry #-}
-withReceivedRecoveryChildLifecycleEntry descent =
-    case descent `seq` () of
-        () -> \store root finalizedSpec config binaryContext use ->
-            case projectPlanDrafts finalizedSpec root config of
-                Left failure ->
-                    pure (Left ("lifecycle entry: recovery child drafts refused: " <> Text.pack (show failure)))
-                Right drafts ->
-                    withReceivedRecoveryChildOriginKernel
-                        descent
-                        store
-                        root
-                        config
-                        drafts
-                        binaryContext
-                        (\origin -> use (ChildRecoveryLifecycleEntry origin))
-
-{- | Emit only the canonical byte identity of a sealed recovery child.
-
-Every other entry is a structural refusal; no retained child evidence is
-projected through this fixed-unit fold.
--}
-withChildRecoveryTerminalOrigin ::
-    LifecycleEntry scope planId frame brokerGeneration verb ->
-    (ByteString.ByteString -> IO (Either Text ())) ->
-    IO (Either Text ())
-withChildRecoveryTerminalOrigin entry use =
-    case entry of
-        ChildRecoveryLifecycleEntry origin -> withChildRecoveryTerminalOriginKernel origin use
-        RootUpLifecycleEntry{} -> refused
-        ChildUpLifecycleEntry{} -> refused
-        RootDownLifecycleEntry{} -> refused
-        RootDestroyLifecycleEntry{} -> refused
-  where
-    refused = pure (Left "lifecycle entry: terminal recovery origin requires a recovery child")
-
-{- | Admit exactly one authenticated child Up/Execute entry.
-
-Verb and phase are classified before the child cursor bridge is called, so a
-Prepare, Teardown, Down, or Destroy request cannot open a journal, seed a
-cursor, or reserve an invocation.  The callback receives only the shared
-opaque entry sum after the child module has durably reserved the exact command.
--}
-withChildProjectUpLifecycleEntry ::
-    ProjectVerb verb ->
-    VerifiedConfigHandoff
-        scope
-        planDigest
-        brokerGeneration
-        parentFrame
-        signedChildFrame
-        configId
-        verb
-        phase ->
-    ChildPlanAuthority
-        scope
-        specDigest
-        planDigest
-        brokerGeneration
-        parentFrame
-        signedChildFrame
-        planId
-        configId
-        verb
-        phase ->
-    ProjectPlan scope specDigest planId configId cfg ->
-    PlanDigestBinding scope specDigest planDigest planId ->
-    ValidatedLifecycleContext scope specDigest planId configId childFrame ->
-    (LifecycleEntry scope planId childFrame brokerGeneration verb -> IO result) ->
-    IO (Either String result)
-withChildProjectUpLifecycleEntry
-    verb
-    handoff
-    childAuthority
-    plan
-    digestBinding
-    lifecycleContext
-    use =
-        case verb of
-            ProjectUp -> case verifiedConfigHandoffPhase handoff of
-                Execute -> do
-                    joined <-
-                        withAuthenticatedChildCursor
-                            handoff
-                            childAuthority
-                            plan
-                            digestBinding
-                            lifecycleContext
-                            ( \authenticated -> do
-                                reserved <- authorizeAuthenticatedChildCursorKernel authenticated
-                                case reserved of
-                                    Left failure ->
-                                        pure (Left (Text.unpack (Authority.authorityErrorMessage failure)))
-                                    Right authorized -> Right <$> use (ChildUpLifecycleEntry authorized)
-                            )
-                    pure $ case joined of
-                        Left failure -> Left (lifecycleErrorMessage failure)
-                        Right outcome -> outcome
-                Prepare -> pure (Left "lifecycle entry: child Up requires Execute, not Prepare")
-                Teardown -> pure (Left "lifecycle entry: child Up requires Execute, not Teardown")
-            ProjectDown -> pure (Left "lifecycle entry: config-origin child entry refuses Down")
-            ProjectDestroy -> pure (Left "lifecycle entry: config-origin child entry refuses Destroy")
 
 {- | Interpret exactly one admitted root @project up@ leaf.
 
@@ -1508,24 +1279,6 @@ runRootProjectUpLifecycleEntry ::
     (LocalWork scope planId frame VerbUp -> IO TeardownOutcome) ->
     LifecycleEntry scope planId frame brokerGeneration VerbUp ->
     IO (Either String ())
-runRootProjectUpLifecycleEntry
-    _cfg
-    _self
-    _scope
-    _loadSigningKey
-    _loadActivationSigningKey
-    _runFailedLocal
-    (ChildUpLifecycleEntry _) =
-        pure (Left "lifecycle entry: the root interpreter refuses a child origin")
-runRootProjectUpLifecycleEntry
-    _cfg
-    _self
-    _scope
-    _loadSigningKey
-    _loadActivationSigningKey
-    _runFailedLocal
-    (ChildRecoveryLifecycleEntry _) =
-        pure (Left "lifecycle entry: the root interpreter refuses a recovery child origin")
 runRootProjectUpLifecycleEntry
     cfg
     self
@@ -1581,8 +1334,6 @@ runRootProjectReverseLifecycleEntry cfg self scope loadSigningKey entry runLocal
         RootDestroyLifecycleEntry root verb plan lifecycleContext _ _ _ _ catalog ->
             run root verb plan lifecycleContext catalog
         RootUpLifecycleEntry{} -> refused "root Up"
-        ChildUpLifecycleEntry{} -> refused "child Up"
-        ChildRecoveryLifecycleEntry{} -> refused "recovery child"
   where
     run ::
         forall specDigest configId cfg catalogId.
@@ -2705,54 +2456,6 @@ forwardRequestView request = do
         (\_ _ _ _ _ _ -> Right ("close", Nothing))
         (\_ _ _ _ _ _ -> Right ("receipt", Nothing))
 
-{- | Interpret one child-origin Up entry with a sealed completion operation.
-
-The completion callback receives only the opaque terminal origin.  It runs
-only after the complete local Chain succeeds and the retained Execute cursor
-durably advances to Teardown.  A root-origin entry is an explicit refusal.
--}
-runChildProjectUpLifecycleEntry ::
-    HostConfig ->
-    SelfRef ->
-    LifecycleEntry scope planId frame brokerGeneration VerbUp ->
-    ( forall specDigest planDigest parentFrame configId.
-      AuthorizedChildCursor
-        scope
-        specDigest
-        planDigest
-        brokerGeneration
-        parentFrame
-        planId
-        configId
-        frame
-        VerbUp
-        TeardownPhase ->
-      IO (Either String ())
-    ) ->
-    IO (Either String ())
-runChildProjectUpLifecycleEntry _cfg _self (RootUpLifecycleEntry{}) _complete =
-    pure (Left "lifecycle entry: the child interpreter refuses a root origin")
-runChildProjectUpLifecycleEntry _cfg _self (ChildRecoveryLifecycleEntry{}) _complete =
-    pure (Left "lifecycle entry: the child Up interpreter refuses a recovery origin")
-runChildProjectUpLifecycleEntry cfg self (ChildUpLifecycleEntry authorized) complete =
-    runAuthorizedChildCursorKernel cfg self authorized complete
-
--- | Canonical opaque identity bytes for the later completion protocol.
-renderForwardTerminalOrigin ::
-    AuthorizedChildCursor
-        scope
-        specDigest
-        planDigest
-        brokerGeneration
-        parentFrame
-        planId
-        configId
-        frame
-        VerbUp
-        TeardownPhase ->
-    ByteString.ByteString
-renderForwardTerminalOrigin = renderForwardTerminalOriginKernel
-
 {- | Terminalize only a sealed root reverse entry. The entry supplies the exact
 plan/current-frame pair; destroy is promoted to its unique-root proof here,
 before the durable Mode kernel can mutate the retained intent.
@@ -2779,13 +2482,11 @@ terminalizeRootReverseLifecycleEntryKernel store project lease sessions settled 
                     Right () -> case verifyDestroySettled plan current settled of
                         Left failure -> pure (Left (show failure))
                         Right destroy ->
-                            case destroySettledClosure lease sessions destroy of
+                            case authorizeProductionDestroy root lease sessions destroy of
                                 Left failure -> pure (Left (Text.unpack (modeErrorMessage failure)))
                                 Right closure ->
-                                    terminalize verb (Just (destroy, destroyCloseRoot root, closure))
+                                    terminalize verb (Just closure)
         RootUpLifecycleEntry{} -> refused "root Up"
-        ChildUpLifecycleEntry{} -> refused "child Up"
-        ChildRecoveryLifecycleEntry{} -> refused "recovery child"
   where
     validateRoot context use =
         case withValidatedRootLifecycleContext context $ \_ _ current _ _ -> use current of

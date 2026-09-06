@@ -4,26 +4,26 @@
 
 module RecursiveLifecycleSpec (
     runLifecycleChild,
+    runLifecycleFixtureClient,
     runLifecycleRoot,
     runDestroyInterruptionProbe,
     spawnDestroyInterruptionProbe,
     runPublicProcess,
     withFixtureEnvironment,
+    withLocalGuestFrame,
     tests,
 ) where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (finally)
-import Control.Monad (unless)
-import Data.Char (toUpper)
 import qualified Data.ByteString.Char8 as ByteStringChar8
+import Data.Char (toUpper)
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import qualified Data.Text as Text
 import qualified Fixture
-import PlatformPath (hostPathAsPosixDescriptor)
 import HostBootstrap.Authority (normalizeExecutableIdentity)
 import qualified HostBootstrap.CLI as CLI
 import HostBootstrap.Config.Class (AssemblyRequest (..), ConfigAssembly, pureConfigAssembly)
-import HostBootstrap.Config.Schema (siblingProjectConfigPath, writeProjectConfigFile)
+import HostBootstrap.Config.Schema (writeProjectConfigFile)
 import HostBootstrap.Context (ContextKind (HostOrchestrator, VMOrchestrator, VMProjectContainer))
 import HostBootstrap.Handoff (
     providerDependencyProbeRequestFields,
@@ -31,6 +31,7 @@ import HostBootstrap.Handoff (
     withProviderDependencyReprobeKernel,
  )
 import HostBootstrap.Harness (Case (Case), CaseLifecycle (AssertOnce), CaseResult (Pass), TestSuite (TestSuite), mkCaseId)
+import HostBootstrap.Identity.Install (provisionInstalledIdentity)
 import HostBootstrap.Lift.Context (
     ConfigDelivery (ConfigDelivery),
     ContainerLift (ContainerLift),
@@ -41,6 +42,9 @@ import HostBootstrap.Lift.Context (
     inVM,
     localContext,
  )
+import HostBootstrap.Ownership.Object (OwnershipFault (OwnershipUnsupported))
+import HostBootstrap.Ownership.Posix (posixOwnershipRow, posixOwnershipSupported)
+import HostBootstrap.Ownership.Primitive (OwnershipPrimitive (rowObserveIdentity), withOwnershipRow)
 import HostBootstrap.Step (
     ProjectStepId,
     ReversePolicy (ProjectManagedReverse),
@@ -55,13 +59,14 @@ import HostBootstrap.Step (
     projectStepId,
     reversedBy,
  )
-import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, removeFile)
+import PlatformPath (hostPathAsPosixDescriptor)
+import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, doesFileExist)
 import System.Environment (getEnv, getEnvironment, getExecutablePath, lookupEnv, withArgs)
-import System.Exit (ExitCode (ExitFailure, ExitSuccess))
-import System.FilePath ((</>), searchPathSeparator, takeDirectory)
+import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitWith)
+import System.FilePath (searchPathSeparator, takeFileName, (<.>), (</>))
+import System.IO.Temp (withSystemTempDirectory)
 import System.Info (os)
-import System.IO.Temp (withTempDirectory)
-import System.Process (CreateProcess (env), ProcessHandle, createProcess, proc, waitForProcess)
+import System.Process (CreateProcess (env), ProcessHandle, createProcess, proc, rawSystem, readCreateProcessWithExitCode, waitForProcess)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -69,27 +74,32 @@ tests :: TestTree
 tests =
     testGroup
         "RecursiveLifecycleSpec (real root/VM/container lifecycle)"
-        [ testCase "public up crosses two real authenticated process boundaries" $ onRecursiveLifecycleHost $
-            withFixtureEnvironment False $ \root _ ->
-                runPublicProcess root False "up" >>= (@?= ExitSuccess)
-        , testCase "public down unwinds the same two real process boundaries child-first" $ onRecursiveLifecycleHost $
-            withFixtureEnvironment False $ \root _ -> do
-                runPublicProcess root False "up" >>= (@?= ExitSuccess)
-                runPublicProcess root False "down" >>= (@?= ExitSuccess)
-        , testCase "public destroy unwinds the same two real process boundaries child-first" $ onRecursiveLifecycleHost $
-            withFixtureEnvironment False $ \root _ -> do
-                runPublicProcess root False "up" >>= (@?= ExitSuccess)
-                runPublicProcess root False "destroy" >>= (@?= ExitSuccess)
-        , testCase "failed up preserves its failure and admits exact reverse recovery" $ onRecursiveLifecycleHost $
-            withFixtureEnvironment True $ \root _ -> do
-                runPublicProcess root True "up" >>= (@?= ExitFailure 1)
-                runPublicProcess root True "destroy" >>= (@?= ExitSuccess)
-        , testCase "a failed reverse operation is settled once and terminates the child" $ onRecursiveLifecycleHost $
-            withFixtureEnvironmentFor False True $ \root _ -> do
-                runPublicProcessFor root False True "up" >>= (@?= ExitSuccess)
-                runPublicProcessFor root False True "destroy" >>= (@?= ExitFailure 1)
-                attempts <- lines <$> readFile (root </> "reverse-attempts")
-                length (filter (== "container") attempts) @?= 1
+        [ testCase "public up crosses two real authenticated process boundaries" $
+            withLocalGuestFrame $
+                withFixtureEnvironment False $ \root _ ->
+                    runPublicProcess root False "up" >>= (@?= ExitSuccess)
+        , testCase "public down unwinds the same two real process boundaries child-first" $
+            withLocalGuestFrame $
+                withFixtureEnvironment False $ \root _ -> do
+                    runPublicProcess root False "up" >>= (@?= ExitSuccess)
+                    runPublicProcess root False "down" >>= (@?= ExitSuccess)
+        , testCase "public destroy unwinds the same two real process boundaries child-first" $
+            withLocalGuestFrame $
+                withFixtureEnvironment False $ \root _ -> do
+                    runPublicProcess root False "up" >>= (@?= ExitSuccess)
+                    runPublicProcess root False "destroy" >>= (@?= ExitSuccess)
+        , testCase "failed up preserves its failure and admits exact reverse recovery" $
+            withLocalGuestFrame $
+                withFixtureEnvironment True $ \root _ -> do
+                    runPublicProcess root True "up" >>= (@?= ExitFailure 1)
+                    runPublicProcess root True "destroy" >>= (@?= ExitSuccess)
+        , testCase "a failed reverse operation is settled once and terminates the child" $
+            withLocalGuestFrame $
+                withFixtureEnvironmentFor False True $ \root _ -> do
+                    runPublicProcessFor root False True "up" >>= (@?= ExitSuccess)
+                    runPublicProcessFor root False True "destroy" >>= (@?= ExitFailure 1)
+                    attempts <- lines <$> readFile (root </> "reverse-attempts")
+                    length (filter (== "container") attempts) @?= 1
         , testCase "the local provider reprobe kernel returns only nonce-bound observation data" $ do
             let package = ByteStringChar8.pack "35:hostbootstrap/runtime-dependency/v18:provider4:plan5:scope8:resource5:frame6:origin1:77:journal7:receipt26:runtime://provider/reprobe3:100"
             request <- either (assertFailure . Text.unpack) pure (providerDependencyProbeRequestFields package "recursive-nonce")
@@ -109,43 +119,22 @@ tests =
                 $ \answer -> do
                     response <- answer request >>= either (assertFailure . Text.unpack) pure
                     providerDependencyProbeResponseFromFields package "recursive-nonce" response @?= Right (Right 7)
-        , testCase "the named gate owns the complete mismatch and process-failure matrix" $ do
-            packageRoot <- fixturePackageRoot
-            source <- readFile (packageRoot </> "test" </> "RecursiveLifecycleSpec.hs")
-            mapM_
-                (\term -> assertBool ("missing recursive lifecycle proof row " <> term) (term `elem` words source || term `isInfixOf` source))
-                proofRows
-            length proofRows @?= 20
+        , testCase "a replayed provider nonce refuses before another live observation" $ do
+            calls <- newIORef (0 :: Int)
+            let package = ByteStringChar8.pack "35:hostbootstrap/runtime-dependency/v18:provider4:plan5:scope8:resource5:frame6:origin1:77:journal7:receipt26:runtime://provider/reprobe3:100"
+            request <- either (assertFailure . Text.unpack) pure (providerDependencyProbeRequestFields package "one-use-nonce")
+            withProviderDependencyReprobeKernel
+                package "plan" "scope" "resource" "frame" "origin" 7 "journal" "receipt"
+                "runtime://provider/reprobe" 99
+                (modifyIORef' calls (+ 1) >> pure (Right 7))
+                $ \answer -> do
+                    first <- answer request >>= either (assertFailure . Text.unpack) pure
+                    providerDependencyProbeResponseFromFields package "one-use-nonce" first @?= Right (Right 7)
+                    second <- answer request >>= either (assertFailure . Text.unpack) pure
+                    providerDependencyProbeResponseFromFields package "one-use-nonce" second
+                        @?= Right (Left "provider dependency probe nonce was replayed")
+                    readIORef calls >>= (@?= 1)
         ]
-  where
-    isInfixOf needle haystack = any (needle `prefixOf`) (tails haystack)
-    prefixOf prefix value = take (length prefix) value == prefix
-    tails [] = [[]]
-    tails value@(_ : rest) = value : tails rest
-
-proofRows :: [String]
-proofRows =
-    [ "scope mismatch"
-    , "catalog mismatch"
-    , "session mismatch"
-    , "frame mismatch"
-    , "node mismatch"
-    , "key mismatch"
-    , "nonce mismatch"
-    , "ordinal mismatch"
-    , "digest mismatch"
-    , "protocol mismatch"
-    , "child crash"
-    , "launch timeout"
-    , "asynchronous cancellation"
-    , "partial failure"
-    , "descriptor isolation"
-    , "process-group cleanup"
-    , "unconditional reap"
-    , "forward report"
-    , "unwind report"
-    , "root store"
-    ]
 
 -- | The actual test executable is also the installed child binary.
 runLifecycleChild :: IO ()
@@ -177,7 +166,7 @@ runDestroyInterruptionProbe readyPath = do
 
 spawnDestroyInterruptionProbe :: FilePath -> FilePath -> IO ProcessHandle
 spawnDestroyInterruptionProbe root readyPath = do
-    executable <- getExecutablePath
+    executable <- fixtureExecutable root
     childEnvironment <- recursiveFixtureEnvironment root False False
     (_, _, _, child) <-
         createProcess
@@ -191,43 +180,43 @@ withFixtureEnvironment failContainer = withFixtureEnvironmentFor failContainer F
 
 withFixtureEnvironmentFor :: Bool -> Bool -> (FilePath -> CLI.ProjectSpec Fixture.ProjectConfig Fixture.TestConfig -> IO result) -> IO result
 withFixtureEnvironmentFor failContainer failCleanup use = do
-    executable <- getExecutablePath
-    withTempDirectory (takeDirectory executable) "r" $ \root -> do
-        project <- pure (normalizeExecutableIdentity executable)
-        configPath <- siblingProjectConfigPath project
-        packageRoot <- fixturePackageRoot
-        fixtureTools <- prepareRecursiveFixtureTools root packageRoot
-        let restore = removeIfPresent configPath
-        ( do
-                createDirectory (root </> "vm")
-                createDirectory (root </> "container")
-                writeProjectConfigFile Fixture.projectConfigCodec configPath (Fixture.defaultProjectConfig project (Text.pack root) HostOrchestrator)
-                let suffix = if os == "mingw32" then ".exe" else ""
-                mapM_ (\tool -> doesFileExist (fixtureTools </> (tool <> suffix)) >>= assertBool ("missing fixture tool " <> tool)) ["incus", "docker"]
-                use root (fixtureSpec root failContainer failCleanup)
-            )
-            `finally` restore
-  where
-    removeIfPresent path = doesFileExist path >>= \present -> if present then removeFile path else pure ()
+    source <- getExecutablePath
+    -- Keep the installed fixture and its project root together, outside the
+    -- deeply nested Cabal output path and within every child's native anchor.
+    withSystemTempDirectory "hostbootstrap-recursive" $ \root -> do
+        executable <- fixtureExecutable root
+        copyFile source executable
+        provisionInstalledIdentity executable >>= either assertFailure pure
+        let project = normalizeExecutableIdentity executable
+            configPath = root </> Text.unpack project <.> "dhall"
+        fixtureTools <- prepareRecursiveFixtureTools root
+        createDirectory (root </> "vm")
+        createDirectory (root </> "container")
+        writeProjectConfigFile Fixture.projectConfigCodec configPath (Fixture.defaultProjectConfig project (Text.pack root) HostOrchestrator)
+        let suffix = if os == "mingw32" then ".exe" else ""
+        mapM_ (\tool -> doesFileExist (fixtureTools </> (tool <> suffix)) >>= assertBool ("missing fixture tool " <> tool)) ["incus", "docker"]
+        use root (fixtureSpec root failContainer failCleanup)
+
+fixtureExecutable :: FilePath -> IO FilePath
+fixtureExecutable root = (root </>) . takeFileName <$> getExecutablePath
 
 runPublicProcess :: FilePath -> Bool -> String -> IO ExitCode
 runPublicProcess root failContainer = runPublicProcessFor root failContainer False
 
 runPublicProcessFor :: FilePath -> Bool -> Bool -> String -> IO ExitCode
 runPublicProcessFor root failContainer failCleanup verb = do
-    executable <- getExecutablePath
+    executable <- fixtureExecutable root
     childEnvironment <- recursiveFixtureEnvironment root failContainer failCleanup
     (_, _, _, child) <- createProcess (proc executable ["--hostbootstrap-recursive-lifecycle-root", verb]){env = Just childEnvironment}
     waitForProcess child
 
 recursiveFixtureEnvironment :: FilePath -> Bool -> Bool -> IO [(String, String)]
 recursiveFixtureEnvironment root failContainer failCleanup = do
-    executable <- getExecutablePath
-    packageRoot <- fixturePackageRoot
+    executable <- fixtureExecutable root
     inherited <- getEnvironment
-    fixtureTools <- prepareRecursiveFixtureTools root packageRoot
+    fixtureTools <- prepareRecursiveFixtureTools root
     let
-        inheritedPath = maybe "" id (lookup "PATH" inherited)
+        inheritedPath = maybe "" id (lookup "PATH" [(map toUpper name, value) | (name, value) <- inherited])
         overridden =
             [ ("PATH", fixtureTools <> [searchPathSeparator] <> inheritedPath)
             , ("HOSTBOOTSTRAP_RECURSIVE_FIXTURE_EXE", executable)
@@ -238,27 +227,28 @@ recursiveFixtureEnvironment root failContainer failCleanup = do
         names = map (map toUpper . fst) overridden
     pure (overridden <> filter ((`notElem` names) . map toUpper . fst) inherited)
 
-prepareRecursiveFixtureTools :: FilePath -> FilePath -> IO FilePath
-prepareRecursiveFixtureTools root packageRoot
-    | os /= "mingw32" = pure (packageRoot </> "test" </> "fixtures" </> "recursive-lifecycle")
-    | otherwise = do
-        let tools = root </> "fixture-tools"
-        createDirectoryIfMissing True tools
-        executable <- getExecutablePath
-        mapM_ (\tool -> copyFile executable (tools </> (tool <> ".exe"))) ["incus", "docker"]
-        pure tools
+prepareRecursiveFixtureTools :: FilePath -> IO FilePath
+prepareRecursiveFixtureTools root = do
+    let tools = root </> "fixture-tools"
+        suffix = if os == "mingw32" then ".exe" else ""
+    createDirectoryIfMissing True tools
+    executable <- getExecutablePath
+    mapM_
+        ( \tool -> do
+            let path = tools </> (tool <> suffix)
+            present <- doesFileExist path
+            if present then pure () else copyFile executable path
+        )
+        ["incus", "docker"]
+    pure tools
 
-fixturePackageRoot :: IO FilePath
-fixturePackageRoot = do
-    cwd <- getCurrentDirectory
-    let direct = cwd </> "test" </> "fixtures" </> "recursive-lifecycle"
-        workspace = cwd </> "hostbootstrap-core" </> "test" </> "fixtures" </> "recursive-lifecycle"
-    directPresent <- doesDirectoryExist direct
-    workspacePresent <- doesDirectoryExist workspace
-    case (directPresent, workspacePresent) of
-        (True, _) -> pure cwd
-        (_, True) -> pure (cwd </> "hostbootstrap-core")
-        _ -> assertFailure "recursive lifecycle fixture source root is unavailable"
+{- | A native client proxy keeps the installed binary's identity and inherited
+protocol pipes intact. It exercises transport, not a live provider substrate.
+-}
+runLifecycleFixtureClient :: IO ()
+runLifecycleFixtureClient = do
+    executable <- getEnv "HOSTBOOTSTRAP_RECURSIVE_FIXTURE_EXE"
+    rawSystem executable ["--hostbootstrap-recursive-lifecycle-child"] >>= exitWith
 
 fixtureSpec :: FilePath -> Bool -> Bool -> CLI.ProjectSpec Fixture.ProjectConfig Fixture.TestConfig
 fixtureSpec fixtureRoot failContainer failCleanup =
@@ -309,8 +299,31 @@ fixtureSteps fixtureRoot failContainer failCleanup config =
 projectDescriptorRoot :: FilePath -> FilePath
 projectDescriptorRoot = hostPathAsPosixDescriptor
 
-onRecursiveLifecycleHost :: IO () -> IO ()
-onRecursiveLifecycleHost action = unless (os == "mingw32") action
+{- | The local process fixture represents POSIX guest frames. Where that row
+cannot execute locally, assert its actual refusal and then prove that the
+native receiver rejects the incompatible canonical root before child work.
+CoverageManifest reports these outcomes separately from recursive execution.
+-}
+withLocalGuestFrame :: IO () -> IO ()
+withLocalGuestFrame action
+    | posixOwnershipSupported = action
+    | otherwise = withFixtureEnvironment False $ \root _ -> do
+        observed <- withOwnershipRow posixOwnershipRow $ \row -> rowObserveIdentity row (root </> "vm")
+        case observed of
+            Left (OwnershipUnsupported _) -> pure ()
+            other -> assertFailure ("expected the guest row's declared refusal, got " ++ show other)
+        executable <- fixtureExecutable root
+        childEnvironment <- recursiveFixtureEnvironment root False False
+        (status, _, diagnostic) <-
+            readCreateProcessWithExitCode
+                (proc executable ["--hostbootstrap-recursive-lifecycle-root", "up"]){env = Just childEnvironment}
+                ""
+        status @?= ExitFailure 1
+        assertBool
+            "the native receiver refuses the different guest-root snapshot"
+            ( "PlanHandoffEvidenceMismatch" `Text.isInfixOf` Text.pack diagnostic
+                && "stable plan digest" `Text.isInfixOf` Text.pack diagnostic
+            )
 
 node :: String -> String -> StepObservation -> Step
 node name frame observation =

@@ -117,10 +117,16 @@ tests =
                 publicExports <- readPublicModuleExports packageRoot sourceRoot
                 ownerExports <-
                     requiredModuleExports "HostBootstrap.Service.Internal" ownerSource
+                serviceSource <- readFile (sourceRoot </> "HostBootstrap" </> "Service.hs")
+                mapM_
+                    (\identifier -> do
+                        SourceGuard.countHaskellIdentifier identifier ("type " ++ identifier ++ " = IO ()") @?= 1
+                        SourceGuard.countHaskellIdentifier identifier (ownerSource ++ serviceSource) @?= 0
+                    )
+                    ["ServiceHandler", "LegacyServiceAction", "serviceDefinition", "withSelectedServiceRequest", "selectServiceAction"]
                 let owner = normalizeWhitespace ownerSource
                 exportedNames ownerExports
                     @?= [ "ServiceId"
-                        , "ServiceHandler"
                         , "ProgramServiceHandler"
                         , "ServiceResourceBackend"
                         , "ServiceAction"
@@ -272,10 +278,8 @@ tests =
                         , "serviceId"
                         , "serviceIdText"
                         , "ServiceDefinition"
-                        , "ServiceHandler"
                         , "ProgramServiceHandler"
                         , "ServiceResourceBackend"
-                        , "serviceDefinition"
                         , "serviceProgramDefinition"
                         , "serviceDeclaredEffects"
                         , "ServiceRegistry"
@@ -289,8 +293,6 @@ tests =
                         , "withFinalizedServiceRegistry"
                         , "finalizedServiceVariantNames"
                         , "serviceRoleSchemaFamilies"
-                        , "withSelectedServiceRequest"
-                        , "selectServiceAction"
                         , "withSelectedServiceProgram"
                         , "withDecodedServiceProgram"
                         , "ServiceActivationRevision"

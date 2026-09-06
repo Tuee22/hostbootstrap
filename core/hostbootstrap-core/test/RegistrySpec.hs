@@ -42,6 +42,7 @@ import HostBootstrap.Registry (
     registryConfigPayload,
  )
 import HostBootstrap.Substrate (Arch (Amd64), Substrate (..), SubstrateName (LinuxCpu))
+import qualified SourceGuard
 import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
@@ -222,8 +223,14 @@ tests =
                 assertBool "plan exposed the Docker Hub auth" (not (hasStr "ZG9ja2VyOnB1bGw=" rendered))
                 assertBool "plan exposed the Docker Hub token" (not (hasStr "HUB-IDENTITY-TOKEN" rendered))
             , testCase "an unsupported context has no authenticated plan" $
-                registryAuthLiftPlan (inContainer authContainer localContext) authSubcommand
-                    @?= Nothing
+                mapM_
+                    (\context -> registryAuthLiftPlan context authSubcommand @?= Nothing)
+                    [ localContext
+                    , inContainer authContainer localContext
+                    , inContainer authContainer (inContainer authContainer localContext)
+                    , inVM (IncusVM "vm" "image") (inContainer authContainer localContext)
+                    , inVM (IncusVM "inner" "image") (inVM (IncusVM "outer" "image") localContext)
+                    ]
             , testCase "Nothing and unsupported authenticated contexts use the ordinary lift" $ do
                 let cfg =
                         HostConfig
@@ -263,6 +270,15 @@ tests =
             assertBool
                 "the registry-aware helper must be implemented in Registry"
                 (hasStr "liftSubcommandWithAuth" registrySource)
+            mapM_
+                ( \name -> do
+                    SourceGuard.countHaskellIdentifier name ("value = " <> name) @?= 1
+                    SourceGuard.countHaskellIdentifier name registrySource @?= 0
+                )
+                ["containerRunArgs", "execVMArgs", "shellVMArgs", "wslExecArgs"]
+            assertBool
+                "registry crossings consume the shared fold"
+                (SourceGuard.countHaskellIdentifier "foldLeaf" registrySource >= 2)
             assertBool
                 "Network must project local endpoints from the cluster backend authority"
                 ( importsModule "HostBootstrap.Cluster.Backend" networkSource

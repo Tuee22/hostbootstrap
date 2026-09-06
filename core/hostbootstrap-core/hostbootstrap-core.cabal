@@ -228,7 +228,6 @@ library
       HostBootstrap.Authority.FailedUp.Internal
       HostBootstrap.Cluster.Backend.Internal
       HostBootstrap.Cluster.Exposure.Internal
-      HostBootstrap.Authority.ProjectPlan.Internal
       HostBootstrap.Command.Child
       HostBootstrap.Command.Child.Reverse
       HostBootstrap.Command.LifecycleEntry
@@ -244,7 +243,6 @@ library
       HostBootstrap.Harness.Ownership.Internal
       HostBootstrap.Handoff.Completion
       HostBootstrap.Handoff.Internal
-      HostBootstrap.Handoff.Lifecycle
       HostBootstrap.Handoff.Process
       HostBootstrap.Handoff.Process.Route
       HostBootstrap.Handoff.Protocol

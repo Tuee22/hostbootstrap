@@ -32,6 +32,9 @@ module HostBootstrap.Lifecycle.Session.Testing (
     projectTransactionTarget,
     sessionTransactionTarget,
     operationTransactionTarget,
+    productionIntentTransactionTarget,
+    productionLeaseTransactionTarget,
+    productionModeTransactionTarget,
     stampTarget,
 
     -- * Reading a materialized target back
@@ -51,6 +54,9 @@ import HostBootstrap.Lifecycle.Transaction (
     coordinatorKey,
     encodeCoordinator,
     operationTransactionTarget,
+    productionIntentTransactionTarget,
+    productionLeaseTransactionTarget,
+    productionModeTransactionTarget,
     projectTransactionTarget,
     readTransactionRecord,
     sessionTransactionTarget,

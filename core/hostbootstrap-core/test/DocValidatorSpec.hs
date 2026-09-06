@@ -7,10 +7,13 @@ import Data.List (isInfixOf)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 import HostBootstrap.DocValidator
-  ( findRepoRoot,
+  ( checkArchitectureDrift,
+    findRepoRoot,
     renderViolation,
     validateRepo,
+    vFile,
   )
+import qualified SourceGuard
 import System.Directory (createDirectoryIfMissing, getCurrentDirectory)
 import System.FilePath ((</>))
 import System.IO (IOMode (WriteMode), hSetEncoding, utf8, withFile)
@@ -29,7 +32,8 @@ tests = do
     testGroup
       "DocValidatorSpec"
       [ testCase "governed documentation conforms to the standard" (realRepoCase cwd mroot),
-        testCase "validator flags missing metadata, links, and sections" negativeCase
+        testCase "validator flags missing metadata, links, and sections" negativeCase,
+        testCase "architecture drift guards reject obsolete authority and numeric citations" architectureCase
       ]
 
 realRepoCase :: FilePath -> Maybe FilePath -> IO ()
@@ -338,6 +342,37 @@ negativeCase = withSystemTempDirectory "hb-docval" $ \root -> do
   assertBool
     ("the Why column must not count toward the deleting-phase arity:" ++ unlines msgs)
     (not (any ("names 3 deleting phases" `isInfixOf`) msgs))
+
+architectureCase :: IO ()
+architectureCase = withSystemTempDirectory "hb-architecture-drift" $ \root -> do
+  let source = root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap"
+  createDirectoryIfMissing True (source </> "Authority" </> "ProjectPlan")
+  createDirectoryIfMissing True (source </> "Handoff")
+  createDirectoryIfMissing True (source </> "Service")
+  createDirectoryIfMissing True (root </> "documents")
+  checkArchitectureDrift root >>= (@?= [])
+  writeUtf8 (source </> "Authority" </> "ProjectPlan" </> "Internal.hs") "module Obsolete where"
+  writeUtf8 (source </> "Handoff" </> "Lifecycle.hs") "module Obsolete where"
+  writeUtf8 (source </> "Authority" </> "Kernel.hs") "data ProductionCloseRoot = ProductionCloseRoot"
+  writeUtf8 (source </> "Service.hs") "type ServiceHandler fields = fields -> IO ()"
+  writeUtf8 (source </> "Service" </> "Internal.hs") "data ServiceAction = LegacyServiceAction (IO ())"
+  writeUtf8 (root </> "documents" </> "example.md") "See Phase 17 and its implementation."
+  writeUtf8 (source </> "Example.hs") "-- Sprint 17.1 owns this boundary."
+  violations <- checkArchitectureDrift root
+  let messages = map renderViolation violations
+      paths = map (SourceGuard.repoRelativePath root . (root </>) . vFile) violations
+  length messages @?= 7
+  forM_ ["Authority/ProjectPlan/Internal.hs", "Handoff/Lifecycle.hs", "ProductionCloseRoot", "ServiceHandler", "LegacyServiceAction", "example.md", "Example.hs"] $ \name ->
+    assertBool
+      ("missing drift refusal for " ++ name ++ ": " ++ unlines messages)
+      (any (name `isInfixOf`) (paths ++ messages))
+  assertBool
+    "every drift refusal names the owning phase to rewrite"
+    (all ("rewrite DEVELOPMENT_PLAN/phase-" `isInfixOf`) messages)
+  -- A phase's durable name and file link remain valid under renumbering.
+  writeUtf8 (root </> "documents" </> "example.md") "See [recursive lifecycle](../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)."
+  remaining <- checkArchitectureDrift root
+  length remaining @?= 6
 
 writeUtf8 :: FilePath -> String -> IO ()
 writeUtf8 path content =

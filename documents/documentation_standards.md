@@ -197,7 +197,7 @@ doctrine nothing checks is a preference:
 - § A and § E: the `phase-NN-*.md` set is contiguous from 0; a phase's `Depends on` names only strictly
   lower-numbered phases; no phase title announces a reversal; and no `Remaining Work` section — phase-level
   or sprint-level — cites a higher-numbered phase. That last one is where the ordering rule is actually
-  broken: "this closes when phase 15 lands", written in prose, is a claim the `Depends on` field never
+  broken: "this closes when a later phase lands", written in prose, is a claim the `Depends on` field never
   sees. A forward link in `## Phase Objective` or `#### Validation` says who owns what and stays legal.
 - § C and § G: every phase carries its header fields and a `## Documentation Requirements` section; each
   phase's status matches its `DEVELOPMENT_PLAN/README.md` row; every sprint declares a status from the
@@ -230,3 +230,8 @@ From `core/`, `cabal test all` exercises the validator through the Haskell test 
 governed document drifts from the rules above. That command is the test leg, not the complete Haskell
 quality gate: the canonical code-check also runs the formatter check, linter, and a warnings-as-errors
 build.
+
+The [documentation reconciliation phase](../DEVELOPMENT_PLAN/phase-29-documentation-reconciliation.md)
+extends the validator with architecture absence guards and phase-name citation checks over governed documents
+and production source. Each architecture refusal names the constructive phase to rewrite and its rationale;
+negative fixtures prove the checks detect removed authority modules and unrestricted service handlers.

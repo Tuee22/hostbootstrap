@@ -5,8 +5,8 @@
 **Referenced by**: [documents index](../README.md), [lifecycle state model](lifecycle_state_model.md), [durable state](durable_state.md), [cluster lifecycle](../engineering/cluster_lifecycle.md)
 
 > **Purpose**: Record what the readiness layer enforces today and distinguish the delivered
-> [canonical-quantities-and-reconcile-results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md)
-> foundation from the downstream adapter integration still required.
+> [canonical quantities foundation](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md)
+> from the prepared adapters and their live consumers.
 
 ## TL;DR
 
@@ -54,7 +54,7 @@ freshly observed generation and observation version against the managed handle o
 
 The exact boundary owned by the
 [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
-has an Active source implementation of that model: preparation accepts only an opaque backend-minted
+implements that model: preparation accepts only an opaque backend-minted
 `RunningProviderDependency`,
 reruns its retained real provider probe inside `withOperationPreconditions`, and offers cluster readiness
 only after identity-checked application of the plan-retained cordon. Its read-only backend probe checks the
@@ -69,46 +69,18 @@ callers cannot construct the dependency, backend call results, managed cluster, 
 readiness authorities, and the injected interpreter exists only in the Cabal-private test component. The
 [cluster-lifecycle, budgets, and cordoning
 phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) closes this source boundary plus its
-focused, full-static, and independent linux-cpu gates. Production recursive adoption remains in the
-[recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md), and demo
-adoption remains in the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
+focused, full-static, and independent linux-cpu gates. The recursive coordinator and worked demo consume
+these boundaries for provider, share, cluster, chart, exposure, and alias work.
 
-The repository does not yet enforce that boundary for every effect:
+Compatibility polling and `IO ()` convenience actions remain descriptive: they do not produce a `Ready`,
+managed receipt, or prepared-operation authority. The demo's `changed` wrapper reports successful return,
+not an idempotence observation. Exact destructive operations still require their managed adapter's receipt.
+`LifecycleFailure` carries structured lifecycle failures; the detached daemon launcher also retains both
+output streams so a startup failure can quote its actual cause.
 
-- several staging, chart, NVIDIA, legacy/demo cluster, and teardown effects still use compatibility waits
-  or return `IO ()` rather than consuming a prepared operation. A chain step's action does now have every
-  input the traversal needs, delivered by the
-  [step-algebra phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md): the plan-minted
-  `StepExecution scope planId` descriptor names its own operation key, frame, plan digest, and ordered
-  edge set (§ U); `stepExecutionPreparedGate` and `stepExecutionTakeProjectedGate` reach the
-  `PreparedGate` the interpreter opened for the node's own operation and for each operation the plan
-  validated as a projection of it; `withCarriedManagedResource` reads back a dependency's `Managed` handle
-  the acquiring node carried in process; and `withNodeResourceOfKind` / `withNodeObservedResource` /
-  `plannedNodeOperation` name the planned resources the node may act on without handing it the plan. What
-  remains is adoption: each effect that still returns `IO ()` has to be rewritten to consume a prepared
-  operation and return a `ReconcileResult`;
-- the Incus/Direct provider adapter now has identity-bound prepared calls, backend-indexed managed
-  provider/share authority, and four-clause Incus recovery. Its discovery accepts only raw outcomes,
-  parses strict one-line tool/identity/marker reports, polls only `NotReady`, and preserves structured
-  provider conflict across the bound transport. The
-  [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
-  carries that boundary's static and native Linux/x86_64 KVM/Incus closure evidence, while the
-  demo route remains work for the
-  [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md);
-- structured `LifecycleFailure` is not yet the universal subprocess boundary; and
-- a failure that cannot reach a stream is not legible, whatever its type. The host-resident accelerator
-  daemon therefore launches through the sealed `HostBootstrap.Detached` boundary (see
-  [unrepresentable_state](unrepresentable_state.md)), which points both output streams at one retained sink
-  and hands the launcher a reader for it, so a daemon that dies before readiness quotes its own cause.
+Dated validation belongs in [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
-Those are assigned integration obligations in the dependent provider/interpreter phases, not missing
-constructor sealing in the
-[canonical-quantities-and-reconcile-results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md).
-Live-run counts and phase status are intentionally not
-repeated here; see
-[the development-plan index](../../DEVELOPMENT_PLAN/README.md).
-
-## Target contract
+## Readiness contract
 
 The canonical target algebra and validation gates live in
 [lifecycle_state_model](lifecycle_state_model.md). For readiness specifically:

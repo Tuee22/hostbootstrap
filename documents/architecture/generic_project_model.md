@@ -52,7 +52,7 @@
   plaintext constructor. Root assembly is scope-safe now, and authenticated config refinement can produce
   exact `ChildPlanAuthority`. The standalone `AuthenticatedRootScope` signer/verifier is implemented in the
   Handoff facade and adopted by the unchanged four-field Offer plus private Relay/Receiver. The recursive
-  catalog, rooted recovery carrier, and storeless child execution remain phase-owned lifecycle work.
+  catalog, rooted recovery carrier, and storeless child execution are owned by the lifecycle phases.
 
 ## Current Status
 
@@ -79,7 +79,7 @@ concrete-config and pre-existing-config alternatives are explained in
 [design rationale](../../DEVELOPMENT_PLAN/rationale.md). The canonical
 contract statement is [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).
 
-The recursive target extends this finalized-project boundary without giving a child durable authority. A real
+The recursive coordinator extends this finalized-project boundary without giving a child durable authority. A real
 project installs `addForwardChildPlan` exactly once; the exact `FinalizedProjectSpec` retains that
 scope-polymorphic projector and the bare default refuses. Cabal-hidden
 `withFinalizedForwardChildProjectionKernel` invokes only the retained projector, canonically validates the

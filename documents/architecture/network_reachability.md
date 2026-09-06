@@ -216,7 +216,11 @@ octet-stream `PATCH`, digest-completing `PUT`, and non-following blob `HEAD`. Te
 including timeouts, headers, payload position, and status/redirect output. Registry authentication remains
 higher policy: `HostBootstrap.Registry` consumes the generic Lift and its quoting rule. Authenticated
 descent and the sanitized lifecycle route likewise delegate crossing argv to `foldLeaf`; no registry or
-route module owns a competing provider renderer.
+route module owns a competing provider renderer. The registry policy folds the container invocation first,
+then folds its provider crossing around a leaf which reads the credential from stdin into the transient
+forwarding environment. Neither fold receives the credential payload; the existing stdin runner supplies
+it only when executing the plan. Incus, Lima and WSL2 share this path, and unsupported layer shapes return
+no authenticated plan.
 
 ## Invalid States
 

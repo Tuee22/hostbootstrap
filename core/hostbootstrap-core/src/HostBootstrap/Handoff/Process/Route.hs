@@ -188,7 +188,8 @@ withNestedForwardLifecycleProcessRouteKernel runtime route input verb targetBina
 
 {- | Derive the reverse route that carries one recovery package's child.
 
-The package is Phase 13's canonical two-frame value, so its own codec has
+The package is the authenticated-handoff phase's canonical two-frame value
+(DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md), so its own codec has
 already refused an empty configuration or adapter; what this kernel adds is
 that a route may not be derived for a package carrying neither. The lift route
 and binding input are the reverse edge's plan-owned pair, and the phase they

@@ -45,11 +45,6 @@ module HostBootstrap.Authority.Kernel (
     rootAuthorityEpoch,
     rootAuthorityProjectName,
     rootAuthorityStoreIdentity,
-    ProductionCloseRoot,
-    destroyCloseRoot,
-    preEffectCloseRoot,
-    productionCloseRootVerb,
-    ProductionCloseKind (..),
     CommandAuthority,
     commandAuthorityVerb,
     commandAuthorityPhase,
@@ -62,7 +57,6 @@ module HostBootstrap.Authority.Kernel (
     invocationIdText,
     CommandReservation,
     commandReservationKernel,
-    childCommandReservationKernel,
     reserveCommandInvocationKernel,
     AuthorityError (..),
     authorityErrorMessage,
@@ -518,34 +512,6 @@ epochMatches session project (BrokerEpoch epochProject epochStore _value) =
     epochProject == installedProjectName project
         && epochStore == protectedStoreIdentityText (sessionStoreIdentity session)
 
-data ProductionCloseKind
-    = SettledDestroyClose
-    | PreEffectRefusalClose
-    deriving (Eq, Show)
-
-type role ProductionCloseRoot nominal nominal
-data ProductionCloseRoot scope brokerGeneration
-    = ProductionCloseRoot ProductionCloseKind Text Text (BrokerEpoch brokerGeneration)
-
-instance Show (ProductionCloseRoot scope brokerGeneration) where
-    show (ProductionCloseRoot kind project _store epoch) =
-        "ProductionCloseRoot " <> show kind <> " " <> show project <> " " <> show epoch
-
-productionCloseRootVerb :: ProductionCloseRoot scope brokerGeneration -> ProductionCloseKind
-productionCloseRootVerb (ProductionCloseRoot kind _ _ _) = kind
-
-destroyCloseRoot ::
-    RootInvocationAuthority scope brokerGeneration VerbDestroy ->
-    ProductionCloseRoot scope brokerGeneration
-destroyCloseRoot (RootInvocationAuthority project store epoch _) =
-    ProductionCloseRoot SettledDestroyClose project store epoch
-
-preEffectCloseRoot ::
-    RootInvocationAuthority scope brokerGeneration verb ->
-    ProductionCloseRoot scope brokerGeneration
-preEffectCloseRoot (RootInvocationAuthority project store epoch _) =
-    ProductionCloseRoot PreEffectRefusalClose project store epoch
-
 newtype InvocationId = InvocationId Text
     deriving (Eq, Ord)
 
@@ -660,34 +626,6 @@ commandReservationKernel root planDigest phase frameName =
         (rootAuthorityVerb root)
         phase
         (reverseRootReplayEligible (rootAuthorityVerb root) phase)
-
-{- | Package-private reservation constructor for an authenticated child.
-
-Unlike the root constructor this takes retained descriptive origin because a
-child deliberately has no 'RootInvocationAuthority'.  Its sole caller first
-checks those values against the opaque child-plan authority, exact admitted
-plan, acquisition journal, frame, cursor, and context before this reservation
-enters protected state.
--}
-childCommandReservationKernel ::
-    Text ->
-    Text ->
-    Word64 ->
-    ProjectVerb verb ->
-    Text ->
-    LifecyclePhase phase ->
-    Text ->
-    CommandReservation scope planId frame brokerGeneration verb phase
-childCommandReservationKernel project store generation verb planDigest phase frameName =
-    CommandReservation
-        project
-        store
-        planDigest
-        frameName
-        (BrokerEpoch project store generation)
-        verb
-        phase
-        False
 
 reserveCommandInvocationKernel ::
     ProtectedSession session ->

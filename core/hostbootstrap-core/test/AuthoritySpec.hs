@@ -16,7 +16,7 @@ actually leaves behind.
 module AuthoritySpec (tests, runEntryProbe, runLivenessInheritanceProbe, runModeProfileProbe) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
-import Control.Exception (bracket_, finally)
+import Control.Exception (IOException, bracket_, finally, throwIO, try)
 import Control.Monad (filterM, replicateM)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
@@ -38,7 +38,6 @@ import HostBootstrap.Config.Schema (ValidatedConfig, VerifiedConfigWire, validat
 import HostBootstrap.Config.Vocab (Production)
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.DocValidator (findRepoRoot)
-import HostBootstrap.Lifecycle.Closure
 import HostBootstrap.Lifecycle.Mode
 import HostBootstrap.Lifecycle.Session (
     ProjectJournalState (ClosedProject, ClosingProject),
@@ -95,7 +94,9 @@ import HostBootstrap.Step (
     mkStepPlan,
     operationKeyText,
  )
+import qualified SessionSpec as TransactionFixture
 import SourceGuard (repoRelativePath)
+import qualified SourceGuard
 import System.Directory (
     doesDirectoryExist,
     doesFileExist,
@@ -411,7 +412,6 @@ exactProjectUpAuthorityCases =
             require
             [ "data CommandReservation scope planId frame brokerGeneration verb phase = CommandReservation Text Text Text Text (BrokerEpoch brokerGeneration) (ProjectVerb verb) (LifecyclePhase phase) Bool"
             , "phase (reverseRootReplayEligible (rootAuthorityVerb root) phase)"
-            , "(BrokerEpoch project store generation) verb phase False"
             , "Right (Just record) | protectedRecordBytes record == identity , replayEligible -> deliver (protectedRecordVersion record)"
             , "| protectedRecordBytes record == identity -> pure (Left (AuthorityInvocationConsumed invocation))"
             , "Right version -> do readback <- readProtectedRecord session recordKey"
@@ -590,11 +590,9 @@ authorityCases =
                         , "HostBootstrap/Command/LifecycleEntry.hs"
                         , "HostBootstrap/Handoff.hs"
                         , "HostBootstrap/Handoff/Runtime.hs"
-                        , "HostBootstrap/Lifecycle/Closure.hs"
                         , "HostBootstrap/Lifecycle/Mode.hs"
                         , "HostBootstrap/Lifecycle/RootedPlan.hs"
                         , "HostBootstrap/Lifecycle/Session.hs"
-                        , "HostBootstrap/ProjectPlan/Child/Internal.hs"
                         , "HostBootstrap/ProjectPlan/Snapshot.hs"
                         , "HostBootstrap/Teardown/Internal.hs"
                         ]
@@ -606,10 +604,17 @@ authorityCases =
                 sort (map (repoRelativePath sourceRoot) importers) @?= expected
                 childReservationCallers <-
                     filterM
-                        (fmap (Text.isInfixOf "childCommandReservationKernel") . TextIO.readFile)
-                        (filter (/= kernelPath) sources)
-                sort (map (repoRelativePath sourceRoot) childReservationCallers)
-                    @?= ["HostBootstrap/ProjectPlan/Child/Internal.hs"]
+                        (fmap ((> 0) . SourceGuard.countHaskellIdentifier "childCommandReservationKernel" . Text.unpack) . TextIO.readFile)
+                        sources
+                sort (map (repoRelativePath sourceRoot) childReservationCallers) @?= []
+                closureKernel <- readFile kernelPath
+                closure <- readFile (sourceRoot </> "HostBootstrap" </> "Lifecycle" </> "Closure.hs")
+                mapM_
+                    ( \name -> do
+                        SourceGuard.countHaskellIdentifier name ("value = " <> name) @?= 1
+                        SourceGuard.countHaskellIdentifier name (closureKernel <> closure) @?= 0
+                    )
+                    ["ProductionCloseRoot", "destroyCloseRoot", "preEffectCloseRoot", "productionCloseRootVerb"]
                 facade <- TextIO.readFile (sourceRoot </> "HostBootstrap" </> "Authority.hs")
                 authorityFacadeExports facade
                     @?= Right
@@ -720,19 +725,62 @@ authorityCases =
                 case parseProjectVerb "deploy" of
                     Left (AuthorityUnknownVerb raw) -> raw @?= "deploy"
                     other -> assertFailure ("expected an unknown verb, got " <> show other)
-           , testCase "a settled-destroy close root comes only from a destroy authority" $
+           , testCase "pre-effect closure rechecks acquisition after authorization" $
                 withStore $ \store ->
-                    withRoot store ProjectDestroy $ \_project _session root -> do
-                        productionCloseRootVerb (destroyCloseRoot root) @?= SettledDestroyClose
-                        productionCloseRootVerb (preEffectCloseRoot root) @?= PreEffectRefusalClose
-                        pure (Right ())
+                    Fixture.withFixtureInstalledProject $ \project -> do
+                        outcome <- withProductionRoot store project ProjectUp $ \root -> do
+                            authorization <- authorizeProductionPreEffect root >>= either (assertFailure . show) pure
+                            withProtectedEntry' store $ \session -> do
+                                key <- either (assertFailure . show) pure (mkRecordKey ("acquisition." <> installedProjectName project <> ".production.late"))
+                                _ <- compareAndSwapProtectedRecord session key ExpectAbsent "acquisition began"
+                                result <- releaseProductionMode session project authorization
+                                case result of
+                                    Left (ModeEffectsRecorded _) -> pure ()
+                                    other -> assertFailure ("expected late acquisition refusal, got " <> show other)
+                                modeKey <- either (assertFailure . show) pure (mkRecordKey ("mode." <> installedProjectName project))
+                                mode <- readProtectedRecord session modeKey
+                                case mode of
+                                    Right (Just _) -> pure ()
+                                    other -> assertFailure ("Production must remain held, got " <> show other)
+                                pure (Right ())
+                        outcome @?= Right ()
            ]
 
 -- Project mode and run leases ---------------------------------------------------------
 
 modeCases :: [TestTree]
 modeCases =
-    [ testCase "production takes the mode and retains it across a second entry" $
+    [ productionCloseRecoveryCase 0
+    , productionCloseRecoveryCase 1
+    , productionCloseRecoveryCase 2
+    , productionCloseRecoveryCase 3
+    , testCase "pre-effect Production closure refuses another protected store" $
+        withStore $ \firstStore -> withStore $ \secondStore ->
+            Fixture.withFixtureInstalledProject $ \project -> do
+                outcome <- withProductionRoot firstStore project ProjectUp $ \root -> do
+                    authorization <- authorizeProductionPreEffect root >>= either (assertFailure . show) pure
+                    withProtectedEntry' secondStore $ \session -> do
+                        before <- listProtectedRecords session
+                        result <- releaseProductionMode session project authorization
+                        case result of
+                            Left (ModeEvidenceMismatch _ _ _) -> pure ()
+                            other -> assertFailure ("expected store substitution refusal, got " <> show other)
+                        after <- listProtectedRecords session
+                        after @?= before
+                        pure (Right ())
+                outcome @?= Right ()
+    , testCase "the Production bracket closes a true pre-effect exception" $
+        withStore $ \store -> Fixture.withFixtureInstalledProject $ \project -> do
+            outcome <- try (withProductionRoot store project ProjectUp (\_ -> throwIO (userError "pre-effect fixture"))) :: IO (Either IOException (Either ModeError ()))
+            case outcome of
+                Left _ -> pure ()
+                Right other -> assertFailure ("expected the original exception, got " <> show other)
+            checked <- withProtectedEntry' store $ \session -> do
+                key <- either (assertFailure . show) pure (mkRecordKey ("mode." <> installedProjectName project))
+                readProtectedRecord session key >>= (@?= Right Nothing)
+                pure (Right ())
+            checked @?= Right ()
+    , testCase "production takes the mode and retains it across a second entry" $
         withStore $ \store ->
             Fixture.withFixtureInstalledProject $ \project -> do
                 first <-
@@ -1387,52 +1435,29 @@ modeCases =
                                 @?= Right (Just "journal-with-no-resource-effect")
                             pure (Right ())
                 outcome @?= Right ()
-    , testCase "releasing production mode requires matching closure evidence" $
+    , testCase "retained Production closure cannot release a successor epoch" $
         withStore $ \store ->
             Fixture.withFixtureInstalledProject $ \project -> do
-                outcome <-
-                    withProductionRoot store project ProjectDestroy $ \root -> do
-                        evidence <-
-                            verifyNoProjectResourcesAcquired
-                                (productionRootUnboundLease root)
-                        preEffect <- either (assertFailure . show) pure evidence
+                outcome <- withProductionRoot store project ProjectUp $ \first -> do
+                    old <- authorizeProductionPreEffect first >>= either (assertFailure . show) pure
+                    withProductionRoot store project ProjectUp $ \second -> do
+                        fresh <- authorizeProductionPreEffect second >>= either (assertFailure . show) pure
                         withProtectedEntry' store $ \session -> do
-                            mismatched <-
-                                releaseProductionMode
-                                    session
-                                    project
-                                    (destroyCloseRoot (productionRootAuthority root))
-                                    preEffect
-                            case mismatched of
-                                Left (ModeClosureMismatch _ _) -> pure ()
-                                other ->
-                                    assertFailure
-                                        ("expected a closure mismatch, got " <> show other)
-                            matched <-
-                                releaseProductionMode
-                                    session
-                                    project
-                                    (preEffectCloseRoot (productionRootAuthority root))
-                                    preEffect
-                            matched @?= Right ()
-                            pure (Right ())
+                            stale <- releaseProductionMode session project old
+                            case stale of
+                                Left (ModeEpochMismatch _ _) -> pure ()
+                                other -> assertFailure ("expected stale epoch refusal, got " <> show other)
+                            releaseProductionMode session project fresh
                 outcome @?= Right ()
     , testCase "production mode is released, so a harness run may then start" $
         withStore $ \store ->
             Fixture.withFixtureInstalledProject $ \project -> do
                 _ <-
                     withProductionRoot store project ProjectDestroy $ \root -> do
-                        evidence <-
-                            verifyNoProjectResourcesAcquired
-                                (productionRootUnboundLease root)
+                        evidence <- authorizeProductionPreEffect root
                         preEffect <- either (assertFailure . show) pure evidence
                         withProtectedEntry' store $ \session -> do
-                            released <-
-                                releaseProductionMode
-                                    session
-                                    project
-                                    (preEffectCloseRoot (productionRootAuthority root))
-                                    preEffect
+                            released <- releaseProductionMode session project preEffect
                             released @?= Right ()
                             pure (Right ())
                 swept <- recoverAbandonedHarnessRuns store project neverResolves neverResolves
@@ -1449,6 +1474,37 @@ modeCases =
                     Right held | "harness:" `Text.isPrefixOf` held -> pure ()
                     other -> assertFailure ("expected harness mode, got " <> show other)
     ]
+
+-- Every prefix includes the point after mode deletion but before coordinator
+-- commit. Recovery through both Session and ordinary Mode admission converges
+-- on the same versions, and a second read performs no additional close.
+productionCloseRecoveryCase :: Int -> TestTree
+productionCloseRecoveryCase prefix =
+    testCase ("Production closure recovers after " <> show prefix <> " materialized targets") $
+        withStore $ \store ->
+            Fixture.withFixtureInstalledProject $ \project -> do
+                outcome <- withProductionRoot store project ProjectUp $ \root -> do
+                    authorization <- authorizeProductionPreEffect root >>= either (assertFailure . show) pure
+                    (restored, planDigest, verify) <- TransactionFixture.withInterruptedProductionTransaction prefix store $ do
+                        result <- withProtectedEntry' store $ \session -> releaseProductionMode session project authorization
+                        result @?= Right ()
+                    if even prefix
+                        then do
+                            swept <- recoverAbandonedHarnessRuns restored project neverResolves neverResolves
+                            _ <- either (assertFailure . show) pure swept
+                            pure ()
+                        else do
+                            state <- withProtectedEntry restored $ \session -> Right <$> readProjectJournalState session planDigest
+                            state @?= Right (Right ClosedProject)
+                    verify
+                    retried <- withProtectedEntry' restored $ \session -> releaseProductionMode session project authorization
+                    retried @?= Right ()
+                    verify
+                    state <- withProtectedEntry restored $ \session -> Right <$> readProjectJournalState session planDigest
+                    state @?= Right (Right ClosedProject)
+                    verify
+                    pure (Right ())
+                outcome @?= Right ()
 
 -- Abandoned-run recovery ------------------------------------------------------------------
 

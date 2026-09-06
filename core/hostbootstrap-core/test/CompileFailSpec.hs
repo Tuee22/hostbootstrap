@@ -262,7 +262,7 @@ compileFailCases rejects rejectsWith =
         ["Could not load module 'HostBootstrap.Lifecycle.Context.Internal'. it is a hidden module"]
     , rejectsWith
         "ImportAuthorityProjectPlanInternal.hs"
-        ["Could not load module 'HostBootstrap.Authority.ProjectPlan.Internal'. it is a hidden module"]
+        ["Could not find module 'HostBootstrap.Authority.ProjectPlan.Internal'"]
     , rejectsWith
         "OpenChildRecoveryOrigin.hs"
         [ "Module 'HostBootstrap.Authority.ProjectPlan' does not export 'ChildRecoveryOrigin'"
@@ -1368,7 +1368,9 @@ compileFailCases rejects rejectsWith =
         [ "Couldn't match expected type: CommandAuthority"
         , "with actual type: ValidatedContext"
         ]
-    , rejects "WrongVerbCloseRoot.hs"
+    , rejectsWith "WrongVerbCloseRoot.hs" ["VerbDestroy", "VerbUp"]
+    , rejectsWith "ForgeProductionClosureAuthorization.hs" ["does not export", "SettledProductionClosure"]
+    , rejectsWith "CoerceProductionClosureAuthorization.hs" ["FirstGeneration", "SecondGeneration", "coerce"]
     , rejectsWith
         "ForgeHarnessAuthority.hs"
         ["does not export any children"]
@@ -1687,7 +1689,7 @@ compileFailCases rejects rejectsWith =
         ["Could not load module 'HostBootstrap.Handoff.TerminalReport'. it is a hidden module"]
     , rejectsWith
         "ImportHandoffLifecycle.hs"
-        ["Could not load module 'HostBootstrap.Handoff.Lifecycle'. it is a hidden module"]
+        ["Could not find module 'HostBootstrap.Handoff.Lifecycle'"]
     , rejectsWith
         "HandoffLifecycleCompletionType.hs"
         [ "Module 'HostBootstrap.Handoff' does not export 'ForwardLifecycleCompletion'"
@@ -2168,6 +2170,9 @@ compileFailCases rejects rejectsWith =
       rejectsWith
         "UndeclaredServiceEffect.hs"
         ["Could not solve: \8216HasEffect DurableStore '[]\8217"]
+    , rejectsWith
+        "IOServiceHandler.hs"
+        ["Couldn't match expected type: HostBootstrap.Service.Program.ServiceProgram", "with actual type: IO ()"]
     , rejectsWith
         "ForgeStepExecution.hs"
         [ "Illegal term-level use of the type constructor 'StepExecution'"

@@ -1,7 +1,7 @@
 # Phase 21 — Composition and network algebra
 
 **Status**: Done
-**Current sprint**: None — phase complete
+**Current sprint**: None
 **Depends on**: Phase 16 (cluster lifecycle, budgets, and cordoning)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`
@@ -90,6 +90,9 @@ Never redirect a client to something it cannot reach.
   Lift smart constructors owned by this blob-delivery sprint, not by the lower generic fold.
 - `HostBootstrap.Registry` owns `liftSubcommandWithAuth`: registry policy consumes the lower Lift and its
   generic `shellQuoteArgs`; `HostBootstrap.Lift` never imports Registry or its credential type.
+- Both the container invocation and its provider crossing are rendered by `foldLeaf`. Registry inserts the
+  stdin-to-environment policy between those two folds and owns no provider or container argument builder.
+  Credentials remain absent from argv and are supplied only at the existing stdin effect boundary.
 
 #### Validation
 
@@ -167,6 +170,11 @@ generation, and ownership operation; mismatching any of those terms cannot settl
 coverage rejects raw host endpoint/port construction and coercion across lifecycle-scope, plan, cluster, or
 service roles. The source guard proves `Network` consumes `Cluster.Backend`, exposes no raw local constructor
 or conventional host-port constant, and leaves `reachLeaf` in the lower generic Lift.
+
+On 2026-09-05 the final Linux x86_64 gate passed all 2,492 tests in 141.73 seconds with GHC 9.12.4
+and Cabal 3.16.1.0. Authenticated forwarding uses `foldLeaf` for both crossings; exact Incus, Lima, and
+WSL argument checks, unsupported frame shapes, and the nonvacuous duplicate-renderer guard pass. The native
+macOS registry and finalized-plan checks also passed 42/42 in 20.08 seconds.
 
 ## Remaining Work
 

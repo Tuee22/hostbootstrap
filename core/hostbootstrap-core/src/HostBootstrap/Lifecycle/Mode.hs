@@ -100,8 +100,6 @@ module HostBootstrap.Lifecycle.Mode (
     acquisitionJournalRootVerb,
     withAcquisitionJournalPhase,
     withAcquisitionJournal,
-    reopenAuthenticatedChildCursorKernel,
-    reopenAuthenticatedRecoveryChildCursorKernel,
     validateBoundRunLeaseAcquisitionJournal,
     LifecycleCursor,
     lifecycleCursorFrame,
@@ -273,6 +271,9 @@ module HostBootstrap.Lifecycle.Mode (
     destroySettledClosure,
     verifyUnboundLeaseHasNoEffects,
     VerifiedUnboundLeaseHasNoEffects,
+    ProductionClosureAuthorization,
+    authorizeProductionDestroy,
+    authorizeProductionPreEffect,
     releaseProductionMode,
     closeHarnessRun,
 
@@ -307,6 +308,8 @@ module HostBootstrap.Lifecycle.Mode (
 ) where
 
 import Control.Applicative ((<|>))
+import Control.Exception (mask, onException)
+import Control.Monad (void)
 import qualified Crypto.Hash as Hash
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
@@ -317,6 +320,7 @@ import Data.Char (isAlphaNum)
 import Data.Kind (Type)
 import Data.List (sort)
 import Data.List.NonEmpty (NonEmpty)
+import Data.Maybe (isNothing)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -326,7 +330,6 @@ import HostBootstrap.Authority (
     AuthorityError (..),
     BrokerEpoch,
     InstalledProjectIdentity,
-    LifecyclePhase,
     ProjectVerb (ProjectDestroy, ProjectDown, ProjectUp),
     RootInvocationAuthority,
     RootScopeAuthority,
@@ -337,7 +340,6 @@ import HostBootstrap.Authority (
     authorityErrorMessage,
     brokerEpochWord,
     installedProjectName,
-    lifecyclePhaseName,
     projectVerbName,
     rootAuthorityEpoch,
     rootAuthorityProjectName,
@@ -369,27 +371,8 @@ import HostBootstrap.Config.Schema (
     verifiedConfigDigest,
  )
 import HostBootstrap.Config.Vocab (Harness, Production)
-import HostBootstrap.Handoff (
-    HandoffBinding,
-    HandoffPayloadKind (NarrowedProjectConfig, RecoveryAdapterWire),
-    handoffBrokerGeneration,
-    handoffChildConfigDigest,
-    handoffChildFrame,
-    handoffInstalledProject,
-    handoffParentFrame,
-    handoffPayloadKind,
-    handoffPhase,
-    handoffPlanRevision,
-    handoffScope,
-    handoffSpecDigest,
-    handoffStoreIdentity,
-    handoffTokenCommitment,
-    handoffVerb,
- )
 import HostBootstrap.Lifecycle.Closure (
     ProductionCloseKind (PreEffectRefusalClose, SettledDestroyClose),
-    ProductionCloseRoot,
-    productionCloseRootVerb,
  )
 import HostBootstrap.Lifecycle.Context (
     ValidatedLifecycleContext,
@@ -399,7 +382,6 @@ import HostBootstrap.Lifecycle.Context.Internal (
     withValidatedRootLifecycleContext,
  )
 import HostBootstrap.Lifecycle.Plan (
-    AcquisitionJournalAdmission,
     BoundPlanSnapshot,
     CanonicalPlanSnapshot,
     ExistingBoundSnapshotAdmission,
@@ -459,6 +441,7 @@ import HostBootstrap.Lifecycle.Session (
     LifecycleCursor,
     LifecycleError,
     OldPermitsFenced,
+    ProjectJournalState (ClosedProject),
     ProjectPermit,
     RehydratedOwnershipReceipt,
     RehydratedResourceHandle,
@@ -487,9 +470,10 @@ import HostBootstrap.Lifecycle.Session (
     lifecycleErrorMessage,
     openAcquisitionJournalKernel,
     openProjectJournal,
+    productionProjectCloseTargetKernel,
+    readProjectJournalState,
     recoverAbandonedSessions,
-    reopenExistingAcquisitionCursorKernel,
-    reopenExistingReverseAcquisitionJournalKernel,
+    reopenClosedProductionJournalKernel,
     sessionErrorMessage,
     validateAcquisitionJournalBindingKernel,
     validateCurrentLifecycleCursor,
@@ -501,16 +485,14 @@ import HostBootstrap.Lifecycle.Session (
     withLifecycleCursor,
     withRehydratedResourceSet,
     withReverseRootSourceRecordsKernel,
-    withReverseRootTargetLifecycleCursorKernel,
     withTeardownLifecycleCursor,
  )
+import qualified HostBootstrap.Lifecycle.Transaction as Transaction
 import HostBootstrap.ProjectPlan (
     renderSnapshot,
     stablePlanSnapshotRoot,
-    topology,
-    topologyParentEdges,
  )
-import HostBootstrap.ProjectPlan.Frame (ProjectFrame, projectFrameId)
+import HostBootstrap.ProjectPlan.Frame (projectFrameId)
 import HostBootstrap.ProjectRoot (canonicalProjectRootPath)
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
@@ -1729,459 +1711,6 @@ withAcquisitionJournal root bound boundSnapshot binding plan use =
                 field
                 "valid retained evidence"
                 (modeErrorMessage failure)
-
-{- | Sealed config-origin child recovery.  The hidden admission token is
-forced before any evidence, key, or store is inspected; the callback runs only
-after the single protected entry has closed.
--}
-reopenAuthenticatedChildCursorKernel ::
-    AcquisitionJournalAdmission ->
-    ProtectedStore ->
-    HandoffBinding scope brokerGeneration ->
-    ProjectPlan scope specDigest planId configId cfg ->
-    PlanDigestBinding scope specDigest planDigest planId ->
-    ProjectFrame scope specDigest planId configId frame ->
-    LifecyclePhase phase ->
-    ( AcquisitionJournal scope planId brokerGeneration ->
-      LifecycleCursor scope planId frame brokerGeneration VerbUp phase ->
-      IO result
-    ) ->
-    IO (Either LifecycleError result)
-reopenAuthenticatedChildCursorKernel admission store signed plan binding frame phase use =
-    case consumeAcquisitionJournalAdmissionKernel admission of
-        () -> case retainedEvidence of
-            Left failure -> pure (Left failure)
-            Right (run, expectedMode) -> do
-                entered <- withProtectedEntry store $ \session -> do
-                    reopened <-
-                        reopenExistingAcquisitionCursorKernel
-                            admission
-                            store
-                            session
-                            (validateLive run expectedMode)
-                            profile
-                            project
-                            storeIdentity
-                            planDigest
-                            run
-                            specDigest
-                            epoch
-                            frame
-                            phase
-                    pure (Right reopened)
-                case entered of
-                    Left failure -> pure (Left (SessionStoreFailure failure))
-                    Right (Left failure) -> pure (Left failure)
-                    Right (Right (journal, cursor)) -> Right <$> use journal cursor
-  where
-    profile = projectPlanProfileNameKernel plan
-    project = projectPlanProfileProjectNameKernel plan
-    storeIdentity = projectPlanProfileStoreIdentityKernel plan
-    epoch = projectPlanProfileEpochKernel plan
-    canonical = indexedPlanSnapshotCanonicalKernel (projectPlanIndexedSnapshotKernel plan)
-    specDigest = canonicalPlanSnapshotSpecDigest canonical
-    configDigest = canonicalPlanSnapshotConfigDigest canonical
-    planDigest = canonicalPlanSnapshotDigest canonical
-    canonicalBytes = canonicalPlanSnapshotBytes canonical
-
-    retainedEvidence = do
-        (run, mode) <- childRun profile (handoffScope signed)
-        require "payload kind" (handoffPayloadKind signed == NarrowedProjectConfig)
-        requireText "project" project (handoffInstalledProject signed)
-        requireText "store" storeIdentity (handoffStoreIdentity signed)
-        requireText "specification digest" specDigest (handoffSpecDigest signed)
-        requireText "configuration digest" configDigest (handoffChildConfigDigest signed)
-        requireText "plan digest" planDigest (handoffPlanRevision signed)
-        requireText "digest binding" planDigest (planDigestBindingDigestKernel binding)
-        requireWord "broker epoch" epoch (handoffBrokerGeneration signed)
-        requireText "child frame" (projectFrameId frame) (handoffChildFrame signed)
-        requireText "verb" (projectVerbName ProjectUp) (handoffVerb signed)
-        requireText "phase" (lifecyclePhaseName phase) (handoffPhase signed)
-        require "token commitment" (not (Text.null (handoffTokenCommitment signed)))
-        requireText
-            "retained store"
-            storeIdentity
-            (protectedStoreIdentityText (protectedStoreIdentity store))
-        pure (run, mode)
-
-    childRun planProfile signedScope
-        | planProfile == "production"
-        , signedScope == "Production" =
-            Right ("production", WireProduction)
-        | Just run <- Text.stripPrefix "harness:" planProfile
-        , signedScope == "Harness " <> run = do
-            runKey <- either (Left . modeAsSession "run") Right (parseRunKey run)
-            Right (run, WireHarness runKey)
-        | otherwise = mismatch "lifecycle scope" planProfile signedScope
-
-    validateLive ::
-        Text ->
-        ModeWire ->
-        (forall liveSession. ProtectedSession liveSession -> Text -> Word64 -> IO (Either SessionError ()))
-    validateLive run expectedMode session leaseText leaseVersion = do
-        case requireText "lease key" canonicalLease leaseText of
-            Left failure -> pure (Left failure)
-            Right () -> do
-                modeResult <- readRequired session ("mode." <> project) "project mode"
-                leaseResult <- readRequired session canonicalLease "run lease"
-                snapshotResult <- readRequired session ("snapshot." <> project <> "." <> run) "plan snapshot"
-                pure $ do
-                    modeRecord <- modeResult
-                    (liveMode, modeEpoch) <- maybe (Left (SessionRecordCorrupt "project mode")) Right (decodeMode (protectedRecordBytes modeRecord))
-                    require "project mode bytes" (protectedRecordBytes modeRecord == encodeMode liveMode modeEpoch)
-                    requireText "live mode" (modeWireName expectedMode) (modeWireName liveMode)
-                    requireWord "live mode broker epoch" epoch modeEpoch
-                    leaseRecord <- leaseResult
-                    requireWord "lease version" leaseVersion (recordVersionWord (protectedRecordVersion leaseRecord))
-                    leaseState <- maybe (Left (SessionRecordCorrupt "run lease")) Right (decodeLease (protectedRecordBytes leaseRecord))
-                    require "lease bytes" (protectedRecordBytes leaseRecord == encodeLease leaseState)
-                    case leaseState of
-                        LeaseBound recordedLeaseEpoch liveSpec livePlan -> do
-                            requireWord "lease broker epoch" epoch recordedLeaseEpoch
-                            requireText "lease specification digest" specDigest liveSpec
-                            requireText "lease plan digest" planDigest livePlan
-                        _ -> mismatch "lease state" "bound" (leaseStateName leaseState)
-                    snapshotRecord <- snapshotResult
-                    persisted <- maybe (Left (SessionRecordCorrupt "plan snapshot")) Right (decodePlanSnapshotRecord (protectedRecordBytes snapshotRecord))
-                    require "snapshot bytes" (protectedRecordBytes snapshotRecord == encodePlanSnapshotRecord persisted)
-                    requireText "snapshot specification digest" specDigest (snapshotRecordSpecDigest persisted)
-                    requireText "snapshot plan digest" planDigest (snapshotRecordPlanDigest persisted)
-                    requireText "snapshot configuration digest" configDigest (maybe "absent" id (snapshotRecordConfigDigest persisted))
-                    require "snapshot canonical bytes" (snapshotRecordCanonicalBytes persisted == Just canonicalBytes)
-      where
-        canonicalLease = "lease." <> project <> "." <> run
-
-    readRequired session raw subject = case mkRecordKey raw of
-        Left failure -> pure (Left (SessionStoreFailure failure))
-        Right key -> do
-            observed <- readProtectedRecord session key
-            pure $ case observed of
-                Left failure -> Left (SessionStoreFailure failure)
-                Right Nothing -> Left (SessionAcquisitionBindingMismatch subject "present" "absent")
-                Right (Just record) -> Right record
-    require field condition
-        | condition = Right ()
-        | otherwise = Left (SessionAcquisitionBindingMismatch field "exact" "different")
-    requireText field expected observed
-        | expected == observed = Right ()
-        | otherwise = mismatch field expected observed
-    requireWord field expected observed = requireText field (showWord expected) (showWord observed)
-    mismatch field expected observed = Left (SessionAcquisitionBindingMismatch field expected observed)
-    modeAsSession field failure =
-        SessionAcquisitionBindingMismatch field "valid" (modeErrorMessage failure)
-
-{- | Reopen one authenticated recovery child's existing reverse cursor.
-
-The hidden admission is forced before the binding or store. This layer checks
-only the authenticated adapter-digest coordinate; exact adapter bytes remain
-owned by the later sealed child-entry verifier.
--}
-reopenAuthenticatedRecoveryChildCursorKernel ::
-    AcquisitionJournalAdmission ->
-    ProtectedStore ->
-    HandoffBinding scope brokerGeneration ->
-    ProjectPlan scope specDigest planId configId cfg ->
-    PlanDigestBinding scope specDigest planDigest planId ->
-    ProjectFrame scope specDigest planId configId frame ->
-    ProjectVerb verb ->
-    ( AcquisitionJournal scope planId brokerGeneration ->
-      LifecycleCursor scope planId frame brokerGeneration verb TeardownPhase ->
-      IO result
-    ) ->
-    IO (Either LifecycleError result)
-{-# OPAQUE reopenAuthenticatedRecoveryChildCursorKernel #-}
-reopenAuthenticatedRecoveryChildCursorKernel admission =
-    case consumeAcquisitionJournalAdmissionKernel admission of
-        () -> \store signed plan binding frame verb use ->
-            let profile = projectPlanProfileNameKernel plan
-                project = projectPlanProfileProjectNameKernel plan
-                storeIdentity = projectPlanProfileStoreIdentityKernel plan
-                actualStore = protectedStoreIdentityText (protectedStoreIdentity store)
-                epoch = projectPlanProfileEpochKernel plan
-                canonical = projectPlanCanonicalSnapshotKernel plan
-                specDigest = canonicalPlanSnapshotSpecDigest canonical
-                configDigest = canonicalPlanSnapshotConfigDigest canonical
-                planDigest = canonicalPlanSnapshotDigest canonical
-                canonicalBytes = canonicalPlanSnapshotBytes canonical
-                child = projectFrameId frame
-                parent = handoffParentFrame signed
-                adapterDigest = handoffChildConfigDigest signed
-                run = runKeyText productionRunKey
-                canonicalLease = "lease." <> project <> "." <> run
-
-                retainedEvidence = do
-                    require "payload kind" (handoffPayloadKind signed == RecoveryAdapterWire)
-                    requireText "plan profile" "production" profile
-                    requireText "handoff scope" "Production" (handoffScope signed)
-                    requireText "project" project (handoffInstalledProject signed)
-                    requireText "plan store" actualStore storeIdentity
-                    requireText "handoff store" storeIdentity (handoffStoreIdentity signed)
-                    requireText "specification digest" specDigest (handoffSpecDigest signed)
-                    requireText "plan digest" planDigest (handoffPlanRevision signed)
-                    requireText "digest binding" planDigest (planDigestBindingDigestKernel binding)
-                    requireWord "broker generation" epoch (handoffBrokerGeneration signed)
-                    requireText "child frame" child (handoffChildFrame signed)
-                    requireText "verb" (projectVerbName verb) (handoffVerb signed)
-                    requireText "phase" "teardown" (handoffPhase signed)
-                    require "token commitment" (not (Text.null (handoffTokenCommitment signed)))
-                    require "adapter digest coordinate" $
-                        Text.length adapterDigest == 64 && Text.all lowerHex adapterDigest
-                    require "topology edge" $
-                        [ edge
-                        | edge@(_, edgeChild) <- topologyParentEdges (topology plan)
-                        , edgeChild == child
-                        ]
-                            == [(parent, child)]
-
-                reopen = case retainedEvidence of
-                    Left failure -> pure (Left failure)
-                    Right () -> case reverseRootIntentKeyForName project of
-                        Left failure -> pure (Left (modeAsSession "reverse-root intent key" failure))
-                        Right intentKey -> do
-                            entered <- withProtectedEntry store $ \session -> do
-                                let admitCommitted
-                                        intentRecord
-                                        common
-                                        target
-                                        nextModeVersion
-                                        nextModeBytes
-                                        nextLeaseVersion
-                                        nextLeaseBytes =
-                                            case validateDescriptor
-                                                common
-                                                target
-                                                nextModeVersion
-                                                nextModeBytes
-                                                nextLeaseVersion
-                                                nextLeaseBytes of
-                                                Left failure -> pure (Left failure)
-                                                Right () -> do
-                                                    let (_, _, _, intentRevision, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) = common
-                                                        validateRowsAt ::
-                                                            forall liveSession.
-                                                            ProtectedSession liveSession -> IO (Either SessionError ())
-                                                        validateRowsAt live = do
-                                                            let readRequired key subject = do
-                                                                    observed <- readProtectedRecord live key
-                                                                    pure $ case observed of
-                                                                        Left failure -> Left (SessionStoreFailure failure)
-                                                                        Right Nothing -> mismatch subject "present" "absent"
-                                                                        Right (Just record) -> Right record
-                                                                readNamed raw subject = case mkRecordKey raw of
-                                                                    Left failure -> pure (Left (SessionStoreFailure failure))
-                                                                    Right key -> readRequired key subject
-                                                            intentResult <- readRequired intentKey "reverse-root intent"
-                                                            modeResult <- readNamed ("mode." <> project) "project mode"
-                                                            leaseResult <- readNamed canonicalLease "run lease"
-                                                            snapshotResult <-
-                                                                readNamed
-                                                                    ("snapshot." <> project <> "." <> run)
-                                                                    "plan snapshot"
-                                                            pure $ do
-                                                                requireText
-                                                                    "live session store"
-                                                                    storeIdentity
-                                                                    (protectedStoreIdentityText (sessionStoreIdentity live))
-                                                                currentIntent <- intentResult
-                                                                requireWord
-                                                                    "live intent version"
-                                                                    2
-                                                                    (recordVersionWord (protectedRecordVersion currentIntent))
-                                                                requireBytes
-                                                                    "live intent bytes"
-                                                                    (protectedRecordBytes intentRecord)
-                                                                    (protectedRecordBytes currentIntent)
-                                                                modeRecord <- modeResult
-                                                                requireWord
-                                                                    "live mode version"
-                                                                    nextModeVersion
-                                                                    (recordVersionWord (protectedRecordVersion modeRecord))
-                                                                requireBytes
-                                                                    "live mode bytes"
-                                                                    nextModeBytes
-                                                                    (protectedRecordBytes modeRecord)
-                                                                leaseRecord <- leaseResult
-                                                                requireWord
-                                                                    "live lease version"
-                                                                    nextLeaseVersion
-                                                                    (recordVersionWord (protectedRecordVersion leaseRecord))
-                                                                requireBytes
-                                                                    "live lease bytes"
-                                                                    nextLeaseBytes
-                                                                    (protectedRecordBytes leaseRecord)
-                                                                snapshotRecord <- snapshotResult
-                                                                persisted <-
-                                                                    maybe
-                                                                        (Left (SessionRecordCorrupt "plan snapshot"))
-                                                                        Right
-                                                                        (decodePlanSnapshotRecord (protectedRecordBytes snapshotRecord))
-                                                                requireBytes
-                                                                    "live snapshot bytes"
-                                                                    (encodePlanSnapshotRecord persisted)
-                                                                    (protectedRecordBytes snapshotRecord)
-                                                                requireWord
-                                                                    "live snapshot revision"
-                                                                    intentRevision
-                                                                    (snapshotRecordRevision persisted)
-                                                                requireText
-                                                                    "live snapshot specification"
-                                                                    specDigest
-                                                                    (snapshotRecordSpecDigest persisted)
-                                                                requireText
-                                                                    "live snapshot plan"
-                                                                    planDigest
-                                                                    (snapshotRecordPlanDigest persisted)
-                                                                requireText
-                                                                    "live snapshot configuration"
-                                                                    configDigest
-                                                                    (maybe "absent" id (snapshotRecordConfigDigest persisted))
-                                                                require "live snapshot canonical plan" $
-                                                                    snapshotRecordCanonicalBytes persisted == Just canonicalBytes
-                                                    rows <- validateRowsAt session
-                                                    case rows of
-                                                        Left failure -> pure (Left failure)
-                                                        Right () ->
-                                                            reopenExistingReverseAcquisitionJournalKernel
-                                                                admission
-                                                                store
-                                                                session
-                                                                ( \live leaseText leaseVersion ->
-                                                                    case do
-                                                                        requireText "journal lease key" canonicalLease leaseText
-                                                                        requireWord "journal lease version" nextLeaseVersion leaseVersion of
-                                                                        Left failure -> pure (Left failure)
-                                                                        Right () -> validateRowsAt live
-                                                                )
-                                                                profile
-                                                                project
-                                                                storeIdentity
-                                                                planDigest
-                                                                run
-                                                                specDigest
-                                                                epoch
-                                                                frame
-                                                                verb
-                                observed <- readProtectedRecord session intentKey
-                                journal <- case observed of
-                                    Left failure -> pure (Left (SessionStoreFailure failure))
-                                    Right Nothing -> pure (mismatch "reverse-root intent" "committed" "absent")
-                                    Right (Just record)
-                                        | recordVersionWord (protectedRecordVersion record) /= 2 ->
-                                            pure
-                                                ( mismatch
-                                                    "reverse-root intent version"
-                                                    "2"
-                                                    (showWord (recordVersionWord (protectedRecordVersion record)))
-                                                )
-                                        | otherwise -> case decodeReverseRootIntent verb (protectedRecordBytes record) of
-                                            Just (ReverseRootDownCommitted common target modeVersion modeBytes leaseVersion leaseBytes) ->
-                                                admitCommitted record common target modeVersion modeBytes leaseVersion leaseBytes
-                                            Just (ReverseRootDestroyCommitted common target modeVersion modeBytes leaseVersion leaseBytes) ->
-                                                admitCommitted record common target modeVersion modeBytes leaseVersion leaseBytes
-                                            Just ReverseRootDownPending{} ->
-                                                pure (mismatch "reverse-root intent state" "committed" "pending")
-                                            Just ReverseRootDestroyPending{} ->
-                                                pure (mismatch "reverse-root intent state" "committed" "pending")
-                                            Just ReverseRootDownTerminal{} ->
-                                                pure (mismatch "reverse-root intent state" "committed" "terminal")
-                                            Just ReverseRootDestroyTerminal{} ->
-                                                pure (mismatch "reverse-root intent state" "committed" "terminal")
-                                            Nothing
-                                                | oppositeIntent (protectedRecordBytes record) ->
-                                                    pure (mismatch "reverse-root intent verb" (projectVerbName verb) "opposite")
-                                                | otherwise -> pure (Left (SessionRecordCorrupt "reverse-root intent"))
-                                pure (Right journal)
-                            case entered of
-                                Left failure -> pure (Left (SessionStoreFailure failure))
-                                Right (Left failure) -> pure (Left failure)
-                                Right (Right journal) ->
-                                    withReverseRootTargetLifecycleCursorKernel
-                                        admission
-                                        journal
-                                        frame
-                                        verb
-                                        (use journal)
-
-                validateDescriptor
-                    common
-                    target
-                    nextModeVersion
-                    nextModeBytes
-                    nextLeaseVersion
-                    nextLeaseBytes = do
-                        requireText "intent project" project intentProject
-                        requireText "intent store" storeIdentity intentStore
-                        requireText "intent run" run intentRun
-                        requireText "intent specification" specDigest intentSpec
-                        requireText "intent configuration" configDigest intentConfig
-                        requireText "intent plan" planDigest intentPlan
-                        requireBytes "intent canonical plan" canonicalBytes intentCanonical
-                        requireWord "intent target generation" epoch target
-                        require "intent target successor" (target > source)
-                        require "old mode version" (oldModeVersion < maxBound)
-                        require "old lease version" (oldLeaseVersion < maxBound)
-                        requireBytes "old mode bytes" (encodeMode WireProduction source) oldModeBytes
-                        requireBytes
-                            "old lease bytes"
-                            (encodeLease (LeaseBound source specDigest planDigest))
-                            oldLeaseBytes
-                        requireWord "target mode version" (oldModeVersion + 1) nextModeVersion
-                        requireBytes "target mode bytes" (encodeMode WireProduction target) nextModeBytes
-                        requireWord "target lease version" (oldLeaseVersion + 1) nextLeaseVersion
-                        requireBytes
-                            "target lease bytes"
-                            (encodeLease (LeaseBound target specDigest planDigest))
-                            nextLeaseBytes
-                      where
-                        ( intentProject
-                            , intentStore
-                            , intentRun
-                            , _
-                            , intentSpec
-                            , intentConfig
-                            , intentPlan
-                            , intentCanonical
-                            , source
-                            , _
-                            , _
-                            , _
-                            , _
-                            , _
-                            , _
-                            , _
-                            , _
-                            , oldModeVersion
-                            , oldModeBytes
-                            , oldLeaseVersion
-                            , oldLeaseBytes
-                            ) = common
-
-                oppositeIntent bytes = case verb of
-                    ProjectDown -> maybe False (const True) (decodeReverseRootIntent ProjectDestroy bytes)
-                    ProjectDestroy -> maybe False (const True) (decodeReverseRootIntent ProjectDown bytes)
-                    ProjectUp -> False
-                lowerHex character =
-                    ('0' <= character && character <= '9')
-                        || ('a' <= character && character <= 'f')
-                require field condition
-                    | condition = Right ()
-                    | otherwise = mismatch field "exact" "different"
-                requireText field expected observed
-                    | expected == observed = Right ()
-                    | otherwise = mismatch field expected observed
-                requireWord field expected observed = requireText field (showWord expected) (showWord observed)
-                requireBytes field expected observed
-                    | expected == observed = Right ()
-                    | otherwise = mismatch field "exact bytes" "different bytes"
-                mismatch field expected observed =
-                    Left (SessionAcquisitionBindingMismatch field expected observed)
-                modeAsSession field failure = case failure of
-                    ModeStoreFailure storeFailure -> SessionStoreFailure storeFailure
-                    _ -> SessionAcquisitionBindingMismatch field "valid" (modeErrorMessage failure)
-             in case verb of
-                    ProjectUp -> pure (Left (SessionCursorVerbMismatch "down/destroy" "up"))
-                    ProjectDown -> reopen
-                    ProjectDestroy -> reopen
 
 {- | Purely prove that a later authority gate was given the exact bound lease
 whose full protected origin was retained by an acquisition journal.
@@ -4007,15 +3536,12 @@ terminalizeExistingBoundReverseRootKernel ::
     BoundRunLease (Production projectId) specDigest planDigest brokerGeneration ->
     VerifiedAllSessionsClosed (Production projectId) planId ->
     SubtreeSettled (Production projectId) planId frame verb ->
-    Maybe
-        ( DestroySettled (Production projectId) planId
-        , ProductionCloseRoot (Production projectId) brokerGeneration
-        , ProjectClosureEvidence (Production projectId)
-        ) ->
+    Maybe (ProductionClosureAuthorization projectId brokerGeneration) ->
     IO (Either ModeError ())
 terminalizeExistingBoundReverseRootKernel store project verb bound sessions settled closure =
     case validateEvidence of
         Left failure -> pure (Left failure)
+        Right () | Just authorization <- closure -> runProtected store $ \session -> releaseProductionMode session project authorization
         Right () -> case reverseRootIntentKey project of
             Left failure -> pure (Left failure)
             Right intentKey -> runProtected store $ \session -> do
@@ -4063,10 +3589,12 @@ terminalizeExistingBoundReverseRootKernel store project verb bound sessions sett
         case (verb, closure) of
             (ProjectDown, Nothing) -> Right ()
             (ProjectDown, Just _) -> mismatch "down destroy closure" "absent" "present"
-            (ProjectDestroy, Just (proof, root, evidence)) -> do
-                requireText "destroy-settled plan" (boundRunLeasePlanDigest bound) (destroySettledPlanDigest proof)
-                require "destroy close kind" (productionCloseRootVerb root == SettledDestroyClose)
-                require "destroy closure kind" (projectClosureEvidenceKind evidence == SettledDestroyClose)
+            (ProjectDestroy, Just (SettledProductionClosure root exact closed proof)) -> do
+                _ <- authorizeProductionDestroy root exact closed proof
+                requireText "destroy closure plan" (boundRunLeasePlanDigest bound) (boundRunLeasePlanDigest exact)
+                requireWord "destroy closure epoch" (brokerEpochWord (boundRunLeaseEpoch bound)) (brokerEpochWord (boundRunLeaseEpoch exact))
+                requireWord "destroy closure lease version" (recordVersionWord (boundRunLeaseRecordVersion bound)) (recordVersionWord (boundRunLeaseRecordVersion exact))
+            (ProjectDestroy, Just PreEffectProductionClosure{}) -> mismatch "destroy closure" "settled" "pre-effect"
             (ProjectDestroy, Nothing) -> mismatch "destroy-settled closure" "present" "absent"
             (ProjectUp, _) -> Left (ModeWrongRecoveryScope "reverse terminal" "up")
 
@@ -4236,14 +3764,11 @@ terminalizeExistingBoundReverseRootKernel store project verb bound sessions sett
     releaseIfDestroy :: forall session. ProtectedSession session -> IO (Either ModeError ())
     releaseIfDestroy session = case closure of
         Nothing -> pure (Right ())
-        Just (_, root, evidence) -> releaseProductionMode session project root evidence
+        Just authorization -> releaseProductionMode session project authorization
     requireText subject expected observed
         | expected == observed = Right ()
         | otherwise = mismatch subject expected observed
     requireWord subject expected observed = requireText subject (showWord expected) (showWord observed)
-    require subject accepted
-        | accepted = Right ()
-        | otherwise = mismatch subject "settled destroy" "different"
     mismatch subject expected observed = Left (ModeEvidenceMismatch subject expected observed)
     mismatchIO subject expected observed = pure (mismatch subject expected observed)
 
@@ -5614,7 +5139,7 @@ consumeLifecycleProfileSlot root expectedMode active unbound =
         Right () -> do
             entered <-
                 withProtectedEntry (leaseLocationStore location) $ \session -> do
-                    clear <- refuseReverseRootIntentForName session projectName
+                    clear <- withModeResult (recoverProductionClosures session) (const (refuseReverseRootIntentForName session projectName))
                     case clear of
                         Left (ModeStoreFailure failure) ->
                             pure (Right (Left (AuthorityStoreFailure failure)))
@@ -7242,7 +6767,7 @@ withProductionRoot ::
       IO (Either ModeError result)
     ) ->
     IO (Either ModeError result)
-withProductionRoot store project verb use = do
+withProductionRoot store project verb use = mask $ \restore -> do
     -- The transaction runs under the exclusive entry and then releases it: the
     -- entry protects the mode/lease decision, not the whole lifecycle run.
     prepared <-
@@ -7284,7 +6809,19 @@ withProductionRoot store project verb use = do
                                                         )
     case prepared of
         Left failure -> pure (Left failure)
-        Right (SomeProductionRoot root) -> use root
+        Right (SomeProductionRoot root) -> do
+            let closeUnbound = do
+                    authorized <- authorizeProductionPreEffect root
+                    case authorized of
+                        Left _ -> pure ()
+                        Right closure -> do
+                            _ <- runProtected store (\session -> releaseProductionMode session project closure)
+                            pure ()
+            result <- restore (use root) `onException` closeUnbound
+            case result of
+                Left _ -> closeUnbound
+                Right _ -> pure ()
+            pure result
 
 {- | A production root whose broker generation index is hidden, so the
 transaction that mints it can complete before the continuation runs.
@@ -7612,29 +7149,278 @@ verifyUnboundLeaseHasNoEffectsForKey session project run = do
             Right [] -> Right (VerifiedUnboundLeaseHasNoEffects run)
             Right (record : _) -> Left (ModeEffectsRecorded (recordKeyText record))
 
-{- | Release Production mode. This is the only path, and it requires both the
-root/verb side (a settled @destroy@ root, or any Production verb on the
-true-pre-effect branch) and the matching closure evidence. The two must agree:
-a settled-destroy root cannot be paired with pre-effect evidence.
+{- | Closure retains the complete generative authority package until the final
+protected entry. Neither a verb tag nor a digest string can construct it.
+-}
+data ProductionClosureAuthorization projectId brokerGeneration
+    = forall specDigest planDigest planId.
+        SettledProductionClosure
+        (RootInvocationAuthority (Production projectId) brokerGeneration VerbDestroy)
+        (BoundRunLease (Production projectId) specDigest planDigest brokerGeneration)
+        (VerifiedAllSessionsClosed (Production projectId) planId)
+        (DestroySettled (Production projectId) planId)
+    | forall verb. PreEffectProductionClosure (ProductionRoot projectId brokerGeneration verb)
+
+type role ProductionClosureAuthorization nominal nominal
+
+instance Show (ProductionClosureAuthorization projectId brokerGeneration) where
+    show SettledProductionClosure{} = "ProductionClosureAuthorization settled destroy"
+    show PreEffectProductionClosure{} = "ProductionClosureAuthorization pre-effect refusal"
+
+authorizeProductionDestroy ::
+    RootInvocationAuthority (Production projectId) brokerGeneration VerbDestroy ->
+    BoundRunLease (Production projectId) specDigest planDigest brokerGeneration ->
+    VerifiedAllSessionsClosed (Production projectId) planId ->
+    DestroySettled (Production projectId) planId ->
+    Either ModeError (ProductionClosureAuthorization projectId brokerGeneration)
+authorizeProductionDestroy root bound sessions settled = do
+    _ <- destroySettledClosure bound sessions settled
+    validateProductionRootBinding root (boundRunLeaseLocation bound) (brokerEpochWord (boundRunLeaseEpoch bound))
+    pure (SettledProductionClosure root bound sessions settled)
+
+authorizeProductionPreEffect ::
+    ProductionRoot projectId brokerGeneration verb ->
+    IO (Either ModeError (ProductionClosureAuthorization projectId brokerGeneration))
+authorizeProductionPreEffect root =
+    runProtected (leaseLocationStore (unboundRunLeaseLocation (productionRootUnboundLease root))) $ \session -> do
+        checked <- validateProductionPreEffect session root
+        pure (PreEffectProductionClosure root <$ checked)
+
+validateProductionRootBinding ::
+    RootInvocationAuthority (Production projectId) brokerGeneration verb -> LeaseLocation -> Word64 -> Either ModeError ()
+validateProductionRootBinding root location epoch = do
+    requireProductionBinding "closure root project" (leaseLocationProjectName location) (rootAuthorityProjectName root)
+    requireProductionBinding "closure root store" (leaseLocationStoreIdentity location) (rootAuthorityStoreIdentity root)
+    requireProductionBinding "closure root epoch" (showWord epoch) (showWord (brokerEpochWord (rootAuthorityEpoch root)))
+
+requireProductionBinding :: Text -> Text -> Text -> Either ModeError ()
+requireProductionBinding subject expected observed
+    | expected == observed = Right ()
+    | otherwise = Left (ModeEvidenceMismatch subject expected observed)
+
+withModeResult :: IO (Either ModeError a) -> (a -> IO (Either ModeError b)) -> IO (Either ModeError b)
+withModeResult action use = action >>= either (pure . Left) use
+
+productionModeRecord :: ProtectedSession session -> LeaseLocation -> Word64 -> IO (Either ModeError (RecordKey, ProtectedRecord))
+productionModeRecord session location epoch =
+    withRecordKey (storeKey ("mode." <> leaseLocationProjectName location)) $ \key -> do
+        observed <- readProtectedRecord session key
+        pure $ case observed of
+            Left failure -> Left (ModeStoreFailure failure)
+            Right (Just record)
+                | protectedRecordBytes record == encodeMode WireProduction epoch -> Right (key, record)
+            Right _ -> Left (ModeEvidenceMismatch "closure mode" "exact Production epoch" "different")
+
+validateProductionPreEffect ::
+    ProtectedSession session ->
+    ProductionRoot projectId brokerGeneration verb ->
+    IO (Either ModeError (LeaseLocation, ProtectedRecord, RecordKey, ProtectedRecord, Text))
+validateProductionPreEffect session root =
+    withModeResult (pure (validateProductionRootBinding authority location epoch)) $ \() ->
+        withModeResult (pure (requireProductionBinding "closure protected store" (leaseLocationStoreIdentity location) (protectedStoreIdentityText (sessionStoreIdentity session)))) $ \() ->
+            withModeResult (pure validateModeLease) $ \() ->
+                withModeResult (readRetainedUnboundLeaseAt session unbound) $ \leaseRecord ->
+                    withModeResult (productionModeRecord session location epoch) $ \(key, modeRecord) -> do
+                        listed <- listProtectedRecords session
+                        case listed of
+                            Left failure -> pure (Left (ModeStoreFailure failure))
+                            Right keys -> case filter (isUnboundOwnershipKeyForLease location productionRunKey) keys of
+                                first : _ -> pure (Left (ModeEffectsRecorded (recordKeyText first)))
+                                [] -> withModeResult (productionPreEffectPlan session unbound) $ \plan -> do
+                                    closed <- verifyAllSessionsClosed session plan
+                                    pure (either (Left . ModeSessionFailure) (const (Right (location, leaseRecord, key, modeRecord, plan))) closed)
+  where
+    authority = productionRootAuthority root
+    unbound = productionRootUnboundLease root
+    location = unboundRunLeaseLocation unbound
+    epoch = brokerEpochWord (unboundRunLeaseEpoch unbound)
+    validateModeLease = case productionRootModeLease root of
+        ProjectModeLease mode name identity heldEpoch -> do
+            requireProductionBinding "closure mode kind" "production" (modeWireName mode)
+            requireProductionBinding "closure mode project" (leaseLocationProjectName location) name
+            requireProductionBinding "closure mode store" (leaseLocationStoreIdentity location) identity
+            requireProductionBinding "closure mode epoch" (showWord epoch) (showWord (brokerEpochWord heldEpoch))
+productionPreEffectPlan :: ProtectedSession session -> UnboundRunLease (Production projectId) brokerGeneration -> IO (Either ModeError Text)
+productionPreEffectPlan session unbound = do
+    observed <- readProtectedRecord session (leaseLocationSnapshotKey location)
+    pure $ case observed of
+        Left failure -> Left (ModeStoreFailure failure)
+        Right Nothing -> Right ("production-pre-effect/" <> leaseLocationProjectName location <> "/" <> showWord epoch)
+        Right (Just record) -> case decodePlanSnapshotRecord (protectedRecordBytes record) of
+            Just snapshot -> Right (snapshotRecordPlanDigest snapshot)
+            Nothing -> Left (ModeMalformedRecord "pre-effect snapshot")
+  where
+    location = unboundRunLeaseLocation unbound
+    epoch = brokerEpochWord (unboundRunLeaseEpoch unbound)
+
+productionPreEffectAlreadyClosed ::
+    ProtectedSession session -> InstalledProjectIdentity projectId -> ProductionRoot projectId brokerGeneration verb -> IO (Either ModeError Bool)
+productionPreEffectAlreadyClosed session project root =
+    withModeResult (pure (validateProductionRootBinding (productionRootAuthority root) location epoch)) $ \() ->
+        withModeResult (pure (requireProductionBinding "closure project" (installedProjectName project) (leaseLocationProjectName location))) $ \() ->
+            withModeResult (pure (requireProductionBinding "closure protected store" (leaseLocationStoreIdentity location) (protectedStoreIdentityText (sessionStoreIdentity session)))) $ \() -> do
+                observed <- readProtectedRecord session (leaseLocationLeaseKey location)
+                case observed of
+                    Left failure -> pure (Left (ModeStoreFailure failure))
+                    Right (Just record)
+                        | protectedRecordBytes record == encodeLease (LeaseClosed epoch)
+                        , unboundRunLeaseRecordVersion unbound < maxBound
+                        , recordVersionWord (protectedRecordVersion record) == unboundRunLeaseRecordVersion unbound + 1 ->
+                            withModeResult (productionPreEffectPlan session unbound) $ \plan -> do
+                                mode <- currentMode session project
+                                journal <- readProjectJournalState session plan
+                                pure $ do
+                                    held <- mode
+                                    state <- either (Left . ModeSessionFailure) Right journal
+                                    if isNothing held && state == ClosedProject
+                                        then Right True
+                                        else Left (ModeMalformedRecord "pre-effect closure successor")
+                    Right _ -> pure (Right False)
+  where
+    unbound = productionRootUnboundLease root
+    location = unboundRunLeaseLocation unbound
+    epoch = brokerEpochWord (unboundRunLeaseEpoch unbound)
+
+{- | The sole Production release boundary. Every live binding is re-read under
+the entry which publishes the redo descriptor; mode deletion is its last
+materialized target. Session and Mode recover this descriptor before reading.
 -}
 releaseProductionMode ::
     ProtectedSession session ->
     InstalledProjectIdentity projectId ->
-    ProductionCloseRoot (Production projectId) brokerGeneration ->
-    ProjectClosureEvidence (Production projectId) ->
+    ProductionClosureAuthorization projectId brokerGeneration ->
     IO (Either ModeError ())
-releaseProductionMode session project root evidence
-    | productionCloseRootVerb root == SettledDestroyClose
-        && projectClosureEvidenceKind evidence /= SettledDestroyClose =
-        pure (Left (ModeClosureMismatch "settled destroy" "pre-effect refusal"))
-    | productionCloseRootVerb root == PreEffectRefusalClose
-        && projectClosureEvidenceKind evidence /= PreEffectRefusalClose =
-        pure (Left (ModeClosureMismatch "pre-effect refusal" "settled destroy"))
-    | otherwise = do
-        closed <- closeLeaseForKey session project productionRunKey
-        case closed of
-            Left failure -> pure (Left failure)
-            Right () -> releaseMode session project WireProduction
+releaseProductionMode session project authorization =
+    withModeResult (recoverProductionClosures session) $ \() -> case authorization of
+        PreEffectProductionClosure root ->
+            withModeResult (productionPreEffectAlreadyClosed session project root) $ \alreadyClosed ->
+                if alreadyClosed
+                    then pure (Right ())
+                    else withModeResult (validateProductionPreEffect session root) $ \(location, leaseRecord, key, modeRecord, plan) ->
+                        withModeResult (pure (requireProductionBinding "closure project" (installedProjectName project) (leaseLocationProjectName location))) $ \() -> do
+                            let epoch = brokerEpochWord (unboundRunLeaseEpoch (productionRootUnboundLease root))
+                            prepared <- productionProjectCloseTargetKernel acquisitionJournalAdmissionKernel session plan True
+                            case prepared of
+                                Left failure -> pure (Left (ModeSessionFailure failure))
+                                Right (permit, journal) ->
+                                    runProductionCloseTransaction
+                                        session
+                                        plan
+                                        permit
+                                        Transaction.TxnFinalizeProductionPreEffect
+                                        [ journal
+                                        , Transaction.productionLeaseTransactionTarget (leaseLocationLeaseKey location) leaseRecord (encodeLease (LeaseClosed epoch))
+                                        , Transaction.productionModeTransactionTarget key modeRecord
+                                        ]
+        SettledProductionClosure root bound sessions settled ->
+            withModeResult (pure (void (authorizeProductionDestroy root bound sessions settled))) $ \() ->
+                withModeResult (pure (requireProductionBinding "closure project" (installedProjectName project) (rootAuthorityProjectName root))) $ \() ->
+                    withModeResult (pure (requireProductionBinding "closure protected store" (rootAuthorityStoreIdentity root) (protectedStoreIdentityText (sessionStoreIdentity session)))) $ \() ->
+                        withRecordKey (reverseRootIntentKey project) $ \intentKey -> do
+                            observed <- readProtectedRecord session intentKey
+                            case observed of
+                                Left failure -> pure (Left (ModeStoreFailure failure))
+                                Right Nothing -> pure (Left (ModeLeaseMissing "Production destroy intent"))
+                                Right (Just intentRecord) ->
+                                    case decodeReverseRootIntent ProjectDestroy (protectedRecordBytes intentRecord) of
+                                        Just (ReverseRootDestroyCommitted common target modeVersion modeBytes leaseVersion leaseBytes) ->
+                                            withModeResult (validateIntent common target leaseVersion) $ \() ->
+                                                withModeResult (validateSnapshot common) $ \() ->
+                                                    withModeResult (productionModeRecord session location epoch) $ \(key, modeRecord) ->
+                                                        withModeResult (readProductionRecord session key modeVersion modeBytes) $ \_ ->
+                                                            withModeResult (readProductionRecord session (leaseLocationLeaseKey location) leaseVersion leaseBytes) $ \leaseRecord ->
+                                                                withModeResult (pure (if leaseBytes == encodeLease (LeaseBound epoch (boundRunLeaseSpecDigest bound) plan) then Right () else Left (ModeMalformedRecord "closure lease bytes"))) $ \() -> do
+                                                                    prepared <- productionProjectCloseTargetKernel acquisitionJournalAdmissionKernel session plan False
+                                                                    case prepared of
+                                                                        Left failure -> pure (Left (ModeSessionFailure failure))
+                                                                        Right (permit, journal)
+                                                                            | recordVersionWord (protectedRecordVersion intentRecord) /= 2 -> pure (Left (ModeMalformedRecord "committed destroy intent version"))
+                                                                            | otherwise ->
+                                                                                runProductionCloseTransaction
+                                                                                    session
+                                                                                    plan
+                                                                                    permit
+                                                                                    Transaction.TxnFinalizeProductionProject
+                                                                                    [ journal
+                                                                                    , Transaction.productionIntentTransactionTarget
+                                                                                        intentKey
+                                                                                        intentRecord
+                                                                                        (encodeReverseRootIntent (ReverseRootDestroyTerminal common target modeVersion modeBytes leaseVersion leaseBytes))
+                                                                                    , Transaction.productionLeaseTransactionTarget (leaseLocationLeaseKey location) leaseRecord (encodeLease (LeaseClosed epoch))
+                                                                                    , Transaction.productionModeTransactionTarget key modeRecord
+                                                                                    ]
+                                        Just (ReverseRootDestroyTerminal common target _ _ leaseVersion _) ->
+                                            withModeResult (validateIntent common target leaseVersion) $ \() ->
+                                                withModeResult (readProductionRecord session (leaseLocationLeaseKey location) (leaseVersion + 1) (encodeLease (LeaseClosed epoch))) $ \_ -> do
+                                                    mode <- currentMode session project
+                                                    journal <- readProjectJournalState session plan
+                                                    pure $ do
+                                                        held <- mode
+                                                        state <- either (Left . ModeSessionFailure) Right journal
+                                                        if isNothing held && state == ClosedProject && recordVersionWord (protectedRecordVersion intentRecord) == 3
+                                                            then Right ()
+                                                            else Left (ModeEvidenceMismatch "terminal Production closure" "Closed journal, closed lease and absent mode" "different")
+                                        _ -> pure (Left ModeReverseRootInProgress)
+          where
+            location = boundRunLeaseLocation bound
+            epoch = brokerEpochWord (boundRunLeaseEpoch bound)
+            plan = boundRunLeasePlanDigest bound
+            validateSnapshot common = do
+                let (_, _, _, revision, _, config, _, bytes, _, _, _, _, _, _, _, _, _, _, _, _, _) = common
+                validateProductionSnapshot session bound revision config bytes
+            validateIntent common target leaseVersion = pure $ do
+                let (intentProject, intentStore, _, _, intentSpec, _, intentPlan, _, _, _, _, _, _, _, _, _, _, _, _, _, _) = common
+                requireProductionBinding "closure intent project" (installedProjectName project) intentProject
+                requireProductionBinding "closure intent store" (rootAuthorityStoreIdentity root) intentStore
+                requireProductionBinding "closure intent spec" (boundRunLeaseSpecDigest bound) intentSpec
+                requireProductionBinding "closure intent plan" plan intentPlan
+                requireProductionBinding "closure intent epoch" (showWord epoch) (showWord target)
+                requireProductionBinding "closure intent lease version" (showWord (recordVersionWord (boundRunLeaseRecordVersion bound))) (showWord leaseVersion)
+
+validateProductionSnapshot ::
+    ProtectedSession session -> BoundRunLease (Production projectId) specDigest planDigest brokerGeneration -> Word64 -> Text -> ByteString -> IO (Either ModeError ())
+validateProductionSnapshot session bound revision config bytes = do
+    observed <-
+        readVerifiedPlanSnapshotAt
+            session
+            (leaseLocationSnapshotKey location)
+            (boundRunLeaseIdentity bound)
+            (leaseLocationProjectName location)
+            (leaseLocationStoreIdentity location)
+    pure $ case observed of
+        Left failure -> Left failure
+        Right (SomeVerifiedPlanSnapshot snapshot) -> do
+            _ <- recoveryCanonicalSnapshot snapshot
+            requireProductionBinding "closure snapshot revision" (showWord revision) (showWord (planSnapshotRevision snapshot))
+            if planSnapshotConfigDigest snapshot == Just config && planSnapshotCanonicalBytes snapshot == Just bytes
+                then Right ()
+                else Left (ModeMalformedRecord "closure canonical snapshot source")
+            requireProductionBinding "closure snapshot spec" (boundRunLeaseSpecDigest bound) (planSnapshotSpecDigest snapshot)
+            requireProductionBinding "closure snapshot plan" (boundRunLeasePlanDigest bound) (planSnapshotPlanDigest snapshot)
+  where
+    location = boundRunLeaseLocation bound
+
+readProductionRecord :: ProtectedSession session -> RecordKey -> Word64 -> ByteString -> IO (Either ModeError ProtectedRecord)
+readProductionRecord session key version bytes = do
+    observed <- readProtectedRecord session key
+    pure $ case observed of
+        Left failure -> Left (ModeStoreFailure failure)
+        Right (Just record)
+            | recordVersionWord (protectedRecordVersion record) == version
+            , protectedRecordBytes record == bytes ->
+                Right record
+        Right _ -> Left (ModeEvidenceMismatch (recordKeyText key) "exact closure version/bytes" "different")
+
+runProductionCloseTransaction ::
+    ProtectedSession session -> Text -> Transaction.TransactionPermit -> Transaction.TxnKind -> [Transaction.TransactionTarget] -> IO (Either ModeError ())
+runProductionCloseTransaction session plan permit kind targets = do
+    result <- Transaction.runLifecycleTransaction session plan permit kind targets
+    pure (either (Left . ModeSessionFailure . SessionRecordCorrupt . Transaction.transactionErrorMessage) (const (Right ())) result)
+
+recoverProductionClosures :: ProtectedSession session -> IO (Either ModeError ())
+recoverProductionClosures session = do
+    recovered <- Transaction.recoverProductionTransactions session
+    pure (either (Left . ModeSessionFailure . SessionRecordCorrupt . Transaction.transactionErrorMessage) Right recovered)
 
 -- Production invocation close ------------------------------------------------------
 
@@ -8227,8 +8013,7 @@ data HarnessCloseOrigin
       RecoveredHarnessClose
     deriving (Eq, Show)
 
-{- | The root\/verb half of harness terminal close — the Harness counterpart of
-"HostBootstrap.Authority"\'s 'Authority.ProductionCloseRoot'.
+{- | The exact live or recovered root that participates in Harness terminal close.
 
 Closing a harness run used to need only the mode lease, the bound lease and the
 session proof. All three are reachable from the live run, so there was no value
@@ -9470,10 +9255,21 @@ recordUnboundLease store session project run epoch rearmClosed =
                                     rearmed <- clearTerminalReverseRoot
                                     case rearmed of
                                         Left failure -> pure (Left failure)
-                                        Right () -> writeUnbound (ExpectVersion (protectedRecordVersion record))
+                                        Right () -> withModeResult (reopenProductionJournal location) $ \() ->
+                                            writeUnbound (ExpectVersion (protectedRecordVersion record))
                     Just other ->
                         pure (Left (ModeLeaseNotBindable (runIdentityText run) (leaseStateName other)))
   where
+    reopenProductionJournal location = do
+        observed <- readProtectedRecord session (leaseLocationSnapshotKey location)
+        case observed of
+            Left failure -> pure (Left (ModeStoreFailure failure))
+            Right Nothing -> pure (Right ())
+            Right (Just record) -> case decodePlanSnapshotRecord (protectedRecordBytes record) of
+                Nothing -> pure (Left (ModeMalformedRecord "Production rearm snapshot"))
+                Just snapshot -> do
+                    reopened <- reopenClosedProductionJournalKernel acquisitionJournalAdmissionKernel session (snapshotRecordPlanDigest snapshot)
+                    pure (either (Left . ModeSessionFailure) Right reopened)
     clearInvocationDisposition location = do
         let key = leaseLocationInvocationKey location
         observed <- readProtectedRecord session key
@@ -9737,7 +9533,7 @@ withOrdinaryProjectAdmissionForName ::
     IO (Either ModeError result) ->
     IO (Either ModeError result)
 withOrdinaryProjectAdmissionForName session project action = do
-    clear <- refuseReverseRootIntentForName session project
+    clear <- withModeResult (recoverProductionClosures session) (const (refuseReverseRootIntentForName session project))
     case clear of
         Left failure -> pure (Left failure)
         Right () -> action
@@ -9807,7 +9603,7 @@ runProtected ::
     (forall session. ProtectedSession session -> IO (Either ModeError result)) ->
     IO (Either ModeError result)
 runProtected store action = do
-    outcome <- withProtectedEntry store (fmap Right . action)
+    outcome <- withProtectedEntry store (\session -> fmap Right (withModeResult (recoverProductionClosures session) (const (action session))))
     pure (either (Left . ModeStoreFailure) id outcome)
 
 withRecordKey ::

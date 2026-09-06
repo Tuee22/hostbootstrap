@@ -46,7 +46,9 @@ import HostBootstrap.Ensure.Colima.Backend.Resolver.Override
     currentResolverOverride,
   )
 import HostBootstrap.Ensure.Colima.Backend.Resolver.Protocol (TrustedToolIdentity (..))
+#if !defined(mingw32_HOST_OS)
 import HostBootstrap.Ensure.Colima.Backend.Resolver.Native (resolveNativeAppleToolchain)
+#endif
 import HostBootstrap.Ensure.Colima.Backend.Runner (BoundedToolResult (..))
 #if !defined(mingw32_HOST_OS)
 import HostBootstrap.Ensure.Colima.Backend.Resolver.Protocol

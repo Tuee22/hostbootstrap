@@ -1,6 +1,6 @@
 # Phase 28 — Host-portability acceptance
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: none (static)
 **Gate**: the host static gate — `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/`,
@@ -14,11 +14,11 @@ host-native on a Windows, a macOS, and a Linux gate host, each recorded with its
 
 This is an **acceptance phase** (§ II, § JJ). Nothing depends on it, so a machine with access to only one
 family stops at the worked-demo phase. It declares no substrate: outer-host portability is not a substrate
-declaration (§ II), and running a static suite on a Linux gate host proves nothing about a provider, a
-container, or a POSIX process boundary.
+declaration (§ II), and running a static suite on a Linux gate host does not establish live provider or container acceptance.
+Compiled local fixtures can prove the native process and kernel behavior they actually exercise.
 
 It exists because of an ownership hole that would otherwise have no owner. § JJ obliges every phase to hold
-the four harness rules over its own suites, and that obligation is mechanical — the absence guards check it
+the five harness rules over its own suites, and that obligation is mechanical — the absence guards check it
 on any gate host. But *confirming the portability claim itself* needs three machines, and § C forbids a
 baseline phase carrying a closure obligation for hardware it does not declare. Without this phase, either
 every § JJ-touching sprint silently acquires a three-machine closure condition, or the claim that the suites
@@ -78,16 +78,29 @@ suite passed 231/231. The reported component durations totalled 6 minutes: 20 se
 The fixed coverage manifest reported the expected Windows realization: all POSIX ownership and shipped
 guest-alias cases asserted their rows' declared refusal, while the Windows ownership families exercised the
 Win32 kernel, `WslGlobalWallHostSpec` exercised its Windows host row, and three of four
-`WslGlobalWallWindowsSpec` cases exercised the Windows kernel. The manifest and total remained fixed; no case
+`WslGlobalWallWindowsSpec` cases exercised the Windows kernel. No case in these fixed manifest families
 was skipped.
+
+The five-case difference from the POSIX total follows the explicit `mingw32_HOST_OS` conditions in
+`HostToolSpec.windowsResolutionCases` (two Windows-only discovery cases), `LiftSpec.shellQuoteCases`
+(one POSIX-only shell round-trip), `LiftSpec.effectCases` (five POSIX cases versus one Windows case),
+and `LifecycleSpec.snapshotFilesystemFailureCases` (two POSIX-only filesystem cases). The manifest's fixed
+families do not cover these conditional groups; the run is evidence for the cases its suite assembled.
+
+Final working-tree refresh on 2026-09-05 on the same native Windows gate host passed
+`cabal build all --ghc-options=-Werror` in 159.47 seconds and the complete core suite at
+2,489/2,489 in 886.48 seconds (1,243.94 seconds including test compilation). The Python code check
+passed and its suite passed 231/231 in 10.23 seconds. This includes Production closure, typed service
+definitions, and the final architecture/documentation guards. The five-case difference from the final
+macOS and Linux runs is the source selection enumerated above.
 
 #### Remaining Work
 
 None.
 
-### Sprint 28.2: macOS gate-host acceptance [Planned]
+### Sprint 28.2: macOS gate-host acceptance [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: none — this sprint changes no source
 **Substrates**: none
 **Docs to update**: `documents/engineering/testing.md`
@@ -107,13 +120,28 @@ Record the host static gate passing host-native on a macOS gate host.
 
 #### Validation
 
-The dated run.
+On 2026-09-05, native arm64 macOS 26.6.2 (build 25G83), with GHC 9.12.4, Cabal 3.16.1.0,
+Python 3.14.3, and Poetry 2.3.2, passed `cabal build all` in 146.13 seconds, the Python code check
+in 9.74 seconds, and the Python suite at 231/231 in 4.48 seconds (1.94 seconds of pytest execution).
+`cabal test all --ghc-options=-Werror --test-show-details=direct` passed 2,482/2,482 in 509.20 seconds
+including test compilation; the suite itself took 375.83 seconds. Successful component durations totalled
+669.55 seconds (11 minutes 10 seconds).
+
+The fixed coverage manifest exercised the POSIX ownership, host-wall, and shipped guest-alias rows against
+the Darwin kernel. The Windows ownership families and the three platform-row cases in
+`WslGlobalWallWindowsSpec` asserted their declared refusal; its platform-neutral case remained present.
+The total matches Linux. The five-case difference from Windows is the explicit source selection described
+in Sprint 28.1; this run does not establish coverage for a case another host does not execute.
+
+Final working-tree refresh on 2026-09-05 on the same native arm64 macOS 26.6.2 gate host passed
+`cabal build all --ghc-options=-Werror` and the complete core suite at 2,494/2,494 in 402.88 seconds.
+The Python code check passed and its suite passed 231/231 in 1.35 seconds. This includes Production closure,
+typed service definitions, and the final architecture/documentation guards. Platform accounting retains
+the same five-case source-condition difference from Windows.
 
 #### Remaining Work
 
-The run. As of 2026-09-05 the active Windows workspace has no configured macOS SSH target and this
-repository has no GitHub Actions workflow or other macOS runner, so obtaining the dated host-native
-evidence requires access to an Apple gate host.
+None.
 
 ### Sprint 28.3: Linux gate-host acceptance [Done]
 
@@ -149,7 +177,14 @@ The fixed coverage manifest reported the expected Linux realization: every `WslG
 POSIX-row case, every POSIX ownership case, and every shipped guest-alias case exercised its row
 against the Linux kernel. Every Windows ownership case and the three platform-row cases in
 `WslGlobalWallWindowsSpec` asserted their declared refusal; that family's fourth, platform-neutral
-case remained in the fixed family total. No case was skipped.
+case remained in the fixed family total. No case in these fixed manifest families was skipped. The
+five-case difference from Windows follows the source conditions enumerated in Sprint 28.1.
+
+Final working-tree refresh on 2026-09-05 also passed on native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, and Poetry 2.4.1.
+`cabal build all --ghc-options=-Werror` passed; the complete core suite passed 2,494/2,494 in
+148.63 seconds. The Python code check passed and its suite passed 231/231 in 1.34 seconds.
+The final documentation-only revalidation passed 3/3 in 0.95 seconds after status reconciliation.
 
 #### Remaining Work
 
@@ -163,12 +198,12 @@ for the gate host that produced it and for no other (§ II).
 
 ## Remaining Work
 
-Sprint 28.2 must record the macOS host-static run.
+None.
 
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
-- `documents/engineering/testing.md` — the gate-host term, the four harness rules, and where the dated
+- `documents/engineering/testing.md` — the gate-host term, the five harness rules, and where the dated
   cross-family evidence lives.
 
 **Cross-references to add:**

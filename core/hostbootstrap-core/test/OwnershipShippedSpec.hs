@@ -70,8 +70,8 @@ import System.Directory (
     doesPathExist,
     getSymbolicLinkTarget,
     pathIsSymbolicLink,
-    removeDirectoryRecursive,
     removeFile,
+    renameDirectory,
  )
 import System.Environment (getExecutablePath)
 import System.FilePath ((</>))
@@ -327,8 +327,10 @@ interpreterTests =
         given <- runShippedOwnership ownershipRowForHost (transactionFor frame ShipGiveBackObject)
         given @?= ShippedObjectGivenBack
     , rowCase "a replaced object is refused, and left intact" $ \frame -> do
-        _ <- runShippedOwnership ownershipRowForHost (transactionFor frame ShipTakeDirectory)
+        owned <- runShippedOwnership ownershipRowForHost (transactionFor frame ShipTakeDirectory) >>= expectTaken
         removeAndReplace (frameTarget frame)
+        replacement <- observeIdentity (frameTarget frame)
+        assertBool "the fixture replaced the owned identity" (replacement /= owned)
         refused <- runShippedOwnership ownershipRowForHost (transactionFor frame ShipGiveBackObject)
         expectRefusal "giving back a replacement" refused
         survived <- doesDirectoryExist (frameTarget frame)
@@ -506,7 +508,8 @@ expectMalformed label outcome = case outcome of
 
 removeAndReplace :: FilePath -> IO ()
 removeAndReplace path = do
-    removeDirectoryRecursive path
+    -- Retain the original inode so the replacement cannot reuse its identity.
+    renameDirectory path (path <> "-original")
     createDirectory path
 
 -- ---------------------------------------------------------------------------

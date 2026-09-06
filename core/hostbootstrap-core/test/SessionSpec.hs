@@ -11,7 +11,7 @@ Every case here runs against a real protected store on a real filesystem, so a
 "crash" is modelled the only honest way: by stopping between two durable writes
 and then reopening the store, exactly as an interrupted invocation leaves it.
 -}
-module SessionSpec (tests, runFenceDelayProbe) where
+module SessionSpec (tests, runFenceDelayProbe, withInterruptedProductionTransaction) where
 
 import Control.Concurrent (forkFinally, newEmptyMVar, putMVar, takeMVar, threadDelay)
 import Control.Exception (SomeException, evaluate, try)
@@ -169,6 +169,7 @@ import HostBootstrap.Protected (
     ProtectedStore,
     RecordKey,
     compareAndSwapProtectedRecord,
+    compareAndDeleteProtectedRecord,
     listProtectedRecords,
     mkRecordKey,
     openProtectedStore,
@@ -178,6 +179,7 @@ import HostBootstrap.Protected (
     readProtectedRecord,
     recordVersionWord,
     recordKeyText,
+    recordNameIdentity,
     sessionStoreRoot,
     withProtectedEntry,
  )
@@ -3370,6 +3372,90 @@ withInterruptedTransaction point kind store transition = do
     restored <- reopenStore store
     installApplying restored point kind published
     reopenStore restored
+
+{- | Reproduce each physical prefix of the actual Production close, retaining
+the canonical raw Mode records and the stamped project journal. The fixture
+derives desired bytes and versions from a real successful finalizer.
+-}
+withInterruptedProductionTransaction ::
+    Int -> ProtectedStore -> IO () -> IO (ProtectedStore, Text, IO ())
+withInterruptedProductionTransaction prefix store transition = do
+    before <- records store
+    let root = protectedStoreRoot store
+        snapshot = takeDirectory root </> "production-close-snapshot"
+    copyTree root snapshot
+    transition
+    after <- records store
+    let changed = Map.filterWithKey (\key value -> Map.lookup key before /= Just value) after
+        projects = [(key, value) | (key, value) <- Map.toList changed, "project." `Text.isPrefixOf` recordKeyText key]
+    (journalKey, _) <- case projects of
+        [one] -> pure one
+        _ -> assertFailure "the Production finalizer must change exactly one project journal"
+    let exactPlan = recordNameIdentity (Text.drop (Text.length "project.") (recordKeyText journalKey))
+        keys =
+            sortOn
+                roleOrder
+                ([key | key <- Map.keys changed, roleOrder key < 3] ++ [key | key <- Map.keys before, Map.notMember key after, roleOrder key == 3])
+        kind = if any (("reverse-root." `Text.isPrefixOf`) . recordKeyText) keys then TxnFinalizeProductionProject else TxnFinalizeProductionPreEffect
+    length keys @?= (if kind == TxnFinalizeProductionProject then 4 else 3)
+    removePathForcibly root
+    copyTree snapshot root
+    restored <- reopenStore store
+    outcome <- withProtectedEntry restored $ \session -> do
+        liveJournal <- readTransactionRecordFrom after journalKey
+        sequenceNumber <- maybe (assertFailure "closed journal has no transaction stamp") pure (transactionRecordStamp liveJournal)
+        let target key
+                | key == journalKey = projectTransactionTarget key (transactionRecord <$> Map.lookup key before) (transactionRecordPayload liveJournal)
+                | "reverse-root." `Text.isPrefixOf` recordKeyText key = productionIntentTransactionTarget key (before Map.! key) (protectedRecordBytes (after Map.! key))
+                | "lease." `Text.isPrefixOf` recordKeyText key = productionLeaseTransactionTarget key (before Map.! key) (protectedRecordBytes (after Map.! key))
+                | otherwise = productionModeTransactionTarget key (before Map.! key)
+            descriptor = TransactionDescriptor sequenceNumber exactPlan kind (map target keys)
+        coord <- either (assertFailure . show) pure (coordinatorKey exactPlan)
+        current <- readProtectedRecord session coord >>= either (assertFailure . show) pure
+        _ <- compareAndSwapProtectedRecord session coord (maybe ExpectAbsent (ExpectVersion . protectedRecordVersion) current) (encodeCoordinator (CoordinatorApplying descriptor)) >>= either (assertFailure . show) pure
+        mapM_ (materialize session before after) (take prefix keys)
+        pure (Right ())
+    either (assertFailure . show) pure outcome
+    let verify = do
+            recovered <- records restored
+            mapM_ (\key -> Map.lookup key recovered @?= Map.lookup key after) keys
+    pure (restored, exactPlan, verify)
+  where
+    roleOrder key
+        | "project." `Text.isPrefixOf` recordKeyText key = 0 :: Int
+        | "reverse-root." `Text.isPrefixOf` recordKeyText key = 1
+        | "lease." `Text.isPrefixOf` recordKeyText key = 2
+        | "mode." `Text.isPrefixOf` recordKeyText key = 3
+        | otherwise = 4
+    records current = do
+        outcome <- withProtectedEntry current $ \session -> do
+            keys <- listProtectedRecords session >>= either (assertFailure . show) pure
+            pairs <-
+                mapM
+                    ( \key -> do
+                        value <- readProtectedRecord session key >>= either (assertFailure . show) pure
+                        record <- maybe (assertFailure "listed record disappeared") pure value
+                        pure (key, record)
+                    )
+                    keys
+            pure (Right (Map.fromList pairs))
+        either (assertFailure . show) pure outcome
+    transactionRecord record = TransactionRecord (protectedRecordVersion record) Nothing (protectedRecordBytes record)
+    readTransactionRecordFrom values key = do
+        let record = values Map.! key
+            bytes = protectedRecordBytes record
+            (header, payload) = ByteStringChar8.break (== '\n') bytes
+        stamp <- case reads (ByteStringChar8.unpack (ByteString.drop (ByteString.length "hbtx-target-v1\t") header)) of
+            [(value, "")] -> pure value
+            _ -> assertFailure "the finalizer journal has an invalid stamp"
+        pure (TransactionRecord (protectedRecordVersion record) (Just stamp) (ByteString.drop 1 payload))
+    materialize session before after key = do
+        let expectation = maybe ExpectAbsent (ExpectVersion . protectedRecordVersion) (Map.lookup key before)
+        case Map.lookup key after of
+            Nothing -> compareAndDeleteProtectedRecord session key expectation >>= either (assertFailure . show) pure
+            Just record -> do
+                _ <- compareAndSwapProtectedRecord session key expectation (protectedRecordBytes record) >>= either (assertFailure . show) pure
+                pure ()
 
 -- | Copy a directory tree, so a snapshot is the store itself rather than a
 -- reconstruction of it — record versions and all.

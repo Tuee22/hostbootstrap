@@ -1203,13 +1203,11 @@ demoEnsureVMProviderStep = demoStepId "ensure-vm-provider"
 
 {- | Lift one of the demo's effectful step bodies into a 'StepAction'.
 
-The demo's actions are not yet prepared operations (§ CC), so none of them can
-distinguish "already in its target state" from "moved there", and none holds a
-receipt: an action that returns without throwing has changed its node as far as
-it can tell. This wrapper says exactly that and nothing more, so the demo does
-not claim an observation it has not made. A node that genuinely observes a
-conflict, an unsupported backend, or a safety refusal returns that observation
-directly instead of going through here.
+This wrapper reports completion for actions that do not expose an idempotence
+observation. It does not mint ownership or readiness evidence. Prepared provider,
+cluster, chart, and alias adapters retain their own exact settlement authorities;
+a node that observes conflict, unsupported behavior, or refusal returns that
+observation directly instead of going through this wrapper.
 -}
 changed :: (forall scope planId. StepExecution scope planId -> IO ()) -> StepAction
 changed act execution = act execution >> pure Step.StepChanged

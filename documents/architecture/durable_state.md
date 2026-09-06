@@ -325,7 +325,7 @@ Those claims require the live validation gates below.
    escaping, and redirected roots fail before the callback, and compile-fail tests prevent raw or
    cross-root paths from entering direct-host bind operations.
 4. **Direct half passed:** native Linux reached Docker with the canonical absolute nonsymlink host
-   `.data` path. Final plan-indexed provider guest projections remain open.
+   `.data` path. Provider guest projections derive from the same admitted canonical root and exact share.
 5. The independent exact-cluster suite creates only the plan-derived removable state leaf, rejects
    symlink/copied/replaced state, lock, record, and snapshot objects, conditionally removes only exact owned
    node IDs, and proves the durable root is not an input to cleanup. The separate linux-cpu live gate keeps a

@@ -5,7 +5,7 @@
 module ColimaSpec (tests, runShippedOwnerProbe) where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (finally)
+import Control.Exception (IOException, displayException, finally, try)
 import Control.Monad (unless)
 import Data.Bifunctor (first)
 import qualified Data.ByteString as ByteString
@@ -24,7 +24,7 @@ import HostBootstrap.Config.Vocab (Production)
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Ensure.Colima
 import HostBootstrap.Ensure.Colima.Backend.Stage
-import HostBootstrap.Ensure.Colima.Backend.Runner (BackendNamespace (..), BoundedToolResult (..), runShippedCommand)
+import HostBootstrap.Ensure.Colima.Backend.Runner (BackendNamespace (..), BoundedToolResult (..), runShippedCommand, runShippedCommandEntry)
 import HostBootstrap.Ensure.Colima.Backend.Resolver.Testing
 import HostBootstrap.Ensure.Colima.Command
 import HostBootstrap.Ensure.Colima.Report
@@ -1038,7 +1038,23 @@ exactInstance profile status =
   ColimaInstance profile status 8 (16 * gib) (80 * gib) "docker"
 
 onOwnershipHost :: IO () -> IO ()
-onOwnershipHost action = unless (os == "mingw32") action
+onOwnershipHost action
+  | os == "mingw32" = withSystemTempDirectory "hostbootstrap-colima-unsupported" $ \root -> do
+      -- rationale.md: a skipped case cannot prove the frame's declared refusal.
+      observed <- executeNativeResolverFixture root (root </> "Users" </> "fixture")
+      case observed of
+        ResolverExecutionCompleted ExitSuccess wire "" ->
+          parseResolverFixtureProtocolView root wire
+            @?= Right (ResolverProtocolUnsupportedView "apple-silicon-required")
+        other -> assertFailure ("expected the native resolver's Windows refusal, got " ++ show other)
+      shipped <- try runShippedCommandEntry :: IO (Either IOException ())
+      case shipped of
+        Left failure ->
+          assertBool
+            "the shipped entry names its Windows refusal"
+            ("the Colima command transaction is unavailable on Windows" `isInfixOf` displayException failure)
+        Right () -> assertFailure "the shipped entry accepted a Windows transaction"
+  | otherwise = action
 
 strictReadFile :: FilePath -> IO String
 strictReadFile path = do

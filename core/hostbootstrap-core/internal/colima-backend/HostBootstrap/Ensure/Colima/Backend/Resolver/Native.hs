@@ -6,6 +6,15 @@ module HostBootstrap.Ensure.Colima.Backend.Resolver.Native
   )
 where
 
+import HostBootstrap.Ensure.Colima.Backend.Resolver.Protocol (TrustedResolverProtocol (..))
+
+#if defined(mingw32_HOST_OS)
+resolveNativeAppleToolchain :: FilePath -> IO TrustedResolverProtocol
+resolveNativeAppleToolchain _ = pure (ProtocolUnsupported "apple-silicon-required")
+
+resolveNativeResolverFixture :: FilePath -> FilePath -> IO TrustedResolverProtocol
+resolveNativeResolverFixture _ _ = pure (ProtocolUnsupported "apple-silicon-required")
+#else
 import Control.Exception (IOException, try)
 import Control.Monad (foldM)
 import Data.List (nub)
@@ -13,7 +22,6 @@ import Data.Word (Word64)
 import HostBootstrap.Ensure.Colima.Backend.Resolver.Protocol
   ( ResolvedTool (..),
     TrustedDirectoryBinding (..),
-    TrustedResolverProtocol (..),
     TrustedToolIdentity (..),
     renderSearchPath,
     systemHelperDirectories,
@@ -337,4 +345,5 @@ pathPrefixes root target
 
 validAbsolute :: FilePath -> Bool
 validAbsolute path = canonicalAbsolute path == Right path
+#endif
 #endif

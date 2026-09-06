@@ -62,7 +62,7 @@ Give a handler exactly one immutable, config-derived input.
 - One immutable config-derived payload is handed to the handler; a handler reads no ambient state and cannot
   mutate its input.
 - Role parameters are least-authority: a handler receives only what its declared role needs. A
-  `ServiceHandler` takes the opaque `RoleParams specDigest configId secretDigest fields service` bundle the
+  `ProgramServiceHandler payload effects fields` takes the opaque `RoleParams specDigest configId secretDigest fields service` bundle the
   role's own projection produced, and nothing else. It carries no `LocalContextView`, so a handler that
   needs a framework datum declares it as a role field and the projection supplies it; the demo's
   accelerator takes its source root that way. The indices are universally quantified, so a handler cannot
@@ -74,7 +74,8 @@ Give a handler exactly one immutable, config-derived input.
   than a later tightening of it. Sprint 22.3 installs the signed activation the interpreter demands, which
   is why the two land together.
 - The handler runs on the same bundle the validated request carries, not on a second projection of the config
-  beside it, and `selectServiceAction` no longer takes a framework view at all.
+  beside it. `withSelectedServiceProgram` and `withDecodedServiceProgram` retain the request, declared row,
+  resource backend, payload backend, and program in one existential package.
 - A missing service configuration produces a service-specific recovery message naming the variant and the field.
 - The registry-selected action enters the role machine as its serve step, narrowed to an effect-indexed program.
 
@@ -149,8 +150,9 @@ definitions have `serviceProgramDefinition`: its immutable role draft, resource 
 `withDecodedServiceProgram` selects the service named by the signed activation from the narrowed installed wire,
 not from the full sibling project config. `withRuntimeRolePlanForRequest` retains that decoded request's exact
 config/secret/service indices through placement authorization, so the interpreter cannot cross-pair a
-same-shaped program. The compatibility legacy definition is categorically rejected by this production path;
-the worked demo owns migration of its concrete definitions.
+same-shaped program. Every definition uses this program boundary; no unbounded handler constructor or
+IO-returning selection API is exposed. `IOServiceHandler.hs` rejects an IO action at the handler boundary,
+and the registry ownership guard prevents the removed aliases and constructors from returning.
 
 ### Sprint 22.3: Role-machine adoption at `service run` [Done]
 
@@ -277,6 +279,13 @@ None.
   (`cluster-service-3`) and accelerator (`daemon-3`); both deployments reached `1/1 Running` concurrently.
   Process inspection showed each `service run` holding only its own role-generation lease, while no process
   held the authority store's global `store.lock` during Serve.
+
+- 2026-09-05, Linux x86_64, GHC 9.12.4 and Cabal 3.16.1.0: the complete gate passed
+  2,493/2,493 in 145.95 seconds. The live `CLISpec` case entered the actual `service run` command,
+  measured its executable, verified the signed installed activation, and dispatched only the selected
+  accelerator program. `IOServiceHandler.hs` rejects an unrestricted IO handler; the registry ownership
+  guard rejects unbounded constructors and selectors. The native macOS focused checks passed 110/110
+  in 6.33 seconds.
 
 ## Documentation Requirements
 

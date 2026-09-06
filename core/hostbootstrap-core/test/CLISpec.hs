@@ -147,7 +147,6 @@ import HostBootstrap.Service (
     emptyServiceRegistry,
     installServiceActivationRevision,
     serviceActivationRevisionPath,
-    serviceDefinition,
     serviceId,
     serviceProgramDefinition,
     serviceRegistry,
@@ -1561,7 +1560,6 @@ tests =
             assertBool "could not isolate projectCommandGroup" (not (T.null fromProject) && projectEnd `T.isInfixOf` fromProject)
             sort (map (repoRelativePath sourceRoot) entryImporters)
                 @?= [ "Command.hs"
-                    , "Handoff/Lifecycle.hs"
                     ]
             mapM_
                 require
@@ -1646,14 +1644,19 @@ fixtureServiceRegistry ::
 fixtureServiceRegistry selected handlers =
     either (error . show) id $
         serviceRegistry
-            [ serviceDefinition
+            [ serviceProgramDefinition
                 (either error id (serviceId name))
                 (\_ -> Right (if selected == Just name then Just () else Nothing))
                 -- The fixture declares a listen-only row: enough that the
                 -- selection carries a real declaration, narrow enough that a
                 -- widening would show up as a diff here.
                 (WithEffect NetworkListenName NoEffects)
-                (\_ -> handler)
+                cliServiceResources
+                cliServiceBackend
+                (\_ -> withReadyServiceHandles $ \ready -> case lookupAcquiredResource ready "listener" of
+                    Nothing -> pure ()
+                    Just listener -> serve [(listener, handler)]
+                )
             | (name, handler) <- handlers
             ]
 
@@ -1673,28 +1676,8 @@ withVerifiedServiceRuntime ::
     IO ()
 withVerifiedServiceRuntime selected handlers use =
     withSystemTempDirectory "hostbootstrap-cli-service-runtime" $ \directory -> do
-        request <- expectRight (mkRoleResourceRequest "listener" False)
-        draft <- expectRight (rolePlanDraft [request])
-        let resources =
-                ServiceResourceBackend
-                    { serviceRolePlanDraft = draft
-                    , servicePrerequisite = pure PrereqSatisfied
-                    , serviceAcquireResource = \_ -> pure Acquired
-                    , serviceProbeResource = \_ -> pure ProbeReadyNow
-                    , serviceReleaseResource = \_ -> pure Released
-                    }
-            definition (name, action) =
-                serviceProgramDefinition
-                    (either error id (serviceId name))
-                    (\_ -> Right (if selected == name then Just () else Nothing))
-                    (WithEffect NetworkListenName NoEffects)
-                    resources
-                    (cliServiceBackend :: ServiceBackend CliServicePayloads)
-                    ( \_ -> withReadyServiceHandles $ \ready -> case lookupAcquiredResource ready "listener" of
-                        Nothing -> pure ()
-                        Just listener -> serve [(listener, action)]
-                    )
-            registry = either (error . show) id (serviceRegistry (map definition handlers))
+        let draft = serviceRolePlanDraft cliServiceResources
+            registry = fixtureServiceRegistry (Just selected) handlers
             spec =
                 finalized $
                     addServices registry $
@@ -1749,6 +1732,18 @@ withVerifiedServiceRuntime selected handlers use =
                         , ("HOSTBOOTSTRAP_SERVICE_INVOCATION_NONCE", "cli-service-instance")
                         ]
                         (use spec)
+
+cliServiceResources :: ServiceResourceBackend
+cliServiceResources =
+    ServiceResourceBackend
+        { serviceRolePlanDraft = either (error . show) id $ do
+            request <- mkRoleResourceRequest "listener" False
+            rolePlanDraft [request]
+        , servicePrerequisite = pure PrereqSatisfied
+        , serviceAcquireResource = \_ -> pure Acquired
+        , serviceProbeResource = \_ -> pure ProbeReadyNow
+        , serviceReleaseResource = \_ -> pure Released
+        }
 
 cliServiceBackend :: ServiceBackend CliServicePayloads
 cliServiceBackend =

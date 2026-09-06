@@ -302,7 +302,8 @@ again inside that entry, and the continuation runs only after it unlocks.
 The canonical child configuration is never supplied by a caller: it comes only
 from the recursive catalog's own admitted entry for exactly this parent and
 child frame, and the recovery adapter comes only from this plan's own reverse
-projection. Phase 13's frozen neutral constructor then joins the two into the
+projection. the authenticated-handoff phase's neutral constructor
+(DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md) then joins the two into the
 complete 'HostBootstrap.Handoff.Recovery.RecoveryChildPackage', whose canonical
 bytes — never the adapter alone — become the prepared payload, the durable
 record's payload frame, and the offer the root signs.

@@ -184,16 +184,26 @@ import HostBootstrap.Protected (
     readProtectedRecord,
     withProtectedEntry,
  )
-import HostBootstrap.RoleLifecycle (DeclaredEffects (NoEffects))
+import HostBootstrap.RoleLifecycle (
+    DeclaredEffects (NoEffects),
+    RoleAcquireOutcome (Acquired),
+    RolePrereqOutcome (PrereqSatisfied),
+    RoleProbeOutcome (ProbeReadyNow),
+    RoleReleaseOutcome (Released),
+    mkRoleResourceRequest,
+    rolePlanDraft,
+ )
 import HostBootstrap.Service (
     ServiceRegistry,
+    ServiceResourceBackend (..),
     emptyServiceRegistry,
     finalizedServiceVariantNames,
-    serviceDefinition,
+    serviceProgramDefinition,
     serviceId,
     serviceRoleSchemaFamilies,
     singletonServiceRegistry,
  )
+import HostBootstrap.Service.Program (ServiceBackend (..))
 import HostBootstrap.Step (
     CoreStepId (ContextInitId),
     ReversePolicy (PreserveOnReverse, ProjectManagedReverse),
@@ -1507,10 +1517,8 @@ sourceBoundaryTests =
                             , "HostBootstrap.ProjectPlan.Frame"
                             , "HostBootstrap.ProjectPlan.Handoff.Internal"
                             , "HostBootstrap.ProjectPlan.Projection.Internal"
-                            , "HostBootstrap.ProjectPlan.Child.Internal"
                             , "HostBootstrap.ProjectPlan.Snapshot"
                             , "HostBootstrap.Authority.ProjectPlan"
-                            , "HostBootstrap.Authority.ProjectPlan.Internal"
                             , "HostBootstrap.Cluster.Workload.Binding"
                             , "HostBootstrap.Cluster.Workload"
                             , "HostBootstrap.Command.Child"
@@ -1550,7 +1558,7 @@ sourceBoundaryTests =
                             , moduleName /= "HostBootstrap.ProjectPlan.Child.Internal"
                             , SourceGuard.countHaskellIdentifier "runAuthorizedChildCursorKernel" source > 0
                             ]
-                fixedRunnerCallers @?= ["HostBootstrap.Command.LifecycleEntry"]
+                fixedRunnerCallers @?= []
         , testCase "the plan foundation depends only on the pure lift-context vocabulary" $
             withPackageSourceRoot $ \_packageRoot sourceRoot -> do
                 let foundationalPaths =
@@ -3030,7 +3038,7 @@ sourceBoundaryTests =
                     authority
                 assertContains
                     "the sealed Entry wrapper admits only its root Up constructor"
-                    "case entry of RootUpLifecycleEntry root _ _ _ _ _ _ catalog -> withFailedUpUnwindAuthorityKernel root catalog failed report binding reached unresolved use ChildUpLifecycleEntry{} -> refused"
+                    "case entry of RootUpLifecycleEntry root _ _ _ _ _ _ catalog -> withFailedUpUnwindAuthorityKernel root catalog failed report binding reached unresolved use"
                     entry
                 assertContains
                     "the hidden module is built but not exposed"
@@ -4332,6 +4340,15 @@ sourceBoundaryTests =
                         "withReverseRootSourceRecordsKernel ::"
                         "{- | Open or exactly resume one frame-local cursor."
                         sessionSource
+                -- The recovery finalizer is a later consumer of this shared
+                -- module. Freeze the reverse protocol's own references only;
+                -- a build without that consumer needs no placeholder section.
+                protocolSource <-
+                    if "data ProductionClosureAuthorization" `Text.isInfixOf` Text.pack modeSource
+                        then do
+                            finalizer <- requiredSourceSection "Production closure consumer" "data ProductionClosureAuthorization" "-- Production invocation close" modeSource
+                            pure (Text.unpack (Text.replace (Text.pack finalizer) "" (Text.pack modeSource)))
+                        else pure modeSource
                 let sealedSchema = normalizeWhitespace schema
                     canonicalCodec = normalizeWhitespace codec
                     eliminator = normalizeWhitespace sourceEliminator
@@ -4474,17 +4491,17 @@ sourceBoundaryTests =
                 SourceGuard.countHaskellIdentifier "compareAndDeleteProtectedRecord" codec @?= 0
                 SourceGuard.countHaskellIdentifier "withReverseRootSourceRecordsKernel" modeSource @?= 2
                 mapM_
-                    (\(name, count) -> SourceGuard.countHaskellIdentifier name modeSource @?= count)
-                    [ ("ReverseRootDownPending", 7)
-                    , ("ReverseRootDestroyPending", 7)
-                    , ("ReverseRootDownCommitted", 7)
-                    , ("ReverseRootDestroyCommitted", 7)
-                    , ("ReverseRootDownTerminal", 10)
-                    , ("ReverseRootDestroyTerminal", 10)
+                    (\(name, count) -> SourceGuard.countHaskellIdentifier name protocolSource @?= count)
+                    [ ("ReverseRootDownPending", 6)
+                    , ("ReverseRootDestroyPending", 6)
+                    , ("ReverseRootDownCommitted", 6)
+                    , ("ReverseRootDestroyCommitted", 6)
+                    , ("ReverseRootDownTerminal", 9)
+                    , ("ReverseRootDestroyTerminal", 9)
                     , ("encodeReverseRootIntent", 9)
-                    , ("decodeReverseRootIntent", 15)
+                    , ("decodeReverseRootIntent", 12)
                     , ("reverseRootIntentKey", 6)
-                    , ("reverseRootIntentKeyForName", 5)
+                    , ("reverseRootIntentKeyForName", 4)
                     ]
                 mapM_
                     (\name -> SourceGuard.countHaskellIdentifier name modeSource @?= 0)
@@ -4542,7 +4559,10 @@ sourceBoundaryTests =
                     @?= [ "HostBootstrap.Authority.Kernel"
                         , "HostBootstrap.Lifecycle.Mode"
                         ]
-                reverseKeyLiteralSites @?= ["HostBootstrap.Lifecycle.Mode"]
+                -- Mode chooses the intent key. The shared redo coordinator may
+                -- validate that key in its closed finalization descriptor.
+                filter (/= "HostBootstrap.Lifecycle.Transaction") reverseKeyLiteralSites
+                    @?= ["HostBootstrap.Lifecycle.Mode"]
                 Text.count "reverse-root." (Text.pack modeSource) @?= 1
                 cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
                 assertAbsent
@@ -5400,7 +5420,7 @@ sourceBoundaryTests =
                     requiredSourceSection
                         "reverse-root lifecycle-entry producer"
                         "withRootProjectReverseLifecycleEntry ::"
-                        "{- | Admit exactly one authenticated child Up/Execute entry."
+                        "{- | Interpret exactly one admitted root @project up@ leaf."
                         entrySource
                 sourceCallback <-
                     requiredSourceSection
@@ -5430,7 +5450,7 @@ sourceBoundaryTests =
                     requiredSourceSection
                         "generic acquisition journal gate"
                         "withAcquisitionJournal ::"
-                        "{- | Sealed config-origin child recovery."
+                        "{- | Purely prove that a later authority gate"
                         modeSource
                 recoveredPlanGate <-
                     requiredSourceSection
@@ -5703,7 +5723,7 @@ sourceBoundaryTests =
                 SourceGuard.countHaskellIdentifier "RootDestroyLifecycleEntry" sealerSection @?= 1
                 SourceGuard.countHaskellIdentifier "withAcquisitionJournalPhase" sourceCallback @?= 1
                 mapM_
-                    (\name -> SourceGuard.countHaskellIdentifier name entrySource @?= 10)
+                    (\name -> SourceGuard.countHaskellIdentifier name entrySource @?= 9)
                     ["RootDownLifecycleEntry", "RootDestroyLifecycleEntry"]
                 sources <- readProductionSources sourceRoot
                 let sites name =
@@ -5722,7 +5742,6 @@ sourceBoundaryTests =
                         ]
                 sites "withReverseRootTargetLifecycleCursorKernel"
                     @?= [ ("HostBootstrap.Command.LifecycleEntry", 3)
-                        , ("HostBootstrap.Lifecycle.Mode", 2)
                         , ("HostBootstrap.Lifecycle.Session", 4)
                         ]
                 publicExports <- readPublicModuleExports packageRoot sourceRoot
@@ -6225,15 +6244,13 @@ sourceBoundaryTests =
                         , ("HostBootstrap.Teardown.Internal", 4)
                         ]
                 sites "withVerifiedReverseAdapterKernel"
-                    @?= [ ("HostBootstrap.ProjectPlan.Child.Internal", 2)
-                        , ("HostBootstrap.Teardown.Internal", 3)
+                    @?= [ ("HostBootstrap.Teardown.Internal", 3)
                         ]
                 importers "HostBootstrap.Teardown.Internal"
                     @?= [ "HostBootstrap.Command.LifecycleEntry"
                         , "HostBootstrap.Handoff.Completion"
                         , "HostBootstrap.Handoff.Process"
                         , "HostBootstrap.Handoff.Relay"
-                        , "HostBootstrap.ProjectPlan.Child.Internal"
                         ]
                 publicExports <- readPublicModuleExports packageRoot sourceRoot
                 modulesExporting "ReverseDescent" publicExports @?= []
@@ -6376,16 +6393,6 @@ sourceBoundaryTests =
                         , producer
                         )
                     ,
-                        ( "Child Up is an unchanged-work refusal"
-                        , "ChildUpLifecycleEntry{} -> refused"
-                        , producer
-                        )
-                    ,
-                        ( "recovery child is an unchanged-work refusal"
-                        , "ChildRecoveryLifecycleEntry{} -> refused"
-                        , producer
-                        )
-                    ,
                         ( "Root Down relays only its destructured sealed package"
                         , "RootDownLifecycleEntry root verb plan lifecycleContext journal cursor authority reauthorize catalog -> prepare root verb plan catalog lifecycleContext journal cursor authority reauthorize descent use"
                         , producer
@@ -6431,8 +6438,6 @@ sourceBoundaryTests =
                     "the producer exhausts Up and recovery-child refusals before the two exact root branches"
                     [ "case entry of"
                     , "RootUpLifecycleEntry{} -> refused"
-                    , "ChildUpLifecycleEntry{} -> refused"
-                    , "ChildRecoveryLifecycleEntry{} -> refused"
                     , "RootDownLifecycleEntry"
                     , "prepare root verb plan catalog lifecycleContext journal cursor authority reauthorize descent use"
                     , "RootDestroyLifecycleEntry"
@@ -6512,8 +6517,6 @@ sourceBoundaryTests =
                 mapM_
                     (\name -> SourceGuard.countHaskellIdentifier name producerBody @?= 1)
                     [ "RootUpLifecycleEntry"
-                    , "ChildUpLifecycleEntry"
-                    , "ChildRecoveryLifecycleEntry"
                     ]
                 mapM_
                     (\name -> SourceGuard.countHaskellIdentifier name producerBody @?= 1)
@@ -6544,8 +6547,6 @@ sourceBoundaryTests =
                             (name `notElem` exports)
                     )
                     [ "RootUpLifecycleEntry"
-                    , "ChildUpLifecycleEntry"
-                    , "ChildRecoveryLifecycleEntry"
                     , "RootDownLifecycleEntry"
                     , "RootDestroyLifecycleEntry"
                     ]
@@ -6586,15 +6587,13 @@ sourceBoundaryTests =
                 sites "PreparedReverseDescent"
                     @?= [("HostBootstrap.Teardown.Internal", 14)]
                 sites "withVerifiedReverseAdapterKernel"
-                    @?= [ ("HostBootstrap.ProjectPlan.Child.Internal", 2)
-                        , ("HostBootstrap.Teardown.Internal", 3)
+                    @?= [ ("HostBootstrap.Teardown.Internal", 3)
                         ]
                 importers "HostBootstrap.Teardown.Internal"
                     @?= [ "HostBootstrap.Command.LifecycleEntry"
                         , "HostBootstrap.Handoff.Completion"
                         , "HostBootstrap.Handoff.Process"
                         , "HostBootstrap.Handoff.Relay"
-                        , "HostBootstrap.ProjectPlan.Child.Internal"
                         ]
                 publicExports <- readPublicModuleExports packageRoot sourceRoot
                 modulesExporting "withPreparedRootReverseDescentKernel" publicExports @?= []
@@ -6696,12 +6695,6 @@ sourceBoundaryTests =
                     requiredSourceSection
                         "ordinary acquisition journal admission"
                         "withAcquisitionJournal ::"
-                        "{- | Sealed config-origin child recovery."
-                        modeSource
-                childReopen <-
-                    requiredSourceSection
-                        "authenticated live child reopen"
-                        "reopenAuthenticatedChildCursorKernel ::"
                         "{- | Purely prove that a later authority gate"
                         modeSource
                 profileAdmission <-
@@ -6715,7 +6708,6 @@ sourceBoundaryTests =
                     bound = normalizeWhitespace boundAdmission
                     fresh = normalizeWhitespace freshAllocator
                     acquisition = normalizeWhitespace acquisitionAdmission
-                    child = normalizeWhitespace childReopen
                     profile = normalizeWhitespace profileAdmission
                 mapM_
                     (\(label, fragment, source) -> assertContains label fragment source)
@@ -6796,7 +6788,7 @@ sourceBoundaryTests =
                         )
                     ,
                         ( "fresh profile refusal before profile-slot mutation"
-                        , "clear <- refuseReverseRootIntentForName session projectName case clear of"
+                        , "clear <- withModeResult (recoverProductionClosures session) (const (refuseReverseRootIntentForName session projectName)) case clear of"
                         , profile
                         )
                     ,
@@ -6807,15 +6799,10 @@ sourceBoundaryTests =
                     ]
                 SourceGuard.countHaskellIdentifier "withFreshBrokerEpochKernel" freshAllocator @?= 1
                 SourceGuard.countHaskellIdentifier "refuseReverseRootIntent" acquisitionAdmission @?= 0
-                SourceGuard.countHaskellIdentifier "refuseReverseRootIntent" childReopen @?= 0
                 assertContains
                     "ordinary acquisition retains its exact live mode/lease validator"
                     "liveResult <- validateLiveBinding session"
                     acquisition
-                assertContains
-                    "authenticated reopen retains its exact live mode/lease validator"
-                    "reopenExistingAcquisitionCursorKernel admission store session (validateLive run expectedMode)"
-                    child
         , testCase "resource and budget admission stays plan-owned and exactly indexed" $
             withPackageSourceRoot $ \packageRoot sourceRoot -> do
                 facadeSource <- readFile (sourceRoot </> "HostBootstrap" </> "ProjectPlan.hs")
@@ -6954,18 +6941,10 @@ sourceBoundaryTests =
                 projectAuthoritySource <-
                     readFile
                         (sourceRoot </> "HostBootstrap" </> "Authority" </> "ProjectPlan.hs")
-                childSource <-
-                    readFile
-                        (sourceRoot </> "HostBootstrap" </> "ProjectPlan" </> "Child" </> "Internal.hs")
-                entrySource <-
-                    readFile
-                        (sourceRoot </> "HostBootstrap" </> "Command" </> "LifecycleEntry.hs")
                 let frame = normalizeWhitespace frameSource
                     session = normalizeWhitespace sessionSource
                     authorityKernel = normalizeWhitespace authorityKernelSource
                     projectAuthority = normalizeWhitespace projectAuthoritySource
-                    child = normalizeWhitespace childSource
-                    entry = normalizeWhitespace entrySource
                 mapM_
                     (\(label, fragment, source) -> assertContains label fragment source)
                     [
@@ -7013,1291 +6992,78 @@ sourceBoundaryTests =
                         , "AcquisitionJournal scope planId brokerGeneration -> LifecycleCursor scope planId frame brokerGeneration verb phase -> ValidatedLifecycleContext"
                         , projectAuthority
                         )
-                    ,
-                        ( "the authenticated child's authorized package"
-                        , "data AuthorizedChildCursor scope specDigest planDigest brokerGeneration parentFrame planId configId childFrame verb phase"
-                        , child
-                        )
-                    ,
-                        ( "the authorized child's ten nominal roles"
-                        , "type role AuthorizedChildCursor nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal"
-                        , child
-                        )
-                    ,
-                        ( "the authorized package's Teardown successor"
-                        , "AuthorizedTeardownChildCursor :: AuthorizedChildCursor"
-                        , child
-                        )
-                    ,
-                        ( "the child entry retains one inseparable authorized package"
-                        , "ChildUpLifecycleEntry :: AuthorizedChildCursor scope specDigest planDigest brokerGeneration parentFrame planId configId frame VerbUp ExecutePhase -> LifecycleEntry"
-                        , entry
-                        )
                     ]
                 SourceGuard.countHaskellIdentifier "authorizeChildProject" projectAuthoritySource @?= 0
-                SourceGuard.countHaskellIdentifier "childCommandReservationKernel" childSource @?= 3
-                Text.count
-                    "AuthorizedTeardownChildCursor authorized teardownCursor"
-                    (Text.pack childSource)
-                    @?= 1
-        , testCase "authenticated child cursor recovery stays token-gated and coordinate-free" $
+        , testCase "child plan admission cannot reopen a root acquisition cursor" $
             withPackageSourceRoot $ \_packageRoot sourceRoot -> do
-                sessionSource <- readFile (sourceRoot </> "HostBootstrap" </> "Lifecycle" </> "Session.hs")
-                modeSource <- readFile (sourceRoot </> "HostBootstrap" </> "Lifecycle" </> "Mode.hs")
-                childSource <- readFile (sourceRoot </> "HostBootstrap" </> "ProjectPlan" </> "Child" </> "Internal.hs")
-                sessionBridge <-
-                    requiredSourceSection
-                        "existing-only child acquisition bridge"
-                        "reopenExistingAcquisitionCursorKernel ::"
-                        "requireChildCursorPresence ::"
-                        sessionSource
-                modeBridge <-
-                    requiredSourceSection
-                        "one-entry authenticated child bridge"
-                        "reopenAuthenticatedChildCursorKernel ::"
-                        "{- | Reopen one authenticated recovery child's existing reverse cursor."
-                        modeSource
-                let session = normalizeWhitespace sessionBridge
-                    mode = normalizeWhitespace modeBridge
-                    child = normalizeWhitespace childSource
-                mapM_
-                    (\(label, fragment, source) -> assertContains label fragment source)
-                    [
-                        ( "the existing-only acquisition lookup"
-                        , "Right Nothing -> pure (Left (SessionAcquisitionMissing (recordKeyText recordKey)))"
-                        , session
-                        )
-                    ,
-                        ( "the child request bound check"
-                        , "case validateLifecycleCursorRequest journal frame ProjectUp of"
-                        , session
-                        )
-                    ,
-                        ( "the Prepare-only absent cursor policy"
-                        , "lifecyclePhaseName requestedPhase == lifecyclePhaseName Prepare"
-                        , normalizeWhitespace sessionSource
-                        )
-                    ,
-                        ( "the hidden token is forced before retained evidence"
-                        , "case consumeAcquisitionJournalAdmissionKernel admission of () -> case retainedEvidence of"
-                        , mode
-                        )
-                    ,
-                        ( "the acquisition lease key is checked before its read"
-                        , "case requireText \"lease key\" canonicalLease leaseText of Left failure -> pure (Left failure) Right () -> do modeResult <- readRequired session (\"mode.\" <> project) \"project mode\" leaseResult <- readRequired session canonicalLease \"run lease\""
-                        , mode
-                        )
-                    ,
-                        ( "the callback follows the protected entry"
-                        , "Right (Right (journal, cursor)) -> Right <$> use journal cursor"
-                        , mode
-                        )
-                    ,
-                        ( "the child authority retains its exact phase"
-                        , "ChildPlanAuthority :: HandoffBinding scope brokerGeneration -> LifecyclePhase phase ->"
-                        , child
-                        )
-                    ,
-                        ( "the signed child identity remains distinct from the local frame"
-                        , "parentFrame signedChildFrame configId VerbUp phase"
-                        , child
-                        )
-                    ,
-                        ( "the child package's ten nominal roles"
-                        , "type role AuthenticatedChildCursor nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal"
-                        , child
-                        )
-                    ,
-                        ( "nested lifecycle context is mandatory"
-                        , "withValidatedNestedLifecycleContext lifecycleContext"
-                        , child
-                        )
-                    ]
-                SourceGuard.countHaskellIdentifier "compareAndSwapProtectedRecord" sessionBridge @?= 0
-                SourceGuard.countHaskellIdentifier "withProtectedEntry" modeBridge @?= 1
-                SourceGuard.countHaskellIdentifier "unsafeCoerce" childSource @?= 0
-                SourceGuard.countHaskellIdentifier "withAuthenticatedChildCursorEvidence" childSource @?= 0
-        , testCase "reverse child recovery is existing-only, exact, and callback-safe" $
-            withPackageSourceRoot $ \packageRoot sourceRoot -> do
-                sessionSource <-
-                    readFile (sourceRoot </> "HostBootstrap" </> "Lifecycle" </> "Session.hs")
-                modeSource <-
-                    readFile (sourceRoot </> "HostBootstrap" </> "Lifecycle" </> "Mode.hs")
-                sessionTesting <-
-                    readFile
-                        (sourceRoot </> "HostBootstrap" </> "Lifecycle" </> "Session" </> "Testing.hs")
-                configOpener <-
-                    requiredSourceSection
-                        "config-origin existing acquisition opener"
-                        "reopenExistingAcquisitionCursorKernel ::"
-                        "{- | Strict existing-only admission for one authenticated reverse child."
-                        sessionSource
-                reverseOpener <-
-                    requiredSourceSection
-                        "strict reverse acquisition opener"
-                        "{- | Strict existing-only admission for one authenticated reverse child."
-                        "reopenExistingAcquisitionJournalInEntry ::"
-                        sessionSource
-                existingHelper <-
-                    requiredSourceSection
-                        "shared existing acquisition helper"
-                        "reopenExistingAcquisitionJournalInEntry ::"
-                        "requireChildCursorPresence ::"
-                        sessionSource
-                targetCursor <-
-                    requiredSourceSection
-                        "refactored reverse target cursor"
-                        "withReverseRootTargetLifecycleCursorKernel ::"
-                        "{- | Open or exactly resume one frame-local cursor."
-                        sessionSource
-                configWrapper <-
-                    requiredSourceSection
-                        "config-origin authenticated child wrapper"
-                        "reopenAuthenticatedChildCursorKernel ::"
-                        "{- | Reopen one authenticated recovery child's existing reverse cursor."
-                        modeSource
-                recoveryWrapper <-
-                    requiredSourceSection
-                        "authenticated reverse child wrapper"
-                        "{- | Reopen one authenticated recovery child's existing reverse cursor."
-                        "{- | Purely prove that a later authority gate"
-                        modeSource
-                let config = normalizeWhitespace configOpener
-                    reverseJournal = normalizeWhitespace reverseOpener
-                    existing = normalizeWhitespace existingHelper
-                    target = normalizeWhitespace targetCursor
-                    configMode = normalizeWhitespace configWrapper
-                    recovery = normalizeWhitespace recoveryWrapper
-                mapM_
-                    (\(label, fragment, body) -> assertContains label fragment body)
-                    [
-                        ( "config recovery remains statically Up-indexed"
-                        , "LifecycleCursor scope planId frame brokerGeneration VerbUp phase"
-                        , config
-                        )
-                    ,
-                        ( "config recovery factors through the shared existing-row helper"
-                        , "reopenExistingAcquisitionJournalInEntry store session validateLive stableScope project storeId snapshot run spec epoch (projectVerbName ProjectUp) Nothing"
-                        , config
-                        )
-                    ,
-                        ( "config recovery validates and opens only ProjectUp"
-                        , "validateLifecycleCursorRequest journal frame ProjectUp"
-                        , config
-                        )
-                    ,
-                        ( "config recovery opens only the requested existing Up cursor"
-                        , "openLifecycleCursorInEntry session journal frame ProjectUp phase"
-                        , config
-                        )
-                    ,
-                        ( "the reverse opener takes the hidden admission first"
-                        , "reopenExistingReverseAcquisitionJournalKernel :: AcquisitionJournalAdmission -> ProtectedStore -> ProtectedSession session"
-                        , reverseJournal
-                        )
-                    ,
-                        ( "the reverse opener returns only the exact journal"
-                        , "ProjectVerb verb -> IO (Either SessionError (AcquisitionJournal scope planId brokerGeneration))"
-                        , reverseJournal
-                        )
-                    ,
-                        ( "the reverse opener is strict and opaque on partial application"
-                        , "{-# OPAQUE reopenExistingReverseAcquisitionJournalKernel #-} reopenExistingReverseAcquisitionJournalKernel admission = case consumeAcquisitionJournalAdmissionKernel admission of () -> \\store session validateLive stableScope project storeId snapshot run spec epoch frame verb ->"
-                        , reverseJournal
-                        )
-                    ,
-                        ( "reverse acquisition requires the immutable Prepare/version-one seed"
-                        , "run spec epoch verbName (Just (\"prepare\", 1))"
-                        , reverseJournal
-                        )
-                    ,
-                        ( "reverse acquisition totally refuses Up"
-                        , "ProjectUp -> pure (Left (SessionCursorVerbMismatch \"down or destroy\" \"up\"))"
-                        , reverseJournal
-                        )
-                    ,
-                        ( "Down validates its exact typed frame and verb"
-                        , "ProjectDown -> do opened <- reopen (projectVerbName verb) pure $ opened >>= \\journal -> journal <$ validateLifecycleCursorRequest journal frame verb"
-                        , reverseJournal
-                        )
-                    ,
-                        ( "Destroy validates its exact typed frame and verb"
-                        , "ProjectDestroy -> do opened <- reopen (projectVerbName verb) pure $ opened >>= \\journal -> journal <$ validateLifecycleCursorRequest journal frame verb"
-                        , reverseJournal
-                        )
-                    ,
-                        ( "the shared helper derives the one existing acquisition key"
-                        , "either (pure . Left) reopen (childAcquisitionKey project run epoch)"
-                        , existing
-                        )
-                    ,
-                        ( "absence is a hard existing-row refusal"
-                        , "Right Nothing -> pure (Left (SessionAcquisitionMissing (recordKeyText recordKey)))"
-                        , existing
-                        )
-                    ,
-                        ( "the durable acquisition row must re-encode canonically"
-                        , "protectedRecordBytes record /= encodeAcquisitionRecord binding seed"
-                        , existing
-                        )
-                    ,
-                        ( "the durable verb and complete binding are exact"
-                        , "acquisitionBindingRootVerb binding /= verbName"
-                        , existing
-                        )
-                    ,
-                        ( "the reverse seed requirement is checked before liveness"
-                        , "Just (requiredSeed, _) <- required , acquisitionPhaseText seed /= requiredSeed"
-                        , existing
-                        )
-                    ,
-                        ( "the reverse record version requirement is checked before liveness"
-                        , "Just (_, requiredVersion) <- required , recordVersionWord (protectedRecordVersion record) /= requiredVersion"
-                        , existing
-                        )
-                    ,
-                        ( "the exact retained liveness validator precedes journal construction"
-                        , "valid <- check session pure $ case valid of Left failure -> Left failure Right () -> Right ( AcquisitionJournal store check recordKey (protectedRecordVersion record) binding seed )"
-                        , existing
-                        )
-                    ,
-                        ( "the target cursor is strict and opaque"
-                        , "{-# OPAQUE withReverseRootTargetLifecycleCursorKernel #-} withReverseRootTargetLifecycleCursorKernel admission = case consumeAcquisitionJournalAdmissionKernel admission of () -> \\journal@(AcquisitionJournal store validateLive _ sourceVersion _ seedPhase) frame verb use ->"
-                        , target
-                        )
-                    ,
-                        ( "target retained liveness is checked before the current cursor"
-                        , "inLifecycleCursorEntry store $ \\session -> do live <- validateLive session case live of Left failure -> pure (Left failure) Right () -> do current <- openCurrentLifecycleCursorInEntry session Nothing journal frame verb"
-                        , target
-                        )
-                    ,
-                        ( "the target callback follows the protected-entry result"
-                        , "either (pure . Left) (fmap Right . use) terminal"
-                        , target
-                        )
-                    ,
-                        ( "config-origin Mode admission remains narrowed-config only"
-                        , "require \"payload kind\" (handoffPayloadKind signed == NarrowedProjectConfig)"
-                        , configMode
-                        )
-                    ,
-                        ( "config-origin Mode admission retains exact config bytes identity"
-                        , "requireText \"configuration digest\" configDigest (handoffChildConfigDigest signed)"
-                        , configMode
-                        )
-                    ,
-                        ( "the recovery wrapper accepts only typed retained evidence"
-                        , "reopenAuthenticatedRecoveryChildCursorKernel :: AcquisitionJournalAdmission -> ProtectedStore -> HandoffBinding scope brokerGeneration -> ProjectPlan scope specDigest planId configId cfg -> PlanDigestBinding scope specDigest planDigest planId -> ProjectFrame scope specDigest planId configId frame -> ProjectVerb verb"
-                        , recovery
-                        )
-                    ,
-                        ( "the recovery wrapper yields only the exact journal/cursor pair"
-                        , "AcquisitionJournal scope planId brokerGeneration -> LifecycleCursor scope planId frame brokerGeneration verb TeardownPhase -> IO result"
-                        , recovery
-                        )
-                    ,
-                        ( "the recovery wrapper is strict and opaque"
-                        , "{-# OPAQUE reopenAuthenticatedRecoveryChildCursorKernel #-} reopenAuthenticatedRecoveryChildCursorKernel admission = case consumeAcquisitionJournalAdmissionKernel admission of () -> \\store signed plan binding frame verb use ->"
-                        , recovery
-                        )
-                    ,
-                        ( "recovery accepts only the authenticated adapter payload"
-                        , "require \"payload kind\" (handoffPayloadKind signed == RecoveryAdapterWire)"
-                        , recovery
-                        )
-                    ,
-                        ( "the adapter coordinate is canonical lower hexadecimal"
-                        , "require \"adapter digest coordinate\" $ Text.length adapterDigest == 64 && Text.all lowerHex adapterDigest"
-                        , recovery
-                        )
-                    ,
-                        ( "the exact local topology supplies one parent-child edge"
-                        , "[ edge | edge@(_, edgeChild) <- topologyParentEdges (topology plan) , edgeChild == child ] == [(parent, child)]"
-                        , recovery
-                        )
-                    ,
-                        ( "only a version-two committed intent can be admitted"
-                        , "recordVersionWord (protectedRecordVersion record) /= 2"
-                        , recovery
-                        )
-                    ,
-                        ( "Down committed intent is the exact admitted branch"
-                        , "ReverseRootDownCommitted common target modeVersion modeBytes leaseVersion leaseBytes"
-                        , recovery
-                        )
-                    ,
-                        ( "Destroy committed intent is the exact admitted branch"
-                        , "ReverseRootDestroyCommitted common target modeVersion modeBytes leaseVersion leaseBytes"
-                        , recovery
-                        )
-                    ,
-                        ( "both Pending states refuse as Pending"
-                        , "ReverseRootDownPending{} -> pure (mismatch \"reverse-root intent state\" \"committed\" \"pending\") Just ReverseRootDestroyPending{} -> pure (mismatch \"reverse-root intent state\" \"committed\" \"pending\")"
-                        , recovery
-                        )
-                    ,
-                        ( "the exact local canonical plan is independently rendered"
-                        , "canonical = projectPlanCanonicalSnapshotKernel plan"
-                        , recovery
-                        )
-                    ,
-                        ( "committed intent retains exact config and canonical plan independently"
-                        , "requireText \"intent configuration\" configDigest intentConfig requireText \"intent plan\" planDigest intentPlan requireBytes \"intent canonical plan\" canonicalBytes intentCanonical"
-                        , recovery
-                        )
-                    ,
-                        ( "live intent, mode, lease, and snapshot rows are all reread"
-                        , "intentResult <- readRequired intentKey \"reverse-root intent\" modeResult <- readNamed (\"mode.\" <> project) \"project mode\" leaseResult <- readNamed canonicalLease \"run lease\" snapshotResult <- readNamed (\"snapshot.\" <> project <> \".\" <> run) \"plan snapshot\""
-                        , recovery
-                        )
-                    ,
-                        ( "the existing reverse journal is opened inside the protected entry"
-                        , "reopenExistingReverseAcquisitionJournalKernel admission store session"
-                        , recovery
-                        )
-                    ,
-                        ( "journal liveness reruns the complete row validator"
-                        , "Right () -> validateRowsAt live"
-                        , recovery
-                        )
-                    ,
-                        ( "the target cursor and callback follow the committed-entry unlock"
-                        , "Right (Right journal) -> withReverseRootTargetLifecycleCursorKernel admission journal frame verb (use journal)"
-                        , recovery
-                        )
-                    ,
-                        ( "Mode totally refuses recovery Up"
-                        , "ProjectUp -> pure (Left (SessionCursorVerbMismatch \"down/destroy\" \"up\"))"
-                        , recovery
-                        )
-                    ]
-                assertFragmentsInOrder
-                    "the shared helper reads, validates, checks liveness, then constructs"
-                    [ "childAcquisitionKey project run epoch"
-                    , "readProtectedRecord session recordKey"
-                    , "Right Nothing"
-                    , "decodeAcquisitionRecord"
-                    , "encodeAcquisitionRecord binding seed"
-                    , "acquisitionBindingRootVerb binding"
-                    , "binding /= expectedBinding binding"
-                    , "acquisitionPhaseText seed"
-                    , "recordVersionWord (protectedRecordVersion record)"
-                    , "valid <- check session"
-                    , "Right ()"
-                    , "AcquisitionJournal"
-                    ]
-                    existing
-                assertFragmentsInOrder
-                    "Mode authenticates, locks, defines exact row validation, dispatches committed intent, unlocks, then drives the target"
-                    [ "retainedEvidence"
-                    , "RecoveryAdapterWire"
-                    , "adapter digest coordinate"
-                    , "reverseRootIntentKeyForName project"
-                    , "withProtectedEntry store"
-                    , "validateRowsAt session"
-                    , "reopenExistingReverseAcquisitionJournalKernel"
-                    , "observed <- readProtectedRecord session intentKey"
-                    , "ReverseRootDownCommitted"
-                    , "ReverseRootDestroyCommitted"
-                    , "case entered of"
-                    , "Right (Right journal)"
-                    , "withReverseRootTargetLifecycleCursorKernel"
-                    , "use journal"
-                    ]
-                    recovery
-                mapM_
-                    (\name -> SourceGuard.countHaskellIdentifier name existingHelper @?= 0)
-                    [ "compareAndSwapProtectedRecord"
-                    , "ExpectAbsent"
-                    , "writeProtectedRecord"
-                    , "withProtectedEntry"
-                    ]
-                mapM_
-                    (\name -> SourceGuard.countHaskellIdentifier name reverseOpener @?= 0)
-                    ["use", "result", "withProtectedEntry", "compareAndSwapProtectedRecord", "ExpectAbsent"]
-                mapM_
-                    (\name -> SourceGuard.countHaskellIdentifier name configOpener @?= 0)
-                    ["ProjectDown", "ProjectDestroy", "RecoveryAdapterWire", "compareAndSwapProtectedRecord"]
-                mapM_
-                    (\name -> SourceGuard.countHaskellIdentifier name recoveryWrapper @?= 0)
-                    [ "ReceivedRecoveryDescent"
-                    , "withVerifiedReverseAdapterKernel"
-                    , "renderReverseAdapter"
-                    , "CommandAuthority"
-                    , "LifecycleEntry"
-                    , "reserveCurrentLifecycleCommandKernel"
-                    , "runChainFromFrame"
-                    , "openHandoffEdge"
-                    , "registerHandoffEdge"
-                    , "HandoffOffer"
-                    , "HandoffToken"
-                    , "attemptLocalWork"
-                    , "attemptPreDescentStep"
-                    , "settleDescentWork"
-                    , "failDescentWork"
-                    , "driveTeardownForest"
-                    , "verifySubtreeSettled"
-                    , "DestroySettled"
-                    , "SubtreeSettled"
-                    , "unsafeCoerce"
-                    , "undefined"
-                    , "error"
-                    , "compareAndSwapProtectedRecord"
-                    , "ExpectAbsent"
-                    ]
-                mapM_
-                    (\section -> mapM_ (\name -> SourceGuard.countHaskellIdentifier name section @?= 0) ["data", "newtype", "type"])
-                    [reverseOpener, existingHelper, targetCursor, recoveryWrapper]
-                SourceGuard.countHaskellIdentifier "reopenExistingAcquisitionJournalInEntry" configOpener @?= 1
-                SourceGuard.countHaskellIdentifier "reopenExistingAcquisitionJournalInEntry" reverseOpener @?= 1
-                SourceGuard.countHaskellIdentifier "withProtectedEntry" recoveryWrapper @?= 1
-                SourceGuard.countHaskellIdentifier "reopenExistingReverseAcquisitionJournalKernel" recoveryWrapper @?= 1
-                SourceGuard.countHaskellIdentifier "withReverseRootTargetLifecycleCursorKernel" recoveryWrapper @?= 1
-                SourceGuard.countHaskellIdentifier "handoffChildConfigDigest" recoveryWrapper @?= 1
-                assertAbsent
-                    "adapter digest is not equated to the local configuration digest"
-                    "requireText \"configuration digest\" configDigest (handoffChildConfigDigest signed)"
-                    recovery
-                SourceGuard.countHaskellIdentifier "ReceivedRecoveryDescent" modeSource @?= 0
-                assertBool
-                    "Mode does not import the future Teardown.Internal verifier"
-                    (not (SourceGuard.importsModule "HostBootstrap.Teardown.Internal" modeSource))
+                -- rationale.md: a shared lifecycle-authority mount and generic
+                -- protected-store RPC cannot stand in for rooted coordination.
                 sources <- readProductionSources sourceRoot
-                let sites name =
-                        [ (moduleName, count)
-                        | (moduleName, _path, sourceBody) <- sources
-                        , let count = SourceGuard.countHaskellIdentifier name sourceBody
+                let forbidden = "AuthenticatedChildCursor"
+                    occurrences =
+                        [ (name, count)
+                        | (name, _path, source) <- sources
+                        , let count = SourceGuard.countHaskellIdentifier forbidden source
                         , count > 0
                         ]
-                sites "reopenExistingAcquisitionJournalInEntry"
-                    @?= [("HostBootstrap.Lifecycle.Session", 4)]
-                sites "reopenExistingReverseAcquisitionJournalKernel"
-                    @?= [ ("HostBootstrap.Lifecycle.Mode", 2)
-                        , ("HostBootstrap.Lifecycle.Session", 4)
-                        ]
-                sites "reopenAuthenticatedRecoveryChildCursorKernel"
-                    @?= [ ("HostBootstrap.Lifecycle.Mode", 4)
-                        , ("HostBootstrap.ProjectPlan.Child.Internal", 2)
-                        ]
-                sites "withReverseRootTargetLifecycleCursorKernel"
-                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 3)
-                        , ("HostBootstrap.Lifecycle.Mode", 2)
-                        , ("HostBootstrap.Lifecycle.Session", 4)
-                        ]
-                publicExports <- readPublicModuleExports packageRoot sourceRoot
-                modulesExporting "reopenExistingReverseAcquisitionJournalKernel" publicExports
-                    @?= ["HostBootstrap.Lifecycle.Session"]
-                modulesExporting "reopenAuthenticatedRecoveryChildCursorKernel" publicExports
-                    @?= ["HostBootstrap.Lifecycle.Mode"]
-                modulesExporting "AcquisitionJournalAdmission" publicExports @?= []
-                SourceGuard.countHaskellIdentifier
-                    "reopenExistingReverseAcquisitionJournalKernel"
-                    sessionTesting
-                    @?= 0
-                SourceGuard.countHaskellIdentifier
-                    "reopenAuthenticatedRecoveryChildCursorKernel"
-                    sessionTesting
-                    @?= 0
-                cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
-                librarySource <-
-                    maybe
-                        (assertFailure "the main library stanza is missing")
-                        pure
-                        (mainLibraryStanza cabalSource)
-                let exposedModules = fieldModules "exposed-modules:" librarySource
-                    otherModules = fieldModules "other-modules:" librarySource
-                length (filter (== "HostBootstrap.Lifecycle.Session") exposedModules) @?= 1
-                length (filter (== "HostBootstrap.Lifecycle.Mode") exposedModules) @?= 1
-                assertBool
-                    "no reverse-recovery testing module was registered"
-                    ( "HostBootstrap.Lifecycle.Mode.Testing" `notElem` otherModules
-                        && "HostBootstrap.Lifecycle.Recovery.Testing" `notElem` otherModules
-                    )
-        , testCase "recovery child origin is sealed and locally derived" $
-            withPackageSourceRoot $ \packageRoot sourceRoot -> do
-                authorityInternalSource <-
-                    readFile
-                        ( sourceRoot
-                            </> "HostBootstrap"
-                            </> "Authority"
-                            </> "ProjectPlan"
-                            </> "Internal.hs"
-                        )
-                childSource <-
-                    readFile
-                        (sourceRoot </> "HostBootstrap" </> "ProjectPlan" </> "Child" </> "Internal.hs")
-                entrySource <-
-                    readFile (sourceRoot </> "HostBootstrap" </> "Command" </> "LifecycleEntry.hs")
-                constructSource <-
-                    readFile (sourceRoot </> "HostBootstrap" </> "ProjectPlan" </> "Construct.hs")
-                originSchema <-
-                    requiredSourceSection
-                        "sealed recovery-child origin schema"
-                        "data ChildRecoveryOrigin"
-                        "withChildRecoveryOriginKernel ::"
-                        authorityInternalSource
-                originSealer <-
-                    requiredSourceSection
-                        "fixed-unit recovery-child origin sealer"
-                        "withChildRecoveryOriginKernel ::"
-                        "-- | Descriptive local frame"
-                        authorityInternalSource
-                let terminalSource =
-                        unlines
-                            ( dropWhile
-                                (not . isPrefixOf "withChildRecoveryTerminalOriginKernel ::")
-                                (lines authorityInternalSource)
-                            )
-                    producerSource =
-                        unlines
-                            ( dropWhile
-                                (not . isPrefixOf "withReceivedRecoveryChildOriginKernel ::")
-                                (lines childSource)
-                            )
-                assertBool "the recovery terminal fold source marker is missing" (not (null terminalSource))
-                assertBool "the recovery child producer source marker is missing" (not (null producerSource))
-                originExports <-
-                    requiredModuleExports
-                        "HostBootstrap.Authority.ProjectPlan.Internal"
-                        authorityInternalSource
-                filter (/= ",") originExports
-                    @?= [ "ChildRecoveryOrigin"
-                        , "withChildRecoveryOriginKernel"
-                        , "childRecoveryOriginFrameNameKernel"
-                        , "childRecoveryOriginVerbNameKernel"
-                        , "withChildRecoveryTerminalOriginKernel"
-                        ]
-                let origin = normalizeWhitespace authorityInternalSource
-                    schema = normalizeWhitespace originSchema
-                    sealer = normalizeWhitespace originSealer
-                    terminal = normalizeWhitespace terminalSource
-                    producer = normalizeWhitespace producerSource
-                mapM_
-                    (\(label, fragment, body) -> assertContains label fragment body)
-                    [
-                        ( "the recovery origin has exactly nine retained indices"
-                        , "data ChildRecoveryOrigin scope specDigest planDigest brokerGeneration parentFrame planId configId childFrame verb where"
-                        , origin
-                        )
-                    ,
-                        ( "the recovery origin's nine roles are all nominal"
-                        , "type role ChildRecoveryOrigin nominal nominal nominal nominal nominal nominal nominal nominal nominal"
-                        , schema
-                        )
-                    ,
-                        ( "the origin existentially retains the signed remote child"
-                        , "ReceivedRecoveryDescent scope brokerGeneration planDigest parentFrame signedChildFrame recoveryWireDigest recoveryWireId verb"
-                        , schema
-                        )
-                    ,
-                        ( "the origin jointly retains the independently admitted local package"
-                        , "ProjectPlan scope specDigest planId configId cfg -> PlanDigestBinding scope specDigest planDigest planId -> ValidatedLifecycleContext scope specDigest planId configId childFrame -> TeardownPlan scope planId childFrame verb -> AcquisitionJournal scope planId brokerGeneration -> LifecycleCursor scope planId childFrame brokerGeneration verb TeardownPhase -> CommandAuthority scope planId childFrame brokerGeneration verb TeardownPhase"
-                        , schema
-                        )
-                    ,
-                        ( "the origin sealer fixes both callback and outer results to unit"
-                        , "ChildRecoveryOrigin scope specDigest planDigest brokerGeneration parentFrame planId configId childFrame verb -> IO (Either Text ()) ) -> IO (Either Text ())"
-                        , sealer
-                        )
-                    ,
-                        ( "the sealer fully eliminates the received package before retaining anything"
-                        , "withReceivedRecoveryDescent descent $ \\_ _ _ _ _ _ ->"
-                        , sealer
-                        )
-                    ,
-                        ( "the sealer forces every independently admitted local term"
-                        , "plan `seq` binding `seq` context `seq` teardown `seq` journal `seq` cursor `seq` authority `seq` use ( ChildRecoveryOrigin descent plan binding context teardown journal cursor authority )"
-                        , sealer
-                        )
-                    ,
-                        ( "the only origin views are descriptive frame and closed verb text"
-                        , "childRecoveryOriginFrameNameKernel (ChildRecoveryOrigin _ _ _ _ _ _ _ authority) = commandAuthorityFrame authority"
-                        , origin
-                        )
-                    ,
-                        ( "the descriptive verb view retains the closed command term"
-                        , "childRecoveryOriginVerbNameKernel (ChildRecoveryOrigin _ _ _ _ _ _ _ authority) = projectVerbName (commandAuthorityVerb authority)"
-                        , origin
-                        )
-                    ,
-                        ( "the terminal fold gives its callback canonical bytes only"
-                        , "(ByteString.ByteString -> IO (Either Text ())) -> IO (Either Text ())"
-                        , terminal
-                        )
-                    ,
-                        ( "the terminal fold re-eliminates the complete received package"
-                        , "withReceivedRecoveryDescent descent $ \\edge _ verb adapter _ _ ->"
-                        , terminal
-                        )
-                    ,
-                        ( "the terminal identity is one length-framed canonical byte stream"
-                        , "use . ByteString.concat . map frameWire $ [ \"child-recovery-terminal-origin-v1\" , \"1\" , renderHandoffBinding (verifiedHandoffBinding (receivedEdgeHandoff edge))"
-                        , terminal
-                        )
-                    ,
-                        ( "the terminal identity closes over local plan, reservation, cursor, frame, verb, and adapter digest"
-                        , "text (stablePlanSnapshotDigest (renderSnapshot plan)) , text (planDigestBindingDigestKernel digestBinding) , text (invocationIdText (commandAuthorityInvocation authority)) , word (acquisitionJournalRecordVersion journal) , word (lifecycleCursorRecordVersion cursor) , text (commandAuthorityFrame authority) , word (brokerEpochWord (commandAuthorityEpoch authority)) , text (projectVerbName verb) , text (projectVerbName (commandAuthorityVerb authority)) , text (lifecyclePhaseName (commandAuthorityPhase authority)) , text (teardownPlanFrameId teardown) , text (teardownPlanVerbName teardown) , text (recoveryWireDigest adapter)"
-                        , terminal
-                        )
-                    ,
-                        ( "the child producer fixes fresh local plan and frame identities"
-                        , "( forall localPlanId localFrame. ChildRecoveryOrigin scope specDigest planDigest brokerGeneration parentFrame localPlanId configId localFrame verb -> IO (Either Text.Text ()) ) -> IO (Either Text.Text ())"
-                        , producer
-                        )
-                    ,
-                        ( "the producer is opaque and forces the received package before caller inputs"
-                        , "{-# OPAQUE withReceivedRecoveryChildOriginKernel #-} withReceivedRecoveryChildOriginKernel descent = case descent `seq` () of () -> \\store root config drafts binaryContext use ->"
-                        , producer
-                        )
-                    ,
-                        ( "the received envelope is Recovery-only, Production, and Teardown"
-                        , "require \"payload kind\" (handoffPayloadKind signed == RecoveryAdapterWire) requireText \"scope\" \"Production\" (handoffScope signed) requireText \"phase\" \"teardown\" (handoffPhase signed)"
-                        , producer
-                        )
-                    ,
-                        ( "the received verb is totally classified before plan admission"
-                        , "case verb of ProjectUp -> mismatch \"verb\" \"down or destroy\" \"up\" ProjectDown -> requireText \"verb\" \"down\" (handoffVerb signed) ProjectDestroy -> requireText \"verb\" \"destroy\" (handoffVerb signed)"
-                        , producer
-                        )
-                    ,
-                        ( "the full received payload is checked before use"
-                        , "require \"token commitment\" (not (Text.null (handoffTokenCommitment signed))) require \"adapter\" (not (ByteString.null adapter)) require \"projection\" (not (ByteString.null projection)) require \"grant\" (not (ByteString.null grant))"
-                        , producer
-                        )
-                    ,
-                        ( "the authenticated adapter digest is canonical lower hexadecimal"
-                        , "requireText \"adapter digest\" (handoffChildConfigDigest signed) (recoveryWireDigest adapter) require \"adapter digest coordinate\" $ Text.length (handoffChildConfigDigest signed) == 64 && Text.all lowerHex (handoffChildConfigDigest signed)"
-                        , producer
-                        )
-                    ,
-                        ( "the local executable plan is independently admitted from typed drafts"
-                        , "withChildProjectPlanKernel \"production\" (handoffBrokerGeneration signed) (handoffInstalledProject signed) (handoffStoreIdentity signed) (handoffPlanRevision signed) config drafts"
-                        , producer
-                        )
-                    ,
-                        ( "the local plan is rechecked against authenticated origin and local config"
-                        , "requireText \"plan specification digest\" (handoffSpecDigest signed) (stablePlanSnapshotSpecDigest snapshot) requireText \"plan configuration digest\" (validatedConfigDigest config) (stablePlanSnapshotConfigDigest snapshot) requireText \"stable plan digest\" (handoffPlanRevision signed) planDigest"
-                        , producer
-                        )
-                    ,
-                        ( "the local plan and context mint the fresh local frame"
-                        , "withValidatedLifecycleContext root store plan binaryContext $ \\context -> case withValidatedNestedLifecycleContext context $ \\_ contextStore current frame validated ->"
-                        , producer
-                        )
-                    ,
-                        ( "remote and local child frames meet only by closed textual and topology checks"
-                        , "requireText \"signed child frame\" (handoffChildFrame signed) child require \"immediate topology edge\" $ [topologyEdge | topologyEdge@(_, edgeChild) <- topologyParentEdges (topology plan), edgeChild == child] == [(handoffParentFrame signed, child)]"
-                        , producer
-                        )
-                    ,
-                        ( "canonical adapter equality precedes protected recovery admission"
-                        , "withVerifiedReverseAdapterKernel plan current verb adapter (\\teardown -> do opened <- reopenAuthenticatedRecoveryChildCursorKernel acquisitionJournalAdmissionKernel store signed plan digestBinding frame verb"
-                        , producer
-                        )
-                    ,
-                        ( "the immutable Prepare seed and exact Teardown cursor are rechecked"
-                        , "requireWord \"acquisition record version\" (1 :: Word64) (acquisitionJournalRecordVersion journal) withAcquisitionJournalPhase journal $ \\phase -> requireText \"acquisition seed\" \"prepare\" (lifecyclePhaseName phase)"
-                        , producer
-                        )
-                    ,
-                        ( "the sole child reservation is exact Teardown authority"
-                        , "reserveCurrentLifecycleCommandKernel journal cursor $ childCommandReservationKernel (handoffInstalledProject signed) (handoffStoreIdentity signed) (handoffBrokerGeneration signed) verb (handoffPlanRevision signed) Teardown (projectFrameId frame)"
-                        , producer
-                        )
-                    ,
-                        ( "the reserved authority is checked before the origin is sealed"
-                        , "require \"command store\" (commandAuthorityMatchesStore authority store) require \"cursor command origin\" (lifecycleCursorMatchesCommandAuthority authority cursor)"
-                        , producer
-                        )
-                    ,
-                        ( "the origin receives the entire exact local package only after reservation"
-                        , "withChildRecoveryOriginKernel descent plan digestBinding context teardown journal cursor authority use"
-                        , producer
-                        )
-                    ,
-                        ( "the producer can run only under the fixed received-package eliminator"
-                        , "in withReceivedRecoveryDescent descent admitReceived"
-                        , producer
-                        )
-                    ]
-                assertFragmentsInOrder
-                    "local plan, context, adapter, protected cursor, reservation, and origin remain ordered"
-                    [ "validateEnvelope signed verb adapter projection grant"
-                    , "withChildProjectPlanKernel"
-                    , "validatePlanHere"
-                    , "withValidatedLifecycleContext"
-                    , "withValidatedNestedLifecycleContext"
-                    , "validateNestedHere"
-                    , "withVerifiedReverseAdapterKernel"
-                    , "reopenAuthenticatedRecoveryChildCursorKernel"
-                    , "validateRuntimeHere"
-                    , "reserveCurrentLifecycleCommandKernel"
-                    , "validateReservedHere"
-                    , "withChildRecoveryOriginKernel"
-                    ]
-                    producer
-                mapM_
-                    (\name -> SourceGuard.countHaskellIdentifier name producerSource @?= 0)
-                    [ "projectPlanDrafts"
-                    , "FinalizedProjectSpec"
-                    , "withProjectPlan"
-                    , "LifecycleEntry"
-                    , "RootInvocationAuthority"
-                    , "unsafeCoerce"
-                    , "coerce"
-                    , "runChainFromFrame"
-                    , "withTeardownLifecycleCursor"
-                    , "renderReverseAdapter"
-                    , "compareAndSwapProtectedRecord"
-                    , "writeProtectedRecord"
-                    , "openTeardownForest"
-                    , "settleDescentWork"
-                    , "failDescentWork"
-                    , "driveTeardownForest"
-                    , "verifySubtreeSettled"
-                    , "SubtreeSettled"
-                    , "DestroySettled"
-                    , "withChildRecoveryTerminalOriginKernel"
-                    , "result"
-                    ]
-                mapM_
-                    (\name -> SourceGuard.countHaskellIdentifier name authorityInternalSource @?= 0)
-                    [ "RootInvocationAuthority"
-                    , "LifecycleEntry"
-                    , "CommandReservation"
-                    , "withProtectedEntry"
-                    , "compareAndSwapProtectedRecord"
-                    , "writeProtectedRecord"
-                    , "unsafeCoerce"
-                    , "result"
-                    , "settleDescentWork"
-                    , "driveTeardownForest"
-                    ]
-                SourceGuard.countHaskellIdentifier "withReceivedRecoveryDescent" originSealer @?= 1
-                SourceGuard.countHaskellIdentifier "withReceivedRecoveryDescent" terminalSource @?= 1
-                SourceGuard.countHaskellIdentifier "withChildProjectPlanKernel" producerSource @?= 1
-                SourceGuard.countHaskellIdentifier "withValidatedLifecycleContext" producerSource @?= 1
-                SourceGuard.countHaskellIdentifier "withValidatedNestedLifecycleContext" producerSource @?= 1
-                SourceGuard.countHaskellIdentifier "withVerifiedReverseAdapterKernel" producerSource @?= 1
-                SourceGuard.countHaskellIdentifier
-                    "reopenAuthenticatedRecoveryChildCursorKernel"
-                    producerSource
-                    @?= 1
-                SourceGuard.countHaskellIdentifier "childCommandReservationKernel" producerSource @?= 1
-                SourceGuard.countHaskellIdentifier "reserveCurrentLifecycleCommandKernel" producerSource @?= 1
-                SourceGuard.countHaskellIdentifier "withChildRecoveryOriginKernel" producerSource @?= 1
-                assertBool
-                    "Child.Internal must not reverse the Construct dependency"
-                    (not (SourceGuard.importsModule "HostBootstrap.ProjectPlan.Construct" childSource))
-                assertBool
-                    "Construct retains its one-way dependency on Child.Internal"
-                    (SourceGuard.importsModule "HostBootstrap.ProjectPlan.Child.Internal" constructSource)
-                assertBool
-                    "Child.Internal imports the recovery-origin authority module"
-                    (SourceGuard.importsModule "HostBootstrap.Authority.ProjectPlan.Internal" childSource)
-                assertBool
-                    "LifecycleEntry imports the abstract recovery-origin authority module"
-                    (SourceGuard.importsModule "HostBootstrap.Authority.ProjectPlan.Internal" entrySource)
-                SourceGuard.countHaskellIdentifier "withChildRecoveryOriginKernel" entrySource @?= 0
-                sources <- readProductionSources sourceRoot
-                let sites name =
-                        [ (moduleName, count)
-                        | (moduleName, _path, sourceBody) <- sources
-                        , let count = SourceGuard.countHaskellIdentifier name sourceBody
-                        , count > 0
-                        ]
-                    importers moduleName =
-                        [ sourceModule
-                        | (sourceModule, _path, sourceBody) <- sources
-                        , SourceGuard.importsModule moduleName sourceBody
-                        ]
-                sites "withReceivedRecoveryChildOriginKernel"
-                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 2)
-                        , ("HostBootstrap.ProjectPlan.Child.Internal", 4)
-                        ]
-                sites "ChildRecoveryOrigin"
-                    @?= [ ("HostBootstrap.Authority.ProjectPlan.Internal", 13)
-                        , ("HostBootstrap.Command.LifecycleEntry", 2)
-                        , ("HostBootstrap.ProjectPlan.Child.Internal", 2)
-                        ]
-                sites "withChildRecoveryOriginKernel"
-                    @?= [ ("HostBootstrap.Authority.ProjectPlan.Internal", 3)
-                        , ("HostBootstrap.ProjectPlan.Child.Internal", 2)
-                        ]
-                sites "childRecoveryOriginFrameNameKernel"
-                    @?= [ ("HostBootstrap.Authority.ProjectPlan.Internal", 3)
-                        , ("HostBootstrap.Command.LifecycleEntry", 2)
-                        ]
-                sites "childRecoveryOriginVerbNameKernel"
-                    @?= [ ("HostBootstrap.Authority.ProjectPlan.Internal", 3)
-                        , ("HostBootstrap.Command.LifecycleEntry", 2)
-                        ]
-                sites "withChildRecoveryTerminalOriginKernel"
-                    @?= [ ("HostBootstrap.Authority.ProjectPlan.Internal", 3)
-                        , ("HostBootstrap.Command.LifecycleEntry", 2)
-                        ]
-                sites "reopenAuthenticatedRecoveryChildCursorKernel"
-                    @?= [ ("HostBootstrap.Lifecycle.Mode", 4)
-                        , ("HostBootstrap.ProjectPlan.Child.Internal", 2)
-                        ]
-                sites "withVerifiedReverseAdapterKernel"
-                    @?= [ ("HostBootstrap.ProjectPlan.Child.Internal", 2)
-                        , ("HostBootstrap.Teardown.Internal", 3)
-                        ]
-                sites "withReceivedRecoveryDescent"
-                    @?= [ ("HostBootstrap.Authority.ProjectPlan.Internal", 3)
-                        , ("HostBootstrap.Command.Child", 3)
-                        , ("HostBootstrap.Handoff.Receiver.Internal", 3)
-                        , ("HostBootstrap.Handoff.Relay", 3)
-                        , ("HostBootstrap.ProjectPlan.Child.Internal", 2)
-                        ]
-                importers "HostBootstrap.Authority.ProjectPlan.Internal"
-                    @?= [ "HostBootstrap.Command.LifecycleEntry"
-                        , "HostBootstrap.ProjectPlan.Child.Internal"
-                        ]
-                importers "HostBootstrap.ProjectPlan.Child.Internal"
-                    @?= [ "HostBootstrap.Command.LifecycleEntry"
-                        , "HostBootstrap.ProjectPlan.Construct"
-                        ]
-                publicExports <- readPublicModuleExports packageRoot sourceRoot
-                mapM_
-                    (\name -> modulesExporting name publicExports @?= [])
-                    [ "ChildRecoveryOrigin"
-                    , "withReceivedRecoveryChildOriginKernel"
-                    , "withChildRecoveryOriginKernel"
-                    , "childRecoveryOriginFrameNameKernel"
-                    , "childRecoveryOriginVerbNameKernel"
-                    , "withChildRecoveryTerminalOriginKernel"
-                    ]
-                cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
-                librarySource <-
-                    maybe
-                        (assertFailure "the main library stanza is missing")
-                        pure
-                        (mainLibraryStanza cabalSource)
-                let exposedModules = fieldModules "exposed-modules:" librarySource
-                    otherModules = fieldModules "other-modules:" librarySource
-                length
-                    (filter (== "HostBootstrap.Authority.ProjectPlan.Internal") otherModules)
-                    @?= 1
-                length
-                    (filter (== "HostBootstrap.ProjectPlan.Child.Internal") otherModules)
-                    @?= 1
-                assertBool
-                    "the recovery-origin authority module is not exposed"
-                    ("HostBootstrap.Authority.ProjectPlan.Internal" `notElem` exposedModules)
-                assertBool
-                    "the recovery-child producer module is not exposed"
-                    ("HostBootstrap.ProjectPlan.Child.Internal" `notElem` exposedModules)
-                mapM_
-                    (\name -> assertAbsent "a recovery-child runtime testing seam" name cabalSource)
-                    [ "HostBootstrap.Authority.ProjectPlan.Internal.Testing"
-                    , "HostBootstrap.ProjectPlan.Child.Internal.Testing"
-                    , "HostBootstrap.ProjectPlan.Child.Recovery.Testing"
-                    , "HostBootstrap.Command.LifecycleEntry.Recovery.Testing"
-                    ]
-        , testCase "recovery child lifecycle entry is sealed, fixed-unit, and caller-free" $
-            withPackageSourceRoot $ \packageRoot sourceRoot -> do
-                entrySource <-
-                    readFile (sourceRoot </> "HostBootstrap" </> "Command" </> "LifecycleEntry.hs")
-                constructSource <-
-                    readFile (sourceRoot </> "HostBootstrap" </> "ProjectPlan" </> "Construct.hs")
-                childSource <-
-                    readFile
-                        (sourceRoot </> "HostBootstrap" </> "ProjectPlan" </> "Child" </> "Internal.hs")
-                authorityInternalSource <-
-                    readFile
-                        ( sourceRoot
-                            </> "HostBootstrap"
-                            </> "Authority"
-                            </> "ProjectPlan"
-                            </> "Internal.hs"
-                        )
-                entrySchemaSource <-
-                    requiredSourceSection
-                        "recovery-child lifecycle-entry schema"
-                        "data LifecycleEntry scope planId frame brokerGeneration verb where"
-                        "type role LifecycleEntry"
-                        entrySource
-                entryViewsSource <-
-                    requiredSourceSection
-                        "recovery-child lifecycle-entry descriptive views"
-                        "lifecycleEntryFrameName ::"
-                        "{- | Admit or exactly resume one root"
-                        entrySource
-                preparedSource <-
-                    requiredSourceSection
-                        "recovery-child prepared-descent refusal"
-                        "withPreparedRootReverseDescentKernel ::"
-                        "{- | Seal one authenticated recovery child"
-                        entrySource
-                producerSource <-
-                    requiredSourceSection
-                        "fixed-unit recovery-child lifecycle-entry producer"
-                        "withReceivedRecoveryChildLifecycleEntry ::"
-                        "{- | Emit only the canonical byte identity"
-                        entrySource
-                terminalSource <-
-                    requiredSourceSection
-                        "fixed-unit recovery-child terminal fold"
-                        "withChildRecoveryTerminalOrigin ::"
-                        "{- | Admit exactly one authenticated child Up/Execute entry"
-                        entrySource
-                rootRunnerSource <-
-                    requiredSourceSection
-                        "root Up recovery-child refusal"
-                        "runRootProjectUpLifecycleEntry ::"
-                        "{- | Interpret one child-origin Up entry"
-                        entrySource
-                let childRunnerSource =
-                        unlines
-                            ( dropWhile
-                                (not . isPrefixOf "runChildProjectUpLifecycleEntry ::")
-                                (lines entrySource)
-                            )
-                assertBool
-                    "the child Up recovery-child refusal marker is missing"
-                    (not (null childRunnerSource))
-                entryExports <-
-                    requiredModuleExports "HostBootstrap.Command.LifecycleEntry" entrySource
-                let exported = filter (/= ",") entryExports
-                    recoveryEntryExports =
-                        [ "withReceivedRecoveryChildLifecycleEntry"
-                        , "withChildRecoveryTerminalOrigin"
-                        ]
-                    namedTypes =
-                        [ stripped
-                        | sourceLine <- lines entrySource
-                        , let stripped = dropWhile isSpace sourceLine
-                        , "data " `isPrefixOf` stripped
-                            || "newtype " `isPrefixOf` stripped
-                            || ("type " `isPrefixOf` stripped && not ("type role " `isPrefixOf` stripped))
-                        ]
-                    constructors =
-                        [ name
-                        | sourceLine <- lines entrySchemaSource
-                        , [name, "::"] <- [words sourceLine]
-                        ]
-                    entry = normalizeWhitespace entrySource
-                    schema = normalizeWhitespace entrySchemaSource
-                    views = normalizeWhitespace entryViewsSource
-                    prepared = normalizeWhitespace preparedSource
-                    producer = normalizeWhitespace producerSource
-                    terminal = normalizeWhitespace terminalSource
-                    rootRunner = normalizeWhitespace rootRunnerSource
-                    childRunner = normalizeWhitespace childRunnerSource
-                filter (`elem` recoveryEntryExports) exported @?= recoveryEntryExports
-                assertBool
-                    "the recovery-child constructor is not exported from the hidden Entry module"
-                    ("ChildRecoveryLifecycleEntry" `notElem` exported)
-                namedTypes
-                    @?= ["data LifecycleEntry scope planId frame brokerGeneration verb where"]
-                constructors
-                    @?= [ "RootUpLifecycleEntry"
-                        , "ChildUpLifecycleEntry"
-                        , "ChildRecoveryLifecycleEntry"
-                        , "RootDownLifecycleEntry"
-                        , "RootDestroyLifecycleEntry"
-                        ]
-                mapM_
-                    (\(label, fragment, body) -> assertContains label fragment body)
-                    [
-                        ( "the existing entry family retains exactly five nominal roles"
-                        , "type role LifecycleEntry nominal nominal nominal nominal nominal"
-                        , entry
-                        )
-                    ,
-                        ( "the recovery-child constructor retains only the sealed nine-role origin"
-                        , "ChildRecoveryLifecycleEntry :: ChildRecoveryOrigin scope specDigest planDigest brokerGeneration parentFrame planId configId frame verb -> LifecycleEntry scope planId frame brokerGeneration verb"
-                        , schema
-                        )
-                    ,
-                        ( "the frame accessor delegates to the sealed origin view"
-                        , "lifecycleEntryFrameName (ChildRecoveryLifecycleEntry origin) = childRecoveryOriginFrameNameKernel origin"
-                        , views
-                        )
-                    ,
-                        ( "the verb accessor delegates to the sealed origin view"
-                        , "lifecycleEntryVerbName (ChildRecoveryLifecycleEntry origin) = childRecoveryOriginVerbNameKernel origin"
-                        , views
-                        )
-                    ,
-                        ( "the wrapper accepts the received package and independently typed project inputs"
-                        , "ReceivedRecoveryDescent (Production projectId) brokerGeneration planDigest parentFrame signedChildFrame recoveryWireDigest recoveryWireId verb -> ProtectedStore -> CanonicalProjectRoot (Production projectId) rootId -> FinalizedProjectSpec (Production projectId) specDigest cfg -> ValidatedConfig (Production projectId) specDigest configId (cfg (Production projectId)) -> Context.BinaryContext"
-                        , producer
-                        )
-                    ,
-                        ( "the wrapper fixes both its callback and outer result to unit"
-                        , "LifecycleEntry (Production projectId) localPlanId localFrame brokerGeneration verb -> IO (Either Text ()) ) -> IO (Either Text ())"
-                        , producer
-                        )
-                    ,
-                        ( "the wrapper is unary, opaque, and strict in the received descent"
-                        , "{-# OPAQUE withReceivedRecoveryChildLifecycleEntry #-} withReceivedRecoveryChildLifecycleEntry descent = case descent `seq` () of"
-                        , producer
-                        )
-                    ,
-                        ( "Entry alone derives the exact local typed drafts"
-                        , "case projectPlanDrafts finalizedSpec root config of"
-                        , producer
-                        )
-                    ,
-                        ( "the lower producer alone seals the retained recovery origin"
-                        , "withReceivedRecoveryChildOriginKernel descent store root config drafts binaryContext (\\origin -> use (ChildRecoveryLifecycleEntry origin))"
-                        , producer
-                        )
-                    ,
-                        ( "the prepared root kernel refuses a recovery-child origin"
-                        , "ChildRecoveryLifecycleEntry{} -> refused"
-                        , prepared
-                        )
-                    ,
-                        ( "prepared refusal returns the original work unchanged"
-                        , "TeardownReverseDescentRefused \"only a root Down or Destroy entry can prepare descent\" , descent"
-                        , prepared
-                        )
-                    ,
-                        ( "the terminal fold has a byte-only fixed-unit callback"
-                        , "(ByteString.ByteString -> IO (Either Text ())) -> IO (Either Text ())"
-                        , terminal
-                        )
-                    ,
-                        ( "the terminal fold delegates the sealed origin without projecting it"
-                        , "ChildRecoveryLifecycleEntry origin -> withChildRecoveryTerminalOriginKernel origin use"
-                        , terminal
-                        )
-                    ,
-                        ( "the root Up runner refuses a recovery child"
-                        , "(ChildRecoveryLifecycleEntry _) = pure (Left \"lifecycle entry: the root interpreter refuses a recovery child origin\")"
-                        , rootRunner
-                        )
-                    ,
-                        ( "the child Up runner refuses a recovery child"
-                        , "runChildProjectUpLifecycleEntry _cfg _self (ChildRecoveryLifecycleEntry{}) _complete = pure (Left \"lifecycle entry: the child Up interpreter refuses a recovery origin\")"
-                        , childRunner
-                        )
-                    ]
-                assertFragmentsInOrder
-                    "received descent strictness precedes drafts, lower admission, and entry sealing"
-                    [ "withReceivedRecoveryChildLifecycleEntry descent ="
-                    , "case descent `seq` () of"
-                    , "projectPlanDrafts finalizedSpec root config"
-                    , "withReceivedRecoveryChildOriginKernel"
-                    , "ChildRecoveryLifecycleEntry origin"
-                    ]
-                    producer
-                assertFragmentsInOrder
-                    "the terminal fold accepts only recovery children and refuses every other entry"
-                    [ "ChildRecoveryLifecycleEntry origin -> withChildRecoveryTerminalOriginKernel origin use"
-                    , "RootUpLifecycleEntry{} -> refused"
-                    , "ChildUpLifecycleEntry{} -> refused"
-                    , "RootDownLifecycleEntry{} -> refused"
-                    , "RootDestroyLifecycleEntry{} -> refused"
-                    ]
-                    terminal
-                SourceGuard.countHaskellIdentifier "projectPlanDrafts" producerSource @?= 1
-                SourceGuard.countHaskellIdentifier
-                    "withReceivedRecoveryChildOriginKernel"
-                    producerSource
-                    @?= 1
-                SourceGuard.countHaskellIdentifier "ChildRecoveryLifecycleEntry" producerSource @?= 1
-                SourceGuard.countHaskellIdentifier
-                    "withChildRecoveryTerminalOriginKernel"
-                    terminalSource
-                    @?= 1
-                mapM_
-                    (\name -> SourceGuard.countHaskellIdentifier name producerSource @?= 0)
-                    [ "HandoffBinding"
-                    , "HandoffBindingInput"
-                    , "HandoffToken"
-                    , "RootInvocationAuthority"
-                    , "ProjectVerb"
-                    , "AcquisitionJournal"
-                    , "LifecycleCursor"
-                    , "CommandAuthority"
-                    , "withReceivedRecoveryDescent"
-                    , "withChildRecoveryOriginKernel"
-                    , "unsafeCoerce"
-                    , "coerce"
-                    , "runChainFromFrame"
-                    , "withProtectedEntry"
-                    , "compareAndSwapProtectedRecord"
-                    , "writeProtectedRecord"
-                    , "openTeardownForest"
-                    , "settleDescentWork"
-                    , "failDescentWork"
-                    ]
-                mapM_
-                    (\name -> SourceGuard.countHaskellIdentifier name terminalSource @?= 0)
-                    [ "ReceivedRecoveryDescent"
-                    , "withReceivedRecoveryDescent"
-                    , "ProjectPlan"
-                    , "ValidatedLifecycleContext"
-                    , "AcquisitionJournal"
-                    , "LifecycleCursor"
-                    , "CommandAuthority"
-                    , "withChildRecoveryOriginKernel"
-                    , "projectPlanDrafts"
-                    , "runChainFromFrame"
-                    , "withProtectedEntry"
-                    , "compareAndSwapProtectedRecord"
-                    , "writeProtectedRecord"
-                    ]
-                assertBool
-                    "Entry imports the abstract child-origin API"
-                    (SourceGuard.importsModule "HostBootstrap.Authority.ProjectPlan.Internal" entrySource)
-                assertBool
-                    "Entry imports the typed-draft owner"
-                    (SourceGuard.importsModule "HostBootstrap.ProjectPlan.Construct" entrySource)
-                assertBool
-                    "Entry imports the lower child-origin producer"
-                    (SourceGuard.importsModule "HostBootstrap.ProjectPlan.Child.Internal" entrySource)
-                assertBool
-                    "Entry does not import the received-package eliminator"
-                    (not (SourceGuard.importsModule "HostBootstrap.Handoff.Receiver.Internal" entrySource))
-                assertBool
-                    "Construct retains its one-way dependency on Child.Internal"
-                    (SourceGuard.importsModule "HostBootstrap.ProjectPlan.Child.Internal" constructSource)
-                assertBool
-                    "Child.Internal retains its one-way dependency on Authority.Internal"
-                    (SourceGuard.importsModule "HostBootstrap.Authority.ProjectPlan.Internal" childSource)
-                mapM_
-                    (\dependency -> assertBool "the lower origin authority does not reverse the Entry DAG" (not dependency))
-                    [ SourceGuard.importsModule "HostBootstrap.Command.LifecycleEntry" authorityInternalSource
-                    , SourceGuard.importsModule "HostBootstrap.ProjectPlan.Construct" authorityInternalSource
-                    , SourceGuard.importsModule "HostBootstrap.ProjectPlan.Child.Internal" authorityInternalSource
-                    , SourceGuard.importsModule "HostBootstrap.Command.LifecycleEntry" childSource
-                    , SourceGuard.importsModule "HostBootstrap.ProjectPlan.Construct" childSource
-                    ]
-                SourceGuard.countHaskellIdentifier "withReceivedRecoveryDescent" entrySource @?= 0
-                SourceGuard.countHaskellIdentifier "withChildRecoveryOriginKernel" entrySource @?= 0
-                sources <- readProductionSources sourceRoot
-                let sites name =
-                        [ (moduleName, count)
-                        | (moduleName, _path, sourceBody) <- sources
-                        , let count = SourceGuard.countHaskellIdentifier name sourceBody
-                        , count > 0
-                        ]
-                    exactDraftCallers =
-                        [ moduleName
-                        | (moduleName, _path, sourceBody) <- sources
-                        , "case projectPlanDrafts finalizedSpec root config of"
-                            `isInfixOf` normalizeWhitespace sourceBody
-                        ]
-                sites "ChildRecoveryLifecycleEntry"
-                    @?= [("HostBootstrap.Command.LifecycleEntry", 15)]
-                sites "withReceivedRecoveryChildLifecycleEntry"
-                    @?= [("HostBootstrap.Command.LifecycleEntry", 4)]
-                sites "withChildRecoveryTerminalOrigin"
-                    @?= [ ("HostBootstrap.Command.LifecycleEntry", 3)
-                        , ("HostBootstrap.Handoff.Lifecycle", 2)
-                        ]
-                exactDraftCallers @?= ["HostBootstrap.Command.LifecycleEntry"]
-                publicExports <- readPublicModuleExports packageRoot sourceRoot
-                mapM_
-                    (\name -> modulesExporting name publicExports @?= [])
-                    [ "ChildRecoveryLifecycleEntry"
-                    , "withReceivedRecoveryChildLifecycleEntry"
-                    , "withChildRecoveryTerminalOrigin"
-                    , "lifecycleEntryRecoveryOrigin"
-                    , "lifecycleEntryRecoveryDescent"
-                    ]
-                cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
-                librarySource <-
-                    maybe
-                        (assertFailure "the main library stanza is missing")
-                        pure
-                        (mainLibraryStanza cabalSource)
-                let exposedModules = fieldModules "exposed-modules:" librarySource
-                    otherModules = fieldModules "other-modules:" librarySource
-                length (filter (== "HostBootstrap.Command.LifecycleEntry") otherModules) @?= 1
-                assertBool
-                    "LifecycleEntry remains hidden"
-                    ("HostBootstrap.Command.LifecycleEntry" `notElem` exposedModules)
-                mapM_
-                    (\name -> assertAbsent "a recovery-child Entry runtime testing seam" name cabalSource)
-                    [ "HostBootstrap.Command.LifecycleEntry.Recovery.Testing"
-                    , "HostBootstrap.Command.LifecycleEntry.ChildRecovery.Testing"
-                    , "HostBootstrap.Command.RecoveryChild.Testing"
-                    ]
-        , testCase "authenticated child entry is closed before mutation and terminalizes before completion" $
+                SourceGuard.countHaskellIdentifier forbidden ("data " <> forbidden <> " = Forbidden") @?= 1
+                occurrences @?= []
+        , testCase "reverse children cannot reopen the root acquisition store" $
             withPackageSourceRoot $ \_packageRoot sourceRoot -> do
-                authoritySource <-
-                    readFile (sourceRoot </> "HostBootstrap" </> "Authority" </> "ProjectPlan.hs")
-                childSource <-
-                    readFile (sourceRoot </> "HostBootstrap" </> "ProjectPlan" </> "Child" </> "Internal.hs")
-                entrySource <-
-                    readFile (sourceRoot </> "HostBootstrap" </> "Command" </> "LifecycleEntry.hs")
-                producerSource <-
-                    requiredSourceSection
-                        "authenticated child entry producer"
-                        "withChildProjectUpLifecycleEntry ::"
-                        "{- | Interpret exactly one admitted root"
-                        entrySource
-                let child = normalizeWhitespace childSource
-                    entry = normalizeWhitespace entrySource
-                    producer = normalizeWhitespace producerSource
-                mapM_
-                    (\(label, fragment, source) -> assertContains label fragment source)
-                    [
-                        ( "the pre-mutation closed verb and phase branch"
-                        , "case verb of ProjectUp -> case verifiedConfigHandoffPhase handoff of Execute -> do joined <- withAuthenticatedChildCursor"
-                        , producer
-                        )
-                    ,
-                        ( "the Prepare refusal before the bridge"
-                        , "Prepare -> pure (Left \"lifecycle entry: child Up requires Execute, not Prepare\")"
-                        , producer
-                        )
-                    ,
-                        ( "the Teardown refusal before the bridge"
-                        , "Teardown -> pure (Left \"lifecycle entry: child Up requires Execute, not Teardown\")"
-                        , producer
-                        )
-                    ,
-                        ( "the Down refusal before the bridge"
-                        , "ProjectDown -> pure (Left \"lifecycle entry: config-origin child entry refuses Down\")"
-                        , producer
-                        )
-                    ,
-                        ( "the Destroy refusal before the bridge"
-                        , "ProjectDestroy -> pure (Left \"lifecycle entry: config-origin child entry refuses Destroy\")"
-                        , producer
-                        )
-                    ,
-                        ( "the whole authenticated package is forced"
-                        , "authenticated@( AuthenticatedChildCursor handoff authority plan digestBinding lifecycleContext journal cursor )"
-                        , child
-                        )
-                    ,
-                        ( "the authorized package's nominal indices"
-                        , "type role AuthorizedChildCursor nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal"
-                        , child
-                        )
-                    ,
-                        ( "the entry stores one authorized child package"
-                        , "ChildUpLifecycleEntry :: AuthorizedChildCursor"
-                        , entry
-                        )
-                    ,
-                        ( "the fixed runner transitions before completion"
-                        , "Right (Right ()) -> do transitioned <- withTeardownLifecycleCursor cursor $ \\teardownCursor -> complete (AuthorizedTeardownChildCursor authorized teardownCursor)"
-                        , child
-                        )
-                    ,
-                        ( "the terminal identity binds the Teardown version"
-                        , "word (lifecycleCursorRecordVersion teardownCursor)"
-                        , child
-                        )
-                    ]
-                SourceGuard.countHaskellIdentifier "withAuthenticatedChildCursor" producerSource @?= 1
-                SourceGuard.countHaskellIdentifier "authorizeChildProject" authoritySource @?= 0
-                SourceGuard.countHaskellIdentifier "withForwardTerminalOrigin" entrySource @?= 0
-                SourceGuard.countHaskellIdentifier "unsafeCoerce" childSource @?= 0
-                Text.count
-                    "AuthorizedTeardownChildCursor authorized teardownCursor"
-                    (Text.pack childSource)
-                    @?= 1
+                -- rationale.md: a shared lifecycle-authority mount and generic
+                -- protected-store RPC cannot stand in for rooted coordination.
+                sources <- readProductionSources sourceRoot
+                let forbidden = "reopenAuthenticatedRecoveryChildCursorKernel"
+                    occurrences =
+                        [ (name, count)
+                        | (name, _path, source) <- sources
+                        , let count = SourceGuard.countHaskellIdentifier forbidden source
+                        , count > 0
+                        ]
+                SourceGuard.countHaskellIdentifier forbidden ("data " <> forbidden <> " = Forbidden") @?= 1
+                occurrences @?= []
+        , testCase "recovery children cannot acquire root command authority" $
+            withPackageSourceRoot $ \_packageRoot sourceRoot -> do
+                -- rationale.md: a shared lifecycle-authority mount and generic
+                -- protected-store RPC cannot stand in for rooted coordination.
+                sources <- readProductionSources sourceRoot
+                let forbidden = "ChildRecoveryOrigin"
+                    occurrences =
+                        [ (name, count)
+                        | (name, _path, source) <- sources
+                        , let count = SourceGuard.countHaskellIdentifier forbidden source
+                        , count > 0
+                        ]
+                SourceGuard.countHaskellIdentifier forbidden ("data " <> forbidden <> " = Forbidden") @?= 1
+                occurrences @?= []
+        , testCase "root lifecycle entries cannot contain a recovery child" $
+            withPackageSourceRoot $ \_packageRoot sourceRoot -> do
+                -- rationale.md: a shared lifecycle-authority mount and generic
+                -- protected-store RPC cannot stand in for rooted coordination.
+                sources <- readProductionSources sourceRoot
+                let forbidden = "ChildRecoveryLifecycleEntry"
+                    occurrences =
+                        [ (name, count)
+                        | (name, _path, source) <- sources
+                        , let count = SourceGuard.countHaskellIdentifier forbidden source
+                        , count > 0
+                        ]
+                SourceGuard.countHaskellIdentifier forbidden ("data " <> forbidden <> " = Forbidden") @?= 1
+                occurrences @?= []
+        , testCase "forward children execute only root-selected frame grants" $
+            withPackageSourceRoot $ \_packageRoot sourceRoot -> do
+                -- rationale.md: a shared lifecycle-authority mount and generic
+                -- protected-store RPC cannot stand in for rooted coordination.
+                sources <- readProductionSources sourceRoot
+                let forbidden = "AuthorizedChildCursor"
+                    occurrences =
+                        [ (name, count)
+                        | (name, _path, source) <- sources
+                        , let count = SourceGuard.countHaskellIdentifier forbidden source
+                        , count > 0
+                        ]
+                SourceGuard.countHaskellIdentifier forbidden ("data " <> forbidden <> " = Forbidden") @?= 1
+                occurrences @?= []
         ]
 
 withPackageSourceRoot :: (FilePath -> FilePath -> IO result) -> IO result
@@ -8874,24 +7640,39 @@ exerciseFinalizedSpec spec directory value = do
     either (fail . show) pure rooted
 
 fixtureServiceRegistry :: ServiceRegistry Fixture.ProjectConfig
-fixtureServiceRegistry =
-    singletonServiceRegistry
-        ( serviceDefinition
-            (either (error . show) id (serviceId "probe"))
-            (\_ -> Right (Just ()))
-            NoEffects
-            (const (pure ()))
-        )
+fixtureServiceRegistry = metadataServiceRegistry "probe"
 
 alternateFixtureServiceRegistry :: ServiceRegistry Fixture.ProjectConfig
-alternateFixtureServiceRegistry =
+alternateFixtureServiceRegistry = metadataServiceRegistry "alternate-probe"
+
+-- These registries exercise finalization identity with an empty effect row.
+-- Any backend dispatch would violate the fixture's declared purpose.
+metadataServiceRegistry :: String -> ServiceRegistry Fixture.ProjectConfig
+metadataServiceRegistry name =
     singletonServiceRegistry
-        ( serviceDefinition
-            (either (error . show) id (serviceId "alternate-probe"))
+        ( serviceProgramDefinition
+            (either (error . show) id (serviceId name))
             (\_ -> Right (Just ()))
             NoEffects
+            resources
+            (backend :: ServiceBackend ())
             (const (pure ()))
         )
+  where
+    resources = ServiceResourceBackend
+        { serviceRolePlanDraft = either (error . show) id $ do
+            request <- mkRoleResourceRequest "metadata" False
+            rolePlanDraft [request]
+        , servicePrerequisite = pure PrereqSatisfied
+        , serviceAcquireResource = \_ -> pure Acquired
+        , serviceProbeResource = \_ -> pure ProbeReadyNow
+        , serviceReleaseResource = \_ -> pure Released
+        }
+    backend = ServiceBackend
+        { backendServe = \_ -> fail "NoEffects fixture dispatched listen"
+        , backendCall = \_ _ -> fail "NoEffects fixture dispatched call"
+        , backendWork = \_ _ -> fail "NoEffects fixture dispatched work"
+        }
 
 withFoundation ::
     ( forall projectId specDigest rootId configId.

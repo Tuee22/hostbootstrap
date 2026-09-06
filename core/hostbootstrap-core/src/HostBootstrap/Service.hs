@@ -19,10 +19,8 @@ module HostBootstrap.Service (
     serviceId,
     serviceIdText,
     ServiceDefinition,
-    ServiceHandler,
     ProgramServiceHandler,
     ServiceResourceBackend (..),
-    serviceDefinition,
     serviceProgramDefinition,
     serviceDeclaredEffects,
     ServiceRegistry,
@@ -36,8 +34,6 @@ module HostBootstrap.Service (
     withFinalizedServiceRegistry,
     finalizedServiceVariantNames,
     serviceRoleSchemaFamilies,
-    withSelectedServiceRequest,
-    selectServiceAction,
     withSelectedServiceProgram,
     withDecodedServiceProgram,
     ServiceActivationRevision,
@@ -138,8 +134,7 @@ import HostBootstrap.Service.Internal (
     FinalizedServiceDefinition (FinalizedServiceDefinition),
     FinalizedServiceRegistry (FinalizedServiceRegistry),
     ProgramServiceHandler,
-    ServiceAction (LegacyServiceAction, ProgramServiceAction),
-    ServiceHandler,
+    ServiceAction (ProgramServiceAction),
     ServiceId (ServiceId),
     ServiceResourceBackend (..),
     reindexFinalizedServiceRegistryKernel,
@@ -190,36 +185,6 @@ data ServiceDefinition cfg
         (DeclaredEffects effects)
         (ServiceAction fields effects)
         (CodecWitness (RuntimeRoleWire fields))
-
-{- | Define one service, including __the effect row it declares__.
-
-The row is part of the definition rather than a separate table because the
-registry is what fixes what a handler may do: 'authorizeServiceEffects' admits a
-declared row only when the signed placement permits every member, and it carries
-the /declared/ row forward rather than the ceiling. A role that declares no
-exclusive effect therefore does not inherit its ceiling's lease requirement.
-
-The row is a 'DeclaredEffects' — the term-level twin of the type-level list — so
-what the definition declares and what the type says cannot disagree.
--}
-serviceDefinition ::
-    forall fields effects cfg.
-    (FromDhall fields, ToDhall fields) =>
-    ServiceId ->
-    (forall scope. cfg scope -> Either String (Maybe fields)) ->
-    DeclaredEffects effects ->
-    ServiceHandler fields ->
-    ServiceDefinition cfg
-serviceDefinition identity project effects run =
-    ServiceDefinition
-        identity
-        project
-        effects
-        (LegacyServiceAction run)
-        ( requireCodecWitness
-            ("RuntimeRoleWire/" ++ serviceIdText identity)
-            (autoCodecWitness @(RuntimeRoleWire fields))
-        )
 
 {- | Define a service whose handler is a closed effect-indexed program.
 
@@ -365,126 +330,6 @@ serviceRoleSchemaFamilies registry =
         ]
     FinalizedServiceRegistry _ definitions = registry
 
-{- | Structurally project exactly one selected role into an opaque request.
-The caller supplies the digest of the already-verified local config/secret
-bundle; fresh @configId@ and @secretDigest@ identities are minted only inside
-the rank-2 continuation. The wire contains the safe framework view and the
-selected service fields, never the full project config.
--}
-withSelectedServiceRequest ::
-    Text ->
-    LocalContextView ->
-    cfg ->
-    FinalizedServiceRegistry scope specDigest cfg ->
-    ( forall configId secretDigest fields service.
-      ServiceId ->
-      RoleCodec scope specDigest fields service ->
-      ValidatedServiceRequest
-        specDigest
-        configId
-        secretDigest
-        fields
-        service ->
-      -- \| the effect row this definition declared
-      [RoleEffect] ->
-      IO () ->
-      result
-    ) ->
-    Either String result
-withSelectedServiceRequest verifiedDigest contextView cfg (FinalizedServiceRegistry _ definitions) use = do
-    matches <- traverse project definitions
-    case [match | Just match <- matches] of
-        [] ->
-            Left
-                ( "effective project config selects no registered service"
-                    ++ registeredSuffix definitions
-                )
-        [match] -> Right (snd match)
-        many ->
-            Left
-                ( "effective project config selects multiple services: "
-                    ++ comma (map (serviceIdText . fst) many)
-                )
-  where
-    project (FinalizedServiceDefinition identity select effects action codec) =
-        case select cfg of
-            Left err -> Left (serviceIdText identity ++ ": " ++ err)
-            Right Nothing -> Right Nothing
-            Right (Just params) -> case action of
-                LegacyServiceAction run ->
-                    Right
-                        ( Just
-                            ( identity
-                            , mintRequest
-                                identity
-                                codec
-                                (declaredEffectList effects)
-                                run
-                                params
-                            )
-                        )
-                ProgramServiceAction{} ->
-                    Left (serviceIdText identity ++ ": the service requires the verified program runtime")
-    mintRequest identity codec declared run params =
-        use
-            identity
-            codec
-            ( ValidatedServiceRequest
-                FrameworkValidation
-                    { frameworkWireKind = ServiceRoleWire
-                    , frameworkScopeKind = internalRoleScopeKind codec
-                    , frameworkSpecDigest = internalRoleSpecDigest codec
-                    , frameworkLocalContext = contextView
-                    }
-                verifiedDigest
-                (RoleParams params)
-            )
-            declared
-            -- The handler runs on the *same* bundle the request carries, not on
-            -- a second projection of the config beside it.
-            (run (RoleParams params))
-
-{- | Select exactly one typed definition from the config. Projection errors are
-returned with the definition identity; zero or multiple matches are explicit
-errors. The returned action closes over only the selected role's own
-'RoleParams' bundle — it takes no framework view, because a handler that needs a
-framework datum declares it as a role field instead.
--}
-selectServiceAction ::
-    cfg ->
-    FinalizedServiceRegistry scope specDigest cfg ->
-    Either String (ServiceId, [RoleEffect], IO ())
-selectServiceAction cfg (FinalizedServiceRegistry _ definitions) = do
-    matches <- traverse project definitions
-    case [match | Just match <- matches] of
-        [] ->
-            Left
-                ( "effective project config selects no registered service"
-                    ++ registeredSuffix definitions
-                )
-        [match] -> Right match
-        many ->
-            Left
-                ( "effective project config selects multiple services: "
-                    ++ comma [serviceIdText identity | (identity, _, _) <- many]
-                )
-  where
-    project (FinalizedServiceDefinition identity select effects action _) =
-        case select cfg of
-            Left err -> Left (serviceIdText identity ++ ": " ++ err)
-            Right Nothing -> Right Nothing
-            Right (Just params) -> case action of
-                LegacyServiceAction run ->
-                    Right
-                        ( Just
-                            ( identity
-                            , declaredEffectList effects
-                            , run (RoleParams params)
-                            )
-                        )
-                ProgramServiceAction{} ->
-                    Left (serviceIdText identity ++ ": the service requires the verified program runtime")
-
 {- | Select one program definition and mint its request, backend, and program
 as one existential package.
 
@@ -520,8 +365,6 @@ withSelectedServiceProgram verifiedDigest contextView cfg (FinalizedServiceRegis
             Left err -> Left (serviceIdText identity ++ ": " ++ err)
             Right Nothing -> Right Nothing
             Right (Just params) -> case action of
-                LegacyServiceAction{} ->
-                    Left (serviceIdText identity ++ ": legacy IO handlers are not admitted by the verified program runtime")
                 ProgramServiceAction resources backend run ->
                     Right
                         ( Just
@@ -576,8 +419,6 @@ withDecodedServiceProgram selectedName verifiedDigest settings wireBytes (Finali
         [] -> pure (Left ("activation selects unknown service " ++ T.unpack selectedName ++ registeredSuffix definitions))
         [FinalizedServiceDefinition identity _ effects action codec] ->
             case action of
-                LegacyServiceAction{} ->
-                    pure (Left (serviceIdText identity ++ ": legacy IO handlers are not admitted by the verified program runtime"))
                 ProgramServiceAction resources backend run ->
                     case TextEncoding.decodeUtf8' wireBytes of
                         Left _ -> pure (Left (serviceIdText identity ++ ": role wire is not UTF-8"))

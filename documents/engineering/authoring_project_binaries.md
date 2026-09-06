@@ -56,8 +56,7 @@
    the core's host-management step kinds (`deployVMStep`, `buildPbStep`, `contextInitStep`,
    `deployKindStep`, `deployChartStep`, `exposePortStep`) and the project's own kinds via `projectStep`;
    host and workload steps interleave in one list. Core interprets the authorized current-frame segment;
-   authenticated recursive child entry remains downstream work. Current
-   reconcilers attempt convergence but mostly return `IO ()`, so typed idempotence remains open. See
+   authenticated child entry uses the root catalog and storeless executor. Convenience IO actions report completion only; managed adapters provide exact settlement observations. See
    [composition_patterns](composition_patterns.md).
 3. **Define project step kinds and their actions.** A workload step the core does not ship (deploy-registry,
    push-image, …) is a project-contributed `Step` kind built with `projectStep`, plus its action. Hand
@@ -75,15 +74,14 @@
    each boundary on the step that owns it with `Step.descendsVia`; the core lift folds the self-invocation
    (`incus exec <vm> -- <pb> project up` into the VM, then a local `docker run --rm <image> project up`
    into the container). The exact Production root invocation retains one plan through its current-frame
-   Chain segment and derives the next frame from that plan. The child command currently refuses nested
-   lifecycle entry before effects; authenticated child admission and proof-complete recursive traversal
-   belong to [the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md). See
+   Chain segment and selects the exact child from its rooted catalog. Authenticated child admission,
+   storeless execution, and proof-complete recursive traversal belong to [the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md). See
    [`HostBootstrap.Lift`](../architecture/hostbootstrap_core_library.md) and
    [composition_methodology § Single Representation](../architecture/composition_methodology.md#single-representation-the-chain-is-the-representation).
 5. **Supply the test suite.** Provide a `TestSuite`/`Case` matrix (the test stream); the intended
    operator entry is `test run <case-id>|all` from the root frame, gated on an existing
-   `<project>.test.dhall` and needing no pre-existing `<project>.dhall`. The current parser does not
-   enforce that root-frame restriction. A suite may declare more than one config variant; for each, the harness **generates**
+   `<project>.test.dhall` and refusing a pre-existing foreign `<project>.dhall`. Entry validates the root
+   restriction before effects. A suite may declare more than one config variant; for each, the harness **generates**
    the run's `<project>.dhall` functionally via the Harness request of the same restricted `psAssemble`,
    under fresh exact-run authority and its matching mapped codec. It never shells the CLI: it retains the
    exact Harness plan, drives the hidden fixed root-Up entry into the common current-frame Chain, asserts the real workload in-frame, and
@@ -94,17 +92,18 @@
    two variants whose only difference is `message`, and its Playwright `e2e-tabs` spec is polymorphic: it
    reads `EXPECTED_MESSAGE` and asserts whichever message the active deployment set. It reuses the chain
    rather than a separate per-case cluster. Each run owns its generated config and `.test_data/<runId>`
-   root under exact Harness authority; provider/cluster/mount consumers still receive independently
-   derived profile/root terms until the
-   [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md)'s exact-plan adoption. See
+   root under exact Harness authority. Provider, cluster, and mount consumers project their inputs from
+   that exact plan, as implemented by the
+   [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md). See
    [testing](testing.md) and [harness_workflow](../architecture/harness_workflow.md).
 6. **Register schema artifacts and Dhall vocabulary.** Pass only the project's `ConfigArtifact` delta
-   to `projectSpec`; core concatenates `coreArtifacts` exactly once. Prefer `artifactOf`, but recognize
-   that the current public `ConfigArtifact` constructor can still pair arbitrary schema/render text and
-   carries no decoder proof. Embed `Core.dhall` for any new step parameters, provider kinds, or witness
+   to `projectSpec`; core concatenates `coreArtifacts` exactly once. `artifactOf` constructs an opaque
+   `ConfigArtifact` from an admitted codec witness and canonical value; callers cannot pair unrelated
+   schema/render text through a public constructor. Embed `Core.dhall` for any new step parameters, provider kinds, or witness
    kinds the chain introduces. In the current demo `contextInitStep`'s action body only announces its
    frame anchor, while the descent it declares carries the container payload; composite bootstrap, that
-   declared descent plus the handoff, and deployment actions perform child projection/delivery. The target assigns those effects to one plan operation. See
+   declared descent plus the handoff, and deployment actions perform child projection/delivery. The exact
+   plan node binds the projector and authenticated descent. See
    [config_generation](config_generation.md) and
    [dhall_topology](dhall_topology.md).
 
@@ -143,17 +142,13 @@ bytes carry `message` and are rollout-hashed (the `serveWeb` handler reads them 
 selected accelerator step run: a host-frame `postHandoffStep` on Apple/Windows, or a container-frame
 `deploy-accelerator-daemon` project step on Linux CPU/GPU. `project up` ends at a live webservice on its exact
 runtime-resolved loopback endpoint with the selected accelerator placement. The interpreter runs the steps in order; its
-stronger typed restart/idempotence guarantee remains target work.
+prepared managed adapters retain exact restart and settlement evidence.
 
-Current `project down`/`destroy` retain or reconstruct the same exact Production plan and drive the verb's
-current-frame reverse projection: cluster cleanup plus the reverse each acquiring node declared, which may
-stop or delete the provider. That pure plan/current-frame derivation is not exact teardown command
-authorization. Nested entry fails closed, and authenticated child-to-parent traversal remains
-[the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)'s work.
-Cluster teardown never places the plan's data path in its removal set. The demo's `.data` is a host
-directory carried into the provider, not guest-only disk state, but destroy/up/readback has not yet been
-validated. Typed idempotence, child-to-parent teardown, and ownership-receipt cleanup are targets. See
-[durable_state](../architecture/durable_state.md) and
+`project down`/`destroy` retain or reconstruct the same exact Production plan. Their root entry joins the
+pure reverse projection to exact command, journal, snapshot, lease, and receipt evidence, then drives
+child-first authenticated teardown before stopping or deleting the provider. The demo's host-backed `.data`
+remains outside destructive removal sets. The worked-demo and substrate acceptance gates record the durable
+readback they exercise. See [durable_state](../architecture/durable_state.md) and
 [lifecycle state model](../architecture/lifecycle_state_model.md).
 
 ## Sketches
@@ -187,10 +182,9 @@ persistence, then admits the root-refined lifecycle context and enters the Cabal
 `LifecycleEntry` producer. That producer derives the journal/current cursor, calls generic
 `authorizeRootProject`, and invokes the fixed current-frame Chain interpreter without exposing those raw
 inputs to dispatch.
-`down`/`destroy` use the same exact plan representation for current-frame reverse work. Nested lifecycle
-entry is fail-closed until authenticated recursive admission is implemented. Harness directly retains and
-interprets its exact plan through the same current-frame boundaries; demo profile/root consumers still
-need exact-plan projection. The read-only `context` introspection
+`down`/`destroy` use the same exact plan representation for authenticated recursive reverse work. Nested
+entry verifies the root-selected catalog edge and grant before effects. Harness retains and interprets its
+exact plan through the same boundaries, and demo profile/root consumers use exact-plan projection. The read-only `context` introspection
 (`inspect`/`path`/`show`/`schema`/`render`, where `inspect` renders the lift composition with the current
 frame marked), and the `test init` / `test run <case-id>|all` split are implemented. Current live
 validation and closure belong in the development plan. The surface is fixed —
@@ -223,7 +217,7 @@ child projection, and invents no fallback values. See the
 ## See also
 
 - [composition_methodology](../architecture/composition_methodology.md) — the canonical home of the
-  chain-is-the-project model, current-frame Chain, target recursive `project up`, and fractal bootstrap.
+  chain-is-the-project model, current-frame Chain, recursive `project up`, and fractal bootstrap.
 - [composition_patterns](composition_patterns.md) — the cookbook of `Step`-chain shapes this guide
   composes.
 - [derived_project_standards](derived_project_standards.md) — the per-stream rules (stream 1 = the lift

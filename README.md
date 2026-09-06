@@ -24,20 +24,17 @@ Every consumer ships one project binary over a fixed command tree. Projects cont
 steps, test cases, generated artifacts, and service handlers through `ProjectSpec`; they do not add
 verbs.
 
-The authored forward representation is an opaque validated `StepPlan`. Production dispatch admits it into
-one exact plan and interprets the authorized current-frame segment. That plan declares how a parent
-provisions another frame, builds or installs the project binary there, projects a narrower sibling
-`<project>.dhall`, and invokes the child's own `project up`. Nested lifecycle entry currently fails closed;
-authenticated recursive traversal remains in the active lifecycle phases. The Python bootstrapper is the
-outer, metal-frame instance of the same provision → build-pb → handoff pattern.
+A project authors an opaque validated `StepPlan`; dispatch admits it into one exact
+`ProjectPlan scope specDigest planId configId cfg`. The root coordinator retains the protected store,
+lease, snapshot, recursive catalog, and per-frame journals. At each declared descent it authenticates a
+storeless child executor, grants only the selected node's prepared operations, and settles the returned
+observations. Reverse traversal visits children before parents and releases only resources whose exact
+ownership is established. Production closure requires settled destroy evidence or a verified pre-effect
+refusal, and interrupted closure resumes through durable redo records.
 
-`ProjectSpec`, `Step`, and `StepPlan` are opaque. Builder finalization rejects empty/duplicate,
-non-contiguous, shadowed, or replacement-lossy contributions and preserves the exact accepted forward
-order; every step carries a reverse policy, operation key, and validated dependency prefix. Production
-dispatch retains or reconstructs one opaque `ProjectPlan scope specDigest planId configId cfg` through
-rendering, persistence, journal/cursor admission, authorization, exact Chain interpretation, and
-current-frame reverse projection. Authenticated child handoff, proof-complete recursive traversal, exact
-teardown authorization, and receipt-bound release remain downstream work. See
+`ProjectSpec`, `Step`, and `StepPlan` are opaque. Finalization rejects empty, duplicate, non-contiguous,
+shadowed, or replacement-lossy contributions and preserves the accepted forward order. Every step carries
+a reverse policy, operation key, and validated dependency prefix. See
 [composition methodology](documents/architecture/composition_methodology.md) and the canonical
 [lifecycle state model](documents/architecture/lifecycle_state_model.md).
 
@@ -66,30 +63,11 @@ operation-indexed evidence. Cross-process config handoff, delayed recovery, cont
 checks each use distinct authenticated gates; config text or a stable resource name cannot mint
 authority.
 
-The Handoff facade supplies an abstract root-signed `AuthenticatedRootScope` capsule for an exact Production
-or Harness scope. Its live-broker producer derives every signed field, and its verifier checks the independently
-installed project identity and verification key before introducing the scope through a closed rank-2 fold. The
-private Relay and Receiver adopt it without changing the existing four-field `Offer`: the root link mints the
-capsule, each nested link copies the exact root-issued bytes, and every Offer authentication value begins with
-its framed capsule. The Receiver verifies the capsule before installed-key, binding, challenge, grant, or
-payload semantics, then exact-verifies the rooted binding in both branches and retains the canonical recovery
-package with its typed projection, grant, and adapter wire. The reverse path transmits only that complete
-package. The hidden neutral rooted codec now implements both the closed six-variant lifecycle request and
-the descriptive seven-variant response, whose exact nine-/eleven-field grammar and request pairing remain
-free of cryptography and runtime semantics. Exact source guards validate both without exposing their
-constructors or assigning semantic ownership; neutral Receiver-internal folds are their sole transport
-import. The implemented response-signing facade adds the fixed-domain live-broker signer and installed-key CPS
-verifier without a second type or semantic caller; its opaque result remains descriptive, not authority.
-Implemented keyless relay adoption is transport-only: it adds singleton fields, bounded sealed
-requester-envelope construction, exact inner-byte preservation, and structural request/response pairing.
-The authenticated-handoff phase's root endpoint remains unavailable and returns the existing outer refusal;
-any signed rooted refusal is carried without interpretation. Root response production/fixed-signer invocation,
-retained session-path checks,
-durable replay/receipt semantics, recursive child construction, and the first successful rooted process
-exchange remain in the [recursive lifecycle command
-phase](DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md). The transport boundary is implemented by the
-[authenticated handoff and child admission
-phase](DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md).
+The handoff receiver verifies a root-signed scope capsule against the independently installed identity
+and key before admitting any payload. Nested links relay exact bytes without signing or storage authority.
+The root validates the catalog, requester path, session, ordinal, nonce, and predecessor digest before
+signing a response or changing durable state. Exact replay converges; mismatched ancestry or evidence
+refuses. See [binary context and authenticated handoff](documents/architecture/binary_context_config.md).
 
 ## Ownership Boundary
 

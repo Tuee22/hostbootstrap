@@ -76,6 +76,22 @@ the family holds on every gate host and is counted like any other.
 manifest :: [ConditionalFamily]
 manifest =
     [ posixFamily ["WslGlobalWallHostSpec", "apply over an absent origin"] 5 5
+    , ConditionalFamily
+        { familyPath = ["RecursiveLifecycleSpec (real root/VM/container lifecycle)"]
+        , familyCases = 7
+        , familyRowCases = 5
+        , familyRowHolds = posixOwnershipSupported
+        , familyReason =
+            "local guest execution needs the POSIX row and its canonical path grammar;"
+                ++ " the native receiver also refuses a different guest-root snapshot"
+        }
+    , ConditionalFamily
+        { familyPath = ["recovery-interruption"]
+        , familyCases = 5
+        , familyRowCases = 1
+        , familyRowHolds = posixOwnershipSupported
+        , familyReason = "recursive destroy recovery uses the declared POSIX guest row; the native receiver refuses a different guest-root snapshot"
+        }
     , posixFamily ["WslGlobalWallHostSpec", "apply over a present origin"] 3 3
     , posixFamily ["WslGlobalWallHostSpec", "ownership refusals"] 4 4
     , posixFamily ["WslGlobalWallHostSpec", "crash resume"] 3 3

@@ -77,7 +77,7 @@ The source boundary is one-way: `HostBootstrap.Registry` may import the lower `H
 generic quoting helper; generic Lift imports neither Registry nor `RegistryAuth`. That dependency boundary
 is implemented and pinned by a source guard. The
 [composition-and-network-algebra phase](../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md)
-keeps the exact blob-leaf argument coverage and complete phase gate open.
+records the exact blob-leaf argument coverage and complete gate.
 
 This is the current forwarding idiom: the host binary knows it is
 the outermost frame and holds the credential; each nested binary knows it may receive a forwarded
@@ -89,7 +89,7 @@ it as project state; the current type/API and kill behavior do not prove that pr
 Discovery reads an **inline** token only. For the ordinary Hub key,
 `auths."https://index.docker.io/v1/"`, `dockerHubAuthFromConfig` keeps the matching entry verbatim —
 both the `auth` (base64 `username:token`) and any `identitytoken` field — and forwards it. The current
-filter accepts any key containing `docker.io`, so canonical-key validation remains target work. It
+filter matches keys containing `docker.io`; it does not canonicalize registry names. It
 deliberately does **not** resolve credential stores
 (`credsStore`/`credHelpers`) — no `docker-credential-*` helper is ever invoked. So the credential must
 live inline in `config.json`, which is exactly what a plain `docker login` writes **when no credential

@@ -45,7 +45,7 @@ Every project that adopts hostbootstrap must keep these out of git:
   `<project-root>/.data`, carries it through provider shares and
   `/var/tmp/hostbootstrap-demo-data`, and mounts it through kind/nvkind into the
   pod. Cluster teardown omits it from its removal set, although full
-  destroy/up/readback is not yet validated (see
+  destroy/up/readback evidence belongs in the worked-demo and substrate acceptance phases (see
   [../architecture/durable_state.md](../architecture/durable_state.md)).
 * `.test_data/` — the Harness run's owned durable-root parent. Each run uses
   `.test_data/<runId>`; the ignore entry is only a source-control guardrail and

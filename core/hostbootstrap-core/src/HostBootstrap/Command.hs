@@ -1240,7 +1240,7 @@ projectCommandGroup project finalizedSpec progName initBuilder =
     runUp dryRun =
         withSiblingValidatedProjectConfigRoot codec (T.pack progName) Context.ClusterLifecycleCommand [] $ \_wire validated ctx root -> do
             unless (null (Context.parentChain ctx)) $
-                die "project up: authenticated recursive child admission is not yet available"
+                die "project up: operator entry requires the root frame; invoke this command from the installed root binary"
             unless dryRun $ do
                 executable <- getExecutablePath
                 installedIdentity <- validateInstalledIdentity executable
@@ -1358,7 +1358,7 @@ projectCommandGroup project finalizedSpec progName initBuilder =
     runDown =
         withSiblingValidatedProjectConfigRoot codec (T.pack progName) Context.HostOrchestratorCommand [] $ \_wire validated ctx root -> do
             unless (null (Context.parentChain ctx)) $
-                die "project down: authenticated recursive child admission is not yet available"
+                die "project down: operator entry requires the root frame; invoke this command from the installed root binary"
             cfg <- hostConfig
             runProductionTeardown
                 root
@@ -1369,7 +1369,7 @@ projectCommandGroup project finalizedSpec progName initBuilder =
     runDestroy =
         withSiblingValidatedProjectConfigRoot codec (T.pack progName) Context.HostOrchestratorCommand [] $ \_wire validated ctx root -> do
             unless (null (Context.parentChain ctx)) $
-                die "project destroy: authenticated recursive child admission is not yet available"
+                die "project destroy: operator entry requires the root frame; invoke this command from the installed root binary"
             cfg <- hostConfig
             runProductionTeardown
                 root

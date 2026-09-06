@@ -144,7 +144,7 @@ Linux VM (see [wsl2](wsl2.md)).
 `HostTool Lima`, the lower target/inner transport renderer, the `HostBootstrap.Lima` lifecycle builders
 (including the prefix-guarded delete), and
 `ensure lima` are exercised by the core tests. The Apple Silicon VM lifecycle runs through the core
-`deploy-VM` step kind and current-frame Chain; the target recursive `project up` interpreter continues
+`deploy-VM` step kind and current-frame Chain; the recursive `project up` interpreter continues
 through authenticated child entries:
 
 - `project up` starts the Lima instance, enters it through passwordless `sudo -H`, stages the working tree into the guest, builds the project

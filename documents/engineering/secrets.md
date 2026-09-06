@@ -21,8 +21,9 @@
   `HarnessConfigAuthority projectId runId`; the generic harness never resolves it.
 - Root-local scope construction, mapped codec admission, and canonical config validation are
   implemented. Authenticated config refinement and exact `ChildPlanAuthority` are also implemented;
-  authenticated root-scope admission, catalog-matched storeless execution, recursive process adoption, and
-  runtime secret channels remain phase-owned work and must not be inferred from the root-local proof.
+  authenticated root-scope admission and catalog-matched storeless execution verify the complete child package.
+  Service activation independently verifies its installed narrowed wire and private bundle; a root-local
+  config proof alone does not establish that runtime channel.
 
 ## Current Status
 
@@ -110,130 +111,30 @@ hashes, strictly re-decodes, and checks byte-stable re-rendering before minting 
 secrets-strict scoped config, no raw context updater, and no conversion from Harness to Production.
 Pointer-only Harness configs remain Harness-indexed.
 
-## Downstream child and runtime target
+## Authenticated Child and Runtime Boundaries
 
-Root-local validation does not authorize a child process. The implemented handoff/refinement boundary and
-the remaining runtime target use the following opaque relations; the phase plan remains the status authority
-for each named API:
+Root-local config validation does not authorize a child. The receiver first verifies the root-signed
+`AuthenticatedRootScope` against the independently installed identity and key. It then verifies the exact
+ordinary payload binding or complete recovery package. `withChildProjectPlan` proves correspondence to the
+canonical plan; the root catalog grants only storeless local execution. No child receives root signing or
+protected-store authority.
 
-```haskell
-data RuntimeRoleWireBytes
-data RoleCodec scope specDigest fields -- constructor hidden
-data FinalizedRuntimeSpec scope specDigest fields -- constructor hidden
-data VerifiedSecretBundle
-  scope planDigest specDigest binaryDigest frame revision instanceId configDigest secretDigest
-  fields service rolePlanDigest permittedEffects -- constructor hidden
-data ValidatedServiceRequest specDigest configId secretDigest fields service -- constructor hidden
-data VerifiedRuntimeRoleActivation
-  scope planDigest specDigest binaryDigest frame revision instanceId configDigest secretDigest
-  service rolePlanDigest permittedEffects -- constructor hidden
-data AuthenticatedRootScope scope -- constructor hidden scope-first admission proof
-data VerifiedHandoff scope brokerGeneration -- constructor hidden transport proof
-data VerifiedConfigHandoff
-  scope planDigest brokerGeneration parentFrame childFrame configId verb phase
-  -- constructor hidden config/plan-coordinate refinement
+Service deployment projects only the selected role fields and installs an immutable signed activation
+revision. `withInstalledServiceActivation` recomputes the revision identity and role/private-bundle digests
+before yielding installed bytes inside the verified activation continuation. `withDecodedServiceProgram`
+selects the signed service's exact finalized codec, decodes that narrowed wire, and retains the request,
+declared effect row, resource backend, and program together. `service run` never loads the sibling full config.
 
-withVerifiedRuntimeSecretBundle
-  :: VerifiedRuntimeRoleActivation
-       scope planDigest specDigest binaryDigest frame revision instanceId
-       configDigest secretDigest service rolePlanDigest permittedEffects
-  -> FinalizedRuntimeSpec scope specDigest fields
-  -> (VerifiedSecretBundle
-        scope planDigest specDigest binaryDigest frame revision instanceId configDigest secretDigest
-        fields service rolePlanDigest permittedEffects
-        -> IO a)
-  -> IO (Either SecretBundleError a)
+The private bundle is measured independently of the public role wire. Core verifies its binding but does not
+resolve project secret references. Runtime mismatch diagnostics name the failing evidence and do not print
+secret contents. A role handler receives opaque `RoleParams` and returns an effect-indexed `ServiceProgram`;
+it has no generic IO escape to reopen another role's config or private channel.
 
-withVerifiedProductionRuntimeRoleWire
-  :: VerifiedRuntimeRoleActivation
-       (Production projectId) planDigest specDigest binaryDigest frame revision instanceId
-       configDigest secretDigest service rolePlanDigest permittedEffects
-  -> FinalizedRuntimeSpec (Production projectId) specDigest fields
-  -> VerifiedSecretBundle
-       (Production projectId) planDigest specDigest binaryDigest frame revision instanceId
-       configDigest secretDigest fields service rolePlanDigest permittedEffects
-  -> RuntimeRoleWireBytes
-  -> (forall configId.
-        VerifiedConfigWire (Production projectId) configDigest configId
-        -> ValidatedServiceRequest specDigest configId secretDigest fields service
-        -> a)
-  -> Either ConfigError a
-
-withVerifiedHarnessRuntimeRoleWire
-  :: VerifiedRuntimeRoleActivation
-       (Harness projectId runId) planDigest specDigest binaryDigest frame revision instanceId
-       configDigest secretDigest service rolePlanDigest permittedEffects
-  -> FinalizedRuntimeSpec (Harness projectId runId) specDigest fields
-  -> VerifiedSecretBundle
-       (Harness projectId runId) planDigest specDigest binaryDigest frame revision instanceId
-       configDigest secretDigest fields service rolePlanDigest permittedEffects
-  -> RuntimeRoleWireBytes
-  -> (forall configId.
-        VerifiedConfigWire (Harness projectId runId) configDigest configId
-        -> ValidatedServiceRequest specDigest configId secretDigest fields service
-        -> a)
-  -> Either ConfigError a
-```
-
-The downstream constructors are also intended to remain opaque. Generative authority must never be
-serialized, and direct `FromDhall` must not construct `TestPlaintext` or a scoped Harness config. An
-authenticated child verifies its granted bytes, mints a fresh child `configId`, and obtains fresh local Harness
-config authority and `ValidatedConfig` together; it does not receive or reconstruct the root's
-`HarnessAuthority`. The narrowed child's identity is distinct from the parent's exact-byte identity.
-
-A controller restart does not replay `ConfigHandoff`. Its independently installed, signed deployment
-manifest binds project/run scope, parent-plan digest, frame, immutable rollout revision, exact
-role-wire/config digest, finalized-spec and expected binary/image digests, separate secret-bundle digest,
-selected service, narrowed role-plan digest, permitted effects, and the controller/template identity
-allowed to instantiate it. The concrete process does not exist when that manifest is signed. Platform
-verification therefore pairs the signed revision with a measured `instanceId`—pod UID plus container
-restart count, or a protected OS-service invocation nonce—and yields one opaque
-`VerifiedRuntimeRoleActivation`; callers cannot separate or cross-pair its activation, role-plan
-projection, and protected secret-channel locator.
-
-Runtime role ConfigMaps are always non-secret. Production carries only pointer coordinates and accepts
-the canonical empty bundle; Harness carries typed secret handles and supplies fixture bytes only through
-a run-scoped Kubernetes Secret/private OS channel. The bundle verifier accepts no caller-constructed
-Harness input and needs no `HarnessConfigAuthority`: it internally reads the activation-bound channel,
-hashes the actual bytes, matches handles one-for-one, and rejects missing/extra/duplicate entries or a
-wrong run/revision/instance before yielding `VerifiedSecretBundle`. That proof carries the full
-scope/plan/spec/binary/frame/revision/instance/config/secret/role-plan/effect-ceiling lineage.
-`withVerifiedProductionRuntimeRoleWire` or
-`withVerifiedHarnessRuntimeRoleWire` then consumes that proof plus the matching finalized runtime spec,
-hashes the actual narrowed wire, and mints a fresh local verified request—not a full
-`ValidatedConfig`. A changed ConfigMap/Secret, mismatched spec/binary/projection, or another project/run
-cannot promote; even an identical secret digest from another activation cannot cross-pair. The
-Kubernetes Secret object or private OS channel is the sole secret-bearing runtime
-payload. No cleartext fixture appears in the non-secret ConfigMap, pod template, signed activation
-manifest, `LocalContextView`, logs, or diagnostic output.
-
-In the downstream target, image-build config is not a third secret scope. The build-session verifier decodes a
-`ProductionConfigWire` as `ProjectConfig (Production projectId)` and binds the installed project,
-config digest, exact `buildId`, and measured source/context digest before yielding build-only
-authority. It has no `TestPlaintext` constructor.
-
-Production commands currently require `cfg (Production projectId)`, while `test run` can mint only the
-matching `cfg (Harness projectId runId)`. There is no unscoped union, direct Harness
-`FromDhall` instance, raw-wire promotion, or
-record update that can move `TestPlaintext` into production, promote a different payload with a valid
-run authority, or move one harness run into another.
-
-This type boundary prevents scope confusion; it does not itself prevent a project resolver from logging
-resolved bytes. Resolver redaction and effect handling remain project responsibilities.
-
-> **WRONG** — a plaintext secret field:
->
-> ```dhall
-> { aws = { secret_access_key = "AKIA…/plaintext" } }   -- a Text secret leaks into the config
-> ```
->
-> A committed or mounted production config now carries a live credential.
->
-> **RIGHT** — a pointer resolved at use time:
->
-> ```dhall
-> { aws = { secret_access_key = SecretRef.Vault { mount = "secret", path = "gateway/aws", field = "secret_access_key" } } }
-> ```
+The [authenticated handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
+owns wire authentication, the [recursive lifecycle phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
+owns its process consumer, and the [service runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md)
+owns immutable installation and signed leaf execution. Exact signatures live in `Handoff`, `Activation`,
+`Service`, and `RoleLifecycle`, rather than in a second illustrative API sketch.
 
 ## The test-secrets seam
 

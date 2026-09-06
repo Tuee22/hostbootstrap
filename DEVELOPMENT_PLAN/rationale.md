@@ -518,3 +518,11 @@ which is the same defect class § JJ exists to catch, arriving through a door §
 
 *Absence guard:* a path validator's grammar matches the frame its value is declared to belong to, and
 fixtures respect the same split (§ MM, § JJ).
+
+### A service handler returns a closed effect-indexed program
+
+An opaque role-parameter input does not bound an `IO ()` result. `ProgramServiceHandler` therefore returns
+`ServiceProgram payload service effects ()`; the registry retains the declared row and matching payload
+backend in the same existential package. Signed admission validates that row and Ready supplies acquired
+handles. An unrestricted handler constructor or IO-returning selector would bypass this boundary.
+`IOServiceHandler.hs`, the registry ownership guard, and `DocValidatorSpec` reject those shapes.

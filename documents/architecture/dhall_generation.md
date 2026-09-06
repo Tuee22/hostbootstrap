@@ -5,8 +5,7 @@
 **Referenced by**: [documents index](../README.md), [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md), [binary context](binary_context_config.md)
 
 > **Purpose**: Define the generated Dhall configuration model — `.dhall` as **parameters + context +
-> witness** (never the plan shape), the current split ownership of child projection/delivery and its
-> target unification, and the load-bearing distinction between validated codec schemas, hand-written
+> witness** (never the plan shape), the plan-owned child projection and authenticated delivery, and the load-bearing distinction between validated codec schemas, hand-written
 > vocabulary types, and evaluation-tested functions.
 
 ## TL;DR
@@ -24,20 +23,19 @@
   role/output/policy flags also support other current init uses. In the demo, the named
   **context-init** action body is only a no-op announcement: VM projection and streaming occur in
   the composite `build-pb` action, container projection is carried by the descent that same step
-  declares and delivered by the handoff, and service/daemon projection occurs in deployment actions. The target plan makes
-  projection plus delivery one typed operation.
+  declares and delivered by the handoff, and service/daemon projection occurs in deployment actions. The declared descent binds projection and authenticated delivery to the exact plan node.
 - The binary-generated tiers are composed from **three vocabulary layers** — `Core.dhall` (L0),
   `Daemon.dhall` (L1), `App.dhall` (L2) — each embedding the one below (`let C = ./Core.dhall`).
 - The lower-layer opaque `CodecWitness a` validates normalized `FromDhall` decoder `expected` and
   `ToDhall` encoder `declared` expressions once and is the only schema/decode/render input.
-  `ConfigArtifact` construction and every project/test config IO path consume that witness. The target
-  project boundary additionally wraps it with installed identity and lifecycle scope as
+  `ConfigArtifact` construction and every project/test config IO path consume that witness. The
+  project boundary wraps it with installed identity and lifecycle scope as
   `ProjectCodec scope specDigest cfg`.
 - The budget **functions** (`fitsWithin`, `split`) are **hand-written Dhall** in `Core.dhall` and
   drift-controlled by evaluation tests, not reflection. Project configs intentionally do not attach a
   `fitsWithin` assertion: they carry text quantities and no pod set. Typed scalar refinements form the
-  decode ring. Haskell `fitsBudget` exists and is unit-tested, but lifecycle bring-up does not yet call
-  it with the complete topology-derived workload set.
+  decode ring. The plan-indexed `Cluster.Budget` admission checks the complete declared workload set and partition;
+  the descriptive `fitsBudget` helper is not the authority for applying a wall.
 
 ## Three Roles Of `.dhall`: Parameters, Context, Witness
 
@@ -52,7 +50,7 @@ as an opaque validated `StepPlan`. Each `.dhall` plays three roles:
 
 The resource knobs are **root parameters**, so plan construction is a pure function of root params rather than
 branching on ambient state. The context and witness fields are the `binary_context_config` "know your
-place" description and current mismatch gate; opaque authority is a separate target. This doc owns how
+place" description and current mismatch gate; opaque installed and lifecycle authority is verified separately. This doc owns how
 the data is generated and projected. See
 [dhall_topology](../engineering/dhall_topology.md) for where the context/witness fields sit in the
 configuration model.
@@ -62,12 +60,11 @@ configuration model.
 | Role | File | Produced by | Read by |
 |------|------|-------------|---------|
 | Root runtime config | `<project>.dhall` | the default `project init` invocation, then user-edited for host-level settings | existing-frame project-binary commands |
-| Child runtime config | `<project>.dhall` at the child executable location | current demo: composite VM bootstrap, the plan-declared descent plus handoff, or workload deployment action; target: one plan operation that owns projection and delivery | existing-frame child-binary commands |
+| Child runtime config | `<project>.dhall` at the child executable location | the exact finalized child projector and authenticated plan descent; service deployment installs narrowed activation revisions | existing-frame child-binary commands |
 | Binary-generated | static registry examples plus standalone typed artifacts | the project binary, from the reusable vocabulary | the project binary / test harness |
 
 Python has no Dhall-facing role. The local config declares where the already-built binary is running and
-which commands it may accept; current gates check that description, but the decoded fields are not yet
-opaque authority. Read-only `context` is the inspection surface for the
+which commands it may accept; current gates check that description, and the decoded fields remain descriptive rather than authority. Read-only `context` is the inspection surface for the
 sibling `.dhall` and the rendered lift composition; runtime deploy and child projections are minted as
 steps that first validate the active local config. Everything richer is binary-generated. See
 [dhall_topology](../engineering/dhall_topology.md), [schema](../engineering/schema.md), and
@@ -83,10 +80,10 @@ and payload. The refusal is the post-sweep one derived from installed project id
 interrupted run's own config is reclaimed rather than blocking the next run. Durable verification and
 rehydration of the complete lifecycle resource set belongs to the
 [recovery and migration phase](../../DEVELOPMENT_PLAN/phase-18-recovery-and-migration.md).
-Only the existing-frame commands
-`project up|down|destroy`, `service run`, and `check-code` use the sibling project-config command gate.
-The exact current-versus-target matrix lives in
-[binary_context_config](binary_context_config.md#per-frame-fail-fast-on-handoff).
+Root `project up|down|destroy` loads the sibling project config and separately admits installed root
+authority. `service run` reads only its verified activation's narrowed role wire. Image `check-code`
+verifies its transient build channel, while ordinary developer checks use the local config gate. The exact
+admission boundaries live in [binary_context_config](binary_context_config.md#per-frame-fail-fast-on-handoff).
 
 ## Generated Tiers
 
@@ -127,41 +124,24 @@ may carry its own typed Parameters-layer fields on `cfg`: the demo's mandatory `
 `psAssemble` default `"Hello, world!"`) is one such field, rendered into the root `<project>.dhall` and read
 by the `Web` service.
 
-Child configs are **projections, not copies**, but the current demo does not give their projection and
-delivery to its named `context-init` action. That action prints an announcement and keeps a frame in the
-chain. The metal frame's composite `build-pb`/pristine-bootstrap action derives and streams the
-VM-orchestrator config; the descent the `context-init` step declares carries the project-container
-payload and the recursive handoff streams it over `stdin`; chart and accelerator deployment actions
-render ConfigMaps for service/daemon children. Because that descent is a node of the same validated
-plan, the announcing step and the container payload can no longer drift apart. The target `ProjectPlan`
-additionally creates a single operation node whose permit covers both projection and delivery.
+Child configs are **projections, not copies**. The finalized project projector derives the exact child
+frame, canonical payload, resource slice, and execution digest. The root recursively validates those edges
+into its catalog before execution. The `context-init` action announces the descent bound to that same
+plan node; authenticated preparation and delivery belong to the interpreter.
 
-The current projection helpers derive a narrower context for the child frame and include supplied child
-witnesses, but they retain the demo's full `ProjectConfig` parameter shape and copy the parent's entire
-raw resource envelope. The smaller cluster slice is computed locally for cluster creation and is not
-projected into service/daemon configs. VM/container payloads are written at the child's
-executable-sibling location before dispatch. Trusted projection narrows the generated context's allowed
-command classes so a service config is not intended to launch host VMs and a container config is not
-intended to perform host orchestration. `addRole` is a validating smart constructor over a closed
-role-addition relation, `service run` rejects a non-leaf primary kind, and lifecycle validation re-derives
-placement from the complete topology instead of trusting a declared command-class list. The
-[worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns the concrete workload, partition,
-and exact frame resource slices; the
-[service runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md) owns the narrowed service
-request consumed by a registered handler. The
-[authenticated handoff and child admission phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
-frames the narrowed config wire plus a separate opaque `HandoffToken` issued by the validated parent's
-profile-specific broker under the exact
-`BoundRunLease scope specDigest planDigest brokerGeneration` on a private duplex session. No token or permit exists
-while the lease is still unbound. The binary receiver
-returns a fresh challenge; the broker atomically consumes the nonce and authenticates a
-child/config-hash-bound grant before the receiver promotes/writes config or mints authority. Recorded
-transcripts and broker loss fail, and later invocations use fresh tokens. Authority is never a Dhall
-field and neither payload travels through `argv` or environment. Project
-Dockerfiles bake the narrow `image-build-container` config so build-time commands run during the image
-build, before any runtime child config is streamed in. See
-[config_generation](../engineering/config_generation.md) for the projection helpers and
-[binary_context_config](binary_context_config.md) for the per-frame witness contract.
+VM bootstrap first establishes the child executable and local configuration. Recursive handoff verifies the
+exact payload and installed identity before a child enters its storeless executor. Services and daemons use
+narrowed `RuntimeRoleWire` values from the jointly finalized registry, with immutable activation revisions
+binding configuration, secret bundle, executable, workload instance, and role placement. A full parent
+config is not the service handler's input. The receiver introduces fresh local indices; no parent plan,
+lease, or authority constructor is serialized in Dhall.
+
+The derived Dockerfile obtains its measured builder and descriptive image config from fixed read-only build
+inputs. Its `check-code` entry also verifies the signed transient BuildKit channel before executing the
+project hook. Configuration alone cannot authorize that build. See
+[config_generation](../engineering/config_generation.md) for writers and projection,
+[binary_context_config](binary_context_config.md) for admission, and
+[build_release](../engineering/build_release.md) for the build boundary.
 
 ## Three Vocabulary Layers
 
@@ -197,7 +177,7 @@ nuance of the model:
   admission before acquiring their ownership lock. `ConfigArtifact` is opaque and can be built only
   from a witness plus a canonical value. Every hand-written `Core.dhall` type is exhaustively named and
   judgmentally equality-gated. This makes type-expression mismatch unrepresentable after admission;
-  semantic encode/decode behavior still requires round-trip/property tests. At the target project
+  semantic encode/decode behavior still requires round-trip/property tests. At the project
   boundary, installed identity and lifecycle scope additionally wrap the witness as
   `ProjectCodec scope specDigest cfg`, required for config promotion and plan construction.
 
@@ -208,9 +188,8 @@ nuance of the model:
   quantities are Kubernetes `Text` and it contains no resolved pod set. Dhall decoding rejects malformed
   shapes, and demo validation uses private smart-constructed quantities, resources, replicas, and
   service parameters. The single project-owned budget is then subjected to positive and provider-exact
-  admission; there is no raw context-budget bypass. The complete
-  topology-derived pod set is not yet fed to `fitsBudget` by bring-up: the only production use is the
-  demo API's static `demoPods` view, which lists just the web example.
+  admission; there is no raw context-budget bypass. The exact lifecycle consumer uses `Cluster.Budget` workload admission and partition evidence.
+  `fitsBudget` and the static `demoPods` artifact are descriptive views, not the applied wall authority.
 
 - **WRONG**: hand-write the schema type next to the decoder (`schemaText = "{ cpu : Natural, … }"`) to
   "document" what the decoder accepts. This is wrong because the literal and the decoder are two
@@ -231,28 +210,13 @@ complete topology-derived set exists. See
 current child-projection seams that realize this, and
 [resource_budgeting](../engineering/resource_budgeting.md) for the budget the assertion guards.
 
-## Current Status
+## Validation And Consumers
 
-The built binary exposes the Dhall surface through the `project` chain. The default `project init`
-invocation renders a fresh root config from the project's Production assembly defaults (core ships none); its
-current `--role` / repeatable `--also-role` / `--output` / `--force` / `--if-missing` surface supports
-explicit role and write-policy modes. Child projection is implemented, but
-its current operation ownership is split: composite bootstrap owns the VM config, the plan-declared
-descent plus handoff owns the container payload, and deployment actions own service/daemon ConfigMaps;
-the `context-init` action body only announces the handoff. Dockerfiles separately bake the narrow
-`image-build-container` config for build-time commands. On the read-only `context` surface, `inspect` reads the
-sibling `.dhall`, `show` reads its selected/default file, and `path`/`schema`/`render` are static and
-config-free; `service schema` is likewise static. The three-layer vocabulary and standalone budget
-artifact have core tests. One validated codec now owns schema, decode, and render for every artifact and
-project/test config path; an exhaustive `Core.dhall` test equality-gates all ten current type exports,
-while `fitsWithin` and `split` remain evaluation-tested.
-The parameters/context/witness data model and its current-versus-target authority distinction are defined
-in `binary_context_config`.
+One admitted codec owns schema, decode, and render for each artifact and project/test config path. The
+`Core.dhall` tests equality-check every exported type, while `fitsWithin` and `split` have evaluation tests.
+Role-schema tests compare the finalized Production and Harness families with their exact decoders.
 
-A target recursive `project up` on Incus/Linux interprets the VM-backed branch of
-`demoChainFor :: Substrate -> ProjectConfig -> [Step]` across the three-frame fractal descent and stands up
-the live persistent stack: the cordoned kind cluster, the in-cluster registry, the project image pushed to
-that registry, and the web chart pod serving through its runtime-resolved loopback endpoint. `project down`
-deletes kind compute and stops the VM; `project destroy` deletes the VM
-too. Static artifact schema/examples remain under read-only `context`; the project-local schema
-is under config-free `service schema`.
+The worked demo's root, VM/container projections, and service roles consume this vocabulary through their
+respective admitted boundaries. The [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md)
+records recursive Production and Harness acceptance. The parameters/context/witness model and independent
+authority checks are defined in [binary_context_config](binary_context_config.md).

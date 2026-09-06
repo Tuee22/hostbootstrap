@@ -51,11 +51,14 @@ module HostBootstrap.DocValidator
     checkSubstrateBudget,
     checkLegacyLedger,
     checkContractOwnership,
+    checkArchitectureDrift,
   )
 where
 
 import Control.Monad (filterM, foldM)
-import Data.Char (isDigit)
+import Data.Char (isAlphaNum, isDigit, toLower)
+import qualified Data.Text as Text
+import qualified Data.Text.IO as TextIO
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf, nub, sort, sortOn)
 import Data.Maybe (isJust, isNothing)
 import System.Directory
@@ -116,6 +119,7 @@ validateRepo root = do
   substrateV <- concatMapM (checkSubstrateBudget root) phaseDocs
   ledgerV <- checkLegacyLedger root
   contractV <- checkContractOwnership root
+  driftV <- checkArchitectureDrift root
   pure
     ( sortOn
         (\v -> (vFile v, vMessage v))
@@ -129,6 +133,7 @@ validateRepo root = do
             ++ taxonomyV
             ++ ledgerV
             ++ contractV
+            ++ driftV
             ++ numberingV
             ++ headerV
             ++ statusHarmonyV
@@ -141,6 +146,80 @@ validateRepo root = do
             ++ substrateV
         )
     )
+
+{- | Architecture reconciliation adds absence guards to the lower doctrine
+checks. Each refusal points to the owning phase and the design rationale.
+Missing source files are valid while earlier phases are being constructed.
+-}
+checkArchitectureDrift :: FilePath -> IO [Violation]
+checkArchitectureDrift root = do
+  removed <- concatMapM removedModule obsoleteModules
+  boundaries <- concatMapM boundary forbiddenBoundaries
+  docs <- listMarkdown (root </> "documents")
+  sources <- concatMapM sourceFiles (map (root </>) ["core/hostbootstrap-core/src", "core/hostbootstrap-core/internal", "demo/src", "hostbootstrap"])
+  references <- concatMapM phaseReferences (docs ++ sources)
+  pure (removed ++ boundaries ++ references)
+ where
+  obsoleteModules =
+    [ ("Authority/ProjectPlan/Internal.hs", "phase-17-recursive-lifecycle-command.md", "a-generic-protected-store-rpc-cannot-stand-in-for-rooted-coordination"),
+      ("Handoff/Lifecycle.hs", "phase-17-recursive-lifecycle-command.md", "a-shared-lifecycle-authority-mount-is-not-a-recursive-transport")
+    ]
+  forbiddenBoundaries =
+    [ ("Service.hs", ["ServiceHandler", "serviceDefinition", "withSelectedServiceRequest", "selectServiceAction", "LegacyServiceAction"], "phase-22-service-runtime.md", "a-service-handler-returns-a-closed-effect-indexed-program"),
+      ("Service/Internal.hs", ["ServiceHandler", "LegacyServiceAction"], "phase-22-service-runtime.md", "a-service-handler-returns-a-closed-effect-indexed-program"),
+      ("Authority/Kernel.hs", ["ProductionCloseRoot", "destroyCloseRoot", "preEffectCloseRoot", "childCommandReservationKernel"], "phase-18-recovery-and-migration.md", "only-a-proven-pre-effect-refusal-takes-the-short-close")
+    ]
+  sourcePath name = root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap" </> name
+  refusal file shape owner rationale =
+    Violation
+      (rrel root file)
+      ( "forbidden architecture shape "
+          ++ shape
+          ++ "; rewrite DEVELOPMENT_PLAN/"
+          ++ owner
+          ++ "; rationale: DEVELOPMENT_PLAN/rationale.md#"
+          ++ rationale
+      )
+  removedModule (name, owner, rationale) = do
+    let file = sourcePath name
+    exists <- doesFileExist file
+    pure [refusal file name owner rationale | exists]
+  boundary (name, forbidden, owner, rationale) = do
+    let file = sourcePath name
+    exists <- doesFileExist file
+    if not exists
+      then pure []
+      else do
+        contents <- Text.unpack <$> TextIO.readFile file
+        let identifiers = words (map (\c -> if isAlphaNum c || c == '_' || c == '\'' then c else ' ') contents)
+        pure [refusal file identifier owner rationale | identifier <- forbidden, identifier `elem` identifiers]
+  phaseReferences file = do
+    contents <- Text.unpack <$> TextIO.readFile file
+    pure
+      [ Violation
+          (rrel root file)
+          ("bare phase/sprint number on line " ++ show lineNumber ++ "; cite the owning phase by name and link; rewrite DEVELOPMENT_PLAN/phase-29-documentation-reconciliation.md")
+      | (lineNumber, line) <- zip [1 :: Int ..] (lines contents),
+        hasNumberReference (words (map (\c -> if isAlphaNum c || c `elem` "'_-." then c else ' ') line))
+      ]
+  hasNumberReference (label : number@(first : _) : rest)
+    | map toLower label `elem` ["phase", "sprint"], isDigit first = True
+    | otherwise = hasNumberReference (number : rest)
+  hasNumberReference (_ : rest) = hasNumberReference rest
+  hasNumberReference [] = False
+  sourceFiles directory = do
+    exists <- doesDirectoryExist directory
+    if not exists
+      then pure []
+      else do
+        entries <- sort <$> listDirectory directory
+        concatMapM
+          ( \entry -> do
+              let path = directory </> entry
+              isDirectory <- doesDirectoryExist path
+              if isDirectory then sourceFiles path else pure [path | takeExtension path `elem` [".hs", ".py"]]
+          )
+          entries
 
 -- | Locate the repository root by walking up from @start@ until a directory
 -- containing both @documents/@ and @DEVELOPMENT_PLAN/@ is found.
@@ -617,7 +696,7 @@ checkSprintStructure root file = do
 {- | § A: a Remaining Work section never cites a later phase.
 
 @Depends on@ is not the only place a phase can claim a later one gates it.
-"This closes when phase 15 lands", written in a @Remaining Work@ section, is the
+"This closes when a later phase lands", written in a @Remaining Work@ section, is the
 same claim in prose, and 'checkPhaseOrdering' cannot see it. That is the claim
 § A forbids outright — there is nothing later for a phase to wait on — so a
 document making it is describing an order the numbering does not have.
@@ -1091,7 +1170,7 @@ sprint, and one parser serves both.
 data DocSection = DocSection
   { sectionLevel :: Int,
     sectionTitle :: String,
-    -- | @Just "Sprint 3.7"@ when the section sits inside one.
+    -- | @Just a sprint label@ when the section sits inside one.
     sectionSprint :: Maybe String,
     sectionBody :: [String]
   }

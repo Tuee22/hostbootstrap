@@ -389,7 +389,7 @@ remains; `.build/hostbootstrap-demo.dhall` is gone while `.build/hostbootstrap-d
 `.test_data` exists and is empty; no accelerator daemon is live; and `limactl list` reports no demo instance.
 The shared Docker context and any pre-existing Colima `default` profile are ambient state and must remain
 unchanged. The dated host, versions, run IDs, duration, image digests, and audit belong in
-[Phase 25](../../DEVELOPMENT_PLAN/phase-25-apple-silicon-substrate.md).
+[Apple Silicon substrate acceptance](../../DEVELOPMENT_PLAN/phase-25-apple-silicon-substrate.md).
 
 ## Safe Operating Guidance
 

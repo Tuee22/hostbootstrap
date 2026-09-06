@@ -75,10 +75,10 @@ declared child boundary; authenticated child admission and cross-frame continuat
 Optional structural variation (skip the VM → straight to Docker) is a root-`.dhall` flag, so the chain
 stays a pure function of root parameters.
 
-## The Chain And Its Target Recursive Interpreter
+## The Chain And Its Recursive Interpreter
 
 `StepPlan` is the single forward ordering. Exact plan admission derives its topology and current-frame
-projections; the public Chain interprets only the authorized current-frame segment. The target recursive
+projections; the public Chain interprets only the authorized current-frame segment. The recursive
 (`fractal`) `project up` interpreter authenticates a child entry and repeats that operation at each
 declared boundary. The canonical home for this doctrine is
 [composition_methodology § The Self-Reference Lift](../architecture/composition_methodology.md#the-recursive-project-up-interpreter);
@@ -87,11 +87,11 @@ the cookbook summary:
 - **Opaque validated `StepPlan`.** The forward source begins as ordered additive fragments computed from
   root parameters. `mkStepPlan` rejects empty, duplicate, conflicting, post-handoff-invalid, and
   non-contiguous `A/B/A` sequences; `--dry-run` renders every accepted plan in exact source order.
-- **Fractal descent (target).** Each `project up` frame boundary is the same move: *provision the frame
+- **Authenticated recursive descent.** Each `project up` frame boundary is the same move: *provision the frame
   → build/install the pb in it → authenticate and hand off `pb project up`*. The current interpreter
-  runs the local segment and derives the next frame and lift context, but a nested lifecycle entry fails
-  closed until the child-admission protocol is implemented. Reconcilers attempt convergence, but typed
-  idempotent outcomes are not yet universal.
+  runs the local segment and selects the exact catalog edge and lift route. Its root-owned protocol
+  authenticates the child, prepares each selected operation, and settles returned observations. Reconcilers attempt convergence, but typed
+  convenience actions report completion only; managed adapters return exact settlement observations.
 - **The Python bootstrapper is the metal-frame precursor** to that pattern — provision the metal frame,
   build/install the pb, hand off — with two caveats the cookbook reuses: the *build* step is
   parent-orchestrated (the child pb does not exist yet), and the container frame *skips* the build
@@ -253,4 +253,4 @@ development plan.
 - [library_hierarchy](../architecture/library_hierarchy.md) — the extension-stream merge that adds step
   kinds.
 - [dhall_topology](dhall_topology.md) — the topology frames declared by the plan and consumed by the
-  target recursive interpreter.
+  recursive interpreter.

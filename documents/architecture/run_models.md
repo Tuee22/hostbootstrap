@@ -36,9 +36,9 @@ bracket: it admits one `ProjectPlan (Harness projectId runId) ...`, packages tha
 interpreter and reverse action in an opaque `HarnessLifecycle`, and lets the engine invoke those actions
 directly. No Harness lifecycle action
 re-enters the CLI or a Production plan. These are call-site boundaries around one authored graph, not
-alternate execution selectors. Nested
-lifecycle entry fails closed until authenticated child admission and proof-complete traversal land; exact
-`down`/`destroy` authorization belongs to
+alternate execution selectors. Nested lifecycle entry authenticates the exact root-selected catalog edge
+and executes only its signed prepared grants. Proof-complete traversal and exact `down`/`destroy`
+authorization belong to
 [the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
 
 The [step-algebra-and-project-plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)

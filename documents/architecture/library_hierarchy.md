@@ -30,7 +30,7 @@
   per step.
 - The chain shape is the canonical model owned by
   [composition_methodology](composition_methodology.md); this document defers to it for the current-frame
-  Chain and target recursive `project up` interpreter and describes only how the streams layer.
+  Chain and recursive `project up` interpreter and describes only how the streams layer.
 
 ## The Three Library Levels
 
@@ -70,7 +70,7 @@ while each frame's descent is declared on the plan node that owns the boundary. 
 ### Stream 1 — The Lift Chain
 
 The first stream is the project's lift **plan**: ordered `cfg -> [Step]` fragments validated into the
-opaque `StepPlan` whose current-frame projection Chain interprets today and whose target recursive
+opaque `StepPlan` whose current-frame projection Chain interprets and whose recursive
 `project up` interpreter walks frame by frame. `addSteps`
 contributes new step kinds while preserving lower fragments; the core's
 host-management step kinds (deploy-VM, `ensure`-X, copy-source, build-pb, build-image, context-init,

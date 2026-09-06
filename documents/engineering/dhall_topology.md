@@ -6,12 +6,12 @@
 
 > **Purpose**: Define how the topology frames in a binary's sibling `<project>.dhall` drive the recursive
 > `project` chain — frames are parameters and a witness contract, never the chain shape — and how each
-> project binary checks its declared frame before acting, while opaque authority remains an open target.
+> project binary checks its declared frame before acting, while independent installed or authenticated evidence supplies authority.
 
 ## TL;DR
 
 - The plan shape is **code**: ordered step fragments are finalized into an opaque validated `StepPlan`
-  owned by the project binary. Current Chain interprets its exact current-frame segment; target recursive
+  owned by the project binary. Current Chain interprets its exact current-frame segment; recursive
   `project up` traverses authenticated child entries. The shape is not in any `.dhall`.
 - `.dhall` carries **parameters + context + witness**, never the shape. The sibling `<project>.dhall`
   parameterizes the chain (budgets, ports, replicas, optional structural flags) and declares the
@@ -65,7 +65,7 @@ context               the declared command/capability/resource context for that 
 witnesses             local checks that prove the process is actually in that frame
 ```
 
-The `topologyFrames` list — frames plus `topologyParentId` references — is the map of the target recursive
+The `topologyFrames` list — frames plus `topologyParentId` references — is the map of the recursive
 descent. Each frame is one segment of the `project up` chain: current Production interprets the current
 frame's steps and refuses at a nested entry; the target authenticates and hands `pb project up` into the
 next frame, where the child copy reads its own
@@ -95,11 +95,10 @@ legal child relations. A closed required-witness function derives the exact set 
 missing, duplicate, irrelevant, contradictory, or false evidence cannot produce the opaque validated
 context.
 
-This per-frame fail-fast catches known placement mismatches during recursive handoff. It is not yet an
-unforgeable authority boundary: context/capability constructors and widening paths remain public enough
-for a caller to represent a declaration the trusted projection would not mint. A baked image-build config
-is not intended to authorize VM-scoped workflows on whatever Docker daemon happens to be reachable; the
-target makes that impossible through opaque narrowed capabilities.
+Per-frame checks reject known placement and witness mismatches. Descriptive context remains data, not
+authority: installed root, authenticated handoff, or verified activation evidence supplies the command's
+capability, and its plan/frame join must agree with the decoded description. A baked image-build config
+cannot authorize a VM-scoped lifecycle merely because a Docker daemon is reachable.
 
 - **WRONG**: bake `/usr/local/bin/<project>.dhall` with VM-project-container authority and then rely on
   `docker run <image> project up` to work from any host. This is wrong because it silently makes the
@@ -199,7 +198,7 @@ separate per-case cluster. Child configs are generated from passed parameters, s
 ## See also
 
 - [composition_methodology](../architecture/composition_methodology.md) — canonical home of the current-frame
-  Chain, target recursive `project up`, and fractal-bootstrap model.
+  Chain, recursive `project up`, and fractal-bootstrap model.
 - [config_generation](config_generation.md) — current child-projection/delivery seams and the target
   unified operation.
 - [binary_context_config](../architecture/binary_context_config.md) — how a binary decides whether a

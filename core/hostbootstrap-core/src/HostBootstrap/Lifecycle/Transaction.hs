@@ -37,6 +37,10 @@ module HostBootstrap.Lifecycle.Transaction (
     projectTransactionTarget,
     sessionTransactionTarget,
     operationTransactionTarget,
+    productionIntentTransactionTarget,
+    productionLeaseTransactionTarget,
+    productionModeTransactionTarget,
+    recoverProductionTransactions,
     ensureTransactionCoordinator,
     runLifecycleTransaction,
     CoordinatorState (..),
@@ -48,11 +52,11 @@ module HostBootstrap.Lifecycle.Transaction (
     transactionErrorMessage,
 ) where
 
+import qualified Crypto.Hash as Hash
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import Data.Char (isHexDigit)
-import qualified Crypto.Hash as Hash
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -64,7 +68,9 @@ import HostBootstrap.Protected (
     ProtectedSession,
     RecordKey,
     RecordVersion,
+    compareAndDeleteProtectedRecord,
     compareAndSwapProtectedRecord,
+    listProtectedRecords,
     mkRecordKey,
     mkRecordName,
     readProtectedRecord,
@@ -150,11 +156,12 @@ data TxnKind
     | TxnRegisterIntent
     | TxnPrepareOperation
     | TxnAcknowledgeOutcome
-    | -- | Abandoned-run recovery rebinding one existing stable session record
-      -- to the fresh broker generation. It is deliberately its own kind rather
-      -- than a second use of 'TxnCloseSession': a rebind leaves the session
-      -- __Open__, so a journal reader can tell a recovered-and-still-open
-      -- session from a closed one, and only the recovery interpreter emits it.
+    | {- | Abandoned-run recovery rebinding one existing stable session record
+      to the fresh broker generation. It is deliberately its own kind rather
+      than a second use of 'TxnCloseSession': a rebind leaves the session
+      __Open__, so a journal reader can tell a recovered-and-still-open
+      session from a closed one, and only the recovery interpreter emits it.
+      -}
       TxnRebindSession
     | TxnCloseSession
     | TxnBeginProjectClose
@@ -165,17 +172,23 @@ data TxnKind
       TxnFinalizeHarnessClose
     | -- Reserved for the Mode integration tranche.
       TxnFinalizeProductionProject
+    | TxnFinalizeProductionPreEffect
+    | TxnReopenProductionProject
     deriving (Eq, Show)
 
 data TargetRole
     = ProjectTarget
     | SessionTarget
     | OperationTarget
+    | ProductionIntentTarget
+    | ProductionLeaseTarget
+    | ProductionModeTarget
     deriving (Eq, Show)
 
 data TargetExpectation
     = TargetAbsent
     | TargetVersion Word64
+    | TargetExact Word64 ByteString
     deriving (Eq, Show)
 
 data TransactionTarget = TransactionTarget
@@ -209,6 +222,52 @@ transactionTarget role key observed payload =
         , targetDesiredPayload = payload
         }
 
+-- Production records retain their canonical Mode wire format. Redo compares both
+-- the original version/bytes and the exact successor, including its version.
+-- Mode deletion is last; a cooperating reader recovers the coordinator first.
+productionIntentTransactionTarget :: RecordKey -> ProtectedRecord -> ByteString -> TransactionTarget
+productionIntentTransactionTarget = productionTransactionTarget ProductionIntentTarget
+
+productionLeaseTransactionTarget :: RecordKey -> ProtectedRecord -> ByteString -> TransactionTarget
+productionLeaseTransactionTarget = productionTransactionTarget ProductionLeaseTarget
+
+productionModeTransactionTarget :: RecordKey -> ProtectedRecord -> TransactionTarget
+productionModeTransactionTarget key record = productionTransactionTarget ProductionModeTarget key record ByteString.empty
+
+productionTransactionTarget :: TargetRole -> RecordKey -> ProtectedRecord -> ByteString -> TransactionTarget
+productionTransactionTarget role key record =
+    TransactionTarget
+        role
+        key
+        (TargetExact (recordVersionWord (protectedRecordVersion record)) (protectedRecordBytes record))
+
+{- | Recover committed Production closes before Mode reads or produces authority.
+Other lifecycle transactions are recovered by their exact Session entry.
+-}
+recoverProductionTransactions :: ProtectedSession session -> IO (Either TransactionError ())
+recoverProductionTransactions session = do
+    listed <- listProtectedRecords session
+    case listed of
+        Left failure -> pure (Left (TransactionStoreFailure failure))
+        Right keys -> go (filter (("transaction." `Text.isPrefixOf`) . recordKeyText) keys)
+  where
+    go [] = pure (Right ())
+    go (key : rest) = do
+        observed <- readProtectedRecord session key
+        case observed of
+            Left failure -> pure (Left (TransactionStoreFailure failure))
+            Right Nothing -> pure (Left (TransactionMalformed "a listed coordinator disappeared"))
+            Right (Just record) -> case decodeCoordinator (protectedRecordBytes record) of
+                Left failure -> pure (Left failure)
+                Right (CoordinatorApplying descriptor)
+                    | descriptorKind descriptor `elem` [TxnFinalizeProductionProject, TxnFinalizeProductionPreEffect] ->
+                        case coordinatorKey (descriptorPlan descriptor) of
+                            Right expected | key == expected -> do
+                                recovered <- recoverApplying session key record descriptor
+                                either (pure . Left) (const (go rest)) recovered
+                            _ -> pure (Left (TransactionMalformed "a Production descriptor names another coordinator"))
+                Right _ -> go rest
+
 -- Coordinator record --------------------------------------------------------------
 
 data CoordinatorState
@@ -224,9 +283,10 @@ data TransactionDescriptor = TransactionDescriptor
     }
     deriving (Eq, Show)
 
--- | The coordinator's record for one plan. The plan digest is namespaced
--- (@\<specDigest\>:\<planBytesDigest\>@), so it reaches the store's key alphabet
--- through the one injective encoding rather than a local sanitizer.
+{- | The coordinator's record for one plan. The plan digest is namespaced
+(@\<specDigest\>:\<planBytesDigest\>@), so it reaches the store's key alphabet
+through the one injective encoding rather than a local sanitizer.
+-}
 coordinatorKey :: Text -> Either TransactionError RecordKey
 coordinatorKey plan =
     either (Left . TransactionStoreFailure) Right $ do
@@ -380,6 +440,7 @@ applyTarget ::
     Word64 ->
     TransactionTarget ->
     IO (Either TransactionError ())
+applyTarget session _ target | isProductionTarget (targetRole target) = applyProductionTarget session target
 applyTarget session sequenceNumber target = do
     observed <- readTransactionRecord session (targetKey target)
     case observed of
@@ -402,6 +463,36 @@ applyTarget session sequenceNumber target = do
                             sequenceNumber
                         )
                     )
+
+isProductionTarget :: TargetRole -> Bool
+isProductionTarget role = role `elem` [ProductionIntentTarget, ProductionLeaseTarget, ProductionModeTarget]
+
+applyProductionTarget :: ProtectedSession session -> TransactionTarget -> IO (Either TransactionError ())
+applyProductionTarget session target = do
+    observed <- readProtectedRecord session (targetKey target)
+    case observed of
+        Left failure -> pure (Left (TransactionStoreFailure failure))
+        Right current -> case targetExpectation target of
+            TargetExact version original
+                | alreadyApplied version current -> pure (Right ())
+                | Just record <- current
+                , recordVersionWord (protectedRecordVersion record) == version
+                , protectedRecordBytes record == original -> do
+                    if targetRole target == ProductionModeTarget
+                        then do
+                            deleted <- compareAndDeleteProtectedRecord session (targetKey target) (ExpectVersion (protectedRecordVersion record))
+                            pure (either (Left . TransactionStoreFailure) Right deleted)
+                        else do
+                            written <- compareAndSwapProtectedRecord session (targetKey target) (ExpectVersion (protectedRecordVersion record)) (targetDesiredPayload target)
+                            pure (either (Left . TransactionStoreFailure) (const (Right ())) written)
+            _ -> pure (Left (TransactionTargetConflict (recordKeyText (targetKey target)) 0))
+  where
+    alreadyApplied _ Nothing = targetRole target == ProductionModeTarget
+    alreadyApplied version (Just record) =
+        targetRole target /= ProductionModeTarget
+            && version < maxBound
+            && recordVersionWord (protectedRecordVersion record) == version + 1
+            && protectedRecordBytes record == targetDesiredPayload target
 
 targetAlreadyApplied :: Word64 -> TransactionTarget -> Maybe TransactionRecord -> Bool
 targetAlreadyApplied sequenceNumber target current =
@@ -427,7 +518,29 @@ validateTargets plan kind targets
         Left (TransactionInvalidTargets kind "a target key is outside the transaction plan")
     | map targetRole targets /= expectedRoles kind =
         Left (TransactionInvalidTargets kind "the target roles do not match the closed transaction kind")
+    | not (validProductionTargets targets) =
+        Left (TransactionInvalidTargets kind "Production targets do not name one exact project generation")
     | otherwise = Right ()
+
+validProductionTargets :: [TransactionTarget] -> Bool
+validProductionTargets targets =
+    case filter (isProductionTarget . targetRole) targets of
+        [] -> True
+        raw -> case [recordKeyText (targetKey target) | target <- raw, targetRole target == ProductionModeTarget] of
+            [mode] | Just project <- Text.stripPrefix "mode." mode, not (Text.null project) -> all (valid project) raw
+            _ -> False
+  where
+    valid project target =
+        let key = recordKeyText (targetKey target)
+            expectedKey = case targetRole target of
+                ProductionIntentTarget -> "reverse-root." <> project <> ".production"
+                ProductionLeaseTarget -> "lease." <> project <> ".production"
+                ProductionModeTarget -> "mode." <> project
+                _ -> ""
+            payloadValid = ByteString.null (targetDesiredPayload target) == (targetRole target == ProductionModeTarget)
+         in key == expectedKey && payloadValid && case targetExpectation target of
+                TargetExact version bytes -> version > 0 && version < maxBound && not (ByteString.null bytes)
+                _ -> False
 
 expectedRoles :: TxnKind -> [TargetRole]
 expectedRoles kind = case kind of
@@ -442,7 +555,9 @@ expectedRoles kind = case kind of
     TxnRecordProjectClosed -> [ProjectTarget]
     TxnCloseProductionInvocation -> []
     TxnFinalizeHarnessClose -> []
-    TxnFinalizeProductionProject -> []
+    TxnFinalizeProductionProject -> [ProjectTarget, ProductionIntentTarget, ProductionLeaseTarget, ProductionModeTarget]
+    TxnFinalizeProductionPreEffect -> [ProjectTarget, ProductionLeaseTarget, ProductionModeTarget]
+    TxnReopenProductionProject -> [ProjectTarget]
 
 {- | Whether a target names a record of this plan.
 
@@ -458,11 +573,13 @@ targetMatchesPlan plan target =
         Right digest ->
             let key = recordKeyText (targetKey target)
              in case targetRole target of
+                    role | isProductionTarget role -> True
                     ProjectTarget -> key == "project." <> digest
                     SessionTarget -> ("session." <> digest <> ".") `Text.isPrefixOf` key
                     OperationTarget ->
                         ("op." <> Text.pack (show (Hash.hash (TextEncoding.encodeUtf8 plan) :: Hash.Digest Hash.SHA256)) <> ".")
                             `Text.isPrefixOf` key
+                    _ -> False
 
 -- Encoding -----------------------------------------------------------------------
 
@@ -493,7 +610,7 @@ decodeCoordinator raw =
                 (Right . CoordinatorIdle)
                 (readWord sequenceText)
         ( ["transaction-v1", "applying", sequenceText, rawKind, plan, countText]
-            : targetLines
+                : targetLines
             ) -> do
                 sequenceNumber <-
                     maybe
@@ -570,6 +687,8 @@ kindText kind = case kind of
     TxnCloseProductionInvocation -> "close-production-invocation"
     TxnFinalizeHarnessClose -> "finalize-harness-close"
     TxnFinalizeProductionProject -> "finalize-production-project"
+    TxnFinalizeProductionPreEffect -> "finalize-production-pre-effect"
+    TxnReopenProductionProject -> "reopen-production-project"
 
 parseKind :: Text -> Maybe TxnKind
 parseKind raw = case raw of
@@ -585,6 +704,8 @@ parseKind raw = case raw of
     "close-production-invocation" -> Just TxnCloseProductionInvocation
     "finalize-harness-close" -> Just TxnFinalizeHarnessClose
     "finalize-production-project" -> Just TxnFinalizeProductionProject
+    "finalize-production-pre-effect" -> Just TxnFinalizeProductionPreEffect
+    "reopen-production-project" -> Just TxnReopenProductionProject
     _ -> Nothing
 
 roleText :: TargetRole -> Text
@@ -592,21 +713,36 @@ roleText role = case role of
     ProjectTarget -> "project"
     SessionTarget -> "session"
     OperationTarget -> "operation"
+    ProductionIntentTarget -> "production-intent"
+    ProductionLeaseTarget -> "production-lease"
+    ProductionModeTarget -> "production-mode"
 
 parseRole :: Text -> Maybe TargetRole
 parseRole raw = case raw of
     "project" -> Just ProjectTarget
     "session" -> Just SessionTarget
     "operation" -> Just OperationTarget
+    "production-intent" -> Just ProductionIntentTarget
+    "production-lease" -> Just ProductionLeaseTarget
+    "production-mode" -> Just ProductionModeTarget
     _ -> Nothing
 
 expectationText :: TargetExpectation -> Text
 expectationText expectation = case expectation of
     TargetAbsent -> "absent"
     TargetVersion version -> "version:" <> showWord version
+    TargetExact version bytes -> "exact:" <> showWord version <> ":" <> encodeHex bytes
 
 parseExpectation :: Text -> Either TransactionError TargetExpectation
 parseExpectation "absent" = Right TargetAbsent
+parseExpectation raw | Just exact <- Text.stripPrefix "exact:" raw =
+    case Text.splitOn ":" exact of
+        [versionText, bytesText]
+            | Just version <- readWord versionText
+            , version > 0
+            , version < maxBound ->
+                TargetExact version <$> decodeHex bytesText
+        _ -> Left (TransactionMalformed "an exact target expectation is invalid")
 parseExpectation raw =
     case Text.stripPrefix "version:" raw >>= readWord of
         Just version | version > 0 -> Right (TargetVersion version)

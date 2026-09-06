@@ -19,8 +19,10 @@ import Control.Exception (IOException, try)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy as LazyByteString
+#if !defined(mingw32_HOST_OS)
 import Data.Bits (shiftL, (.|.))
 import Data.Word (Word32)
+#endif
 import HostBootstrap.Effect.Run
   ( BoundedRun (..),
     CapturedRun (capturedExit, capturedStderr, capturedStdout),
@@ -29,11 +31,12 @@ import HostBootstrap.Effect.Run
     runBoundedGroupedWithInput,
   )
 import System.Environment (getExecutablePath)
-import System.Exit (ExitCode, exitWith)
+import System.Exit (ExitCode)
 import System.FilePath (isAbsolute, splitSearchPath)
+#if !defined(mingw32_HOST_OS)
+import System.Exit (exitWith)
 import System.IO (stdin)
 import System.Process (StdStream (Inherit, NoStream), getProcessExitCode, proc, std_err, std_in, std_out, withCreateProcess)
-#if !defined(mingw32_HOST_OS)
 import System.Posix.Process (getParentProcessID, getProcessGroupIDOf, getProcessID)
 import System.Posix.Signals (sigKILL, signalProcessGroup)
 import System.Posix.IO (FdOption (NonBlockingRead), setFdOption, stdInput)
@@ -153,6 +156,7 @@ encodeCommand executable arguments =
     bytes = ByteString.pack . map (fromIntegral . fromEnum)
     sized value = Builder.word32BE (fromIntegral (ByteString.length value)) <> Builder.byteString value
 
+#if !defined(mingw32_HOST_OS)
 readCommand :: IO (Either String (FilePath, [String]))
 readCommand = do
   magic <- ByteString.hGet stdin (ByteString.length commandMagic)
@@ -182,6 +186,8 @@ readCommand = do
 word32 :: ByteString.ByteString -> Word32
 word32 value =
   foldl (\total byte -> shiftL total 8 .|. fromIntegral byte) 0 (ByteString.unpack value)
+
+#endif
 
 commandMagic :: ByteString.ByteString
 commandMagic = "hb-colima-command-1"

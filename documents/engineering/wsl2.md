@@ -207,9 +207,10 @@ create no alias. All lanes also lack the required destroy/up/readback proof. See
 
 ## Lifecycle caveat
 
-Current teardown is a root cleanup plus project provider hook, not recursive dispatch through the WSL
-child before termination/unregister. WSL unregister removes the distro VHDX, but host-shared `.data`
-should remain outside it; that outcome is not yet live-gated.
+Teardown visits the authenticated WSL child before its parent terminates or unregisters the distro.
+Unregister removes the distro VHDX; durable `.data` is the plan-owned host share outside it. The
+[Windows and WSL2 acceptance phase](../../DEVELOPMENT_PLAN/phase-27-windows-and-wsl2-substrate.md) records
+the concrete reverse and durable-readback gate.
 
 ## Validation
 

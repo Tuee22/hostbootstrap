@@ -4,7 +4,7 @@
 **Supersedes**: N/A
 **Referenced by**: [documents-index](../README.md), [prerequisites](prerequisites.md), [python_haskell_boundary](../architecture/python_haskell_boundary.md), [hostbootstrap_core_library](../architecture/hostbootstrap_core_library.md), [resource_budgeting](resource_budgeting.md), [wsl2](wsl2.md), [accelerator_daemon](accelerator_daemon.md)
 
-> **Purpose**: Define the target `ensure` reconciler contract, document the strength and platform
+> **Purpose**: Define the `ensure` reconciler contract, document the strength and platform
 > limits of current probes/install plans, and explain how current project actions invoke the library.
 
 ## TL;DR
@@ -12,20 +12,19 @@
 - **A reconciler separates absence from unsupported/non-installable state.** When a supported install
   plan exists for the current substrate, it installs after an absent result and re-runs the probe.
   Delegated or non-installable prerequisites fail with a reason. The no-op guarantee is only as strong
-  as the probe: several probes establish real usability, while weak presence-only probes remain open
-  defects.
+  as the probe: several probes establish real usability, while presence-only probes establish only presence and must not be described as usability checks.
 - **Reconcilers are library values invoked while `project up` executes.** Core exports
   `ensureStep`, but the current demo does not use it: provider/build/accelerator actions call
   `runEnsure` directly, and the pristine VM bootstrap installs GHC/Docker through one composite shell
-  action. The target plan represents every reconcile effect as its own typed operation with a retained
-  outcome. See [composition_methodology](../architecture/composition_methodology.md).
+  action. These local install helpers do not themselves return managed lifecycle authority;
+  exact resource effects are prepared and settled by the surrounding admitted operation. See [composition_methodology](../architecture/composition_methodology.md).
 - **`ensure` is not a command.** There is no top-level or hidden `ensure <tool>` verb. The command
   surface remains exactly `project`, `test`, `service`, `context`, and `check-code`; the reconcilers are
   library primitives that projects compose into their chains.
 - **Incus readiness is a total capability observation.** Its final probe distinguishes missing client,
   absent/permission-denied/unreachable daemon, missing VM capability, missing image-server egress, and
   ready. Only ready mints the opaque `IncusProviderCapability`. Other reconcilers still vary in probe
-  strength, and the universal plan-owned prepared-operation integration remains target work.
+  strength, and prepared managed operations provide the separate exact lifecycle authority boundary.
 - The Python wrapper's host minimums are the **pre-binary** hard fail-fast surface (the irreducible
   host floor it cannot install; see [prerequisites](prerequisites.md)). Everything else
   (where a substrate-specific install plan exists) is installed by a reconciler when its action runs, so
@@ -72,7 +71,7 @@ apple-silicon comes from the prepared project Colima wall). A frame the reconcil
 `ensure incus` has apple and linux rows and no Windows row at all, because the WSL2 frame owns the Windows
 host provider and stating that twice is how two answers to one question start to differ.
 
-Idempotence is the target contract: running a reconciler when the host is already in the desired state
+The probe-first idempotence contract is: running a reconciler when the host is already in the desired state
 must be a successful, verified no-op. The shared driver is probe-first, and the strongest reconcilers
 add a final capability observation after remediation. A
 **missing dependency with a supported install plan on that substrate** is not a hard stop merely because
@@ -93,15 +92,15 @@ signal. The other hard prerequisites in the system are the Python wrapper's host
 Reconcilers live under `HostBootstrap.Ensure.*`. Every external tool a reconciler drives is resolved
 through the closed `HostTool` enumeration to an absolute path. The current reconcile action is
 context-agnostic (`HostConfig -> IO ()`): it runs locally in whatever frame its invoking action reaches.
-The target preserves that local interpretation while replacing `IO ()` with the indexed
-`ReconcileResult`/failure algebra in
-[lifecycle_state_model](../architecture/lifecycle_state_model.md), so a successful transition carries
-the exact observation or receipt the dependent operation consumes.
+Managed resource transitions have a separate indexed `ReconcileResult`/failure algebra in
+[lifecycle_state_model](../architecture/lifecycle_state_model.md). Their prepared operation carries the
+exact observation or receipt needed by a dependent operation; a local helper's `IO ()` completion cannot
+stand in for that evidence.
 
-## Current Invocation And Target Plan Operations
+## Invocation And Managed Plan Operations
 
-The lift chain is the project's identity. Current `project up` interprets the exact current-frame segment
-of `chain projectCfg :: [Step]`; target recursive traversal authenticates each child entry.
+The lift chain is the project's identity. The root coordinator interprets each exact current-frame
+segment of the admitted plan and authenticates each recursive child entry.
 `HostBootstrap.Step.ensureStep` can represent a reconcile action as a named row,
 but the current demo does not assemble its chain that way:
 
@@ -114,17 +113,17 @@ but the current demo does not assemble its chain that way:
 
 Re-running `project up` therefore re-enters those composite actions, which in turn re-run some probes or
 package-manager no-op paths. It is not accurate to infer an independently ordered `ensure-*` row or
-retained readiness result for each dependency from the dry-run chain. The target plan makes each
-reconcile operation explicit, sequences it before exact dependants, and exposes only a verified,
-resource-indexed result.
+retained readiness result for each dependency from the dry-run chain. Managed provider, share, cluster,
+and workload operations separately retain their exact prepared authority, dependency observations, and
+settlement results.
 
 - **WRONG**: a runbook tells an operator to converge a host by hand-running `ensure docker`,
   `ensure incus`, … in sequence as the supported install path. This is wrong because those commands are
   not part of the supported CLI and because the dependency order belongs in the chain.
 - **RIGHT (current operator surface)**: the operator runs `project up`; its registered composite actions
   invoke the reconcilers/install steps they currently own.
-- **RIGHT (target representation)**: the opaque plan contains a distinct reconcile node for each
-  dependency, and dependent operations require that node's retained result.
+- **RIGHT (managed resource boundary)**: the opaque plan binds the resource operation and its complete
+  dependency set; dependent managed operations freshly revalidate their retained dependency package.
 
 ## Install-and-Verify
 
@@ -141,8 +140,8 @@ A reconcile action takes a no-op path when its probe reports presence and, when 
 This is install-and-reprobe mechanically. It is install-and-**verify** semantically only to the extent
 that the probe proves the desired state. Docker's daemon probe is a capability check. Incus goes further:
 after client convergence it performs one total provider observation and only the fully usable branch
-mints an opaque capability. The target operation algebra still retains such observations as scoped
-reconcile outcomes rather than returning `IO ()`.
+mints an opaque capability. That capability observation remains distinct from the scoped managed
+settlement produced by the prepared operation algebra.
 
 Tools are re-resolved after each step, so a freshly installed tool (for example `ghcup` just laid
 down by `brew`) is discoverable by the next step. Homebrew formula steps are written as plain
@@ -165,7 +164,7 @@ is exercised during real bootstrap runs.
 
 ## Current Provider Probes And Target Usability
 
-The target contract does not call a provider ready merely because its package is on disk. It requires the
+The managed provider contract does not call a provider ready merely because its package is on disk. It requires the
 capability the dependent operation consumes and, where subsequent work pulls remote inputs, working
 egress. Current Incus code implements that provider observation, while general lifecycle integration
 still returns a result-free reconciler action:
@@ -198,9 +197,9 @@ still returns a result-free reconciler action:
   result can run Docker through its retained isolated context or derive cleanup authority. Cleanup has a
   separate journal invocation, records `releasing` before `colima delete --force --data`, and conditionally
   proves profile/data/context absence before releasing exact namespaces and origin. Missing clauses are
-  `Unsupported`; replacements or partial foreign stages are `Conflict`. The boundary remains Active in the
+  `Unsupported`; replacements or partial foreign stages are `Conflict`. The
   [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
-  pending focused/full validation. Production recursive and demo call-site adoption remains open.
+  records the boundary's focused/full validation. The recursive coordinator and demo consume these exact adapters.
 - **`ensure incus` on Apple and Linux** converges its substrate-specific provider, then probes daemon
   reachability, VM capability, and `images:ubuntu/24.04` metadata egress. Permission, absence,
   reachability, VM capability, and egress failures remain distinct typed statuses; only ready enters the
@@ -211,7 +210,7 @@ credential down the lift supplies authentication but does not prove network reac
 checks its image-server route, but other provider/dependent routes must retain their own exact
 observations. See
 [composition_methodology](../architecture/composition_methodology.md) for credential forwarding and
-[lifecycle_state_model](../architecture/lifecycle_state_model.md) for the target typed observation.
+[lifecycle_state_model](../architecture/lifecycle_state_model.md) for the typed observation and authority boundary.
 
 ## Reconciler Inventory
 
@@ -309,10 +308,9 @@ exception instead aborts the enclosing composite action and therefore `project u
 The reconcilers are intended to carry one contract — install-and-verify, idempotence, wrong-host
 fail-fast, and capability-level provider readiness. The current shared driver provides the
 probe/install/reprobe structure, while the probe table above records where the implementation is weaker
-than that target. Invocation is not yet one representation: current-frame Chain walks its projected
-`chain cfg :: [Step]` segment, while target recursive `project up` continues through child frames; the demo
-calls reconciler runners from composite actions and also duplicates
-some guest installation as shell work.
+than a per-dependency managed operation. The root coordinator drives the admitted graph through authenticated child frames. The demo invokes
+config-free reconciler runners from composite provider/build actions. Guest bootstrap uses its closed
+pre-binary vocabulary and shared effect/lift interpretation.
 
 The nine context-free reconcilers are centralized as `allReconcilers` (`docker`, `apple-metal`, `cuda`,
 `cudawin`, `homebrew`, `ghc`, `lima`, `wsl2`, and cross-substrate `incus`). Project/config/plan-dependent

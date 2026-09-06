@@ -2025,13 +2025,11 @@ lifecycleCompletionWireTests =
                     ]
             users "renderForwardCompletedLifecycleReport"
                 @?= [ "HostBootstrap/Handoff.hs"
-                    , "HostBootstrap/Handoff/Lifecycle.hs"
                     , "HostBootstrap/Handoff/TerminalReport.hs"
                     ]
             users "renderReverseCompletedLifecycleReport"
                 @?= [ "HostBootstrap/Command/LifecycleEntry.hs"
                     , "HostBootstrap/Handoff.hs"
-                    , "HostBootstrap/Handoff/Lifecycle.hs"
                     ]
             users "eliminateLifecycleReport"
                 @?= [ "HostBootstrap/Authority/FailedUp/Internal.hs"
@@ -2069,7 +2067,6 @@ lifecycleCompletionWireTests =
                     ]
             users "renderTeardownObservations"
                 @?= [ "HostBootstrap/Command/LifecycleEntry.hs"
-                    , "HostBootstrap/Handoff/Lifecycle.hs"
                     , "HostBootstrap/Teardown.hs"
                     , "HostBootstrap/Teardown/Executor/Internal.hs"
                     ]
@@ -2116,7 +2113,6 @@ lifecycleCompletionWireTests =
             length (filter (== "HostBootstrap.Teardown") exposed) @?= 1
             forM_
                 [ "HostBootstrap.Handoff.Completion"
-                , "HostBootstrap.Handoff.Lifecycle"
                 ]
                 $ \moduleName ->
                     assertBool
@@ -3285,7 +3281,7 @@ lifecycleAcknowledgementSubstrateTests =
             SourceGuard.countHaskellIdentifier "relayLifecycleAcknowledgement" relaySource @?= 3
             SourceGuard.countHaskellIdentifier "exactLifecycleFrames" relaySource @?= 4
             frozenRouteRelaySignificantLines - preRouteRelaySignificantLines @?= 364
-    , testCase "Relay owns terminal persistence, complete serve, and sealed child receipt" $
+    , testCase "Relay owns terminal persistence and complete serve without a child-store receipt" $
         withHandoffSourceRoot $ \packageRoot sourceRoot -> do
             sources <- readHaskellSources sourceRoot
             handoffSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff.hs")
@@ -3293,24 +3289,6 @@ lifecycleAcknowledgementSubstrateTests =
             protocolSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Protocol.hs")
             receiverSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Receiver.hs")
             cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
-            childReceiptSource <-
-                requiredSourceSection
-                    "the sealed child receipt helpers"
-                    "withReceivedLifecycleAcknowledgementKernel ::"
-                    "{- | Ask this frame's route to sign one activation manifest."
-                    relaySource
-            recoveryReceiptSource <-
-                requiredSourceSection
-                    "the recovery receipt eliminator"
-                    "withReceivedRecoveryLifecycleAcknowledgementKernel ::"
-                    "receiveLifecycleAcknowledgementForEdge ::"
-                    relaySource
-            commonReceiptSource <-
-                requiredSourceSection
-                    "the common sealed-edge receipt path"
-                    "receiveLifecycleAcknowledgementForEdge ::"
-                    "lifecycleAcknowledgementUnavailable ::"
-                    relaySource
             ordinaryOfferSource <-
                 requiredSourceSection
                     "the complete ordinary offer"
@@ -3361,10 +3339,7 @@ lifecycleAcknowledgementSubstrateTests =
                     (assertFailure "hostbootstrap-core.cabal has no main library stanza")
                     pure
                     (mainLibraryStanza cabalSource)
-            let childReceipt = normalizeWhitespace childReceiptSource
-                recoveryReceipt = normalizeWhitespace recoveryReceiptSource
-                commonReceipt = normalizeWhitespace commonReceiptSource
-                ordinaryOffer = normalizeWhitespace ordinaryOfferSource
+            let ordinaryOffer = normalizeWhitespace ordinaryOfferSource
                 reverseOffer = normalizeWhitespace reverseOfferSource
                 fullServe = normalizeWhitespace fullServeSource
                 terminal = normalizeWhitespace terminalSource
@@ -3456,19 +3431,10 @@ lifecycleAcknowledgementSubstrateTests =
                 "reverse offer retains its closed Bound-descent signature"
                 "offerReverseDescentKernel :: BrokerLink scope brokerGeneration -> HandoffChannel -> Word64 -> ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId -> ( ReverseDescent (HandoffOffer scope brokerGeneration) scope planId parentFrame childFrame brokerGeneration verb descentId -> ByteString -> (ByteString -> ByteString -> IO (Either Text ())) -> IO (Either Text ()) ) -> IO (Either RelayError ())"
                 reverseOffer
-            assertContains
-                "ordinary child receipt accepts one sealed edge, explicit store, report, and sender"
-                "withReceivedLifecycleAcknowledgementKernel :: ReceivedEdge scope brokerGeneration -> ProtectedStore -> ByteString -> (ByteString -> IO (Either Text ())) -> IO (Either Text ())"
-                childReceipt
-            assertContains
-                "recovery child receipt accepts only the sealed descent, explicit store, report, and sender"
-                "withReceivedRecoveryLifecycleAcknowledgementKernel :: ReceivedRecoveryDescent scope brokerGeneration planDigest parentFrame childFrame recoveryWireDigest recoveryWireId verb -> ProtectedStore -> ByteString -> (ByteString -> IO (Either Text ())) -> IO (Either Text ())"
-                childReceipt
             mapM_
                 (\section -> SourceGuard.countHaskellIdentifier "result" section @?= 0)
                 [ ordinaryOfferSource
                 , reverseOfferSource
-                , childReceiptSource
                 , terminalSource
                 ]
             assertFragmentsInOrder
@@ -3611,44 +3577,6 @@ lifecycleAcknowledgementSubstrateTests =
                 , "TextEncoding"
                 , "Text.unpack"
                 ]
-            assertFragmentsInOrder
-                "the child checks binding, publishes, sends the same report once, and records only exact receipt"
-                [ "case lifecycleReportBinding report of"
-                , "binding == renderHandoffBinding (verifiedHandoffBinding (receivedEdgeHandoff edge))"
-                , "published <- publishLifecycleReportKernel recoverySigningKernel store report"
-                , "sent <- sender report"
-                , "received <- receiveAcknowledgement"
-                , "receiveLifecycleAcknowledgementKernel recoverySigningKernel store report acknowledgement"
-                , "Right () -> pure (Right ())"
-                ]
-                commonReceipt
-            assertFragmentsInOrder
-                "direct child receipt accepts only the exact request, tag, singleton acknowledgement, and report commitment"
-                [ "incoming <- channelReceive (receivedEdgeChannel edge)"
-                , "protocolMessageRequestId message == receivedEdgeRequestId edge"
-                , "protocolMessageTag message == AcknowledgedTag"
-                , "[acknowledgement]"
-                , "verifyLifecycleAcknowledgement report acknowledgement"
-                , "Right acknowledgement"
-                ]
-                commonReceipt
-            assertFragmentsInOrder
-                "the recovery helper only eliminates its sealed package into the common edge path"
-                [ "withReceivedRecoveryDescent descent"
-                , "receiveLifecycleAcknowledgementForEdge edge store report sender"
-                ]
-                recoveryReceipt
-            SourceGuard.countHaskellTokenSequence ["sender", "report"] commonReceiptSource @?= 1
-            SourceGuard.countHaskellIdentifier "channelReceive" commonReceiptSource @?= 1
-            SourceGuard.countHaskellIdentifier "publishLifecycleReportKernel" commonReceiptSource @?= 1
-            SourceGuard.countHaskellIdentifier "receiveLifecycleAcknowledgementKernel" commonReceiptSource @?= 1
-            mapM_
-                (\identifier -> SourceGuard.countHaskellIdentifier identifier commonReceiptSource @?= 0)
-                [ "await"
-                , "refuse"
-                , "transmit"
-                , "channelSend"
-                ]
             assertContains
                 "Relay lifecycle failures carry no hostile text"
                 "RelayLifecycleAdoptionFailure -> \"handoff relay: lifecycle acknowledgement failed at durable acknowledgement adoption\""
@@ -3694,10 +3622,7 @@ lifecycleAcknowledgementSubstrateTests =
                 (\identifier -> users identifier @?= ["HostBootstrap/Handoff/Relay.hs"])
                 [ "prepareLifecycleAcknowledgementThroughLink"
                 , "adoptLifecycleAcknowledgementThroughLink"
-                , "withReceivedLifecycleAcknowledgementKernel"
-                , "withReceivedRecoveryLifecycleAcknowledgementKernel"
                 , "runLifecycleTerminal"
-                , "receiveLifecycleAcknowledgementForEdge"
                 ]
             importers "HostBootstrap.Handoff.Relay"
                 @?= ["HostBootstrap/Command/Child.hs", "HostBootstrap/Command/LifecycleEntry.hs", "HostBootstrap/Handoff/Process.hs"]
@@ -3709,8 +3634,6 @@ lifecycleAcknowledgementSubstrateTests =
                 [ "BrokerLink"
                 , "offerHandoffEdge"
                 , "offerReverseDescentKernel"
-                , "withReceivedLifecycleAcknowledgementKernel"
-                , "withReceivedRecoveryLifecycleAcknowledgementKernel"
                 ]
             assertBool
                 "Relay stays Cabal-private without a new module row"
@@ -3751,13 +3674,13 @@ lifecycleAcknowledgementSubstrateTests =
                 ]
             SourceGuard.countHaskellIdentifier "prepareLifecycleAcknowledgementThroughLink" relaySource @?= 4
             SourceGuard.countHaskellIdentifier "adoptLifecycleAcknowledgementThroughLink" relaySource @?= 4
-            SourceGuard.countHaskellIdentifier "publishLifecycleReportKernel" relaySource @?= 4
-            SourceGuard.countHaskellIdentifier "receiveLifecycleAcknowledgementKernel" relaySource @?= 4
-            SourceGuard.countHaskellIdentifier "withReceivedLifecycleAcknowledgementKernel" relaySource @?= 3
-            SourceGuard.countHaskellIdentifier "withReceivedRecoveryLifecycleAcknowledgementKernel" relaySource @?= 3
-            SourceGuard.countHaskellIdentifier "receiveLifecycleAcknowledgementForEdge" relaySource @?= 4
+            SourceGuard.countHaskellIdentifier "publishLifecycleReportKernel" relaySource @?= 3
+            SourceGuard.countHaskellIdentifier "receiveLifecycleAcknowledgementKernel" relaySource @?= 3
+            SourceGuard.countHaskellIdentifier "withReceivedLifecycleAcknowledgementKernel" relaySource @?= 0
+            SourceGuard.countHaskellIdentifier "withReceivedRecoveryLifecycleAcknowledgementKernel" relaySource @?= 0
+            SourceGuard.countHaskellIdentifier "receiveLifecycleAcknowledgementForEdge" relaySource @?= 0
             SourceGuard.countHaskellIdentifier "runLifecycleTerminal" relaySource @?= 3
-            SourceGuard.countHaskellIdentifier "AcknowledgedTag" relaySource @?= 3
+            SourceGuard.countHaskellIdentifier "AcknowledgedTag" relaySource @?= 2
             mapM_
                 (\identifier -> SourceGuard.countHaskellIdentifier identifier terminalSource @?= 1)
                 [ "RelayLifecycleInvalidReport"
@@ -3791,7 +3714,6 @@ sealedFacadeTests =
                 hiddenHandoffModules =
                     [ "HostBootstrap.Handoff.Completion"
                     , "HostBootstrap.Handoff.Internal"
-                    , "HostBootstrap.Handoff.Lifecycle"
                     , "HostBootstrap.Handoff.Protocol"
                     , "HostBootstrap.Handoff.Receiver"
                     , "HostBootstrap.Handoff.Receiver.Internal"
@@ -5892,11 +5814,9 @@ sealedFacadeTests =
                     , "HostBootstrap/Lifecycle/Rooted/Receipt.hs"
                     ]
             importers "HostBootstrap.Handoff.Receiver.Internal"
-                @?= [ "HostBootstrap/Authority/ProjectPlan/Internal.hs"
-                    , "HostBootstrap/Command/Child.hs"
+                @?= [ "HostBootstrap/Command/Child.hs"
                     , "HostBootstrap/Handoff/Receiver.hs"
                     , "HostBootstrap/Handoff/Relay.hs"
-                    , "HostBootstrap/ProjectPlan/Child/Internal.hs"
                     ]
             traverse_
                 (\identifier -> SourceGuard.countHaskellIdentifier identifier transportOnly @?= 0)
@@ -7099,7 +7019,6 @@ sealedFacadeTests =
                     , "HostBootstrap/Handoff/Completion.hs"
                     , "HostBootstrap/Handoff/Process.hs"
                     , "HostBootstrap/Handoff/Relay.hs"
-                    , "HostBootstrap/ProjectPlan/Child/Internal.hs"
                     ]
             importers "HostBootstrap.Handoff.Relay"
                 @?= ["HostBootstrap/Command/Child.hs", "HostBootstrap/Command/LifecycleEntry.hs", "HostBootstrap/Handoff/Process.hs"]
@@ -7146,563 +7065,28 @@ sealedFacadeTests =
                 , "HostBootstrap.Teardown.Internal.Testing"
                 , "HostBootstrap.Teardown.ReverseDescent.Testing"
                 ]
-    , testCase "semantic lifecycle completion is sealed, exact, fixed-unit, and caller-free" $
-        withHandoffSourceRoot $ \packageRoot sourceRoot -> do
+    , testCase "child report rendering cannot recover root-store cursor authority" $
+        withHandoffSourceRoot $ \_packageRoot sourceRoot -> do
+            -- rationale.md: the root owns durable lifecycle authority; a child
+            -- reports through the authenticated rooted terminal receipt.
             sources <- readHaskellSources sourceRoot
-            handoffSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff.hs")
-            completionSource <-
-                readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Completion.hs")
-            lifecycleSource <-
-                readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Lifecycle.hs")
-            receiverSource <-
-                readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Receiver.hs")
-            protocolSource <-
-                readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Protocol.hs")
-            relaySource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Relay.hs")
-            teardownSource <- readFile (sourceRoot </> "HostBootstrap" </> "Teardown.hs")
-            teardownInternalSource <-
-                readFile (sourceRoot </> "HostBootstrap" </> "Teardown" </> "Internal.hs")
-            completionFamilySource <-
-                requiredSourceSection
-                    "the hidden semantic completion family"
-                    "data LifecycleCompletion proof scope brokerGeneration verb where"
-                    "{- | Acknowledge a canonical forward report against one exact offer."
-                    completionSource
-            forwardReporterSource <-
-                requiredSourceSection
-                    "the completed forward reporter"
-                    "{- | Render one completed forward report only from its terminal cursor."
-                    "{- | Render one completed reverse report from the same-index sealed entry"
-                    lifecycleSource
-            reverseReporterSource <-
-                requiredSourceSection
-                    "the completed reverse reporter"
-                    "{- | Render one completed reverse report from the same-index sealed entry"
-                    "renderObservations ::"
-                    lifecycleSource
-            forwardAcknowledgementSource <-
-                requiredSourceSection
-                    "the acknowledged forward producer"
-                    "{- | Acknowledge a canonical forward report against one exact offer."
-                    "{- | Validate and acknowledge one canonical reverse report against live Bound"
-                    completionSource
-            reverseAcknowledgementSource <-
-                requiredSourceSection
-                    "the common acknowledged Bound reverse producer"
-                    "{- | Validate and acknowledge one canonical reverse report against live Bound"
-                    "{- | Rehydrate exact Bound and parent Adopted state without reopening a token"
-                    completionSource
-            rehydratedAcknowledgementSource <-
-                requiredSourceSection
-                    "the no-open rehydrated reverse producer"
-                    "{- | Rehydrate exact Bound and parent Adopted state without reopening a token"
-                    "{- | Eliminate semantic completion without exposing its retained wire identity."
-                    completionSource
-            completionFoldSource <-
-                requiredSourceSection
-                    "the strict semantic completion fold"
-                    "{- | Eliminate semantic completion without exposing its retained wire identity."
-                    "acknowledge ::"
-                    completionSource
-            acknowledgementActionSource <-
-                requiredSourceSection
-                    "the caller-supplied acknowledgement action"
-                    "acknowledge ::"
-                    "requireBinding ::"
-                    completionSource
-            reverseOriginSource <-
-                requiredSourceSection
-                    "the exact reverse origin and proof join"
-                    "reverseOriginMatches ::"
-                    "exactFrames ::"
-                    lifecycleSource
-            receiverSignatureSource <-
-                requiredSourceSection
-                    "the Receiver owner-supplied terminal action signature"
-                    "withReceivedHandoffEdge ::"
-                    "withReceivedHandoffEdge\n    project\n    channel\n    key"
-                    receiverSource
-            receiverExchangeSource <-
-                requiredSourceSection
-                    "the Receiver authenticated exchange"
-                    "withReceivedHandoffEdge\n    project\n    channel\n    key"
-                    "runTerminalAction ::"
-                    receiverSource
-            terminalActionSource <-
-                requiredSourceSection
-                    "the masked one-shot terminal report action"
-                    "runTerminalAction ::"
-                    "-- ---------------------------------------------------------------------------\n-- Message shapes"
-                    receiverSource
-            receiverClassificationSource <-
-                requiredSourceSection
-                    "the two rank-N terminal-report branches"
-                    "classifyVerified ::"
-                    "configEvidence ::"
-                    receiverSource
-            liftContextSource <-
-                requiredSourceSection
-                    "the plan-owned reverse LiftContext fold"
-                    "withReverseDescentLiftContextKernel ::"
-                    "{- | Prepare one exact root-entry descent, or return its unchanged work."
-                    teardownInternalSource
-            boundReportSource <-
-                requiredSourceSection
-                    "the no-proof Bound report validator"
-                    "-- | Revalidate one Bound report coordinate without minting settlement proof."
-                    "-- | Verify acknowledged terminal observations without exposing Bound state."
-                    teardownInternalSource
-            boundObservationSource <-
-                requiredSourceSection
-                    "the proof-producing Bound observation validator"
-                    "-- | Verify acknowledged terminal observations without exposing Bound state."
-                    "forceProtectedResult ::"
-                    teardownInternalSource
-            lifecycleExports <-
-                maybe
-                    (assertFailure "HostBootstrap.Handoff.Lifecycle has no explicit export list")
-                    pure
-                    (SourceGuard.moduleExportTokens "HostBootstrap.Handoff.Lifecycle" lifecycleSource)
-            completionExports <-
-                maybe
-                    (assertFailure "HostBootstrap.Handoff.Completion has no explicit export list")
-                    pure
-                    (SourceGuard.moduleExportTokens "HostBootstrap.Handoff.Completion" completionSource)
-            handoffExports <-
-                maybe
-                    (assertFailure "HostBootstrap.Handoff has no explicit export list")
-                    pure
-                    (SourceGuard.moduleExportTokens "HostBootstrap.Handoff" handoffSource)
-            teardownExports <-
-                maybe
-                    (assertFailure "HostBootstrap.Teardown has no explicit export list")
-                    pure
-                    (SourceGuard.moduleExportTokens "HostBootstrap.Teardown" teardownSource)
-            let family = normalizeWhitespace completionFamilySource
-                forwardReporter = normalizeWhitespace forwardReporterSource
-                reverseReporter = normalizeWhitespace reverseReporterSource
-                forwardAcknowledgement = normalizeWhitespace forwardAcknowledgementSource
-                reverseAcknowledgement = normalizeWhitespace reverseAcknowledgementSource
-                rehydratedAcknowledgement = normalizeWhitespace rehydratedAcknowledgementSource
-                completionFold = normalizeWhitespace completionFoldSource
-                acknowledgementAction = normalizeWhitespace acknowledgementActionSource
-                reverseOrigin = normalizeWhitespace reverseOriginSource
-                receiverSignature = normalizeWhitespace receiverSignatureSource
-                receiverExchange = normalizeWhitespace receiverExchangeSource
-                terminalAction = normalizeWhitespace terminalActionSource
-                receiverClassification = normalizeWhitespace receiverClassificationSource
-                liftContext = normalizeWhitespace liftContextSource
-                boundReport = normalizeWhitespace boundReportSource
-                boundObservation = normalizeWhitespace boundObservationSource
-                hiddenCompletionExports = normalizedModuleExports completionExports
-                hiddenLifecycleExports = normalizedModuleExports lifecycleExports
-                hiddenExports = hiddenCompletionExports <> hiddenLifecycleExports
-                publicHandoff = normalizedModuleExports handoffExports
-                publicTeardown = normalizedModuleExports teardownExports
-                users identifier =
-                    sort
-                        [ sourcePath sourceRoot path
-                        | (path, source) <- sources
-                        , SourceGuard.countHaskellIdentifier identifier source > 0
-                        ]
-                importers moduleName =
-                    sort
-                        [ sourcePath sourceRoot path
-                        | (path, source) <- sources
-                        , SourceGuard.importsModule moduleName source
-                        ]
-            hiddenCompletionExports
-                @?= [ "LifecycleCompletion"
-                    , "withAcknowledgedForwardLifecycleCompletionKernel"
-                    , "withAcknowledgedBoundReverseLifecycleCompletionKernel"
-                    , "withRehydratedAcknowledgedReverseLifecycleCompletionKernel"
-                    , "withLifecycleCompletionKernel"
-                    ]
-            hiddenLifecycleExports
-                @?= [ "withForwardLifecycleReportKernel"
-                    , "withReverseLifecycleReportKernel"
-                    ]
-            mapM_
-                (\(label, fragment, body) -> assertContains label fragment body)
-                [
-                    ( "the sole new type has four indices"
-                    , "data LifecycleCompletion proof scope brokerGeneration verb where"
-                    , family
-                    )
-                ,
-                    ( "all four completion roles are nominal"
-                    , "type role LifecycleCompletion nominal nominal nominal nominal"
-                    , family
-                    )
-                ,
-                    ( "forward completion retains only exact report and acknowledgement bytes"
-                    , "ForwardLifecycleCompletion :: ByteString -> ByteString -> LifecycleCompletion () scope brokerGeneration VerbUp"
-                    , family
-                    )
-                ,
-                    ( "reverse completion additionally retains its exact subtree proof"
-                    , "ReverseLifecycleCompletion :: ByteString -> ByteString -> SubtreeSettled scope planId frame verb -> LifecycleCompletion (SubtreeSettled scope planId frame verb) scope brokerGeneration verb"
-                    , family
-                    )
-                ,
-                    ( "the forward reporter consumes only an exact terminal cursor"
-                    , "AuthorizedChildCursor scope specDigest planDigest brokerGeneration parentFrame planId configId frame VerbUp TeardownPhase"
-                    , forwardReporter
-                    )
-                ,
-                    ( "the forward reporter derives origin and canonical report before its fixed-unit callback"
-                    , "renderForwardCompletedLifecycleReport (renderForwardTerminalOrigin terminal)"
-                    , forwardReporter
-                    )
-                ,
-                    ( "the reverse reporter joins a same-index Entry and SubtreeSettled proof"
-                    , "LifecycleEntry scope planId frame brokerGeneration verb -> SubtreeSettled scope planId frame verb"
-                    , reverseReporter
-                    )
-                ,
-                    ( "reverse report observations derive only from sealed settlement evidence"
-                    , "renderTeardownObservations . map (\\(operation, outcome) -> (Text.pack (operationKeyText operation), outcome)) . subtreeSettledTerminalObservations"
-                    , normalizeWhitespace lifecycleSource
-                    )
-                ,
-                    ( "forward acknowledgement binds the report to the exact offer binding"
-                    , "expected = Handoff.renderHandoffBinding (Handoff.handoffOfferBinding offer)"
-                    , forwardAcknowledgement
-                    )
-                ,
-                    ( "forward completed alone constructs semantic evidence"
-                    , "acknowledge report persist $ \\ack -> use (ForwardLifecycleCompletion report ack)"
-                    , forwardAcknowledgement
-                    )
-                ,
-                    ( "forward refused and failed reports are acknowledged without a constructor"
-                    , "refused binding _ _ detail _ = requireBinding expected binding (acknowledgeWithoutProof \"refused\" detail) failed binding _ _ detail _ = requireBinding expected binding (acknowledgeWithoutProof \"failed\" detail)"
-                    , forwardAcknowledgement
-                    )
-                ,
-                    ( "reverse completed reports alone decode observations and invoke the proof verifier"
-                    , "teardownObservationsFromWire observations"
-                    , reverseAcknowledgement
-                    )
-                ,
-                    ( "reverse completion construction follows acknowledgement"
-                    , "acknowledgeReport $ \\ack -> use (ReverseLifecycleCompletion report ack settled)"
-                    , reverseAcknowledgement
-                    )
-                ,
-                    ( "reverse refused and failed reports use only the no-proof Bound validator"
-                    , "withVerifiedBoundReverseDescentReportKernel bound binding verb $ acknowledgeReport (const (pure (Right ()))) failed = refused"
-                    , reverseAcknowledgement
-                    )
-                ,
-                    ( "rehydrated recovery owns the hidden capability internally"
-                    , "withRehydratedAdoptedReverseDescentKernel recoverySigningKernel prepared report"
-                    , rehydratedAcknowledgement
-                    )
-                ,
-                    ( "rehydrated recovery enters the one common Bound acknowledgement path"
-                    , "\\bound acknowledgement -> withBoundReverseLifecycleCompletionKernel bound report (\\continue -> continue acknowledgement) use"
-                    , rehydratedAcknowledgement
-                    )
-                ,
-                    ( "the completion fold exposes only its indexed proof to a fixed-unit callback"
-                    , "LifecycleCompletion proof scope brokerGeneration verb -> (proof -> IO (Either Text ())) -> IO (Either Text ())"
-                    , completionFold
-                    )
-                ,
-                    ( "the forward fold strictly forces retained bytes before yielding unit"
-                    , "ForwardLifecycleCompletion report acknowledgement -> case report `seq` acknowledgement `seq` () of () -> \\use -> use ()"
-                    , completionFold
-                    )
-                ,
-                    ( "the reverse fold strictly forces bytes and proof before yielding proof"
-                    , "ReverseLifecycleCompletion report acknowledgement proof -> case report `seq` acknowledgement `seq` proof `seq` () of () -> \\use -> use proof"
-                    , completionFold
-                    )
-                ,
-                    ( "the durable action receives only exact report and acknowledgement bytes"
-                    , "(ByteString -> ByteString -> IO (Either Text ()))"
-                    , acknowledgementAction
-                    )
-                ,
-                    ( "the LiftContext fold receives no caller context or frame coordinates"
-                    , "ReverseDescent state scope planId parentFrame childFrame brokerGeneration verb descentId -> (LiftContext -> IO (Either Text ())) -> IO (Either Text ())"
-                    , liftContext
-                    )
-                ,
-                    ( "the LiftContext is derived from the exact plan-owned descent"
-                    , "topologyDescentFrom (topology plan) parent"
-                    , liftContext
-                    )
-                ,
-                    ( "the derived LiftContext is strict before its fixed-unit callback"
-                    , "Right context -> context `seq` use context"
-                    , liftContext
-                    )
-                ,
-                    ( "a nested reverse route is composed from exact rooted topology edges"
-                    , "rootedRouteTo (topology plan) expectedChild"
-                    , liftContext
-                    )
-                ,
-                    ( "the no-proof validator checks exact binding and closed verb"
-                    , "observedBinding /= bindingBytes"
-                    , boundReport
-                    )
-                ,
-                    ( "the no-proof validator returns only fixed unit"
-                    , "IO (Either Text ()) -> IO (Either Text ())"
-                    , boundReport
-                    )
+            forM_
+                [ "AuthorizedChildCursor"
+                , "childCommandReservationKernel"
+                , "ChildRecoveryOrigin"
+                , "ChildUpLifecycleEntry"
+                , "withForwardLifecycleReportKernel"
+                , "withReverseLifecycleReportKernel"
+                , "withReceivedLifecycleAcknowledgementKernel"
+                , "withReceivedRecoveryLifecycleAcknowledgementKernel"
                 ]
-            assertFragmentsInOrder
-                "reverse report construction validates origin/proof before rendering"
-                [ "withChildRecoveryTerminalOrigin entry"
-                , "reverseOriginMatches entry settled origin"
-                , "renderObservations settled"
-                , "renderReverseCompletedLifecycleReport origin observations"
-                , "use report"
-                ]
-                reverseReporter
-            assertFragmentsInOrder
-                "the reverse origin joins exact plan, frame, and verb duplicates"
-                [ "exactFrames 16 raw"
-                , "snapshotName == expectedDigest"
-                , "digestName == expectedDigest"
-                , "frameName == expectedFrame"
-                , "teardownName == expectedFrame"
-                , "verbName == expectedVerb"
-                , "commandName == expectedVerb"
-                , "teardownVerbName == expectedVerb"
-                , "lifecycleEntryFrameName entry == expectedFrame"
-                , "lifecycleEntryVerbName entry == expectedVerb"
-                ]
-                reverseOrigin
-            assertFragmentsInOrder
-                "Bound proof validation precedes acknowledgement action, constructor, and callback"
-                [ "withVerifiedBoundReverseDescentObservationsKernel bound binding verb rows"
-                , "\\settled -> acknowledgeReport"
-                , "\\ack -> use (ReverseLifecycleCompletion report ack settled)"
-                ]
-                reverseAcknowledgement
-            assertFragmentsInOrder
-                "acknowledgement rendering and durable action precede every evidence continuation"
-                [ "renderLifecycleAcknowledgement report"
-                , "stored <- persist report ack"
-                , "case stored of"
-                , "Right () -> ack `seq` use ack"
-                ]
-                acknowledgementAction
-            assertFragmentsInOrder
-                "the no-proof Bound check is strict inside the protected entry and calls back after unlock"
-                [ "observedBinding /= bindingBytes"
-                , "observedVerb /= projectVerbName verb"
-                , "checked <- withProtectedEntry store"
-                , "validateCurrentLifecycleCursor session cursor"
-                , "readProtectedRecord session key"
-                , "forceProtectedResult (checkRecord observed)"
-                , "case checked of"
-                , "Right (Right ()) -> use"
-                ]
-                boundReport
-            assertFragmentsInOrder
-                "the proof-producing Bound check is strict inside the protected entry and calls back after unlock"
-                [ "observedBinding /= bindingBytes"
-                , "observedVerb /= projectVerbName verb"
-                , "checked <- withProtectedEntry store"
-                , "validateCurrentLifecycleCursor session cursor"
-                , "readProtectedRecord session key"
-                , "forceProtectedResult (checkRecord observed)"
-                , "case checked of"
-                , "Right (Right settled) -> use settled"
-                ]
-                boundObservation
-            assertFragmentsInOrder
-                "Receiver authenticates, accepts, then enters the owner-supplied terminal action"
-                [ "classifyVerified authenticated channel requestId key evidence verified useConfig useRecovery"
-                , "sendMessage channel afterGrant AcceptedTag"
-                , "runTerminalAction channel afterAccepted requestId active branch"
-                ]
-                receiverExchange
-            assertContains
-                "both Receiver branches receive the one-shot sender"
-                "(ByteString -> IO (Either ReceiverError ()))"
-                receiverSignature
-            assertFragmentsInOrder
-                "the config branch passes the sender directly with its authenticated evidence"
-                [ "\\sendReport -> do"
-                , "mkReceivedEdge authenticated verified channel requestId"
-                , "useConfig edge admitted sendReport"
-                ]
-                receiverClassification
-            assertFragmentsInOrder
-                "the recovery branch passes the same sender directly with its joint descent"
-                [ "\\wire sendReport -> do"
-                , "mkReceivedRecoveryDescent"
-                , "useRecovery descent sendReport"
-                ]
-                receiverClassification
-            assertFragmentsInOrder
-                "the terminal sender is masked, one-shot, closes, and requires successful delivery"
-                [ "Exception.mask $ \\restore"
-                , "newMVar (False, False, False)"
-                , "if closed"
-                , "if attempted"
-                , "sendMessage channel state CompletedTag requestId [report]"
-                , "Right _ -> writeIORef active 0"
-                , "restore (useTerminal sendReport)"
-                , "Exception.uninterruptibleMask_"
-                , "pure ((True, attempted, completed), completed)"
-                , "Right (Right ()) | delivered -> pure (Right ())"
-                , "the terminal action returned without one successful report send"
-                ]
-                terminalAction
-            SourceGuard.countHaskellTokenSequence ["data", "LifecycleCompletion"] completionSource @?= 1
-            SourceGuard.countHaskellTokenSequence ["newtype", "LifecycleCompletion"] completionSource @?= 0
-            SourceGuard.countHaskellTokenSequence ["type", "LifecycleCompletion"] completionSource @?= 0
-            SourceGuard.countHaskellIdentifier "LifecycleCompletion" completionSource @?= 10
-            SourceGuard.countHaskellIdentifier "ForwardLifecycleCompletion" completionSource @?= 3
-            SourceGuard.countHaskellIdentifier "ReverseLifecycleCompletion" completionSource @?= 3
-            SourceGuard.countHaskellIdentifier "withVerifiedBoundReverseDescentObservationsKernel" reverseAcknowledgementSource @?= 1
-            SourceGuard.countHaskellIdentifier "withVerifiedBoundReverseDescentReportKernel" reverseAcknowledgementSource @?= 1
-            SourceGuard.countHaskellIdentifier "ForwardLifecycleCompletion" forwardAcknowledgementSource @?= 1
-            SourceGuard.countHaskellIdentifier "ReverseLifecycleCompletion" reverseAcknowledgementSource @?= 1
-            SourceGuard.countHaskellIdentifier "ForwardLifecycleCompletion" completionFoldSource @?= 1
-            SourceGuard.countHaskellIdentifier "ReverseLifecycleCompletion" completionFoldSource @?= 1
-            SourceGuard.countHaskellIdentifier "ByteString" completionFoldSource @?= 0
-            SourceGuard.countHaskellIdentifier "withProtectedEntry" boundReportSource @?= 1
-            SourceGuard.countHaskellIdentifier "compareAndSwapProtectedRecord" boundReportSource @?= 0
-            SourceGuard.countHaskellIdentifier "withProtectedEntry" boundObservationSource @?= 1
-            SourceGuard.countHaskellIdentifier "compareAndSwapProtectedRecord" boundObservationSource @?= 0
-            SourceGuard.countHaskellIdentifier "LifecycleCompletion" receiverSource @?= 0
-            SourceGuard.countHaskellIdentifier "renderLifecycleAcknowledgement" receiverSource @?= 0
-            SourceGuard.countHaskellIdentifier "withProtectedEntry" receiverSource @?= 0
-            SourceGuard.countHaskellTokenSequence ["CompletedTag", "[", "\"ok\"", "]"] receiverSource @?= 0
-            mapM_
-                ( \identifier ->
-                    assertBool
-                        (identifier <> " is hidden from public facades")
-                        (identifier `notElem` publicHandoff && identifier `notElem` publicTeardown)
-                )
-                hiddenExports
-            users "LifecycleCompletion" @?= ["HostBootstrap/Handoff/Completion.hs"]
-            users "withForwardLifecycleReportKernel" @?= ["HostBootstrap/Handoff/Lifecycle.hs"]
-            users "withReverseLifecycleReportKernel" @?= ["HostBootstrap/Handoff/Lifecycle.hs"]
-            users "withAcknowledgedForwardLifecycleCompletionKernel"
-                @?= [ "HostBootstrap/Handoff/Completion.hs"
-                    , "HostBootstrap/Handoff/Process.hs"
-                    ]
-            users "withAcknowledgedBoundReverseLifecycleCompletionKernel"
-                @?= [ "HostBootstrap/Handoff/Completion.hs"
-                    , "HostBootstrap/Handoff/Process.hs"
-                    ]
-            users "withRehydratedAcknowledgedReverseLifecycleCompletionKernel"
-                @?= ["HostBootstrap/Handoff/Completion.hs"]
-            users "withLifecycleCompletionKernel"
-                @?= ["HostBootstrap/Handoff/Completion.hs"]
-            users "withReverseDescentLiftContextKernel"
-                @?= [ "HostBootstrap/Command/LifecycleEntry.hs"
-                    , "HostBootstrap/Teardown/Internal.hs"
-                    ]
-            users "withVerifiedBoundReverseDescentReportKernel"
-                @?= [ "HostBootstrap/Handoff/Completion.hs"
-                    , "HostBootstrap/Teardown/Internal.hs"
-                    ]
-            importers "HostBootstrap.Handoff.Completion"
-                @?= ["HostBootstrap/Handoff/Process.hs"]
-            importers "HostBootstrap.Handoff.Lifecycle" @?= []
-            assertBool
-                "Completion owns the lower no-open recovery path"
-                (SourceGuard.importsModule "HostBootstrap.Teardown.Internal" completionSource)
-            assertBool
-                "Completion owns the hidden recovery capability value"
-                (SourceGuard.importsModule "HostBootstrap.Handoff.Internal" completionSource)
-            assertBool
-                "Lifecycle adopts the hidden lifecycle-entry producer"
-                (SourceGuard.importsModule "HostBootstrap.Command.LifecycleEntry" lifecycleSource)
-            assertBool
-                "Lifecycle does not adopt the lower completion owner before forward integration"
-                (not (SourceGuard.importsModule "HostBootstrap.Handoff.Completion" lifecycleSource))
-            assertBool
-                "Receiver constructs neither semantic completion nor reports"
-                ( not (SourceGuard.importsModule "HostBootstrap.Handoff.Completion" receiverSource)
-                    && not (SourceGuard.importsModule "HostBootstrap.Handoff.Lifecycle" receiverSource)
-                )
-            mapM_
-                ( \moduleName ->
-                    assertBool
-                        ("Completion imports no upward/process/protocol owner " <> moduleName)
-                        (not (SourceGuard.importsModule moduleName completionSource))
-                )
-                [ "HostBootstrap.Chain"
-                , "HostBootstrap.Command.LifecycleEntry"
-                , "HostBootstrap.Handoff.Lifecycle"
-                , "HostBootstrap.Handoff.Protocol"
-                , "HostBootstrap.Handoff.Receiver"
-                , "HostBootstrap.Handoff.Relay"
-                , "HostBootstrap.Protected"
-                , "System.Process"
-                , "System.Timeout"
-                ]
-            mapM_
-                ( \moduleName ->
-                    assertBool
-                        ("Lifecycle imports no process/protocol owner " <> moduleName)
-                        (not (SourceGuard.importsModule moduleName lifecycleSource))
-                )
-                [ "HostBootstrap.Handoff.Protocol"
-                , "HostBootstrap.Handoff.Receiver"
-                , "HostBootstrap.Handoff.Relay"
-                , "HostBootstrap.Protected"
-                , "System.Process"
-                , "System.Timeout"
-                ]
-            mapM_
-                ( \identifier -> do
-                    SourceGuard.countHaskellIdentifier identifier completionSource @?= 0
-                    SourceGuard.countHaskellIdentifier identifier lifecycleSource @?= 0
-                    SourceGuard.countHaskellIdentifier identifier receiverSource @?= 0
-                )
-                [ "createProcess"
-                , "waitForProcess"
-                , "terminateProcess"
-                , "getProcessExitCode"
-                , "timeout"
-                , "signalProcess"
-                , "interruptProcessGroupOf"
-                , "ExitSuccess"
-                , "ExitFailure"
-                , "spawn"
-                , "reap"
-                ]
-            SourceGuard.countHaskellIdentifier "LifecycleCompletion" protocolSource @?= 0
-            SourceGuard.countHaskellIdentifier "LifecycleCompletion" relaySource @?= 0
-            cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
-            librarySource <-
-                maybe
-                    (assertFailure "hostbootstrap-core.cabal has no main library stanza")
-                    pure
-                    (mainLibraryStanza cabalSource)
-            let exposed = fieldModules "exposed-modules:" librarySource
-                private = fieldModules "other-modules:" librarySource
-            length (filter (== "HostBootstrap.Handoff.Completion") private) @?= 1
-            length (filter (== "HostBootstrap.Handoff.Lifecycle") private) @?= 1
-            assertBool
-                "HostBootstrap.Handoff.Completion remains hidden"
-                ("HostBootstrap.Handoff.Completion" `notElem` exposed)
-            assertBool
-                "HostBootstrap.Handoff.Lifecycle remains hidden"
-                ("HostBootstrap.Handoff.Lifecycle" `notElem` exposed)
-            traverse_
-                ( \seam ->
-                    assertBool
-                        (seam <> " is absent from Cabal")
-                        (seam `notElem` map (unwords . words) (lines cabalSource))
-                )
-                [ "HostBootstrap.Handoff.Completion.Testing"
-                , "HostBootstrap.Handoff.Lifecycle.Testing"
-                , "HostBootstrap.Handoff.Process.Testing"
-                ]
+                $ \name -> do
+                    SourceGuard.countHaskellIdentifier name ("data " <> name <> " = Forbidden") @?= 1
+                    [ (sourcePath sourceRoot path, name)
+                      | (path, source) <- sources
+                      , SourceGuard.countHaskellIdentifier name source > 0
+                      ]
+                        @?= []
     , testCase "the hidden handoff modules and sealed folds have exact production owners" $
         withHandoffSourceRoot $ \packageRoot sourceRoot -> do
             sources <- readHaskellSources sourceRoot
@@ -7769,17 +7153,11 @@ sealedFacadeTests =
                     , "HostBootstrap/Teardown/Internal.hs"
                     ]
             importers "HostBootstrap.Handoff.Receiver"
-                @?= [ "HostBootstrap/Authority/ProjectPlan/Internal.hs"
-                    , "HostBootstrap/Command/Child.hs"
-                    , "HostBootstrap/Command/LifecycleEntry.hs"
-                    , "HostBootstrap/ProjectPlan/Child/Internal.hs"
-                    ]
+                @?= ["HostBootstrap/Command/Child.hs"]
             importers "HostBootstrap.Handoff.Receiver.Internal"
-                @?= [ "HostBootstrap/Authority/ProjectPlan/Internal.hs"
-                    , "HostBootstrap/Command/Child.hs"
+                @?= [ "HostBootstrap/Command/Child.hs"
                     , "HostBootstrap/Handoff/Receiver.hs"
                     , "HostBootstrap/Handoff/Relay.hs"
-                    , "HostBootstrap/ProjectPlan/Child/Internal.hs"
                     ]
             importers "HostBootstrap.Handoff.Relay"
                 @?= ["HostBootstrap/Command/Child.hs", "HostBootstrap/Command/LifecycleEntry.hs", "HostBootstrap/Handoff/Process.hs"]
@@ -7815,11 +7193,9 @@ sealedFacadeTests =
                     , "HostBootstrap/Handoff/Receiver/Internal.hs"
                     ]
             users "withReceivedRecoveryDescent"
-                @?= [ "HostBootstrap/Authority/ProjectPlan/Internal.hs"
-                    , "HostBootstrap/Command/Child.hs"
+                @?= [ "HostBootstrap/Command/Child.hs"
                     , "HostBootstrap/Handoff/Receiver/Internal.hs"
                     , "HostBootstrap/Handoff/Relay.hs"
-                    , "HostBootstrap/ProjectPlan/Child/Internal.hs"
                     ]
             users "withConfigBrokerLink"
                 @?= ["HostBootstrap/Handoff/Relay.hs"]
@@ -7851,8 +7227,6 @@ sealedFacadeTests =
                     , "adoptLifecycleAcknowledgementThroughLink"
                     , "offerHandoffEdge"
                     , "offerReverseDescentKernel"
-                    , "withReceivedLifecycleAcknowledgementKernel"
-                    , "withReceivedRecoveryLifecycleAcknowledgementKernel"
                     , "withRootedOpenedResponseKernel"
                     , "withRootedPreparedResponseKernel"
                     , "withRootedPostOpenResponseKernel"
@@ -7884,7 +7258,6 @@ sealedFacadeTests =
                     (\moduleName -> not (SourceGuard.importsModule moduleName handoffSource))
                     [ "HostBootstrap.Handoff.Completion"
                     , "HostBootstrap.Handoff.Protocol"
-                    , "HostBootstrap.Handoff.Lifecycle"
                     , "HostBootstrap.Handoff.Receiver"
                     , "HostBootstrap.Handoff.Receiver.Internal"
                     , "HostBootstrap.Handoff.Relay"
@@ -7915,7 +7288,6 @@ sealedFacadeTests =
                 )
                 [ "HostBootstrap.Handoff.Completion"
                 , "HostBootstrap.Handoff.Internal"
-                , "HostBootstrap.Handoff.Lifecycle"
                 , "HostBootstrap.Handoff.Protocol"
                 , "HostBootstrap.Handoff.Receiver"
                 , "HostBootstrap.Handoff.Receiver.Internal"
@@ -9177,7 +8549,7 @@ sealedFacadeTests =
                 requiredSourceSection
                     "the keyless runtime installer"
                     "withNestedRecursiveHandoffRuntimeKernel ::"
-                    "-- | Publish, send, and durably receive one exact child lifecycle report."
+                    "lifecycleAcknowledgementUnavailable ::"
                     relaySource
             entryInstallerSource <-
                 requiredSourceSection
@@ -9330,8 +8702,6 @@ sealedFacadeTests =
                 [ "RootUpLifecycleEntry root verb _ _ _ _ _ _ -> install root verb"
                 , "RootDownLifecycleEntry root verb _ _ _ _ _ _ _ -> install root verb"
                 , "RootDestroyLifecycleEntry root verb _ _ _ _ _ _ _ -> install root verb"
-                , "ChildUpLifecycleEntry{} -> keylessArmRefusal"
-                , "ChildRecoveryLifecycleEntry{} -> keylessArmRefusal"
                 , "rootRecursiveHandoffRuntimeKernel broker scope (rootBrokerRoute broker) root verb"
                 ]
                 entryInstaller
@@ -9563,7 +8933,7 @@ sealedFacadeTests =
                 requiredSourceSection
                     "sealed root cluster cleanup kernel"
                     "runPreparedRootClusterCleanupKernel ::"
-                    "{- | Seal one authenticated recovery child"
+                    "{- | Interpret exactly one admitted root @project up@ leaf."
                     entrySource
             let cluster = normalizeWhitespace clusterKernel
                 entry = normalizeWhitespace entryKernel
@@ -9586,8 +8956,6 @@ sealedFacadeTests =
                 , "RootDestroyLifecycleEntry _ verb plan"
                 , "runExactClusterCleanupKernel plan verb gate local runDown runDestroy"
                 , "RootUpLifecycleEntry"
-                , "ChildUpLifecycleEntry"
-                , "ChildRecoveryLifecycleEntry"
                 ]
                 entry
             traverse_
@@ -9628,11 +8996,11 @@ sealedFacadeTests =
             let terminal = normalizeWhitespace terminalKernel
                 entry = normalizeWhitespace entryKernel
             assertFragmentsInOrder
-                "terminalization checks exact settlement before its sole CAS"
+                "Down terminalization checks exact settlement before its retained-intent CAS"
                 [ "case validateEvidence of"
                 , "subtreeSettledPlanDigest settled"
                 , "allSessionsClosedPlanDigest sessions"
-                , "ProjectDestroy, Just (proof, root, evidence)"
+                , "ProjectDestroy, Just (SettledProductionClosure root exact closed proof)"
                 , "validateLive session common target"
                 , "compareAndSwapProtectedRecord session intentKey"
                 , "exactTerminal session intentKey bytes"
@@ -9646,11 +9014,9 @@ sealedFacadeTests =
                 , "terminalize verb Nothing"
                 , "RootDestroyLifecycleEntry"
                 , "verifyDestroySettled plan current settled"
-                , "destroySettledClosure lease sessions destroy"
-                , "terminalize verb (Just (destroy, destroyCloseRoot root, closure))"
+                , "authorizeProductionDestroy root lease sessions destroy"
+                , "terminalize verb (Just closure)"
                 , "RootUpLifecycleEntry"
-                , "ChildUpLifecycleEntry"
-                , "ChildRecoveryLifecycleEntry"
                 ]
                 entry
             SourceGuard.countHaskellIdentifier "compareAndSwapProtectedRecord" terminalKernel @?= 1
@@ -10561,7 +9927,6 @@ frozenHandoffPackageRows =
     [ "HostBootstrap.Handoff"
     , "HostBootstrap.Handoff.Completion"
     , "HostBootstrap.Handoff.Internal"
-    , "HostBootstrap.Handoff.Lifecycle"
     , "HostBootstrap.Handoff.Process"
     , "HostBootstrap.Handoff.Process.Route"
     , "HostBootstrap.Handoff.Protocol"

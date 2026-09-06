@@ -8,7 +8,6 @@ import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
-import System.Info (os)
 import System.Process (spawnProcess, terminateProcess, waitForProcess)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
@@ -27,16 +26,17 @@ tests =
 destroySettlementCase :: TestTree
 destroySettlementCase =
     testCase "destroy-settled survives a real process death with terminal lease and mode" $
-        unless (os == "mingw32") $ RecursiveLifecycleSpec.withFixtureEnvironment False $ \root _ -> do
-            RecursiveLifecycleSpec.runPublicProcess root False "up" >>= (@?= ExitSuccess)
-            let readyPath = root </> "destroy-ready"
-            producer <- RecursiveLifecycleSpec.spawnDestroyInterruptionProbe root readyPath
-            awaitFile readyPath
-            readFile readyPath >>= (@?= "destroy-settled")
-            terminateProcess producer
-            _ <- waitForProcess producer
-            RecursiveLifecycleSpec.runPublicProcess root False "up" >>= (@?= ExitSuccess)
-            RecursiveLifecycleSpec.runPublicProcess root False "destroy" >>= (@?= ExitSuccess)
+        RecursiveLifecycleSpec.withLocalGuestFrame $
+            RecursiveLifecycleSpec.withFixtureEnvironment False $ \root _ -> do
+                RecursiveLifecycleSpec.runPublicProcess root False "up" >>= (@?= ExitSuccess)
+                let readyPath = root </> "destroy-ready"
+                producer <- RecursiveLifecycleSpec.spawnDestroyInterruptionProbe root readyPath
+                awaitFile readyPath
+                readFile readyPath >>= (@?= "destroy-settled")
+                terminateProcess producer
+                _ <- waitForProcess producer
+                RecursiveLifecycleSpec.runPublicProcess root False "up" >>= (@?= ExitSuccess)
+                RecursiveLifecycleSpec.runPublicProcess root False "destroy" >>= (@?= ExitSuccess)
 
 boundaryCase :: String -> Maybe [String] -> TestTree
 boundaryCase boundary expectedEvents =

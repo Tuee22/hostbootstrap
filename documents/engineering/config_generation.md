@@ -33,14 +33,14 @@
   `context-init`'s action body is a no-op announcement: the VM config is projected/delivered by the
   composite `build-pb` action, the container config by the descent that same `context-init` step
   declares (`descendsVia`) plus the handoff, and service configs by deployment actions. The announcing
-  row and the container payload are therefore one plan node. The target root coordinator recursively
+  row and the container payload are therefore one plan node. The root coordinator recursively
   projects every child config and plan into one exact catalog before effects, then gives a storeless
   executor only root-signed grants for that catalog node.
 - `deployConfigText` renders a standalone numeric budget/pod artifact carrying a Dhall `fitsWithin`
   assertion. It is not the runtime `<project>.dhall`: that config has text quantities and no resolved pod
   set. Current decode/validation uses private scalar constructors and one project-owned resource value;
-  later plan/provider admission rejects zero and backend-inexact budgets. `fitsBudget` exists, but
-  bring-up does not yet call it with the complete topology-derived workload set.
+  later plan/provider admission rejects zero and backend-inexact budgets. The authoritative complete-workload fit and partition come from `Cluster.Budget`;
+  the static `fitsBudget` helper is descriptive.
   Selected fixtures have byte-stable
   render → decode → re-render tests; that is not a universal property of arbitrary `ConfigArtifact`.
 
@@ -139,15 +139,13 @@ validated variant message. `test init` follows the separate `psTestInit` path be
 
 `ConfigAssembly` admits only project-declared read-only inputs and no arbitrary `IO`, process, backend,
 write, or lifecycle operation. Production and Harness wire schemas are admitted by separate mapped
-codecs, and Harness admission closes over exact run config authority. Complete per-role parameter
-projection remains work in the
-[service runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md); it must derive from the
-validated assembly result rather than substitute the demo's current hard-coded Web ports or accelerator
-timeout.
+codecs, and Harness admission closes over exact run config authority. Per-role projection derives a narrowed immutable `RoleParams` bundle from the validated assembly result.
+The service registry retains it with the matching typed program, declared effect row, and backend; signed
+runtime selection decodes that exact narrowed role wire.
 
 The on-disk config is normally **absent** after a build: nothing creates it as a side effect of building
 the binary, and Python does not initialize or trigger config creation. Existing-frame commands
-(`project up|down|destroy`, `service run`, and `check-code`) fail fast (exit 1) when their sibling
+(`project up|down|destroy` and `check-code`) fail fast (exit 1) when their sibling
 `<project>.dhall` is missing. The other inputs are intentionally different: `project init`,
 `service init`, and `test init` are config-free writers; `service schema` and
 `context path|schema|render` are static and config-free; `context inspect` reads the sibling;
@@ -155,77 +153,20 @@ the binary, and Python does not initialize or trigger config creation. Existing-
 refuses an existing sibling project config, and writes/removes its run config under the four § EE
 ownership clauses of `HostBootstrap.Harness.GeneratedConfig`. Complete durable resource-record
 verification and rehydration belongs to the
-[recovery and migration phase](../../DEVELOPMENT_PLAN/phase-18-recovery-and-migration.md). There is no
-auto-init backstop.
+[recovery and migration phase](../../DEVELOPMENT_PLAN/phase-18-recovery-and-migration.md). `service run` instead consumes platform-installed immutable activation coordinates and never reads the
+sibling full project config. There is no auto-init backstop.
 
-## Child `<project>.dhall`: Current Split And Target Owner
+## Child `<project>.dhall`: Plan Projection and Authenticated Delivery
 
-Descending into a nested frame requires a child config that declares the binary's new position and
-provides facts for the current mismatch checks. The demo currently produces those configs in three
-different operational seams:
+The finalized specification supplies the restricted project-owned child projector. The root catalog
+reconstructs and validates every exact child plan, configuration payload, digest binding, frame edge, and
+one-layer route before effects. The declared descent belongs to its plan node; the node's descriptive action
+may announce the boundary while the interpreter performs the authenticated delivery.
 
-- the composite `build-pb`/pristine-bootstrap action derives and streams the VM-orchestrator config;
-- the descent the in-VM `context-init` step declares carries the project-container config, and the
-  recursive handoff streams it over `stdin` for the descending binary to write beside itself before
-  dispatch; and
-- chart/accelerator deployment actions render service/daemon projections into ConfigMaps, whose mounted
-  bytes are rollout-hashed.
-
-The named `context-init` row does not perform any of those effects; its body prints an announcement and
-acts as a frame anchor. The plan binds the container payload to the descent that row declares, while full
-projection/delivery ownership remains work in the
-[recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md). The
-root coordinator recursively projects the child config and plan into `RootedPlanCatalog` before the remote
-frame performs an effect. It selects the exact parent/child edge and projected node keys, durably prepares
-the operation, and signs a bounded response. The storeless `FrameExecutor` exact-compares that response with
-its locally rebuilt node, runs only the named effect, and returns a bounded observation for root settlement.
-Projection, config delivery, journal advancement, and terminal receipt confirmation therefore remain one
-root-owned lifecycle relation without giving the child a store or cursor.
-
-The current pure generation helpers project the child from the parent:
-
-- it retains the full demo `ProjectConfig`, including host-only Dockerfile/deploy settings at service
-  leaves;
-- it carries the parent's resource envelope and deploy knobs;
-- it appends the child frame to `topologyFrames`, sets `currentFrame` to it, and records the witnesses
-  that prove the frame locally;
-- trusted projection narrows capabilities and allowed command classes so it does not intentionally grant
-  host-only permissions to a container/service config. `addRole` validates a closed compatibility
-  relation, `service run` rejects a non-leaf primary kind, and lifecycle validation re-derives placement
-  from the complete topology. The
-  [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns concrete workload and exact
-  resource slices, while the
-  [service runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md) owns the role-specific
-  service request. The
-  [authenticated handoff and child admission phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
-  owns the private duplex session, separate payload/config digests, authenticated root-scope capsule,
-  scope-first receiver, exact config refinement, recovery package, and closed rooted request/response wire.
-  The receiver verifies scope against the independently installed key before received config bytes introduce
-  a phantom, then returns a fresh challenge; the root consumes its nonce and authenticates the exact edge.
-  Recorded transcripts and broker loss fail, later invocations get fresh tokens, intermediaries stay keyless,
-  authority is never encoded in Dhall, and neither payload appears in `argv` or environment. The
-  [test harness and run ownership phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md)
-  supplies exact live Harness run evidence to the generic authenticated-scope producer. The
-  [recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) owns
-  the catalog, root coordinator, storeless executor, and process adoption that consume those wire contracts.
-
-After authenticated scope and exact-byte config refinement, the descending binary checks that its sibling
-child `.dhall` describes the locally witnessed frame. The resulting `ChildPlanAuthority` still grants no
-command or durable authority: the Cabal-private entry exact-matches config, plan, ancestry, frame, and
-projected keys against the root catalog before admitting a storeless executor. Descriptive witness checks
-alone are not an unforgeable proof (see
-[binary_context_config](../architecture/binary_context_config.md) and
-[dhall_topology](dhall_topology.md)).
-
-- **WRONG**: a parent mints a child config for a frame that is not in the topology, or a child binary
-  trusts the config without witnessing its frame. This is wrong because the child could then run
-  host-only work in a container after passing only descriptive fields, defeating the per-frame
-  fail-fast that keeps the lift honest.
-- **RIGHT (target)**: the root catalog contains only recursively projected plan-related frames; the descending
-  binary verifies authenticated scope, exact config refinement, `ChildPlanAuthority`, local witnesses, and
-  catalog coordinates before becoming a storeless `FrameExecutor`. It acts only on root-signed exact node
-  grants, while the root performs durable prepare, settlement, and receipt transitions. See
-  [composition_methodology § Context-Aware Topology](../architecture/composition_methodology.md).
+VM bootstrap establishes the executable before runtime admission. A container image already carries it.
+The receiver verifies the root scope capsule, independently installed key, exact payload binding, and grant
+before dispatching local work. Children return observations to the root and receive no durable store or signer.
+Services use a separate narrowed role wire installed in an immutable signed activation revision.
 
 ## `context`: Read-Only Inspection
 
@@ -286,12 +227,9 @@ deployed binary. Because this artifact contains both numeric operands, Dhall can
 It must not be confused with the demo's runtime `ProjectConfig`. That config carries Kubernetes
 `memory`/`storage` quantities as `Text` and no pod set, so there is nothing meaningful to attach this
 assertion to. Its decode ring is the typed `Quantity`, resource-floor, replica, port, and timeout
-refinements. In the target, bring-up resolves the actual pod set and requires `fitsBudget` before effects. Attaching
-`fitsWithin` to every generated project config is not a target. Current lifecycle bring-up has not yet
-assembled that actual set or called `fitsBudget`; the demo API calls it only for `demoPods`, a static list
-containing the web example and not MinIO, registry, accelerator, or control-plane overhead. The web
-StatefulSet also lacks corresponding CPU/memory requests and limits, so the API value is not an applied
-scheduler contract.
+refinements. The exact plan admission resolves the declared workload and proves its fit through `Cluster.Budget`.
+Attaching `fitsWithin` to every generated project config is not meaningful because the config itself has no
+resolved pod set. Static `demoPods` output is an API example, not an applied scheduler or wall authority.
 
 ## The Round-Trip Invariant
 

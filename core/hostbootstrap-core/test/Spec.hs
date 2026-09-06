@@ -36,8 +36,8 @@ import qualified GeneratedConfigSpec
 import qualified GuestBootstrapSpec
 import qualified HandoffSpec
 import qualified HarnessSpec
-import HostBootstrap.Ensure.Colima.Backend.Runner (runShippedCommandEntry, shippedCommandEntryArguments)
 import HostBootstrap.Cluster.Shipped (interpretShippedClusterExposure)
+import HostBootstrap.Ensure.Colima.Backend.Runner (runShippedCommandEntry, shippedCommandEntryArguments)
 import HostBootstrap.Handoff.Transaction (classifyFrameChild, frameInterpreter, runFrameChildEntry)
 import HostBootstrap.Identity.Install (provisionInstalledIdentity)
 import HostBootstrap.Ownership.Shipped (interpretShippedOwnership)
@@ -156,7 +156,7 @@ main = do
         _
             | executableName `elem` ["incus", "docker"]
             , Just _ <- recursiveFixture ->
-                RecursiveLifecycleSpec.runLifecycleChild
+                RecursiveLifecycleSpec.runLifecycleFixtureClient
         _
             | Just entry <- classifyFrameChild args ->
                 runFrameChildEntry (frameInterpreter interpretFrameTransaction) entry
@@ -235,8 +235,8 @@ main = do
             -- so the ownership transactions collide and a bracket's cleanup
             -- resolves a path it no longer owns. Those guards are the behaviour
             -- under test, so the fix is to stop scheduling them against each
-            -- other rather than to weaken them. The whole suite is ~30s
-            -- serially, so the ordering costs nothing worth reclaiming.
+            -- other rather than to weaken them. Serial execution preserves
+            -- each fixture's process-global environment for its full lifetime.
             --
             -- The manifest is assembled from the same list the runner is given,
             -- so what it counts is what runs. A family that lost a case on this

@@ -5,19 +5,17 @@
 **Referenced by**: [../README.md](../README.md), [../architecture/network_reachability.md](../architecture/network_reachability.md), [derived_project_standards.md](derived_project_standards.md), [build_release.md](build_release.md)
 
 > **Purpose**: Document the in-cluster OCI registry a downstream project stands up to push its own
-> arch-explicit image, describe the current broken redirect topology, and define how the downstream
-> project consumes core's target reachability-safe registry plan without transferring image ownership
+> arch-explicit image, describe the legal proxy route, and explain how the downstream
+> project consumes core's reachability-safe registry plan without transferring image ownership
 > to core.
 
 ## Current Status
 
-The demo resources and push step exist, but the end-to-end registry route is not currently valid.
-Distribution's S3 driver redirects repeated blob requests to `http://minio.default.svc:9000`. That
-name is cluster-only, while the Docker client pushing through the registry's local exposure runs in host scope.
-The registry therefore answers a blob `HEAD` with `307`, and the client fails DNS resolution for
-`minio.default.svc`.
+The demo uses a finalized proxy-delivery plan for a host client and cluster-only MinIO store. It renders
+`storage.redirect.disable: true`, so repeated blob requests stay on the reachable registry endpoint rather
+than redirecting the host client to `minio.default.svc:9000`.
 
-The target is the typed plan in
+The contract is the typed plan in
 [network reachability](../architecture/network_reachability.md): core owns the generic endpoint,
 client, delivery, and readiness vocabulary; the demo owns its registry resources, project-image
 operation, and topology-specific plan. For this topology, proxy delivery is selected by construction
@@ -30,7 +28,7 @@ The hostbootstrap core **does not build or push your project image.** The thin P
 materializes the host-native project binary. Once that binary is running, a project-supplied build-image
 chain action may build a project container `FROM` the base tag and run its code-check gate; core only
 interprets the contributed action. Whether and how the resulting image reaches a registry is the
-**downstream project's** job. Core has no project-image push command. Its target responsibility is
+**downstream project's** job. Core has no project-image push command. Its responsibility is
 generic enforcement: it supplies reachability-safe planning and readiness types, while the consumer
 supplies and interprets its own concrete registry resources and push operation.
 
@@ -99,10 +97,9 @@ registry DSL does not expose that setting as a boolean: `ProxyThroughRegistry` i
 delivery strategy for this topology, and the renderer derives `storage.redirect.disable: true`. See
 [network reachability](../architecture/network_reachability.md) for the type-level rule.
 
-The target derives a per-run credential from scoped secret authority and binds it to the exact plan.
-Public anonymous registry mode remains an explicit development-only policy. A requested strong
-loopback-only mode must be rejected as unsupported unless the substrate can prove the listener binding
-and namespace; a client spelling of `localhost` is not that proof.
+The worked local demo uses the explicit development credentials described above. These constants do not
+establish per-run secret derivation or a production authentication policy. Exact loopback exposure is owned
+and verified by the cluster backend; spelling a client address as `localhost` alone is not that proof.
 
 **Why.** With the default ephemeral filesystem driver a registry pod restart (crash,
 eviction, node reboot) loses every pushed blob — `GET /v2/<repo>/tags/list` 404s.

@@ -30,59 +30,26 @@ consumes the bound identity, so performing either out of order has no term rathe
 
 ## Current Status
 
-Every **host-local** owner now holds its clauses through the one seam. The harness data root, the
-generated sibling config, and the global host wall reach the identity read, the no-replace link, the
-exclusive open, the identity-conditional act, and the durable record encoding in one place, against one
-row, so the three cannot drift and a record one of them writes is a record the others read. The **reported** face now has its first
-consumer: `HostBootstrap.Substrate.Provider.Ownership` holds all four clauses over an Incus instance and
-over each share attached to it, with every effect a described command and every answer a total
-classification. What still carries the transaction a second time is the cluster, Colima, and guest-alias
-drivers, which are interpreter programs and belong to the phases that drive them.
+Host-local owners use the shared ownership primitives for kernel identity, exclusion, origin publication,
+no-replace linking, and identity-conditional release. The POSIX row uses descriptor-based operations and
+symbolic errno classification. The Windows row uses no-follow handles, `LockFileEx`, file identity, and
+write-through creation. `ownershipRowForHost` selects the native row as a build fact.
 
-The **vocabulary** below is built and is the one home for the identity, the intended payload, the origin
-record, its canonical codec, and the closed fault sum. Every owner and both rows speak it, so an identity
-means the same thing wherever it appears.
+`HostBootstrap.Substrate.Provider.Ownership` holds provider and share transactions. The cluster and direct
+Colima backends retain their exact backend-specific machine, namespace, snapshot, and node identities through
+the same clause order. The guest-alias path runs the shared transaction at the guest through the shipped
+ownership command; the demo consumes its prepared managed authority. A missing primitive is an explicit
+unsupported result, never a weaker ownership receipt.
 
-The **clause tokens** and the **seam** are built with it. The four tokens are abstract, both of their
-indices are nominal, and the entry index is the protected session's own rank-2 variable, so evidence
-cannot move between entries or between objects and cannot outlive the entry that authorized it. The seam
-is a record of primitives closed existentially over its handle type, with seven producers that each demand
-their predecessor token; a row declares which clauses it can hold and the refusal it owes for one it
-cannot is a total function of that declaration, applied before any kernel call.
+Clause tokens have nominal object and entry indices. The protected entry's rank-2 identity prevents evidence
+from moving between entries or outliving its transaction. Shipped requests are canonical bounded data; the
+receiving binary performs the transaction using the row for the frame that owns the object.
 
-The **shipped row** is built with them. A transaction addressed to a lift context is carried to a process
-of this same binary at that context and interpreted there; an empty context addresses this machine, and a
-layered one crosses a frame. Its two encodings and the frame table's ownership column are total functions
-covered by application, and the empty-context crossing is driven through a real child process, so the
-claim that a transaction reached another process is a property of a program that would not finish if it
-were false. What it does not yet have is a driver that consumes it.
-
-**Both platform rows** fill that seam, and one selector chooses between them. The POSIX row supplies an `lstat`
-identity read without following a link, an `O_NOFOLLOW` open carrying an `fcntl` write lock over the whole
-file, `mkdir(2)`, `O_CREAT|O_EXCL` plus `fsync`, `link(2)`, and an `fsync` on the parent directory — each
-reached through the `unix` binding rather than a front-end process, each classifying its own errno
-symbolically. The Windows row supplies the same primitives through `CreateFileW` with the no-follow flag,
-a `LockFileEx` byte-range exclusion, `GetFileInformationByHandle` identity, `CREATE_NEW` with
-`FILE_FLAG_WRITE_THROUGH`, and `CreateHardLinkW`; it has no directory descriptor to flush, so the
-parent's durability rides on the write-through creation and the link rather than on a separate sync. Both
-encode identity through one producer in the owned-object vocabulary, so an identity means the same thing
-whichever kernel answered, and `ownershipRowForHost` selects the row as a build fact rather than a
-runtime probe. Each row is exercised against the real kernel in a temporary directory the case created,
-and the kernel releasing its exclusion is proved by a real process dying; a run is evidence for the one
-row that ran it. What is still owed is the owners at another frame — the providers, the clusters, the
-Colima profile, and the guest alias.
-
-The seam, the clause tokens, and the two platform rows are the
-[four-ownership-clauses-and-host-local-reservations phase](../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md)'s;
-the shipped row and the provider drivers are the
-[host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)'s,
-whose row is built and whose drivers are not;
-the cluster and Colima drivers are the
-[cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)'s;
-and the guest alias driver is the
-[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md)'s, because replacing it needs the
-project binary established inside the guest first. Everything below describes the target contract; the
-phase index carries what is built.
+The [ownership clauses phase](../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md) owns the
+primitive seam. The [providers and lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
+owns provider realization and transport, the [cluster lifecycle phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
+owns cluster and Colima adapters, and the [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md)
+owns their concrete consumers. Their dated gates distinguish native kernel checks from live provider acceptance.
 
 ## The vocabulary
 
