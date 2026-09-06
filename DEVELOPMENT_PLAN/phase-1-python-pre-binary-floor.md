@@ -5,6 +5,9 @@
 **Substrates**: linux-cpu
 **Gate**: `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` from the repository root
+**Gate kind**: deferred
+**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), Python 3.14.3, Poetry 2.3.2 ; `poetry run python -m hostbootstrap.test_all` ; pass ; covers fb982e9d82be0175f04dc1900dba85114fb51771546b064660c8d4d66a1d385b
+**Evidence covers**: `hostbootstrap` `tests` `pyproject.toml`
 
 > **Purpose**: Assert the irreducible host floor, prepare the native Haskell toolchain, build the project
 > binary host-native, and hand control to it.

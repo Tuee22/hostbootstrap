@@ -1,9 +1,10 @@
 # Phase 22 — Service runtime
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 20 (`test` and `context` command semantics), Phase 21 (composition and network algebra)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus a live `service run` on linux-cpu
+**Gate kind**: deferred
 
 > **Purpose**: Make a project's long-running workload a config-selected service variant reached through one
 > fixed command, driven by the role phase machine.
@@ -261,9 +262,36 @@ None. The aggregate gate and live concurrent-role confirmation pass. Web and acc
 Serve from signed immutable revisions while sharing one authority store; each retains only its own
 service/frame generation lease after admission releases the global transaction lock.
 
+### Sprint 22.4: The live service run [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Record the dated live `service run` on linux-cpu.
+
+#### Deliverables
+
+- one dated live `service run` naming its host and the config-selected leaf service it ran.
+
+#### Validation
+
+The dated run.
+
+#### Remaining Work
+
+The run is owed. Its newest dated evidence is 2026-08-24, before the September changes to `Service`
+and `Service.Internal`.
+
 ## Remaining Work
 
-None.
+Sprint 22.4 owns the owed run.
+
+The live half is owed: a `service run` on linux-cpu. Its newest dated evidence is 2026-08-24, before the
+September changes to `Service` and `Service.Internal`.
 
 ## Validation Record
 

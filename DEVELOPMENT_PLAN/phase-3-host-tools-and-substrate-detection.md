@@ -4,6 +4,8 @@
 **Depends on**: Phase 2 (Haskell core scaffolding)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`
+**Gate kind**: self-verifying
+**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
 
 > **Purpose**: Close both axes of host invocation — *which* executable a call names, and the *shape* the
 > call takes — and classify the outer host realization on which the binary is running.
@@ -369,7 +371,7 @@ None.
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/test/EffectSpec.hs`,
 `documents/engineering/durable_windows_runs.md`, `CLAUDE.md`, `AGENTS.md`
-**Substrates**: —
+**Substrates**: none
 **Docs to update**: `documents/engineering/durable_windows_runs.md`
 
 #### Objective

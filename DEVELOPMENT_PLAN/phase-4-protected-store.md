@@ -4,6 +4,8 @@
 **Depends on**: Phase 3 (host tools and substrate detection)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`
+**Gate kind**: self-verifying
+**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
 
 > **Purpose**: Provide the one durable, exclusively entered, versioned record store every later ownership,
 > authority, and lifecycle decision is made inside.
@@ -20,7 +22,7 @@ durability. This phase is that store and nothing else; it knows nothing about wh
 ### Sprint 4.1: Exclusive entry and versioned records [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Protected.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_invariant.md`
@@ -58,8 +60,7 @@ None.
 ### Sprint 4.2: The run-liveness lock [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Protected.hs`,
-`core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_invariant.md`
@@ -95,7 +96,7 @@ seconds. The child remained alive while the parent immediately reacquired the sa
 ### Sprint 4.3: Store identity binding [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Protected.hs`
+**Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_invariant.md`
 

@@ -105,9 +105,9 @@ Configuration is strict, binary-owned Dhall:
 - `<project>.test.dhall` is the project-defined test input written by `test init`.
 - Opaque `ConfigArtifact` values contribute generated vocabulary/schema/render artifacts through one
   admitted `CodecWitness`, so schema, decode, and render share a validated encoder/decoder type.
-- child frames currently receive narrower descriptive context/capability declarations but retain the
-  demo's full parameter record and resource envelope; the target uses role-specific parameter/resource
-  projections plus separately verified opaque authority.
+- child frames receive role-specific parameter and resource projections: the finalized projector derives
+  each exact child configuration, and a service or daemon consumer receives only its narrowed
+  `RuntimeRoleWire` together with separately verified opaque authority.
 
 The demo's config includes its own resources, deploy settings, context, and message fields.
 `hostbootstrap-core` owns no universal project config or project defaults. The extension is generic over
@@ -155,12 +155,12 @@ Self-update is never implicit.
 
 Every Haskell project binary exposes the fixed tree:
 
-| Command | Current behavior |
+| Command | Behavior |
 |---|---|
-| `project init` | Write the project-owned sibling config; current shared init flags are broader than the target typed request |
-| `project up` | Interpret the exact current-frame Chain; nested entry currently fails closed, while `--dry-run` renders the admitted plan |
-| `project down` | Current-frame cleanup plus stop-mode project hook; typed recursive reverse traversal is open |
-| `project destroy` | Current-frame cleanup plus delete-mode project hook; typed recursive reverse traversal is open |
+| `project init` | Write the project-owned sibling config |
+| `project up` | Interpret the admitted plan and authenticate each declared descent, granting the child only its selected node's prepared operations; `--dry-run` renders the admitted plan |
+| `project down` | Child-first reverse traversal plus stop-mode project hook, releasing only resources whose ownership is established |
+| `project destroy` | Child-first reverse traversal plus delete-mode project hook, closing only on settled destroy evidence or a verified pre-effect refusal |
 | `test init` | Write `<project>.test.dhall` without requiring a project config |
 | `test run <case-id>\|all` | Generate each variant, directly drive its exact Harness current-frame forward/reverse around assertions, then close only after settled destroy |
 | `service init\|schema\|run` | Initialize/inspect service config or run one config-selected leaf service |
@@ -300,8 +300,8 @@ The implemented code is usable, but the stronger target is deliberately open. Pl
   pathname, and release conditioned on re-observing that identity — plus exact ownership receipts and
   foreign-state refusal
   (see [documents/architecture/ownership_invariant.md](documents/architecture/ownership_invariant.md)).
-  Those four clauses are one transaction, so the target holds them once over one closed seam with a
-  platform row beneath, rather than once per owned object; the clause order is a property of the types,
+  Those four clauses are one transaction, held once over one closed seam with a platform row beneath
+  rather than once per owned object; the clause order is a property of the types,
   and the drivers that hold them are the binary's own typed operations rather than programs carried as
   string literals
   (see [documents/architecture/ownership_seam.md](documents/architecture/ownership_seam.md));
@@ -312,16 +312,16 @@ The implemented code is usable, but the stronger target is deliberately open. Pl
 - opaque project/step/config constructors that cannot represent contradictory states; and
 - a closed boundary for spawning a child that outlives its launcher, so its stdio disposition,
   descriptor inheritance, session, environment, and working directory are properties of a type rather
-  than fields a call site fills in. This one is open because a boundary nobody sealed had none: the
-  host-resident accelerator daemon is currently launched with its standard streams closed and cannot
-  report why it stops. The method every boundary above applies is stated once in
+  than fields a call site fills in
+  (see [`Detached`](core/hostbootstrap-core/src/HostBootstrap/Detached.hs), whose assembled process
+  specification is private so those dispositions are not call-site parameters).
+  The method every boundary above applies is stated once in
   [documents/architecture/unrepresentable_state.md](documents/architecture/unrepresentable_state.md).
 
-Separately from that target work, several phases are open on a narrower point: the host static gate must
-pass host-native on every supported outer host, and some suites still assert from one of them — a POSIX
-tool path in a host fixture, a native path separator in a module allow-list, a source digest taken
-through the process locale. Those are properties of how a guard is written rather than of what it
-asserts, so the provider, cluster, and authority contracts those phases state are unchanged.
+The host static gate passes host-native on every supported outer host, and the suites assert from none of
+them in particular: the host-portability acceptance phase records separate native Windows, macOS, and Linux
+runs, and the per-platform difference in their totals is enumerated against the suites' own declared
+platform conditions rather than left to the run.
 
 Phase status, blockers, and deletion work are authoritative only in
 [DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md) and

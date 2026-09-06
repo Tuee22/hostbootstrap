@@ -7,6 +7,8 @@ budgets, and cordoning)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`, including the real local
 process-boundary recursive-lifecycle tests
+**Gate kind**: self-verifying
+**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
 
 > **Purpose**: Interpret one project plan recursively under a single root coordinator, execute each remote
 > frame through a storeless child executor, and unwind the same plan child-first for reverse verbs and failed

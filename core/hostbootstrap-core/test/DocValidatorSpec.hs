@@ -7,7 +7,12 @@ import Data.List (isInfixOf)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 import HostBootstrap.DocValidator
-  ( checkArchitectureDrift,
+  ( checkAcceptanceTerminal,
+    checkArchitectureDrift,
+    checkGateEvidence,
+    checkPhaseOrdering,
+    checkSubstrateBudget,
+    checkImplementationPaths,
     findRepoRoot,
     renderViolation,
     validateRepo,
@@ -33,7 +38,9 @@ tests = do
       "DocValidatorSpec"
       [ testCase "governed documentation conforms to the standard" (realRepoCase cwd mroot),
         testCase "validator flags missing metadata, links, and sections" negativeCase,
-        testCase "architecture drift guards reject obsolete authority and numeric citations" architectureCase
+        testCase "architecture drift guards reject obsolete authority and numeric citations" architectureCase,
+        testCase "implementation citations and Done evidence are checked against the tree" citationCase,
+        testCase "wrapped header fields are read whole, in the spelling the plan uses" fieldReadingCase
       ]
 
 realRepoCase :: FilePath -> Maybe FilePath -> IO ()
@@ -373,6 +380,238 @@ architectureCase = withSystemTempDirectory "hb-architecture-drift" $ \root -> do
   writeUtf8 (root </> "documents" </> "example.md") "See [recursive lifecycle](../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)."
   remaining <- checkArchitectureDrift root
   length remaining @?= 6
+
+{- | The two checks that answer "is this phase still describing the tree?".
+
+Both failures this exercises stood in the real plan: a module relocated between
+Cabal stanzas left its citing sprints pointing at a path that no longer existed,
+and one phase read Done while carrying no dated run at all. Neither is visible to
+any other check here, which is the point — the status bookkeeping stays coherent
+either way.
+-}
+citationCase :: IO ()
+citationCase = withSystemTempDirectory "hb-citation-drift" $ \root -> do
+  let plan = root </> "DEVELOPMENT_PLAN"
+      source = root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap"
+      present = "core/hostbootstrap-core/src/HostBootstrap/HostTool.hs"
+      dated = "On 2026-09-06 the complete gate passed."
+      -- 'readLines' reads lazily, so each variant gets its own document rather
+      -- than rewriting one path a still-open handle is holding.
+      writeDocument name body = do
+        let file = plan </> ("phase-3-" ++ name ++ ".md")
+        writeUtf8 file body
+        pure file
+      document name status implementation validation =
+        writeDocument name (phaseDocument status implementation validation)
+  createDirectoryIfMissing True plan
+  createDirectoryIfMissing True source
+  writeUtf8 (source </> "HostTool.hs") "module HostBootstrap.HostTool where"
+
+  -- A Done phase citing a file that is there, with a dated run, satisfies both.
+  intact <- document "intact" "Done" present dated
+  checkImplementationPaths root intact >>= (@?= [])
+  checkGateEvidence root intact >>= (@?= [])
+
+  -- The same sprint after the module moves: the citation is refused by name.
+  relocated <- document "relocated" "Done" "core/hostbootstrap-core/src/HostBootstrap/Moved.hs" dated
+  moved <- map renderViolation <$> checkImplementationPaths root relocated
+  length moved @?= 1
+  assertBool
+    ("citation refusal names the missing path: " ++ unlines moved)
+    (any ("Moved.hs" `isInfixOf`) moved)
+
+  -- A glob names a scope rather than a file, and a directory resolves as itself.
+  globbed <- document "globbed" "Done" "core/hostbootstrap-core/src/**" dated
+  checkImplementationPaths root globbed >>= (@?= [])
+  directory <- document "directory" "Done" "core/hostbootstrap-core/src" dated
+  checkImplementationPaths root directory >>= (@?= [])
+
+  -- A Done phase recording no gate evidence at all is refused.
+  undated <- writeDocument "undated" (phaseDocumentWith "Done" present "The dated run." "")
+  checkGateEvidence root intact >>= (@?= [])
+  dateless <-
+    map renderViolation
+      <$> checkGateEvidence root undated
+  length dateless @?= 1
+  assertBool
+    ("the missing evidence row is named: " ++ unlines dateless)
+    (any ("records no '**Gate evidence**' row" `isInfixOf`) dateless)
+
+  -- An impossible calendar date is not a date, however well shaped.
+  impossible <-
+    writeDocument
+      "impossible"
+      ( phaseDocumentWith
+          "Done"
+          present
+          "The dated run."
+          "**Gate evidence**: 2026-02-30 ; a gate host ; `cabal test all` ; pass ; covers in-gate"
+      )
+  malformed <- map renderViolation <$> checkGateEvidence root impossible
+  length malformed @?= 1
+  assertBool
+    ("the impossible date is refused: " ++ unlines malformed)
+    (any ("is not <date>" `isInfixOf`) malformed)
+
+  -- The same document as an Active phase is owed rather than overdue.
+  owed <- document "owed" "Active" present "The dated run."
+  checkGateEvidence root owed >>= (@?= [])
+
+-- | The smallest § G-shaped phase document the two checks read.
+phaseDocument :: String -> FilePath -> String -> String
+phaseDocument status implementation validation = phaseDocumentWith status implementation validation selfVerifyingEvidence
+
+-- | A self-verifying phase's evidence row: its gate is re-executed by the run
+-- that validates the plan, so it covers @in-gate@ rather than a digest.
+selfVerifyingEvidence :: String
+selfVerifyingEvidence =
+  "**Gate evidence**: 2026-09-06 ; a gate host ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate"
+
+phaseDocumentWith :: String -> FilePath -> String -> String -> String
+phaseDocumentWith status implementation validation evidence =
+  unlines
+    [ "# Phase Three \8212 Host tools",
+      "",
+      "**Status**: " ++ status,
+      "**Depends on**: none",
+      "**Substrates**: linux-cpu",
+      "**Gate**: `cabal test all --ghc-options=-Werror` from `core/`",
+      "**Gate kind**: self-verifying",
+      evidence,
+      "",
+      "## Sprints",
+      "",
+      "### Sprint 3.1: The resolver [" ++ status ++ "]",
+      "",
+      "**Status**: " ++ status,
+      "**Implementation**: `" ++ implementation ++ "`",
+      "**Substrates**: linux-cpu",
+      "",
+      "#### Validation",
+      "",
+      validation,
+      "",
+      "#### Remaining Work",
+      "",
+      "None.",
+      "",
+      "## Remaining Work",
+      "",
+      "None."
+    ]
+
+{- | The header fields three checks read, in the shape the plan actually writes them.
+
+Each half of this is a defect that shipped. 'checkPhaseOrdering' matched only
+@phase-NN-@ link targets while every @Depends on@ value in the plan is prose, so
+the check its own comment calls the one the doctrine rests on fired on nothing.
+'checkSubstrateBudget' read one value per document and so covered thirty of the
+plan's four hundred and six. Both are read here in the wrapped, prose form the
+plan uses, because a fixture written in the form the check already handled would
+have passed against the broken code too.
+-}
+fieldReadingCase :: IO ()
+fieldReadingCase = withSystemTempDirectory "hb-field-reading" $ \root -> do
+  let plan = root </> "DEVELOPMENT_PLAN"
+      document name body = do
+        let file = plan </> ("phase-" ++ name ++ ".md")
+        writeUtf8 file body
+        pure file
+  createDirectoryIfMissing True plan
+
+  -- A dependency named in prose, on a continuation line, is still a dependency.
+  wrapped <-
+    document
+      "7-wrapped"
+      ( unlines
+          [ "# Phase Seven",
+            "",
+            "**Status**: Done",
+            "**Depends on**: Phase 2 (core scaffolding), Phase 4 (protected store),",
+            "Phase 9 (lifecycle modes and run leases)",
+            "**Substrates**: linux-cpu",
+            "**Gate**: `cabal test all`",
+            "",
+            "## Remaining Work",
+            "",
+            "None."
+          ]
+      )
+  forward <- map renderViolation <$> checkPhaseOrdering root wrapped
+  length forward @?= 1
+  assertBool
+    ("the continuation line's forward dependency is reported: " ++ unlines forward)
+    (any ("depends on phase 9" `isInfixOf`) forward)
+
+  -- Every **Substrates** declaration is read, not just the header's.
+  substrates <-
+    document
+      "8-substrates"
+      ( unlines
+          [ "# Phase Eight",
+            "",
+            "**Status**: Done",
+            "**Depends on**: nothing",
+            "**Substrates**: linux-cpu",
+            "**Gate**: `cabal test all`",
+            "",
+            "## Sprints",
+            "",
+            "### Sprint 8.1: A sprint [Done]",
+            "",
+            "**Status**: Done",
+            "**Substrates**: \8212",
+            "",
+            "## Remaining Work",
+            "",
+            "None."
+          ]
+      )
+  vocabulary <- map renderViolation <$> checkSubstrateBudget root substrates
+  length vocabulary @?= 1
+  assertBool
+    ("a sprint's out-of-vocabulary substrate is reported: " ++ unlines vocabulary)
+    (any ("substrate declaration is not one of" `isInfixOf`) vocabulary)
+
+  -- Nothing may depend on a phase that declares a non-baseline substrate.
+  _ <-
+    document
+      "6-acceptance"
+      ( unlines
+          [ "# Phase Nine",
+            "",
+            "**Status**: Done",
+            "**Depends on**: nothing",
+            "**Substrates**: nvidia",
+            "**Gate**: live acceptance",
+            "",
+            "## Remaining Work",
+            "",
+            "None."
+          ]
+      )
+  dependent <-
+    document
+      "10-dependent"
+      ( unlines
+          [ "# Phase Ten",
+            "",
+            "**Status**: Done",
+            "**Depends on**: Phase 6 (the accelerator acceptance)",
+            "**Substrates**: linux-cpu",
+            "**Gate**: `cabal test all`",
+            "",
+            "## Remaining Work",
+            "",
+            "None."
+          ]
+      )
+  plan' <- pure [wrapped, substrates, plan </> "phase-6-acceptance.md", dependent]
+  terminal <- map renderViolation <$> checkAcceptanceTerminal root plan'
+  length terminal @?= 1
+  assertBool
+    ("the edge into the acceptance phase is reported: " ++ unlines terminal)
+    (any ("acceptance phases terminal" `isInfixOf`) terminal)
 
 writeUtf8 :: FilePath -> String -> IO ()
 writeUtf8 path content =

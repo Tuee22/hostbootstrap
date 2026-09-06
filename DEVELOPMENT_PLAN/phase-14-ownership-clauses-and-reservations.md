@@ -6,6 +6,8 @@
 Phase 11 (prepared operations and preconditions)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`
+**Gate kind**: self-verifying
+**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
 
 > **Purpose**: Define the four Locked-Origin Identity Ownership clauses once, supply the one seam that
 > holds them, and supply the platform rows beneath it.
@@ -34,7 +36,7 @@ owns the frame table's rows and the one fold that reaches a frame.
 
 **Status**: Done
 **Implementation**: superseded within this phase — clause 3's identity read is
-`core/hostbootstrap-core/src/HostBootstrap/Ownership/Object.hs`'s vocabulary and the two rows'
+`core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Object.hs`'s vocabulary and the two rows'
 primitive, and Sprints 14.11 and 14.12 removed the shared layer this sprint built
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_invariant.md`
@@ -172,8 +174,7 @@ listed by the acceptance phase that declares Windows hardware (§ II).
 ### Sprint 14.5: The owned-object vocabulary [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Object.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Harness/Identity.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Object.hs`,
 `core/hostbootstrap-core/test/OwnershipObjectSpec.hs`,
 `core/hostbootstrap-core/test/compile-fail/`
 **Substrates**: linux-cpu
@@ -225,8 +226,8 @@ them, the platform rows, and the owners that consume all four are the sprints th
 ### Sprint 14.6: The clause tokens [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Internal.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Ownership/Clause.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Internal.hs`,
+`core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Clause.hs`,
 `core/hostbootstrap-core/test/compile-fail/`,
 `core/hostbootstrap-core/test/OwnershipObjectSpec.hs`
 **Substrates**: linux-cpu
@@ -273,7 +274,7 @@ seam's, and the seam is the next sprint.
 ### Sprint 14.7: The ownership primitive seam [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Primitive.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Primitive.hs`,
 `core/hostbootstrap-core/test/OwnershipSpec.hs`,
 `core/hostbootstrap-core/test/compile-fail/`
 **Substrates**: linux-cpu
@@ -340,7 +341,7 @@ that consume it are the last sprint of this phase.
 ### Sprint 14.8: The POSIX ownership row [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Posix.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Posix.hs`,
 `core/hostbootstrap-core/test/OwnershipPosixSpec.hs`,
 `core/hostbootstrap-core/test/CoverageManifest.hs`
 **Substrates**: linux-cpu
@@ -398,9 +399,9 @@ the two rows are the next sprint's, and the owners that consume both are the las
 ### Sprint 14.9: The Windows ownership row [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Windows.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Ownership/Row.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Ownership/Object.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Windows.hs`,
+`core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Row.hs`,
+`core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Object.hs`,
 `core/hostbootstrap-core/test/OwnershipWindowsSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_seam.md`
@@ -460,7 +461,7 @@ adoption of that seam is the last sprint of this phase.
 ### Sprint 14.10: Re-entering an object this project already owns [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Primitive.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Primitive.hs`,
 `core/hostbootstrap-core/test/OwnershipSpec.hs`,
 `core/hostbootstrap-core/test/compile-fail/`
 **Substrates**: linux-cpu
@@ -612,8 +613,8 @@ None. The host wall is the one owner still holding its own copy.
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall/Host.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall/Windows.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Ownership/Primitive.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Ownership/Row.hs`,
+`core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Primitive.hs`,
+`core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Row.hs`,
 `core/hostbootstrap-core/test/WslGlobalWallHostSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/wsl2.md`,

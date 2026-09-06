@@ -17,11 +17,6 @@ tested-with: GHC ==9.12.4
 extra-source-files:
     test/compile-fail/*.hs
 
-flag provider-live
-  description: Build the explicitly confirmed native Linux provider lifecycle gate
-  default: False
-  manual: True
-
 common warnings
   default-language: Haskell2010
   ghc-options: -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints
@@ -55,6 +50,7 @@ library ownership-internal
   visibility: private
   hs-source-dirs: internal/ownership
   exposed-modules:
+      HostBootstrap.Digest
       HostBootstrap.Protected
       HostBootstrap.Ownership.Object
       HostBootstrap.Ownership.Manifest
@@ -453,10 +449,9 @@ test-suite hostbootstrap-provider-live-linux-cpu
     , process
     , temporary
     , text
-  -- The opt-in flag is the whole gate. A second host condition that silently
-  -- made the suite unbuildable would answer "asked for and not built" with the
-  -- same green nothing as "not asked for", which is the shape § JJ's fifth rule
-  -- forbids: an operator who asks for this suite on a host that cannot run it
-  -- is told so by the build rather than handed an empty pass.
-  if !flag(provider-live)
-    buildable: False
+  -- This suite is compiled everywhere and decides at runtime whether its subject
+  -- is available, because a component excluded from the default build is a
+  -- component no gate compiles: it went fifteen days without compiling behind a
+  -- default-off flag, and reported the same green nothing a passing suite does.
+  -- The destructive guard it needs lives in requirePlatformAndConfirmation, not
+  -- in a build condition.

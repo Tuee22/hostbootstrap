@@ -1,11 +1,12 @@
 # Phase 28 — Host-portability acceptance
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: none (static)
 **Gate**: the host static gate — `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/`,
 `poetry run python -m hostbootstrap.check_code`, and `poetry run python -m hostbootstrap.test_all` — passing
 host-native on a Windows, a macOS, and a Linux gate host, each recorded with its own dated evidence
+**Gate kind**: deferred
 
 > **Purpose**: Confirm on real machines that the sources § N builds host-native everywhere do in fact build
 > and self-test on every supported gate host family.
@@ -196,7 +197,36 @@ family that is not becomes available, and the phase reports nothing while holdin
 A family whose run is not available is named as owed rather than assumed, because a dated run is evidence
 for the gate host that produced it and for no other (§ II).
 
+### Sprint 28.4: The current-tree portability run [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: none
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Record the host static gate passing host-native on a Windows, a macOS, and a Linux gate host against
+the current tree.
+
+#### Deliverables
+
+- three dated runs, one per gate family, each naming its host and toolchain versions;
+- the per-family difference in totals enumerated against the suites' own platform conditions.
+
+#### Validation
+
+The three dated runs.
+
+#### Remaining Work
+
+The three runs are owed. This phase is `Active` by default and `Done` only in the window following a
+fresh three-family run: its claim is about the host-portable source tree, so any change to that tree
+expires it. That is the honest reading of a portability claim rather than a defect in this phase.
+
 ## Remaining Work
+
+Sprint 28.4 owns the owed runs.
 
 None.
 

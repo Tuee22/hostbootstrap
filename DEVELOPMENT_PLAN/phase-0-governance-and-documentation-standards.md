@@ -4,6 +4,8 @@
 **Depends on**: nothing
 **Substrates**: none (static)
 **Gate**: `DocValidatorSpec` inside `cabal test all --ghc-options=-Werror` from `core/`
+**Gate kind**: self-verifying
+**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
 
 > **Purpose**: Establish the metadata standard, the plan tree, and the machine-checked documentation
 > validator that every later phase is judged against.

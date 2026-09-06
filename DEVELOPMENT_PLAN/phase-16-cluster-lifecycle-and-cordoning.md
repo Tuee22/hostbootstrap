@@ -1,12 +1,15 @@
 # Phase 16 — Cluster lifecycle, budgets, and cordoning
 
-**Status**: Done
+**Status**: Active
 **Current sprint**: None
 **Depends on**: Phase 12 (the generic plan-indexed budget boundary), Phase 14 (the four ownership clauses
 and the ownership seam), Phase 15 (host providers and the self-reference lift)
 **Substrates**: linux-cpu
-**Gate**: `cd core && cabal test all --ghc-options=-Werror` host-native on every supported outer host
-realization, composed with `hostbootstrap test run cluster-live` on linux-cpu
+**Gate**: `cd core && cabal test all --ghc-options=-Werror` on the gate host that runs it (§ C;
+cross-family confirmation belongs to the
+[host-portability acceptance phase](phase-28-host-portability-acceptance.md)), composed with
+`hostbootstrap test run cluster-live` on linux-cpu
+**Gate kind**: deferred
 
 > **Purpose**: Bring a cluster up inside a declared resource budget, cordon what the project may consume, and
 > keep the durable host root outside everything the lifecycle may delete.
@@ -849,7 +852,7 @@ None.
 
 **Status**: Done
 **Implementation**:
-`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Resolver/Program.hs`,
+`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Resolver.hs`,
 `core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Resolver/Testing.hs`,
 `core/hostbootstrap-core/test/ColimaSpec.hs`
 **Substrates**: linux-cpu
@@ -889,7 +892,7 @@ None.
 **Status**: Done
 **Implementation**:
 `core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Runner.hs`,
-`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Program/Supervisor.hs`,
+`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Stage.hs`,
 `core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Resolver/Testing.hs`,
 `core/hostbootstrap-core/test/ColimaSpec.hs`
 **Substrates**: linux-cpu
@@ -970,7 +973,7 @@ None.
 
 **Status**: Done
 **Implementation**:
-`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Program/Filesystem.hs`,
+`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Stage.hs`,
 `core/hostbootstrap-core/test/ColimaSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/durable_state.md`,
@@ -1006,7 +1009,7 @@ None.
 
 **Status**: Done
 **Implementation**:
-`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Program/Namespace.hs`,
+`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Stage.hs`,
 `core/hostbootstrap-core/test/ColimaSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/ensure_reconcilers.md`,
@@ -1042,7 +1045,7 @@ None.
 
 **Status**: Done
 **Implementation**:
-`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Program/Context.hs`,
+`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Stage.hs`,
 `core/hostbootstrap-core/test/ColimaSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/durable_state.md`,
@@ -1079,7 +1082,7 @@ None.
 
 **Status**: Done
 **Implementation**:
-`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Program/Common.hs`,
+`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Stage.hs`,
 `core/hostbootstrap-core/test/ColimaSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/durable_state.md`,
@@ -1119,7 +1122,7 @@ None.
 
 **Status**: Done
 **Implementation**:
-`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Program/Acquire.hs`,
+`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Stage.hs`,
 `core/hostbootstrap-core/test/ColimaSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/ensure_reconcilers.md`,
@@ -1155,9 +1158,9 @@ None.
 
 **Status**: Done
 **Implementation**:
-`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Internal.hs`,
+`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Runner.hs`,
 `core/hostbootstrap-core/test/ColimaSpec.hs`,
-`core/hostbootstrap-core/test/compile-fail/ImportColimaBackendInternal.hs`
+`core/hostbootstrap-core/test/compile-fail/ImportColimaBackendRunner.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/ensure_reconcilers.md`,
 `documents/architecture/unrepresentable_state.md`
@@ -1270,7 +1273,7 @@ None.
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima.hs`,
 `core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Resolver/Install.hs`,
 `core/hostbootstrap-core/test/ColimaSpec.hs`,
-`core/hostbootstrap-core/test/compile-fail/ImportColimaBackendInternal.hs`
+`core/hostbootstrap-core/test/compile-fail/ImportColimaBackendRunner.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/ensure_reconcilers.md`,
 `documents/architecture/ownership_invariant.md`
@@ -1388,8 +1391,8 @@ None.
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima.hs`,
-`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Internal.hs`,
-`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Program/LiveDocker.hs`,
+`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Runner.hs`,
+`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Stage.hs`,
 `core/hostbootstrap-core/test/ColimaSpec.hs`,
 `core/hostbootstrap-core/test/compile-fail/`
 **Substrates**: linux-cpu
@@ -1531,8 +1534,8 @@ None.
 
 **Status**: Done
 **Implementation**:
-`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Internal.hs`,
-`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Program/Cleanup.hs`,
+`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Runner.hs`,
+`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Stage.hs`,
 `core/hostbootstrap-core/test/ColimaSpec.hs`,
 `core/hostbootstrap-core/test/compile-fail/`
 **Substrates**: linux-cpu
@@ -2488,9 +2491,37 @@ proved no matching node container remained, re-read the byte-identical durable-r
 1/1 passed. A prerequisite run without `kubectl` additionally refused before cluster creation with the exact
 missing-tool diagnostic instead of timing out.
 
+### Sprint 16.50: The live cluster gate run [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Record the dated `hostbootstrap test run cluster-live` run on linux-cpu against the current tree.
+
+#### Deliverables
+
+- one dated run naming its host, the cluster identity it created, and its result.
+
+#### Validation
+
+The dated run.
+
+#### Remaining Work
+
+The run is owed. Its newest dated evidence is 2026-08-21/22, before the September changes to the
+lifecycle, service, and child-projection surfaces this lane exercises.
+
 ## Remaining Work
 
-None.
+Sprint 16.50 owns the owed run.
+
+The composed half is owed: `hostbootstrap test run cluster-live` on linux-cpu. Its newest dated evidence is
+2026-08-21/22, before the September changes to the lifecycle, service, and child-projection surfaces the lane
+exercises, so the currency rule in [the plan index](README.md) re-owes it.
 
 ## Documentation Requirements
 

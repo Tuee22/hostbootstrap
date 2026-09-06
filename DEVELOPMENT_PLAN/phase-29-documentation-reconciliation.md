@@ -1,9 +1,11 @@
 # Phase 29 — Documentation reconciliation and drift guards
 
 **Status**: Done
-**Depends on**: every preceding phase
+**Depends on**: Phase 28 (host-portability acceptance)
 **Substrates**: none (static)
 **Gate**: `DocValidatorSpec` inside `cabal test all --ghc-options=-Werror` from `core/`
+**Gate kind**: self-verifying
+**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
 
 > **Purpose**: After the narrative is fully built, reconcile the governed `documents/` suite, comments, and help
 > text with what the code actually does — and install the guards that keep them reconciled.

@@ -1,11 +1,12 @@
 # Phase 19 — Test harness and exclusive run ownership
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 18 (recovery and migration)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus on a realized linux-cpu host
 `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern recovery-interruption'`
 from `core/`
+**Gate kind**: deferred
 
 > **Purpose**: Make a test run an exclusively owned transaction whose failures are isolated per variant and
 > whose cleanup cannot delete foreign or concurrently replaced state.
@@ -299,9 +300,38 @@ governed-documentation checks.
 
 None.
 
+### Sprint 19.7: The realized-host recovery-interruption run [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Record the dated recovery-interruption selection on a realized linux-cpu host.
+
+#### Deliverables
+
+- one dated run of `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror
+  --test-options='--pattern recovery-interruption'` inside a realized linux-cpu host.
+
+#### Validation
+
+The dated run.
+
+#### Remaining Work
+
+The run is owed. Its newest dated evidence is 2026-08-22, and `RecoveryInterruptionSpec.hs` has
+changed since.
+
 ## Remaining Work
 
-None.
+Sprint 19.7 owns the owed run.
+
+The realized-host half is owed: `cabal test hostbootstrap-core:test:hostbootstrap-core-test
+--ghc-options=-Werror --test-options='--pattern recovery-interruption'` on a realized linux-cpu host. Its
+newest dated evidence is 2026-08-22, and `RecoveryInterruptionSpec.hs` has changed since.
 
 ## Documentation Requirements
 

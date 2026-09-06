@@ -1,10 +1,11 @@
 # Phase 23 — Base image publication and the opportunistic warm store
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 22 (service runtime)
 **Substrates**: linux-cpu
 **Gate**: current-compatible resolution → native build → complete quality gate → publish rolling tag → pull →
 real-consumer compatibility smoke, on linux-cpu
+**Gate kind**: deferred
 
 > **Purpose**: Publish a rolling, native-architecture base image whose warm Cabal store is an opportunistic
 > cache, and prove a real consumer builds against the pulled tag.
@@ -111,9 +112,51 @@ succeeds against both a warm and a cold store.
 
 None.
 
+### Sprint 23.4: The publish, pull, and consumer smoke run [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Record the dated publish, pull, and real-consumer compatibility smoke on linux-cpu.
+
+#### Deliverables
+
+- one dated run naming the published tag, the pulled digest, and the consumer build that verified it.
+
+#### Validation
+
+The dated run.
+
+#### Remaining Work
+
+The run is owed, and one defect blocks it: `compatibility_smoke_spec` supplies only `BASE_IMAGE`
+while `demo/docker/Dockerfile` requires a named build context, two verification-key build arguments,
+and four `required=true` secrets, two of which are a signed one-use build grant the Haskell
+coordinator mints. How the smoke obtains that authority without minting a second build-authority
+surface is decided before this sprint closes.
+
 ## Remaining Work
 
-None.
+Sprint 23.4 owns the owed run.
+
+This phase's whole gate is owed, and one defect blocks it.
+
+No dated evidence exists anywhere in this file — it is the only phase document in the plan containing no
+date — while its Validation sections twice promise one.
+
+The gate is also not executable as implemented. `compatibility_smoke_spec` (`hostbootstrap/base_image.py`)
+builds a `BuildSpec` carrying only `build_args={"BASE_IMAGE": ...}`, and `docker_ops.build_command` emits no
+`--secret` and no `--build-context`, while `demo/docker/Dockerfile` requires a `hostbootstrap-builder` named
+build context, two 64-character verification-key build arguments, and four `required=true` secret mounts —
+two of which are a signed one-use build grant the Haskell coordinator mints. `cli.py` also pushes the rolling
+tag before running the smoke, so a failing smoke leaves the tag published.
+
+Closing this phase requires deciding how the smoke obtains that authority without minting a second
+build-authority surface, then recording the dated publish → pull → real-consumer run on linux-cpu.
 
 ## Documentation Requirements
 

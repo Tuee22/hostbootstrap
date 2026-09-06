@@ -1,6 +1,6 @@
 # Phase 24 — The worked demo
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 16 (provider, cluster, and guest lifecycle foundations), Phase 17 (proof-complete
 recursive lifecycle command), Phase 22 (service-runtime activation and `service run` semantics), Phase 23
 (base image publication and the opportunistic warm store)
@@ -10,6 +10,7 @@ core host-static gate from `core/`, plus live
 `hostbootstrap run -- project up`, `hostbootstrap run -- project down`,
 `hostbootstrap run -- project destroy`, and `hostbootstrap run -- test run all` reporting `10/10 passed`
 inside the universal `linux-cpu` realization on any supported outer host
+**Gate kind**: deferred
 
 > **Purpose**: Be the real consumer that proves the library composes — a complete application with its own
 > plan, config vocabulary, test component, and service variants.
@@ -1776,7 +1777,7 @@ successful release.
 
 **Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/app/Main.hs`,
-`demo/test/CommandsSpec.hs`, `demo/test/compile-fail/`
+`demo/test/CommandsSpec.hs`, `core/hostbootstrap-core/test/compile-fail/`
 **Production modules**: `HostBootstrapDemo.Commands`, `Main` (2; cap 3)
 **Sprint budget**: one demo projector call-site adoption and no new named contract; at most 400 production
 Haskell lines.
@@ -1829,7 +1830,7 @@ and yields no binding, executable, `SelfRef`, or compatibility export.
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `demo/src/HostBootstrapDemo/Commands.hs`, `demo/docker/Dockerfile`,
-`core/hostbootstrap-core/test/CommandSpec.hs`, `demo/test/CommandsSpec.hs`
+`core/hostbootstrap-core/test/CLISpec.hs`, `demo/test/CommandsSpec.hs`
 **Production modules**: `HostBootstrap.Command`, `HostBootstrapDemo.Commands` (2 Haskell modules; cap 3;
 `demo/docker/Dockerfile` is a build input)
 **Sprint budget**: the VM and Direct image-build call-site adoption and no new named contract; at most 400
@@ -2524,22 +2525,44 @@ Every one of the four pristine generations pulled published base digest
 operator-owned `hostbootstrap-demo.test.dhall` remained. The post-run gates passed core 2,457/2,457, demo
 145/145, Python 231/231, and Python coverage 1,331/1,331 statements.
 
+### Sprint 24.42: The live demo matrix run [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Record the dated live demo lifecycle and matrix run inside the universal linux-cpu realization.
+
+#### Deliverables
+
+- one dated run of `hostbootstrap run -- project up`, `project down`, `project destroy`, and
+  `test run all` reporting `10/10 passed`, naming its host.
+
+#### Validation
+
+The dated run.
+
+#### Remaining Work
+
+The run is owed. Its newest dated evidence is 2026-08-26, before the September changes to the demo
+command surface. The static half is current: the demo build and its 149-case suite passed on
+2026-09-06.
+
 ## Remaining Work
 
-None. Phase 24 is complete. The Production lifecycle, exact authenticated recursive reverse path, distinct
-automatic service exposures, pristine guest alias, Docker-host durable projection, concurrent signed roles,
-non-empty derived image, and two-variant same-run durable recreate are statically and live confirmed on
-linux-cpu. The 2026-08-26 Apple/Lima run supplied the remaining native and in-container evidence at exactly
-`10/10 passed` and ended with an empty live-runtime audit. NVIDIA-, Windows-, and cross-family
-host-portability confirmation belongs only to Phases 26–28.
+Sprint 24.42 owns the owed run.
 
-No sprint transports a Managed/Running/Readiness witness, handle, authentication key, executable selector, or
-raw probe in canonical bytes or a generic resource carrier. The two invocation-owned registries have separate
-roles: canonical packages contain commitments and bounded client routes; opaque live services contain backend
-closures and die on failure, retry, Process close, or fresh invocation. Share and alias settle lexically inside
-one copy-source action before `Chain` continues. Direct reverse terminalizes its journal reservation and reports
-physical stop/delete `Unsupported`. Phase 22 remains only the lower activation/`service run` dependency and does
-not own the demo chart call site.
+The static half is confirmed: on 2026-09-06, `cabal build all --ghc-options=-Werror` and
+`cabal test hostbootstrap-demo-test --ghc-options=-Werror` from `demo/` passed 149/149 on native arm64
+macOS 26.6.2. That half is not reachable from `cabal test all` in `core/`, because `demo/cabal.project` is a
+separate project.
+
+The live half is owed: `hostbootstrap run -- project up`, `project down`, `project destroy`, and
+`test run all` reporting `10/10 passed` inside the universal `linux-cpu` realization. Its newest dated
+evidence is 2026-08-26, before the September changes to the demo command surface.
 
 ## Documentation Requirements
 

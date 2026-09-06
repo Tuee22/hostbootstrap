@@ -158,12 +158,15 @@ The binary-generated tiers are composed from a three-level Dhall vocabulary that
 from Haskell. It is **self-contained**—no Prelude import—so it
 evaluates with no network access, both in-process via the Haskell `dhall` library and via
 `dhall-to-json`. It exports the record/union types `Resources`, `Budget`, `PodResources`, `KindNode`,
-`Mount`, `Substrate`, `ClusterProfile`, and `SecretRef` (plus the `Weight = Natural` synonym), plus the budget functions
-`fitsWithin` and `split` (also under the aliases `Budget/fitsWithin` and `Budget/split`). Higher
+`Mount`, `ProductionSecretRef`, and `HarnessSecretRef` (plus the `Weight = Natural` synonym), and the
+functions `lessThanEqual`, `requestsWithinLimits`, `fitsWithin`, and `split` (the last two also under
+the aliases `Budget/fitsWithin` and `Budget/split`). `divFloor` is deliberately not exported: it is
+partial at a zero divisor, and `split` — its only caller — never reaches that input. Higher
 layers embed it via `let C = ./Core.dhall` and extend it; they never redefine the L0 types (the Dhall
-stream of the extension-stream contract—see [library_hierarchy](library_hierarchy.md)). An exhaustive
-test derives every type-valued export from the normalized record and requires a named Haskell codec
-whose schema is judgmentally equal. Execution shape is deliberately absent from the vocabulary;
+stream of the extension-stream contract—see [library_hierarchy](library_hierarchy.md)). Two exhaustive
+tests partition the export record: one derives every type-valued export and requires a named Haskell
+codec whose schema is judgmentally equal, and the other requires every remaining export to be named by
+the function inventory, so neither half can be renamed or dropped unnoticed. Execution shape is deliberately absent from the vocabulary;
 lifecycle steps are its sole representation.
 
 ## The Load-Bearing Nuance: Validated Types, Hand-Written Functions

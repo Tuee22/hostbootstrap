@@ -1,18 +1,20 @@
 # Phase 15 — Host providers and the self-reference lift
 
-**Status**: Done
+**Status**: Active
 **Current sprint**: None — phase complete
 **Depends on**: Phase 8 (ensure reconcilers), Phase 12 (step algebra and plan-owned resource
 projections), Phase 13 (authenticated handoff and the frame-child entry), Phase 14 (the four ownership
 clauses and host-local reservations)
 **Substrates**: linux-cpu
-**Gate**: `cabal test all --ghc-options=-Werror` from `core/` host-native on every supported outer host
-realization,
-`cabal build -fprovider-live hostbootstrap-provider-live-linux-cpu --ghc-options=-Werror` from
-`core/`, and
-`HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host cabal test -fprovider-live
-hostbootstrap-provider-live-linux-cpu --test-show-details=direct --ghc-options=-Werror` from `core/`
-on native Linux/x86_64 with KVM and Incus
+**Gate**: `cabal test all --ghc-options=-Werror` from `core/` on the gate host that runs it (§ C;
+cross-family confirmation belongs to the
+[host-portability acceptance phase](phase-28-host-portability-acceptance.md)),
+and
+`HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host cabal test all
+--test-show-details=direct --ghc-options=-Werror` from `core/` on native Linux/x86_64 with KVM and
+Incus — the suite is built by the ordinary gate on every host and decides at runtime whether its
+subject is present
+**Gate kind**: deferred
 
 > **Purpose**: Add one prepared provider boundary over the lower pure target vocabulary and generic
 > self-reference Lift, with Incus and Direct as the baseline realizations.
@@ -919,8 +921,8 @@ are the sprint that follows.
 ### Sprint 15.26: The reported observation [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Primitive.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Ownership/Windows.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Primitive.hs`,
+`core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Windows.hs`,
 `core/hostbootstrap-core/test/OwnershipSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_seam.md`,
@@ -1091,8 +1093,8 @@ follow.
 ### Sprint 15.29: The claimed object [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Object.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Ownership/Primitive.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Object.hs`,
+`core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Primitive.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Harness/GeneratedConfig.hs`,
 `core/hostbootstrap-core/test/OwnershipObjectSpec.hs`,
 `core/hostbootstrap-core/test/OwnershipSpec.hs`
@@ -1600,14 +1602,46 @@ its exact VM, alias, staging paths, origin records, and `/var/tmp` root. The hos
 at 2,333/2,333 Haskell tests in 219.39 seconds, the Python code check passed, and the Python suite passed
 at 231/231.
 
+### Sprint 15.37: The live Incus provider run [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Record the dated live `provider-live` run on native Linux/x86_64 with KVM and Incus.
+
+#### Deliverables
+
+- one dated run of `HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host cabal test -fprovider-live
+  hostbootstrap-provider-live-linux-cpu --test-show-details=direct --ghc-options=-Werror` naming its host;
+- that run also confirms `liveGuestSelfPath`, the in-VM path the shipped guest transaction re-invokes,
+  which the host build cannot check.
+
+#### Validation
+
+The dated run.
+
+#### Remaining Work
+
+The run is owed. The build half passed warning-clean on 2026-09-06.
+
 ## Remaining Work
 
-None.
+Sprint 15.37 owns the owed run.
 
-Sprints 15.6 through 15.19 describe the mechanism their own boundaries hold today. § A rewrites a phase in
-place rather than appending a correction, so those sprints are restated in the same change that moves them
-onto the seam — not before it. A plan that described the seam while the code held something else would be
-the intended future state rather than the current one, which § C forbids.
+The build half of this phase's gate is restored: `cabal build -fprovider-live
+hostbootstrap-provider-live-linux-cpu --ghc-options=-Werror` passed warning-clean on 2026-09-06. It had not
+compiled since 2026-08-24, when `discoverStrongAliasBackend` gained its host-config and self-reference
+parameters four days after this phase closed; the fixture now threads both through its route.
+
+The live half is owed: `HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host cabal test -fprovider-live
+hostbootstrap-provider-live-linux-cpu --test-show-details=direct --ghc-options=-Werror` on native
+Linux/x86_64 with KVM and Incus. That run also owns the one value the host build cannot check —
+`liveGuestSelfPath` in `ProviderLiveAliasFixture`, the in-VM path the shipped guest transaction re-invokes;
+a wrong path is observable only as a shipped-transaction failure on that host.
 
 ## Documentation Requirements
 

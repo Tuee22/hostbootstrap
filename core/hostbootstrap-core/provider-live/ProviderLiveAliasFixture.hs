@@ -35,7 +35,7 @@ import HostBootstrap.Lifecycle.Mode (
     withProductionRoot,
  )
 import HostBootstrap.Lifecycle.Prepared (PreparedGate, recordDurableUnknown)
-import HostBootstrap.Lift (localContext)
+import HostBootstrap.Lift (SelfRef, currentSelfRef, localContext)
 import HostBootstrap.ProjectPlan (
     ProjectPlan,
     forward,
@@ -189,6 +189,20 @@ runLiveDirectRoute ::
 runLiveDirectRoute root config backend provider shareSpec =
     runProviderRoute root config backend provider shareSpec DirectExercise
 
+{- | Where the shipped guest transaction re-invokes this binary inside the VM.
+
+'shipOwnedTransaction' crosses into the guest frame and runs the project binary
+there, so the alias backend retains an in-VM path alongside the host one. The
+live component stages no guest binary of its own: the Incus preflight admits a
+VM the operator already prepared, so this names the path that preparation is
+expected to install to. It is the one value in this fixture that the host build
+cannot verify — a wrong path is observed only as a shipped-transaction failure
+on a native Linux/KVM/Incus host, which is exactly what the owning phase's live
+gate is for.
+-}
+liveGuestSelfPath :: FilePath
+liveGuestSelfPath = "/usr/local/bin/hostbootstrap-provider-live"
+
 runProviderRoute ::
     FilePath ->
     HostConfig ->
@@ -201,6 +215,7 @@ runProviderRoute root config backend provider shareSpec exercise =
     withLiveProjectPlan root liveStepPlan $ \projectPlan ->
         case NonEmpty.toList (forward projectPlan) of
             [providerNode, shareNode] -> do
+                self <- currentSelfRef liveGuestSelfPath
                 carrier <- Execution.newResourceCarrier
                 providerRuntime <- Execution.newStepRuntime carrier
                 shareRuntime <- Execution.newStepRuntime carrier
@@ -231,6 +246,8 @@ runProviderRoute root config backend provider shareSpec exercise =
                                                         ( \provisioned _change ->
                                                             continueProvisioned
                                                                 root
+                                                                config
+                                                                self
                                                                 backend
                                                                 provider
                                                                 providerExecution
@@ -247,6 +264,8 @@ runProviderRoute root config backend provider shareSpec exercise =
 
 continueProvisioned ::
     FilePath ->
+    HostConfig ->
+    SelfRef ->
     StrongProviderBackend backendId ->
     SubstrateProvider ->
     Execution.StepExecution scope planId ->
@@ -257,7 +276,7 @@ continueProvisioned ::
     RouteExercise ->
     ManagedProviderHandle scope planId backendId providerId Provisioned ->
     IO (Either ReconcileError ())
-continueProvisioned root backend provider providerExecution shareExecution plannedProvider shareKey shareSpec exercise provisioned = do
+continueProvisioned root config self backend provider providerExecution shareExecution plannedProvider shareKey shareSpec exercise provisioned = do
     ready <-
         readyProvider
             root
@@ -278,6 +297,8 @@ continueProvisioned root backend provider providerExecution shareExecution plann
                 withDiscoveredRunning backend provider running $ \capability ->
                     prepareShare
                         root
+                        config
+                        self
                         backend
                         provider
                         providerExecution
@@ -295,6 +316,8 @@ continueProvisioned root backend provider providerExecution shareExecution plann
                         withDiscoveredRunning backend provider running $ \capability ->
                             prepareShare
                                 root
+                                config
+                                self
                                 backend
                                 provider
                                 providerExecution
@@ -316,6 +339,8 @@ continueProvisioned root backend provider providerExecution shareExecution plann
 
 prepareShare ::
     FilePath ->
+    HostConfig ->
+    SelfRef ->
     StrongProviderBackend backendId ->
     SubstrateProvider ->
     Execution.StepExecution scope planId ->
@@ -328,7 +353,7 @@ prepareShare ::
     ManagedProviderHandle scope planId backendId providerId Running ->
     ProviderCapability scope planId providerId backendId capabilityId ->
     IO (Either ReconcileError ())
-prepareShare root backend provider providerExecution shareExecution plannedProvider shareKey shareSpec exercise cleanupAuthority running capability =
+prepareShare root config self backend provider providerExecution shareExecution plannedProvider shareKey shareSpec exercise cleanupAuthority running capability =
     joinReconcileIO $
         withNodeResourceOfKind shareExecution DurableShareResourceKind shareKey $ \plannedShare ->
             joinReconcileIO $
@@ -360,6 +385,8 @@ prepareShare root backend provider providerExecution shareExecution plannedProvi
                                                     DirectExercise ->
                                                         exerciseDirect
                                                             root
+                                                            config
+                                                            self
                                                             backend
                                                             providerExecution
                                                             plannedProvider
@@ -371,6 +398,8 @@ prepareShare root backend provider providerExecution shareExecution plannedProvi
                                                             Just retainedAuthority ->
                                                                 exerciseIncus
                                                                     root
+                                                                    config
+                                                                    self
                                                                     backend
                                                                     provider
                                                                     providerExecution
@@ -391,18 +420,20 @@ prepareShare root backend provider providerExecution shareExecution plannedProvi
 
 exerciseDirect ::
     FilePath ->
+    HostConfig ->
+    SelfRef ->
     StrongProviderBackend backendId ->
     Execution.StepExecution scope planId ->
     PlannedResource scope planId providerId ProviderResource providerFrame ->
     ProviderCapability scope planId providerId backendId capabilityId ->
     ManagedProviderHandle scope planId backendId providerId Running ->
     IO (Either ReconcileError ())
-exerciseDirect root backend providerExecution plannedProvider capability running = do
+exerciseDirect root config self backend providerExecution plannedProvider capability running = do
     guestRefusal <- case providerCapabilityGuestExecutor capability of
         Left ProviderUnsupported{} -> pure (Right ())
         Left failure -> pure (Left (providerFailure failure))
         Right _ -> pure (fixtureFailure "Direct unexpectedly exposed a guest executor")
-    aliasRefusal <- case discoverStrongAliasBackend capability of
+    aliasRefusal <- case discoverStrongAliasBackend config self capability of
         Left (Unsupported _) -> pure (Right ())
         Left failure -> pure (Left failure)
         Right _ -> pure (fixtureFailure "Direct unexpectedly admitted a strong alias backend")
@@ -418,6 +449,8 @@ exerciseDirect root backend providerExecution plannedProvider capability running
 
 exerciseIncus ::
     FilePath ->
+    HostConfig ->
+    SelfRef ->
     StrongProviderBackend backendId ->
     SubstrateProvider ->
     Execution.StepExecution scope planId ->
@@ -432,9 +465,9 @@ exerciseIncus ::
     IO (Either ReconcileError ()) ->
     IO (Either ReconcileError ()) ->
     IO (Either ReconcileError ())
-exerciseIncus root backend provider providerExecution shareExecution plannedProvider plannedShare capability running managedShare aliasSpec cleanupAuthority beforeRestart afterRestart = do
+exerciseIncus root config self backend provider providerExecution shareExecution plannedProvider plannedShare capability running managedShare aliasSpec cleanupAuthority beforeRestart afterRestart = do
     attemptReconcile "exercise prepared provider alias" $
-        case discoverStrongAliasBackend capability of
+        case discoverStrongAliasBackend config self capability of
             Left failure -> pure (Left failure)
             Right aliasBackend ->
                 joinReconcileIO $
@@ -460,6 +493,8 @@ exerciseIncus root backend provider providerExecution shareExecution plannedProv
                                         aliasGate
                                         ( runOwnedAlias
                                             root
+                                            config
+                                            self
                                             backend
                                             provider
                                             providerExecution
@@ -474,6 +509,8 @@ exerciseIncus root backend provider providerExecution shareExecution plannedProv
 
 runOwnedAlias ::
     FilePath ->
+    HostConfig ->
+    SelfRef ->
     StrongProviderBackend backendId ->
     SubstrateProvider ->
     Execution.StepExecution scope planId ->
@@ -496,7 +533,7 @@ runOwnedAlias ::
         attempt
         journalVersion ->
     IO (Either ReconcileError ())
-runOwnedAlias root backend provider providerExecution plannedProvider aliasBackend running cleanupAuthority beforeRestart afterRestart preparedAlias = do
+runOwnedAlias root config self backend provider providerExecution plannedProvider aliasBackend running cleanupAuthority beforeRestart afterRestart preparedAlias = do
     result <- runPreparedGuestAliasCall aliasBackend preparedAlias
     case settlePreparedGuestAliasCall Nothing preparedAlias result of
         Left failure -> pure (Left failure)
@@ -538,7 +575,7 @@ runOwnedAlias root backend provider providerExecution plannedProvider aliasBacke
                                                         Left failure -> pure (Left failure)
                                                         Right runningAgain ->
                                                             withDiscoveredRunning backend provider runningAgain $ \freshCapability ->
-                                                                case discoverStrongAliasBackend freshCapability of
+                                                                case discoverStrongAliasBackend config self freshCapability of
                                                                     Left failure -> pure (Left failure)
                                                                     Right _ -> afterRestart
                         release <-

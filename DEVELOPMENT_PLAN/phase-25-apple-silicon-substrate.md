@@ -1,10 +1,11 @@
 # Phase 25 — Apple Silicon substrate
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: apple-silicon
 **Gate**: live `hostbootstrap run -- test run all` reporting `10/10 passed` on an Apple Silicon host, plus a
 focused live exact-plan direct-Colima adapter lane
+**Gate kind**: deferred
 
 > **Purpose**: Add the Apple-only Metal accelerator realization, exercise Lima/Colima as the Apple-host
 > realization of universal `linux-cpu`, and confirm the additional Apple behavior.
@@ -160,9 +161,37 @@ passed 2,475/2,475 in 369.23 seconds.
 None. The pristine Apple/Lima matrix, terminal ownership audit, and native exact-plan direct-Colima lane
 are complete.
 
+### Sprint 25.4: The Apple Silicon acceptance run [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: apple-silicon
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Record the dated live acceptance matrix on an Apple Silicon host.
+
+#### Deliverables
+
+- one dated run of `hostbootstrap run -- test run all` reporting `10/10 passed`, naming its host.
+
+#### Validation
+
+The dated run.
+
+#### Remaining Work
+
+The run is owed. Its newest dated evidence is 2026-08-26/27, before the September changes to the
+lifecycle, child-projection, and demo command surfaces this lane exercises.
+
 ## Remaining Work
 
-None. All three sprints and the Apple Silicon acceptance gate are complete.
+Sprint 25.4 owns the owed run.
+
+The live acceptance is owed: `hostbootstrap run -- test run all` reporting `10/10 passed` on an Apple
+Silicon host. Its newest dated evidence is 2026-08-26/27, before the September changes to the lifecycle,
+child-projection, and demo command surfaces this lane exercises.
 
 ## Documentation Requirements
 

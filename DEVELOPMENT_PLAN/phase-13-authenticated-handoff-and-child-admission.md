@@ -5,6 +5,8 @@
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror -j1` from `core/`, after focused `HandoffSpec`,
 public compile-fail boundary, `ProjectPlanSpec`, and `DocValidatorSpec` runs
+**Gate kind**: self-verifying
+**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
 
 > **Purpose**: Define the bounded root-authenticated handoff and keyless rooted-transport contracts without
 > constructing a recursive child or claiming a successful rooted process exchange.

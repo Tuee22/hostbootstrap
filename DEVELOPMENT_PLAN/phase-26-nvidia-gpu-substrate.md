@@ -1,10 +1,11 @@
 # Phase 26 — NVIDIA GPU substrate
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: nvidia
 **Gate**: live `hostbootstrap run -- test run all` reporting `10/10 passed` on a native Linux host with an
 NVIDIA GPU
+**Gate kind**: deferred
 
 > **Purpose**: Add the GPU realizations — the accelerator-capable cluster driver and the CUDA worker — and
 > confirm the whole build on that substrate.
@@ -170,9 +171,38 @@ passed 149/149, and the Python check-code plus 231/231 tests passed.
 
 None.
 
+### Sprint 26.4: The NVIDIA acceptance run [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: nvidia
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Record the dated live acceptance matrix on a native Linux host with an NVIDIA GPU.
+
+#### Deliverables
+
+- one dated run of `hostbootstrap run -- test run all` reporting `10/10 passed`, naming its host
+  and the accelerator it placed on.
+
+#### Validation
+
+The dated run.
+
+#### Remaining Work
+
+The run is owed. Its newest dated evidence is 2026-08-27, before the September changes to the
+lifecycle, child-projection, and demo command surfaces this lane exercises.
+
 ## Remaining Work
 
-None.
+Sprint 26.4 owns the owed run.
+
+The live acceptance is owed: `hostbootstrap run -- test run all` reporting `10/10 passed` on a native Linux
+host with an NVIDIA GPU. Its newest dated evidence is 2026-08-27, before the September changes to the
+lifecycle, child-projection, and demo command surfaces this lane exercises.
 
 ## Documentation Requirements
 

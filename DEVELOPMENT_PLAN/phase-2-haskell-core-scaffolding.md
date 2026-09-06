@@ -3,8 +3,12 @@
 **Status**: Done
 **Depends on**: Phase 1 (Python pre-binary floor)
 **Substrates**: none (static)
-**Gate**: `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/`, host-native on
-every supported outer host realization
+**Gate**: `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/`, on the gate host
+that runs it — § C forbids a baseline phase owing evidence from a family it does not declare, and
+cross-family confirmation belongs to the
+[host-portability acceptance phase](phase-28-host-portability-acceptance.md)
+**Gate kind**: self-verifying
+**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
 
 > **Purpose**: Establish the `hostbootstrap-core` package, its pinned compiler, and the generic CLI
 > entrypoint every consuming project binary is built from.
@@ -170,7 +174,7 @@ None.
 `core/hostbootstrap-core/test/WslGlobalWallHostSpec.hs`,
 `core/hostbootstrap-core/test/WslGlobalWallWindowsSpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall/Posix.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall/Host.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Handoff/Process.hs`,
 `core/hostbootstrap-core/hostbootstrap-core.cabal`
 **Substrates**: none

@@ -1,10 +1,11 @@
 # Phase 20 — `test` and `context` command semantics
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 19 (test harness and exclusive run ownership)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus the focused `CLISpec` and `ContextSpec`
 groups with `--ghc-options=-Werror` inside a realized linux-cpu host
+**Gate kind**: deferred
 
 > **Purpose**: Fix the exact grammar and side-effect boundary of `test init`, `test run <case-id>|all`,
 > `context`, and `check-code`.
@@ -149,9 +150,35 @@ missing/decode refusals, topology/current-frame validation, and the pure lift co
 
 None.
 
+### Sprint 20.5: The realized-host CLI and context run [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Record the dated focused `CLISpec` and `ContextSpec` selection inside a realized linux-cpu host.
+
+#### Deliverables
+
+- one dated run of both groups with `--ghc-options=-Werror` inside a realized linux-cpu host.
+
+#### Validation
+
+The dated run.
+
+#### Remaining Work
+
+The run is owed. Its newest dated evidence is 2026-08-22.
+
 ## Remaining Work
 
-None.
+Sprint 20.5 owns the owed run.
+
+The realized-host half is owed: the focused `CLISpec` and `ContextSpec` groups with
+`--ghc-options=-Werror` inside a realized linux-cpu host. Its newest dated evidence is 2026-08-22.
 
 ## Documentation Requirements
 

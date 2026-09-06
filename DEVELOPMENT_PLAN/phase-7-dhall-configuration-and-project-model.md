@@ -4,6 +4,8 @@
 **Depends on**: Phase 6 (canonical quantities and reconcile results)
 **Substrates**: none (static)
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`, including the schema golden tests
+**Gate kind**: self-verifying
+**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
 
 > **Purpose**: Own the project-local Dhall vocabulary, the scope-indexed codec that turns untrusted wire
 > into typed configuration, its adapter to the lower canonical budget foundation, the generic project model

@@ -79,7 +79,7 @@ import System.Directory (
     removePathForcibly,
  )
 import System.Environment (lookupEnv)
-import System.Exit (ExitCode (ExitFailure, ExitSuccess))
+import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitSuccess)
 import System.FilePath (takeFileName, (</>))
 import System.IO (hPutStrLn, stderr)
 import System.IO.Temp (createTempDirectory)
@@ -358,23 +358,40 @@ cleanupRemedy root vmName reason =
         , "the prepared route deletes only the exact origin-bound VM; do not delete a same-named replacement"
         ]
 
+{- | Decide whether this run proceeds, and say which of the two reasons it does not.
+
+The two refusals are deliberately different exits. Not asking for the suite is
+the ordinary case on every gate host that is not the live one, and it reports
+@Unsupported@ and succeeds — the row is real, only this host is not its subject.
+Asking for it on a host that cannot hold it is an operator error and still fails
+the gate, because answering a request with a green nothing is exactly what § JJ's
+fifth rule forbids.
+
+This distinction used to be a Cabal flag. A flag cannot make it: an unbuilt suite
+reports the same nothing whether or not anyone asked, which is how this component
+went fifteen days without compiling.
+-}
 requirePlatformAndConfirmation :: IO ()
 requirePlatformAndConfirmation = do
-    unless (map toLower Info.os == "linux" && map toLower Info.arch `elem` ["x86_64", "amd64"]) $
-        failGate
-            ( "provider-live requires native Linux/x86_64; observed "
-                ++ Info.os
-                ++ "/"
-                ++ Info.arch
-            )
     confirmation <- lookupEnv confirmationVariable
-    unless (confirmation == Just confirmationValue) $
-        failGate
-            ( "provider-live is destructive and requires "
-                ++ confirmationVariable
-                ++ "="
-                ++ confirmationValue
-            )
+    if confirmation /= Just confirmationValue
+        then do
+            putStrLn
+                ( "Unsupported: provider-live not requested; set "
+                    ++ confirmationVariable
+                    ++ "="
+                    ++ confirmationValue
+                    ++ " on a native Linux/x86_64 host with KVM and Incus to run it"
+                )
+            exitSuccess
+        else
+            unless (map toLower Info.os == "linux" && map toLower Info.arch `elem` ["x86_64", "amd64"]) $
+                failGate
+                    ( "provider-live requires native Linux/x86_64; observed "
+                        ++ Info.os
+                        ++ "/"
+                        ++ Info.arch
+                    )
 
 liveToken :: FilePath -> String
 liveToken root =

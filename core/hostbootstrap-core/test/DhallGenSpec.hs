@@ -126,12 +126,46 @@ coreTypeCoverage =
     , ("PodResources", codecSchemaText (codec @V.PodResources))
     , ("KindNode", codecSchemaText (codec @V.KindNode))
     , ("Mount", codecSchemaText (codec @V.Mount))
-    , ("Substrate", codecSchemaText (codec @V.Substrate))
-    , ("ClusterProfile", codecSchemaText (codec @V.ClusterProfile))
     , ("ProductionSecretRef", codecSchemaText (codec @V.ProductionSecretRefWire))
     , ("HarnessSecretRef", codecSchemaText (codec @V.HarnessSecretRefWire))
     , ("Weight", codecSchemaText (codec @V.Weight))
     ]
+
+{- | Every export of @Core.dhall@ that is not a type.
+
+'coreTypeExports' keeps only fields whose own type is @Type@, so the budget
+functions fell outside the inventory entirely: @divFloor@ and @lessThanEqual@
+could have been renamed or dropped and the anti-drift test would still have
+passed. Naming them here means the complement is checked too, and the two lists
+together account for the whole export record.
+-}
+coreFunctionCoverage :: [Text]
+coreFunctionCoverage =
+    [ "lessThanEqual"
+    , "requestsWithinLimits"
+    , "fitsWithin"
+    , "split"
+    , "Budget/fitsWithin"
+    , "Budget/split"
+    ]
+
+coreNonTypeExports :: Dhall.Core.Expr Src Void -> Either String [Text]
+coreNonTypeExports expression =
+    case Dhall.Core.normalize expression of
+        Dhall.Core.RecordLit fields ->
+            Right
+                [ name
+                | (name, field) <- Dhall.Map.toList fields
+                , let value = Dhall.Core.recordFieldValue field
+                , not (isTypeValued value)
+                ]
+        other ->
+            Left ("Core.dhall did not normalize to a record: " ++ T.unpack (Dhall.Core.pretty other))
+  where
+    isTypeValued value =
+        case Dhall.TypeCheck.typeOf value of
+            Right (Dhall.Core.Const Dhall.Core.Type) -> True
+            _ -> False
 
 coreTypeExports :: Dhall.Core.Expr Src Void -> Either String [(Text, Dhall.Core.Expr Src Void)]
 coreTypeExports expression =
@@ -158,6 +192,11 @@ vocabularyCases =
         core <- Dhall.inputExpr cp
         exports <- either assertFailure pure (coreTypeExports core)
         sort (map fst exports) @?= sort (map fst coreTypeCoverage)
+    , testCase "every function exported by Core.dhall is named by the inventory" $ withRoot $ \root -> do
+        cp <- corePath root
+        core <- Dhall.inputExpr cp
+        exports <- either assertFailure pure (coreNonTypeExports core)
+        sort exports @?= sort coreFunctionCoverage
     , testCase "every admitted vocabulary codec is judgmentally equal to its Core.dhall type" $ withRoot $ \root -> do
         cp <- corePath root
         core <- Dhall.inputExpr cp
@@ -169,8 +208,6 @@ vocabularyCases =
         roundTrip (codec @V.PodResources) (V.PodResources 2 1 2 3 4)
         roundTrip (codec @V.KindNode) (V.KindNode 4 8 20)
         roundTrip (codec @V.Mount) (V.Mount "/host" "/guest" True)
-        roundTrip (codec @V.Substrate) V.LinuxGpu
-        roundTrip (codec @V.ClusterProfile) (V.Test "smoke")
         roundTrip (codec @V.ProductionSecretRefWire) (V.ProductionPrompt "database password")
         roundTrip (codec @V.HarnessSecretRefWire) (V.HarnessTestPlaintext "fixture")
         roundTrip (codec @V.Weight) (V.Weight 3)
@@ -316,6 +353,20 @@ budgetCases =
                     <> cp
                     <> " in C.fitsWithin { cpu = 2, memory = 4, storage = 20 }"
                     <> " [ { replicas = 3, cpuRequest = 1, cpuLimit = 2, memoryRequest = 1, memoryLimit = 4 } ]"
+                )
+        ok @?= False
+    , testCase "Budget/fitsWithin rejects a pod whose request exceeds its own limit" $ withRoot $ \root -> do
+        cp <- corePath root
+        -- Comfortably inside the budget, and still not a workload: Kubernetes
+        -- refuses request > limit at apply time, so the config that would be
+        -- rejected there fails to type-check here instead.
+        ok <-
+            Dhall.input
+                Dhall.bool
+                ( "let C = "
+                    <> cp
+                    <> " in C.fitsWithin { cpu = 64, memory = 64, storage = 64 }"
+                    <> " [ { replicas = 1, cpuRequest = 4, cpuLimit = 1, memoryRequest = 1, memoryLimit = 1 } ]"
                 )
         ok @?= False
     , testCase "Budget/split divides proportionally by weight (floor)" $ withRoot $ \root -> do

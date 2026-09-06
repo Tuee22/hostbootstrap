@@ -23,8 +23,6 @@ module HostBootstrap.Config.Vocab (
     PodResources (..),
     KindNode (..),
     Mount (..),
-    Substrate (..),
-    ClusterProfile (..),
     Weight (..),
     Production,
     Harness,
@@ -112,17 +110,8 @@ data Mount = Mount
     deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
 -- | The historical substrate vocabulary exported by @Core.dhall@.
-data Substrate
-    = AppleSilicon
-    | LinuxCpu
-    | LinuxGpu
-    deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
 -- | Production or named test cluster profile.
-data ClusterProfile
-    = Production
-    | Test Text
-    deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
 -- | A proportional budget weight (transparent @Natural@ in Dhall).
 newtype Weight = Weight Natural

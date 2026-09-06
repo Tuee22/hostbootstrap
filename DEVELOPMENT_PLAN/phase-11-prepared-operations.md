@@ -4,6 +4,8 @@
 **Depends on**: Phase 10 (versioned sessions, the project journal, and durable fences)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`
+**Gate kind**: self-verifying
+**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
 
 > **Purpose**: Make every external effect require a value whose only lawful origin is one protected
 > compare-and-swap taken immediately before it, over freshly re-probed evidence.
@@ -102,7 +104,7 @@ None.
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Protected.hs`
+`core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`
 

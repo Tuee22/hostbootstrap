@@ -2866,9 +2866,14 @@ it may not be written in terms of one.
   changes an *expectation* keeps the evidence, while one that removes the case removes it — and a green
   total that quietly shrank on one family is the most complete form of spoofing available, because the
   number reads the same. Platform rows are therefore compiled everywhere and stubbed to a total
-  `Unsupported` where they cannot apply, rather than excluded by a Cabal `os` condition. The suite
-  reports what it did not run, and the gate compares that against a declared per-family expectation, so a
-  case vanishing is a failure rather than a smaller number nobody reads.
+  `Unsupported` where they cannot apply, rather than excluded by a Cabal condition of any kind — an
+  `os` guard, an `arch` guard, or a `flag`. A component the default build excludes is a component no
+  gate compiles, and a suite that cannot be compiled reports the same green nothing as one that passed:
+  the provider-live component sat behind a default-off `flag` and went fifteen days without compiling
+  while every gate run stayed green. Whether a run was *asked for* is a runtime decision the component
+  makes and reports, never a build condition. The suite reports what it did not run, and the gate
+  compares that against a declared per-family expectation, so a case vanishing is a failure rather than
+  a smaller number nobody reads.
 
 #### The gate host
 

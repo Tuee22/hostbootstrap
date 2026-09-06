@@ -16,6 +16,11 @@
 --   * @snake_case@ file naming under @documents/@ (only @README.md@ is exempt)
 --   * the canonical @documents/@ taxonomy (no top-level category outside the
 --     declared set)
+--   * every path a sprint's @**Implementation**@ field cites resolving in the tree
+--   * a @Done@ phase recording gate evidence, carrying a covers digest when
+--     its gate is not re-executed by the run performing this check
+--   * no phase depending on an acceptance phase (§ II makes them terminal)
+--   * an Active phase naming the sprint that owns its owed work
 --
 -- The individual checks are exported so the same mechanical floor can be reused
 -- across the project family (the reusable family doc-floor). It runs through the
@@ -47,15 +52,20 @@ module HostBootstrap.DocValidator
     checkNoReversal,
     checkSprintStructure,
     checkActivePhaseRemainingWork,
+    checkActivePhaseOwnsRemainingWork,
     checkDoneSprintRemainingWork,
     checkSubstrateBudget,
     checkLegacyLedger,
     checkContractOwnership,
     checkArchitectureDrift,
+    checkAcceptanceTerminal,
+    checkImplementationPaths,
+    checkGateEvidence,
   )
 where
 
 import Control.Monad (filterM, foldM)
+import HostBootstrap.Digest (measurePathSetDigest, renderDigestError)
 import Data.Char (isAlphaNum, isDigit, toLower)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
@@ -116,10 +126,14 @@ validateRepo root = do
   sprintV <- concatMapM (checkSprintStructure root) phaseDocs
   doneSprintV <- concatMapM (checkDoneSprintRemainingWork root) phaseDocs
   activeRemainingV <- concatMapM (checkActivePhaseRemainingWork root) phaseDocs
+  activeOwnerV <- concatMapM (checkActivePhaseOwnsRemainingWork root) phaseDocs
   substrateV <- concatMapM (checkSubstrateBudget root) phaseDocs
   ledgerV <- checkLegacyLedger root
   contractV <- checkContractOwnership root
   driftV <- checkArchitectureDrift root
+  acceptanceV <- checkAcceptanceTerminal root phaseDocs
+  implementationV <- concatMapM (checkImplementationPaths root) phaseDocs
+  doneEvidenceV <- concatMapM (checkGateEvidence root) phaseDocs
   pure
     ( sortOn
         (\v -> (vFile v, vMessage v))
@@ -134,6 +148,9 @@ validateRepo root = do
             ++ ledgerV
             ++ contractV
             ++ driftV
+            ++ acceptanceV
+            ++ implementationV
+            ++ doneEvidenceV
             ++ numberingV
             ++ headerV
             ++ statusHarmonyV
@@ -143,6 +160,7 @@ validateRepo root = do
             ++ sprintV
             ++ doneSprintV
             ++ activeRemainingV
+            ++ activeOwnerV
             ++ substrateV
         )
     )
@@ -345,7 +363,16 @@ checkPhaseHeader root file = do
         | Just observed <- [phaseHeaderFieldValue "Status" ls],
           observed `notElem` ["Done", "Active", "Planned"]
         ]
-  pure (concatMap missing ["Status", "Depends on", "Substrates", "Gate"] ++ badStatus)
+      badGateKind =
+        [ Violation rel ("phase gate kind is not self-verifying|deferred: " ++ observed)
+        | Just observed <- [phaseHeaderFieldValue "Gate kind" ls],
+          observed `notElem` ["self-verifying", "deferred"]
+        ]
+  pure
+    ( concatMap missing ["Status", "Depends on", "Substrates", "Gate", "Gate kind"]
+        ++ badStatus
+        ++ badGateKind
+    )
 
 -- | One parsed row from @DEVELOPMENT_PLAN/README.md@'s status table.
 --
@@ -598,15 +625,15 @@ parsePhaseNumber raw =
 
 {- | § A: a phase depends only on strictly lower-numbered phases.
 
-This is the check the whole doctrine rests on. The @Depends on@ field names
-phases, and every @phase-NN-@ link in it must resolve to a number below this
-document's own.
+This is the check the whole doctrine rests on, and until the field was read in
+both of its spellings it rested on nothing: every @Depends on@ value in the plan
+is prose, so a link-only reader matched none of them.
 -}
 checkPhaseOrdering :: FilePath -> FilePath -> IO [Violation]
 checkPhaseOrdering root file = do
   ls <- readLines file
   let rel = rrel root file
-  pure $ case (phaseNumberOf file, fieldValue "Depends on" ls) of
+  pure $ case (phaseNumberOf file, fieldBlockValue "Depends on" ls) of
     (Just self, Just raw) ->
       [ Violation
           rel
@@ -620,6 +647,59 @@ checkPhaseOrdering root file = do
         dep >= self
       ]
     _ -> []
+
+{- | § II: acceptance phases are terminal — nothing depends on them.
+
+An acceptance phase is one whose header declares a non-baseline substrate: it
+confirms a hardware realization nobody's baseline closure may wait on. A
+dependency edge into one re-couples the whole plan to hardware § C says a phase
+may not owe, and it is exactly the edge no other check could see while
+'checkPhaseOrdering' matched nothing.
+
+The rule is about the edge, not about status: it holds whether the acceptance
+phase reads Done or Active, so it cannot be satisfied by re-closing the target.
+-}
+checkAcceptanceTerminal :: FilePath -> [FilePath] -> IO [Violation]
+checkAcceptanceTerminal root phaseDocs = do
+  entries <- mapM readEntry phaseDocs
+  let acceptance =
+        [ number
+        | PhaseEdges{edgePhase = Just number, edgeSubstrates = Just substrates} <- entries,
+          substrates `elem` ["apple-silicon", "nvidia", "windows"]
+        ]
+  pure
+    [ Violation
+      (rrel root (edgeFile entry))
+      ( "phase "
+          ++ show number
+          ++ " depends on acceptance phase "
+          ++ show dependency
+          ++ "; § II makes acceptance phases terminal so no phase waits on hardware it does not declare"
+      )
+    | entry <- entries,
+      Just number <- [edgePhase entry],
+      dependency <- edgeDependencies entry,
+      dependency `elem` acceptance,
+      dependency /= number
+    ]
+  where
+    readEntry file = do
+      ls <- readLines file
+      pure
+        PhaseEdges
+          { edgeFile = file,
+            edgePhase = phaseNumberOf file,
+            edgeSubstrates = phaseHeaderFieldValue "Substrates" ls,
+            edgeDependencies = maybe [] referencedPhaseNumbers (fieldBlockValue "Depends on" ls)
+          }
+
+-- | One phase's identity, declared substrate, and dependency edges.
+data PhaseEdges = PhaseEdges
+  { edgeFile :: FilePath,
+    edgePhase :: Maybe Int,
+    edgeSubstrates :: Maybe String,
+    edgeDependencies :: [Int]
+  }
 
 {- | § A: the narrative is strictly additive, so no phase document announces a
 removal, a retirement, or a correction. A hit here means a reversal crept back
@@ -691,7 +771,24 @@ checkSprintStructure root file = do
           s <- remainingWorkOf sections sprint,
           all (null . trim) (sectionBody s)
         ]
-  pure (blocked ++ badTag ++ activeWithoutWork)
+      -- The title tag and the body field are two independent declarations of one
+      -- fact, and every other sprint check reads the body while this one reads
+      -- the tag. Disagreement would let a sprint present as Done in the plan's
+      -- own table of contents while every rule that constrains a Done sprint
+      -- looked at the other value and skipped it.
+      tagDisagreement =
+        [ Violation
+          rel
+          (sprint ++ " title tag is [" ++ tag ++ "] but its '**Status**' reads " ++ body)
+        | s <- sections,
+          sectionLevel s == 3,
+          "Sprint " `isPrefixOf` sectionTitle s,
+          Just sprint <- [sectionSprint s],
+          let tag = takeWhile (/= ']') (drop 1 (dropWhile (/= '[') (sectionTitle s))),
+          Just body <- [fieldValue "Status" (sectionBody s)],
+          tag /= body
+        ]
+  pure (blocked ++ badTag ++ activeWithoutWork ++ tagDisagreement)
 
 {- | § A: a Remaining Work section never cites a later phase.
 
@@ -783,6 +880,67 @@ checkActivePhaseRemainingWork root file = do
         ]
   pure (drift ++ missing ++ empty)
 
+{- | § C: an Active phase names the sprint that owns its owed work.
+
+An Active phase's @## Remaining Work@ is where the plan says what is still owed,
+and until it names a sprint the owed run has nowhere to be recorded — the phase
+would close by deleting a paragraph rather than by filling in a sprint's
+@#### Validation@. Requiring the citation makes closing the phase the same act as
+closing the sprint that owns the run, which is the only reading under which a
+reopened phase has a defined way back to Done.
+-}
+checkActivePhaseOwnsRemainingWork :: FilePath -> FilePath -> IO [Violation]
+checkActivePhaseOwnsRemainingWork root file = do
+  ls <- readLines file
+  let rel = rrel root file
+      sections = documentSections ls
+      active = phaseHeaderFieldValue "Status" ls == Just "Active"
+      phaseWork =
+        [ s
+        | s <- sections,
+          sectionLevel s == 2,
+          isRemainingWorkTitle (sectionTitle s)
+        ]
+      cited = nub (concatMap (concatMap sprintCitations . sectionBody) phaseWork)
+      known = [sprint | s <- sections, Just sprint <- [sectionSprint s]]
+      stillActive = activeSprints sections
+      missingCitation =
+        [ Violation
+          rel
+          "an Active phase's '## Remaining Work' names no sprint; the owed run has no '#### Validation' to land in"
+        | active,
+          null cited
+        ]
+      unknownSprint =
+        [ Violation
+          rel
+          ("an Active phase's '## Remaining Work' cites " ++ sprint ++ ", which this phase does not define")
+        | active,
+          sprint <- cited,
+          sprint `notElem` known
+        ]
+      noneActive =
+        [ Violation
+          rel
+          "an Active phase's '## Remaining Work' cites only Done sprints; the sprint owning the owed run is Active"
+        | active,
+          not (null cited),
+          all (`notElem` stillActive) cited
+        ]
+  pure (missingCitation ++ unknownSprint ++ noneActive)
+
+-- | Every @Sprint N.M@ label a line names.
+sprintCitations :: String -> [String]
+sprintCitations = go
+  where
+    go [] = []
+    go s
+      | "Sprint " `isPrefixOf` s
+      , (major@(_ : _), '.' : afterDot) <- span isDigit (drop 7 s)
+      , (minor@(_ : _), _) <- span isDigit afterDot =
+          ("Sprint " ++ major ++ "." ++ minor) : go (drop 7 s)
+      | otherwise = go (drop 1 s)
+
 {- | § C and § G: a @Done@ sprint has a @#### Remaining Work@ and it reads
 "None".
 
@@ -824,22 +982,49 @@ checkDoneSprintRemainingWork root file = do
       (l : _) -> "None" `isPrefixOf` trim l
       [] -> False
 
-{- | § II: a phase declares at most one substrate beyond the @linux-cpu@
-baseline, so no phase is unclosable on a single machine.
+{- | § II: every @**Substrates**@ declaration draws from the closed set, and each
+declares at most one substrate beyond the @linux-cpu@ baseline, so no phase is
+unclosable on a single machine.
+
+Both halves read /every/ declaration. Reading one value per document covered 30
+of the plan's 406 and is why an em-dash stood in a sprint's substrate field: the
+budget rule was never the part that was failing to hold.
 -}
 checkSubstrateBudget :: FilePath -> FilePath -> IO [Violation]
 checkSubstrateBudget root file = do
   ls <- readLines file
   let rel = rrel root file
-  pure $ case fieldValue "Substrates" ls of
-    Nothing -> []
-    Just raw ->
-      let special = [s | s <- ["apple-silicon", "nvidia", "windows"], s `isInfixOf` raw]
-       in [ Violation
-              rel
-              ("phase declares more than one non-baseline substrate: " ++ unwords special)
-          | length special > 1
-          ]
+      declarations = fieldBlockValues "Substrates" ls
+      overBudget raw =
+        let special = [s | s <- ["apple-silicon", "nvidia", "windows"], s `isInfixOf` raw]
+         in [ Violation
+                rel
+                ("phase declares more than one non-baseline substrate: " ++ unwords special)
+            | length special > 1
+            ]
+      unknown raw =
+        [ Violation
+          rel
+          ("substrate declaration is not one of " ++ unwords substrateVocabulary ++ ": " ++ raw)
+        | raw `notElem` substrateVocabulary
+        ]
+  pure (concatMap overBudget declarations ++ concatMap unknown declarations)
+
+{- | The closed set a @**Substrates**@ declaration draws from.
+
+@none (static)@ is spelled out rather than parsed apart: it is the value the plan
+uses for a phase that declares no substrate and says why, and admitting a
+parenthetical suffix generally would admit any suffix.
+-}
+substrateVocabulary :: [String]
+substrateVocabulary =
+  [ "none",
+    "none (static)",
+    "linux-cpu",
+    "apple-silicon",
+    "nvidia",
+    "windows"
+  ]
 
 {- | The plan standards' rule that each contract names its owning phase.
 
@@ -1140,19 +1325,34 @@ phaseHeaderFieldValue :: String -> [String] -> Maybe String
 phaseHeaderFieldValue field =
   fieldValue field . takeWhile (not . ("## " `isPrefixOf`) . trim)
 
-{- | Every phase number a @Depends on@ value mentions, read out of its
-@phase-NN-@ links. Prose without a link contributes nothing, which is why § G
-requires the field to link.
+{- | Every phase number a @Depends on@ value mentions.
+
+Two spellings, because the plan uses one and this read the other. A @phase-NN-@
+link target is the durable form; @Phase NN@ in prose is what all thirty fields
+actually contain, so reading links alone made 'checkPhaseOrdering' — the check
+its own comment calls the one the doctrine rests on — match nothing and fire
+never. The prose form requires a word boundary before @Phase@ so a word ending
+in those letters contributes nothing.
 -}
 referencedPhaseNumbers :: String -> [Int]
-referencedPhaseNumbers = go
+referencedPhaseNumbers = go True
   where
-    go [] = []
-    go s@(_ : rest) = case stripPrefix' "phase-" s of
-      Just after -> case span isDigit after of
-        (digits@(_ : _), '-' : _) -> read digits : go rest
-        _ -> go rest
-      Nothing -> go rest
+    go boundary s = case s of
+      [] -> []
+      (c : rest)
+        | Just after <- stripPrefix' "phase-" s
+        , (digits@(_ : _), '-' : _) <- span isDigit after ->
+            read digits : go False rest
+        | boundary
+        , Just after <- stripPrefix' "Phase " s
+        , (digits@(_ : _), remainder) <- span isDigit (dropWhile (== ' ') after)
+        , not (startsWithDot remainder) ->
+            read digits : go False rest
+        | otherwise -> go (not (isAlphaNum c || c == '-')) rest
+    -- A sprint identifier ("Sprint" then a dotted number) is not a dependency;
+    -- a phase number is never followed by a dot and a digit.
+    startsWithDot ('.' : d : _) = isDigit d
+    startsWithDot _ = False
     stripPrefix' p xs
       | p `isPrefixOf` xs = Just (drop (length p) xs)
       | otherwise = Nothing
@@ -1271,6 +1471,261 @@ listMarkdown dir = do
 
 rrel :: FilePath -> FilePath -> FilePath
 rrel root = makeRelative (normalise root) . normalise
+
+{- | § D: every path a sprint's @**Implementation**@ field cites resolves in the tree.
+
+A sprint names the files it builds, and until now nothing re-read that name. When a
+later change moves a module between Cabal stanzas or consolidates one away, the
+citation keeps pointing at a path that is no longer there while the phase stays
+@Done@ and its prose stays plausible — the drift is invisible precisely because the
+suite that would catch it is green. The check is deliberately literal: it resolves
+the cited path from the repository root and says nothing about the contents,
+because what rots here is always a name that stopped existing.
+
+A citation carrying a glob is a scope rather than a file and is left alone; a
+directory resolves as itself.
+-}
+checkImplementationPaths :: FilePath -> FilePath -> IO [Violation]
+checkImplementationPaths root file = do
+  ls <- readLines file
+  let rel = rrel root file
+      cited = nub (concatMap citedPaths (implementationBlocks ls))
+  missing <- filterM (fmap not . resolves) cited
+  pure
+    [ Violation rel ("'**Implementation**' cites a path that does not exist: " ++ path)
+    | path <- missing
+    ]
+  where
+    resolves path = do
+      isFile <- doesFileExist (root </> path)
+      isDirectory <- doesDirectoryExist (root </> path)
+      pure (isFile || isDirectory)
+
+{- | § II: a @Done@ phase records gate evidence, and a deferred one records what
+tree that evidence covered.
+
+The distinction this turns on is whether the run that validates the plan also
+re-executes the phase's gate. Eighteen phases close on the host static gate, so
+the same @cabal test all@ that runs this check re-establishes their currency;
+their evidence records @covers in-gate@ and needs no digest, because a stamp
+re-proved on every run protects nothing.
+
+The other twelve declare something that run does not perform — a live provider, a
+realized host, a three-family portability claim, the Python suite. Their evidence
+is a claim about a tree that is no longer being tested, so it carries a digest of
+exactly the paths the phase declares in @**Evidence covers**@. When those paths
+change the digest stops matching and the phase is refused until its gate is re-run
+and re-recorded. That is the currency rule in @DEVELOPMENT_PLAN/README.md@ made
+mechanical rather than hand-computed, which is what it was when ten phases had to
+be reopened by hand.
+
+What this cannot do is prove the run happened: the digest is recomputable without
+executing anything. It raises the cost of a stale claim from nothing to
+deliberately recording a result that was not obtained, and absent continuous
+integration that is the honest ceiling.
+-}
+checkGateEvidence :: FilePath -> FilePath -> IO [Violation]
+checkGateEvidence root file = do
+  ls <- readLines file
+  let rel = rrel root file
+      stripped = stripFencedCode ls
+      done = phaseHeaderFieldValue "Status" stripped == Just "Done"
+      deferred = phaseHeaderFieldValue "Gate kind" stripped == Just "deferred"
+      rows = fieldBlockValues "Gate evidence" stripped
+      parsed = [row | Just row <- map parseEvidenceRow rows]
+      cited = map unquote (maybe [] words (fieldBlockValue "Evidence covers" stripped))
+      missingRow =
+        [ Violation rel "a Done phase records no '**Gate evidence**' row"
+        | done,
+          null rows
+        ]
+      malformed =
+        [ Violation
+          rel
+          ( "'**Gate evidence**' is not <date> ; <host> ; <command> ; pass ; covers <digest|in-gate>: "
+              ++ row
+          )
+        | done,
+          row <- rows,
+          isNothing (parseEvidenceRow row)
+        ]
+      wrongCovers =
+        [ Violation
+          rel
+          ( if deferred
+              then "a deferred phase's gate evidence must name the digest it covers, not 'in-gate'"
+              else "a self-verifying phase's gate evidence covers 'in-gate'; the validating run re-executes its gate"
+          )
+        | done,
+          (_, evidenceCovers) <- parsed,
+          deferred == (evidenceCovers == "in-gate")
+        ]
+      missingCovers =
+        [ Violation rel "a deferred Done phase names no '**Evidence covers**' paths"
+        | done,
+          deferred,
+          null cited
+        ]
+  measured <-
+    if done && deferred && not (null cited)
+      then Just <$> measurePathSetDigest root cited
+      else pure Nothing
+  let stale = case measured of
+        Just (Left err) ->
+          [Violation rel ("'**Evidence covers**' cannot be measured: " ++ renderDigestError err)]
+        Just (Right actual) ->
+          [ Violation
+            rel
+            ( "gate evidence covers "
+                ++ recorded
+                ++ " but '**Evidence covers**' now measures "
+                ++ unpackText actual
+                ++ "; re-run this phase's gate and re-record it"
+            )
+          | (_, recorded) <- parsed,
+            recorded /= "in-gate",
+            recorded /= unpackText actual
+          ]
+        Nothing -> []
+  pure (missingRow ++ malformed ++ wrongCovers ++ missingCovers ++ stale)
+
+{- | One @**Gate evidence**@ row: its date and what it covers.
+
+Five @ ; @-separated positions — date, gate host, backticked command, @pass@, and
+@covers <value>@. Only the first and last are read mechanically; the middle three
+are what a person needs in order to judge the run, and stay prose.
+-}
+parseEvidenceRow :: String -> Maybe (String, String)
+parseEvidenceRow row = case map trim (splitOnChar ';' row) of
+  [date, _host, command, "pass", coversField]
+    | isIsoDate date
+    , '`' `elem` command
+    , Just value <- stripKeyword "covers" coversField
+    , value == "in-gate" || isSha256Hex value ->
+        Just (date, value)
+  _ -> Nothing
+  where
+    stripKeyword keyword value = case words value of
+      (first : rest) | first == keyword, not (null rest) -> Just (unwords rest)
+      _ -> Nothing
+
+{- | A real ISO calendar date.
+
+No clock is consulted. A validator that compared against the current time would
+fail on a gate host whose clock is skewed, and "is this date in the past" is not
+the question — currency is the digest's job.
+-}
+isIsoDate :: String -> Bool
+isIsoDate raw = case splitOnChar '-' raw of
+  [y, m, d]
+    | length y == 4,
+      length m == 2,
+      length d == 2,
+      all isDigit (y ++ m ++ d) ->
+        let year = read y :: Int
+            month = read m :: Int
+            day = read d :: Int
+         in month >= 1 && month <= 12 && day >= 1 && day <= daysIn year month
+  _ -> False
+  where
+    daysIn :: Int -> Int -> Int
+    daysIn year month
+      | month `elem` [4, 6, 9, 11] = 30
+      | month == 2 = if leap year then 29 else 28
+      | otherwise = 31
+    leap year = (year `mod` 4 == 0 && year `mod` 100 /= 0) || year `mod` 400 == 0
+
+isSha256Hex :: String -> Bool
+isSha256Hex value =
+  length value == 64 && all (`elem` ("0123456789abcdef" :: String)) value
+
+unpackText :: Text.Text -> String
+unpackText = Text.unpack
+
+splitOnChar :: Char -> String -> [String]
+splitOnChar separator raw = case break (== separator) raw of
+  (chunk, []) -> [chunk]
+  (chunk, _ : rest) -> chunk : splitOnChar separator rest
+
+unquote :: String -> String
+unquote = reverse . dropWhile (== '`') . reverse . dropWhile (== '`')
+
+{- | Every occurrence of one bold field, each with the continuation lines that
+belong to it.
+
+§ G's fields wrap freely, so a block runs to the next blank line, bold field, or
+heading. Reading a field one line at a time is the defect this replaces: seven
+@**Depends on**@ fields and six @**Gate**@ fields wrap today, and a line-at-a-time
+reader silently drops everything after the first, which is how a check can look
+green while covering a fraction of what it names.
+-}
+fieldBlocks :: String -> [String] -> [[String]]
+fieldBlocks field = go
+  where
+    marker = "**" ++ field ++ "**"
+    go [] = []
+    go (l : rest)
+      | marker `isPrefixOf` trim l =
+          let (body, remaining) = span continuation rest
+           in (l : body) : go remaining
+      | otherwise = go rest
+    continuation candidate =
+      let t = trim candidate
+       in not (null t) && not ("**" `isPrefixOf` t) && not ("#" `isPrefixOf` t)
+
+-- | The @**Implementation**@ field and its continuation lines.
+implementationBlocks :: [String] -> [[String]]
+implementationBlocks = fieldBlocks "Implementation"
+
+{- | One wrapped field read as a single string.
+
+The continuation lines are joined with a space before anything tokenizes them, so
+a backticked token split across two lines stays one token. Tokenizing per line
+inverts backtick parity on the continuation and yields garbage, which the
+host-providers phase's @**Gate**@ does today by splitting a backticked command
+across lines.
+-}
+fieldBlockValue :: String -> [String] -> Maybe String
+fieldBlockValue field ls = case fieldBlocks field ls of
+  (block : _) -> Just (joinFieldBlock field block)
+  [] -> Nothing
+
+-- | Every occurrence of a wrapped field, each joined into one string.
+fieldBlockValues :: String -> [String] -> [String]
+fieldBlockValues field ls = map (joinFieldBlock field) (fieldBlocks field ls)
+
+joinFieldBlock :: String -> [String] -> String
+joinFieldBlock field block = case block of
+  (l : rest) ->
+    let prefix = "**" ++ field ++ "**:"
+        headValue =
+          if prefix `isPrefixOf` trim l
+            then trim (drop (length prefix) (trim l))
+            else trim l
+     in unwords (filter (not . null) (headValue : map trim rest))
+  [] -> ""
+
+{- | Repository-relative paths named between backticks in one field block.
+
+The block is joined before tokenizing so a path split across a line break stays
+one token; mapping the tokenizer over the lines would invert backtick parity on
+the continuation.
+-}
+citedPaths :: [String] -> [String]
+citedPaths block =
+  [ token
+  | token <- backtickedTokens (joinFieldBlock "Implementation" block),
+    '/' `elem` token,
+    '*' `notElem` token
+  ]
+
+-- | Every backtick-delimited token on one line.
+backtickedTokens :: String -> [String]
+backtickedTokens line = case break (== '`') line of
+  (_, '`' : rest) -> case break (== '`') rest of
+    (token, '`' : remaining) -> trim token : backtickedTokens remaining
+    _ -> []
+  _ -> []
 
 trim :: String -> String
 trim = trimStart . reverse . trimStart . reverse

@@ -5,6 +5,8 @@
 **Substrates**: none (static)
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`, including the compile-fail fixtures,
 host-native on the gate host that runs it
+**Gate kind**: self-verifying
+**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
 
 > **Purpose**: Turn independently verified executable, operating-system, store, and generation facts into
 > opaque authority inputs, while leaving lifecycle-specific command admission to the phases that possess

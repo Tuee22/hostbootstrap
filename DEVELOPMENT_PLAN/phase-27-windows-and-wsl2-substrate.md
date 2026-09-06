@@ -1,9 +1,10 @@
 # Phase 27 — Windows and WSL2 substrate
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: windows
 **Gate**: live `hostbootstrap run -- test run all` reporting `10/10 passed` on a native Windows host
+**Gate kind**: deferred
 
 > **Purpose**: Add the Windows-only native host-wall backend and CUDA worker, exercise WSL2 as the Windows
 > realization of the universal `linux-cpu` substrate, and confirm the additional Windows behavior.
@@ -148,9 +149,37 @@ accelerator daemon and typed frame-indexed teardown across the WSL boundary. Its
 
 None.
 
+### Sprint 27.4: The Windows acceptance run [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: windows
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Record the dated live acceptance matrix on a native Windows host.
+
+#### Deliverables
+
+- one dated run of `hostbootstrap run -- test run all` reporting `10/10 passed`, naming its host.
+
+#### Validation
+
+The dated run.
+
+#### Remaining Work
+
+The run is owed again. Its dated run is 2026-09-05, which precedes the same day's later rewrite of
+`Lifecycle.Mode`, `Command.LifecycleEntry`, and the child projector.
+
 ## Remaining Work
 
-None.
+Sprint 27.4 owns the owed run.
+
+The live acceptance is owed again: `hostbootstrap run -- test run all` reporting `10/10 passed` on a native
+Windows host. Its dated run is 2026-09-05, which precedes the same day's later rewrite of `Lifecycle.Mode`,
+`Command.LifecycleEntry`, and the child projector.
 
 ## Documentation Requirements
 

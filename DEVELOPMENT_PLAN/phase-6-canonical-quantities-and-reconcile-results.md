@@ -4,6 +4,8 @@
 **Depends on**: Phase 5 (operator, root, and command authority)
 **Substrates**: none (static)
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`
+**Gate kind**: self-verifying
+**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
 
 > **Purpose**: Supply one canonical parser for every quantity, the provider-neutral capacity and cordon
 > foundation, opaque generative readiness bound to a hidden probe, and the ownership- and phase-indexed
