@@ -95,6 +95,7 @@ import HostBootstrap.Lift (
  )
 import HostBootstrap.Ownership.Clause (Bound, Recorded, Releasable, recordedEvidence)
 import HostBootstrap.Ownership.Object (
+    storeFault,
     ConflictReport (ConflictReport, conflictExpected, conflictObserved, conflictSubject),
     ObjectIdentity,
     ObjectKind (ReportedObject),
@@ -1492,8 +1493,6 @@ foreignRecord _key =
     OwnershipMalformed
         "the durable record under this instance's key is not the one this transaction publishes"
 
-storeFault :: Text -> ProtectedError -> OwnershipFault
-storeFault operation failure = OwnershipProbeFailed operation (protectedErrorMessage failure)
 
 interpret :: HostConfig -> HostCommand -> IO (Either String CapturedRun)
 interpret = interpretHostCommand

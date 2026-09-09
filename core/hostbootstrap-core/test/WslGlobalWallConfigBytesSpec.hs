@@ -2,6 +2,7 @@
 
 module WslGlobalWallConfigBytesSpec (tests) where
 
+import Expect (expectRight)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import Data.Word (Word16)
@@ -282,11 +283,6 @@ isUnsupported :: ConfigBytesError -> Bool
 isUnsupported (UnsupportedWslConfigEncoding _) = True
 isUnsupported _ = False
 
-expectRight :: Show err => Either err value -> IO value
-expectRight result =
-  case result of
-    Left err -> assertFailure ("expected Right, got Left " ++ show err)
-    Right value -> pure value
 
 assertLeftKind ::
   Show err =>

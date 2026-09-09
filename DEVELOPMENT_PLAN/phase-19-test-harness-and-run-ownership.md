@@ -1,12 +1,14 @@
 # Phase 19 — Test harness and exclusive run ownership
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 18 (recovery and migration)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus on a realized linux-cpu host
 `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern recovery-interruption'`
 from `core/`
 **Gate kind**: deferred
+**Gate evidence**: 2026-09-07 ; aarch64 Linux realized through the published `basecontainer-cpu-arm64` base, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern recovery-interruption'` ; pass ; covers 28a1960cfd248366414c686d5a0ab8384a302d24c9d091e95c27c6931aa4e435
+**Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs` `core/hostbootstrap-core/src/HostBootstrap/Harness` `core/hostbootstrap-core/internal/harness-lifecycle` `core/hostbootstrap-core/test/RecoveryInterruptionSpec.hs`
 
 > **Purpose**: Make a test run an exclusively owned transaction whose failures are isolated per variant and
 > whose cleanup cannot delete foreign or concurrently replaced state.
@@ -300,9 +302,9 @@ governed-documentation checks.
 
 None.
 
-### Sprint 19.7: The realized-host recovery-interruption run [Active]
+### Sprint 19.7: The realized-host recovery-interruption run [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`
@@ -318,24 +320,32 @@ Record the dated recovery-interruption selection on a realized linux-cpu host.
 
 #### Validation
 
-The dated run.
+On 2026-09-06, the recovery-interruption selection passed `6/6` on a realized `linux-cpu` host: the
+published `basecontainer-cpu-arm64` base at digest `sha256:3634916e85b1fda411ae671a4bca2f72745e0bd106e2e9efebccc25415e0bc49`,
+reporting `Linux aarch64` with GHC 9.12.4 and Cabal 3.16.1.0, the pinned toolchain the outer host also
+carries. The five interruption cases — `owned-resource-settled`, `migration-frozen`,
+`migration-committed`, `closing-persisted`, and `destroy-settled` — each survived a real process death
+and converged, the last with a terminal lease and mode. The sixth is `CoverageManifest`'s declaration
+for this family, which reported `5 cases, 1 exercising the row against this gate host's kernel`, so the
+family's size was checked rather than assumed.
+
+The realization is a container rather than metal, which § JJ admits as a Linux gate host in its own
+right: the process, its kernel calls, and the deaths it survives are Linux's. The repository was mounted
+read-only and the build directed to a container-local path, so the run observed the working tree without
+writing to it.
 
 #### Remaining Work
 
-The run is owed. Its newest dated evidence is 2026-08-22, and `RecoveryInterruptionSpec.hs` has
-changed since.
+None.
 
 ## Remaining Work
 
-Sprint 19.7 owns the owed run.
-
-The realized-host half is owed: `cabal test hostbootstrap-core:test:hostbootstrap-core-test
---ghc-options=-Werror --test-options='--pattern recovery-interruption'` on a realized linux-cpu host. Its
-newest dated evidence is 2026-08-22, and `RecoveryInterruptionSpec.hs` has changed since.
+None.
 
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
+- `documents/architecture/binary_context_config.md` — the surface this phase changes in it.
 - `documents/architecture/harness_workflow.md` — the ownership bracket, the sweep, and the engine.
 - `documents/architecture/run_models.md` — execution shape is the lifecycle plan.
 

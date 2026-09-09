@@ -18,6 +18,7 @@ the number would read the same.
 -}
 module WslGlobalWallHostSpec (tests) where
 
+import Expect (expectRightLabelled)
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Monad (void)
@@ -85,11 +86,9 @@ withWall consume =
         state = directory </> "state"
     createDirectoryIfMissing True state
     opened <- openHostWallLocation target state
-    location <- expectRight "open the wall location" opened
+    location <- expectRightLabelled "open the wall location" opened
     consume target location
 
-expectRight :: (Show err) => String -> Either err value -> IO value
-expectRight label = either (assertFailure . ((label ++ ": ") ++) . show) pure
 
 {- | One case that drives the POSIX row against the kernel.
 
@@ -143,7 +142,7 @@ absentOriginCases :: [TestTree]
 absentOriginCases =
   [ rowCase "publishes the managed body and restores absence" $ \target location -> do
         wall <- request "owner" managedBody
-        applied <- applyGlobalWall ownershipRowForHost location wall >>= expectRight "apply"
+        applied <- applyGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "apply"
         persistedWallPhase (appliedWslConfigRecord applied) @?= WallApplied
         published <- ByteString.readFile target
         assertBool
@@ -154,13 +153,13 @@ absentOriginCases =
           ("vmIdleTimeout=21600000" `ByteString.isInfixOf` published)
 
         restored <- restoreGlobalWall ownershipRowForHost location wall
-        _ <- expectRight "restore" restored
+        _ <- expectRightLabelled "restore" restored
         exists <- doesFileExist target
         exists @?= False,
     rowCase "leaves no recovery names or journal behind" $ \target location -> do
         wall <- request "owner" managedBody
-        _ <- applyGlobalWall ownershipRowForHost location wall >>= expectRight "apply"
-        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRight "restore"
+        _ <- applyGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "apply"
+        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "restore"
         residue <- targetSiblings target
         residue @?= []
 
@@ -172,26 +171,26 @@ absentOriginCases =
               ("expected a cleared journal, got " ++ show other),
     rowCase "a second apply is an idempotent no-op" $ \target location -> do
         wall <- request "owner" managedBody
-        first <- applyGlobalWall ownershipRowForHost location wall >>= expectRight "apply"
+        first <- applyGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "apply"
         afterFirst <- ByteString.readFile target
-        second <- applyGlobalWall ownershipRowForHost location wall >>= expectRight "re-apply"
+        second <- applyGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "re-apply"
         afterSecond <- ByteString.readFile target
         afterSecond @?= afterFirst
         persistedFenceValue (appliedWslConfigRecord second)
           @?= persistedFenceValue (appliedWslConfigRecord first)
-        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRight "restore"
+        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "restore"
         pure (),
     rowCase "each acquisition consumes a strictly newer fence" $ \_ location -> do
         wall <- request "owner" managedBody
-        first <- applyGlobalWall ownershipRowForHost location wall >>= expectRight "apply"
-        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRight "restore"
-        second <- applyGlobalWall ownershipRowForHost location wall >>= expectRight "re-apply"
+        first <- applyGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "apply"
+        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "restore"
+        second <- applyGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "re-apply"
         assertBool
           "the second acquisition allocated a strictly newer fence"
           ( persistedFenceValue (appliedWslConfigRecord second)
               > persistedFenceValue (appliedWslConfigRecord first)
           )
-        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRight "final restore"
+        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "final restore"
         pure (),
     rowCase "clause 1 serialises two concurrent entries" $ \_ location -> do
         started <- newEmptyMVar
@@ -217,7 +216,7 @@ presentOriginCases =
         let original = "# operator settings\n[wsl2]\nkernel=C:\\\\custom\n"
         ByteString.writeFile target original
         wall <- request "owner" managedBody
-        _ <- applyGlobalWall ownershipRowForHost location wall >>= expectRight "apply"
+        _ <- applyGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "apply"
         managed <- ByteString.readFile target
         assertBool
           "the managed file still carries the operator's unrelated key"
@@ -226,7 +225,7 @@ presentOriginCases =
           "the managed file carries the cordon"
           ("memory=8GB" `ByteString.isInfixOf` managed)
 
-        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRight "restore"
+        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "restore"
         recovered <- ByteString.readFile target
         recovered @?= original
         residue <- targetSiblings target
@@ -234,8 +233,8 @@ presentOriginCases =
     rowCase "an empty original file is restored as an empty file" $ \target location -> do
         ByteString.writeFile target ByteString.empty
         wall <- request "owner" managedBody
-        _ <- applyGlobalWall ownershipRowForHost location wall >>= expectRight "apply"
-        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRight "restore"
+        _ <- applyGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "apply"
+        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "restore"
         exists <- doesFileExist target
         exists @?= True
         recovered <- ByteString.readFile target
@@ -259,19 +258,19 @@ refusalCases =
   [ rowCase "a foreign owner cannot take over an active wall" $ \_ location -> do
         mine <- request "owner" managedBody
         theirs <- request "other-owner" managedBody
-        _ <- applyGlobalWall ownershipRowForHost location mine >>= expectRight "apply"
+        _ <- applyGlobalWall ownershipRowForHost location mine >>= expectRightLabelled "apply"
         result <- applyGlobalWall ownershipRowForHost location theirs
         case result of
           Left (HostWallConflict (ForeignWallOwner _ _)) -> pure ()
           other ->
             assertFailure
               ("expected a foreign-owner conflict, got " ++ show other)
-        _ <- restoreGlobalWall ownershipRowForHost location mine >>= expectRight "restore"
+        _ <- restoreGlobalWall ownershipRowForHost location mine >>= expectRightLabelled "restore"
         pure (),
     rowCase "an incompatible declaration refuses rather than overwrites" $ \target location -> do
         small <- request "owner" managedBody
         large <- request "owner" otherManagedBody
-        _ <- applyGlobalWall ownershipRowForHost location small >>= expectRight "apply"
+        _ <- applyGlobalWall ownershipRowForHost location small >>= expectRightLabelled "apply"
         before <- ByteString.readFile target
         result <- applyGlobalWall ownershipRowForHost location large
         case result of
@@ -281,7 +280,7 @@ refusalCases =
               ("expected an incompatible-spec conflict, got " ++ show other)
         after <- ByteString.readFile target
         after @?= before
-        _ <- restoreGlobalWall ownershipRowForHost location small >>= expectRight "restore"
+        _ <- restoreGlobalWall ownershipRowForHost location small >>= expectRightLabelled "restore"
         pure (),
     rowCase "restore without an active record is a structured refusal" $ \_ location -> do
         wall <- request "owner" managedBody
@@ -293,7 +292,7 @@ refusalCases =
               ("expected HostWallNoActiveRecord, got " ++ show other),
     rowCase "clause 4 refuses to delete a replaced managed target" $ \target location -> do
         wall <- request "owner" managedBody
-        _ <- applyGlobalWall ownershipRowForHost location wall >>= expectRight "apply"
+        _ <- applyGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "apply"
         -- Same privilege, different object: the pathname is identical but the
         -- kernel identity is not the one the receipt binds.
         removeFile target
@@ -312,38 +311,38 @@ resumeCases :: [TestTree]
 resumeCases =
   [ rowCase "an interrupted publication converges on the next apply" $ \target location -> do
         wall <- request "owner" managedBody
-        applied <- applyGlobalWall ownershipRowForHost location wall >>= expectRight "apply"
+        applied <- applyGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "apply"
         let record = appliedWslConfigRecord applied
         -- Rewind the journal to the phase written immediately before the
         -- publication call, exactly as a crash there would leave it.
         rewindJournal location record {persistedWallPhase = WallApplyOutcomeUnknown}
-        resumed <- applyGlobalWall ownershipRowForHost location wall >>= expectRight "resume"
+        resumed <- applyGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "resume"
         persistedWallPhase (appliedWslConfigRecord resumed) @?= WallApplied
         published <- ByteString.readFile target
         assertBool
           "the resumed wall still carries the managed body"
           ("processors=4" `ByteString.isInfixOf` published)
-        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRight "restore"
+        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "restore"
         pure (),
     rowCase "an interrupted restore converges on the next restore" $ \target location -> do
         wall <- request "owner" managedBody
-        applied <- applyGlobalWall ownershipRowForHost location wall >>= expectRight "apply"
+        applied <- applyGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "apply"
         let record = appliedWslConfigRecord applied
         rewindJournal
           location
           record {persistedWallPhase = WallRestoreOutcomeUnknown}
-        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRight "resume restore"
+        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "resume restore"
         exists <- doesFileExist target
         exists @?= False
         residue <- targetSiblings target
         residue @?= [],
     rowCase "a durable armed leftover is reclaimed, never published" $ \target location -> do
         wall <- request "owner" managedBody
-        applied <- applyGlobalWall ownershipRowForHost location wall >>= expectRight "apply"
+        applied <- applyGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "apply"
         let record = appliedWslConfigRecord applied
             fence = show (persistedFenceValue record)
             armed = target ++ ".hostbootstrap." ++ fence ++ ".stage.armed"
-        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRight "restore"
+        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "restore"
 
         -- Re-enter the stage phase with a stale armed object present. The
         -- POSIX armed link is durable, so this is our own interrupted attempt;
@@ -355,13 +354,13 @@ resumeCases =
             { persistedWallPhase = WallStageCreateOutcomeUnknown,
               persistedTargetIdentity = Nothing
             }
-        resumed <- applyGlobalWall ownershipRowForHost location wall >>= expectRight "resume stage"
+        resumed <- applyGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "resume stage"
         persistedWallPhase (appliedWslConfigRecord resumed) @?= WallApplied
         published <- ByteString.readFile target
         assertBool
           "the stale armed bytes were never published"
           (not ("stale attempt bytes" `ByteString.isInfixOf` published))
-        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRight "final restore"
+        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "final restore"
         pure ()
   ]
 
@@ -369,12 +368,12 @@ codecCases :: [TestTree]
 codecCases =
   [ rowCase "the durable record round-trips" $ \_ location -> do
         wall <- request "owner" managedBody
-        applied <- applyGlobalWall ownershipRowForHost location wall >>= expectRight "apply"
+        applied <- applyGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "apply"
         let record = appliedWslConfigRecord applied
         decoded <-
-          expectRight "decode" (decodeWallRecord (encodeWallRecord record))
+          expectRightLabelled "decode" (decodeWallRecord (encodeWallRecord record))
         decoded @?= record
-        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRight "restore"
+        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "restore"
         pure (),
     testCase "an unknown format is refused" $
       case decodeWallRecord "HBWSLXXX" of
@@ -383,7 +382,7 @@ codecCases =
           assertFailure ("expected a journal failure, got " ++ show other),
     rowCase "trailing bytes are refused" $ \_ location -> do
         wall <- request "owner" managedBody
-        applied <- applyGlobalWall ownershipRowForHost location wall >>= expectRight "apply"
+        applied <- applyGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "apply"
         let encoded =
               encodeWallRecord (appliedWslConfigRecord applied)
                 <> "trailing"
@@ -391,7 +390,7 @@ codecCases =
           Left (HostWallJournalFailure _) -> pure ()
           other ->
             assertFailure ("expected a journal failure, got " ++ show other)
-        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRight "restore"
+        _ <- restoreGlobalWall ownershipRowForHost location wall >>= expectRightLabelled "restore"
         pure ()
   ]
 
@@ -444,7 +443,7 @@ rewindJournal location record = do
                 (maybe ExpectAbsent (ExpectVersion . protectedRecordVersion) observed)
                 (encodeWallRecord record)
             )
-  void (expectRight "rewind journal" stored)
+  void (expectRightLabelled "rewind journal" stored)
 
 -- | Every recovery name the adapter can leave beside the target.
 targetSiblings :: FilePath -> IO [FilePath]

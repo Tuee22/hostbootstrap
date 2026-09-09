@@ -561,11 +561,18 @@ tests =
         assertBool
           "default must never become project authority"
           (not (validColimaProjectProfileName "default")),
+      -- A case whose subject this gate host may not have says which it did, in
+      -- the run's own output. Returning @pure ()@ when the lane is not requested
+      -- made a host that never touched Colima report the same green line as one
+      -- that acquired a profile, refused a conflicting plan, and cleaned up --
+      -- the silently-shrinking evidence § JJ's fifth rule exists to prevent.
       testCase "the opt-in native exact-plan lane acquires, refuses conflict, and cleans up without activating default" $ do
         enabled <- lookupEnv "HOSTBOOTSTRAP_COLIMA_LIVE"
         case enabled of
           Just "1" -> runNativeColimaAcceptance
-          _ -> pure (),
+          _ ->
+            putStrLn
+              "Unsupported: native direct-Colima lane not requested; set HOSTBOOTSTRAP_COLIMA_LIVE=1 on an Apple Silicon host with Colima to run it",
       testGroup
         "trusted resolver"
         [ testCase "the native fixture observer and strict facade settle one closed ready toolchain" $

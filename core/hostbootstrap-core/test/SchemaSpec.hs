@@ -5,6 +5,7 @@
 
 module SchemaSpec (tests) where
 
+import Expect (expectRight)
 import Control.Exception (SomeException, try)
 import qualified Data.ByteString as BS
 import Data.List (isInfixOf)
@@ -471,11 +472,6 @@ isSha256Digest digest =
     T.length digest == 64
         && T.all (`elem` ("0123456789abcdef" :: String)) digest
 
-expectRight :: Either String a -> IO a
-expectRight result =
-    case result of
-        Right value -> pure value
-        Left err -> assertFailure err
 
 withAuthenticatedFixtureConfig ::
     BS.ByteString ->

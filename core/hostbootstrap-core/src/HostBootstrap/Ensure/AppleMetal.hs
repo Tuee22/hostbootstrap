@@ -17,11 +17,10 @@ module HostBootstrap.Ensure.AppleMetal (
 )
 where
 
-import Control.Exception (SomeException)
-import Control.Exception.Safe (try)
 import Data.List (isInfixOf)
 import HostBootstrap.Effect.Run (CapturedRun (capturedExit), runCaptured)
 import HostBootstrap.Ensure (
+    withProbeDir,
     FramePlan (ProvidedElsewhere),
     InstallStep,
     Reconciler (..),
@@ -35,11 +34,6 @@ import HostBootstrap.Ensure (
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.HostTool (HostTool (Swiftc, SystemProfiler, Xcrun))
 import HostBootstrap.Substrate (Substrate)
-import System.Directory (
-    createDirectoryIfMissing,
-    getTemporaryDirectory,
-    removePathForcibly,
- )
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 
@@ -106,15 +100,6 @@ swiftMetalSmokeBuild cfg sdkPath =
                     _ -> False
             _ -> pure False
 
-withProbeDir :: FilePath -> (FilePath -> IO Bool) -> IO Bool
-withProbeDir name action = do
-    root <- getTemporaryDirectory
-    let dir = root </> name
-    _ <- try (removePathForcibly dir) :: IO (Either SomeException ())
-    createDirectoryIfMissing True dir
-    result <- try (action dir) :: IO (Either SomeException Bool)
-    _ <- try (removePathForcibly dir) :: IO (Either SomeException ())
-    pure (either (const False) id result)
 
 installSteps :: Substrate -> Either String [InstallStep]
 installSteps = reconcilerInstallSteps reconciler

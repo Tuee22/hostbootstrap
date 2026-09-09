@@ -54,6 +54,7 @@ module HostBootstrap.DocValidator
     checkActivePhaseRemainingWork,
     checkActivePhaseOwnsRemainingWork,
     checkDoneSprintRemainingWork,
+    checkDonePhaseRemainingWork,
     checkSubstrateBudget,
     checkLegacyLedger,
     checkContractOwnership,
@@ -126,6 +127,7 @@ validateRepo root = do
   sprintV <- concatMapM (checkSprintStructure root) phaseDocs
   doneSprintV <- concatMapM (checkDoneSprintRemainingWork root) phaseDocs
   activeRemainingV <- concatMapM (checkActivePhaseRemainingWork root) phaseDocs
+  donePhaseRwV <- concatMapM (checkDonePhaseRemainingWork root) phaseDocs
   activeOwnerV <- concatMapM (checkActivePhaseOwnsRemainingWork root) phaseDocs
   substrateV <- concatMapM (checkSubstrateBudget root) phaseDocs
   ledgerV <- checkLegacyLedger root
@@ -160,6 +162,7 @@ validateRepo root = do
             ++ sprintV
             ++ doneSprintV
             ++ activeRemainingV
+            ++ donePhaseRwV
             ++ activeOwnerV
             ++ substrateV
         )
@@ -977,6 +980,50 @@ checkDoneSprintRemainingWork root file = do
           not (beginsWithNone (sectionBody section))
         ]
   pure (missing ++ declaresWork)
+  where
+    beginsWithNone body = case dropWhile (null . trim) body of
+      (l : _) -> "None" `isPrefixOf` trim l
+      [] -> False
+
+-- | A @Done@ phase declares no phase-level remaining work (§ C).
+--
+-- 'checkDoneSprintRemainingWork' holds every *sprint* to this rule and
+-- 'checkActivePhaseRemainingWork' holds an @Active@ *phase* to its converse, but
+-- nothing read a phase-level @## Remaining Work@ against the phase's own
+-- @**Status**@ — so the one combination left unchecked was the one that actually
+-- occurred. On 2026-09-08 the worked-demo phase
+-- (@DEVELOPMENT_PLAN\/phase-24-worked-demo.md@) was found sitting @Done@, with a
+-- current @**Gate evidence**@ row, above a phase-level section still naming its
+-- live matrix run as owed — while the sprint that owns that run was itself
+-- @[Done]@ with its own remaining work @None@. It was stale text left behind at closure
+-- rather than real owed work, but § C is unambiguous that @Done@ requires \"no
+-- remaining work in its scope\", and a reader had no way to tell the two apart.
+--
+-- The rule is deliberately the same shape as the sprint rule — the section must
+-- begin with @None@ — so that closing a phase means writing the same word in both
+-- places rather than deleting a section.
+checkDonePhaseRemainingWork :: FilePath -> FilePath -> IO [Violation]
+checkDonePhaseRemainingWork root file = do
+  ls <- readLines file
+  let rel = rrel root file
+      sections = documentSections ls
+      phaseRemaining =
+        [ s
+        | s <- sections,
+          sectionLevel s == 2,
+          isRemainingWorkTitle (sectionTitle s)
+        ]
+  pure
+    [ Violation
+        rel
+        ( "Done phase declares remaining work; a Done phase's '## "
+            ++ sectionTitle s
+            ++ "' begins with 'None'"
+        )
+    | fieldValue "Status" ls == Just "Done",
+      s <- phaseRemaining,
+      not (beginsWithNone (sectionBody s))
+    ]
   where
     beginsWithNone body = case dropWhile (null . trim) body of
       (l : _) -> "None" `isPrefixOf` trim l

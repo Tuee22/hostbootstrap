@@ -131,6 +131,7 @@ import HostBootstrap.Effect.Vocabulary (HostCommand)
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Ownership.Clause (Bound, Recorded, Releasable)
 import HostBootstrap.Ownership.Object (
+    storeFault,
     ConflictReport (ConflictReport, conflictExpected, conflictObserved, conflictSubject),
     ObjectIdentity,
     ObjectKind (ReportedObject),
@@ -1354,8 +1355,6 @@ foreignRecord =
     OwnershipMalformed
         "the durable record under this key is not the one this transaction publishes"
 
-storeFault :: Text -> ProtectedError -> OwnershipFault
-storeFault operation failure = OwnershipProbeFailed operation (protectedErrorMessage failure)
 
 interpret :: HostConfig -> HostCommand -> IO (Either String CapturedRun)
 interpret = interpretHostCommand

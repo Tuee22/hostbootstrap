@@ -2827,6 +2827,9 @@ None.
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
+- `documents/architecture/ownership_invariant.md` — the surface this phase changes in it.
+- `documents/architecture/harness_workflow.md` — the surface this phase changes in it.
+- `documents/architecture/generic_project_model.md` — the surface this phase changes in it.
 
 - `documents/architecture/composition_methodology.md` — root-coordinated recursive interpretation,
   catalog-bound descent, storeless executors, and child-first unwind.

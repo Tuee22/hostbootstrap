@@ -58,6 +58,14 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
+import HostBootstrap.Effect.ChildGroup (
+    askChildGroupToStop,
+    awaitChildExit,
+    closeQuietly,
+    killChildGroup,
+    launchMicros,
+    terminationGraceMicros,
+ )
 import HostBootstrap.Handoff.Protocol
     ( HandoffChannel
     , ProtocolError
@@ -81,9 +89,8 @@ import HostBootstrap.Lift
     , SelfRef
     , foldLift
     )
-import Control.Concurrent (threadDelay)
 import System.Exit (ExitCode, die)
-import System.IO (Handle, hClose)
+import System.IO (Handle)
 import System.Process
     ( CreateProcess (close_fds, create_group, std_err, std_in, std_out)
     , ProcessHandle
@@ -94,12 +101,6 @@ import System.Process
     , withCreateProcess
     )
 import System.Timeout (timeout)
-#if defined(mingw32_HOST_OS)
-import System.Process (terminateProcess)
-#else
-import System.Posix.Signals (Signal, sigKILL, sigTERM, signalProcessGroup)
-import System.Process (getPid)
-#endif
 
 -- ---------------------------------------------------------------------------
 -- The far side
@@ -435,77 +436,13 @@ endChildGroup child childStdin childStdout = do
         Just _ -> pure ()
         Nothing -> do
             askChildGroupToStop child
-            lingering <- waitFor terminationGraceMicros child
+            lingering <- awaitChildExit terminationGraceMicros child
             case lingering of
                 Just _ -> pure ()
                 Nothing -> killChildGroup child
     _ <- Exception.try (waitForProcess child) :: IO (Either Exception.SomeException ExitCode)
     closeQuietly childStdin
     closeQuietly childStdout
-
-{- | Ask the child's own group to stop, or accept that there is no longer one.
-
-The two rows differ only in which primitive names a group. A POSIX host signals
-the process group the child was launched into; a Windows host interrupts the
-console process group the same launch created. Neither reaches beyond the
-child's group, because the launch put the child in its own.
--}
-askChildGroupToStop :: ProcessHandle -> IO ()
-#if defined(mingw32_HOST_OS)
-askChildGroupToStop child = quietly (terminateProcess child)
-#else
-askChildGroupToStop child = signalChildGroup child sigTERM
-#endif
-
-{- | End the child's group with something it cannot decline. -}
-killChildGroup :: ProcessHandle -> IO ()
-#if defined(mingw32_HOST_OS)
-killChildGroup child = quietly (terminateProcess child)
-#else
-killChildGroup child = signalChildGroup child sigKILL
-#endif
-
-#if !defined(mingw32_HOST_OS)
-{- | Signal the child's own group, or accept that there is no longer one. -}
-signalChildGroup :: ProcessHandle -> Signal -> IO ()
-signalChildGroup child signal = do
-    identity <- getPid child
-    case identity of
-        Nothing -> pure ()
-        Just pid -> quietly (signalProcessGroup signal (fromIntegral pid))
-#endif
-
-{- | Poll for the child's exit until the grace runs out. -}
-waitFor :: Int -> ProcessHandle -> IO (Maybe ExitCode)
-waitFor remaining child
-    | remaining <= 0 = getProcessExitCode child
-    | otherwise = do
-        exited <- getProcessExitCode child
-        case exited of
-            Just status -> pure (Just status)
-            Nothing -> do
-                threadDelay pollMicros
-                waitFor (remaining - pollMicros) child
-
-closeQuietly :: Handle -> IO ()
-closeQuietly handle = quietly (hClose handle)
-
-quietly :: IO () -> IO ()
-quietly act = do
-    attempted <- Exception.try act
-    either (\(_ :: Exception.IOException) -> pure ()) pure attempted
-
-{- | How long a child has to exist at all. -}
-launchMicros :: Int
-launchMicros = 30 * 1000000
-
-{- | How long a signalled group has to finish before it is killed. -}
-terminationGraceMicros :: Int
-terminationGraceMicros = 10 * 1000000
-
-{- | How often the grace is checked. -}
-pollMicros :: Int
-pollMicros = 50 * 1000
 
 protocolFailure :: ProtocolError -> Text
 protocolFailure = frameChildFailure . Text.pack . protocolErrorMessage

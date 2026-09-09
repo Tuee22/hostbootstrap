@@ -31,7 +31,8 @@ Three shapes are deliberately unrepresentable rather than validated:
 -}
 module HostBootstrap.Ownership.Object
     ( -- * The kernel's answer
-      ObjectIdentity
+      storeFault
+    , ObjectIdentity
     , mkObjectIdentity
     , mkKernelObjectIdentity
     , objectIdentityBytes
@@ -78,6 +79,7 @@ module HostBootstrap.Ownership.Object
     )
 where
 
+import HostBootstrap.Protected (ProtectedError, protectedErrorMessage)
 import Data.Bits (shiftR, (.&.))
 import qualified Crypto.Hash as Hash
 import qualified Data.ByteArray as ByteArray
@@ -626,3 +628,14 @@ decodeAscii raw
 
 encodeUtf8Ascii :: Text -> ByteString
 encodeUtf8Ascii = ByteString.pack . map (fromIntegral . fromEnum) . Text.unpack
+
+{- | A protected-store failure, reported as the ownership fault it is.
+
+Six owners each carried this line: the cluster, the direct-Colima wall, the
+provider instance, the harness data root and its generated config, and the
+shipped guest transaction. They agreed, but nothing made them agree --- and a
+store failure classified differently by one owner would be an ownership answer
+that depends on who asked, which is what the four clauses exist to rule out.
+-}
+storeFault :: Text -> ProtectedError -> OwnershipFault
+storeFault operation failure = OwnershipProbeFailed operation (protectedErrorMessage failure)

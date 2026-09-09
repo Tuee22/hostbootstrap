@@ -24,15 +24,14 @@ module HostBootstrap.Ensure.Incus (
     linuxVmCapabilityProbeScript,
     withIncusProviderCapability,
     probeIncusProviderStatus,
-    targetIncusAdminUser,
     ensureKvmAccess,
 )
 where
 
 import Data.Char (toLower)
-import Data.List (find, intercalate, isInfixOf)
-import Data.Maybe (mapMaybe)
+import Data.List (intercalate, isInfixOf)
 import HostBootstrap.Ensure (
+    invokingNonRootUser,
     FramePlan (InstallHere),
     InstallStep (..),
     Reconciler (..),
@@ -52,7 +51,6 @@ import System.Exit (ExitCode (..), die)
 #ifndef mingw32_HOST_OS
 import System.Directory (doesPathExist)
 import System.Posix.Files (fileAccess)
-import System.Posix.User (getEffectiveUserID, getUserEntryForID, userName)
 #endif
 
 data KvmStatus = KvmOk | KvmAbsent | KvmUnwritable
@@ -334,7 +332,7 @@ installSteps = reconcilerInstallSteps reconciler
 ensureIncusAdminGroup :: HostConfig -> IO ()
 ensureIncusAdminGroup cfg = do
     env <- getEnvironment
-    selectedUser <- invokingIncusAdminUser env
+    selectedUser <- invokingNonRootUser env
     case selectedUser of
         Nothing ->
             putStrLn "ensure incus: no non-root invoking user detected for incus-admin membership (skipping)"
@@ -408,7 +406,7 @@ Root already has @rw@ (so a root euid never reaches an unwritable status and
 grantKvmReadWrite :: HostConfig -> IO ()
 grantKvmReadWrite cfg = do
     env <- getEnvironment
-    selectedUser <- invokingIncusAdminUser env
+    selectedUser <- invokingNonRootUser env
     case selectedUser of
         Nothing -> verifyKvmReadWrite
         Just user -> do
@@ -436,36 +434,3 @@ kvmUnwritableResidue :: String
 kvmUnwritableResidue =
     "ensure kvm: /dev/kvm still not read/write after setfacl; grant rw on /dev/kvm and retry."
 
-{- | The login user whose future sessions should be allowed to talk to the incus
-socket. Prefer @SUDO_USER@ so @sudo hostbootstrap ...@ grants the original
-operator, then fall back to the non-sudo environment. Root itself needs no
-group grant.
--}
-targetIncusAdminUser :: [(String, String)] -> Maybe String
-targetIncusAdminUser env = find (/= "root") candidates
-  where
-    candidates =
-        mapMaybe nonEmpty [lookup "SUDO_USER" env, lookup "LOGNAME" env, lookup "USER" env]
-    nonEmpty (Just "") = Nothing
-    nonEmpty value = value
-
-{- | Resolve the non-root process owner even when a service runner omits the
-conventional login-user environment. Environment identity remains first so
-@sudo@ grants the original operator; the effective passwd entry is the
-noninteractive fallback used by direct process launchers.
--}
-invokingIncusAdminUser :: [(String, String)] -> IO (Maybe String)
-invokingIncusAdminUser env = case targetIncusAdminUser env of
-    Just user -> pure (Just user)
-    Nothing -> effectiveNonRootUser
-
-effectiveNonRootUser :: IO (Maybe String)
-#ifdef mingw32_HOST_OS
-effectiveNonRootUser = pure Nothing
-#else
-effectiveNonRootUser = do
-  userId <- getEffectiveUserID
-  if userId == 0
-    then pure Nothing
-    else Just . userName <$> getUserEntryForID userId
-#endif

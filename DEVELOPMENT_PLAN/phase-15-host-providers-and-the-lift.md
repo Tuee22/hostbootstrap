@@ -732,7 +732,7 @@ Make the opt-in native provider component a static client of the same sealed bac
 #### Validation
 
 From `core/`,
-`cabal build -fprovider-live hostbootstrap-provider-live-linux-cpu --ghc-options=-Werror` compiles the
+`cabal build all --ghc-options=-Werror` compiles the
 manual Linux/x86_64 component. The `ProviderSpec` source guard rejects raw lifecycle planners, opaque
 provider-authority constructor imports, the private/independent guest executor, and any Direct delete path
 after the prepared stop refusal. The phase's baseline acceptance below records the confirmed live route.
@@ -1530,7 +1530,7 @@ the declared native Linux/x86_64 component build or live KVM/Incus run.
 On 2026-08-10, Ubuntu 24.04.4 LTS x86_64 with GHC 9.12.4 and Cabal 3.16.1.0 passed
 `cabal test all --ghc-options=-Werror` from `core/`: all 1,710 tests passed in 56.56 seconds, including the
 socket-pathname bound refusal this phase's backend admission adds. The same host passed
-`cabal build -fprovider-live hostbootstrap-provider-live-linux-cpu --ghc-options=-Werror`.
+`cabal build all --ghc-options=-Werror`.
 
 On 2026-08-19, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0 passed
 `cabal test all --ghc-options=-Werror` from `core/`: all 2,153 tests passed in 233.28 seconds, including
@@ -1541,7 +1541,7 @@ substrate declaration: it is the host static gate run natively on a Windows oute
 substitutes for the declared native Linux/x86_64 component build nor for the live KVM/Incus run.
 
 On 2026-08-20, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0 passed
-`cabal build -fprovider-live hostbootstrap-provider-live-linux-cpu --ghc-options=-Werror` from `core/` —
+`cabal build all --ghc-options=-Werror` from `core/` —
 the first gate host other than Linux on which that component builds at all — and
 `cabal test all --ghc-options=-Werror` from `core/`: all 2,227 tests passed in 310.17 seconds,
 including this phase's clause-holding provider driver, its Direct canonical-root admission, and the
@@ -1580,8 +1580,8 @@ writable by the invoking user, Incus 6.0.0 with a `dir` storage pool. Toolchain:
 Command, from `core/`:
 
 ```text
-HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host cabal test -fprovider-live \
-  hostbootstrap-provider-live-linux-cpu --test-show-details=direct --ghc-options=-Werror
+HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host cabal test all \
+  --test-show-details=direct --ghc-options=-Werror
 ```
 
 Result: `provider-live: PASS — prepared Incus lifecycle/share/alias/restart/delete and mutation-free Direct
@@ -1615,8 +1615,8 @@ Record the dated live `provider-live` run on native Linux/x86_64 with KVM and In
 
 #### Deliverables
 
-- one dated run of `HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host cabal test -fprovider-live
-  hostbootstrap-provider-live-linux-cpu --test-show-details=direct --ghc-options=-Werror` naming its host;
+- one dated run of `HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host cabal test all
+  --test-show-details=direct --ghc-options=-Werror` naming its host;
 - that run also confirms `liveGuestSelfPath`, the in-VM path the shipped guest transaction re-invokes,
   which the host build cannot check.
 
@@ -1626,22 +1626,39 @@ The dated run.
 
 #### Remaining Work
 
-The run is owed. The build half passed warning-clean on 2026-09-06.
+The run is owed. The build half passed warning-clean again on **2026-09-08** on native arm64 macOS 26.6.2
+(build 25G83), GHC 9.12.4, Cabal 3.16.1.0: `cabal build all --ghc-options=-Werror` from `core/` clean, and
+`cabal test all --ghc-options=-Werror` at 2,497/2,497 in 429.07 seconds with
+`hostbootstrap-provider-live-linux-cpu` reporting
+`Unsupported: provider-live not requested; set HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host on a
+native Linux/x86_64 host with KVM and Incus to run it` and exiting success. That is the component
+compiling and executing on an ordinary gate host, which is what the deleted flag used to prevent.
 
 ## Remaining Work
 
 Sprint 15.37 owns the owed run.
 
-The build half of this phase's gate is restored: `cabal build -fprovider-live
-hostbootstrap-provider-live-linux-cpu --ghc-options=-Werror` passed warning-clean on 2026-09-06. It had not
-compiled since 2026-08-24, when `discoverStrongAliasBackend` gained its host-config and self-reference
-parameters four days after this phase closed; the fixture now threads both through its route.
+The build half of this phase's gate is restored, and the flag that hid its rot is gone. The component had
+not compiled since 2026-08-24, when `discoverStrongAliasBackend` gained its host-config and
+self-reference parameters four days after this phase closed; the fixture now threads both through its
+route. It sat behind a default-off Cabal `flag`, so no gate run built it and every run stayed green — the
+shape § JJ now names alongside an `os` or `arch` guard. The flag is deleted: `cabal build all` and
+`cabal test all` build and run the component on every host, and it decides at runtime whether its subject
+is present, reporting `Unsupported` when the confirmation variable is unset.
 
-The live half is owed: `HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host cabal test -fprovider-live
-hostbootstrap-provider-live-linux-cpu --test-show-details=direct --ghc-options=-Werror` on native
-Linux/x86_64 with KVM and Incus. That run also owns the one value the host build cannot check —
+The live half is owed: `HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host cabal test all
+--test-show-details=direct --ghc-options=-Werror` on native Linux/x86_64 with KVM and Incus. That run also owns the one value the host build cannot check —
 `liveGuestSelfPath` in `ProviderLiveAliasFixture`, the in-VM path the shipped guest transaction re-invokes;
 a wrong path is observable only as a shipped-transaction failure on that host.
+
+That half is **structurally unobtainable from an Apple Silicon host**, and the reason is worth recording so
+it is not re-attempted. The runner's load-bearing refusal is not the architecture guard but
+`ProviderLiveRunner.hs:209-215`, which requires `/dev/kvm` to exist and be readable and writable. KVM is a
+Linux kernel module; neither Hypervisor.framework nor QEMU/TCG emulation exposes it to a guest, so no
+Lima, Colima, or hand-rolled VM on this host can present one — a Lima x86_64 guest would satisfy the
+`Info.os`/`Info.arch` guard at `:388` and still fail on `/dev/kvm`. An `incus` client being installed
+locally is irrelevant, since the platform guard fires before `requireIncusPreflight` is reached. This gate
+needs a disposable native Linux/x86_64 host, as Sprint 15.37 states.
 
 ## Documentation Requirements
 
@@ -1671,3 +1688,6 @@ a wrong path is observable only as a shipped-transaction failure on that host.
 
 - Phase 24 owns the demo call-site adoption and destroy-to-up readback.
 - Phases 25–27 own native Lima, NVIDIA/Direct, and WSL2 acceptance respectively.
+
+**Engineering docs to create/update:**
+- `documents/engineering/testing.md` — the gate kinds this phase closes on and the run it records.

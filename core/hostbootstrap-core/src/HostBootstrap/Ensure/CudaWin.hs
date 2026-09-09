@@ -16,10 +16,9 @@ module HostBootstrap.Ensure.CudaWin (
 )
 where
 
-import Control.Exception (SomeException)
-import Control.Exception.Safe (try)
 import Data.List (isInfixOf)
 import HostBootstrap.Ensure (
+    withProbeDir,
     FramePlan (InstallHere),
     InstallStep (..),
     Reconciler (..),
@@ -33,11 +32,6 @@ import HostBootstrap.Ensure (
 import HostBootstrap.HostConfig (HostConfig, resolveMaybe)
 import HostBootstrap.HostTool (HostTool (Clang, MsvcCl, Nvcc, NvidiaSmi, Vswhere, Winget), absExePath)
 import HostBootstrap.Substrate (Substrate)
-import System.Directory (
-    createDirectoryIfMissing,
-    getTemporaryDirectory,
-    removePathForcibly,
- )
 import System.Exit (ExitCode (..), die)
 import System.FilePath (takeDirectory, (</>))
 
@@ -98,15 +92,6 @@ cudaSmokeCompile cfg =
                     Right (ExitSuccess, _, _) -> True
                     _ -> False
 
-withProbeDir :: FilePath -> (FilePath -> IO Bool) -> IO Bool
-withProbeDir name action = do
-    root <- getTemporaryDirectory
-    let dir = root </> name
-    _ <- try (removePathForcibly dir) :: IO (Either SomeException ())
-    createDirectoryIfMissing True dir
-    result <- try (action dir) :: IO (Either SomeException Bool)
-    _ <- try (removePathForcibly dir) :: IO (Either SomeException ())
-    pure (either (const False) id result)
 
 installSteps :: Substrate -> Either String [InstallStep]
 installSteps = reconcilerInstallSteps reconciler

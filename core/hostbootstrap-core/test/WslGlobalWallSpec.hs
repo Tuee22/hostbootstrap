@@ -3,6 +3,7 @@
 
 module WslGlobalWallSpec (tests) where
 
+import Expect (expectRight)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import Data.Word (Word64)
@@ -696,11 +697,6 @@ runEitherAssertion result =
     Left err -> assertFailure ("unexpected model error: " ++ show err)
     Right assertion -> assertion
 
-expectRight :: Show err => Either err value -> IO value
-expectRight result =
-  case result of
-    Left err -> assertFailure ("expected Right, got Left " ++ show err)
-    Right value -> pure value
 
 assertLeft :: (Eq err, Show err) => err -> Either err value -> Assertion
 assertLeft expected result =

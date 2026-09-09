@@ -1,10 +1,12 @@
 # Phase 22 — Service runtime
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 20 (`test` and `context` command semantics), Phase 21 (composition and network algebra)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus a live `service run` on linux-cpu
 **Gate kind**: deferred
+**Gate evidence**: 2026-09-06 ; aarch64 Linux realized through the published `basecontainer-cpu-arm64` base, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern CLISpec'` ; pass ; covers 5a6cb07496312d9aa44893dfdd35fd075a25882abf65c73aa20db1987d842bcf
+**Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs` `core/hostbootstrap-core/src/HostBootstrap/Service` `core/hostbootstrap-core/src/HostBootstrap/Activation.hs`
 
 > **Purpose**: Make a project's long-running workload a config-selected service variant reached through one
 > fixed command, driven by the role phase machine.
@@ -262,9 +264,9 @@ None. The aggregate gate and live concurrent-role confirmation pass. Web and acc
 Serve from signed immutable revisions while sharing one authority store; each retains only its own
 service/frame generation lease after admission releases the global transaction lock.
 
-### Sprint 22.4: The live service run [Active]
+### Sprint 22.4: The live service run [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`
@@ -279,19 +281,26 @@ Record the dated live `service run` on linux-cpu.
 
 #### Validation
 
-The dated run.
+On 2026-09-06, the live `service run` case passed inside a realized `linux-cpu` host — the published
+`basecontainer-cpu-arm64` base reporting `Linux aarch64` with GHC 9.12.4 and Cabal 3.16.1.0. The case
+`service run verifies activation and dispatches exactly its signed program variant` reported
+`role exit: turned at Serve`, so activation was verified and exactly the signed variant was dispatched
+before the role turned. The surrounding `CLISpec` group passed `58/58` under `-Werror`, including the
+six refusal cases that bound it: a non-service-role config, a forged multi-role orchestrator holding
+`ServiceCommand`, a legacy positional variant, an empty registry, an unknown variant, and a service-role
+config naming no variant.
+
+This lane's evidence is a `CLISpec` case rather than a separate driver, which is what this phase's own
+validation record has always said it is; the run above is that case executed on a realized host against
+the current tree.
 
 #### Remaining Work
 
-The run is owed. Its newest dated evidence is 2026-08-24, before the September changes to `Service`
-and `Service.Internal`.
+None.
 
 ## Remaining Work
 
-Sprint 22.4 owns the owed run.
-
-The live half is owed: a `service run` on linux-cpu. Its newest dated evidence is 2026-08-24, before the
-September changes to `Service` and `Service.Internal`.
+None.
 
 ## Validation Record
 
@@ -322,6 +331,7 @@ September changes to `Service` and `Service.Internal`.
 - `documents/architecture/composition_methodology.md` — role adoption at `service run`.
 
 **Engineering docs to create/update:**
+- `documents/engineering/testing.md` — the gate kinds this phase closes on and the run it records.
 - `documents/engineering/accelerator_daemon.md` — daemon startup ordering and teardown expectations.
 
 **Cross-references to add:**

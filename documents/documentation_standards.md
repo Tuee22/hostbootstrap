@@ -214,13 +214,30 @@ not enforce literal backlink reciprocity: this field is curated conceptual-consu
 complete graph. Remove an entry when the named document no longer consumes the contract conceptually;
 do not manufacture a reciprocal prose link solely to satisfy metadata.
 
-The individual checks (`checkGovernedMeta`, `checkRootDoc`, `checkBroadDoctrine`,
-`checkDocRequirements`, `checkLinks`, `checkReadmeRefs`, `checkNaming`, `checkTaxonomy`) are exported
+The individual checks (`checkGovernedMeta`, `checkRootDoc`, `checkRootDocPresent`,
+`checkBroadDoctrine`, `checkDocRequirements`, `checkLinks`, `checkReadmeRefs`, `checkNaming`,
+`checkTaxonomy`) are exported
 from `HostBootstrap.DocValidator` so the same mechanical floor can be reused across the project
 family. The plan-doctrine checks (`checkPhaseNumbering`, `checkPhaseHeader`, `checkPhaseStatusHarmony`,
 `checkPhaseOrdering`, `checkRemainingWorkOrdering`, `checkNoReversal`, `checkSprintStructure`,
-`checkActivePhaseRemainingWork`, `checkDoneSprintRemainingWork`, `checkSubstrateBudget`,
-`checkLegacyLedger`, `checkContractOwnership`) are exported alongside them.
+`checkActivePhaseRemainingWork`, `checkActivePhaseOwnsRemainingWork`, `checkDoneSprintRemainingWork`,
+`checkDonePhaseRemainingWork`,
+`checkSubstrateBudget`, `checkAcceptanceTerminal`, `checkLegacyLedger`, `checkContractOwnership`) are
+exported alongside them.
+
+`checkDonePhaseRemainingWork` is the newest and exists because of a gap the others left open. Its three
+neighbours cover a sprint that is `Done`, a phase that is `Active`, and a sprint's owner; the one
+combination nothing read was a *phase-level* `## Remaining Work` against the phase's own `**Status**`,
+and that is the combination that occurred — a phase sat `Done`, with a current gate-evidence row, above a
+section still declaring its live half owed. A check family is only as good as its least-covered corner,
+so the rule is stated in the same shape as its sprint counterpart: the section must begin with `None`.
+
+Three further checks relate a document to the tree rather than to another document, which is the
+distinction that decides whether a green validator means anything: `checkImplementationPaths` resolves
+every path a sprint cites, `checkArchitectureDrift` refuses a shape the architecture removed, and
+`checkGateEvidence` recomputes the digest a phase's gate evidence claims to cover. The first two answer
+"does this name still exist"; the third answers "has the source this run measured changed since", which
+is the question a status field cannot answer about itself.
 
 Each has a negative fixture proving it fires. The two scoped checks also assert an **absence** — a
 forward link in a `#### Validation` section, and a bare phase citation inside a contract, must produce no

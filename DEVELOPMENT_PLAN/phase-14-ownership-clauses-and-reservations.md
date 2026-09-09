@@ -689,12 +689,14 @@ every one of them.
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
+- `documents/architecture/durable_state.md` — the surface this phase changes in it.
 - `documents/architecture/ownership_invariant.md` — the four clauses, the exact guarantee, and the
   `Unsupported` rule.
 - `documents/architecture/ownership_seam.md` — the seam, the two platform rows, and the clause tokens.
 - `documents/architecture/unrepresentable_state.md` — the clause tokens and their compile-fail fixtures.
 
 **Engineering docs to create/update:**
+- `documents/engineering/testing.md` — the gate kinds this phase closes on and the run it records.
 - `documents/engineering/wsl2.md` — the portable host-wall driver and its byte transformer.
 
 **Cross-references to add:**

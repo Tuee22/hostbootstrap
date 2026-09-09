@@ -98,7 +98,7 @@ collect root path = do
     (True, _) -> fmap (fmap (\contents -> [(forwardSlashes path, contents)])) (readBytes absolute)
     (_, True) -> do
       names <- listDirectory absolute
-      nested <- traverse (collect root . (path </>)) (sort names)
+      nested <- traverse (collect root . (path </>)) (sort (filter (`notElem` generatedNames) names))
       pure (fmap concat (sequence nested))
     _ ->
       pure (Left (DigestPathUnavailable (Text.pack (path <> ": no such file or directory"))))
@@ -109,6 +109,31 @@ readBytes absolute = do
   pure $ case loaded of
     Left err -> Left (DigestPathUnavailable (Text.pack (absolute <> ": " <> firstLine (show err))))
     Right contents -> Right contents
+
+{- | Directory names whose contents are generated, not source.
+
+A covers digest answers "has the source this run measured changed since". A
+build or interpreter cache changes on every run, so including one would expire a
+phase's evidence the moment anything executed — the mechanism caught this on its
+own second use, when running the Python suite rewrote @__pycache__@ under a path
+a phase's covers set named.
+
+The set is deliberately small and by exact name. A pattern language here would be
+a second ignore syntax beside @.gitignore@, and a phase that needs to exclude
+something else should name narrower paths instead.
+-}
+generatedNames :: [FilePath]
+generatedNames =
+  [ "__pycache__",
+    "dist-newstyle",
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    ".stack-work",
+    "node_modules"
+  ]
 
 forwardSlashes :: FilePath -> FilePath
 forwardSlashes = map (\c -> if c == '\\' then '/' else c)

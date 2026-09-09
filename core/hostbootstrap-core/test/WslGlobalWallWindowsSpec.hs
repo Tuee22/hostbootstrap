@@ -16,6 +16,7 @@ the same size everywhere, which is what "CoverageManifest" checks.
 -}
 module WslGlobalWallWindowsSpec (tests) where
 
+import Expect (expectRightLabelled)
 import Control.Exception (bracket)
 import qualified Data.ByteString as ByteString
 import HostBootstrap.Wsl2.GlobalWall
@@ -58,8 +59,6 @@ restoreEnvironment :: String -> Maybe String -> IO ()
 restoreEnvironment name Nothing = unsetEnv name
 restoreEnvironment name (Just value) = setEnv name value
 
-expectRight :: (Show err) => String -> Either err value -> IO value
-expectRight label = either (assertFailure . ((label ++ ": ") ++) . show) pure
 
 {- | One case that drives the Win32 row against the kernel.
 
@@ -105,14 +104,14 @@ tests =
       rowCase "an absent origin is published and restored to absence" $
         \profile -> do
           wall <- request
-          applied <- applyCurrentUserGlobalWall wall >>= expectRight "apply"
+          applied <- applyCurrentUserGlobalWall wall >>= expectRightLabelled "apply"
           persistedWallPhase (appliedWslConfigRecord applied) @?= WallApplied
           let target = profile </> ".wslconfig"
           published <- ByteString.readFile target
           assertBool
             "the native publication contains the managed memory wall"
             ("memory=8GB" `ByteString.isInfixOf` published)
-          _ <- restoreCurrentUserGlobalWall wall >>= expectRight "restore"
+          _ <- restoreCurrentUserGlobalWall wall >>= expectRightLabelled "restore"
           doesFileExist target >>= (@?= False)
           doesFileExist (profile </> ".hostbootstrap" </> "global-wall.record")
             >>= (@?= False),
@@ -121,14 +120,14 @@ tests =
               original = "# operator bytes\r\n[wsl2]\r\nkernel=C:\\\\custom\r\n"
           ByteString.writeFile target original
           wall <- request
-          _ <- applyCurrentUserGlobalWall wall >>= expectRight "apply"
-          _ <- restoreCurrentUserGlobalWall wall >>= expectRight "restore"
+          _ <- applyCurrentUserGlobalWall wall >>= expectRightLabelled "apply"
+          _ <- restoreCurrentUserGlobalWall wall >>= expectRightLabelled "restore"
           ByteString.readFile target >>= (@?= original),
       rowCase "a replacement is refused and preserved" $ \profile -> do
           let target = profile </> ".wslconfig"
               replacement = "foreign replacement\r\n"
           wall <- request
-          _ <- applyCurrentUserGlobalWall wall >>= expectRight "apply"
+          _ <- applyCurrentUserGlobalWall wall >>= expectRightLabelled "apply"
           removeFile target
           ByteString.writeFile target replacement
           restored <- restoreCurrentUserGlobalWall wall

@@ -1062,6 +1062,8 @@ None.
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
+- `documents/architecture/hostbootstrap_core_library.md` — the surface this phase changes in it.
+- `documents/architecture/build_and_run_model.md` — the surface this phase changes in it.
 
 - `documents/architecture/binary_context_config.md` — challenge/grant admission, authenticated scope,
   recovery package, and private duplex transport.
@@ -1080,6 +1082,7 @@ None.
   and the keyless child/intermediary rule.
 
 **Cross-references to add:**
+- `documents/README.md` — the surface this phase changes in it.
 
 - `development_plan_standards.md` §§ X, Y, EE, and HH name this phase as the owner of authenticated handoff,
   root scope, rooted wire/receipt vocabulary, and keyless relay transport.

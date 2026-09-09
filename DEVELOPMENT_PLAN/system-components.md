@@ -16,10 +16,11 @@ canonical topic documents supply their detailed contracts.
 
 | Component family | Responsibility | Owning phase |
 |---|---|---|
-| `DocValidator` | Governed metadata, links, plan doctrine, status harmony, and architecture drift checks | [Governance](phase-0-governance-and-documentation-standards.md), [documentation reconciliation](phase-29-documentation-reconciliation.md) |
+| `DocValidator` | Governed metadata, links, plan doctrine, status harmony, architecture drift, cited-path resolution, and gate-evidence currency checks | [Governance](phase-0-governance-and-documentation-standards.md), [documentation reconciliation](phase-29-documentation-reconciliation.md) |
+| `Digest` | The one SHA-256 spelling and the sorted, length-prefixed path-set measurement gate evidence and build authority both use | [Governance](phase-0-governance-and-documentation-standards.md), [base image and warm store](phase-23-base-image-and-warm-store.md) |
 | `CLI`, `Command` | Closed command tree and identity-parametric project specification | [Core scaffolding](phase-2-haskell-core-scaffolding.md), [recursive lifecycle](phase-17-recursive-lifecycle-command.md) |
 | `HostTool`, `HostConfig`, `HostPrereqs`, `Substrate`, `Detached` | Absolute tool resolution, host classification, prerequisite floor, and sealed detached process launch | [Host tools and substrate detection](phase-3-host-tools-and-substrate-detection.md) |
-| `Effect.Quote`, `Effect.Run`, `Effect.Vocabulary`, `Effect.Interpreter` | One quoter per grammar, process runner, described effect vocabulary, and interpreter | [Host tools and substrate detection](phase-3-host-tools-and-substrate-detection.md) |
+| `Effect.Quote`, `Effect.Run`, `Effect.Vocabulary`, `Effect.Interpreter`, `Effect.ChildGroup` | One quoter per grammar, process runner, described effect vocabulary, interpreter, and the one bounded escalation that ends a child process group | [Host tools and substrate detection](phase-3-host-tools-and-substrate-detection.md), [authenticated handoff](phase-13-authenticated-handoff-and-child-admission.md) |
 | `Protected` | Exact protected-store identity, exclusive entries, canonical records, and compare-and-swap | [Protected store](phase-4-protected-store.md) |
 | `Authority`, `Identity.Install` | Executable-bound installed identity, root liveness, scope, and closed invocation authority | [Installed identity and authority kernels](phase-5-installed-identity-and-authority-kernels.md) |
 | `Readiness`, `Reconcile`, `Cluster.Cordon.Foundation` | Opaque readiness, total observations and results, canonical quantities, and exact capacity/sizing policy | [Canonical quantities and reconcile results](phase-6-canonical-quantities-and-reconcile-results.md) |

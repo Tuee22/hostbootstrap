@@ -14,6 +14,7 @@ The production recovery and root-scope signers remain inaccessible.
 -}
 module HandoffSpec (tests) where
 
+import Expect (expectRight)
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
 import Control.Exception (SomeException, evaluate, finally, try)
 import Control.Monad (forM_, when)
@@ -249,7 +250,11 @@ frameCrossingTests =
                 , "getArgs"
                 , "unsafeCoerce"
                 ]
-            significantHaskellLineCount transactionSource @?= 302
+            -- Down from 302: the child-group escalation and its three timeouts
+            -- moved to the one shared module both transports now call, so this
+            -- module carries the transaction and no longer a second copy of how
+            -- to end a process group.
+            significantHaskellLineCount transactionSource @?= 261
             assertBool
                 "shared CLI lost the frame-child classifier"
                 (significantHaskellLineCount cliSource >= 424)
@@ -7544,23 +7549,39 @@ sealedFacadeTests =
             assertFragmentsInOrder
                 "the group is terminated, graced, escalated, reaped unconditionally, and only then are the pipes closed"
                 [ "askChildGroupToStop child"
-                , "lingering <- waitFor terminationGraceMicros child"
+                , "lingering <- awaitChildExit terminationGraceMicros child"
                 , "Nothing -> killChildGroup child"
                 , "Exception.try (waitForProcess child)"
                 , "closeQuietly childStdin"
                 , "closeQuietly childStdout"
                 ]
                 owner
+            -- The escalation's ordering is the owner's, above; its two platform
+            -- rows are the shared child-group module's. Both transports that end
+            -- a child group carried byte-identical copies of those rows and of
+            -- the three timeouts beside them, so this guard now reads the one
+            -- implementation rather than asserting the same property twice about
+            -- two copies that were free to drift apart.
+            childGroup <-
+                normalizeWhitespace
+                    <$> readFile
+                        ( packageRoot
+                            </> "internal"
+                            </> "effect"
+                            </> "HostBootstrap"
+                            </> "Effect"
+                            </> "ChildGroup.hs"
+                        )
             assertContains
                 "the whole group is signalled rather than the process alone"
                 "Just pid -> do signalled <- Exception.try (signalProcessGroup signal (fromIntegral pid))"
-                owner
+                childGroup
             assertFragmentsInOrder
                 "the Windows row terminates the owned process before and after its bounded grace"
                 [ "askChildGroupToStop child = quietly (terminateProcess child)"
                 , "killChildGroup child = quietly (terminateProcess child)"
                 ]
-                owner
+                childGroup
             assertContains
                 "termination runs on every exit from the exchange"
                 "Exception.bracket_ (pure ()) (terminateChildGroup child childStdin childStdout) (exchange childStdin childStdout serve)"
@@ -10073,12 +10094,7 @@ assertFragmentsInOrder label fragments source =
          in not (Text.null fromFragment)
                 && go remaining (Text.drop (Text.length fragment) fromFragment)
 
-expectRight :: (Show err) => Either err value -> IO value
-expectRight (Right value) = pure value
-expectRight (Left failure) = assertFailure ("expected success, got " <> show failure)
 
-expectRightIO :: (Show err) => Either err value -> IO value
-expectRightIO = expectRight
 
 expectSignatureRefusal :: (Show value) => Either HandoffError value -> IO ()
 expectSignatureRefusal outcome = case outcome of
@@ -10111,3 +10127,7 @@ contains needle haystack = any (needle `prefixOf`) (tails haystack)
     prefixOf [] _ = True
     prefixOf _ [] = False
     prefixOf (x : xs) (y : ys) = x == y && prefixOf xs ys
+
+-- | An alias retained at its call sites; the unwrapping itself is 'Expect.expectRight'.
+expectRightIO :: (Show err) => Either err value -> IO value
+expectRightIO = expectRight

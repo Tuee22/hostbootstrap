@@ -73,6 +73,7 @@ import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Lift (LiftContext, SelfRef)
 import HostBootstrap.Ownership.Clause (enteredEvidence)
 import HostBootstrap.Ownership.Object (
+    storeFault,
     ConflictReport (ConflictReport, conflictExpected, conflictObserved, conflictSubject),
     ObjectIdentity,
     ObjectKind (OwnedDirectory, OwnedFile, ReportedObject),
@@ -826,8 +827,6 @@ forget session key _record = do
                     deleted
                 )
 
-storeFault :: Text -> ProtectedError -> OwnershipFault
-storeFault operation failure = OwnershipProbeFailed operation (protectedErrorMessage failure)
 
 refusedByStore :: Text -> ProtectedError -> ShippedOutcome
 refusedByStore operation = ShippedRefused . storeFault operation

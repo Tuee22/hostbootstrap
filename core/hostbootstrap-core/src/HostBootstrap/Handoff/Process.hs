@@ -61,6 +61,14 @@ where
 import Data.ByteString (ByteString)
 import Data.Text (Text)
 import Data.Word (Word64)
+import HostBootstrap.Effect.ChildGroup (
+    askChildGroupToStop,
+    awaitChildExit,
+    closeQuietly,
+    killChildGroup,
+    launchMicros,
+    terminationGraceMicros,
+ )
 import HostBootstrap.Handoff (HandoffBindingInput, providerDependencyPackagesFields, providerDependencyProbeRequestFromFields, withProviderDependencyReprobeKernel)
 import HostBootstrap.Handoff.Process.Route (
     LifecycleProcessRoute,
@@ -81,7 +89,6 @@ import HostBootstrap.Lifecycle.Execution.Internal (
 import HostBootstrap.Teardown.Internal (
     ReverseDescent,
  )
-import Control.Concurrent (threadDelay)
 import qualified Control.Exception as Exception
 import Data.Proxy (Proxy (Proxy))
 import qualified Data.Text as Text
@@ -101,24 +108,15 @@ import HostBootstrap.HostConfig (resolveMaybe)
 import HostBootstrap.HostTool (absExePath, hostToolProcessArguments)
 import HostBootstrap.Teardown.Internal (withReverseDescentProcessInputsKernel)
 import System.Exit (ExitCode)
-import System.IO (Handle, hClose)
-#if !defined(mingw32_HOST_OS)
-import System.Posix.Signals (Signal, sigKILL, sigTERM, signalProcessGroup)
-#endif
+import System.IO (Handle)
 import System.Process
     ( CreateProcess (close_fds, create_group, std_err, std_in, std_out)
     , ProcessHandle
     , StdStream (CreatePipe, Inherit)
-    , getProcessExitCode
     , proc
     , waitForProcess
     , withCreateProcess
     )
-#if defined(mingw32_HOST_OS)
-import System.Process (terminateProcess)
-#else
-import System.Process (getPid)
-#endif
 import System.Timeout (timeout)
 
 {- | Launch one forward child and complete its edge, or leave nothing running.
@@ -422,78 +420,13 @@ descriptor left open outlives the process that justified it.
 terminateChildGroup :: ProcessHandle -> Handle -> Handle -> IO ()
 terminateChildGroup child childStdin childStdout = do
     askChildGroupToStop child
-    lingering <- waitFor terminationGraceMicros child
+    lingering <- awaitChildExit terminationGraceMicros child
     case lingering of
         Just _ -> pure ()
         Nothing -> killChildGroup child
     _ <- Exception.try (waitForProcess child) :: IO (Either Exception.SomeException ExitCode)
     closeQuietly childStdin
     closeQuietly childStdout
-
-{- | Ask the child's own group to stop, or accept that there is no longer one. -}
-askChildGroupToStop :: ProcessHandle -> IO ()
-#if defined(mingw32_HOST_OS)
-askChildGroupToStop child = quietly (terminateProcess child)
-#else
-askChildGroupToStop child = signalChildGroup child sigTERM
-#endif
-
-{- | End the child's group with something it cannot decline. -}
-killChildGroup :: ProcessHandle -> IO ()
-#if defined(mingw32_HOST_OS)
-killChildGroup child = quietly (terminateProcess child)
-#else
-killChildGroup child = signalChildGroup child sigKILL
-#endif
-
-#if !defined(mingw32_HOST_OS)
-{- | Signal the child's POSIX group, or accept that there is no longer one. -}
-signalChildGroup :: ProcessHandle -> Signal -> IO ()
-signalChildGroup child signal = do
-    identity <- getPid child
-    case identity of
-        Nothing -> pure ()
-        Just pid -> do
-            signalled <-
-                Exception.try (signalProcessGroup signal (fromIntegral pid))
-            either (\(_ :: Exception.IOException) -> pure ()) pure signalled
-#endif
-
-#if defined(mingw32_HOST_OS)
-quietly :: IO () -> IO ()
-quietly action = do
-    attempted <- Exception.try action
-    either (\(_ :: Exception.IOException) -> pure ()) pure attempted
-#endif
-
-{- | Poll for the child's exit until the grace runs out. -}
-waitFor :: Int -> ProcessHandle -> IO (Maybe ExitCode)
-waitFor remaining child
-    | remaining <= 0 = getProcessExitCode child
-    | otherwise = do
-        exited <- getProcessExitCode child
-        case exited of
-            Just status -> pure (Just status)
-            Nothing -> do
-                threadDelay pollMicros
-                waitFor (remaining - pollMicros) child
-
-closeQuietly :: Handle -> IO ()
-closeQuietly handle = do
-    closed <- Exception.try (hClose handle)
-    either (\(_ :: Exception.IOException) -> pure ()) pure closed
-
-{- | How long a child has to exist at all. -}
-launchMicros :: Int
-launchMicros = 30 * 1000000
-
-{- | How long a signalled group has to finish before it is killed. -}
-terminationGraceMicros :: Int
-terminationGraceMicros = 10 * 1000000
-
-{- | How often the grace is checked. -}
-pollMicros :: Int
-pollMicros = 50 * 1000
 
 processFailure :: Text -> Text
 processFailure detail = "lifecycle child process: " <> detail

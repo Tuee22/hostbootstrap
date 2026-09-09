@@ -10,6 +10,8 @@ import qualified Data.Map.Strict as Map
 import HostBootstrap.Command (allReconcilers)
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Ensure (
+    environmentNonRootUser,
+    invokingNonRootUser,
     InstallStep (..),
     Reconciler (..),
     appliesTo,
@@ -298,12 +300,24 @@ installPlanCases =
         Docker.installSteps cpu @?= linux
         Docker.installSteps gpu @?= linux
         assertBool "docker Left on apple" (isLeft (Docker.installSteps apple))
-    , testCase "docker: linux socket user prefers the invoking sudo user and skips root" $ do
-        Docker.targetDockerUser [("SUDO_USER", "matt"), ("USER", "root")] @?= Just "matt"
-        Docker.targetDockerUser [("SUDO_USER", "root"), ("LOGNAME", "matt"), ("USER", "root")]
+    , testCase "the group grant prefers the invoking sudo user and skips root" $ do
+        -- One case, because there is now one implementation. The Docker and Incus
+        -- grants each carried an identical copy of this lookup and only Incus grew
+        -- the euid fallback beside it, so a host whose service runner omits the
+        -- login-user environment silently skipped the docker grant while
+        -- performing the incus one. Two identical test blocks could not see that:
+        -- they tested the halves that agreed.
+        environmentNonRootUser [("SUDO_USER", "matt"), ("USER", "root")] @?= Just "matt"
+        environmentNonRootUser [("SUDO_USER", "root"), ("LOGNAME", "matt"), ("USER", "root")]
             @?= Just "matt"
-        Docker.targetDockerUser [("SUDO_USER", "root"), ("USER", "root")] @?= Nothing
-        Docker.targetDockerUser [("USER", "")] @?= Nothing
+        environmentNonRootUser [("SUDO_USER", "root"), ("USER", "root")] @?= Nothing
+        environmentNonRootUser [("USER", "")] @?= Nothing
+        -- The IO path both grants now share keeps environment identity first, so
+        -- @sudo@ still grants the original operator rather than the effective
+        -- passwd entry. The euid fallback beneath it is POSIX-only and is reached
+        -- only when the environment names nobody.
+        invokingNonRootUser [("SUDO_USER", "matt"), ("USER", "root")]
+            >>= (@?= Just "matt")
     , testCase "cuda: container toolkit on linux-gpu, Left elsewhere" $ do
         Cuda.installSteps gpu
             @?= Right
@@ -407,12 +421,6 @@ installPlanCases =
                     ]
         EIncus.installSteps cpu @?= linux
         EIncus.installSteps gpu @?= linux
-    , testCase "incus: linux admin user prefers the invoking sudo user and skips root" $ do
-        EIncus.targetIncusAdminUser [("SUDO_USER", "matt"), ("USER", "root")] @?= Just "matt"
-        EIncus.targetIncusAdminUser [("SUDO_USER", "root"), ("LOGNAME", "matt"), ("USER", "root")]
-            @?= Just "matt"
-        EIncus.targetIncusAdminUser [("SUDO_USER", "root"), ("USER", "root")] @?= Nothing
-        EIncus.targetIncusAdminUser [("USER", "")] @?= Nothing
     ]
 
 incusProbeCases :: [TestTree]

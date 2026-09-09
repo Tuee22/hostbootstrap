@@ -38,9 +38,18 @@ of thing, and none substitutes for another.
 | Gate | Command | Where it runs | What it proves | What it cannot prove |
 |---|---|---|---|---|
 | Host static gate | `cabal test all --ghc-options=-Werror` from `core/`; `poetry run python -m hostbootstrap.check_code`; `poetry run python -m hostbootstrap.test_all` | an ordinary process of the outer host — macOS, Linux, or Windows | type boundaries, compile-fail diagnostics, codecs, source guards, plans, argv, documentation, and exercised native kernel/process protocols | live provider, container, cluster, or accelerator acceptance |
-| `linux-cpu` substrate gate | the phase's own declared command | inside the realized Linux substrate — native Linux, a Lima/Colima VM, or WSL2 | that the gated process and its POSIX/container effects actually ran on the baseline substrate | that the same sources build and self-test on another outer host |
+| `linux-cpu` substrate gate | the phase's own declared command | inside the realized Linux substrate — native Linux, a Lima/Colima VM, WSL2, or a container | that the gated process and its POSIX/container effects actually ran on the baseline substrate | that the same sources build and self-test on another outer host |
 | Container `check-code` | `<project> check-code` in the derived image | inside the built container | the formatter (`fourmolu`) and linter (`hlint`), which are installed in the base image only | behaviour; it is a build-time guardrail |
 | Live demo gate | `hostbootstrap run -- test init` then `test run all` | a disposable host with real Docker, provider, and cluster state | end-to-end lifecycle over real infrastructure | anything on a host it did not run on |
+
+A container is named in that list because § JJ identifies a gate host by what it *is* rather than by how
+it came to exist. It is not a cheaper substrate gate, and § JJ says so directly: what qualifies a run is
+where the *effects of the lifecycle under test* execute, not where the binary happens to sit. Running a
+static suite inside a container establishes nothing about a provider or a cluster. A selection whose cases
+kill real processes and observe convergence, take the protected store's run-liveness lock under a real
+project root, or dispatch a signed service to its exit does execute those effects in that Linux, and is
+evidence for it. The distinction is worth stating because the difference between the two is invisible in
+the run's output: both print the same green line.
 
 The independent cluster-phase live gate is the bare binary's `hostbootstrap test run cluster-live` case.
 It is a `linux-cpu` substrate gate rather than the demo gate: one Harness-owned Kind plan creates the

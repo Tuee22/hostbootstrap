@@ -200,6 +200,9 @@ A phase document opens with this header, then groups its sprints under one `## S
 **Depends on**: Phase A, Phase B (by name; every one strictly lower-numbered)
 **Substrates**: linux-cpu
 **Gate**: the exact command that closes this phase
+**Gate kind**: self-verifying | deferred
+**Gate evidence**: <ISO date> ; <gate host> ; `<command>` ; pass ; covers <digest|in-gate>
+**Evidence covers**: `path` `path` (deferred phases only)
 
 > **Purpose**: one sentence naming what this phase adds to the build.
 
@@ -214,7 +217,45 @@ A phase document opens with this header, then groups its sprints under one `## S
 
 `## Remaining Work` is required while the phase is `Active` (§ C) and says "None." once it is not. It
 states what this phase owes and nothing else (§ A); a boundary with another phase belongs in
-`## Phase Objective`.
+`## Phase Objective`. While the phase is `Active` it also names the sprint that owns the owed run, so
+closing the phase is the same act as closing that sprint rather than the deletion of a paragraph.
+
+`**Gate kind**` says whether the run that validates this plan also re-executes this phase's gate.
+**Self-verifying** phases close on the host static gate, so the same `cabal test all` that reads this
+document re-establishes their currency; their `**Gate evidence**` records `covers in-gate` and carries no
+digest, because a stamp re-proved on every run protects nothing. **Deferred** phases declare something
+that run does not perform — a live provider, a realized host, a hardware acceptance, the Python suite —
+so their evidence is a claim about a tree nothing is currently re-testing. Those name the paths whose
+change re-owes the run in `**Evidence covers**`, and their evidence carries a digest over exactly those
+paths. When the paths change the digest stops matching and the phase is refused until its gate is re-run
+and re-recorded.
+
+That is the currency rule of [the plan index](README.md) made mechanical. It was prose before, and ten
+phases had to be reopened by hand to discover it had not been held. What it still cannot do is prove a
+run happened: the digest is recomputable without executing anything. It raises the cost of a stale claim
+from nothing to deliberately recording a result that was not obtained, and absent continuous integration
+that is the honest ceiling — so a `**Gate evidence**` row names its gate host and command, which is what
+a reader needs in order to judge the run this check cannot.
+
+There is a second limit, found on 2026-09-08 and recorded here because it is structural rather than a bug.
+**A covers digest cannot see the toolchain that drove the run.** `measurePathSetDigest` hashes repository
+bytes under the cited paths and nothing else, so two runs of the same gate — one driven by a current
+program, one by a month-stale install of it — produce byte-identical digests over an identical tree. The
+row's command field is not read mechanically either: `parseEvidenceRow` checks only that it contains a
+backtick. On that date the `hostbootstrap` CLI on the maintainer's PATH was found to be a pipx install
+dated 2026-08-05 that omitted both the `-j1` build serialization and the
+`--hostbootstrap-install-identity` call the current source makes unconditionally — so a gate naming that
+CLI had been exercising a program the repository no longer describes, invisibly to every check here.
+
+Two consequences follow. A `**Gate evidence**` row whose command invokes a **separately installed**
+program is a weaker claim than one invoking `cabal`/`poetry` against the tree directly, because only the
+latter is guaranteed to exercise the source the digest measures. And because this repository ships two
+different programs both named `hostbootstrap` — the Python bootstrapper and the bare core executable
+(`hostbootstrap-core.cabal`) — a row naming it must say **which**, or a reader cannot tell what ran.
+
+A three-family acceptance phase is expected to sit `Active` between runs: its covers set is the
+host-portable tree, so ordinary source change expires its claim. That is the honest reading of a
+portability claim rather than an unclosed phase.
 
 Each sprint is nested one level deeper:
 

@@ -210,6 +210,7 @@ lifecycle, child-projection, and demo command surfaces this lane exercises.
 - `documents/architecture/build_and_run_model.md` — GPU classification and the driver selection.
 
 **Engineering docs to create/update:**
+- `documents/engineering/testing.md` — the gate kinds this phase closes on and the run it records.
 - `documents/engineering/cluster_lifecycle.md` — the accelerator-capable cluster driver.
 - `documents/engineering/accelerator_daemon.md` — the CUDA worker and in-cluster placement.
 

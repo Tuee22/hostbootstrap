@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 -- | The @Reconciler@ value type and runner used by @ensure-*@ chain steps.
 --
 -- A reconciler is a frame table plus a reconcile action (see
@@ -24,6 +25,9 @@ module HostBootstrap.Ensure
     diagnostic,
     runReconciler,
     runEnsure,
+    environmentNonRootUser,
+    invokingNonRootUser,
+    withProbeDir,
 
     -- * The frame table a reconciler is a row over
     FrameTable,
@@ -50,11 +54,17 @@ module HostBootstrap.Ensure
   )
 where
 
+import Control.Exception (SomeException, try)
 import Control.Monad (foldM)
 import Data.Char (toLower)
 import Data.List (find, intercalate, isInfixOf)
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, mapMaybe)
+#ifndef mingw32_HOST_OS
+import System.Posix.User (getEffectiveUserID, getUserEntryForID, userName)
+#endif
 import HostBootstrap.Effect.Interpreter (interpretHostCommand)
+import System.Directory (createDirectoryIfMissing, getTemporaryDirectory, removePathForcibly)
+import System.FilePath ((</>))
 import HostBootstrap.Effect.Run (capturedTriple)
 import HostBootstrap.Effect.Vocabulary (hostCommand, withCommandStdin)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig, resolveMaybe)
@@ -338,6 +348,70 @@ toolPresent cfg t = isJust (resolveMaybe cfg t)
 -- than a @$PATH@-resolved bare name.
 runTool :: HostConfig -> HostTool -> [String] -> IO (Either String (ExitCode, String, String))
 runTool cfg t args = runToolWithStdin cfg t args ""
+
+{- | Run a probe in a fresh scratch directory that does not outlive it.
+
+An accelerator probe compiles and runs a tiny program to find out whether a
+toolchain is really present, so it needs somewhere to put one. The directory is
+removed before and after: before, because a previous crashed probe must not make
+this one look ready, and after, because a probe is an observation and should
+leave nothing. Any exception is a failed probe rather than a propagated error —
+the caller asked a yes-or-no question about the host.
+
+It lives here rather than in one accelerator because both the Apple and Windows
+CUDA rows need it, and a byte-identical copy in each is the parallel logic § LL
+puts on the row instead.
+-}
+withProbeDir :: FilePath -> (FilePath -> IO Bool) -> IO Bool
+withProbeDir name action = do
+    root <- getTemporaryDirectory
+    let dir = root </> name
+    _ <- try (removePathForcibly dir) :: IO (Either SomeException ())
+    createDirectoryIfMissing True dir
+    result <- try (action dir) :: IO (Either SomeException Bool)
+    _ <- try (removePathForcibly dir) :: IO (Either SomeException ())
+    pure (either (const False) id result)
+
+{- | The login user whose future sessions a group grant should reach.
+
+Prefer @SUDO_USER@ so @sudo hostbootstrap ...@ grants the original operator,
+then fall back to the non-sudo environment. Root itself needs no group grant, so
+a root-only environment yields 'Nothing'.
+-}
+environmentNonRootUser :: [(String, String)] -> Maybe String
+environmentNonRootUser env = find (/= "root") candidates
+  where
+    candidates =
+        mapMaybe nonEmpty [lookup "SUDO_USER" env, lookup "LOGNAME" env, lookup "USER" env]
+    nonEmpty (Just "") = Nothing
+    nonEmpty value = value
+
+{- | The same question, answered even when a service runner omits the
+conventional login-user environment.
+
+Environment identity stays first so @sudo@ grants the original operator; the
+effective passwd entry is the noninteractive fallback a direct process launcher
+needs. This lives here, on the row, because both the Docker and Incus grants ask
+it: they had identical copies of the environment half, only one grew the euid
+fallback, and the result was that the same host silently skipped one grant while
+performing the other (§ LL — a provider supplies a row, never a second
+implementation).
+-}
+invokingNonRootUser :: [(String, String)] -> IO (Maybe String)
+invokingNonRootUser env = case environmentNonRootUser env of
+    Just user -> pure (Just user)
+    Nothing -> effectiveNonRootUser
+
+effectiveNonRootUser :: IO (Maybe String)
+#ifdef mingw32_HOST_OS
+effectiveNonRootUser = pure Nothing
+#else
+effectiveNonRootUser = do
+    userId <- getEffectiveUserID
+    if userId == 0
+        then pure Nothing
+        else Just . userName <$> getUserEntryForID userId
+#endif
 
 -- | Like 'runTool', but feed @stdin@ to the process. Used to forward a secret
 -- (a Docker Hub credential) on @stdin@ rather than in @argv@, so it never appears

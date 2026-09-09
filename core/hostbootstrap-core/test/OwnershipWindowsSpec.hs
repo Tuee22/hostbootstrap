@@ -22,6 +22,7 @@ whose declaration says it can hold the clauses here.
 -}
 module OwnershipWindowsSpec (tests) where
 
+import Expect (expectOccupied, expectOwned)
 import qualified Data.ByteString as ByteString
 import HostBootstrap.Ownership.Object
     ( ObjectIdentity
@@ -106,8 +107,8 @@ identityTests =
     , rowCase "a created directory and a created file have their own identities" $ \root -> do
         let directory = root </> "directory"
             file = root </> "file"
-        onRow (\row -> rowCreateDirectory row directory) >>= expectRight "create the directory"
-        onRow (\row -> rowCreateFile row file "payload") >>= expectRight "create the file"
+        onRow (\row -> rowCreateDirectory row directory) >>= expectOwned "create the directory"
+        onRow (\row -> rowCreateFile row file "payload") >>= expectOwned "create the file"
         directoryIdentity <- observeExisting directory
         fileIdentity <- observeExisting file
         assertBool
@@ -116,9 +117,9 @@ identityTests =
     , rowCase "linking preserves the identity the staged object had" $ \root -> do
         let staged = root </> "staged"
             target = root </> "target"
-        onRow (\row -> rowCreateFile row staged "payload") >>= expectRight "create the staged file"
+        onRow (\row -> rowCreateFile row staged "payload") >>= expectOwned "create the staged file"
         stagedIdentity <- observeExisting staged
-        onRow (\row -> rowLinkNoReplace row staged target) >>= expectRight "link"
+        onRow (\row -> rowLinkNoReplace row staged target) >>= expectOwned "link"
         targetIdentity <- observeExisting target
         -- A hard link publishes a second name for the same object, which is what
         -- makes clause 3's binding survive publication on this kernel too.
@@ -132,33 +133,33 @@ publicationTests :: [TestTree]
 publicationTests =
     [ rowCase "a directory is created once and the second attempt is occupied" $ \root -> do
         let directory = root </> "directory"
-        onRow (\row -> rowCreateDirectory row directory) >>= expectRight "create the directory"
+        onRow (\row -> rowCreateDirectory row directory) >>= expectOwned "create the directory"
         onRow (\row -> rowCreateDirectory row directory) >>= expectOccupied "the second create"
     , rowCase "a file is written whole and the second attempt is occupied" $ \root -> do
         let file = root </> "file"
-        onRow (\row -> rowCreateFile row file "the exact payload") >>= expectRight "create the file"
+        onRow (\row -> rowCreateFile row file "the exact payload") >>= expectOwned "create the file"
         ByteString.readFile file >>= (@?= "the exact payload")
         onRow (\row -> rowCreateFile row file "a replacement") >>= expectOccupied "the second create"
         ByteString.readFile file >>= (@?= "the exact payload")
     , rowCase "linking refuses rather than replacing, and leaves the target intact" $ \root -> do
         let staged = root </> "staged"
             target = root </> "target"
-        onRow (\row -> rowCreateFile row staged "the staged payload") >>= expectRight "stage"
-        onRow (\row -> rowCreateFile row target "the operator's payload") >>= expectRight "occupy"
+        onRow (\row -> rowCreateFile row staged "the staged payload") >>= expectOwned "stage"
+        onRow (\row -> rowCreateFile row target "the operator's payload") >>= expectOwned "occupy"
         onRow (\row -> rowLinkNoReplace row staged target) >>= expectOccupied "link"
         ByteString.readFile target >>= (@?= "the operator's payload")
         doesFileExist staged >>= (@?= True)
     , rowCase "a linked file is the staged bytes, under both names until one is withdrawn" $ \root -> do
         let staged = root </> "staged"
             target = root </> "target"
-        onRow (\row -> rowCreateFile row staged "the staged payload") >>= expectRight "stage"
-        onRow (\row -> rowLinkNoReplace row staged target) >>= expectRight "link"
+        onRow (\row -> rowCreateFile row staged "the staged payload") >>= expectOwned "stage"
+        onRow (\row -> rowLinkNoReplace row staged target) >>= expectOwned "link"
         ByteString.readFile target >>= (@?= "the staged payload")
         -- The kernel primitive is a link, so the staging name survives it. An
         -- owner that wanted a move withdraws that name itself, which is the
         -- second half of the seam's own file publication.
         doesPathExist staged >>= (@?= True)
-        onRow (\row -> rowRemoveObject row staged) >>= expectRight "withdraw the staging name"
+        onRow (\row -> rowRemoveObject row staged) >>= expectOwned "withdraw the staging name"
         doesPathExist staged >>= (@?= False)
         ByteString.readFile target >>= (@?= "the staged payload")
     ]
@@ -170,7 +171,7 @@ exclusionTests :: [TestTree]
 exclusionTests =
     [ rowCase "an open handle reads the object's whole bytes" $ \root -> do
         let file = root </> "file"
-        onRow (\row -> rowCreateFile row file "the exact payload") >>= expectRight "create the file"
+        onRow (\row -> rowCreateFile row file "the exact payload") >>= expectOwned "create the file"
         contents <-
             onRow $ \row -> do
                 opened <- rowOpenExclusive row file
@@ -183,7 +184,7 @@ exclusionTests =
         contents @?= Right "the exact payload"
     , rowCase "a directory is refused rather than opened as a file" $ \root -> do
         let directory = root </> "directory"
-        onRow (\row -> rowCreateDirectory row directory) >>= expectRight "create the directory"
+        onRow (\row -> rowCreateDirectory row directory) >>= expectOwned "create the directory"
         opened <- onRow (\row -> fmap (fmap (const ())) (rowOpenExclusive row directory))
         expectOccupied "open a directory" opened
     ]
@@ -195,14 +196,14 @@ removalTests :: [TestTree]
 removalTests =
     [ rowCase "a file is removed, and the parent's own change is made durable" $ \root -> do
         let file = root </> "file"
-        onRow (\row -> rowCreateFile row file "payload") >>= expectRight "create the file"
-        onRow (\row -> rowRemoveObject row file) >>= expectRight "remove the file"
-        onRow (\row -> rowSyncParent row file) >>= expectRight "sync the parent"
+        onRow (\row -> rowCreateFile row file "payload") >>= expectOwned "create the file"
+        onRow (\row -> rowRemoveObject row file) >>= expectOwned "remove the file"
+        onRow (\row -> rowSyncParent row file) >>= expectOwned "sync the parent"
         doesPathExist file >>= (@?= False)
     , rowCase "a directory is removed" $ \root -> do
         let directory = root </> "directory"
-        onRow (\row -> rowCreateDirectory row directory) >>= expectRight "create the directory"
-        onRow (\row -> rowRemoveObject row directory) >>= expectRight "remove the directory"
+        onRow (\row -> rowCreateDirectory row directory) >>= expectOwned "create the directory"
+        onRow (\row -> rowRemoveObject row directory) >>= expectOwned "remove the directory"
         doesPathExist directory >>= (@?= False)
     ]
 
@@ -343,15 +344,7 @@ observeExisting target = do
 expectIdentity :: Either OwnershipFault ObjectIdentity -> IO ObjectIdentity
 expectIdentity = either (\fault -> assertFailure ("expected an identity: " <> show fault)) pure
 
-expectRight :: String -> Either OwnershipFault value -> IO ()
-expectRight label outcome = case outcome of
-    Right _ -> pure ()
-    Left fault -> assertFailure ("could not " <> label <> ": " <> show fault)
 
-expectOccupied :: (Show value) => String -> Either OwnershipFault value -> IO ()
-expectOccupied label outcome = case outcome of
-    Left _ -> pure ()
-    Right value -> assertFailure (label <> " must be refused, got " <> show value)
 
 expectUnsupported :: (Show value) => String -> Either OwnershipFault value -> IO ()
 expectUnsupported label outcome = case outcome of

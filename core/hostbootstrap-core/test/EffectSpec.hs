@@ -254,12 +254,24 @@ conditionalized, so no host family loses the far side of a crossing (§ JJ).
 handoffTransactionPath :: FilePath
 handoffTransactionPath = "core/hostbootstrap-core/src/HostBootstrap/Handoff/Transaction.hs"
 
+-- | The one module the handoff transports share for ending a child group.
+--
+-- Both of them held byte-identical copies of the escalation and its three
+-- timeouts. Sharing it means the group teardown they perform is the same
+-- teardown by construction rather than by two authors agreeing.
+childGroupPath :: FilePath
+childGroupPath = "core/hostbootstrap-core/internal/effect/HostBootstrap/Effect/ChildGroup.hs"
+
 {- | Every module allowed to signal a process group. Each listed boundary owns
 the group it terminates; another site would be a teardown nobody compared with
 these.
+
+The handoff transports are no longer listed: they call the shared boundary and
+signal nothing themselves, which is what removed the second copy this guard used
+to have to compare.
 -}
 groupOwners :: [FilePath]
-groupOwners = [runnerPath, colimaRunnerPath, handoffProcessPath, handoffTransactionPath]
+groupOwners = [runnerPath, colimaRunnerPath, childGroupPath]
 
 -- | The shipped Colima command transaction owns the group it kills on parent death.
 colimaRunnerPath :: FilePath

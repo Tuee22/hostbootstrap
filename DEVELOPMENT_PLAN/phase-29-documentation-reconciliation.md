@@ -178,5 +178,6 @@ None.
   commands and observed figures.
 
 **Cross-references to add:**
+- `documents/documentation_standards.md` — the surface this phase changes in it.
 - `README.md`, `AGENTS.md`, `CLAUDE.md`, `DEVELOPMENT_PLAN/README.md`, `00-overview.md`, and
   `system-components.md` all agree on the phase names and defer status to the README table.

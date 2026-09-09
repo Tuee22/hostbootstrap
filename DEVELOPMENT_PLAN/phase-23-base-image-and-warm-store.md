@@ -129,34 +129,60 @@ Record the dated publish, pull, and real-consumer compatibility smoke on linux-c
 
 #### Validation
 
-The dated run.
+The pull and smoke halves are recorded; the publish half is not.
+
+On 2026-09-06, `docker pull docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64` resolved to
+`sha256:3634916e85b1fda411ae671a4bca2f72745e0bd106e2e9efebccc25415e0bc49`, and the real-consumer
+compatibility smoke built against that exact digest on arm64 macOS 26.6.2 (build 25G83) in 11.8
+seconds. The consumer observed `ghc`, `cabal`, a set `CABAL_DIR`, the warm store at
+`/opt/basecontainer/haskell-deps`, and `cabal build --dry-run all` resolving `Up to date` against the
+inherited store — which is the question a publication gate can answer: is what was published usable by
+a project that builds `FROM` it.
+
+The defect that blocked this half is resolved. `compatibility_smoke_spec` pointed at
+`demo/docker/Dockerfile`, which requires a named build context holding a separately selected builder,
+two verification-key build arguments, and four `required=true` secrets — two of them a signed one-use
+build grant only the project binary's build coordinator mints. Driving it from the Python bootstrapper
+would have meant minting build authority there, a second authority surface § KK's single-owner rule
+exists to prevent. The smoke now builds `docker/compatibility-smoke.Dockerfile`, whose only input is
+`BASE_IMAGE`; the demo's authenticated build stays with the coordinator that owns it and is exercised
+by the [worked-demo phase](phase-24-worked-demo.md).
+
+`tests/test_base_image.py` now asserts the consumer's own requirements — one `ARG`, no secrets, no
+named context — rather than the spec's fields, because asserting the fields is what let a spec that
+pointed at a real consumer coexist with a command that could never build it. A companion case asserts
+no module under `hostbootstrap/` names a `demo/` path at all.
 
 #### Remaining Work
 
-The run is owed, and one defect blocks it: `compatibility_smoke_spec` supplies only `BASE_IMAGE`
-while `demo/docker/Dockerfile` requires a named build context, two verification-key build arguments,
-and four `required=true` secrets, two of which are a signed one-use build grant the Haskell
-coordinator mints. How the smoke obtains that authority without minting a second build-authority
-surface is decided before this sprint closes.
+The publish half is owed: `hostbootstrap base build-and-push --flavor cpu --arch arm64`, which pushes
+the rolling tag to the operator's registry namespace. It is the one step of this gate that is an
+outward-facing publication rather than an observation, and it is performed only under the operator's
+direction.
 
 ## Remaining Work
 
 Sprint 23.4 owns the owed run.
 
-This phase's whole gate is owed, and one defect blocks it.
+The **publish half** of the gate is owed. The pull and smoke halves are recorded above: on 2026-09-06 the
+published rolling tag resolved to `sha256:3634916e85b1fda411ae671a4bca2f72745e0bd106e2e9efebccc25415e0bc49`
+and the real-consumer compatibility smoke built against that exact digest on arm64 macOS 26.6.2.
 
-No dated evidence exists anywhere in this file — it is the only phase document in the plan containing no
-date — while its Validation sections twice promise one.
-
-The gate is also not executable as implemented. `compatibility_smoke_spec` (`hostbootstrap/base_image.py`)
-builds a `BuildSpec` carrying only `build_args={"BASE_IMAGE": ...}`, and `docker_ops.build_command` emits no
-`--secret` and no `--build-context`, while `demo/docker/Dockerfile` requires a `hostbootstrap-builder` named
+The defect that made the gate unexecutable is **fixed**. `compatibility_smoke_spec` now builds
+`docker/compatibility-smoke.Dockerfile` (`hostbootstrap/base_image.py:311`, `:368`), whose only input is
+`BASE_IMAGE`. It previously built `demo/docker/Dockerfile`, which requires a `hostbootstrap-builder` named
 build context, two 64-character verification-key build arguments, and four `required=true` secret mounts —
-two of which are a signed one-use build grant the Haskell coordinator mints. `cli.py` also pushes the rolling
-tag before running the smoke, so a failing smoke leaves the tag published.
+two of which are a signed one-use build grant only the Haskell coordinator mints — while
+`docker_ops.build_command` emits neither `--secret` nor `--build-context`. Driving that Dockerfile from
+Python would have created the second build-authority surface the architecture exists to prevent, so the
+smoke now asks the question a publication gate can answer on its own.
 
-Closing this phase requires deciding how the smoke obtains that authority without minting a second
-build-authority surface, then recording the dated publish → pull → real-consumer run on linux-cpu.
+One **ordering defect remains open**: `cli.py` pushes the rolling tag (`hostbootstrap/cli.py:402`) before
+running the smoke (`:405`), so a failing smoke leaves the tag published.
+
+Closing this phase requires the outward-facing publish — a push to the user's Docker Hub namespace, which
+an assistant performs only when the user directs it — and then recording the dated
+publish → pull → real-consumer run on linux-cpu.
 
 ## Documentation Requirements
 
@@ -164,11 +190,12 @@ build-authority surface, then recording the dated publish → pull → real-cons
 - `documents/architecture/build_and_run_model.md` — where publication sits relative to the host build.
 
 **Engineering docs to create/update:**
+- `documents/engineering/testing.md` — the gate kinds this phase closes on and the run it records.
 - `documents/engineering/base_image.md` — the rebuild → republish → pull rule.
 - `documents/engineering/build_release.md` — the full publication pipeline.
 - `documents/engineering/warm_store.md` — broad population and graceful misses.
 - `documents/engineering/cabal_layout.md` — one project host and container.
 
 **Cross-references to add:**
-- `development_plan_standards.md` § N, § V, and § FF name this phase as the owner of publication and the store.
+- `development_plan_standards.md` § R, § V, and § FF name this phase as the owner of publication and the store.
 - `CLAUDE.md` and `AGENTS.md` state the rebuild → republish → pull rule for assistants.

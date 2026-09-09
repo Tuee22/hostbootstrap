@@ -26,6 +26,7 @@ library effect-internal
   visibility: private
   hs-source-dirs: internal/effect
   exposed-modules:
+      HostBootstrap.Effect.ChildGroup
       HostBootstrap.Effect.Quote
       HostBootstrap.Effect.Run
   build-depends:
@@ -326,6 +327,7 @@ test-suite hostbootstrap-core-test
   hs-source-dirs: test
   main-is: Spec.hs
   other-modules:
+      Expect
       CoverageManifest
       Fixture
       FakeProvider

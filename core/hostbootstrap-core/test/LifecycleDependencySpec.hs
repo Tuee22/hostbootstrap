@@ -3,6 +3,7 @@
 
 module LifecycleDependencySpec (tests) where
 
+import Expect (expectRight)
 import qualified Data.ByteString.Char8 as ByteString
 import Data.Either (isLeft)
 import Data.List (isInfixOf, isPrefixOf)
@@ -229,8 +230,6 @@ mkProvider :: Word64 -> Text.Text -> Word64 -> Either Text.Text (RuntimeDependen
 mkProvider generation route expiry =
     mkProviderRuntimeDependencyPackage "plan" "scope" "resource" "frame" "origin" generation "journal" "receipt" route expiry
 
-expectRight :: (Show failure) => Either failure value -> IO value
-expectRight = either (assertFailure . show) pure
 
 unique :: (Eq value) => [value] -> [value]
 unique [] = []

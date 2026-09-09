@@ -5,6 +5,7 @@
 
 module ProjectPlanSpec (tests) where
 
+import Expect (expectRight)
 import qualified Crypto.Hash as Hash
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
@@ -8272,8 +8273,6 @@ hexRoot root =
 expectStepPlan :: [Step] -> StepPlan
 expectStepPlan = either (error . show) id . mkStepPlan
 
-expectRight :: (Show failure) => Either failure value -> IO value
-expectRight = either (fail . show) pure
 
 joinPlan :: Either PlanError (Either PlanError value) -> Either PlanError value
 joinPlan = either Left id

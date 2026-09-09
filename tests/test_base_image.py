@@ -281,9 +281,44 @@ def test_compatibility_smoke_uses_real_consumer() -> None:
         context=context,
         pulled_reference=digest,
     )
-    assert spec.dockerfile == context / "demo/docker/Dockerfile"
+    assert spec.dockerfile == context / "docker/compatibility-smoke.Dockerfile"
     assert spec.context == context
     assert spec.tags == ("hostbootstrap-base-compatibility:cpu-arm64",)
     assert spec.build_args == {"BASE_IMAGE": digest}
     assert spec.pull is True
     assert spec.no_cache is True
+
+
+def test_compatibility_smoke_consumer_needs_only_the_base_image() -> None:
+    """The smoke's consumer must be buildable by the command this module emits.
+
+    The previous consumer was the demo's Dockerfile, which requires a named build
+    context and four ``required=true`` secrets -- two of them a signed one-use
+    build grant only the project binary's coordinator can mint. The spec looked
+    correct because it pointed at a real consumer; the emitted ``docker build``
+    could never have succeeded. Asserting the spec's fields could not catch that,
+    so this asserts the consumer's own requirements instead.
+    """
+    dockerfile = Path(__file__).resolve().parent.parent / "docker/compatibility-smoke.Dockerfile"
+    body = dockerfile.read_text(encoding="utf-8")
+    declared = {line.split()[1].split("=")[0] for line in body.splitlines() if line.startswith("ARG ")}
+    assert declared == {"BASE_IMAGE"}
+    assert "--mount=type=secret" not in body
+    assert "--from=" not in body
+
+
+def test_python_owns_no_demo_path() -> None:
+    """The bootstrapper never reaches into the demo.
+
+    Building the demo means holding build authority, and that authority has one
+    home in the Haskell coordinator. A ``demo/`` path appearing anywhere under
+    ``hostbootstrap/`` is the shape of the defect this replaced: the Python side
+    reaching for a consumer whose build it cannot authorize.
+    """
+    package = Path(__file__).resolve().parent.parent / "hostbootstrap"
+    offenders = [
+        module.name
+        for module in sorted(package.glob("*.py"))
+        if "demo/" in module.read_text(encoding="utf-8")
+    ]
+    assert offenders == []

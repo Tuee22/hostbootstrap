@@ -421,6 +421,7 @@ None.
 - `documents/architecture/durable_state.md` — the canonical project root and its durable projections.
 
 **Engineering docs to create/update:**
+- `documents/engineering/durable_windows_runs.md` — the surface this phase changes in it.
 - `documents/engineering/prerequisites.md` — the host floor per substrate.
 - `documents/engineering/testing.md` — what the static suites do and do not cover for host invocation.
 

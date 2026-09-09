@@ -147,7 +147,7 @@ import HostBootstrap.Reconcile (
     resourceHandleKey,
     validateOwnershipReceipt,
  )
-import HostBootstrap.Substrate (SubstrateName (AppleSilicon, LinuxCpu, WindowsGpu), substrateName)
+import HostBootstrap.Substrate (HostFrame (WindowsFrame), SubstrateName (AppleSilicon, LinuxCpu), substrateFrame, substrateName)
 import HostBootstrap.Substrate.Provider (
     FileTransfer (LimaFileTransfer, Wsl2MountTransfer),
     HostEffect (RunHostCommand),
@@ -408,8 +408,13 @@ mkWsl2BackendSpec ::
     HostPathShare ->
     Either ReconcileError ProviderBackendSpec
 mkWsl2BackendSpec hostConfig provider envelope share
-    | substrateName (hcSubstrate hostConfig) /= WindowsGpu =
-        invalid "the WSL2 provider backend requires a windows-gpu HostConfig"
+    -- The frame, not the accelerator row. Both Windows classifications realize
+    -- the same WSL2 provider; keying on @WindowsGpu@ alone refused a
+    -- @windows-cpu@ host outright, on the one substrate this project's own gates
+    -- cannot observe. 'substrateFrame' is where the five classification tags
+    -- collapse to the three frames, so asking it keeps that collapse in one place.
+    | substrateFrame (hcSubstrate hostConfig) /= WindowsFrame =
+        invalid "the WSL2 provider backend requires a Windows HostConfig"
     | providerKind provider /= ProviderWsl2 =
         invalid "the WSL2 backend requires the closed WSL2 provider realization"
     | null (providerVmId provider) || '\0' `elem` providerVmId provider =

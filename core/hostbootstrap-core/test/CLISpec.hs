@@ -9,6 +9,7 @@
 
 module CLISpec (runSchemaFixture, tests) where
 
+import Expect (expectRight)
 import ActivationSpec (withBrokerFor)
 import Control.Exception (finally, throwIO, try)
 import Control.Monad (filterM)
@@ -1899,8 +1900,6 @@ recordImageContains :: T.Text -> ProtectedRecordImage -> Bool
 recordImageContains needle (_, _, bytes) =
     TextEncoding.encodeUtf8 needle `ByteString.isInfixOf` bytes
 
-expectRight :: (Show failure) => Either failure result -> IO result
-expectRight = either (assertFailure . show) pure
 
 {- | Admit the exact finalized Production plan the CLI will reconstruct from
 the same static spec and on-disk config.  The callback cannot retain any of the

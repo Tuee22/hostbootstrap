@@ -15,6 +15,7 @@ actually leaves behind.
 -}
 module AuthoritySpec (tests, runEntryProbe, runLivenessInheritanceProbe, runModeProfileProbe) where
 
+import Expect (expectRight)
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
 import Control.Exception (IOException, bracket_, finally, throwIO, try)
 import Control.Monad (filterM, replicateM)
@@ -2797,8 +2798,6 @@ readModeRecord store key =
         observed <- readProtectedRecord session key
         pure (either (Left . ModeStoreFailure) Right observed)
 
-expectRight :: (Show failure) => Either failure result -> IO result
-expectRight = either (assertFailure . show) pure
 
 expectCloseKey :: Text -> IO InvocationCloseKey
 expectCloseKey raw = case mkInvocationCloseKey raw of

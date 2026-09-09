@@ -9,12 +9,11 @@ config-free planner refuses rather than attempting a host-package install.
 The pure
 'installSteps' planner and target-user selector are unit-tested.
 -}
-module HostBootstrap.Ensure.Docker (reconciler, installSteps, targetDockerUser) where
+module HostBootstrap.Ensure.Docker (reconciler, installSteps) where
 
 import Control.Monad (when)
-import Data.List (find)
-import Data.Maybe (mapMaybe)
 import HostBootstrap.Ensure (
+    invokingNonRootUser,
     FramePlan (InstallHere, ProvidedElsewhere),
     InstallStep (..),
     Reconciler (..),
@@ -108,7 +107,8 @@ installSteps = reconcilerInstallSteps reconciler
 ensureDockerGroup :: HostConfig -> IO ()
 ensureDockerGroup cfg = do
     env <- getEnvironment
-    case targetDockerUser env of
+    selectedUser <- invokingNonRootUser env
+    case selectedUser of
         Nothing ->
             putStrLn "ensure docker: no non-root invoking user detected for docker group membership (skipping)"
         Just user -> do
@@ -184,15 +184,3 @@ reportDockerAccessVerified =
     putStrLn $
         "ensure docker: docker group membership verified and current-session socket ACL ensured"
 
-{- | The login user whose future sessions should be allowed to talk to the
-docker socket. Prefer @SUDO_USER@ so @sudo hostbootstrap ...@ grants the
-original operator, then fall back to the non-sudo environment. Root itself
-needs no group grant.
--}
-targetDockerUser :: [(String, String)] -> Maybe String
-targetDockerUser env = find (/= "root") candidates
-  where
-    candidates =
-        mapMaybe nonEmpty [lookup "SUDO_USER" env, lookup "LOGNAME" env, lookup "USER" env]
-    nonEmpty (Just "") = Nothing
-    nonEmpty value = value

@@ -1,11 +1,14 @@
 # Phase 20 — `test` and `context` command semantics
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 19 (test harness and exclusive run ownership)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus the focused `CLISpec` and `ContextSpec`
 groups with `--ghc-options=-Werror` inside a realized linux-cpu host
 **Gate kind**: deferred
+**Gate evidence**: 2026-09-07 ; aarch64 Linux realized through the published `basecontainer-cpu-arm64` base, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern CLISpec'` ; pass ; covers 28cb80bd9b92c0d91196c975828ad298ad892a2937d647bffd7330d6e82c5b18
+**Gate evidence**: 2026-09-07 ; aarch64 Linux realized through the published `basecontainer-cpu-arm64` base, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern ContextSpec'` ; pass ; covers 28cb80bd9b92c0d91196c975828ad298ad892a2937d647bffd7330d6e82c5b18
+**Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs` `core/hostbootstrap-core/test/CLISpec.hs` `core/hostbootstrap-core/test/ContextSpec.hs`
 
 > **Purpose**: Fix the exact grammar and side-effect boundary of `test init`, `test run <case-id>|all`,
 > `context`, and `check-code`.
@@ -150,9 +153,9 @@ missing/decode refusals, topology/current-frame validation, and the pure lift co
 
 None.
 
-### Sprint 20.5: The realized-host CLI and context run [Active]
+### Sprint 20.5: The realized-host CLI and context run [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`
@@ -167,18 +170,26 @@ Record the dated focused `CLISpec` and `ContextSpec` selection inside a realized
 
 #### Validation
 
-The dated run.
+On 2026-09-06, both focused groups passed inside a realized `linux-cpu` host — the published
+`basecontainer-cpu-arm64` base at digest
+`sha256:3634916e85b1fda411ae671a4bca2f72745e0bd106e2e9efebccc25415e0bc49`, reporting `Linux aarch64`
+with the pinned GHC 9.12.4 and Cabal 3.16.1.0. `CLISpec` passed `58/58` and `ContextSpec` passed
+`85/85`, both under `-Werror`.
+
+The run is recorded against a writable copy of the working tree inside the realization. A first attempt
+mounted the tree read-only and four `CLISpec` cases refused with
+`could not take the run liveness lock: … Read-only file system`. That is the harness being observed
+correctly rather than a defect: those cases take the protected store's run-liveness lock under the
+project root, so a root that cannot be written is a refusal the ownership seam is supposed to produce.
+It is recorded because it is the difference between this gate having run and having appeared to.
 
 #### Remaining Work
 
-The run is owed. Its newest dated evidence is 2026-08-22.
+None.
 
 ## Remaining Work
 
-Sprint 20.5 owns the owed run.
-
-The realized-host half is owed: the focused `CLISpec` and `ContextSpec` groups with
-`--ghc-options=-Werror` inside a realized linux-cpu host. Its newest dated evidence is 2026-08-22.
+None.
 
 ## Documentation Requirements
 

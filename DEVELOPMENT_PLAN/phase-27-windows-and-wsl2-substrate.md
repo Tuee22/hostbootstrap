@@ -187,6 +187,7 @@ Windows host. Its dated run is 2026-09-05, which precedes the same day's later r
 - `documents/architecture/build_and_run_model.md` — Windows classification and the provider dispatch.
 
 **Engineering docs to create/update:**
+- `documents/engineering/testing.md` — the gate kinds this phase closes on and the run it records.
 - `documents/engineering/wsl2.md` — the provider, the wall, and the restore ordering.
 - `documents/engineering/durable_windows_runs.md` — why a long gate must leave the harness process tree.
 - `documents/engineering/accelerator_daemon.md` — the CUDA-on-Windows worker and its placement.

@@ -308,7 +308,7 @@ def compute_build_args(
 
 
 REPO_ROOT_DOCKERFILE: Final[Path] = Path("docker/basecontainer.Dockerfile")
-DEMO_DOCKERFILE: Final[Path] = Path("demo/docker/Dockerfile")
+SMOKE_DOCKERFILE: Final[Path] = Path("docker/compatibility-smoke.Dockerfile")
 
 
 def build_spec_for(
@@ -352,9 +352,20 @@ def compatibility_smoke_spec(
     context: Path,
     pulled_reference: str,
 ) -> docker_ops.BuildSpec:
-    """Cold-build the real demo against the just-pulled publication."""
+    """Cold-build a real consumer against the just-pulled publication.
+
+    The consumer is ``docker/compatibility-smoke.Dockerfile``, whose only input is
+    ``BASE_IMAGE``. It is not the demo's Dockerfile: that one requires a named
+    build context holding a separately selected builder and four ``required=true``
+    secrets, two of which are a signed one-use build grant the project binary's
+    build coordinator mints. Driving it from here would mean minting build
+    authority in the Python bootstrapper, which is the second authority surface
+    the architecture exists to prevent -- so this smoke asks the question a
+    publication gate can answer on its own, and the demo's authenticated build
+    stays with the coordinator that owns it.
+    """
     return docker_ops.BuildSpec(
-        dockerfile=context / DEMO_DOCKERFILE,
+        dockerfile=context / SMOKE_DOCKERFILE,
         context=context,
         tags=(f"hostbootstrap-base-compatibility:{flavor.value}-{arch}",),
         build_args={"BASE_IMAGE": pulled_reference},

@@ -65,6 +65,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import HostBootstrap.Ownership.Clause (enteredEvidence)
 import HostBootstrap.Ownership.Object (
+    storeFault,
     ConflictReport (conflictExpected, conflictObserved, conflictSubject),
     ObjectIdentity,
     ObjectKind (OwnedDirectory, OwnedFile, ReportedObject),
@@ -665,8 +666,6 @@ reported in the seam's terms while it is inside one. The store's exact message
 survives; what does not is the structured 'ProtectedError', which no caller of
 this module matches on for a publication.
 -}
-storeFault :: Text -> ProtectedError -> OwnershipFault
-storeFault operation failure = OwnershipProbeFailed operation (protectedErrorMessage failure)
 
 forgetFailure :: GeneratedConfigError -> OwnershipFault
 forgetFailure failure =

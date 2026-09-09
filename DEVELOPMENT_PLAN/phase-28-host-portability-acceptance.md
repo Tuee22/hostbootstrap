@@ -216,19 +216,45 @@ the current tree.
 
 #### Validation
 
-The three dated runs.
+The three dated runs. One of the three is recorded; two are owed.
+
+**macOS gate host — 2026-09-08 — passed.** On native arm64 macOS 26.6.2 (build 25G83) with GHC 9.12.4,
+Cabal 3.16.1.0, Python 3.14.3 and Poetry 2.3.2: `cabal build all --ghc-options=-Werror` from `core/`
+passed warning-clean, and `cabal test all --ghc-options=-Werror` passed **2,497/2,497** in 429.07 seconds
+across both suites — `hostbootstrap-core-test` and `hostbootstrap-provider-live-linux-cpu`, the latter
+reporting `Unsupported: provider-live not requested` and exiting success, which is the runtime
+disposition that replaced the deleted default-off flag. From the repository root
+`poetry run python -m hostbootstrap.check_code` passed (`ruff`, `black`, `mypy` over 12 source files) and
+`poetry run python -m hostbootstrap.test_all` passed **233/233** in 1.68 seconds. Total 7 minutes
+25 seconds.
+
+The total moved from the previously recorded 2,498 to 2,497, and the missing case is accounted for rather
+than unexplained: the Docker/Incus deduplication replaced two byte-identical test blocks —
+`Docker.targetDockerUser` and `EIncus.targetIncusAdminUser`, three assertions each — with a single
+`environmentNonRootUser`/`invokingNonRootUser` block that additionally covers the euid fallback neither
+copy exercised. One fewer case asserting strictly more, not a case that stopped running.
+
+Platform accounting is unchanged from Sprint 28.2: the POSIX ownership, host-wall and shipped guest-alias
+rows executed against the Darwin kernel, and the Windows ownership families plus the platform rows in
+`WslGlobalWallWindowsSpec` asserted their declared refusal on this gate host rather than being skipped.
 
 #### Remaining Work
 
-The three runs are owed. This phase is `Active` by default and `Done` only in the window following a
-fresh three-family run: its claim is about the host-portable source tree, so any change to that tree
-expires it. That is the honest reading of a portability claim rather than a defect in this phase.
+Two of the three runs are owed — the **Windows** and **Linux** gate families. The macOS family run is
+recorded above against the current tree. This phase is `Active` by default and `Done` only in the window
+following a fresh three-family run: its claim is about the host-portable source tree, so any change to
+that tree expires it. That is the honest reading of a portability claim rather than a defect in this phase.
 
 ## Remaining Work
 
 Sprint 28.4 owns the owed runs.
 
-None.
+The **macOS** family run is recorded against the current tree: 2026-09-08, arm64 macOS 26.6.2
+(build 25G83), 2,497/2,497 core and 233/233 Python. The **Windows** and **Linux** family runs remain
+owed; neither gate host is available from this machine. This phase is `Active` by default and `Done`
+only in the window following a fresh three-family run: its claim is about the host-portable source tree,
+so any change to that tree expires it. That is the honest reading of a portability claim, not an
+unclosed phase.
 
 ## Documentation Requirements
 

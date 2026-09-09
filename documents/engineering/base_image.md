@@ -55,11 +55,21 @@ under [`core/warm-deps/`](../../core/warm-deps/) change, an operator rebuilds an
 native tag with `hostbootstrap base build-and-push`. Consumers pull the republished tag. A same-named
 local image must not stand in for that published copy.
 
-After pushing, the workflow pulls the tag and builds the real
-[`demo/docker/Dockerfile`](../../demo/docker/Dockerfile) as a compatibility smoke. It may pass the pulled
-digest to prevent a local-tag race within that one workflow. The smoke proves that the real consumer can
-build from that publication; it does not prove offline behavior, complete cache reuse, or reproducible
-inputs.
+After pushing, the workflow pulls the tag and builds
+[`docker/compatibility-smoke.Dockerfile`](../../docker/compatibility-smoke.Dockerfile) as a compatibility
+smoke. It may pass the pulled digest to prevent a local-tag race within that one workflow. The smoke
+observes the toolchain the base exists to carry, the warm store, and a derived resolution against that
+store — it proves that a project which builds `FROM` the publication can do so. It does not prove offline
+behavior, complete cache reuse, or reproducible inputs.
+
+The smoke is deliberately not the demo's own
+[`demo/docker/Dockerfile`](../../demo/docker/Dockerfile). That one authenticates a separately selected
+builder through a named build context and consumes four `required=true` secrets, two of which are a signed
+one-use build grant the project binary's build coordinator mints. Driving it from the Python bootstrapper
+would put build authority in a second place, which is the shape § KK's single-owner rule exists to prevent
+— so the demo's authenticated build stays with the coordinator that owns it and is exercised by the
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md). A publication gate asks the narrower
+question it can answer on its own.
 
 ## What ships in the image
 

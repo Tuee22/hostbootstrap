@@ -369,6 +369,7 @@ None.
 - `documents/architecture/composition_methodology.md` — context data beneath generic dispatch.
 
 **Engineering docs to create/update:**
+- `documents/engineering/authoring_project_binaries.md` — the surface this phase changes in it.
 - `documents/engineering/schema.md` — the schema commands and golden snapshots.
 - `documents/engineering/config_generation.md` — how a project declares its vocabulary.
 - `documents/engineering/resource_budgeting.md` and `documents/engineering/applied_cordon.md` — the

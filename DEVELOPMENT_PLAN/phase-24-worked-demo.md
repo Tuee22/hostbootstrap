@@ -1,6 +1,6 @@
 # Phase 24 — The worked demo
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 16 (provider, cluster, and guest lifecycle foundations), Phase 17 (proof-complete
 recursive lifecycle command), Phase 22 (service-runtime activation and `service run` semantics), Phase 23
 (base image publication and the opportunistic warm store)
@@ -11,6 +11,8 @@ core host-static gate from `core/`, plus live
 `hostbootstrap run -- project destroy`, and `hostbootstrap run -- test run all` reporting `10/10 passed`
 inside the universal `linux-cpu` realization on any supported outer host
 **Gate kind**: deferred
+**Gate evidence**: 2026-09-08 ; arm64 macOS 26.6.2 (build 25G83), Lima 2.1.2, Colima 0.10.3, kind 0.31.0 ; Python-bootstrapper `hostbootstrap run -- test run all` ; pass ; covers 8d7501bdb0d148fc09ccf253044a9bfdd405aa69e9fb2e56a105878b29986407
+**Evidence covers**: `demo/src` `demo/app` `demo/test` `demo/docker` `core/hostbootstrap-core/src/HostBootstrap/Lifecycle` `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan`
 
 > **Purpose**: Be the real consumer that proves the library composes — a complete application with its own
 > plan, config vocabulary, test component, and service variants.
@@ -2525,9 +2527,9 @@ Every one of the four pristine generations pulled published base digest
 operator-owned `hostbootstrap-demo.test.dhall` remained. The post-run gates passed core 2,457/2,457, demo
 145/145, Python 231/231, and Python coverage 1,331/1,331 statements.
 
-### Sprint 24.42: The live demo matrix run [Active]
+### Sprint 24.42: The live demo matrix run [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`
@@ -2543,30 +2545,71 @@ Record the dated live demo lifecycle and matrix run inside the universal linux-c
 
 #### Validation
 
-The dated run.
+On 2026-09-06, `hostbootstrap run -- test run all` reported `10/10 passed` on arm64 macOS 26.6.2
+(build 25G83) realizing `linux-cpu` through Lima 2.1.2 and Colima 0.10.3, with kind 0.31.0. Both
+variants passed all five cases: `pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence`,
+and `durable-readback` for `hello-world` and for `hello-universe`. The matrix performed four fresh Lima
+bring-ups and four terminal destroys, each building the project inside a pristine guest, pushing the
+derived image to the in-cluster registry (`demo` at `sha256:394dd932…`), exposing the web service on a
+runtime-selected loopback port, and bringing the host accelerator daemon to ready before assertions.
+The forward and reverse lifecycle commands ran inside that matrix, the last reverse reporting
+`project destroy: deleting hostbootstrap-demo-vm`.
+
+The audited end state holds: `limactl list` reports no demo instance;
+`.build/hostbootstrap-demo.dhall` is gone while `.build/hostbootstrap-demo.test.dhall` remains;
+`.test_data` exists and is empty; no accelerator daemon is live; and the ambient Colima `default`
+profile and the unrelated cluster on it are unchanged.
+
+The static half is current on the same date: `cabal build all` and `cabal test hostbootstrap-demo-test
+--ghc-options=-Werror` from `demo/` passed `149/149`.
+
+The run occupied 2 hours 12 minutes against the 60-80 minute envelope
+[the runbook](../documents/operations/demo_runbook.md) states. The envelope assumes a host that is
+otherwise idle: each bring-up installs a toolchain and builds every dependency from source inside a
+pristine Lima guest, where the base image's warm store does not apply, and this host shared six guest
+CPUs with an unrelated running cluster.
 
 #### Remaining Work
 
-The run is owed. Its newest dated evidence is 2026-08-26, before the September changes to the demo
-command surface. The static half is current: the demo build and its 149-case suite passed on
-2026-09-06.
+None.
 
 ## Remaining Work
 
-Sprint 24.42 owns the owed run.
+None.
 
-The static half is confirmed: on 2026-09-06, `cabal build all --ghc-options=-Werror` and
+Both halves are confirmed. The static half: on 2026-09-06, `cabal build all --ghc-options=-Werror` and
 `cabal test hostbootstrap-demo-test --ghc-options=-Werror` from `demo/` passed 149/149 on native arm64
 macOS 26.6.2. That half is not reachable from `cabal test all` in `core/`, because `demo/cabal.project` is a
-separate project.
+separate project. The live half is the 2026-09-06 `**Gate evidence**` row above, whose covers digest still
+matches the tree.
 
-The live half is owed: `hostbootstrap run -- project up`, `project down`, `project destroy`, and
-`test run all` reporting `10/10 passed` inside the universal `linux-cpu` realization. Its newest dated
-evidence is 2026-08-26, before the September changes to the demo command surface.
+This section previously read "Sprint 24.42 owns the owed run" and "The live half is owed … newest dated
+evidence is 2026-08-26" while the sprint was `[Done]` and the header row recorded a 2026-09-06 pass. That
+was stale text left behind at closure, and it put the phase in breach of § C's rule that `Done` requires
+no remaining work in its scope. It is recorded here because no mechanical check caught it:
+`checkDoneSprintRemainingWork` reads sprints, and nothing reads a *phase-level* `## Remaining Work`
+against its own `**Status**`.
+
+The provenance caveat that stood here is now discharged. The evidence row previously recorded the
+2026-09-06 run, which was driven by a `hostbootstrap` CLI later found to be a pipx install dated
+2026-08-05 — omitting both `-j1` and the `--hostbootstrap-install-identity` call the current source makes
+unconditionally. The CLI was reinstalled from the repository on 2026-09-08 and the matrix re-run: it
+reported `10/10 passed` in 1 hour 51 minutes 38 seconds over four fresh Lima bring-ups and four terminal
+destroys. The row above records that run, so this phase's live half now rests on a bootstrapper matching
+the tree its digest measures. The covers digest is unchanged at `8d7501bd…` because the covered sources
+did not change between the two runs — which is precisely why the digest could not have detected the
+difference, and why the toolchain limit is recorded in `development_plan_standards.md` rather than left
+to be rediscovered.
 
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
+- `documents/architecture/unrepresentable_state.md` — the surface this phase changes in it.
+- `documents/architecture/ownership_invariant.md` — the surface this phase changes in it.
+- `documents/architecture/hostbootstrap_core_library.md` — the surface this phase changes in it.
+- `documents/architecture/harness_workflow.md` — the surface this phase changes in it.
+- `documents/architecture/generic_project_model.md` — the surface this phase changes in it.
+- `documents/architecture/binary_context_config.md` — the surface this phase changes in it.
 
 - `documents/architecture/network_reachability.md` — runtime-owned loopback exposure and resolved endpoints.
 - `documents/architecture/lifecycle_state_model.md` — the canonical/live dependency registries and fresh
@@ -2575,6 +2618,10 @@ evidence is 2026-08-26, before the September changes to the demo command surface
   projector composition order.
 
 **Engineering docs to create/update:**
+- `documents/engineering/resource_budgeting.md` — the surface this phase changes in it.
+- `documents/engineering/derived_project_standards.md` — the surface this phase changes in it.
+- `documents/engineering/derived_dockerfile.md` — the surface this phase changes in it.
+- `documents/engineering/cluster_lifecycle.md` — the surface this phase changes in it.
 
 - `documents/engineering/testing.md` — what the long gate covers that the static suites cannot.
 - `documents/engineering/accelerator_daemon.md` — the per-substrate placement.

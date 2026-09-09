@@ -1,6 +1,6 @@
 # Phase 16 — Cluster lifecycle, budgets, and cordoning
 
-**Status**: Active
+**Status**: Done
 **Current sprint**: None
 **Depends on**: Phase 12 (the generic plan-indexed budget boundary), Phase 14 (the four ownership clauses
 and the ownership seam), Phase 15 (host providers and the self-reference lift)
@@ -8,8 +8,10 @@ and the ownership seam), Phase 15 (host providers and the self-reference lift)
 **Gate**: `cd core && cabal test all --ghc-options=-Werror` on the gate host that runs it (§ C;
 cross-family confirmation belongs to the
 [host-portability acceptance phase](phase-28-host-portability-acceptance.md)), composed with
-`hostbootstrap test run cluster-live` on linux-cpu
+the bare core binary's `hostbootstrap test run cluster-live` on linux-cpu
 **Gate kind**: deferred
+**Gate evidence**: 2026-09-07 ; arm64 macOS 26.6.2 (build 25G83), Colima 0.10.3, kind 0.31.0, Kubernetes v1.35.0 ; bare core binary `hostbootstrap test run cluster-live` ; pass ; covers 3aa15600bd07f4758b7269ac042ed8ad707338b58fa1b77160d1be7b675ed08a
+**Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Cluster` `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima.hs` `core/hostbootstrap-core/internal/colima-backend`
 
 > **Purpose**: Bring a cluster up inside a declared resource budget, cordon what the project may consume, and
 > keep the durable host root outside everything the lifecycle may delete.
@@ -2491,9 +2493,9 @@ proved no matching node container remained, re-read the byte-identical durable-r
 1/1 passed. A prerequisite run without `kubectl` additionally refused before cluster creation with the exact
 missing-tool diagnostic instead of timing out.
 
-### Sprint 16.50: The live cluster gate run [Active]
+### Sprint 16.50: The live cluster gate run [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`
@@ -2508,20 +2510,27 @@ Record the dated `hostbootstrap test run cluster-live` run on linux-cpu against 
 
 #### Validation
 
-The dated run.
+On 2026-09-06, `hostbootstrap test run cluster-live` reported `1/1 passed` on arm64 macOS 26.6.2
+(build 25G83) realizing `linux-cpu` through Colima 0.10.3, with kind 0.31.0 and a Kubernetes v1.35.0
+server. The run created the harness-owned cluster `hostbootstrap-test-run-19b169b97b438`, observed its
+nodes Ready through `kubectl`, and its reverse projection deleted the cluster; `kind get clusters`
+afterwards listed only the ambient unrelated cluster, and `.test_data` was left present and empty.
+
+The Apple outer host reports `cordon: Apple substrate — the prepared per-project provider VM owns the
+outer wall`, which is the declared cordon disposition for this realization rather than a skipped check.
+
+An earlier attempt on the same day recorded `1/2 passed` with the teardown refusing
+(`no installed signing key`), because the binary had been built but its installed identity had not been
+provisioned. That is the documented install order rather than a defect in this lane, and it is recorded
+here because the refusal left a cluster standing that had to be removed by hand.
 
 #### Remaining Work
 
-The run is owed. Its newest dated evidence is 2026-08-21/22, before the September changes to the
-lifecycle, service, and child-projection surfaces this lane exercises.
+None.
 
 ## Remaining Work
 
-Sprint 16.50 owns the owed run.
-
-The composed half is owed: `hostbootstrap test run cluster-live` on linux-cpu. Its newest dated evidence is
-2026-08-21/22, before the September changes to the lifecycle, service, and child-projection surfaces the lane
-exercises, so the currency rule in [the plan index](README.md) re-owes it.
+None.
 
 ## Documentation Requirements
 
@@ -2537,6 +2546,7 @@ exercises, so the currency rule in [the plan index](README.md) re-owes it.
   boundaries and their named compile-fail evidence.
 
 **Engineering docs to create/update:**
+- `documents/engineering/testing.md` — the gate kinds this phase closes on and the run it records.
 - `documents/engineering/cluster_lifecycle.md` — exact plan-owned bring-up, status, readiness, and teardown.
 - `documents/engineering/applied_cordon.md` — the pure preflight and the applied constructive slice.
 - `documents/engineering/resource_budgeting.md` — generic budget admission and exact cluster/Colima consumers.

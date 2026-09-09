@@ -53,6 +53,7 @@ import Data.Ord (Down (Down))
 import qualified Data.Text as Text
 import Data.Word (Word64)
 import qualified Data.ByteString.Char8 as ByteString.Char8
+import HostBootstrap.Ownership.Object (storeFault)
 import HostBootstrap.Protected
   ( Expectation (ExpectAbsent, ExpectVersion),
     ProtectedError,
@@ -1304,8 +1305,6 @@ acquireColimaDirectory session key target = do
               (renderOriginRecord record)
           pure (either (Left . storeFault "publish directory binding") (const (Right ())) written)
 
-storeFault :: Text.Text -> ProtectedError -> OwnershipFault
-storeFault operation failure = OwnershipProbeFailed operation (protectedErrorMessage failure)
 
 revalidateColimaManifest :: ProtectedSession session -> ColimaOwnershipKeys -> FilePath -> FilePath -> IO (Either OwnershipFault OwnershipManifest)
 revalidateColimaManifest session keys home context = do

@@ -1850,6 +1850,8 @@ None.
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
+- `documents/architecture/hostbootstrap_core_library.md` — the surface this phase changes in it.
+- `documents/architecture/generic_project_model.md` — the surface this phase changes in it.
 - `documents/architecture/composition_methodology.md` — static/scope-finalized specification boundaries, the
   one-plan doctrine, target signatures, projection ownership, and module dependency direction.
 - `documents/architecture/binary_context_config.md` — plan/context admission and the generated current-frame

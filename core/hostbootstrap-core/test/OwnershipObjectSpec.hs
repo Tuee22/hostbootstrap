@@ -16,6 +16,7 @@ half-reads is the one input that could make it delete something it does not own.
 -}
 module OwnershipObjectSpec (tests) where
 
+import Expect (expectRight)
 import qualified Data.ByteString as ByteString
 import Data.ByteString (ByteString)
 import Data.Foldable (traverse_)
@@ -447,9 +448,6 @@ forceIdentity raw = either (error . show) id (mkObjectIdentity raw)
 forceBound :: ObjectIdentity -> OriginRecord -> OriginRecord
 forceBound identity record = either (error . show) id (bindOriginRecord identity record)
 
-expectRight :: (Show fault) => Either fault value -> IO value
-expectRight (Right value) = pure value
-expectRight (Left fault) = assertFailure ("expected a value, got " <> show fault)
 
 expectUnsupported :: (Show value) => Either OwnershipFault value -> IO ()
 expectUnsupported outcome = case outcome of

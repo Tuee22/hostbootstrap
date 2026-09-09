@@ -34,7 +34,7 @@ import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 import qualified HostBootstrap.ProjectPlan as ProjectPlan
 import HostBootstrap.Reconcile
 import HostBootstrap.Step
-import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (..), SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsGpu))
+import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (..), SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu))
 import HostBootstrap.Substrate.Provider (HostPathShare (..), ProviderKind (..), SubstrateProvider, VMHandles (..), selectProviderKind)
 import HostBootstrap.Substrate.Provider.Backend
 import HostBootstrap.Substrate.Provider.Reconcile
@@ -117,6 +117,14 @@ portableCases =
         case mkWsl2BackendSpec wsl2ResolvedHostConfig limaProvider limaEnvelope limaShare of
             Left (Failure _) -> pure ()
             other -> assertFailure ("expected WSL2 provider-kind refusal, got " <> showEither other)
+        -- Both Windows rows realize the same provider. Keying on the accelerator
+        -- row refused a windows-cpu host, and no case here noticed because every
+        -- fixture was windows-gpu.
+        _ <-
+            either
+                (assertFailure . ("windows-cpu must realize the WSL2 provider: " <>) . show)
+                pure
+                (mkWsl2BackendSpec wsl2CpuResolvedHostConfig wsl2Provider limaEnvelope limaShare)
         wslSpec <- either (assertFailure . show) pure (mkWsl2BackendSpec wsl2ResolvedHostConfig wsl2Provider limaEnvelope limaShare)
         limaSpec <- either (assertFailure . show) pure (mkLimaBackendSpec limaResolvedHostConfig limaProvider limaEnvelope limaShare)
         assertBool "the WSL2 realization shared Lima's backend identity" (wslSpec /= limaSpec)
@@ -1072,6 +1080,12 @@ wsl2ResolvedHostConfig :: HostConfig
 wsl2ResolvedHostConfig =
     HostConfig
         (Substrate WindowsGpu Amd64)
+        (Map.fromList [(Wsl, fixtureExe fixtureWsl)])
+
+wsl2CpuResolvedHostConfig :: HostConfig
+wsl2CpuResolvedHostConfig =
+    HostConfig
+        (Substrate WindowsCpu Amd64)
         (Map.fromList [(Wsl, fixtureExe fixtureWsl)])
 
 wsl2UnresolvedHostConfig :: HostConfig
