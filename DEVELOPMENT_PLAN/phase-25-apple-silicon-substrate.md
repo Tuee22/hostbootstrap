@@ -1,12 +1,12 @@
 # Phase 25 — Apple Silicon substrate
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: apple-silicon
-**Gate**: live `hostbootstrap run -- test run all` reporting `10/10 passed` on an Apple Silicon host, plus a
-focused live exact-plan direct-Colima adapter lane
+**Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
+reporting `10/10 passed` on an Apple Silicon host, plus a focused live exact-plan direct-Colima adapter lane
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-08 ; arm64 macOS 26.6.2 (build 25G83), Lima 2.1.2, Colima 0.10.3, kind 0.31.0, GHC 9.12.4, Cabal 3.16.1.0 ; Python-bootstrapper `hostbootstrap run -- test run all` plus `HOSTBOOTSTRAP_COLIMA_LIVE=1 cabal test --test-options='--pattern Colima'` ; pass ; covers fecbffb2e680eea7c487ecd619dd065891c4d3571ba7cfddedef3c335f2d7d7b
+**Gate evidence**: 2026-09-09 ; arm64 macOS 26.6.2 (build 25G83), Lima 2.1.2, Colima 0.10.3, kind 0.31.0, GHC 9.12.4, Cabal 3.16.1.0 ; repository Python bootstrapper `poetry run hostbootstrap run --project-root demo test run all` plus `HOSTBOOTSTRAP_COLIMA_LIVE=1 cabal test hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern Colima' --test-show-details=direct` ; pass ; covers 2b2a396a8b090a54079696ecc9966d79d6784d7ed73f89609979ca753d788ebc
 **Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/AppleMetal.hs` `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima.hs` `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima` `core/hostbootstrap-core/src/HostBootstrap/Ensure/Lima.hs` `core/hostbootstrap-core/src/HostBootstrap/Lima.hs` `core/hostbootstrap-core/internal/colima-backend` `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider` `core/hostbootstrap-core/internal/effect`
 
 > **Purpose**: Add the Apple-only Metal accelerator realization, exercise Lima/Colima as the Apple-host
@@ -163,84 +163,84 @@ passed 2,475/2,475 in 369.23 seconds.
 None. The pristine Apple/Lima matrix, terminal ownership audit, and native exact-plan direct-Colima lane
 are complete.
 
-### Sprint 25.4: The Apple Silicon acceptance run [Active]
+### Sprint 25.4: The Apple Silicon acceptance run [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: apple-silicon
-**Docs to update**: `documents/engineering/testing.md`
+**Docs to update**: `documents/engineering/testing.md`, `documents/operations/demo_runbook.md`
 
 #### Objective
 
-Record the dated live acceptance matrix on an Apple Silicon host.
+Record both live acceptance lanes against the same tree on an Apple Silicon host.
 
 #### Deliverables
 
-- one dated run of `hostbootstrap run -- test run all` reporting `10/10 passed`, naming its host.
+- A dated run of the repository Python-bootstrapper's complete demo matrix reporting `10/10 passed`.
+- A dated native exact-plan direct-Colima lane proving acquisition, conflict refusal, and cleanup.
+- A terminal ownership audit and a covers digest matching the tree both lanes exercised.
 
 #### Validation
 
-**2026-09-08 — passed. This is the run the header row records.** Both halves ran against one tree on
-arm64 macOS 26.6.2 (build 25G83) with Lima 2.1.2, Colima 0.10.3, kind 0.31.0, GHC 9.12.4 and
-Cabal 3.16.1.0.
+**2026-09-09 — passed.** Both lanes ran on native arm64 macOS 26.6.2 (build 25G83), with Lima 2.1.2,
+Colima 0.10.3, kind 0.31.0, GHC 9.12.4, Cabal 3.16.1.0, Python 3.14.3, and Poetry 2.3.2.
 
-The live acceptance: `hostbootstrap run -- test run all` reported `10/10 passed` in 1 hour 51 minutes
-38 seconds — both variants across `pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence`
-and `durable-readback` — over four fresh Lima bring-ups and four terminal destroys, with no `BROKEN`,
-`LEAKED` or `FAILED` row. The audited end state holds: no demo Lima instance remains,
-`hostbootstrap-demo.dhall` is gone while `.test.dhall` and the five installed identity artifacts are
-retained, `.test_data` is present and empty, and the ambient Colima `default` and `incus` profiles are
-byte-identical to their pre-run listing.
+The demo began without `.build`, `.hostbootstrap`, `.test_data`, `.data`, generated sibling config,
+Lima instance, or accelerator process. From the repository root,
+`poetry run hostbootstrap run --project-root demo test init` built the host-native binary and wrote its
+sibling test config. The Python module resolved to this checkout's `hostbootstrap/` package.
 
-The focused direct-Colima adapter lane, re-run the same day rather than carried forward: 33/33 in 40.96
-seconds with `HOSTBOOTSTRAP_COLIMA_LIVE=1`, the live case taking 37.78 seconds and reporting
-`direct-colima-live: project=hostbootstrap-core-test profile=h-202dee` then
-`conflict refused; exact profile/context/data cleaned; ambient default unchanged`. No `h-*` profile
-remained afterwards.
+`poetry run hostbootstrap run --project-root demo test run all` reported **10/10 passed**, with exit 0,
+in **6,801.62 seconds (1 hour 53 minutes 22 seconds)**, starting at 12:40:05 UTC. This exceeds the
+60–80 minute planning envelope; the initial cold host-native build is additional. Both `hello-world`
+(`run-26ffba3bd2610`) and `hello-universe` (`run-2731778d2db60`) passed `pristine-bootstrap`,
+`web-build`, `e2e-tabs`, `registry-persistence`, and `durable-readback`. The matrix completed four fresh
+Lima bring-ups and four destroys, including one same-run durable reconstruction per variant, with no
+`BROKEN`, `LEAKED`, or `FAILED` row. Each image completed its in-container check-code and export
+verification; both variants exercised the host Metal daemon through their end-to-end assertions.
 
-This run also matters for a reason outside this phase. Every earlier `hostbootstrap run` on this host was
-driven by a pipx install dated 2026-08-05 that omitted both `-j1` and the
-`--hostbootstrap-install-identity` call the current source makes unconditionally; the CLI was reinstalled
-from the repository earlier the same day, so this is the first Apple acceptance matrix driven by a
-bootstrapper matching the tree its digest measures.
+Every fresh guest pulled published base digest
+`sha256:3634916e85b1fda411ae671a4bca2f72745e0bd106e2e9efebccc25415e0bc49`.
+The derived image digests, in generation order, were:
 
-The 2026-09-06 run below is retained as history.
+| Variant | Generation | Derived image digest |
+|---|---|---|
+| `hello-world` | Initial | `sha256:95d4d6ca5259bf802710947c55b8294c56eab040c9dc7c3d1ccf138da8c5ff2a` |
+| `hello-world` | Durable reconstruction | `sha256:40cd65ee7a98c2f61cac61c88db137d19c665578342f405443cdd7363bcec5f2` |
+| `hello-universe` | Initial | `sha256:70b3a02e683f650357a170978b074fef82fb89c32b8e5a5afef3668fda95176a` |
+| `hello-universe` | Durable reconstruction | `sha256:46d4e1c75198fd0f71e31f032c4334be20b95c7987bcaa47bc9d44fbe4aab271` |
 
-Both halves of this phase's gate ran on 2026-09-06 on arm64 macOS 26.6.2 (build 25G83) with Lima 2.1.2,
-Colima 0.10.3 and kind 0.31.0.
+The terminal audit confirmed both protected leases encode `closed` (epochs 4 and 8); no project mode,
+generated-config, or data-root record remains. The generated `.build/hostbootstrap-demo.dhall` is absent;
+the test config and five installed identity artifacts remain. `.test_data` is preserved and empty,
+`.data` retains its initial absent state, no accelerator process or Lima instance remains, and the ambient
+Docker engine has no containers. The Colima `default` (Running) and `incus` (Stopped) JSON listings and
+Docker context listing are byte-identical to preflight, with `colima` still selected.
 
-The live acceptance: `hostbootstrap run -- test run all` reported `10/10 passed` — both variants across
-`pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence`, and `durable-readback` — over four
-fresh Lima bring-ups and four terminal destroys, with the Metal accelerator daemon reaching ready on the
-host before assertions. The audited end state holds: no demo Lima instance remains, `.test_data` is
-present and empty, no daemon is live, and the ambient Colima `default` profile is unchanged.
+From `core/`,
+`HOSTBOOTSTRAP_COLIMA_LIVE=1 cabal test hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern Colima' --test-show-details=direct`
+passed **33/33** in **41.51 seconds**. The live case took 38.18 seconds, derived profile `h-c2a539`,
+refused the incompatible same-name acquisition, and reported exact profile/context/data cleanup with
+ambient `default` unchanged. No managed `h-*` profile remains. The 31-file covers measurement matched
+before and after both lanes; the header records that digest.
 
-The focused direct-Colima adapter lane: `ColimaSpec` passed `18/18` in 42.74 seconds with
-`HOSTBOOTSTRAP_COLIMA_LIVE=1`, the live case reporting
-`direct-colima-live: project=hostbootstrap-core-test profile=h-542e02` and then
-`conflict refused; exact profile/context/data cleaned; ambient default unchanged`. It derived the opaque
-exact-plan profile, acquired and settled it, refused a same-plan incompatible acquisition, and cleaned up
-without activating the shared profile.
+The supporting native macOS static gate also passed: `cabal build all --ghc-options=-Werror` and
+`cabal test all --ghc-options=-Werror --test-show-details=direct` from `core/`, with **2,497/2,497**
+core cases in 391.11 seconds (401.70 seconds including component work). The provider-live component
+compiled and reported its declared `Unsupported: provider-live not requested` disposition; this is no
+claim of Linux provider acceptance. From the repository root, the Python code check passed and the
+Python suite passed **235/235** in 1.56 seconds.
+
+The closing `DocValidatorSpec` gate passed **5/5**, checking governed-document conformance, phase/index
+status harmony, and the recorded evidence against the tree. `git diff --check` passed.
 
 #### Remaining Work
 
-Both halves of the gate are owed against the current tree. The finite Incus stop renderer under
-`HostBootstrap.Substrate.Provider` changed after the recorded 2026-09-08 run, so the covers digest no longer
-matches; the live matrix and focused direct-Colima lane must run together again on an Apple Silicon host.
-
-The previous entry recorded that this phase was owed its live acceptance again, because a deduplication
-pass had changed `Ensure/Colima/Ownership.hs` and `Ensure/AppleMetal.hs` inside this phase's covers set
-after the 2026-09-06 matrix. That is now discharged by the 2026-09-08 run above, which re-ran **both**
-halves against one tree rather than carrying the adapter lane forward from a prior day.
-
-It is worth keeping the reason on the record: the currency rule priced a refactor that looked purely
-cosmetic, and the honest response was to re-run the matrix rather than re-stamp a digest. That is the
-substitution the mechanism exists to prevent, and it held.
+None. Both live lanes, the terminal audit, and the matching evidence measurement are complete.
 
 ## Remaining Work
 
-Sprint 25.4 owns the owed runs. The live matrix and focused direct-Colima adapter lane must both pass on an
-Apple Silicon host against the current tree before this phase returns to `Done`.
+None.
 
 ## Documentation Requirements
 

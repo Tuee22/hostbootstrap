@@ -235,6 +235,12 @@ records the concrete parser and filesystem command checks. These exercise the ge
 the [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns the live provider, cluster,
 workload, recursive reverse, and same-run durable recreate gate. Dated totals belong in those phase records.
 
+The [Apple Silicon acceptance phase](../../DEVELOPMENT_PLAN/phase-25-apple-silicon-substrate.md) combines
+the pristine demo matrix through Lima and Metal with the native exact-plan direct-Colima lane. Its terminal
+audit checks closed leases, released config and run-data ownership, absent demo VM and daemon, and unchanged
+ambient Colima profiles and Docker context. Both live lanes exercise the same covered tree; their dated
+results and source measurement belong in that phase.
+
 ## Supported Fast Test Entries
 
 From the repository root:

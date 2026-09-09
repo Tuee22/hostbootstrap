@@ -380,8 +380,9 @@ poetry run hostbootstrap run --project-root demo test init
 poetry run hostbootstrap run --project-root demo test run all
 ```
 
-The complete matrix performs four fresh Lima bring-ups and four terminal destroys and normally occupies the
-60–80 minute envelope. Every bring-up installs/builds inside a pristine guest, pulls the published base, and
+The complete matrix performs four fresh Lima bring-ups and four terminal destroys. Allow at least two hours
+for the matrix, plus the initial cold host-native build; the acceptance phase records measured durations.
+Every bring-up installs/builds inside a pristine guest, pulls the published base, and
 runs the image's `check-code`/export verification before workloads start. Success is exactly `10/10 passed`.
 
 After success, verify both run leases encode `closed`; no project mode, generated-config, or data-root record
