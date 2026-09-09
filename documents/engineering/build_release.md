@@ -25,10 +25,13 @@ For each selected flavor the workflow:
 1. discovers current compatible upstream versions and URLs;
 2. runs the complete Python/core/demo source preflight;
 3. cold-builds the rolling tag with plain native `docker build`;
-4. pushes the rolling tag;
-5. pulls that published tag so a same-named local image cannot mask registry state;
-6. resolves the pulled repository digest as an identifier for this workflow;
-7. cold-builds the real `demo/docker/Dockerfile` with that pulled base as a compatibility smoke.
+4. resolves the freshly built local image ID and, with the classic builder needed for daemon-local ID
+   resolution, cold-builds the compatibility consumer against that immutable local ID, refusing before
+   registry mutation if the new base cannot build it;
+5. pushes the rolling tag;
+6. pulls that published tag so a same-named local image cannot mask registry state;
+7. resolves the pulled repository digest as an identifier for this workflow;
+8. cold-builds `docker/compatibility-smoke.Dockerfile` against that exact digest.
 
 Buildx, emulation, and multi-architecture manifest lists are outside this workflow.
 
@@ -96,9 +99,10 @@ A digest is still useful to identify the exact artifact just pulled and to bind 
 against a registry result rather than a stale local tag. That use does not make the digest a permanent
 consumer pin and does not turn dynamic inputs into reproducibility evidence.
 
-The compatibility smoke uses the real demo project and its ordinary `cabal.project`. It may download and
-compile cache misses. It proves that the publication can build the consumer, not that the store is
-complete or the build is offline.
+The compatibility smoke is a real derived consumer with its own Cabal project and source. It needs only
+the selected base reference, may download and compile cache misses, and proves that the publication can
+build a consumer without acquiring the demo's separate authenticated build authority. It does not prove
+that the warm store is complete or the build is offline.
 
 ## Local inspection versus publication
 
@@ -126,7 +130,13 @@ Unit seams cover:
 - architecture mismatch before mutation;
 - dynamic resolver output feeding build arguments;
 - source-gate failure before Docker build/push;
-- build → push → pull → digest identification → real-demo smoke ordering;
-- the smoke's use of the real Dockerfile and ordinary online consumer project.
+- build → local consumer smoke → push → pull → digest identification → published consumer smoke ordering;
+- the smoke's use of the dedicated real-consumer Dockerfile and ordinary online Cabal project.
 
 Live publication evidence belongs in the owning development-plan sprint.
+
+The 2026-09-09 native Linux/x86_64 CPU run completed this sequence and published
+`docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64` at
+`sha256:e46fb5699af246dc631704cd9bba5020776a7e96fbba1f4c450b5b9971ffb9d5`. Both the immutable
+local-ID smoke before the push and the exact pulled-digest smoke after it resolved the inherited Cabal
+store `Up to date`.

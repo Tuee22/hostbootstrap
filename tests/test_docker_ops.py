@@ -109,7 +109,7 @@ def test_build_command_omits_resource_limits_when_unset() -> None:
     assert "--cpu-quota" not in cmd
 
 
-async def test_build_forces_classic_builder_only_with_resource_caps(
+async def test_build_forces_classic_builder_for_caps_or_explicit_local_resolution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: list[object] = []
@@ -127,11 +127,20 @@ async def test_build_forces_classic_builder_only_with_resource_caps(
     capped = docker_ops.BuildSpec(
         dockerfile=Path("D"), context=Path("."), tags=("t",), build_args={}, memory="1g", cpus="2"
     )
+    local = docker_ops.BuildSpec(
+        dockerfile=Path("D"),
+        context=Path("."),
+        tags=("t",),
+        build_args={},
+        use_classic_builder=True,
+    )
     await docker_ops.build(plain)
     await docker_ops.build(capped)
+    await docker_ops.build(local)
 
     assert seen[0] is None
     assert seen[1] == {"DOCKER_BUILDKIT": "0"}
+    assert seen[2] == {"DOCKER_BUILDKIT": "0"}
 
 
 def test_run_command_one_shot_rm_with_mounts() -> None:
@@ -195,6 +204,14 @@ def test_push_tag_inspect_commands() -> None:
         "{{json .RepoDigests}}",
         "r:t",
     )
+    assert docker_ops.image_id_command("r:t") == (
+        "docker",
+        "image",
+        "inspect",
+        "--format",
+        "{{.Id}}",
+        "r:t",
+    )
 
 
 @pytest.mark.parametrize(
@@ -242,6 +259,15 @@ def test_parse_digest_reference_accepts_docker_hub_registry_elision() -> None:
     assert docker_ops.parse_digest_reference(rendered, tag=tag) == (
         f"docker.io/tuee22/hostbootstrap@{digest}"
     )
+
+
+def test_parse_image_id_requires_full_sha256() -> None:
+    image_id = f"sha256:{'d' * 64}"
+    assert docker_ops.parse_image_id(f"{image_id}\n", tag="r:t") == image_id
+    with pytest.raises(RuntimeError, match="unexpected Docker image ID"):
+        docker_ops.parse_image_id("sha256:short", tag="r:t")
+    with pytest.raises(RuntimeError, match="unexpected Docker image ID"):
+        docker_ops.parse_image_id(f"sha256:{'D' * 64}", tag="r:t")
 
 
 def test_parse_image_entrypoint() -> None:
@@ -306,16 +332,23 @@ async def test_arch_and_digest_async_wrappers_parse_quiet_output(
         argv = tuple(str(part) for part in cmd)  # type: ignore[union-attr]
         calls.append(argv)
         assert kwargs == {"quiet": True}
-        stdout = "aarch64\n" if argv[:2] == ("docker", "info") else f'["{digest}"]\n'
+        if argv[:2] == ("docker", "info"):
+            stdout = "aarch64\n"
+        elif argv == docker_ops.image_id_command(tag):
+            stdout = f"sha256:{'d' * 64}\n"
+        else:
+            stdout = f'["{digest}"]\n'
         return process.CommandResult(argv, 0, stdout, "")
 
     monkeypatch.setattr(docker_ops.process, "run_checked", _fake_run_checked)
 
     assert await docker_ops.engine_arch() == "arm64"
     assert await docker_ops.image_digest_reference(tag) == digest
+    assert await docker_ops.image_id(tag) == f"sha256:{'d' * 64}"
     assert calls == [
         docker_ops.engine_arch_command(),
         docker_ops.image_repo_digests_command(tag),
+        docker_ops.image_id_command(tag),
     ]
 
 

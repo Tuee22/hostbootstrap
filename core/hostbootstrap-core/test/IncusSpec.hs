@@ -70,7 +70,7 @@ argvCases =
               "path=/srv/demo/.data"
             ],
     testCase "stop halts the VM without deleting it (project down)" $
-      stopVMArgs vm @?= ["stop", "hostbootstrap-demo-vm"]
+      stopVMArgs vm @?= ["stop", "hostbootstrap-demo-vm", "--force"]
   ]
 
 guardCases :: [TestTree]

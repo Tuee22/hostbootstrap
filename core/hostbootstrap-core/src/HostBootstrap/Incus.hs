@@ -33,9 +33,9 @@ createVMArgs vm sizing = ["launch", vmImage vm, vmName vm, "--vm"] ++ sizing
 startVMArgs :: IncusVM -> [String]
 startVMArgs vm = ["start", vmName vm]
 
--- | @incus stop <name>@.
+-- | @incus stop <name> --force@, without an unbounded guest-agent wait.
 stopVMArgs :: IncusVM -> [String]
-stopVMArgs vm = ["stop", vmName vm]
+stopVMArgs vm = ["stop", vmName vm, "--force"]
 
 -- | @incus file push <src> <name>/<dst>@.
 pushFileArgs :: IncusVM -> FilePath -> FilePath -> [String]

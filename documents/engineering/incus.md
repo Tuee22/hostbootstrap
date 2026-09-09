@@ -69,7 +69,10 @@ mutation. A real provider mutation instead consumes the exact prepared call. Opa
 generic handle/receipt authority. Inside one protected-store exclusive entry, the backend publishes and
 recovers the explicit-absence provider/share origins, binds the VM's own UUID under this run's owner
 claim, and revalidates identity before and after ready, share, stop, guest execution, and conditional
-delete. Two consequences of that shape are worth stating, because both were reached by driving the real
+delete. A share is not bound merely because the forced activation restart reports the VM `RUNNING`: the
+driver polls `incus exec <name> -- true` under the canonical VM-boot policy and admits dependent guest work
+only after that exact owned VM answers. Two consequences of that shape are worth stating, because both were
+reached by driving the real
 transaction rather than by reading it:
 
 - **the re-entry compares what a record says, not its bytes.** Every release and every dependent
@@ -162,7 +165,8 @@ through rather than one written per provider. This module supplies only the noun
 the argument vector for a name the guard has already admitted, so it cannot render a destructive command for
 a name the guard would have refused. An instance outside the project's namespace refuses, and so do the two
 degenerate inputs that make the guard vacuous: an empty prefix, which is a prefix of every name, and an empty
-instance name. `incus stop` carries no guard because it is not destructive.
+instance name. `incus stop <name> --force` carries no guard because it is not destructive, and it does not
+allow an unresponsive guest agent to hold the lifecycle transaction indefinitely.
 
 ## Recursive Lifecycle And Durable State
 
@@ -211,9 +215,12 @@ including prepared create/recovery, ready, share/readback, stop/restart, bound g
 acquisition/release, identity-conditional delete, and the Direct no-mutation/refusal path. A macOS run is
 not evidence for that gate.
 
-That run passed on 2026-08-10 on Ubuntu 24.04.4 LTS x86_64 with Incus 6.0.0, GHC 9.12.4, and Cabal 3.16.1.0;
-the phase document holds the exact command, confirmed observations, and residue checks. Recursive teardown
-and end-to-end demo durability remain later phase concerns. Status and scheduling belong in
+That run passed against the current tree on 2026-09-09 on Ubuntu 24.04.4 LTS x86_64, Linux
+7.0.0-28-generic, with readable/writable KVM, Incus 6.0.0, GHC 9.12.4, and Cabal 3.16.1.0. All 2,497
+static cases passed before the live component confirmed the prepared lifecycle, forced restart,
+post-restart guest readiness, installed frame-child execution, conditional alias release, delete, Direct
+refusal, and residue checks. The phase document holds the exact command and evidence digest. Recursive
+teardown and end-to-end demo durability remain later phase concerns. Status and scheduling belong in
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
 ### Provider naming bounds

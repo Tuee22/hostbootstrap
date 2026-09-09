@@ -7,6 +7,7 @@ re-orderable); the runners just hand the result to :mod:`hostbootstrap.process`.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +45,7 @@ class BuildSpec:
     memory: str | None = None
     cpus: str | None = None
     memory_swap: str | None = None
+    use_classic_builder: bool = False
 
 
 def build_command(spec: BuildSpec) -> tuple[str, ...]:
@@ -134,6 +136,10 @@ def image_repo_digests_command(tag: str) -> tuple[str, ...]:
     return (_DOCKER, "image", "inspect", "--format", "{{json .RepoDigests}}", tag)
 
 
+def image_id_command(tag: str) -> tuple[str, ...]:
+    return (_DOCKER, "image", "inspect", "--format", "{{.Id}}", tag)
+
+
 def normalize_architecture(value: str) -> str:
     normalized = value.strip().lower()
     aliases = {
@@ -183,6 +189,13 @@ def parse_digest_reference(rendered: str, *, tag: str) -> str:
     return f"{repository}@{digest}"
 
 
+def parse_image_id(rendered: str, *, tag: str) -> str:
+    image_id = rendered.strip()
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
+        raise RuntimeError(f"unexpected Docker image ID for {tag!r}: {image_id!r}")
+    return image_id
+
+
 def parse_image_entrypoint(rendered: str, *, tag: str) -> tuple[str, ...]:
     text = rendered.strip()
     if text in {"", "null"}:
@@ -209,7 +222,7 @@ def _has_resource_caps(spec: BuildSpec) -> bool:
 
 
 async def build(spec: BuildSpec, *, prefix: str = "") -> process.CommandResult:
-    env = _BUILDKIT_OFF_ENV if _has_resource_caps(spec) else None
+    env = _BUILDKIT_OFF_ENV if _has_resource_caps(spec) or spec.use_classic_builder else None
     return await process.run_checked(build_command(spec), prefix=prefix, env=env)
 
 
@@ -229,6 +242,11 @@ async def engine_arch() -> str:
 async def image_digest_reference(tag: str) -> str:
     result = await process.run_checked(image_repo_digests_command(tag), quiet=True)
     return parse_digest_reference(result.stdout, tag=tag)
+
+
+async def image_id(tag: str) -> str:
+    result = await process.run_checked(image_id_command(tag), quiet=True)
+    return parse_image_id(result.stdout, tag=tag)
 
 
 async def image_exists(tag: str) -> bool:

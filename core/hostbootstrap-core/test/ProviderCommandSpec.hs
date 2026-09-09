@@ -87,9 +87,9 @@ mutationTests =
                 ((providerOwnerConfigKey <> "=") `isInfixOf`)
                 (commandArguments (launchInstanceCommand "demo-vm" "img" sizing "9f3c"))
             )
-    , testCase "start and stop name only the instance" $ do
+    , testCase "start names the instance and stop cannot wait on its guest agent" $ do
         commandArguments (startInstanceCommand "demo-vm") @?= ["start", "demo-vm"]
-        commandArguments (stopInstanceCommand "demo-vm") @?= ["stop", "demo-vm"]
+        commandArguments (stopInstanceCommand "demo-vm") @?= ["stop", "demo-vm", "--force"]
     , testCase "share activation restarts exactly the owned instance" $
         commandArguments (restartInstanceCommand "demo-vm") @?= ["restart", "demo-vm", "--force"]
     , testCase "a share is attached as a disk device with both paths" $

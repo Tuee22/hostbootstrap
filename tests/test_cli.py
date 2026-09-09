@@ -454,9 +454,13 @@ def _stub_self_check_passing(monkeypatch: pytest.MonkeyPatch) -> None:
         repository = tag.split(":", 1)[0]
         return f"{repository}@sha256:{'a' * 64}"
 
+    async def _image_id(_tag: str) -> str:
+        return f"sha256:{'b' * 64}"
+
     monkeypatch.setattr(cli, "_validate_native_architecture", _native)
     monkeypatch.setattr(cli.docker_ops, "pull", _pull)
     monkeypatch.setattr(cli.docker_ops, "image_digest_reference", _digest)
+    monkeypatch.setattr(cli.docker_ops, "image_id", _image_id)
     monkeypatch.setattr(
         cli.base_image,
         "compatibility_smoke_spec",
@@ -815,23 +819,36 @@ def test_native_architecture_requires_request_host_and_engine_match(
         asyncio.run(cli._validate_native_architecture("amd64", "arm64"))
 
 
-def test_build_then_publish_orders_pull_and_real_consumer_smoke(
+def test_build_then_publish_smokes_before_and_after_registry_mutation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     tag = "docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64"
     digest = f"docker.io/tuee22/hostbootstrap@sha256:{'b' * 64}"
+    local_image_id = f"sha256:{'a' * 64}"
     base_spec = _stub_build_spec()[0]
-    smoke_spec = docker_ops.BuildSpec(
+    local_smoke_spec = docker_ops.BuildSpec(
         dockerfile=tmp_path / "demo/docker/Dockerfile",
         context=tmp_path,
-        tags=("compatibility",),
+        tags=("local-compatibility",),
+        build_args={"BASE_IMAGE": local_image_id},
+    )
+    published_smoke_spec = docker_ops.BuildSpec(
+        dockerfile=tmp_path / "demo/docker/Dockerfile",
+        context=tmp_path,
+        tags=("published-compatibility",),
         build_args={"BASE_IMAGE": digest},
     )
     order: list[str] = []
 
     async def _build(spec: docker_ops.BuildSpec, *, prefix: str = "") -> object:
         _ = prefix
-        order.append("base-build" if spec is base_spec else "derived-build")
+        if spec is base_spec:
+            order.append("base-build")
+        elif spec is local_smoke_spec:
+            order.append("local-derived-build")
+        else:
+            assert spec is published_smoke_spec
+            order.append("published-derived-build")
         return process.CommandResult(args=("docker", "build"), returncode=0, stdout="", stderr="")
 
     async def _push(value: str, *, prefix: str = "") -> object:
@@ -851,26 +868,33 @@ def test_build_then_publish_orders_pull_and_real_consumer_smoke(
         order.append("digest")
         return digest
 
+    async def _image_id(value: str) -> str:
+        assert value == tag
+        order.append("image-id")
+        return local_image_id
+
     def _validation(
         flavor: cli.Flavor,
         arch: str,
         *,
         context: Path,
-        pulled_reference: str,
+        base_reference: str,
+        pull: bool,
     ) -> docker_ops.BuildSpec:
-        assert (flavor, arch, context, pulled_reference) == (
-            cli.Flavor.CPU,
-            "arm64",
-            tmp_path,
-            digest,
-        )
-        order.append("compatibility-spec")
-        return smoke_spec
+        assert (flavor, arch, context) == (cli.Flavor.CPU, "arm64", tmp_path)
+        if pull:
+            assert base_reference == digest
+            order.append("published-compatibility-spec")
+            return published_smoke_spec
+        assert base_reference == local_image_id
+        order.append("local-compatibility-spec")
+        return local_smoke_spec
 
     monkeypatch.setattr(cli.docker_ops, "build", _build)
     monkeypatch.setattr(cli.docker_ops, "push", _push)
     monkeypatch.setattr(cli.docker_ops, "pull", _pull)
     monkeypatch.setattr(cli.docker_ops, "image_digest_reference", _digest)
+    monkeypatch.setattr(cli.docker_ops, "image_id", _image_id)
     monkeypatch.setattr(cli.base_image, "compatibility_smoke_spec", _validation)
 
     result = asyncio.run(
@@ -886,11 +910,14 @@ def test_build_then_publish_orders_pull_and_real_consumer_smoke(
     assert result == digest
     assert order == [
         "base-build",
+        "image-id",
+        "local-compatibility-spec",
+        "local-derived-build",
         "push",
         "pull",
         "digest",
-        "compatibility-spec",
-        "derived-build",
+        "published-compatibility-spec",
+        "published-derived-build",
     ]
 
 

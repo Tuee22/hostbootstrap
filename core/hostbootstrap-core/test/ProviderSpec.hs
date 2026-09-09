@@ -253,7 +253,7 @@ lifecycleCases =
                     }
     , testCase "stop and guarded delete are explicit" $ do
         planProviderStop apple env @?= Right [hostToolEffect Lima ["stop", "demo-vm"]]
-        planProviderStop linux env @?= Right [hostToolEffect Incus ["stop", "demo-vm"]]
+        planProviderStop linux env @?= Right [hostToolEffect Incus ["stop", "demo-vm", "--force"]]
         planProviderStop windows env
             @?= Right [ReleaseGlobalWslWall wallBody, hostToolEffect Wsl ["--shutdown"]]
         planProviderDelete apple env @?= Right [hostToolEffect Lima ["delete", "demo-vm", "--force"]]

@@ -165,10 +165,11 @@ startInstanceCommand instanceName = hostCommand Incus ["start", instanceName]
 {- | Stop an instance the provider already names.
 
 Carries no guard, because stopping is not destructive: an instance stopped by
-mistake is an instance that can be started again.
+mistake is an instance that can be started again.  The forced provider action
+does not wait indefinitely on an unresponsive guest agent.
 -}
 stopInstanceCommand :: String -> HostCommand
-stopInstanceCommand instanceName = hostCommand Incus ["stop", instanceName]
+stopInstanceCommand instanceName = hostCommand Incus ["stop", instanceName, "--force"]
 
 {- | Restart an owned running instance after attaching a disk device.
 

@@ -1,11 +1,19 @@
 # Phase 23 — Base image publication and the opportunistic warm store
 
-**Status**: Active
+**Status**: Done
+**Current sprint**: None — phase complete
 **Depends on**: Phase 22 (service runtime)
 **Substrates**: linux-cpu
 **Gate**: current-compatible resolution → native build → complete quality gate → publish rolling tag → pull →
 real-consumer compatibility smoke, on linux-cpu
 **Gate kind**: deferred
+**Gate evidence**: 2026-09-09 ; x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic,
+Docker 29.7.1, GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.4.1, Python 3.12.3 ;
+repository-local Python-bootstrapper `poetry run hostbootstrap base build-and-push --flavor cpu
+--arch amd64` ; pass ; covers 78e785dcc3c00042f0f8c91cc32311243d40fe61e11584c9eafd12dccd42b718
+**Evidence covers**: `docker/basecontainer.Dockerfile` `docker/compatibility-smoke.Dockerfile`
+`core/warm-deps` `hostbootstrap/base_image.py` `hostbootstrap/cli.py`
+`hostbootstrap/docker_ops.py`
 
 > **Purpose**: Publish a rolling, native-architecture base image whose warm Cabal store is an opportunistic
 > cache, and prove a real consumer builds against the pulled tag.
@@ -58,7 +66,8 @@ None.
 ### Sprint 23.2: Publish → pull → real-consumer smoke [Done]
 
 **Status**: Done
-**Implementation**: `hostbootstrap/base_image.py`, `docker/`
+**Implementation**: `hostbootstrap/base_image.py`, `hostbootstrap/cli.py`, `docker/`,
+`tests/test_base_image.py`, `tests/test_cli.py`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/base_image.md`
 
@@ -68,6 +77,11 @@ Prove the published tag is the one consumers get.
 
 #### Deliverables
 
+- Before pushing, the workflow resolves the newly built image's local `sha256:...` ID and a cold
+  compatibility-consumer build uses that immutable ID; a consumer failure therefore refuses before registry
+  mutation. The rolling tag is deliberately not used here because BuildKit can resolve a registry-backed tag
+  from the registry even without `--pull`; the pre-publish smoke uses the classic builder so the daemon-local
+  ID cannot be reinterpreted as a registry repository. The post-publish digest smoke remains a BuildKit build.
 - After pushing, the tag is **pulled** and a real consumer project is built against the pulled image, so the
   evidence is about the published artifact rather than a local layer cache.
 - Building the base locally and testing a derived project against the un-republished local image is not
@@ -112,9 +126,9 @@ succeeds against both a warm and a cold store.
 
 None.
 
-### Sprint 23.4: The publish, pull, and consumer smoke run [Active]
+### Sprint 23.4: The publish, pull, and consumer smoke run [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`
@@ -129,60 +143,31 @@ Record the dated publish, pull, and real-consumer compatibility smoke on linux-c
 
 #### Validation
 
-The pull and smoke halves are recorded; the publish half is not.
+On 2026-09-09, the repository-local Python bootstrapper completed the canonical pipeline on native
+x86_64 Ubuntu 24.04.4 LTS with Docker 29.7.1. The complete Python/core/demo source preflight passed,
+then the CPU image built with the current compatible selections: GHC 9.10.3, Cabal 3.16.1.0,
+Fourmolu 0.19.0.1, HLint 3.10, Go 1.27.1, Node 24.21.0, npm 12.0.2, PureScript 0.15.16,
+kind 0.33.0, kubectl 1.37.0, Helm 4.2.4, Pulumi 3.261.0, Rust 1.98.1, and Poetry 2.4.3.
 
-On 2026-09-06, `docker pull docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64` resolved to
-`sha256:3634916e85b1fda411ae671a4bca2f72745e0bd106e2e9efebccc25415e0bc49`, and the real-consumer
-compatibility smoke built against that exact digest on arm64 macOS 26.6.2 (build 25G83) in 11.8
-seconds. The consumer observed `ghc`, `cabal`, a set `CABAL_DIR`, the warm store at
-`/opt/basecontainer/haskell-deps`, and `cabal build --dry-run all` resolving `Up to date` against the
-inherited store — which is the question a publication gate can answer: is what was published usable by
-a project that builds `FROM` it.
+The pre-publication compatibility consumer built with the classic builder against immutable local image
+ID `sha256:e46fb5699af246dc631704cd9bba5020776a7e96fbba1f4c450b5b9971ffb9d5`. It observed GHC,
+Cabal, `CABAL_DIR`, and `/opt/basecontainer/haskell-deps`, and its `cabal build --dry-run all` resolved
+`Up to date`. Only after that pass did the workflow push
+`docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64`.
 
-The defect that blocked this half is resolved. `compatibility_smoke_spec` pointed at
-`demo/docker/Dockerfile`, which requires a named build context holding a separately selected builder,
-two verification-key build arguments, and four `required=true` secrets — two of them a signed one-use
-build grant only the project binary's build coordinator mints. Driving it from the Python bootstrapper
-would have meant minting build authority there, a second authority surface § KK's single-owner rule
-exists to prevent. The smoke now builds `docker/compatibility-smoke.Dockerfile`, whose only input is
-`BASE_IMAGE`; the demo's authenticated build stays with the coordinator that owns it and is exercised
-by the [worked-demo phase](phase-24-worked-demo.md).
-
-`tests/test_base_image.py` now asserts the consumer's own requirements — one `ARG`, no secrets, no
-named context — rather than the spec's fields, because asserting the fields is what let a spec that
-pointed at a real consumer coexist with a command that could never build it. A companion case asserts
-no module under `hostbootstrap/` names a `demo/` path at all.
+The push reported digest `sha256:e46fb5699af246dc631704cd9bba5020776a7e96fbba1f4c450b5b9971ffb9d5`.
+The workflow pulled that tag, resolved the same repository digest, and cold-built the compatibility
+consumer with BuildKit against the exact digest. The published-artifact smoke again observed GHC 9.10.3,
+Cabal 3.16.1.0, the warm store, and an `Up to date` inherited-store resolution.
 
 #### Remaining Work
 
-The publish half is owed: `hostbootstrap base build-and-push --flavor cpu --arch arm64`, which pushes
-the rolling tag to the operator's registry namespace. It is the one step of this gate that is an
-outward-facing publication rather than an observation, and it is performed only under the operator's
-direction.
+None.
 
 ## Remaining Work
 
-Sprint 23.4 owns the owed run.
-
-The **publish half** of the gate is owed. The pull and smoke halves are recorded above: on 2026-09-06 the
-published rolling tag resolved to `sha256:3634916e85b1fda411ae671a4bca2f72745e0bd106e2e9efebccc25415e0bc49`
-and the real-consumer compatibility smoke built against that exact digest on arm64 macOS 26.6.2.
-
-The defect that made the gate unexecutable is **fixed**. `compatibility_smoke_spec` now builds
-`docker/compatibility-smoke.Dockerfile` (`hostbootstrap/base_image.py:311`, `:368`), whose only input is
-`BASE_IMAGE`. It previously built `demo/docker/Dockerfile`, which requires a `hostbootstrap-builder` named
-build context, two 64-character verification-key build arguments, and four `required=true` secret mounts —
-two of which are a signed one-use build grant only the Haskell coordinator mints — while
-`docker_ops.build_command` emits neither `--secret` nor `--build-context`. Driving that Dockerfile from
-Python would have created the second build-authority surface the architecture exists to prevent, so the
-smoke now asks the question a publication gate can answer on its own.
-
-One **ordering defect remains open**: `cli.py` pushes the rolling tag (`hostbootstrap/cli.py:402`) before
-running the smoke (`:405`), so a failing smoke leaves the tag published.
-
-Closing this phase requires the outward-facing publish — a push to the user's Docker Hub namespace, which
-an assistant performs only when the user directs it — and then recording the dated
-publish → pull → real-consumer run on linux-cpu.
+None. The dated native build, pre-publication local-ID smoke, rolling-tag push, pull, digest resolution,
+and published-artifact smoke are recorded in Sprint 23.4.
 
 ## Documentation Requirements
 

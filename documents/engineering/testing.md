@@ -215,6 +215,19 @@ row's refusal and the native receiver's rejection of a guest snapshot with a dif
 `CoverageManifest` counts all seven cases and reports which outcomes are refusals. These are local
 protocol tests; live provider and container execution has its separate substrate gate.
 
+The [host-providers-and-self-reference-lift
+phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md) records the separate native
+Linux/x86_64 KVM/Incus provider gate. Its 2026-09-09 current-tree run passed all 2,497 static cases and
+then the live component, including forced restart, post-restart guest readiness, execution of the installed
+frame-child entry, conditional alias release, identity-conditional delete, the mutation-free Direct
+refusal, and exact residue checks.
+
+The [base-image-publication-and-opportunistic-warm-store
+phase](../../DEVELOPMENT_PLAN/phase-23-base-image-and-warm-store.md) records its separate publication
+gate. On 2026-09-09, the native Linux/x86_64 CPU pipeline passed its complete source preflight and
+immutable local-ID consumer smoke before publishing; it then pulled and re-smoked exact Docker Hub digest
+`sha256:e46fb5699af246dc631704cd9bba5020776a7e96fbba1f4c450b5b9971ffb9d5`.
+
 The [test harness and run ownership phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md)
 records realized-Linux acceptance of its recovery, ownership, process, interruption, exact-plan, and report
 engine. The [test and context commands phase](../../DEVELOPMENT_PLAN/phase-20-test-and-context-commands.md)

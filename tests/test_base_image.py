@@ -279,7 +279,8 @@ def test_compatibility_smoke_uses_real_consumer() -> None:
         Flavor.CPU,
         "arm64",
         context=context,
-        pulled_reference=digest,
+        base_reference=digest,
+        pull=True,
     )
     assert spec.dockerfile == context / "docker/compatibility-smoke.Dockerfile"
     assert spec.context == context
@@ -287,6 +288,23 @@ def test_compatibility_smoke_uses_real_consumer() -> None:
     assert spec.build_args == {"BASE_IMAGE": digest}
     assert spec.pull is True
     assert spec.no_cache is True
+    assert spec.use_classic_builder is False
+
+
+def test_compatibility_smoke_can_validate_local_base_before_publish() -> None:
+    context = Path("/repo")
+    image_id = f"sha256:{'a' * 64}"
+    spec = base_image.compatibility_smoke_spec(
+        Flavor.CPU,
+        "amd64",
+        context=context,
+        base_reference=image_id,
+        pull=False,
+    )
+    assert spec.build_args == {"BASE_IMAGE": image_id}
+    assert spec.pull is False
+    assert spec.no_cache is True
+    assert spec.use_classic_builder is True
 
 
 def test_compatibility_smoke_consumer_needs_only_the_base_image() -> None:

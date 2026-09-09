@@ -144,6 +144,7 @@ data RouteExercise
         GuestAliasSpec
         (IO (Either ReconcileError ()))
         (IO (Either ReconcileError ()))
+        (IO (Either ReconcileError ()))
     | DirectExercise
 
 data ProviderCleanupAuthority scope planId backendId providerId
@@ -157,6 +158,7 @@ callback or the stop/restart body fails.
 -}
 runLiveIncusRoute ::
     FilePath ->
+    FilePath ->
     HostConfig ->
     StrongProviderBackend backendId ->
     SubstrateProvider ->
@@ -164,15 +166,17 @@ runLiveIncusRoute ::
     GuestAliasSpec ->
     IO (Either ReconcileError ()) ->
     IO (Either ReconcileError ()) ->
+    IO (Either ReconcileError ()) ->
     IO (Either ReconcileError ())
-runLiveIncusRoute root config backend provider shareSpec aliasSpec beforeRestart afterRestart =
+runLiveIncusRoute root guestSelfPath config backend provider shareSpec aliasSpec prepareGuest beforeRestart afterRestart =
     runProviderRoute
         root
+        guestSelfPath
         config
         backend
         provider
         shareSpec
-        (IncusExercise aliasSpec beforeRestart afterRestart)
+        (IncusExercise aliasSpec prepareGuest beforeRestart afterRestart)
 
 {- | Exercise Direct admission, Ready validation, identity share settlement,
 and the sealed refusal boundary.  A refused prepared stop produces no
@@ -181,29 +185,28 @@ capability discovery likewise produces no guest executor or alias backend.
 -}
 runLiveDirectRoute ::
     FilePath ->
+    FilePath ->
     HostConfig ->
     StrongProviderBackend backendId ->
     SubstrateProvider ->
     ProviderShareSpec ->
     IO (Either ReconcileError ())
-runLiveDirectRoute root config backend provider shareSpec =
-    runProviderRoute root config backend provider shareSpec DirectExercise
+runLiveDirectRoute root guestSelfPath config backend provider shareSpec =
+    runProviderRoute root guestSelfPath config backend provider shareSpec DirectExercise
 
 {- | Where the shipped guest transaction re-invokes this binary inside the VM.
 
 'shipOwnedTransaction' crosses into the guest frame and runs the project binary
 there, so the alias backend retains an in-VM path alongside the host one. The
-live component stages no guest binary of its own: the Incus preflight admits a
-VM the operator already prepared, so this names the path that preparation is
-expected to install to. It is the one value in this fixture that the host build
-cannot verify — a wrong path is observed only as a shipped-transaction failure
-on a native Linux/KVM/Incus host, which is exactly what the owning phase's live
-gate is for.
+live runner installs its current executable through the admitted provider's
+file API after the exact VM and durable share are ready, and this path names
+that live-only fixture executable in the guest filesystem.
+It is the one value in this fixture that the host build cannot verify — a wrong
+path is observed only as a shipped-transaction failure on a native
+Linux/KVM/Incus host, which is exactly what the owning phase's live gate is for.
 -}
-liveGuestSelfPath :: FilePath
-liveGuestSelfPath = "/usr/local/bin/hostbootstrap-provider-live"
-
 runProviderRoute ::
+    FilePath ->
     FilePath ->
     HostConfig ->
     StrongProviderBackend backendId ->
@@ -211,11 +214,11 @@ runProviderRoute ::
     ProviderShareSpec ->
     RouteExercise ->
     IO (Either ReconcileError ())
-runProviderRoute root config backend provider shareSpec exercise =
+runProviderRoute root guestSelfPath config backend provider shareSpec exercise =
     withLiveProjectPlan root liveStepPlan $ \projectPlan ->
         case NonEmpty.toList (forward projectPlan) of
             [providerNode, shareNode] -> do
-                self <- currentSelfRef liveGuestSelfPath
+                self <- currentSelfRef guestSelfPath
                 carrier <- Execution.newResourceCarrier
                 providerRuntime <- Execution.newStepRuntime carrier
                 shareRuntime <- Execution.newStepRuntime carrier
@@ -392,7 +395,7 @@ prepareShare root config self backend provider providerExecution shareExecution 
                                                             plannedProvider
                                                             capability
                                                             running
-                                                    IncusExercise aliasSpec beforeRestart afterRestart ->
+                                                    IncusExercise aliasSpec prepareGuest beforeRestart afterRestart ->
                                                         case cleanupAuthority of
                                                             Nothing -> pure (fixtureFailure "the Incus route lost its cleanup authority")
                                                             Just retainedAuthority ->
@@ -411,6 +414,7 @@ prepareShare root config self backend provider providerExecution shareExecution 
                                                                     managedShare
                                                                     aliasSpec
                                                                     retainedAuthority
+                                                                    prepareGuest
                                                                     beforeRestart
                                                                     afterRestart
                                             )
@@ -464,48 +468,53 @@ exerciseIncus ::
     IORef (ProviderCleanupAuthority scope planId backendId providerId) ->
     IO (Either ReconcileError ()) ->
     IO (Either ReconcileError ()) ->
+    IO (Either ReconcileError ()) ->
     IO (Either ReconcileError ())
-exerciseIncus root config self backend provider providerExecution shareExecution plannedProvider plannedShare capability running managedShare aliasSpec cleanupAuthority beforeRestart afterRestart = do
-    attemptReconcile "exercise prepared provider alias" $
-        case discoverStrongAliasBackend config self capability of
-            Left failure -> pure (Left failure)
-            Right aliasBackend ->
-                joinReconcileIO $
-                    withNodeGuestAliasProjection shareExecution plannedProvider plannedShare $ \plannedAlias edge ->
+exerciseIncus root config self backend provider providerExecution shareExecution plannedProvider plannedShare capability running managedShare aliasSpec cleanupAuthority prepareGuest beforeRestart afterRestart = do
+    preparedGuest <- prepareGuest
+    case preparedGuest of
+        Left failure -> pure (Left failure)
+        Right () ->
+            attemptReconcile "exercise prepared provider alias" $
+                case discoverStrongAliasBackend config self capability of
+                    Left failure -> pure (Left failure)
+                    Right aliasBackend ->
                         joinReconcileIO $
-                            withNodeObservedResource shareExecution plannedAlias 307 1 $ \observedAlias -> do
-                                aliasGate <-
-                                    gateFor
-                                        root
-                                        "provider-alias"
-                                        (Execution.stepExecutionPlanDigest shareExecution)
-                                        (plannedResourceKey plannedAlias)
-                                prepared <-
-                                    withPreparedGuestAliasCall
-                                        aliasBackend
-                                        running
-                                        managedShare
-                                        plannedAlias
-                                        edge
-                                        observedAlias
-                                        (dependencyProbe (pure (Right (managedProviderShareObservationVersion managedShare))))
-                                        aliasSpec
-                                        aliasGate
-                                        ( runOwnedAlias
-                                            root
-                                            config
-                                            self
-                                            backend
-                                            provider
-                                            providerExecution
-                                            plannedProvider
-                                            aliasBackend
-                                            running
-                                            cleanupAuthority
-                                            beforeRestart
-                                            afterRestart
-                                        )
-                                joinReconcileIO prepared
+                            withNodeGuestAliasProjection shareExecution plannedProvider plannedShare $ \plannedAlias edge ->
+                                joinReconcileIO $
+                                    withNodeObservedResource shareExecution plannedAlias 307 1 $ \observedAlias -> do
+                                        aliasGate <-
+                                            gateFor
+                                                root
+                                                "provider-alias"
+                                                (Execution.stepExecutionPlanDigest shareExecution)
+                                                (plannedResourceKey plannedAlias)
+                                        prepared <-
+                                            withPreparedGuestAliasCall
+                                                aliasBackend
+                                                running
+                                                managedShare
+                                                plannedAlias
+                                                edge
+                                                observedAlias
+                                                (dependencyProbe (pure (Right (managedProviderShareObservationVersion managedShare))))
+                                                aliasSpec
+                                                aliasGate
+                                                ( runOwnedAlias
+                                                    root
+                                                    config
+                                                    self
+                                                    backend
+                                                    provider
+                                                    providerExecution
+                                                    plannedProvider
+                                                    aliasBackend
+                                                    running
+                                                    cleanupAuthority
+                                                    beforeRestart
+                                                    afterRestart
+                                                )
+                                        joinReconcileIO prepared
 
 runOwnedAlias ::
     FilePath ->

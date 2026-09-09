@@ -1,12 +1,11 @@
 # syntax=docker/dockerfile:1
 # check=skip=InvalidDefaultArgInFrom
 #
-# The real-consumer compatibility smoke for a freshly published base tag.
+# The real-consumer compatibility smoke for a newly built or freshly published base tag.
 #
-# Phase 23's gate ends "publish rolling tag -> pull -> real-consumer
-# compatibility smoke", and this is that consumer. It asks the one question the
-# smoke exists to answer: is the image that was just published usable by a
-# project that builds FROM it?
+# Phase 23 runs this consumer once against the fresh local image ID before
+# publication and once against the exact pulled digest. It asks the one question
+# the smoke exists to answer: is this image usable by a project that builds FROM it?
 #
 # It is deliberately NOT the demo's Dockerfile. That one authenticates a
 # separately selected builder and consumes a signed one-use build grant minted by
@@ -16,7 +15,7 @@
 # by the worked-demo phase, through the coordinator that owns it.
 #
 # Build with:
-#   docker build -f docker/compatibility-smoke.Dockerfile --build-arg BASE_IMAGE=<digest> .
+#   docker build -f docker/compatibility-smoke.Dockerfile --build-arg BASE_IMAGE=<reference> .
 
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}

@@ -3,8 +3,9 @@
 
 {- | Explicitly confirmed, native Linux/x86_64 Incus lifecycle evidence.
 
-This component is deliberately absent from the ordinary test graph.  It
-creates one collision-resistant VM name and host-backed share, admits the
+This component is compiled and launched by the ordinary test graph, then
+decides at runtime whether its explicitly confirmed live subject is present.
+It creates one collision-resistant VM name and host-backed share, admits the
 production Incus and Direct backends, and reaches lifecycle mutation only
 through plan-prepared calls and opaque managed provider authority.
 -}
@@ -78,7 +79,7 @@ import System.Directory (
     listDirectory,
     removePathForcibly,
  )
-import System.Environment (lookupEnv)
+import System.Environment (getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitSuccess)
 import System.FilePath (takeFileName, (</>))
 import System.IO (hPutStrLn, stderr)
@@ -93,6 +94,9 @@ confirmationValue = "incus-direct-host"
 
 managedPrefix :: String
 managedPrefix = "hostbootstrap-provider-live-"
+
+liveGuestSelfPath :: FilePath
+liveGuestSelfPath = "/usr/local/bin/hostbootstrap-provider-live"
 
 incusImage :: String
 incusImage = "images:ubuntu/24.04"
@@ -134,6 +138,7 @@ runConfirmedGate root token vmName = do
     createDirectoryIfMissing True stateRoot
     createDirectoryIfMissing True incusPlanRoot
     createDirectoryIfMissing True directPlanRoot
+    stagedGuestSelf <- stageGuestSelf shareRoot
     config <- buildHostConfig (Substrate LinuxCpu Amd64)
 
     putStrLn "provider-live: preflight native Linux/x86_64 Incus and KVM"
@@ -165,11 +170,16 @@ runConfirmedGate root token vmName = do
             ( \backend ->
                 runLiveIncusRoute
                     incusPlanRoot
+                    liveGuestSelfPath
                     config
                     backend
                     incusProvider
                     shareSpec
                     aliasSpec
+                    ( asReconcileFailure
+                        "install live guest self"
+                        (installGuestSelf config vmName stagedGuestSelf)
+                    )
                     (asReconcileFailure "verify live alias before restart" (verifyOwnedState config vmName shareRoot))
                     (asReconcileFailure "verify live alias after restart" (verifyOwnedState config vmName shareRoot))
             )
@@ -189,7 +199,7 @@ runConfirmedGate root token vmName = do
         discoverStrongProviderBackend
             config
             directSpec
-            (\backend -> runLiveDirectRoute directPlanRoot config backend directProvider shareSpec)
+            (\backend -> runLiveDirectRoute directPlanRoot liveGuestSelfPath config backend directProvider shareSpec)
     expectReconcile "run prepared Direct route" (admittedDirect >>= id)
     assertDirectAdmissionIsReadOnly config shareRoot
     stillAbsent <- observeIncusPresence config vmName
@@ -200,6 +210,30 @@ runConfirmedGate root token vmName = do
     residue <- doesPathExist root
     when residue $
         failGate ("provider-live root remained after successful teardown: " ++ root)
+
+stageGuestSelf :: FilePath -> IO FilePath
+stageGuestSelf shareRoot = do
+    let aliasAuthorityRecords = shareRoot </> ".hostbootstrap-alias-authority-v1" </> "records"
+    createDirectoryIfMissing True aliasAuthorityRecords
+    getExecutablePath
+
+installGuestSelf :: HostConfig -> String -> FilePath -> IO ()
+installGuestSelf config vmName staged = do
+    _ <-
+        requireCommand
+            config
+            Incus
+            [ "file"
+            , "push"
+            , staged
+            , vmName ++ liveGuestSelfPath
+            , "--mode"
+            , "0755"
+            ]
+    _ <- requireCommand config Incus ["exec", vmName, "--", "sync"]
+    output <- requireCommand config Incus ["exec", vmName, "--", liveGuestSelfPath]
+    unless ("Unsupported: provider-live not requested" `isPrefixOf` trim output) $
+        failGate ("the installed live guest self did not execute its ordinary entry: " ++ trim output)
 
 requireIncusPreflight :: HostConfig -> IO ()
 requireIncusPreflight config = do
@@ -286,16 +320,14 @@ assertDirectAdmissionIsReadOnly config root = do
 
 assertAliasOriginState :: FilePath -> Int -> IO ()
 assertAliasOriginState shareRoot expected = do
-    let directory = shareRoot </> ".hostbootstrap-alias-origin-v1"
-    present <- doesDirectoryExist directory
-    entries <- if present then listDirectory directory else pure []
-    let records = filter (".json" `isSuffixOf`) entries
+    let recordsDirectory = shareRoot </> ".hostbootstrap-alias-authority-v1" </> "records"
+    present <- doesDirectoryExist recordsDirectory
+    entries <- if present then listDirectory recordsDirectory else pure []
+    let records = filter (".rec" `isSuffixOf`) entries
         staging = filter (".prepared-" `isInfix`) entries
     assertEqual "host-visible alias origin-record count" expected (length records)
     unless (null staging) $
         failGate ("alias origin staging residue remained: " ++ show staging)
-    when (expected == 0 && present) $
-        failGate ("alias origin directory remained after conditional release: " ++ show entries)
 
 assertProviderRecordForgotten :: FilePath -> String -> IO ()
 assertProviderRecordForgotten stateRoot vmName = do

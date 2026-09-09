@@ -47,6 +47,11 @@ The rolling tag is the consumer discovery name. A registry digest can identify t
 publication and bind a pull-to-smoke workflow, but it does not imply locked inputs, reproducible rebuilds,
 or a permanent digest-pinned consumer contract.
 
+The dated CPU/amd64 publication on 2026-09-09 resolved to
+`sha256:e46fb5699af246dc631704cd9bba5020776a7e96fbba1f4c450b5b9971ffb9d5`. Its immutable local-ID
+smoke passed before the push, and its exact pulled-digest smoke passed afterward. This identifies that
+publication; consumers continue to discover the rolling tag.
+
 ## Republishing
 
 Published tags are the source of truth for derived projects. When
@@ -55,7 +60,10 @@ under [`core/warm-deps/`](../../core/warm-deps/) change, an operator rebuilds an
 native tag with `hostbootstrap base build-and-push`. Consumers pull the republished tag. A same-named
 local image must not stand in for that published copy.
 
-After pushing, the workflow pulls the tag and builds
+Before pushing, the workflow cold-builds
+[`docker/compatibility-smoke.Dockerfile`](../../docker/compatibility-smoke.Dockerfile) against the new
+local base. A consumer incompatibility therefore refuses before registry mutation. After pushing, the
+workflow pulls the tag and builds
 [`docker/compatibility-smoke.Dockerfile`](../../docker/compatibility-smoke.Dockerfile) as a compatibility
 smoke. It may pass the pulled digest to prevent a local-tag race within that one workflow. The smoke
 observes the toolchain the base exists to carry, the warm store, and a derived resolution against that
@@ -136,9 +144,16 @@ available allocation. A plain Docker invocation retains the conservative Dockerf
 Cabal job.
 
 Resource-capped builds use the classic builder because buildx does not honor the required memory/CPU
-controls. This is build-resource management, separate from project runtime cordoning.
+controls. The pre-publish compatibility smoke also uses it because the daemon-local image ID must not be
+reinterpreted as a registry reference; the post-publish digest smoke remains a BuildKit build with `--pull`.
+This is build-resource and publication-identity management, separate from project runtime cordoning.
 
 ## Publication authority
 
-`base build` is a local inspection build. `base build-and-push` mutates Docker Hub and is run only with
-explicit operator authorization. See [build and release](build_release.md) for ordering and evidence.
+`base build` is a local inspection build. `base build-and-push` first resolves the fresh local image ID
+and proves the compatibility consumer against that immutable local artifact, then mutates Docker Hub
+and verifies the pulled digest; it is run only with explicit operator authorization. A registry-backed
+rolling tag is not sufficient for the pre-publish check because BuildKit may resolve it from the
+registry even when `--pull` is absent, and BuildKit interprets a bare image ID in `FROM` as a repository
+name. The pre-publish smoke therefore uses the classic builder for exact daemon-local ID resolution. See
+[build and release](build_release.md) for ordering and evidence.

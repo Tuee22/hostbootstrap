@@ -397,18 +397,28 @@ async def _build_then_publish(
     *,
     prefix: str = "",
 ) -> str:
-    """Build/push/pull a rolling tag, then run the real consumer smoke."""
+    """Build/smoke locally, then push/pull and smoke the exact publication."""
     await docker_ops.build(build_spec, prefix=prefix)
-    await docker_ops.push(tag, prefix=prefix)
-    await docker_ops.pull(tag, prefix=prefix)
-    digest_reference = await docker_ops.image_digest_reference(tag)
-    validation = base_image.compatibility_smoke_spec(
+    local_image_id = await docker_ops.image_id(tag)
+    local_validation = base_image.compatibility_smoke_spec(
         flavor,
         arch,
         context=context,
-        pulled_reference=digest_reference,
+        base_reference=local_image_id,
+        pull=False,
     )
-    await docker_ops.build(validation, prefix=prefix)
+    await docker_ops.build(local_validation, prefix=prefix)
+    await docker_ops.push(tag, prefix=prefix)
+    await docker_ops.pull(tag, prefix=prefix)
+    digest_reference = await docker_ops.image_digest_reference(tag)
+    published_validation = base_image.compatibility_smoke_spec(
+        flavor,
+        arch,
+        context=context,
+        base_reference=digest_reference,
+        pull=True,
+    )
+    await docker_ops.build(published_validation, prefix=prefix)
     return digest_reference
 
 
@@ -545,7 +555,7 @@ async def _run_base_targets(
     context: Path,
     arch: str,
 ) -> None:
-    """Build locally or complete the publish→pull→digest→derived-build transaction.
+    """Build locally or complete the pre-smoke→publish→pull→digest→smoke transaction.
 
     Concurrent by default — the cpu/cuda base builds are fully independent — with
     each build's streamed output line-prefixed ``[<label>]`` so the interleaved
@@ -630,7 +640,7 @@ def base_build(flavor: str | None, arch: str | None, context: Path, sequential: 
 
     For base-image inspection only: rebuilds from scratch and leaves the tag in
     the local Docker daemon. Derived projects must not consume it; compatibility
-    validation follows ``build-and-push`` → pull → real-demo smoke. With no
+    validation follows local smoke → ``build-and-push`` → pull → published smoke. With no
     ``--flavor`` the cpu and cuda builds run concurrently (output line-prefixed
     ``[cpu]`` / ``[cuda]``); pass ``--sequential`` to build one at a time.
     """

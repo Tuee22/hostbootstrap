@@ -272,7 +272,7 @@ serveProviderCommand guest root role behaviour argv = case argv of
         alterInstance root name (\held -> held{instanceRunState = "RUNNING"})
         recordMutation root "start"
         replaceIfArmed root "start" name
-    ["stop", name] -> do
+    ["stop", name, "--force"] -> do
         alterInstance root name (\held -> held{instanceRunState = "STOPPED"})
         recordMutation root "stop"
         replaceIfArmed root "stop" name

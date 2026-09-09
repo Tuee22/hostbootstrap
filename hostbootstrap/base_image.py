@@ -350,9 +350,10 @@ def compatibility_smoke_spec(
     arch: str,
     *,
     context: Path,
-    pulled_reference: str,
+    base_reference: str,
+    pull: bool,
 ) -> docker_ops.BuildSpec:
-    """Cold-build a real consumer against the just-pulled publication.
+    """Cold-build the compatibility consumer against one exact base reference.
 
     The consumer is ``docker/compatibility-smoke.Dockerfile``, whose only input is
     ``BASE_IMAGE``. It is not the demo's Dockerfile: that one requires a named
@@ -363,12 +364,19 @@ def compatibility_smoke_spec(
     the architecture exists to prevent -- so this smoke asks the question a
     publication gate can answer on its own, and the demo's authenticated build
     stays with the coordinator that owns it.
+
+    A pre-publication caller passes the freshly built local ``sha256:...`` image
+    ID rather than its rolling tag. BuildKit may resolve a registry-backed tag
+    from the registry even without ``--pull`` and treats a bare image ID as a
+    repository name, so that caller also selects the classic builder for exact
+    daemon-local, immutable resolution.
     """
     return docker_ops.BuildSpec(
         dockerfile=context / SMOKE_DOCKERFILE,
         context=context,
         tags=(f"hostbootstrap-base-compatibility:{flavor.value}-{arch}",),
-        build_args={"BASE_IMAGE": pulled_reference},
-        pull=True,
+        build_args={"BASE_IMAGE": base_reference},
+        pull=pull,
         no_cache=True,
+        use_classic_builder=not pull,
     )

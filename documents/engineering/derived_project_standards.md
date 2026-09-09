@@ -210,7 +210,7 @@ toolchain image without becoming a hostbootstrap project; that is not a second i
 5. **Treat the inherited store as an optimization.** `cabal build --dry-run` can diagnose reuse, but a
    third-party package in the plan is a permitted cache miss. Add broadly useful dependencies to the
    descriptive manifest under [`core/warm-deps/`](../../core/warm-deps/) when useful; do not contort
-   consumer constraints merely to force a hit. Publication uses the real demo as an online compatibility
+   consumer constraints merely to force a hit. Publication uses a dedicated real consumer as an online compatibility
    smoke, not an offline completeness proof. See [warm_store.md](warm_store.md#cache-behavior).
 
 A project that follows all five rules has a small Dockerfile, opportunistic cache reuse,

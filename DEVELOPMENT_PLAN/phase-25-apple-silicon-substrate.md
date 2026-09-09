@@ -1,6 +1,6 @@
 # Phase 25 — Apple Silicon substrate
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: apple-silicon
 **Gate**: live `hostbootstrap run -- test run all` reporting `10/10 passed` on an Apple Silicon host, plus a
@@ -163,9 +163,9 @@ passed 2,475/2,475 in 369.23 seconds.
 None. The pristine Apple/Lima matrix, terminal ownership audit, and native exact-plan direct-Colima lane
 are complete.
 
-### Sprint 25.4: The Apple Silicon acceptance run [Done]
+### Sprint 25.4: The Apple Silicon acceptance run [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: none — this sprint records a run
 **Substrates**: apple-silicon
 **Docs to update**: `documents/engineering/testing.md`
@@ -224,7 +224,9 @@ without activating the shared profile.
 
 #### Remaining Work
 
-None.
+Both halves of the gate are owed against the current tree. The finite Incus stop renderer under
+`HostBootstrap.Substrate.Provider` changed after the recorded 2026-09-08 run, so the covers digest no longer
+matches; the live matrix and focused direct-Colima lane must run together again on an Apple Silicon host.
 
 The previous entry recorded that this phase was owed its live acceptance again, because a deduplication
 pass had changed `Ensure/Colima/Ownership.hs` and `Ensure/AppleMetal.hs` inside this phase's covers set
@@ -237,10 +239,8 @@ substitution the mechanism exists to prevent, and it held.
 
 ## Remaining Work
 
-None.
-
-Both halves of the gate are recorded against the current tree in Sprint 25.4: the live matrix at
-`10/10 passed` and the focused direct-Colima adapter lane, both dated 2026-09-08.
+Sprint 25.4 owns the owed runs. The live matrix and focused direct-Colima adapter lane must both pass on an
+Apple Silicon host against the current tree before this phase returns to `Done`.
 
 ## Documentation Requirements
 

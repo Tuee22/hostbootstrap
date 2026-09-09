@@ -76,6 +76,7 @@ module HostBootstrap.Substrate.Provider.Ownership (
 where
 
 import Crypto.Hash (Digest, SHA256, hash)
+import Control.Concurrent (threadDelay)
 import Data.ByteArray.Encoding (Base (Base16), convertToBase)
 import Data.ByteString (ByteString)
 import Data.List (sort)
@@ -140,6 +141,7 @@ import HostBootstrap.Protected (
     readProtectedRecord,
     recordKeyText,
  )
+import HostBootstrap.Readiness (microsValue, pollSchedule, vmBootPoll)
 import HostBootstrap.Substrate.Provider.Command (
     ProviderSizing,
     attachShareDeviceCommand,
@@ -929,7 +931,8 @@ restartShareThenBind cfg session instanceKey expected share continue = do
                 Right (observed, report)
                     | observed /= expected ->
                         pure (Left (replacedUnderShareAttachment expected observed))
-                    | fmap listedState (observedListing report) == Just ProviderRunning -> continue
+                    | fmap listedState (observedListing report) == Just ProviderRunning ->
+                        waitForShareGuest cfg session instanceKey owned expected continue
                     | otherwise ->
                         pure
                             ( Left
@@ -942,6 +945,36 @@ restartShareThenBind cfg session instanceKey expected share continue = do
                             )
   where
     owned = ownedShareInstance share
+
+waitForShareGuest ::
+    HostConfig ->
+    ProtectedSession session ->
+    RecordKey ->
+    OwnedProviderInstance ->
+    ObjectIdentity ->
+    IO (Either ProviderOwnershipFault ProviderShareOutcome) ->
+    IO (Either ProviderOwnershipFault ProviderShareOutcome)
+waitForShareGuest cfg session key owned expected continue = go (pollSchedule vmBootPoll)
+  where
+    go delays = do
+        answered <- probeGuest cfg session key owned (ReadyAlready expected)
+        case answered of
+            Left fault -> pure (Left fault)
+            Right (ReadyNotAnswering reason) -> case delays of
+                [] ->
+                    pure
+                        ( Left
+                            ( ProviderOwnershipClause
+                                ( OwnershipProbeFailed
+                                    "activate the provider share device"
+                                    ("the restarted guest did not answer within the VM boot budget: " <> reason)
+                                )
+                            )
+                        )
+                delay : remaining -> do
+                    threadDelay (microsValue delay)
+                    go remaining
+            Right _ -> continue
 
 {- | Bind the share only while the instance it hangs in is still the entered one.
 

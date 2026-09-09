@@ -77,10 +77,14 @@ cache exists only inside the Linux image. That difference does not require diffe
 1. Add the dependency alphabetically to the most descriptive manifest package.
 2. Validate the single warm-store project and the normal consumer project.
 3. With operator authorization, rebuild and publish the affected rolling native tags.
-4. Pull the published tag and run the real demo compatibility smoke.
+4. Pull the published tag and run the dedicated real-consumer compatibility smoke.
 
 There is no freeze generation or commit step. A rebuild may select newer compatible transitive
 dependencies than the prior publication.
+
+The 2026-09-09 CPU/amd64 publication exercised both sides of this contract: the compatibility consumer
+resolved `Up to date` against the newly built immutable local image before publication and against pulled
+digest `sha256:e46fb5699af246dc631704cd9bba5020776a7e96fbba1f4c450b5b9971ffb9d5` afterward.
 
 ## Wrong and right
 

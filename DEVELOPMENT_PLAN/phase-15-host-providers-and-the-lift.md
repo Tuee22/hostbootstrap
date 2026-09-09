@@ -1,6 +1,6 @@
 # Phase 15 — Host providers and the self-reference lift
 
-**Status**: Active
+**Status**: Done
 **Current sprint**: None — phase complete
 **Depends on**: Phase 8 (ensure reconcilers), Phase 12 (step algebra and plan-owned resource
 projections), Phase 13 (authenticated handoff and the frame-child entry), Phase 14 (the four ownership
@@ -15,6 +15,14 @@ and
 Incus — the suite is built by the ordinary gate on every host and decides at runtime whether its
 subject is present
 **Gate kind**: deferred
+**Gate evidence**: 2026-09-09 ; x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic,
+KVM readable/writable, Incus 6.0.0, GHC 9.12.4, Cabal 3.16.1.0 ;
+`HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host cabal test all
+--test-show-details=direct --ghc-options=-Werror` ; pass ; covers
+d0b9dfd4203b9ecda1215d346bb11101f91a39b4ba77fcea13d9af95e2d541c5
+**Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Incus.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider`
+`core/hostbootstrap-core/provider-live`
 
 > **Purpose**: Add one prepared provider boundary over the lower pure target vocabulary and generic
 > self-reference Lift, with Incus and Direct as the baseline realizations.
@@ -315,9 +323,11 @@ None.
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Reconcile.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Observation/Internal.hs`,
 `core/hostbootstrap-core/test/ProviderReconcileSpec.hs`,
-`core/hostbootstrap-core/test/ProviderBackendSpec.hs`
+`core/hostbootstrap-core/test/ProviderBackendSpec.hs`,
+`core/hostbootstrap-core/test/ProviderCommandSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`,
 `documents/architecture/ownership_invariant.md`
@@ -400,14 +410,16 @@ Attach one declared durable share through the exact Running provider authority.
 - The share device is named from its binding digest inside the bound its provider control-socket pathname
   admits, and the durable manifest accepts only that shape.
 - Incus publishes a complete share intent, device binding, and sidecar under the provider lock.
+- The restart that activates an Incus share polls the exact owned guest under the canonical bounded VM-boot
+  policy before the share is bound or any dependent guest mutation can begin.
 - Direct admits only the already-local canonical root identity projection.
 - Share settlement returns an opaque provider-indexed managed share or descriptive foreign observation.
 - Manifest, sidecar, and device crash windows converge without adoption.
 
 #### Validation
 
-Specs cover attach, repair, unchanged-with-proof, collision, partial manifest/sidecar publication, replacement,
-and Direct identity/refusal paths.
+Specs cover attach, post-restart guest readiness, repair, unchanged-with-proof, collision, partial
+manifest/sidecar publication, replacement, and Direct identity/refusal paths.
 
 #### Remaining Work
 
@@ -432,6 +444,8 @@ Stop only the exact managed Running provider generation.
 
 - `PreparedProviderStop` accepts only a managed Running provider.
 - Incus revalidates the durable origin, UUID, and nonce before and after stop.
+- Incus forces the provider stop, so an unresponsive guest agent cannot hold the prepared transaction
+  indefinitely.
 - Already-stopped success remains bound to the same exact identity.
 - A still-running result retains retryable typed failure rather than advancing phase.
 - A replacement is Conflict and remains untouched.
@@ -439,7 +453,8 @@ Stop only the exact managed Running provider generation.
 
 #### Validation
 
-Specs cover stop, idempotence, retry, Direct refusal, malformed reports, and replacement at each observation.
+Specs cover the finite stop vector, stop, idempotence, retry, Direct refusal, malformed reports, and replacement
+at each observation.
 
 #### Remaining Work
 
@@ -722,18 +737,21 @@ Make the opt-in native provider component a static client of the same sealed bac
 
 #### Deliverables
 
-- The component retains its manual flag, Linux/x86_64 restriction, and explicit confirmation guard.
+- The component is compiled by the ordinary gate on every host and uses a runtime Linux/x86_64/KVM/Incus
+  check plus an explicit confirmation guard to decide whether to exercise its live subject.
 - It constructs validated Incus and Direct specs and admits their generative strong backends.
 - Provision, ready, share, stop, and delete use only matching prepared calls and settlements.
 - Discovery and guest execution derive only from the matching managed Running provider.
 - Alias acquisition and release use only matching prepared alias calls and opaque managed authority.
+- After the exact owned VM and share are ready, the live-only fixture installs and syncs its current executable
+  through the admitted Incus file API; that executable's main serves the hidden frame-child entry with the
+  shipped-ownership interpreter before considering the live-run entry.
 - Cleanup addresses only exact owned VM, share, alias, and origin identities and reports residue as failure.
 
 #### Validation
 
-From `core/`,
-`cabal build all --ghc-options=-Werror` compiles the
-manual Linux/x86_64 component. The `ProviderSpec` source guard rejects raw lifecycle planners, opaque
+From `core/`, `cabal build all --ghc-options=-Werror` compiles the component on every host. The
+`ProviderSpec` source guard rejects raw lifecycle planners, opaque
 provider-authority constructor imports, the private/independent guest executor, and any Direct delete path
 after the prepared stop refusal. The phase's baseline acceptance below records the confirmed live route.
 
@@ -1602,9 +1620,19 @@ its exact VM, alias, staging paths, origin records, and `/var/tmp` root. The hos
 at 2,333/2,333 Haskell tests in 219.39 seconds, the Python code check passed, and the Python suite passed
 at 231/231.
 
-### Sprint 15.37: The live Incus provider run [Active]
+**2026-09-09 — passed against the current provider boundary.** Host: Ubuntu 24.04.4 LTS, Linux
+7.0.0-28-generic, x86_64, `/dev/kvm` readable and writable by the invoking user, Incus 6.0.0 with a
+`dir` storage pool. Toolchain: GHC 9.12.4 and Cabal 3.16.1.0. The exact command above passed all 2,497
+static cases in 177.46 seconds and then passed the live component. The live result confirmed the prepared
+Incus lifecycle, share, alias, forced restart, post-restart guest readiness, identity-conditional delete,
+and mutation-free Direct refusal. The executable installed into the guest was synced before restart and
+served the shipped-ownership frame-child entry after restart. The run left no matching VM, `/var/tmp`
+root, alias record, or staging object, and all Cabal-generated `.log` files were removed from the working
+tree after the run.
 
-**Status**: Active
+### Sprint 15.37: The live Incus provider run [Done]
+
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`
@@ -1622,43 +1650,18 @@ Record the dated live `provider-live` run on native Linux/x86_64 with KVM and In
 
 #### Validation
 
-The dated run.
+On 2026-09-09 the phase's exact native Linux/x86_64 gate passed all 2,497 static cases and the live
+component reported `provider-live: PASS — prepared Incus lifecycle/share/alias/restart/delete and
+mutation-free Direct refusal`. The phase-level record above names the host, toolchain, observations, and
+residue checks.
 
 #### Remaining Work
 
-The run is owed. The build half passed warning-clean again on **2026-09-08** on native arm64 macOS 26.6.2
-(build 25G83), GHC 9.12.4, Cabal 3.16.1.0: `cabal build all --ghc-options=-Werror` from `core/` clean, and
-`cabal test all --ghc-options=-Werror` at 2,497/2,497 in 429.07 seconds with
-`hostbootstrap-provider-live-linux-cpu` reporting
-`Unsupported: provider-live not requested; set HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host on a
-native Linux/x86_64 host with KVM and Incus to run it` and exiting success. That is the component
-compiling and executing on an ordinary gate host, which is what the deleted flag used to prevent.
+None.
 
 ## Remaining Work
 
-Sprint 15.37 owns the owed run.
-
-The build half of this phase's gate is restored, and the flag that hid its rot is gone. The component had
-not compiled since 2026-08-24, when `discoverStrongAliasBackend` gained its host-config and
-self-reference parameters four days after this phase closed; the fixture now threads both through its
-route. It sat behind a default-off Cabal `flag`, so no gate run built it and every run stayed green — the
-shape § JJ now names alongside an `os` or `arch` guard. The flag is deleted: `cabal build all` and
-`cabal test all` build and run the component on every host, and it decides at runtime whether its subject
-is present, reporting `Unsupported` when the confirmation variable is unset.
-
-The live half is owed: `HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host cabal test all
---test-show-details=direct --ghc-options=-Werror` on native Linux/x86_64 with KVM and Incus. That run also owns the one value the host build cannot check —
-`liveGuestSelfPath` in `ProviderLiveAliasFixture`, the in-VM path the shipped guest transaction re-invokes;
-a wrong path is observable only as a shipped-transaction failure on that host.
-
-That half is **structurally unobtainable from an Apple Silicon host**, and the reason is worth recording so
-it is not re-attempted. The runner's load-bearing refusal is not the architecture guard but
-`ProviderLiveRunner.hs:209-215`, which requires `/dev/kvm` to exist and be readable and writable. KVM is a
-Linux kernel module; neither Hypervisor.framework nor QEMU/TCG emulation exposes it to a guest, so no
-Lima, Colima, or hand-rolled VM on this host can present one — a Lima x86_64 guest would satisfy the
-`Info.os`/`Info.arch` guard at `:388` and still fail on `/dev/kvm`. An `incus` client being installed
-locally is irrelevant, since the platform guard fires before `requireIncusPreflight` is reached. This gate
-needs a disposable native Linux/x86_64 host, as Sprint 15.37 states.
+None.
 
 ## Documentation Requirements
 

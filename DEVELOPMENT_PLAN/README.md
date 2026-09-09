@@ -52,7 +52,7 @@ its row here.
 | 12 | [Step algebra and the project plan](phase-12-step-algebra-and-project-plan.md) | Done | linux-cpu | — |
 | 13 | [Authenticated handoff and child admission](phase-13-authenticated-handoff-and-child-admission.md) | Done | linux-cpu | — |
 | 14 | [Ownership clauses and reservations](phase-14-ownership-clauses-and-reservations.md) | Done | linux-cpu | — |
-| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Active | linux-cpu | live Incus provider run |
+| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Done | linux-cpu | — |
 | 16 | [Cluster lifecycle, budgets, and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Done | linux-cpu | — |
 | 17 | [Recursive lifecycle command](phase-17-recursive-lifecycle-command.md) | Done | linux-cpu | — |
 | 18 | [Recovery and migration](phase-18-recovery-and-migration.md) | Done | linux-cpu | — |
@@ -60,9 +60,9 @@ its row here.
 | 20 | [`test` and `context` commands](phase-20-test-and-context-commands.md) | Done | linux-cpu | — |
 | 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Done | linux-cpu | — |
 | 22 | [Service runtime](phase-22-service-runtime.md) | Done | linux-cpu | — |
-| 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Active | linux-cpu | rolling-tag publish |
+| 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
 | 24 | [The worked demo](phase-24-worked-demo.md) | Done | linux-cpu | — |
-| 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Done | **apple-silicon** | — |
+| 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Active | **apple-silicon** | current-tree Apple matrix and direct-Colima lane |
 | 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Active | **nvidia** | NVIDIA 10/10 |
 | 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | Windows 10/10 |
 | 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | Windows and Linux family runs (macOS recorded 2026-09-08) |
@@ -78,26 +78,25 @@ The table above owns phase status; each phase's validation section owns its date
 
 The [host-portability acceptance phase](phase-28-host-portability-acceptance.md) records separate native
 Windows, macOS, and Linux gate runs, with the suite's explicit platform conditions explaining their totals.
-Static and substrate evidence are distinct, and that distinction is where the five `Active` rows above sit:
+Static and substrate evidence are distinct, and that distinction is where the four `Active` rows above sit:
 each one's static half passes on the current tree, and each is held open by a live or realized half its own
 `**Gate**` declares and no dated run currently covers.
 
-The [Apple-Silicon acceptance phase](phase-25-apple-silicon-substrate.md) is closed on a 2026-09-08 run of
-both its halves against one tree — the live matrix at `10/10 passed` over four fresh bring-ups and four
-terminal destroys, and the focused direct-Colima adapter lane re-run the same day rather than carried
-forward. The [NVIDIA](phase-26-nvidia-gpu-substrate.md) and
-[Windows/WSL2](phase-27-windows-and-wsl2-substrate.md) acceptance phases still hold results from
-2026-08-27 and 2026-09-05, both of which precede later changes to the surfaces those lanes exercise, and
-neither gate host is reachable from the machine this plan was last worked on.
+The [Apple-Silicon acceptance phase](phase-25-apple-silicon-substrate.md) retains a 2026-09-08 run of both
+its halves against one tree — the live matrix at `10/10 passed` over four fresh bring-ups and four
+terminal destroys, and the focused direct-Colima adapter lane — but the current provider-boundary change
+expires that evidence and re-owes both halves. The [NVIDIA](phase-26-nvidia-gpu-substrate.md) and
+[Windows/WSL2](phase-27-windows-and-wsl2-substrate.md) acceptance phases retain results from 2026-08-27
+and 2026-09-05 respectively, both of which precede later changes to the surfaces those lanes exercise.
 
-Two of the ten are open on more than currency. The [host-providers phase](phase-15-host-providers-and-the-lift.md)'s
-`provider-live` component did not compile between 2026-08-24 and 2026-09-06, because it sat behind a
-`manual`, default-off Cabal flag that no gate run built; the flag is now deleted and the component is
-built by the ordinary gate on every host, so what remains owed there is the live Incus run itself. The
-[base-image phase](phase-23-base-image-and-warm-store.md) has its pull and smoke halves recorded as of
-2026-09-06 against the real published digest, and the defect that made its smoke unexecutable is fixed;
-what remains owed is the outward-facing publish, which an assistant performs only when the user directs
-it.
+The [host-providers phase](phase-15-host-providers-and-the-lift.md) is closed by its 2026-09-09 native
+Linux/x86_64 KVM/Incus run: all 2,497 static cases passed before the live component completed its prepared
+Incus lifecycle and mutation-free Direct refusal with no residue. The
+[base-image phase](phase-23-base-image-and-warm-store.md) is closed by its 2026-09-09 native
+Linux/x86_64 run: the complete source preflight and immutable local-ID compatibility smoke passed before
+the rolling CPU/amd64 tag was pushed, pulled at
+`sha256:e46fb5699af246dc631704cd9bba5020776a7e96fbba1f4c450b5b9971ffb9d5`, and smoked again against
+that exact published digest.
 
 ## Validation policy
 

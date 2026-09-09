@@ -6,7 +6,9 @@
 **Gate**: `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` from the repository root
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), Python 3.14.3, Poetry 2.3.2 ; `poetry run python -m hostbootstrap.test_all` ; pass ; covers c34deb2d78473705ddcb67e9301a84da0aa57af1ef04505a70a577105bb701e9
+**Gate evidence**: 2026-09-09 ; x86_64 Ubuntu 24.04.4 LTS, Python 3.12.3, Poetry 2.4.1 ;
+`poetry run python -m hostbootstrap.check_code && poetry run python -m hostbootstrap.test_all` ; pass ;
+covers 94d3d28830984fd65f6e9382db6b7a813a125122936ecb0f354209420557eaba
 **Evidence covers**: `hostbootstrap` `tests` `pyproject.toml`
 
 > **Purpose**: Assert the irreducible host floor, prepare the native Haskell toolchain, build the project
@@ -131,8 +133,9 @@ Make the Python half's gate one command with no bypass.
 
 #### Validation
 
-Both commands pass from the repository root. Dated evidence: `231 passed`, and `ruff`/`black`/`mypy`
-clean, on macOS 25.5.0 arm64 (2026-08-05).
+Both commands pass from the repository root. Dated evidence: `235 passed` in 1.43 seconds, and
+`ruff`/`black`/`mypy` clean, on x86_64 Ubuntu 24.04.4 LTS with Python 3.12.3 and Poetry 2.4.1
+(2026-09-09).
 
 #### Remaining Work
 
