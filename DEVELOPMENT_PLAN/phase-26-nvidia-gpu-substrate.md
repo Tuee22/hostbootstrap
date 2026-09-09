@@ -1,11 +1,13 @@
 # Phase 26 — NVIDIA GPU substrate
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: nvidia
-**Gate**: live `hostbootstrap run -- test run all` reporting `10/10 passed` on a native Linux host with an
-NVIDIA GPU
+**Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
+reporting `10/10 passed` on a native Linux host with an NVIDIA GPU, followed by the terminal ownership audit
 **Gate kind**: deferred
+**Gate evidence**: 2026-09-09 ; native x86_64 Ubuntu 24.04.4 LTS, NVIDIA GeForce RTX 5090, driver 595.84, Docker 29.7.1, GHC 9.12.4, Cabal 3.16.1.0 ; repository Python bootstrapper `poetry run hostbootstrap run --project-root demo test run all` plus terminal ownership audit ; pass ; covers dc81c1b3b2af462ef0e9590b741211b055bf57ceb4082cb75833f10f70f7c0aa
+**Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `demo/src` `demo/app` `demo/test` `demo/docker` `hostbootstrap`
 
 > **Purpose**: Add the GPU realizations — the accelerator-capable cluster driver and the CUDA worker — and
 > confirm the whole build on that substrate.
@@ -171,12 +173,12 @@ passed 149/149, and the Python check-code plus 231/231 tests passed.
 
 None.
 
-### Sprint 26.4: The NVIDIA acceptance run [Active]
+### Sprint 26.4: The NVIDIA acceptance run [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: nvidia
-**Docs to update**: `documents/engineering/testing.md`
+**Docs to update**: `documents/engineering/testing.md`, `documents/operations/demo_runbook.md`
 
 #### Objective
 
@@ -184,25 +186,70 @@ Record the dated live acceptance matrix on a native Linux host with an NVIDIA GP
 
 #### Deliverables
 
-- one dated run of `hostbootstrap run -- test run all` reporting `10/10 passed`, naming its host
-  and the accelerator it placed on.
+- Initialize the pristine demo with the repository Python bootstrapper:
+  `poetry run hostbootstrap run --project-root demo test init` from the repository root.
+- Run `poetry run hostbootstrap run --project-root demo test run all` and record `10/10 passed`,
+  naming the host, toolchain, accelerator, duration, run IDs, and published base and derived-image digests.
+- Observe the Running accelerator workload's one-GPU request and audit the terminal run leases,
+  ownership records, generated config, preserved durable parent, and absence of the run's containers.
+- Record a passing gate-evidence row with the declared source paths' digest only after the live matrix
+  and audit pass.
 
 #### Validation
 
-The dated run.
+The dated live run and terminal ownership audit.
+
+On 2026-09-09, static preflight passed on `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, and Poetry 2.4.1.
+From `core/`, `cabal build all --ghc-options=-Werror` passed and
+`cabal test all --ghc-options=-Werror --test-show-details=direct --test-options=--hide-successes`
+passed 2,497/2,497 core cases in 165.94 seconds of suite execution after the Hackage refresh,
+including the documentation validator (174.20 seconds for the complete Cabal command). The provider-live
+component reported `Unsupported: provider-live not requested`, as expected for static preflight.
+From the repository root, `poetry run python -m hostbootstrap.check_code` passed and
+`poetry run python -m hostbootstrap.test_all` passed 235/235 in 1.57 seconds.
+
+On the same date and host, the repository Python bootstrapper's
+`poetry run hostbootstrap run --project-root demo test init` initialized the two variants, and
+`poetry run hostbootstrap run --project-root demo test run all` passed **10/10** in **3,177.18 seconds**
+(52 minutes 57 seconds). The matrix began without Docker containers, Incus instances, or pre-existing
+demo Production state. Both `hello-world` (`run-affca409369d4`) and `hello-universe`
+(`run-b0137ecc5f464`) passed pristine bootstrap, web build, end-to-end tabs, registry persistence,
+and durable readback. Each durable-readback case crossed settled destruction and fresh same-run
+cluster recreation before reading its retained bytes.
+
+All four image generations pulled published CUDA/amd64 base digest
+`sha256:90f423e5659e3c5642664224735cf261d542f6de8394bd68f71aec57fbb62fc4`, passed the in-container
+`check-code` and export checks, and published these derived image digests to their run-local registries:
+
+| Variant | Generation | Derived image digest |
+|---------|------------|----------------------|
+| `hello-world` | 1 | `sha256:1a8a5171cc6a5dccbe0875cd3b991799bee0cd0746722ba62b05769dd2a1df1e` |
+| `hello-world` | 2 | `sha256:e4cebc2b2b80283e08e3a413b9ead6b39356a1b0b43e7983d917abfb026e5992` |
+| `hello-universe` | 1 | `sha256:2449625fbbeaedf5d26ad4e24afd82f8ea854e9714184bee03c3d28e5367930b` |
+| `hello-universe` | 2 | `sha256:a19c96e9c0cc88a586967b7a29d2b7f9a18380f6e2c96f90e9e47657ed8812ab` |
+
+Live API observations captured Running accelerator pods `accelerator-daemon-797cfc86f7-dlr9p`
+and `accelerator-daemon-5864594989-x52vq` on their respective run's GPU worker. Both selected
+RuntimeClass `nvidia` and requested and limited `nvidia.com/gpu: 1`; the observed worker advertised
+one allocatable GPU. The host GPU was an NVIDIA GeForce RTX 5090 on driver 595.84, and the
+nvkind node image was `kindest/node:v1.36.1`. All four bring-ups reported the NVIDIA device plugin
+and allocatable GPU ready before releasing the accelerator workload.
+
+The terminal audit found both leases `closed`, both profiles `available`, no project mode or either
+run's generated-config/data-root record, and no generated `.build/hostbootstrap-demo.dhall`.
+The test config remained, `.test_data` remained empty, and neither run data directory survived.
+Docker reported no running or stopped containers, Incus reported no instances, and NVIDIA reported
+no compute process. The terminal source measurement matched the in-run measurement across all
+208 covered files; the header records that digest.
 
 #### Remaining Work
 
-The run is owed. Its newest dated evidence is 2026-08-27, before the September changes to the
-lifecycle, child-projection, and demo command surfaces this lane exercises.
+None.
 
 ## Remaining Work
 
-Sprint 26.4 owns the owed run.
-
-The live acceptance is owed: `hostbootstrap run -- test run all` reporting `10/10 passed` on a native Linux
-host with an NVIDIA GPU. Its newest dated evidence is 2026-08-27, before the September changes to the
-lifecycle, child-projection, and demo command surfaces this lane exercises.
+None.
 
 ## Documentation Requirements
 

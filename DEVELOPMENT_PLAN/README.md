@@ -63,7 +63,7 @@ its row here.
 | 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
 | 24 | [The worked demo](phase-24-worked-demo.md) | Done | linux-cpu | — |
 | 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Done | **apple-silicon** | — |
-| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Active | **nvidia** | NVIDIA 10/10 |
+| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Done | **nvidia** | — |
 | 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | Windows 10/10 |
 | 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | Windows and Linux family runs (macOS recorded 2026-09-08) |
 | 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Done | — | — |
@@ -78,16 +78,19 @@ The table above owns phase status; each phase's validation section owns its date
 
 The [host-portability acceptance phase](phase-28-host-portability-acceptance.md) records separate native
 Windows, macOS, and Linux gate runs, with the suite's explicit platform conditions explaining their totals.
-Static and substrate evidence are distinct, and that distinction is where the three `Active` rows above sit:
+Static and substrate evidence are distinct, and that distinction is where the two `Active` rows above sit:
 each one's static half passes on the current tree, and each is held open by a live or realized half its own
 `**Gate**` declares and no dated run currently covers.
 
 The [Apple-Silicon acceptance phase](phase-25-apple-silicon-substrate.md) is closed by its 2026-09-09
 pristine Apple matrix, native direct-Colima lane, and terminal ownership audit against one unchanged
 covered tree. Its phase document records the dated results and image digests. The
-[NVIDIA](phase-26-nvidia-gpu-substrate.md) and
-[Windows/WSL2](phase-27-windows-and-wsl2-substrate.md) acceptance phases retain results from 2026-08-27
-and 2026-09-05 respectively, both of which precede later changes to the surfaces those lanes exercise.
+[NVIDIA acceptance phase](phase-26-nvidia-gpu-substrate.md) is closed by its 2026-09-09 native
+Linux/x86_64 RTX 5090 matrix: `10/10 passed`, with one-GPU placement observed for both variants and
+both terminal run leases closed. Its phase document records the unchanged covered-source digest,
+four derived image digests, duration, and full terminal audit. The
+[Windows/WSL2 acceptance phase](phase-27-windows-and-wsl2-substrate.md) retains results from
+2026-09-05, which precede later changes to the surfaces that lane exercises.
 
 The [host-providers phase](phase-15-host-providers-and-the-lift.md) is closed by its 2026-09-09 native
 Linux/x86_64 KVM/Incus run: all 2,497 static cases passed before the live component completed its prepared

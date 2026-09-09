@@ -3,7 +3,8 @@
 **Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: windows
-**Gate**: live `hostbootstrap run -- test run all` reporting `10/10 passed` on a native Windows host
+**Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
+reporting `10/10 passed` on a native Windows host, followed by the terminal ownership and WSL wall audit
 **Gate kind**: deferred
 
 > **Purpose**: Add the Windows-only native host-wall backend and CUDA worker, exercise WSL2 as the Windows
@@ -162,7 +163,14 @@ Record the dated live acceptance matrix on a native Windows host.
 
 #### Deliverables
 
-- one dated run of `hostbootstrap run -- test run all` reporting `10/10 passed`, naming its host.
+- Initialize the pristine demo from the repository root with
+  `poetry run hostbootstrap run --project-root demo test init` on the native Windows gate host.
+- Run the repository Python bootstrapper's
+  `poetry run hostbootstrap run --project-root demo test run all` through the documented Windows
+  durable-run mechanism and record `10/10 passed`, the host/toolchain, duration, run IDs, and image digests.
+- Audit closed run leases, released ownership, removed generated config and WSL distro, preserved durable
+  parent, and restoration of the prior WSL wall body before global shutdown.
+- Record passing gate evidence and its covered-source digest only after the live matrix and audit pass.
 
 #### Validation
 
@@ -170,16 +178,18 @@ The dated run.
 
 #### Remaining Work
 
-The run is owed again. Its dated run is 2026-09-05, which precedes the same day's later rewrite of
-`Lifecycle.Mode`, `Command.LifecycleEntry`, and the child projector.
+The native Windows live run and terminal audit are owed. A native Windows gate host with WSL2 and
+the Windows CUDA prerequisites is required; Linux static results do not establish this acceptance.
+The dated live result is 2026-09-05 and does not cover the current lifecycle and child-projection surfaces.
 
 ## Remaining Work
 
 Sprint 27.4 owns the owed run.
 
-The live acceptance is owed again: `hostbootstrap run -- test run all` reporting `10/10 passed` on a native
-Windows host. Its dated run is 2026-09-05, which precedes the same day's later rewrite of `Lifecycle.Mode`,
-`Command.LifecycleEntry`, and the child projector.
+The repository Python bootstrapper's `poetry run hostbootstrap run --project-root demo test run all`
+must report `10/10 passed` on a native Windows host, followed by the terminal ownership and WSL wall
+audit. Access to that gate host is required. The dated live result is 2026-09-05 and does not cover
+the current lifecycle and child-projection surfaces.
 
 ## Documentation Requirements
 

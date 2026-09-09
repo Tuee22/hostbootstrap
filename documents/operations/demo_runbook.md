@@ -119,8 +119,8 @@ Operator-significant boundaries are:
 - Direct provider reverse terminalizes its journal reservation and reports physical host stop/delete as
   `Unsupported`;
 - bare Linux has no runtime storage quota or image-GC wall;
-- terminal NVIDIA and Windows acceptance reruns remain owned by their substrate phases; the Apple/Lima/Metal
-  acceptance is complete.
+- terminal hardware acceptance follows each substrate's declared gate; current completion and dated
+  evidence are recorded in the [development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
 ## Build and Config
 
