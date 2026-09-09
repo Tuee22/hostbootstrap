@@ -88,6 +88,16 @@ tests =
                 withFixtureEnvironment False $ \root _ -> do
                     runPublicProcess root False "up" >>= (@?= ExitSuccess)
                     runPublicProcess root False "destroy" >>= (@?= ExitSuccess)
+        , testCase "public down then destroy preserves the recursive source across separate root processes" $
+            withLocalGuestFrame $
+                withFixtureEnvironment False $ \root _ -> do
+                    runPublicProcess root False "up" >>= (@?= ExitSuccess)
+                    runPublicProcess root False "down" >>= (@?= ExitSuccess)
+                    runPublicProcess root False "down" >>= (@?= ExitSuccess)
+                    runPublicProcess root False "destroy" >>= (@?= ExitSuccess)
+                    runPublicProcess root False "destroy" >>= (@?= ExitSuccess)
+                    runPublicProcess root False "up" >>= (@?= ExitSuccess)
+                    runPublicProcess root False "destroy" >>= (@?= ExitSuccess)
         , testCase "failed up preserves its failure and admits exact reverse recovery" $
             withLocalGuestFrame $
                 withFixtureEnvironment True $ \root _ -> do

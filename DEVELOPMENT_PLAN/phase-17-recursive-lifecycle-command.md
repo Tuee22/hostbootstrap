@@ -1,14 +1,13 @@
 # Phase 17 — The recursive lifecycle command
 
 **Status**: Done
-**Current sprint**: None
 **Depends on**: Phase 13 (authenticated handoff and rooted lifecycle protocol), Phase 16 (cluster lifecycle,
 budgets, and cordoning)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`, including the real local
 process-boundary recursive-lifecycle tests
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
+**Gate evidence**: 2026-09-09 ; Ubuntu 24.04.4 WSL x86_64, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror --test-show-details=direct --test-options=--hide-successes` ; pass ; covers in-gate
 
 > **Purpose**: Interpret one project plan recursively under a single root coordinator, execute each remote
 > frame through a storeless child executor, and unwind the same plan child-first for reverse verbs and failed
@@ -176,9 +175,11 @@ None.
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Command.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Step.hs`, `core/hostbootstrap-core/test/TeardownSpec.hs`
 **Substrates**: linux-cpu
-**Docs to update**: `documents/architecture/composition_methodology.md`
+**Docs to update**: `documents/architecture/composition_methodology.md`,
+`documents/architecture/lifecycle_state_model.md`
 
 #### Objective
 
@@ -190,12 +191,20 @@ Carry the command gate's exact `ProjectVerb verb` through both forward and rever
 - No second teardown-local verb universe or compatibility term exists.
 - `ProjectUp` is total but receives a typed refusal before reverse work is exposed.
 - Down and destroy remain structurally distinct and select only their declared reverse actions.
+- Down projects `RetainResource` for `copy-source`, retaining the provider share and guest alias across
+  stop/restart; Destroy projects `ReleaseResource` after the child subtree settles. Only provider
+  stop/delete actions establish the forest's frame owner.
 - Parser text and caller-selected tags cannot change the verb after root admission.
 
 #### Validation
 
-Dated 2026-08-10 evidence includes `TeardownSpec` 28/28, twenty-seven affected compile-fail groups 27/27,
-`DocValidatorSpec` 2/2, and warning-clean library/test builds.
+`TeardownSpec` proves the exact share action under each verb, unchanged child-first ordering, and the
+separate provider stop/delete actions. Run the complete warning-clean core gate.
+
+On 2026-09-09, native Ubuntu 24.04.4 WSL x86_64 passes the complete core gate at 2,505/2,505
+in 291.83 seconds with GHC 9.12.4 and Cabal 3.16.1.0 under `--ghc-options=-Werror`.
+The same source passes native Windows 11 Home 10.0.26200 at 2,500/2,500 in 504.50 seconds.
+The post-status Linux documentation gate passes 5/5 in 1.72 seconds.
 
 #### Remaining Work
 
@@ -347,6 +356,8 @@ Persist exact root reverse intent before any reverse effect can begin.
 - Canonical Pending, Running, and terminal rows retain the exact admitted verb and source coordinates.
 - Compare-and-swap plus strict readback governs every transition and retry.
 - Down and destroy intents cannot be relabelled or share an in-flight slot.
+- The codec fixes its field-list, unsigned-integer, and reverse-verb guard result types explicitly across
+  GADT branches, preserving the same canonical bytes on supported compilers.
 - The substrate performs no teardown effect and exposes no store or raw intent row.
 
 #### Validation
@@ -354,14 +365,23 @@ Persist exact root reverse intent before any reverse effect can begin.
 Dated 2026-08-11 focused mode/session tests, source guards, compile-fail checks, and the warning-clean core gate
 passed.
 
+On 2026-09-09, the native Windows GHC 9.12.4 core gate passes 2,492/2,492 in 675.12 seconds.
+The library and both executables also build with `-Werror` against GHC 9.10.3 in published CPU/amd64
+base digest `e46fb5699af246dc631704cd9bba5020776a7e96fbba1f4c450b5b9971ffb9d5`.
+The reverse-root codec's explicit local types pass both compilers and the production formatter check.
+
 #### Remaining Work
 
 None.
 
-### Sprint 17.11: Exact same-verb reverse-root resume and redo [Done]
+### Sprint 17.11: Exact reverse-root continuation and redo [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Snapshot.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
+`core/hostbootstrap-core/test/CLISpec.hs`, `core/hostbootstrap-core/test/RecursiveLifecycleSpec.hs`,
+`core/hostbootstrap-core/test/ProjectPlanSpec.hs`, `core/hostbootstrap-core/test/CoverageManifest.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`,
 `documents/architecture/durable_state.md`
@@ -375,13 +395,30 @@ Resume or redo an admitted reverse verb only from its exact durable intent linea
 - Pending resumes the same plan/run/broker/frame/verb without allocating a second intent.
 - Running admits only the exact replay path defined by its durable transition state.
 - Terminal state returns a typed terminal observation and performs no effect.
-- Cross-verb, cross-run, stale-version, malformed-row, and missing-source input refuses.
+- A terminal Down receipt admits one following Destroy after exact snapshot, closed-session, and current
+  mode/lease verification. The same protected row advances from Down Terminal version 3 through Destroy
+  Pending/Committed/Terminal versions 4/5/6 without discarding its predecessor before publication.
+- In-flight cross-verb, cross-run, stale-version, malformed-row, and missing-source input refuses.
 - Every branch rechecks state under the root-owned protected-store bracket before returning its fixed result.
 
 #### Validation
 
 Dated 2026-08-11 focused mode tests, retry/concurrency cases, source guards, and warning-clean library/test
 builds passed.
+
+On 2026-09-09, the native regression passes Up-to-Down-to-Destroy without another forward effect, with terminal
+versions 3 and 6 and absent Production mode. Five stale-predecessor cases refuse before Destroy effects
+and preserve the mode, lease, and reverse receipt. Exact terminal retries and fresh Up rearm pass, as does
+resumption from the persisted Destroy Pending version 4 before broker allocation.
+
+The published CPU/amd64 base's GHC 9.10.3 builds the library and both test components with `-Werror`.
+Its compiled test executable, run directly in Ubuntu 24.04 on WSL2, passes the `RecursiveLifecycleSpec`
+selection at 9/9 in 107.37 seconds: eight family cases and their coverage-manifest assertion. This includes
+the real root/VM/container Up-to-Down-to-Destroy sequence, repeated reverse commands, and fresh Up rearm.
+The complete native Windows GHC 9.12.4 host-static gate passes 2,499/2,499 in 499.45 seconds,
+including the source boundaries, platform coverage manifest, and governed documentation. The provider-live
+component reports its declared no-request Unsupported outcome and exits successfully. All four changed
+production modules pass the formatter check; the Python code check and 235-case suite pass as well.
 
 #### Remaining Work
 
@@ -463,12 +500,16 @@ Seal fresh and resumed root Down/Destroy admission into the same opaque lifecycl
 - The entry retains its admitted source and all root-coordinator evidence behind nominal indices.
 - Down and destroy have distinct typed branches and cannot enter the Up runner.
 - Fresh and resumed routes converge on the same fixed reverse interpreter contract.
+- Local phase and seed refusals fix their result effect to `IO` across the indexed lifecycle branches.
 - No raw authority, intent, store, journal, cursor, or frame coordinate projects from the entry.
 
 #### Validation
 
 Dated 2026-08-11 authority/entry tests, compile-fail and source guards, and warning-clean library/test builds
 passed.
+
+The 2026-09-09 native Windows core gate passes 2,492/2,492 with GHC 9.12.4. The explicit `IO`
+refusal types also pass the GHC 9.10.3 published-base build recorded in Sprint 17.10 and the formatter.
 
 #### Remaining Work
 
@@ -521,10 +562,15 @@ Produce prepared reverse descent only from the exact root-resident entry and its
 - The prepared row is durable and read back before any handoff action can observe it.
 - Local work cannot enter the descent producer and sibling/ancestor evidence refuses.
 - The producer exposes only a fixed continuation over the sealed prepared descent.
+- Its refusal helper retains the enclosing work and result indices through an explicit scoped type.
 
 #### Validation
 
 Dated 2026-08-11 lifecycle-entry and teardown tests, source/compile-fail guards, and warning-clean builds passed.
+
+The 2026-09-09 native Windows core gate passes 2,492/2,492 with GHC 9.12.4, including the exact
+producer signature guard. The scoped refusal result also passes the GHC 9.10.3 published-base build
+recorded in Sprint 17.10 and the formatter.
 
 #### Remaining Work
 

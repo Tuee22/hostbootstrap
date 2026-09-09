@@ -6,6 +6,7 @@
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
 reporting `10/10 passed` on a native Windows host, followed by the terminal ownership and WSL wall audit
 **Gate kind**: deferred
+**Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `demo/src` `demo/app` `demo/test` `demo/docker` `hostbootstrap`
 
 > **Purpose**: Add the Windows-only native host-wall backend and CUDA worker, exercise WSL2 as the Windows
 > realization of the universal `linux-cpu` substrate, and confirm the additional Windows behavior.
@@ -174,22 +175,34 @@ Record the dated live acceptance matrix on a native Windows host.
 
 #### Validation
 
-The dated run.
+On 2026-09-09, native x86_64 Windows 11 Home 10.0.26200 has GHC 9.12.4,
+Cabal 3.16.1.0, Poetry 2.4.1, repository-venv Python 3.14.7, and an NVIDIA GeForce RTX 3090
+on driver 616.64. The current source passes the warning-clean core build and the complete core
+gate at 2,500/2,500 in 504.50 seconds. The Python code check and 235/235 tests pass, as do the
+demo warning-clean build and 149/149 tests. These are static preflight results.
+The current 208-file covered source digest is
+`dbd7ee8515737e4c8391a9337a1815eb7db8de2d6dc28a4893e0b099b669b83e`.
+
+The worked-demo phase records the current-source Production Up/Down/Destroy pass, cold-restart
+alias identity check, and Windows CUDA result. Its Harness matrix is interrupted at the user's
+request during the second guest build, before a complete result. It supplies no `10/10` acceptance
+claim for this phase. At the pause, no WSL distribution, utility VM, demo daemon, generated run
+config, run data, or active wall record remains. The original `.wslconfig` measures SHA-256
+`2986099d4e292abed1bacbf7b7cb514188bad4304f930800803a85470ee4e694`;
+the operator test config and Production marker are preserved. Sprint 24.42 owns those run and
+cleanup details.
 
 #### Remaining Work
 
-The native Windows live run and terminal audit are owed. A native Windows gate host with WSL2 and
-the Windows CUDA prerequisites is required; Linux static results do not establish this acceptance.
-The dated live result is 2026-09-05 and does not cover the current lifecycle and child-projection surfaces.
+Run the complete native Windows matrix against the current source and audit its terminal state.
+The Windows/WSL2/CUDA host and initialized test configuration are available. No current-source
+passing matrix is recorded.
 
 ## Remaining Work
 
-Sprint 27.4 owns the owed run.
-
-The repository Python bootstrapper's `poetry run hostbootstrap run --project-root demo test run all`
-must report `10/10 passed` on a native Windows host, followed by the terminal ownership and WSL wall
-audit. Access to that gate host is required. The dated live result is 2026-09-05 and does not cover
-the current lifecycle and child-projection surfaces.
+Sprint 27.4 owns the current-source Windows matrix, terminal ownership and wall audit, and matching
+covered-source evidence. The repository Python bootstrapper's
+`poetry run hostbootstrap run --project-root demo test run all` must report `10/10 passed`.
 
 ## Documentation Requirements
 

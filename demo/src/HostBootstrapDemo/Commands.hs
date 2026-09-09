@@ -411,7 +411,7 @@ import HostBootstrap.Step (
     StepFrame (..),
     StepIdentity (..),
     StepPlan,
-    TeardownAction (DeleteFrame, StopFrame),
+    TeardownAction (DeleteFrame, RetainResource),
     TeardownOutcome,
     buildImageStep,
     buildPbStep,
@@ -5635,7 +5635,7 @@ demoGuestAliasReverse ::
     HostConfig ->
     TeardownAction ->
     IO TeardownOutcome
-demoGuestAliasReverse _projectCfg _cfg StopFrame =
+demoGuestAliasReverse _projectCfg _cfg RetainResource =
     pure (Step.TeardownForeignRetained "the owned guest alias persists across provider stop/restart")
 demoGuestAliasReverse projectCfg cfg _action = do
     provider <- demoProvider cfg

@@ -940,6 +940,7 @@ withRootProjectReverseLifecycleEntry
                                 )
                 )
         pure $ case admitted of
+            Left SnapshotReverseRootTerminal -> Right ()
             Left failure -> Left ("lifecycle entry: " <> show failure)
             Right result -> result
       where
@@ -951,7 +952,9 @@ withRootProjectReverseLifecycleEntry
                 . Text.pack
                 . lifecycleContextErrorMessage
         sourceSessionFailure = Left . SnapshotVerificationError . ModeSessionFailure
+        sourcePhaseFailure :: Text -> IO (Either SnapshotError value)
         sourcePhaseFailure = pure . sourceMismatch "reverse-root source phase" "teardown"
+        sourceSeedFailure :: Text -> IO (Either SnapshotError value)
         sourceSeedFailure = pure . sourceMismatch "reverse-root source acquisition seed" "prepare"
         sourceMismatch field expected observed =
             Left (SnapshotVerificationError (ModeEvidenceMismatch field expected observed))
@@ -1105,6 +1108,7 @@ The original work is returned unchanged on refusal. The entry's exact replay
 action remains inseparable from its retained Teardown authority.
 -}
 withPreparedRootReverseDescentKernel ::
+    forall scope planId rootFrame brokerGeneration verb parentFrame childFrame result.
     LifecycleEntry scope planId rootFrame brokerGeneration verb ->
     DescentWork scope planId parentFrame childFrame verb ->
     ( forall descentId.
@@ -1166,6 +1170,7 @@ withPreparedRootReverseDescentKernel entry descent use =
             reauthorize
             work
             deliver
+    refused :: IO (Either (TeardownError, DescentWork scope planId parentFrame childFrame verb) result)
     refused =
         pure
             ( Left

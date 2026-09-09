@@ -2242,6 +2242,15 @@ reverseRootIntentMagic = "HOSTBOOTSTRAP-REVERSE-ROOT"
 reverseRootIntentVersion :: Word64
 reverseRootIntentVersion = 1
 
+{- | A settled Down may advance once to Destroy in the same durable row.
+The second Pending/Committed/Terminal sequence retains versions 4/5/6.
+-}
+reverseRootPhaseVersion :: ProjectVerb verb -> Word64 -> Word64 -> Bool
+reverseRootPhaseVersion verb initialVersion version = case verb of
+    ProjectUp -> False
+    ProjectDown -> version == initialVersion
+    ProjectDestroy -> version == initialVersion || version == initialVersion + 3
+
 encodeReverseRootIntent :: ReverseRootIntent projectId sourceBrokerGeneration verb -> ByteString
 encodeReverseRootIntent intent =
     LazyByteString.toStrict
@@ -2253,6 +2262,7 @@ encodeReverseRootIntent intent =
             )
         )
   where
+    fields :: [ByteString]
     fields = case intent of
         ReverseRootDownPending values -> common "pending" "down" values
         ReverseRootDestroyPending values -> common "pending" "destroy" values
@@ -2320,6 +2330,7 @@ encodeReverseRootIntent intent =
             , leaseBytes
             ]
     text = TextEncoding.encodeUtf8
+    word :: Word64 -> ByteString
     word = ByteStringChar8.pack . show
 
 decodeReverseRootIntent ::
@@ -2328,7 +2339,7 @@ decodeReverseRootIntent ::
     ByteString ->
     Maybe (ReverseRootIntent projectId sourceBrokerGeneration verb)
 decodeReverseRootIntent expected raw = do
-    case expected of
+    () <- case expected of
         ProjectUp -> Nothing
         ProjectDown -> pure ()
         ProjectDestroy -> pure ()
@@ -2699,7 +2710,17 @@ withBoundPlanSnapshotKernel admission store project terminal useOpen =
                             clear <- refuseReverseRootIntent session project
                             case clear of
                                 Left failure -> pure (Left failure)
-                                Right () -> prepareExistingBoundSnapshotAt session location project
+                                Right () -> withRecordKey (reverseRootIntentKey project) $ \key -> do
+                                    retained <- readProtectedRecord session key
+                                    case retained of
+                                        Left failure -> pure (Left (ModeStoreFailure failure))
+                                        Right Nothing -> prepareExistingBoundSnapshotAt session location project
+                                        Right (Just _) -> do
+                                            mode <- currentMode session project
+                                            case mode of
+                                                Left failure -> pure (Left failure)
+                                                Right Nothing -> prepareExistingBoundSnapshotAt session location project
+                                                Right (Just _) -> pure (Left ModeReverseRootInProgress)
                     case prepared of
                         Left failure -> pure (Left failure)
                         Right (ExistingBoundSnapshotTerminal key) -> Right <$> terminal key
@@ -3874,9 +3895,12 @@ withExistingBoundReverseRootTransition store project verb admit use = case verb 
                             Left failure -> pure (Left failure)
                             Right retained -> case decodeReverseRootIntent verb (protectedRecordBytes retained) of
                                 Just intent -> drive session location intentKey retained intent
-                                Nothing -> case oppositeIntent (protectedRecordBytes retained) of
-                                    True -> pure (Left ModeReverseRootInProgress)
-                                    False -> pure (Left (ModeMalformedRecord (recordKeyText intentKey)))
+                                Nothing -> case (verb, decodeDown (protectedRecordBytes retained)) of
+                                    (ProjectDestroy, Just down@ReverseRootDownTerminal{}) ->
+                                        promoteDown session location intentKey retained down
+                                    _ -> case oppositeIntent (protectedRecordBytes retained) of
+                                        True -> pure (Left ModeReverseRootInProgress)
+                                        False -> pure (Left (ModeMalformedRecord (recordKeyText intentKey)))
             case prepared of
                 Left failure -> pure (Left failure)
                 Right deliver -> Right <$> deliver
@@ -3885,6 +3909,103 @@ withExistingBoundReverseRootTransition store project verb admit use = case verb 
         ProjectDown -> maybe False (const True) (decodeReverseRootIntent ProjectDestroy bytes)
         ProjectDestroy -> maybe False (const True) (decodeReverseRootIntent ProjectDown bytes)
         ProjectUp -> False
+
+    decodeDown :: forall sourceBrokerGeneration. ByteString -> Maybe (ReverseRootIntent projectId sourceBrokerGeneration VerbDown)
+    decodeDown = decodeReverseRootIntent ProjectDown
+
+    -- A terminal Down is the durable authority for one following Destroy.
+    -- Keep its original acquisition/cursor evidence and compare-and-swap the
+    -- same row, so interruption cannot lose the predecessor receipt.
+    promoteDown ::
+        forall session sourceBrokerGeneration.
+        ProtectedSession session ->
+        LeaseLocation ->
+        RecordKey ->
+        ProtectedRecord ->
+        ReverseRootIntent projectId sourceBrokerGeneration VerbDown ->
+        IO (Either ModeError (IO result))
+    promoteDown session location intentKey retained down = case down of
+        ReverseRootDownTerminal common target modeVersion modeBytes leaseVersion leaseBytes
+            | recordVersionWord (protectedRecordVersion retained) == 3 -> do
+                let ( projectName
+                        , storeIdentity
+                        , run
+                        , revision
+                        , spec
+                        , config
+                        , plan
+                        , canonical
+                        , source
+                        , acquisitionKey
+                        , acquisitionVersion
+                        , acquisitionBytes
+                        , cursorKey
+                        , cursorVersion
+                        , cursorBytes
+                        , rootFrame
+                        , _
+                        , _
+                        , _
+                        , _
+                        , _
+                        ) = common
+                closed <- verifyAllSessionsClosed session plan
+                case closed of
+                    Left failure -> pure (Left (ModeSessionFailure failure))
+                    Right proof -> do
+                        let nextCommon =
+                                ( projectName
+                                , storeIdentity
+                                , run
+                                , revision
+                                , spec
+                                , config
+                                , plan
+                                , canonical
+                                , source
+                                , acquisitionKey
+                                , acquisitionVersion
+                                , acquisitionBytes
+                                , cursorKey
+                                , cursorVersion
+                                , cursorBytes
+                                , rootFrame
+                                , fromIntegral (allSessionsClosedCount proof)
+                                , modeVersion
+                                , modeBytes
+                                , leaseVersion
+                                , leaseBytes
+                                )
+                        validateCommon session location nextCommon $ \_ _ -> do
+                            modeRead <- withRecordKey (modeKey project) $ \key ->
+                                exactWordRecord session key modeVersion modeBytes
+                            leaseRead <- exactWordRecord session (leaseLocationLeaseKey location) leaseVersion leaseBytes
+                            case do
+                                _ <- modeRead
+                                _ <- leaseRead
+                                requireBytes "terminal Down mode" (encodeMode WireProduction target) modeBytes
+                                requireBytes "terminal Down lease" (encodeLease (LeaseBound target spec plan)) leaseBytes
+                                if target > source then Right () else mismatch "terminal Down epoch" "greater than source" (showWord target) of
+                                Left failure -> pure (Left failure)
+                                Right () | ProjectDown <- verb -> pure (Left ModeReverseRootTerminal)
+                                Right () | ProjectDestroy <- verb -> do
+                                    let pending = ReverseRootDestroyPending nextCommon
+                                        bytes = encodeReverseRootIntent pending
+                                    written <-
+                                        compareAndSwapProtectedRecord
+                                            session
+                                            intentKey
+                                            (ExpectVersion (protectedRecordVersion retained))
+                                            bytes
+                                    case written of
+                                        Left failure -> pure (Left (ModeStoreFailure failure))
+                                        Right version
+                                            | recordVersionWord version == 4 -> do
+                                                readback <- exactWordRecord session intentKey 4 bytes
+                                                either (pure . Left) (\record -> drive session location intentKey record pending) readback
+                                            | otherwise -> mismatchIO "following Destroy Pending version" "4" (showWord (recordVersionWord version))
+                                Right () -> pure (Left (ModeWrongRecoveryScope "reverse root" "up"))
+        _ -> pure (Left ModeReverseRootInProgress)
 
     drive ::
         forall session sourceBrokerGeneration.
@@ -3907,15 +4028,68 @@ withExistingBoundReverseRootTransition store project verb admit use = case verb 
             finishCommitted common target modeVersion modeBytes leaseVersion leaseBytes intentRecord
         ReverseRootDestroyCommitted common target modeVersion modeBytes leaseVersion leaseBytes ->
             finishCommitted common target modeVersion modeBytes leaseVersion leaseBytes intentRecord
-        ReverseRootDownTerminal{} -> pure (Left ModeReverseRootInProgress)
-        ReverseRootDestroyTerminal{} -> pure (Left ModeReverseRootInProgress)
+        down@ReverseRootDownTerminal{} -> promoteDown session location intentKey intentRecord down
+        ReverseRootDestroyTerminal common target modeVersion modeBytes leaseVersion leaseBytes ->
+            terminalDestroy common target modeVersion modeBytes leaseVersion leaseBytes
       where
+        terminalDestroy ::
+            ( Text
+            , Text
+            , Text
+            , Word64
+            , Text
+            , Text
+            , Text
+            , ByteString
+            , Word64
+            , RecordKey
+            , Word64
+            , ByteString
+            , RecordKey
+            , Word64
+            , ByteString
+            , Text
+            , Word64
+            , Word64
+            , ByteString
+            , Word64
+            , ByteString
+            ) ->
+            Word64 ->
+            Word64 ->
+            ByteString ->
+            Word64 ->
+            ByteString ->
+            IO (Either ModeError (IO result))
+        terminalDestroy common target modeVersion modeBytes leaseVersion leaseBytes
+            | not (reverseRootPhaseVersion ProjectDestroy 3 (recordVersionWord (protectedRecordVersion intentRecord))) =
+                mismatchIO "terminal Destroy version" "3 or 6" (showWord (recordVersionWord (protectedRecordVersion intentRecord)))
+            | leaseVersion == maxBound = mismatchIO "terminal lease version" "below maxBound" "maxBound"
+            | otherwise = do
+                let (projectName, storeIdentity, run, revision, spec, config, plan, canonical, source, acquisitionKey, acquisitionVersion, acquisitionBytes, cursorKey, cursorVersion, cursorBytes, rootFrame, _, _, _, _, _) = common
+                closed <- verifyAllSessionsClosed session plan
+                case closed of
+                    Left failure -> pure (Left (ModeSessionFailure failure))
+                    Right proof -> do
+                        let terminalCommon = (projectName, storeIdentity, run, revision, spec, config, plan, canonical, source, acquisitionKey, acquisitionVersion, acquisitionBytes, cursorKey, cursorVersion, cursorBytes, rootFrame, fromIntegral (allSessionsClosedCount proof), modeVersion, modeBytes, leaseVersion, leaseBytes)
+                        validateCommon session location terminalCommon $ \_ _ -> do
+                            lease <- exactWordRecord session (leaseLocationLeaseKey location) (leaseVersion + 1) (encodeLease (LeaseClosed target))
+                            mode <- currentMode session project
+                            journal <- readProjectJournalState session plan
+                            pure $ do
+                                _ <- lease
+                                held <- mode
+                                state <- either (Left . ModeSessionFailure) Right journal
+                                if isNothing held && state == ClosedProject && target > source
+                                    then Left ModeReverseRootTerminal
+                                    else mismatch "terminal Production closure" "Closed journal, closed lease and absent mode" "different"
+
         commitPending common encodeCommitted
-            | recordVersionWord (protectedRecordVersion intentRecord) /= 1 =
+            | not (reverseRootPhaseVersion verb 1 pendingVersion) =
                 mismatchIO
                     "pending intent version"
-                    "1"
-                    (showWord (recordVersionWord (protectedRecordVersion intentRecord)))
+                    "the verb's Pending version"
+                    (showWord pendingVersion)
             | oldModeVersion == maxBound =
                 mismatchIO "mode record version" "below maxBound" "maxBound"
             | oldLeaseVersion == maxBound =
@@ -3939,6 +4113,7 @@ withExistingBoundReverseRootTransition store project verb admit use = case verb 
                     (Left failure, _) -> pure (Left failure)
                     (_, Left failure) -> pure (Left failure)
           where
+            pendingVersion = recordVersionWord (protectedRecordVersion intentRecord)
             ( _
                 , _
                 , _
@@ -3979,8 +4154,8 @@ withExistingBoundReverseRootTransition store project verb admit use = case verb 
                     case written of
                         Left failure -> pure (Left (ModeStoreFailure failure))
                         Right version
-                            | recordVersionWord version == 2 -> do
-                                readback <- exactWordRecord session intentKey 2 bytes
+                            | recordVersionWord version == pendingVersion + 1 -> do
+                                readback <- exactWordRecord session intentKey (pendingVersion + 1) bytes
                                 case readback of
                                     Left failure -> pure (Left failure)
                                     Right committedRecord ->
@@ -3995,7 +4170,7 @@ withExistingBoundReverseRootTransition store project verb admit use = case verb 
                             | otherwise ->
                                 mismatchIO
                                     "committed intent version"
-                                    "2"
+                                    (showWord (pendingVersion + 1))
                                     (showWord (recordVersionWord version))
               where
                 target = brokerEpochWord epoch
@@ -4019,10 +4194,10 @@ withExistingBoundReverseRootTransition store project verb admit use = case verb 
             nextLeaseVersion
             nextLeaseBytes
             retainedIntent
-                | recordVersionWord (protectedRecordVersion retainedIntent) /= 2 =
+                | not (reverseRootPhaseVersion verb 2 (recordVersionWord (protectedRecordVersion retainedIntent))) =
                     mismatchIO
                         "committed intent version"
-                        "2"
+                        "the verb's Committed version"
                         (showWord (recordVersionWord (protectedRecordVersion retainedIntent)))
                 | oldModeVersion == maxBound || nextModeVersion /= oldModeVersion + 1 =
                     mismatchIO "committed mode successor" "old version + 1" (showWord nextModeVersion)
@@ -4138,7 +4313,7 @@ withExistingBoundReverseRootTransition store project verb admit use = case verb 
                         exactWordRecord
                             session
                             intentKey
-                            2
+                            (recordVersionWord (protectedRecordVersion retainedIntent))
                             (protectedRecordBytes retainedIntent)
                     modeRead <- withRecordKey (modeKey project) $ \key ->
                         exactWordRecord session key nextModeVersion nextModeBytes
@@ -7334,7 +7509,7 @@ releaseProductionMode session project authorization =
                                                                     case prepared of
                                                                         Left failure -> pure (Left (ModeSessionFailure failure))
                                                                         Right (permit, journal)
-                                                                            | recordVersionWord (protectedRecordVersion intentRecord) /= 2 -> pure (Left (ModeMalformedRecord "committed destroy intent version"))
+                                                                            | not (reverseRootPhaseVersion ProjectDestroy 2 (recordVersionWord (protectedRecordVersion intentRecord))) -> pure (Left (ModeMalformedRecord "committed destroy intent version"))
                                                                             | otherwise ->
                                                                                 runProductionCloseTransaction
                                                                                     session
@@ -7357,7 +7532,7 @@ releaseProductionMode session project authorization =
                                                     pure $ do
                                                         held <- mode
                                                         state <- either (Left . ModeSessionFailure) Right journal
-                                                        if isNothing held && state == ClosedProject && recordVersionWord (protectedRecordVersion intentRecord) == 3
+                                                        if isNothing held && state == ClosedProject && reverseRootPhaseVersion ProjectDestroy 3 (recordVersionWord (protectedRecordVersion intentRecord))
                                                             then Right ()
                                                             else Left (ModeEvidenceMismatch "terminal Production closure" "Closed journal, closed lease and absent mode" "different")
                                         _ -> pure (Left ModeReverseRootInProgress)
@@ -9289,12 +9464,13 @@ recordUnboundLease store session project run epoch rearmClosed =
             Left failure -> pure (Left (ModeStoreFailure failure))
             Right Nothing -> pure (Right ())
             Right (Just record)
-                | recordVersionWord (protectedRecordVersion record) /= 3 ->
+                | not (reverseRootPhaseVersion ProjectDestroy 3 (recordVersionWord (protectedRecordVersion record))) ->
                     pure (Left ModeReverseRootInProgress)
                 | otherwise ->
                     let terminalTarget bytes =
                             case decodeReverseRootIntent ProjectDown bytes of
-                                Just (ReverseRootDownTerminal _ target _ _ _ _) -> Just target
+                                Just (ReverseRootDownTerminal _ target _ _ _ _)
+                                    | reverseRootPhaseVersion ProjectDown 3 (recordVersionWord (protectedRecordVersion record)) -> Just target
                                 _ -> case decodeReverseRootIntent ProjectDestroy bytes of
                                     Just (ReverseRootDestroyTerminal _ target _ _ _ _) -> Just target
                                     _ -> Nothing
@@ -9737,6 +9913,8 @@ data ModeError
       ModeWrongRecoveryScope Text Text
     | -- | A durable reverse root owns admission until its later terminal protocol.
       ModeReverseRootInProgress
+    | -- | The exact requested reverse verb is already terminal; no effect is admitted.
+      ModeReverseRootTerminal
     | ModeAuthorityFailure AuthorityError
     | -- | The recorded-session interpreter, the manifest, or the fence set refused.
       ModeSessionFailure SessionError
@@ -9789,6 +9967,7 @@ modeErrorMessage failure = case failure of
         scope <> " recovery cannot consume " <> observed
     ModeReverseRootInProgress ->
         "a durable reverse-root intent owns ordinary lifecycle admission"
+    ModeReverseRootTerminal -> "the requested reverse root is already terminal"
     ModeAuthorityFailure inner -> authorityErrorMessage inner
     ModeSessionFailure inner -> Text.pack (sessionErrorMessage inner)
     ModeStoreFailure inner -> protectedErrorMessage inner

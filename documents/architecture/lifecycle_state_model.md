@@ -112,9 +112,24 @@ Each operation records its durable unknown state before an effect whose answer c
 then settles that same operation, fence, generation, and journal version. A delayed result cannot settle a
 newer attempt. Unknown outcomes remain recoverable rather than being guessed as success or absence.
 
+Reverse-journal and cursor helpers retain the enclosing scope, plan, broker generation, and result type
+across GADT branches. Explicit local result signatures make those index relationships compiler-independent.
+The reverse-root intent codec likewise fixes its field-list, unsigned-integer, and reverse-verb guard result
+types so compiler inference does not affect the canonical record format.
+Reverse-entry refusal helpers explicitly retain their `IO` effect and the enclosing descent-work and result
+indices before a branch refines the lifecycle verb.
+
 The private root intent records Pending, Committed, and Terminal Down/Destroy states. Preparing a reverse
 entry binds the exact source plan, snapshot, target epoch, and verb. Repeated entry resumes those coordinates;
-it cannot create a second plan beside the recorded one. Failed-Up unwind preserves the original failure
+it cannot create a second plan beside the recorded one. After settled Down, the exact terminal receipt may
+admit a following Destroy. This continuation verifies the
+current mode and lease, unchanged snapshot and source records, and closed sessions, then advances the same
+protected row from version 3 to Destroy Pending/Committed/Terminal versions 4/5/6. It retains the original
+acquisition evidence and allocates a fresh Destroy broker generation without reopening a Down journal as Up.
+Exact terminal retries verify the retained evidence and return without effects. Destroy retry additionally
+requires the closed lease, closed project journal, and absent Production mode; fresh Up uses the normal
+closed-lease rearm path.
+Failed-Up unwind preserves the original failure
 while attempting the admitted reverse work and reporting any unsettled resources.
 
 ## Lifecycle profile authority
@@ -126,6 +141,10 @@ retain the exact installed project, protected-store identity, and broker epoch.
 Fresh lease binding compare-and-swaps one exact unbound version against its verified snapshot. An existing
 bound lease has a separate recovery admission; it does not enter the fresh-Up continuation. Profile admission
 consumes its durable slot once, so retaining an ordinary Haskell value does not permit a second opening.
+
+Down projects `RetainResource` for the provider's `copy-source` node, so its durable share and guest
+alias survive provider stop/restart. Destroy projects `ReleaseResource` for that node only after its
+child subtree settles. Provider `StopFrame` and `DeleteFrame` remain the forest's frame-owner actions.
 
 Production closure has two authorized branches:
 

@@ -61,11 +61,11 @@ its row here.
 | 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Done | linux-cpu | — |
 | 22 | [Service runtime](phase-22-service-runtime.md) | Done | linux-cpu | — |
 | 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
-| 24 | [The worked demo](phase-24-worked-demo.md) | Done | linux-cpu | — |
+| 24 | [The worked demo](phase-24-worked-demo.md) | Active | linux-cpu | Sprint 24.42: Harness matrix and terminal audit |
 | 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Done | **apple-silicon** | — |
-| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Done | **nvidia** | — |
-| 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | Windows 10/10 |
-| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | Windows and Linux family runs (macOS recorded 2026-09-08) |
+| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Active | **nvidia** | Sprint 26.4: current-tree matrix and audit |
+| 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | Sprint 27.4: Windows live matrix and audit |
+| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | Sprint 28.4: current-tree macOS and native Linux runs |
 | 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Done | — | — |
 
 ## The current frontier
@@ -78,19 +78,21 @@ The table above owns phase status; each phase's validation section owns its date
 
 The [host-portability acceptance phase](phase-28-host-portability-acceptance.md) records separate native
 Windows, macOS, and Linux gate runs, with the suite's explicit platform conditions explaining their totals.
-Static and substrate evidence are distinct, and that distinction is where the two `Active` rows above sit:
-each one's static half passes on the current tree, and each is held open by a live or realized half its own
-`**Gate**` declares and no dated run currently covers.
+Static and substrate evidence are distinct. The journal helpers and reverse-root codec pass their native
+Windows core gate and published-base compiler build. Exact terminal Down-to-Destroy continuation,
+Pending resume, terminal retries, and fresh Up rearm pass the host-static gate and real Linux recursive
+selection. The realized-Linux CLI/context gate also passes. The worked-demo, NVIDIA, Windows, and
+portability rows require their own gates against the current covered source.
 
 The [Apple-Silicon acceptance phase](phase-25-apple-silicon-substrate.md) is closed by its 2026-09-09
 pristine Apple matrix, native direct-Colima lane, and terminal ownership audit against one unchanged
 covered tree. Its phase document records the dated results and image digests. The
-[NVIDIA acceptance phase](phase-26-nvidia-gpu-substrate.md) is closed by its 2026-09-09 native
-Linux/x86_64 RTX 5090 matrix: `10/10 passed`, with one-GPU placement observed for both variants and
-both terminal run leases closed. Its phase document records the unchanged covered-source digest,
-four derived image digests, duration, and full terminal audit. The
+[NVIDIA acceptance phase](phase-26-nvidia-gpu-substrate.md) records a 2026-09-09 native
+Linux/x86_64 RTX 5090 matrix and terminal audit. Changes to its covered journal source make the
+current-tree run owed again; its phase document retains the dated result and covered-source digest. The
 [Windows/WSL2 acceptance phase](phase-27-windows-and-wsl2-substrate.md) retains results from
-2026-09-05, which precede later changes to the surfaces that lane exercises.
+2026-09-05, which precede later changes to the surfaces that lane exercises. Its native Windows
+gate host is available, and Sprint 27.4 records the current preflight and live-run progress.
 
 The [host-providers phase](phase-15-host-providers-and-the-lift.md) is closed by its 2026-09-09 native
 Linux/x86_64 KVM/Incus run: all 2,497 static cases passed before the live component completed its prepared
@@ -100,6 +102,13 @@ Linux/x86_64 run: the complete source preflight and immutable local-ID compatibi
 the rolling CPU/amd64 tag was pushed, pulled at
 `sha256:e46fb5699af246dc631704cd9bba5020776a7e96fbba1f4c450b5b9971ffb9d5`, and smoked again against
 that exact published digest.
+
+Work is paused at the user's request on 2026-09-09. The worked-demo Production sequence and
+current Windows/Linux core checks pass; its complete Harness matrix remains owed after interruption
+in the second guest build. Cleanup is complete, and Sprint 24.42 records the exact retained inputs
+and resource audit. Resume with that sprint, then work through the open rows in numerical order.
+The current-source NVIDIA run needs native Linux/NVIDIA host access; the available SSH key is refused
+for `matt@matt-junction`. Native macOS access is also required for portability. No gate is running.
 
 ## Validation policy
 

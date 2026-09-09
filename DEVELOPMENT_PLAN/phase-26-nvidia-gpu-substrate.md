@@ -1,12 +1,11 @@
 # Phase 26 — NVIDIA GPU substrate
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: nvidia
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
 reporting `10/10 passed` on a native Linux host with an NVIDIA GPU, followed by the terminal ownership audit
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-09 ; native x86_64 Ubuntu 24.04.4 LTS, NVIDIA GeForce RTX 5090, driver 595.84, Docker 29.7.1, GHC 9.12.4, Cabal 3.16.1.0 ; repository Python bootstrapper `poetry run hostbootstrap run --project-root demo test run all` plus terminal ownership audit ; pass ; covers dc81c1b3b2af462ef0e9590b741211b055bf57ceb4082cb75833f10f70f7c0aa
 **Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `demo/src` `demo/app` `demo/test` `demo/docker` `hostbootstrap`
 
 > **Purpose**: Add the GPU realizations — the accelerator-capable cluster driver and the CUDA worker — and
@@ -173,9 +172,9 @@ passed 149/149, and the Python check-code plus 231/231 tests passed.
 
 None.
 
-### Sprint 26.4: The NVIDIA acceptance run [Done]
+### Sprint 26.4: The NVIDIA acceptance run [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: none — this sprint records a run
 **Substrates**: nvidia
 **Docs to update**: `documents/engineering/testing.md`, `documents/operations/demo_runbook.md`
@@ -241,15 +240,19 @@ run's generated-config/data-root record, and no generated `.build/hostbootstrap-
 The test config remained, `.test_data` remained empty, and neither run data directory survived.
 Docker reported no running or stopped containers, Incus reported no instances, and NVIDIA reported
 no compute process. The terminal source measurement matched the in-run measurement across all
-208 covered files; the header records that digest.
+208 covered files, digest `dc81c1b3b2af462ef0e9590b741211b055bf57ceb4082cb75833f10f70f7c0aa`.
+The lifecycle compiler annotations and exact Down-to-Destroy continuation change this phase's covered
+source set, so that dated result does not establish current-tree acceptance.
 
 #### Remaining Work
 
-None.
+Run the complete native Linux/NVIDIA matrix and terminal ownership audit against the current covered
+tree, then record its matching digest. A native Linux host with an NVIDIA GPU is required.
 
 ## Remaining Work
 
-None.
+Sprint 26.4 owns the current-tree native Linux/NVIDIA matrix, terminal ownership audit, and refreshed
+source evidence.
 
 ## Documentation Requirements
 

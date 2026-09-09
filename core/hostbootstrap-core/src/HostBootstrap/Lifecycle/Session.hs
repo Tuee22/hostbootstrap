@@ -731,6 +731,7 @@ frame, or requested verb can be inspected.  Only an existing Down or Destroy
 record with its original version-one Prepare seed can yield a journal.
 -}
 reopenExistingReverseAcquisitionJournalKernel ::
+    forall session scope specDigest planId configId frame verb brokerGeneration.
     AcquisitionJournalAdmission ->
     ProtectedStore ->
     ProtectedSession session ->
@@ -754,7 +755,8 @@ reopenExistingReverseAcquisitionJournalKernel ::
 reopenExistingReverseAcquisitionJournalKernel admission =
     case consumeAcquisitionJournalAdmissionKernel admission of
         () -> \store session validateLive stableScope project storeId snapshot run spec epoch frame verb ->
-            let reopen verbName =
+            let reopen :: Text -> IO (Either SessionError (AcquisitionJournal scope planId brokerGeneration))
+                reopen verbName =
                     reopenExistingAcquisitionJournalInEntry
                         store
                         session
@@ -1186,6 +1188,7 @@ inspected.  Up is a total refusal, and the closed phase cases provide no
 generic transition or phase callback to the caller.
 -}
 withReverseRootTargetLifecycleCursorKernel ::
+    forall scope planId brokerGeneration specDigest configId frame verb result.
     AcquisitionJournalAdmission ->
     AcquisitionJournal scope planId brokerGeneration ->
     ProjectFrame scope specDigest planId configId frame ->
@@ -1196,7 +1199,8 @@ withReverseRootTargetLifecycleCursorKernel ::
 withReverseRootTargetLifecycleCursorKernel admission =
     case consumeAcquisitionJournalAdmissionKernel admission of
         () -> \journal@(AcquisitionJournal store validateLive _ sourceVersion _ seedPhase) frame verb use ->
-            let advance = case seedPhase of
+            let advance :: IO (Either LifecycleError result)
+                advance = case seedPhase of
                     Prepare
                         | recordVersionWord sourceVersion == 1 -> case validateLifecycleCursorRequest journal frame verb of
                             Left failure -> pure (Left failure)

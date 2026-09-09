@@ -78,8 +78,8 @@ manifest =
     [ posixFamily ["WslGlobalWallHostSpec", "apply over an absent origin"] 5 5
     , ConditionalFamily
         { familyPath = ["RecursiveLifecycleSpec (real root/VM/container lifecycle)"]
-        , familyCases = 7
-        , familyRowCases = 5
+        , familyCases = 8
+        , familyRowCases = 6
         , familyRowHolds = posixOwnershipSupported
         , familyReason =
             "local guest execution needs the POSIX row and its canonical path grammar;"

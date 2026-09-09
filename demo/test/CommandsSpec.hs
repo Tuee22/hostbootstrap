@@ -48,6 +48,7 @@ import HostBootstrap.Service (
     withSelectedServiceProgram,
  )
 import HostBootstrap.Step (Step, StepFrame (..), StepIdentity (..), StepPlan, chainFrames, frameDescent, frameId, mkStepPlan, postHandoffStepsForFrame, projectStepId, providerResourceDeclarationTargetsChild, renderChainPlan, stepFrame, stepIdentity, stepKind, stepKindName, stepLabel, stepPlanSteps, stepProviderResourceDeclarations, stepServiceActivationDeclarations)
+import qualified HostBootstrap.Step as Step
 import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (Substrate), SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu))
 import HostBootstrapDemo.Commands (
     absoluteHostAcceleratorDaemonExePath,
@@ -469,6 +470,16 @@ tests =
                     _ -> False
                 )
         , testCase "the guest alias settles inside the managed copy-source continuation" $ do
+            mapM_
+                ( \substrate -> do
+                    plan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor substrate root hostCfg)))
+                    case [reverseAction | step <- stepPlanSteps plan, stepKindName (stepKind step) == "copy-source", Just reverseAction <- [Step.stepReverse step]] of
+                        [reverseAction] -> do
+                            outcome <- reverseAction (error "alias retention must not inspect a host configuration or perform guest effects") Step.RetainResource
+                            outcome @?= Step.TeardownForeignRetained "the owned guest alias persists across provider stop/restart"
+                        _ -> assertFailure "the VM plan must retain exactly one guest-alias reverse adapter"
+                )
+                [Substrate LinuxCpu Amd64, Substrate AppleSilicon Arm64, Substrate WindowsCpu Amd64, Substrate WindowsGpu Amd64]
             commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
             let adopterSource =
                     maybe "" (`drop` commandsSource) (substringOffset "runExactVmShare ::" commandsSource)

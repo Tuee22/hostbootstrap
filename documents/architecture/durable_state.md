@@ -75,6 +75,14 @@ Neither path transports lifecycle authority. The root prepares and settles durab
 only signed, bounded rooted responses; children return observations and receipt confirmations, never raw
 record keys or versions.
 
+Production Down retains its terminal reverse-root receipt and the original Up acquisition evidence.
+A subsequent Destroy verifies that receipt against the current mode, lease, snapshot, source rows, and
+closed sessions before advancing the same protected record. Its Pending, Committed, and Terminal versions
+are 4, 5, and 6, following Down's terminal version 3; fresh reverse operations use versions 1, 2, and 3.
+The continuation allocates one fresh Destroy broker generation and uses the existing exact suffix redo
+and atomic Production finalization. Repeated terminal entry performs no effect, and a later fresh Up
+clears the matching terminal receipt through guarded lease admission.
+
 ## What is implemented
 
 - `HostPathShare`/`ShareReconcile` describe the provider-specific host-to-guest carry.
@@ -188,7 +196,8 @@ The carry and its same-run protocol are implemented:
 - Production and Harness reverse traverse the admitted recursive plan child-first and settle exact teardown
   evidence before a terminal close can be authorized.
 - The provider/share operation owns the guest mount, and the guest alias holds the four ownership clauses over
-  the Docker-daemon-visible durable path. Kind/nvkind projects that alias into the node and pod.
+  the Docker-daemon-visible durable path. Down retains that exact alias and its ownership row across provider
+  stop/restart; Destroy gives it back after child teardown. Kind/nvkind projects that alias into the node and pod.
 - Chart and standalone service placements use signed immutable activation revisions whose durable directories
   are mounted into their exact runtime frames.
 - Each Harness variant retains one exact plan and `.test_data/<runId>`. `AssertAcrossRestart` places the durable

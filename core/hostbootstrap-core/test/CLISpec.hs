@@ -162,7 +162,7 @@ import HostBootstrap.Service.Program (
     serve,
     withReadyServiceHandles,
  )
-import HostBootstrap.Step (ProjectStepId, ReversePolicy (PreserveOnReverse, ProjectManagedReverse), Step, StepFrame (..), StepObservation (..), StepPlanError (DuplicateStepIdentities), TeardownAction (StopFrame), TeardownOutcome (TeardownReleased), deployVMStep, descendsVia, projectStep, projectStepId, reversedBy, stepLabel, stepPlanSteps)
+import HostBootstrap.Step (ProjectStepId, ReversePolicy (PreserveOnReverse, ProjectManagedReverse), Step, StepFrame (..), StepObservation (..), StepPlanError (DuplicateStepIdentities), TeardownAction (DeleteFrame, StopFrame), TeardownOutcome (TeardownReleased), deployVMStep, descendsVia, projectStep, projectStepId, reversedBy, stepLabel, stepPlanSteps)
 import SourceGuard (repoRelativePath)
 import System.Directory (doesDirectoryExist, doesFileExist, doesPathExist, getCurrentDirectory, listDirectory, removeFile)
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv, withArgs)
@@ -1465,14 +1465,15 @@ tests =
           -- runs is the one the acquiring step declared — not a whole-project
           -- hook beside the plan (§ W). The chain here owns no `deploy-kind`, so
           -- the core cluster adapter contributes nothing and only this node runs.
-          testCase "project down runs the reverse the acquiring step declared" $
-            withIsolatedProjectConfig $ \_paths -> do
+          testCase "project down then destroy runs each declared reverse without reacquiring" $
+            withIsolatedProjectConfig $ \paths -> do
                 observed <- newIORef ([] :: [TeardownAction])
+                acquired <- newIORef (0 :: Int)
                 let reversedChain :: FixtureFragment
                     reversedChain _ _ =
                         [ reversedBy
                             (\_ action -> modifyIORef' observed (action :) >> pure TeardownReleased)
-                            (deployVMStep "launch the VM" (StepFrame "host-orchestrator-0" "metal") (const (pure StepChanged)))
+                            (deployVMStep "launch the VM" (StepFrame "host-orchestrator-0" "metal") (\_ -> modifyIORef' acquired (+ 1) >> pure StepChanged))
                         ]
                     spec = finalized (addSteps reversedChain (builderWith passingSuite (pure ()) []))
                 prepared <-
@@ -1484,6 +1485,107 @@ tests =
                         IO (Either ExitCode ())
                 result @?= Right ()
                 readIORef observed >>= (@?= [StopFrame])
+                downState <- readProtectedStoreImage (isolatedStoreRoot paths)
+                (_, downVersion, _) <- expectSingleRecord "reverse-root." downState
+                downVersion @?= 3
+                repeatedDown <- try (withArgs ["project", "down"] (runHostBootstrapCLI spec)) :: IO (Either ExitCode ())
+                repeatedDown @?= Right ()
+                readIORef observed >>= (@?= [StopFrame])
+                destroyed <-
+                    try (withArgs ["project", "destroy"] (runHostBootstrapCLI spec)) ::
+                        IO (Either ExitCode ())
+                destroyed @?= Right ()
+                readIORef observed >>= (@?= [DeleteFrame, StopFrame])
+                readIORef acquired >>= (@?= 1)
+                finalState <- readProtectedStoreImage (isolatedStoreRoot paths)
+                (_, destroyVersion, _) <- expectSingleRecord "reverse-root." finalState
+                destroyVersion @?= 6
+                assertRecordCount "mode." 0 finalState
+                repeatedDestroy <- try (withArgs ["project", "destroy"] (runHostBootstrapCLI spec)) :: IO (Either ExitCode ())
+                repeatedDestroy @?= Right ()
+                readIORef observed >>= (@?= [DeleteFrame, StopFrame])
+                restarted <- try (withArgs ["project", "up"] (runHostBootstrapCLI spec)) :: IO (Either ExitCode ())
+                restarted @?= Right ()
+                readIORef acquired >>= (@?= 2)
+                try (withArgs ["project", "destroy"] (runHostBootstrapCLI spec)) >>= (@?= (Right () :: Either ExitCode ()))
+        , testCase "Destroy resumes the retained Pending continuation after Down" $
+            withIsolatedProjectConfig $ \paths -> do
+                acquired <- newIORef (0 :: Int)
+                destroyed <- newIORef (0 :: Int)
+                let chain :: FixtureFragment
+                    chain _ _ =
+                        [ reversedBy
+                            ( \_ action -> do
+                                case action of
+                                    DeleteFrame -> modifyIORef' destroyed (+ 1)
+                                    _ -> pure ()
+                                pure TeardownReleased
+                            )
+                            (deployVMStep "launch the VM" (StepFrame "host-orchestrator-0" "metal") (\_ -> modifyIORef' acquired (+ 1) >> pure StepChanged))
+                        ]
+                    spec = finalized (addSteps chain (builderWith passingSuite (pure ()) []))
+                    run verb = try (withArgs ["project", verb] (runHostBootstrapCLI spec)) :: IO (Either ExitCode ())
+                run "up" >>= (@?= Right ())
+                run "down" >>= (@?= Right ())
+                image <- readProtectedStoreImage (isolatedStoreRoot paths)
+                (keyText, version, bytes) <- expectSingleRecord "reverse-root." image
+                version @?= 3
+                pending <- pendingDestroyAfterDown bytes
+                key <- either (assertFailure . show) pure (mkRecordKey keyText)
+                store <- openProtectedStore (isolatedStoreRoot paths) >>= either (assertFailure . show) pure
+                written <- withProtectedEntry store $ \session -> do
+                    found <- readProtectedRecord session key >>= either (assertFailure . show) pure
+                    record <- maybe (assertFailure "terminal Down disappeared") pure found
+                    compareAndSwapProtectedRecord session key (ExpectVersion (protectedRecordVersion record)) pending
+                either (assertFailure . show) (\v -> recordVersionWord v @?= 4) written
+                run "destroy" >>= (@?= Right ())
+                readIORef acquired >>= (@?= 1)
+                readIORef destroyed >>= (@?= 1)
+                terminal <- readProtectedStoreImage (isolatedStoreRoot paths)
+                (_, terminalVersion, _) <- expectSingleRecord "reverse-root." terminal
+                terminalVersion @?= 6
+                run "destroy" >>= (@?= Right ())
+                readIORef destroyed >>= (@?= 1)
+                readProtectedStoreImage (isolatedStoreRoot paths) >>= (@?= terminal)
+        , testGroup "Destroy after Down refuses stale predecessor evidence" $
+            [ testCase (T.unpack prefix) $
+                withIsolatedProjectConfig $ \paths -> do
+                    destroyed <- newIORef (0 :: Int)
+                    let chain :: FixtureFragment
+                        chain _ _ =
+                            [ reversedBy
+                                ( \_ action -> do
+                                    case action of
+                                        DeleteFrame -> modifyIORef' destroyed (+ 1)
+                                        _ -> pure ()
+                                    pure TeardownReleased
+                                )
+                                (deployVMStep "launch the VM" (StepFrame "host-orchestrator-0" "metal") (\_ -> pure StepChanged))
+                            ]
+                        spec = finalized (addSteps chain (builderWith passingSuite (pure ()) []))
+                        run verb = try (withArgs ["project", verb] (runHostBootstrapCLI spec)) :: IO (Either ExitCode ())
+                    run "up" >>= (@?= Right ())
+                    run "down" >>= (@?= Right ())
+                    image <- readProtectedStoreImage (isolatedStoreRoot paths)
+                    (keyText, _, _) <- case recordsWithPrefix prefix image of
+                        record : _ -> pure record
+                        [] -> assertFailure ("missing predecessor " ++ T.unpack prefix)
+                    key <- either (assertFailure . show) pure (mkRecordKey keyText)
+                    store <- openProtectedStore (isolatedStoreRoot paths) >>= either (assertFailure . show) pure
+                    changed <- withProtectedEntry store $ \session -> do
+                        found <- readProtectedRecord session key >>= either (assertFailure . show) pure
+                        record <- maybe (assertFailure "predecessor disappeared") pure found
+                        compareAndSwapProtectedRecord session key (ExpectVersion (protectedRecordVersion record)) (protectedRecordBytes record)
+                    _ <- either (assertFailure . show) pure changed
+                    before <- readProtectedStoreImage (isolatedStoreRoot paths)
+                    run "destroy" >>= (@?= Left (ExitFailure 1))
+                    readIORef destroyed >>= (@?= 0)
+                    after <- readProtectedStoreImage (isolatedStoreRoot paths)
+                    recordsWithPrefix "reverse-root." after @?= recordsWithPrefix "reverse-root." before
+                    recordsWithPrefix "mode." after @?= recordsWithPrefix "mode." before
+                    recordsWithPrefix "lease." after @?= recordsWithPrefix "lease." before
+            | prefix <- ["reverse-root.", "mode.", "lease.", "acquisition.", "cursor."]
+            ]
         , testCase "chain steps see the snapshot admitted at project up, not a replaced sibling" $
             withIsolatedProjectConfig $ \paths -> do
                 let projectName = isolatedProjectName paths
@@ -1845,6 +1947,34 @@ withIsolatedProjectConfig use =
         if present then removeFile path else pure ()
 
 type ProtectedRecordImage = (T.Text, Word64, ByteString.ByteString)
+
+-- Materialize the exact new Pending boundary in an isolated fixture, as if
+-- the process died after its CAS but before allocating the Destroy epoch.
+pendingDestroyAfterDown :: ByteString.ByteString -> IO ByteString.ByteString
+pendingDestroyAfterDown bytes = do
+    let magic = "HOSTBOOTSTRAP-REVERSE-ROOT"
+        header = LazyByteString.toStrict . Builder.toLazyByteString $
+            Builder.byteString magic <> Builder.word64BE 1 <> Builder.word64BE 28
+        readFields :: Int -> ByteString.ByteString -> Either String [ByteString.ByteString]
+        readFields 0 rest
+            | ByteString.null rest = Right []
+        readFields count rest
+            | count > 0, ByteString.length rest >= 8 =
+                let (encodedSize, payload) = ByteString.splitAt 8 rest
+                    size = ByteString.foldl' (\value byte -> value * 256 + fromIntegral byte) (0 :: Word64) encodedSize
+                 in if size <= fromIntegral (ByteString.length payload)
+                        then let (field, remaining) = ByteString.splitAt (fromIntegral size) payload
+                              in (field :) <$> readFields (count - 1) remaining
+                        else Left "truncated reverse-root fixture field"
+        readFields _ _ = Left "invalid reverse-root fixture framing"
+    ByteString.take (ByteString.length header) bytes @?= header
+    fields <- either assertFailure pure (readFields 28 (ByteString.drop (ByteString.length header) bytes))
+    length fields @?= 28
+    take 2 fields @?= ["terminal", "down"]
+    let pending = ["pending", "destroy"] ++ take 17 (drop 2 fields) ++ drop 24 fields
+        frame field = Builder.word64BE (fromIntegral (ByteString.length field)) <> Builder.byteString field
+    pure . LazyByteString.toStrict . Builder.toLazyByteString $
+        Builder.byteString magic <> Builder.word64BE 1 <> Builder.word64BE 23 <> foldMap frame pending
 
 readProtectedStoreImage :: FilePath -> IO [ProtectedRecordImage]
 readProtectedStoreImage storeRoot = do

@@ -301,6 +301,10 @@ share, alias, and service callbacks remain authorized by their exact projected l
 aggregates failures and retains unsettled work for an exact retry instead of treating a partial reverse as
 terminal closure.
 
+Down retains the provider's durable share, guest alias, and exact alias ownership row. Destroy can therefore
+restart the guest and reach the same durable cluster store before releasing the alias and deleting the VM.
+The host `.data` root and marker survive both verbs.
+
 On Apple and Linux, `project down` returns the provider VM's CPU and memory to the host. On Windows it
 first restores the journalled `.wslconfig` origin, including an absent origin, and then invokes the
 global `wsl --shutdown`. That ordering makes the next cold boot read the restored configuration; the

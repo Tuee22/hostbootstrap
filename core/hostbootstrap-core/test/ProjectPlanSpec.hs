@@ -4494,14 +4494,14 @@ sourceBoundaryTests =
                 mapM_
                     (\(name, count) -> SourceGuard.countHaskellIdentifier name protocolSource @?= count)
                     [ ("ReverseRootDownPending", 6)
-                    , ("ReverseRootDestroyPending", 6)
+                    , ("ReverseRootDestroyPending", 7)
                     , ("ReverseRootDownCommitted", 6)
                     , ("ReverseRootDestroyCommitted", 6)
-                    , ("ReverseRootDownTerminal", 9)
+                    , ("ReverseRootDownTerminal", 11)
                     , ("ReverseRootDestroyTerminal", 9)
-                    , ("encodeReverseRootIntent", 9)
-                    , ("decodeReverseRootIntent", 12)
-                    , ("reverseRootIntentKey", 6)
+                    , ("encodeReverseRootIntent", 10)
+                    , ("decodeReverseRootIntent", 13)
+                    , ("reverseRootIntentKey", 7)
                     , ("reverseRootIntentKeyForName", 4)
                     ]
                 mapM_
@@ -4601,6 +4601,12 @@ sourceBoundaryTests =
                         "commitPending common encodeCommitted"
                         "finishCommitted"
                         engineSource
+                promotionSource <-
+                    requiredSourceSection
+                        "terminal Down to Destroy admission"
+                        "    promoteDown ::"
+                        "    drive ::"
+                        engineSource
                 committedSource <-
                     requiredSourceSection
                         "reverse-root Committed convergence"
@@ -4628,6 +4634,7 @@ sourceBoundaryTests =
                 let wrapper = normalizeWhitespace wrapperSource
                     engine = normalizeWhitespace engineSource
                     pending = normalizeWhitespace pendingSource
+                    promotion = normalizeWhitespace promotionSource
                     committed = normalizeWhitespace committedSource
                     common = normalizeWhitespace commonSource
                     suffix = normalizeWhitespace suffixSource
@@ -4680,8 +4687,8 @@ sourceBoundaryTests =
                         , engine
                         )
                     ,
-                        ( "the Pending intent has its exact initial durable version"
-                        , "recordVersionWord (protectedRecordVersion intentRecord) /= 1"
+                        ( "the Pending intent has its exact verb-specific durable version"
+                        , "not (reverseRootPhaseVersion verb 1 pendingVersion)"
                         , pending
                         )
                     ,
@@ -4706,7 +4713,7 @@ sourceBoundaryTests =
                         )
                     ,
                         ( "the committed descriptor is strictly read back"
-                        , "readback <- exactWordRecord session intentKey 2 bytes"
+                        , "readback <- exactWordRecord session intentKey (pendingVersion + 1) bytes"
                         , pending
                         )
                     ,
@@ -4777,6 +4784,24 @@ sourceBoundaryTests =
                     ]
                 assertAbsent "the fixed absence refusal projects no raw key" "recordKeyText" wrapper
                 assertFragmentsInOrder
+                    "terminal Down verifies its exact authority before publishing following Destroy"
+                    [ "ReverseRootDownTerminal common target modeVersion modeBytes leaseVersion leaseBytes"
+                    , "recordVersionWord (protectedRecordVersion retained) == 3"
+                    , "verifyAllSessionsClosed session plan"
+                    , "validateCommon session location nextCommon"
+                    , "exactWordRecord session key modeVersion modeBytes"
+                    , "exactWordRecord session (leaseLocationLeaseKey location) leaseVersion leaseBytes"
+                    , "requireBytes \"terminal Down mode\" (encodeMode WireProduction target) modeBytes"
+                    , "requireBytes \"terminal Down lease\" (encodeLease (LeaseBound target spec plan)) leaseBytes"
+                    , "Right () | ProjectDown <- verb -> pure (Left ModeReverseRootTerminal)"
+                    , "Right () | ProjectDestroy <- verb"
+                    , "ReverseRootDestroyPending nextCommon"
+                    , "compareAndSwapProtectedRecord session intentKey (ExpectVersion (protectedRecordVersion retained)) bytes"
+                    , "exactWordRecord session intentKey 4 bytes"
+                    ]
+                    promotion
+                SourceGuard.countHaskellIdentifier "compareAndDeleteProtectedRecord" promotionSource @?= 0
+                assertFragmentsInOrder
                     "Pending validates exact source and predecessors before allocation and commit"
                     [ "validateCommon session location common"
                     , "exactWordRecord session key oldModeVersion oldModeBytes"
@@ -4820,7 +4845,7 @@ sourceBoundaryTests =
                     common
                 assertFragmentsInOrder
                     "intent, mode, and lease readback precede the target closure"
-                    [ "intentRead <- exactWordRecord session intentKey 2"
+                    [ "intentRead <- exactWordRecord session intentKey (recordVersionWord (protectedRecordVersion retainedIntent))"
                     , "modeRead <- withRecordKey"
                     , "leaseRead <- exactWordRecord"
                     , "case (intentRead, modeRead, leaseRead) of"
@@ -4836,7 +4861,7 @@ sourceBoundaryTests =
                     , "Right deliver -> Right <$> deliver"
                     ]
                     engine
-                SourceGuard.countHaskellIdentifier "validateCommon" engineSource @?= 4
+                SourceGuard.countHaskellIdentifier "validateCommon" engineSource @?= 6
                 SourceGuard.countHaskellIdentifier "withFreshBrokerEpochKernel" engineSource @?= 1
                 SourceGuard.countHaskellIdentifier "withReifiedAllocatedBrokerEpochKernel" engineSource @?= 1
                 SourceGuard.countHaskellIdentifier "withExistingVerifiedRoot" engineSource @?= 1
@@ -5222,7 +5247,7 @@ sourceBoundaryTests =
                 resumeBranch <-
                     requiredSourceSection
                         "reverse-root Snapshot resume branch"
-                        "Left ModeReverseRootInProgress -> do"
+                        "Left failure | failure == ModeReverseRootInProgress"
                         "Left failure ->"
                         facadeSource
                 targetSignature <-
@@ -5271,7 +5296,7 @@ sourceBoundaryTests =
                         )
                     ,
                         ( "only the selector's outer InProgress failure resumes"
-                        , "case selected of Left ModeReverseRootInProgress -> do resumed <- withResumedExistingBoundReverseRootKernel admission store project verb use pure (fromMode resumed) Left failure -> pure (Left (SnapshotVerificationError failure)) Right outcome -> pure outcome"
+                        , "case selected of Left failure | failure == ModeReverseRootInProgress || failure == ModeWrongMode \"production\" \"absent\" -> do resumed <- withResumedExistingBoundReverseRootKernel admission store project verb use pure (fromMode resumed) Left failure -> pure (Left (SnapshotVerificationError failure)) Right outcome -> pure outcome"
                         , facade
                         )
                     ,
@@ -5307,7 +5332,7 @@ sourceBoundaryTests =
                     , "initialSource"
                     , "withFreshExistingBoundReverseRootKernel"
                     , "case selected of"
-                    , "Left ModeReverseRootInProgress"
+                    , "failure == ModeReverseRootInProgress || failure == ModeWrongMode \"production\" \"absent\""
                     , "withResumedExistingBoundReverseRootKernel"
                     , "underLiveness = do"
                     , "withRunLiveness store (installedProjectName project) select"
@@ -5557,7 +5582,7 @@ sourceBoundaryTests =
                         )
                     ,
                         ( "the immutable target acquisition seed must remain Prepare"
-                        , "let advance = case seedPhase of Prepare | recordVersionWord sourceVersion == 1 -> case validateLifecycleCursorRequest journal frame verb of"
+                        , "advance = case seedPhase of Prepare | recordVersionWord sourceVersion == 1 -> case validateLifecycleCursorRequest journal frame verb of"
                         , cursor
                         )
                     ,
@@ -6375,7 +6400,7 @@ sourceBoundaryTests =
                         )
                     ,
                         ( "the producer accepts only the sealed entry and exact descent work"
-                        , "withPreparedRootReverseDescentKernel :: LifecycleEntry scope planId rootFrame brokerGeneration verb -> DescentWork scope planId parentFrame childFrame verb"
+                        , "withPreparedRootReverseDescentKernel :: forall scope planId rootFrame brokerGeneration verb parentFrame childFrame result. LifecycleEntry scope planId rootFrame brokerGeneration verb -> DescentWork scope planId parentFrame childFrame verb"
                         , signature
                         )
                     ,
@@ -6719,7 +6744,12 @@ sourceBoundaryTests =
                         )
                     ,
                         ( "existing-bound refusal before snapshot preparation"
-                        , "clear <- refuseReverseRootIntent session project case clear of Left failure -> pure (Left failure) Right () -> prepareExistingBoundSnapshotAt session location project"
+                        , "clear <- refuseReverseRootIntent session project case clear of Left failure -> pure (Left failure) Right () -> withRecordKey (reverseRootIntentKey project)"
+                        , bound
+                        )
+                    ,
+                        ( "retained reverse evidence selects its own kernel while absent mode permits ordinary rearm"
+                        , "Right (Just _) -> do mode <- currentMode session project case mode of Left failure -> pure (Left failure) Right Nothing -> prepareExistingBoundSnapshotAt session location project Right (Just _) -> pure (Left ModeReverseRootInProgress)"
                         , bound
                         )
                     ,

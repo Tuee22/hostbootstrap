@@ -216,45 +216,31 @@ the current tree.
 
 #### Validation
 
-The three dated runs. One of the three is recorded; two are owed.
+On 2026-09-09, the current source passes the native Windows family gate on x86_64
+Windows 11 Home 10.0.26200 with GHC 9.12.4, Cabal 3.16.1.0, Python 3.14.7, and Poetry 2.4.1.
+The warning-clean core build passes; `cabal test all --ghc-options=-Werror` passes 2,500/2,500
+in 504.50 seconds, and the provider-live component reports its declared no-request Unsupported
+outcome. The Python code check and 235/235 tests pass. The documentation-only check subsequently
+passes 5/5 in 6.36 seconds. The Windows ownership families execute their native rows; POSIX-only
+process fixtures assert their declared refusals.
 
-**macOS gate host — 2026-09-08 — passed.** On native arm64 macOS 26.6.2 (build 25G83) with GHC 9.12.4,
-Cabal 3.16.1.0, Python 3.14.3 and Poetry 2.3.2: `cabal build all --ghc-options=-Werror` from `core/`
-passed warning-clean, and `cabal test all --ghc-options=-Werror` passed **2,497/2,497** in 429.07 seconds
-across both suites — `hostbootstrap-core-test` and `hostbootstrap-provider-live-linux-cpu`, the latter
-reporting `Unsupported: provider-live not requested` and exiting success, which is the runtime
-disposition that replaced the deleted default-off flag. From the repository root
-`poetry run python -m hostbootstrap.check_code` passed (`ruff`, `black`, `mypy` over 12 source files) and
-`poetry run python -m hostbootstrap.test_all` passed **233/233** in 1.68 seconds. Total 7 minutes
-25 seconds.
-
-The total moved from the previously recorded 2,498 to 2,497, and the missing case is accounted for rather
-than unexplained: the Docker/Incus deduplication replaced two byte-identical test blocks —
-`Docker.targetDockerUser` and `EIncus.targetIncusAdminUser`, three assertions each — with a single
-`environmentNonRootUser`/`invokingNonRootUser` block that additionally covers the euid fallback neither
-copy exercised. One fewer case asserting strictly more, not a case that stopped running.
-
-Platform accounting is unchanged from Sprint 28.2: the POSIX ownership, host-wall and shipped guest-alias
-rows executed against the Darwin kernel, and the Windows ownership families plus the platform rows in
-`WslGlobalWallWindowsSpec` asserted their declared refusal on this gate host rather than being skipped.
+The same source's complete core gate also passes inside an Ubuntu 24.04.4 WSL guest at 2,505/2,505
+in 291.83 seconds with GHC 9.12.4 and Cabal 3.16.1.0. Its real separate-process recursive fixtures
+and Linux ownership rows execute; the five-case total difference follows the suite's platform
+conditions. This is Linux guest core evidence, not a complete native Linux outer-host family gate.
+That task-created guest is removed at the user-requested pause. A current-source macOS family
+result and a complete native Linux family result remain owed.
 
 #### Remaining Work
 
-Two of the three runs are owed — the **Windows** and **Linux** gate families. The macOS family run is
-recorded above against the current tree. This phase is `Active` by default and `Done` only in the window
-following a fresh three-family run: its claim is about the host-portable source tree, so any change to
-that tree expires it. That is the honest reading of a portability claim rather than a defect in this phase.
+Run the complete current-source host-static gate on native macOS and native Linux gate hosts.
+The Windows family passes; the Linux guest core result is supplementary evidence. Any further
+host-portable source change requires fresh coverage from every affected family.
 
 ## Remaining Work
 
-Sprint 28.4 owns the owed runs.
-
-The **macOS** family run is recorded against the current tree: 2026-09-08, arm64 macOS 26.6.2
-(build 25G83), 2,497/2,497 core and 233/233 Python. The **Windows** and **Linux** family runs remain
-owed; neither gate host is available from this machine. This phase is `Active` by default and `Done`
-only in the window following a fresh three-family run: its claim is about the host-portable source tree,
-so any change to that tree expires it. That is the honest reading of a portability claim, not an
-unclosed phase.
+Sprint 28.4 owns the current-source macOS and native Linux family runs and their platform accounting.
+Access to those gate hosts is required; the available Windows family has passing evidence.
 
 ## Documentation Requirements
 

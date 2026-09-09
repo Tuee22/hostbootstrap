@@ -296,9 +296,10 @@ data StepIdentity
 
 {- | What one reverse step does to its resource.
 
-'StopFrame' and 'DeleteFrame' are the single point where the two teardown verbs
-differ: @down@ stops a provider frame so the guest and its disk survive,
-@destroy@ deletes it. 'DeleteCluster' is used by __both__, because kind has no
+'StopFrame' and 'DeleteFrame' distinguish the provider actions: @down@ stops
+the frame so the guest and its disk survive, while @destroy@ deletes it.
+'RetainResource' keeps the provider's durable share and alias across that stop.
+'DeleteCluster' is used by __both__, because kind has no
 reliable stop contract. Which one a step gets is derived by
 "HostBootstrap.Teardown" from the plan and the verb; the step's own reverse
 action receives it rather than choosing it.
@@ -310,6 +311,8 @@ data TeardownAction
       DeleteFrame
     | -- | the ephemeral kind cluster; its removal set is empty
       DeleteCluster
+    | -- | keep the provider's durable share and alias across stop/restart
+      RetainResource
     | -- | any other acquired resource this run owns
       ReleaseResource
     deriving (Eq, Ord, Show)

@@ -1,6 +1,6 @@
 # Phase 24 — The worked demo
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 16 (provider, cluster, and guest lifecycle foundations), Phase 17 (proof-complete
 recursive lifecycle command), Phase 22 (service-runtime activation and `service run` semantics), Phase 23
 (base image publication and the opportunistic warm store)
@@ -11,7 +11,6 @@ core host-static gate from `core/`, plus live
 `hostbootstrap run -- project destroy`, and `hostbootstrap run -- test run all` reporting `10/10 passed`
 inside the universal `linux-cpu` realization on any supported outer host
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-08 ; arm64 macOS 26.6.2 (build 25G83), Lima 2.1.2, Colima 0.10.3, kind 0.31.0 ; Python-bootstrapper `hostbootstrap run -- test run all` ; pass ; covers 8d7501bdb0d148fc09ccf253044a9bfdd405aa69e9fb2e56a105878b29986407
 **Evidence covers**: `demo/src` `demo/app` `demo/test` `demo/docker` `core/hostbootstrap-core/src/HostBootstrap/Lifecycle` `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan`
 
 > **Purpose**: Be the real consumer that proves the library composes — a complete application with its own
@@ -1983,6 +1982,8 @@ the shipped project binary.
 - With the binary established there, the guest alias holds its four clauses through the ownership seam,
   over the shipped row addressed at that frame — so the alias's identity is still read by the kernel that
   owns the object, and it is read by this binary.
+- The reverse adapter consumes `RetainResource` on Down without releasing the alias or its ownership row;
+  Destroy consumes `ReleaseResource` and gives back the exact link after child teardown.
 - The shipped row stages the symbolic link and binds that exact device/inode identity in the durable record
   before atomic no-replace publication. Linux publishes a second name with `link(2)`; Darwin moves the same
   bound inode with `renamex_np(RENAME_EXCL)`, because APFS does not admit a hard link to a symbolic link.
@@ -2020,7 +2021,13 @@ On 2026-08-26, macOS arm64 passed the complete warning-clean core gate at 2,474/
 
 #### Remaining Work
 
-None. Completed on 2026-08-26 on macOS 26.5 arm64 with Lima 2.1.2, GHC 9.12.4, Cabal 3.16.1.0, and
+None. On 2026-09-09, the current core and demo gates pass, and the fresh Windows/WSL Production
+Up/Down/Destroy sequence passes. After Down and a cold restart, the alias retains device/inode
+`2096:217048`, the exact target, and the exact ownership-record hash. Destroy releases the alias row
+and removes the provider while preserving the host marker. Sprint 24.42 records the commands,
+timings, image digest, and terminal audit.
+
+Dated evidence on 2026-08-26 on macOS 26.5 arm64 with Lima 2.1.2, GHC 9.12.4, Cabal 3.16.1.0, and
 `hostbootstrap` 0.1.0. The fresh Apple/Lima Harness run bootstrapped the project binary and Docker 29.1.3 in
 each of four pristine guests, published the guest alias, completed child cluster descent, survived the
 engine-owned same-run Destroy/recreate boundary for both variants, and released the provider on terminal
@@ -2527,9 +2534,9 @@ Every one of the four pristine generations pulled published base digest
 operator-owned `hostbootstrap-demo.test.dhall` remained. The post-run gates passed core 2,457/2,457, demo
 145/145, Python 231/231, and Python coverage 1,331/1,331 statements.
 
-### Sprint 24.42: The live demo matrix run [Done]
+### Sprint 24.42: The live demo matrix run [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: none — this sprint records a run
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`
@@ -2545,61 +2552,93 @@ Record the dated live demo lifecycle and matrix run inside the universal linux-c
 
 #### Validation
 
-On 2026-09-06, `hostbootstrap run -- test run all` reported `10/10 passed` on arm64 macOS 26.6.2
-(build 25G83) realizing `linux-cpu` through Lima 2.1.2 and Colima 0.10.3, with kind 0.31.0. Both
-variants passed all five cases: `pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence`,
-and `durable-readback` for `hello-world` and for `hello-universe`. The matrix performed four fresh Lima
-bring-ups and four terminal destroys, each building the project inside a pristine guest, pushing the
-derived image to the in-cluster registry (`demo` at `sha256:394dd932…`), exposing the web service on a
-runtime-selected loopback port, and bringing the host accelerator daemon to ready before assertions.
-The forward and reverse lifecycle commands ran inside that matrix, the last reverse reporting
-`project destroy: deleting hostbootstrap-demo-vm`.
+On 2026-09-09, the current core gate, `cabal test all --ghc-options=-Werror`, passes on
+native x86_64 Windows 11 Home 10.0.26200 at 2,500/2,500 in 504.50 seconds and inside native
+Ubuntu 24.04.4 WSL at 2,505/2,505 in 291.83 seconds. Both use GHC 9.12.4 and Cabal 3.16.1.0;
+the Linux suite includes the real separate-process lifecycle fixtures. The native Windows demo
+passes `cabal build all --ghc-options=-Werror` and
+`cabal test hostbootstrap-demo-test --ghc-options=-Werror` at 149/149 in 5.39 seconds.
+The changed production formatter checks and demo `hlint app src` pass. The repository Python
+check-code and 235/235-test gates pass. The current 46-file covered source digest is
+`bead951148f4b26e04c53272877c55c4f80539619efd081335bdeea7367846dd`.
 
-The audited end state holds: `limactl list` reports no demo instance;
-`.build/hostbootstrap-demo.dhall` is gone while `.build/hostbootstrap-demo.test.dhall` remains;
-`.test_data` exists and is empty; no accelerator daemon is live; and the ambient Colima `default`
-profile and the unrelated cluster on it are unchanged.
+The fresh Production sequence runs through the repository Python bootstrapper on that Windows host,
+with a Ryzen 7 5700G, 16 GiB host memory, and an RTX 3090 on driver 616.64. The generated config
+declares 6 CPUs, 10 GiB memory, and 80 GiB storage; it measures SHA-256
+`5ec0092759c6818db0879c97399f5f33f345062781adf06d5e8214378fbb0a22`.
+The preserved `.data/web/marker` contains `hostbootstrap-destroy-up-v1` and measures SHA-256
+`05932ad6080575c3081d3870d02780bd1e2750c039f2e4cee37a69de1eeb1c21`.
+The three canonical commands are `poetry run hostbootstrap run --project-root demo project up`,
+`project down`, and `project destroy`; each uses the harness-owned durable Windows launcher.
 
-The static half is current on the same date: `cabal build all` and `cabal test hostbootstrap-demo-test
---ghc-options=-Werror` from `demo/` passed `149/149`.
+| Command | Launcher label | Result | Duration |
+|---------|----------------|--------|----------|
+| Up | `phase24-production-up-current-20260909-1715` | exit 0 | 3,542.59 s |
+| Down | `phase24-production-down-current-20260909-1815` | exit 0 | 33.30 s |
+| Destroy | `phase24-production-destroy-current-20260909-1816` | exit 0 | 12.61 s |
 
-The run occupied 2 hours 12 minutes against the 60-80 minute envelope
-[the runbook](../documents/operations/demo_runbook.md) states. The envelope assumes a host that is
-otherwise idle: each bring-up installs a toolchain and builds every dependency from source inside a
-pristine Lima guest, where the base image's warm store does not apply, and this host shared six guest
-CPUs with an unrelated running cluster.
+Up starts at 2026-09-09 21:14:47 UTC and builds the native project inside a fresh Ubuntu 24.04.4
+WSL guest. It pulls published CPU/amd64 base digest
+`sha256:e46fb5699af246dc631704cd9bba5020776a7e96fbba1f4c450b5b9971ffb9d5`, whose compiler is
+GHC 9.10.3, and builds derived image
+`sha256:866175c5db3841f4019f19e82e7d183be57e6f3f3f556950dcc2eda9fc835122`.
+The in-image quality gate and exported runtime/config/key/web checks pass. Docker 29.1.3 reports
+the kind control plane and exact exposure relay running; web, MinIO, and registry pods are Ready
+and their health endpoints return HTTP 200. The budget endpoint reports 6/10/80 and `Hello, world!`;
+the durable endpoint reads the preserved marker. The Windows accelerator returns 5 for 2 + 3 with
+backend `windows-gpu` and artifact hash `fc76cd884d2539b8`.
+
+Before Down, the guest alias has device/inode `2096:217048`, points to
+`/mnt/c/Users/Matt/hostbootstrap/demo/.data`, and its ownership record measures SHA-256
+`30331efc4ab27a84a9fcffaee9b33ff0934dbde81e1d89ed5ea3bbb8166f63ca`.
+Down stops the daemon and utility VM and restores the original wall bytes. An explicit cold guest
+restart observes the same alias device/inode, target, ownership record, and durable marker.
+Destroy removes the distribution, Production mode, and alias ownership row; the lease is closed at
+epoch 8 and the reverse intent is terminal at version 6. Config and marker hashes remain exact.
+The original `.wslconfig` measures SHA-256
+`2986099d4e292abed1bacbf7b7cb514188bad4304f930800803a85470ee4e694` and its active ownership
+record is absent. The idle utility VM left by the explicit cold-restart observation is stopped with
+`wsl --shutdown`. The task-generated Production config is removed after its exact hash is checked,
+leaving the operator test config and preserved `.data` for the Harness isolation audit.
+
+The current full Harness matrix starts at 2026-09-09 22:19:54 UTC under durable launcher label
+`phase24-harness-current-20260909-1820`, using
+`poetry run hostbootstrap run --project-root demo test run all`. Its operator-owned two-variant
+config declares the same 6/10/80 resources and measures SHA-256
+`8a88f68edd459803fe6ffa8a60cabc4615fea91ce489842a6ba798fbab43136b`.
+The matrix is incomplete. The `hello-world` run is `run-212e7f0cb740`.
+Its first fresh guest, under wall fence 21, passes the native build and exported-image checks,
+pulls the same published base, and builds derived image
+`sha256:84d89f609aa37cdc0136d90466dccb7b287df63e1fa2025ccb2069efa9a35db4`.
+That generation opens the exact variant assertions, completes its owned Destroy with wall
+restoration, and starts the second fresh guest in the same run under wall fence 22.
+
+The user-requested pause interrupts this matrix at 2026-09-09 23:35:43 UTC during the second
+guest's GHC 9.12.4 build. No final report or `10/10` result is produced; `hello-universe` is not
+started. Fresh acceptance therefore requires a complete matrix, not continuation of this report.
+The interrupted run closes its lease at epoch 11 and returns its profile to `available`; its mode,
+generated-config record, data-root record, generated sibling config, and run data directory are absent.
+
+The pause cleanup terminates the remaining guest build, unregisters the task-created
+`hostbootstrap-demo-vm`, restores the exact global wall through `restoreCurrentUserGlobalWall`,
+and runs `wsl --shutdown`. The terminal audit finds no installed WSL distribution, utility VM,
+demo daemon, or detached matrix process. `.test_data` is empty and the active wall record is absent.
+The operator test config, preserved Production marker, and original `.wslconfig` retain the exact
+hashes above; the Production lease remains closed at epoch 8. Compiled build caches and durable
+closed receipts remain available. This assisted pause cleanup is not a passing live gate.
+The terminal 46-file source measurement still matches
+`bead951148f4b26e04c53272877c55c4f80539619efd081335bdeea7367846dd`.
 
 #### Remaining Work
 
-None.
+Run the complete `10/10` Harness matrix through one supported realization of `linux-cpu`.
+Record its terminal ownership audit and matching current-source digest. The current Production
+Up/Down/Destroy sequence and core/demo static gates pass.
 
 ## Remaining Work
 
-None.
-
-Both halves are confirmed. The static half: on 2026-09-06, `cabal build all --ghc-options=-Werror` and
-`cabal test hostbootstrap-demo-test --ghc-options=-Werror` from `demo/` passed 149/149 on native arm64
-macOS 26.6.2. That half is not reachable from `cabal test all` in `core/`, because `demo/cabal.project` is a
-separate project. The live half is the 2026-09-06 `**Gate evidence**` row above, whose covers digest still
-matches the tree.
-
-This section previously read "Sprint 24.42 owns the owed run" and "The live half is owed … newest dated
-evidence is 2026-08-26" while the sprint was `[Done]` and the header row recorded a 2026-09-06 pass. That
-was stale text left behind at closure, and it put the phase in breach of § C's rule that `Done` requires
-no remaining work in its scope. It is recorded here because no mechanical check caught it:
-`checkDoneSprintRemainingWork` reads sprints, and nothing reads a *phase-level* `## Remaining Work`
-against its own `**Status**`.
-
-The provenance caveat that stood here is now discharged. The evidence row previously recorded the
-2026-09-06 run, which was driven by a `hostbootstrap` CLI later found to be a pipx install dated
-2026-08-05 — omitting both `-j1` and the `--hostbootstrap-install-identity` call the current source makes
-unconditionally. The CLI was reinstalled from the repository on 2026-09-08 and the matrix re-run: it
-reported `10/10 passed` in 1 hour 51 minutes 38 seconds over four fresh Lima bring-ups and four terminal
-destroys. The row above records that run, so this phase's live half now rests on a bootstrapper matching
-the tree its digest measures. The covers digest is unchanged at `8d7501bd…` because the covered sources
-did not change between the two runs — which is precisely why the digest could not have detected the
-difference, and why the toolchain limit is recorded in `development_plan_standards.md` rather than left
-to be rediscovered.
+Sprint 24.42 owns the current-tree Harness matrix, its terminal audit, and refreshed covered-source
+evidence. The current Production lifecycle, alias retention, and core/demo static gates pass.
 
 ## Documentation Requirements
 

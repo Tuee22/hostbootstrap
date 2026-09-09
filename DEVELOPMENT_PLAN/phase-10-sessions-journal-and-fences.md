@@ -5,7 +5,7 @@
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
+**Gate evidence**: 2026-09-09 ; x86_64 Windows 11 Home 10.0.26200, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror --test-show-details=direct --test-options=--hide-successes` ; pass ; covers in-gate
 
 > **Purpose**: Give an invocation a versioned session inside a single-writer project journal, and give a
 > crashed invocation a durable fence that stops its old permits from being mistaken for live ones.
@@ -50,11 +50,20 @@ One journal version that both session opening and project close advance.
   is open — including a **zero-operation** open session, which is exactly what a kill right after open leaves.
 - `Lifecycle.Transaction` supplies the crash-consistent redo coordinator every multi-record transition runs
   behind.
+- Local journal and cursor helpers carry explicit scoped result types across GADT branches, so supported
+  compilers preserve the same scope, plan, broker, and result indices.
 
 #### Validation
 
 `SessionSpec` covers the one-winner race, the zero-operation session refusal, idempotent closing-epoch
 resumption, the foreign-epoch refusal, and that a closing project admits nothing new.
+
+On 2026-09-09, the complete native Windows core gate passes 2,492/2,492 in 675.12 seconds with
+GHC 9.12.4 and Cabal 3.16.1.0. The library and both executables also build with `-Werror` using
+GHC 9.10.3 from published CPU/amd64 base digest
+`e46fb5699af246dc631704cd9bba5020776a7e96fbba1f4c450b5b9971ffb9d5`.
+The explicit scoped journal/cursor signatures preserve the indexed branch behavior, and their
+production modules pass the base's formatter check.
 
 #### Remaining Work
 

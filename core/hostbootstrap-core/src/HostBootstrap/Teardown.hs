@@ -158,7 +158,7 @@ import HostBootstrap.ProjectPlan (
  )
 import HostBootstrap.ProjectPlan.Frame (CurrentFrame, currentFrameId)
 import HostBootstrap.Step (
-    CoreStepId (DeployKindId, DeployVMId),
+    CoreStepId (CopySourceId, DeployKindId, DeployVMId),
     ReversePolicy (..),
     StepIdentity (..),
     TeardownAction (..),
@@ -354,7 +354,9 @@ reverseStepFor verb placement step =
 
 @up@ has no reverse work. A VM is stopped by @down@ and deleted by @destroy@;
 kind is deleted by both non-up verbs because it has no reliable stop/restart
-contract. Every other removable node runs its declared release.
+contract. The provider's copy-source node retains its share and alias on
+@down@ so reverse descent after restart resolves the same durable root.
+Every other removable node runs its declared release.
 -}
 actionFor :: ProjectVerb verb -> StepIdentity -> Maybe TeardownAction
 actionFor ProjectUp _ = Nothing
@@ -362,6 +364,7 @@ actionFor ProjectDown (CoreStepIdentity DeployVMId) = Just StopFrame
 actionFor ProjectDestroy (CoreStepIdentity DeployVMId) = Just DeleteFrame
 actionFor ProjectDown (CoreStepIdentity DeployKindId) = Just DeleteCluster
 actionFor ProjectDestroy (CoreStepIdentity DeployKindId) = Just DeleteCluster
+actionFor ProjectDown (CoreStepIdentity CopySourceId) = Just RetainResource
 actionFor ProjectDown _ = Just ReleaseResource
 actionFor ProjectDestroy _ = Just ReleaseResource
 

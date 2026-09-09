@@ -210,9 +210,10 @@ the root-coordinated extension across child frames.
 
 Its static process fixture installs a temporary binary with fresh identity keys and sibling config,
 then drives real duplex channels through compiled local clients. On a POSIX gate host it executes the
-root/VM/container protocol locally. Where the POSIX row is unavailable, the same five cases assert the
+root/VM/container protocol locally. Where the POSIX row is unavailable, the same process cases assert the
 row's refusal and the native receiver's rejection of a guest snapshot with a different canonical root.
-`CoverageManifest` counts all seven cases and reports which outcomes are refusals. These are local
+`CoverageManifest` counts every case, including the Down-to-Destroy continuation and fresh Up rearm,
+and reports which outcomes are refusals. These are local
 protocol tests; live provider and container execution has its separate substrate gate.
 
 The [host-providers-and-self-reference-lift

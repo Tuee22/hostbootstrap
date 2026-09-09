@@ -419,7 +419,8 @@ withReauthorizedBoundPlanSnapshotKernel ::
 withReauthorizedBoundPlanSnapshotKernel admission =
     case consumeExistingBoundSnapshotAdmissionKernel admission of
         () -> \store project verb initialSource use ->
-            let fromMode = either (Left . SnapshotVerificationError) Right
+            let fromMode (Left ModeReverseRootTerminal) = Left SnapshotReverseRootTerminal
+                fromMode outcome = either (Left . SnapshotVerificationError) Right outcome
                 select = do
                     selected <-
                         withBoundPlanSnapshotKernel
@@ -459,7 +460,7 @@ withReauthorizedBoundPlanSnapshotKernel admission =
                                     )
                             )
                     case selected of
-                        Left ModeReverseRootInProgress -> do
+                        Left failure | failure == ModeReverseRootInProgress || failure == ModeWrongMode "production" "absent" -> do
                             resumed <-
                                 withResumedExistingBoundReverseRootKernel
                                     admission

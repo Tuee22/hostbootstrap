@@ -6,8 +6,8 @@
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus the focused `CLISpec` and `ContextSpec`
 groups with `--ghc-options=-Werror` inside a realized linux-cpu host
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-07 ; aarch64 Linux realized through the published `basecontainer-cpu-arm64` base, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern CLISpec'` ; pass ; covers 28cb80bd9b92c0d91196c975828ad298ad892a2937d647bffd7330d6e82c5b18
-**Gate evidence**: 2026-09-07 ; aarch64 Linux realized through the published `basecontainer-cpu-arm64` base, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern ContextSpec'` ; pass ; covers 28cb80bd9b92c0d91196c975828ad298ad892a2937d647bffd7330d6e82c5b18
+**Gate evidence**: 2026-09-09 ; x86_64 Ubuntu 24.04.4 LTS realized through WSL2 on Windows 11 Home 10.0.26200, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test hostbootstrap-core-test --ghc-options=-Werror --test-show-details=direct --test-options=--pattern=CLISpec` ; pass ; covers 1168c0e1694c1337ac62b2d1267a212e4b49f343ec032ac6acf0a5bf014d0861
+**Gate evidence**: 2026-09-09 ; x86_64 Ubuntu 24.04.4 LTS realized through WSL2 on Windows 11 Home 10.0.26200, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test hostbootstrap-core-test --ghc-options=-Werror --test-show-details=direct --test-options=--pattern=ContextSpec` ; pass ; covers 1168c0e1694c1337ac62b2d1267a212e4b49f343ec032ac6acf0a5bf014d0861
 **Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs` `core/hostbootstrap-core/test/CLISpec.hs` `core/hostbootstrap-core/test/ContextSpec.hs`
 
 > **Purpose**: Fix the exact grammar and side-effect boundary of `test init`, `test run <case-id>|all`,
@@ -182,6 +182,13 @@ mounted the tree read-only and four `CLISpec` cases refused with
 correctly rather than a defect: those cases take the protected store's run-liveness lock under the
 project root, so a root that cannot be written is a refusal the ownership seam is supposed to produce.
 It is recorded because it is the difference between this gate having run and having appeared to.
+
+On 2026-09-09, the focused `CLISpec` group passes 64/64 in 2.12 seconds and the `ContextSpec`
+selection passes 85/85 in 0.23 seconds on Ubuntu 24.04.4 LTS through WSL2, using GHC 9.12.4
+and Cabal 3.16.1.0. The complete core gate passes 2,504/2,504 in 190.86 seconds on that realization
+and 2,499/2,499 in 499.45 seconds on the Windows outer host. All 971 tracked working-tree files
+match the validated Linux copy byte for byte. The focused command selection retains the read-only
+context and exact Harness mutation boundaries; its covered digest matches the header evidence.
 
 #### Remaining Work
 

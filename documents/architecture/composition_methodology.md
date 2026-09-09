@@ -98,7 +98,8 @@
   the unchanged provider projection. Incus may attach and activate the share through its owned instance row;
   Lima re-probes the writable create-time mount retained by its exact backend. Returning closes the
   continuation; neither execution packages nor the generic carried-resource channel contain the
-  provider/share handles.
+  provider/share handles. Down projects `RetainResource` for this node, keeping its share and alias
+  across provider stop/restart; Destroy projects `ReleaseResource` after the child subtree settles.
 - **The same algebra expresses deployment and runtime business logic.** "Bring up a cluster" and "run an
   inference/training pipeline" are the same kind of composition over durable external stores at different
   altitudes; both are steps in the one chain.

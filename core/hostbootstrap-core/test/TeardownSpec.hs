@@ -615,6 +615,15 @@ projectionTests =
             destroyForest <- openOrFail (teardownPlan plan current ProjectDestroy)
             localActionFor "core:deploy-kind" downForest @?= Just DeleteCluster
             localActionFor "core:deploy-kind" destroyForest @?= Just DeleteCluster
+    , testCase "the durable share survives down and releases only after destroy's child subtree" $
+        withExactPlan id workedDemoReversePlan $ \plan current -> do
+            downForest <- openOrFail (teardownPlan plan current ProjectDown)
+            destroyForest <- openOrFail (teardownPlan plan current ProjectDestroy)
+            localActionFor "core:copy-source" downForest @?= Just RetainResource
+            localActionFor "core:copy-source" destroyForest @?= Just ReleaseResource
+            localActionFor "core:deploy-vm" downForest @?= Just StopFrame
+            localActionFor "core:deploy-vm" destroyForest @?= Just DeleteFrame
+            teardownForestOutstanding downForest @?= teardownForestOutstanding destroyForest
     , testCase "project up refuses before exposing reverse work from a removable plan" $
         withPlan $ \plan current -> do
             let projection = teardownPlan plan current ProjectUp
