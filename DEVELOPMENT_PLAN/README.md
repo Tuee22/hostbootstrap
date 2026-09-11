@@ -63,9 +63,9 @@ its row here.
 | 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
 | 24 | [The worked demo](phase-24-worked-demo.md) | Done | linux-cpu | — |
 | 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Done | **apple-silicon** | — |
-| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Active | **nvidia** | Sprint 26.4: current-tree matrix and audit |
+| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Done | **nvidia** | — |
 | 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Done | **windows** | — |
-| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | Sprint 28.4: current-tree macOS and native Linux runs |
+| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | Sprint 28.4: current-tree macOS and arm64 Linux cells |
 | 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Done | — | — |
 
 ## The current frontier
@@ -89,16 +89,18 @@ agent session through the durable-run mechanism.
 The [Apple-Silicon acceptance phase](phase-25-apple-silicon-substrate.md) is closed by its 2026-09-09
 pristine Apple matrix, native direct-Colima lane, and terminal ownership audit against one unchanged
 covered tree. Its phase document records the dated results and image digests. The
-[NVIDIA acceptance phase](phase-26-nvidia-gpu-substrate.md) records a 2026-09-09 native
-Linux/x86_64 RTX 5090 matrix and terminal audit. Changes to its covered journal source make the
-current-tree run owed again; its phase document retains the dated result and covered-source digest.
+[NVIDIA acceptance phase](phase-26-nvidia-gpu-substrate.md) is closed by its 2026-09-11 native
+Linux/x86_64 RTX 5090 run on `matt-junction`: `10/10 passed` in 51 minutes 35 seconds across four
+pristine generations, with the one-GPU request observed live through the Kubernetes API on distinct
+accelerator and device-plugin pods per generation, and a terminal audit whose 208-file source
+measurement still matches the in-run tree.
 
-The [host-portability acceptance phase](phase-28-host-portability-acceptance.md) records separate native
-Windows, macOS, and Linux gate runs, with the suite's explicit platform conditions explaining their totals.
-Static and substrate evidence are distinct. Its Windows family passes against the current tree on
-2026-09-11 at 2,500/2,500 core cases and 235/235 Python cases. A current-source macOS family run and a
-complete native Linux family run remain owed, and a Linux guest realized on a Windows host is not one of
-them: § II makes a gate host the OS, architecture, and toolchain the gate process itself runs on.
+The [host-portability acceptance phase](phase-28-host-portability-acceptance.md) records separate dated gate
+runs for four cells — a Windows gate host, a macOS gate host, an x86_64 Linux gate host, and an arm64 Linux
+gate host — with the suite's explicit platform conditions explaining their totals. The Linux family splits
+by architecture because § N compiles different code for each. Static and substrate evidence are distinct.
+Its Windows cell passes against the current tree on 2026-09-11 at 2,500/2,500 core cases and 235/235 Python
+cases.
 
 The [host-providers phase](phase-15-host-providers-and-the-lift.md) is closed by its 2026-09-09 native
 Linux/x86_64 KVM/Incus run: all 2,497 static cases passed before the live component completed its prepared
@@ -109,11 +111,14 @@ the rolling CPU/amd64 tag was pushed, pulled at
 `sha256:e46fb5699af246dc631704cd9bba5020776a7e96fbba1f4c450b5b9971ffb9d5`, and smoked again against
 that exact published digest.
 
-Two acceptance rows stay open, and both wait on hardware rather than on work in this tree. The
-current-source NVIDIA run needs a native Linux host with an NVIDIA GPU; the available SSH key is refused
-for `matt@matt-junction`. The portability row needs a native macOS gate host and a native Linux gate host
-for the two families the Windows run cannot speak for. Every other row is closed against the current
-covered source. No gate is running.
+§ JJ's coverage matrix names five cells, and a hardware set is visited once: a visit records every cell
+that hardware can produce, so three machines fill all five and a fourth is never required. The Apple
+Silicon visit carries the Metal substrate, the macOS gate host, and an arm64 Linux gate host; the
+Linux/NVIDIA visit carries the nvidia substrate and the x86_64 Linux gate host; the Windows visit carries
+the windows substrate and the Windows gate host. The 2026-09-11 Linux/NVIDIA visit recorded both of its
+cells, so that machine is not owed a return. One row stays open: the Apple visit, which owes the macOS
+gate host and the arm64 Linux gate host. Every other row is closed against the current covered source.
+No gate is running.
 
 ## Validation policy
 

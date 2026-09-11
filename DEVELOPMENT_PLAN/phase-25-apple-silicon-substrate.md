@@ -40,6 +40,24 @@ listing them here is what keeps a static closure from silently dropping live cov
   A gate host that is not Apple never takes that branch, so one answer where there were two is
   confirmed here rather than asserted by the phase that unified it.
 
+## What one Apple visit records
+
+This phase declares exactly one substrate beyond the baseline (§ II), and its gate is the Apple hardware
+run above. But a hardware set is visited once (§ JJ), and Apple Silicon is the only hardware that carries
+three of the plan's cells at the same time:
+
+| Cell | Owned by |
+|---|---|
+| Apple Silicon / Metal substrate acceptance | this phase |
+| macOS gate host, host static gate | [phase 28](phase-28-host-portability-acceptance.md) |
+| arm64 Linux gate host, host static gate | [phase 28](phase-28-host-portability-acceptance.md) |
+
+An Apple visit therefore records all three before it ends: this phase's live matrix and Colima lane, the
+complete host static gate natively on macOS, and the same gate inside an arm64 Linux VM or container. None
+of the three is this phase's closure condition — § C forbids that, and phase 28 owns the two gate-host
+rows — but collecting them in one sitting is what stops the arm64 Linux cell from later demanding a second
+trip to the same machine.
+
 ## Sprints
 
 ### Sprint 25.1: Lima provider acceptance [Done]

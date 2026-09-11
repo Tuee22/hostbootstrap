@@ -1,11 +1,15 @@
 # Phase 26 — NVIDIA GPU substrate
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: nvidia
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
 reporting `10/10 passed` on a native Linux host with an NVIDIA GPU, followed by the terminal ownership audit
 **Gate kind**: deferred
+**Gate evidence**: 2026-09-11 ; `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic,
+NVIDIA GeForce RTX 5090 driver 595.84, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1 ;
+repository Python bootstrapper `poetry run hostbootstrap run --project-root demo test run all` ; pass ;
+covers dbd7ee8515737e4c8391a9337a1815eb7db8de2d6dc28a4893e0b099b669b83e
 **Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `demo/src` `demo/app` `demo/test` `demo/docker` `hostbootstrap`
 
 > **Purpose**: Add the GPU realizations — the accelerator-capable cluster driver and the CUDA worker — and
@@ -25,6 +29,25 @@ host with no NVIDIA markers classifies as `linux-cpu` and cannot stand in for th
 - in-cluster accelerator placement behind a service address, which is the placement the Apple lane does not use;
 - the direct-host provider path, where the cluster runs without an intervening VM;
 - the single metal-to-container descent, where the cluster lives in a frame the metal host cannot see directly.
+
+## What one Linux/NVIDIA visit records
+
+This phase declares exactly one substrate beyond the baseline (§ II), and its gate is the live matrix on a
+native Linux host with an NVIDIA GPU. That machine is also, unavoidably, an x86_64 Linux gate host, so a
+visit to it records two cells (§ JJ):
+
+| Cell | Owned by |
+|---|---|
+| NVIDIA substrate acceptance | this phase |
+| x86_64 Linux gate host, host static gate | [phase 28](phase-28-host-portability-acceptance.md) |
+
+The second row is not this phase's closure condition and never becomes one (§ C). It is recorded on the
+same visit because the alternative is convening the machine twice for evidence one sitting can produce.
+
+What this phase does **not** confirm is that the host static gate passes on a Linux outer host. That is a
+§ JJ obligation every phase holds over its own suites, and Linux is an outer host realization there rather
+than a declared substrate. This phase's gate is the live `10/10` demo run and the accelerator behavior
+above.
 
 ## Sprints
 
@@ -172,9 +195,9 @@ passed 149/149, and the Python check-code plus 231/231 tests passed.
 
 None.
 
-### Sprint 26.4: The NVIDIA acceptance run [Active]
+### Sprint 26.4: The NVIDIA acceptance run [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: nvidia
 **Docs to update**: `documents/engineering/testing.md`, `documents/operations/demo_runbook.md`
@@ -193,6 +216,10 @@ Record the dated live acceptance matrix on a native Linux host with an NVIDIA GP
   ownership records, generated config, preserved durable parent, and absence of the run's containers.
 - Record a passing gate-evidence row with the declared source paths' digest only after the live matrix
   and audit pass.
+- Before leaving the machine, also record the complete host static gate on it for
+  [phase 28](phase-28-host-portability-acceptance.md)'s x86_64 Linux cell (§ JJ). It is not a closure
+  condition of this phase and does not become one; it is collected here because this visit is the one that
+  can produce it.
 
 #### Validation
 
@@ -241,18 +268,72 @@ The test config remained, `.test_data` remained empty, and neither run data dire
 Docker reported no running or stopped containers, Incus reported no instances, and NVIDIA reported
 no compute process. The terminal source measurement matched the in-run measurement across all
 208 covered files, digest `dc81c1b3b2af462ef0e9590b741211b055bf57ceb4082cb75833f10f70f7c0aa`.
-The lifecycle compiler annotations and exact Down-to-Destroy continuation change this phase's covered
-source set, so that dated result does not establish current-tree acceptance.
+The lifecycle compiler annotations and exact Down-to-Destroy continuation changed this phase's covered
+source set after that run, so it is retained as the prior dated result rather than as current-tree
+acceptance. The run below supersedes it for currency.
+
+On 2026-09-11, the current covered tree passed on the same host: `matt-junction`, native x86_64
+Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic, NVIDIA GeForce RTX 5090 on driver 595.84, GHC 9.12.4,
+Cabal 3.16.1.0, Python 3.12.3, and Poetry 2.4.1. Static preflight passed first: from `core/`,
+`cabal build all --ghc-options=-Werror` in 114.56 seconds and `cabal test all --ghc-options=-Werror`
+at 2,505/2,505 core cases in 169.73 seconds, with the provider-live component reporting
+`Unsupported: provider-live not requested`; from the repository root, the Python code check passed and
+the Python suite passed 235/235.
+
+The repository Python bootstrapper's `poetry run hostbootstrap run --project-root demo test init`
+initialized the two variants, and `poetry run hostbootstrap run --project-root demo test run all`
+passed **10/10** in **51 minutes 35 seconds** (11:01:33 to 11:53:08 EDT), exit status 0. Every case
+passed in both variants: `pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence`, and
+`durable-readback`, for `hello-world` (`run-b9d0f80ba221f`) and `hello-universe` (`run-b9e805768832f`).
+
+All four generations pulled published CUDA/amd64 base digest
+`sha256:90f423e5659e3c5642664224735cf261d542f6de8394bd68f71aec57fbb62fc4`, built with `--no-cache`, ran
+the in-container `check-code` and export checks, and published these derived digests to their run-local
+registries on ports 32822, 32825, 32828, and 32831:
+
+| Variant | Generation | Derived image digest |
+|---------|------------|----------------------|
+| `hello-world` | 1 | `sha256:e6d90608f73c0a74b73da066817fd99dbb61bb4daade19be8f94a0654eff25b9` |
+| `hello-world` | 2 | `sha256:fb4c5cefa03cba1555c57c616da48ec78f958709178512bbb68df34fbfff00ab` |
+| `hello-universe` | 3 | `sha256:19961d3c34bb658546b56e3209469edec093d332fec57beb7beecc8721012e39` |
+| `hello-universe` | 4 | `sha256:60689e8ebfcd1ed552f96cdb0a1c142ea9f80a0f06cca02a8ec62c7da7f72629` |
+
+The one-GPU request was **observed live through the Kubernetes API during the run**, not inferred from a
+successful rollout. On `hello-world` generation 1, Running pod `accelerator-daemon-5cf57b99c6-gbx8h`
+selected RuntimeClass `nvidia` with request and limit `nvidia.com/gpu: 1` on the GPU worker, alongside
+device plugin `nvidia-device-plugin-rv99v`; that worker advertised one allocatable GPU and the
+control-plane advertised none. The host driver concurrently reported the compute process
+`/workspace/demo/.build/accelerator/linux-gpu/fc76cd884d2539b8/accelerator-worker` holding 500 MiB, and
+`fc76cd884d2539b8` is the artifact identity the daemon announced and the browser assertion checks.
+
+The same observation held on the recreated and second-variant clusters, with every pod identity distinct,
+which is what establishes that each generation was genuinely fresh rather than a surviving cluster:
+
+| Generation | Accelerator pod | Device plugin pod |
+|---|---|---|
+| `hello-world` 1 | `accelerator-daemon-5cf57b99c6-gbx8h` | `nvidia-device-plugin-rv99v` |
+| `hello-world` 2 (same-run recreation) | `accelerator-daemon-f496cb4c7-ghrnw` | `nvidia-device-plugin-dvj8m` |
+| `hello-universe` 3 | `accelerator-daemon-786bdbd8bc-wlbbb` | `nvidia-device-plugin-mnksr` |
+
+The terminal audit found both leases `closed` (`run-b9d0f80ba221f`, `run-b9e805768832f`), both profiles
+`available`, and no project mode, generated-config, or data-root ownership row. The generated
+`.build/hostbootstrap-demo.dhall` was gone while `.build/hostbootstrap-demo.test.dhall` remained,
+`.test_data` remained present and empty, no container of either run survived, `incus list` reported no
+instance, and the driver reported no accelerator compute process. Unrelated ambient Docker workload on
+this host was left untouched, so the container finding is "no container of this run" rather than a claim
+of an empty daemon. The terminal source measurement matched the in-run tree across all 208 covered files
+at digest `dbd7ee8515737e4c8391a9337a1815eb7db8de2d6dc28a4893e0b099b669b83e`.
+
+Per § JJ this visit also recorded the x86_64 Linux gate-host cell for
+[phase 28](phase-28-host-portability-acceptance.md), so the machine is not owed a second visit.
 
 #### Remaining Work
 
-Run the complete native Linux/NVIDIA matrix and terminal ownership audit against the current covered
-tree, then record its matching digest. A native Linux host with an NVIDIA GPU is required.
+None.
 
 ## Remaining Work
 
-Sprint 26.4 owns the current-tree native Linux/NVIDIA matrix, terminal ownership audit, and refreshed
-source evidence.
+None.
 
 ## Documentation Requirements
 

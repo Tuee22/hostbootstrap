@@ -396,6 +396,43 @@ The shared Docker context and any pre-existing Colima `default` profile are ambi
 unchanged. The dated host, versions, run IDs, duration, image digests, and audit belong in
 [Apple Silicon substrate acceptance](../../DEVELOPMENT_PLAN/phase-25-apple-silicon-substrate.md).
 
+### Linux/NVIDIA pristine acceptance
+
+Run the NVIDIA acceptance only from a disposable demo state with no `.build`, `.hostbootstrap`, generated
+`hostbootstrap-demo.dhall`, or `.test_data`. Preserve tracked sources and any unrelated ambient Docker or
+Incus workload. The substrate classifier reads `/proc/driver/nvidia/version` and `/dev/nvidiactl`, so a host
+with no NVIDIA markers classifies as `linux-cpu` and runs a different lane. From the repository root:
+
+```text
+poetry run hostbootstrap run --project-root demo test init
+poetry run hostbootstrap run --project-root demo test run all
+```
+
+This lane takes the Direct host-provider path, so the four bring-ups create no VM: each builds the project
+image, descends into it, and creates an nvkind cluster in a frame the metal host cannot see directly. Allow
+about an hour for the matrix, plus the initial cold host-native build. Every bring-up pulls the published
+CUDA base, runs the image's `check-code`/export verification, and reconciles the pinned NVIDIA device plugin
+before the accelerator workload is released. Success is exactly `10/10 passed`.
+
+Accelerator placement must be **observed, not inferred**: confirm a Running accelerator pod selecting
+RuntimeClass `nvidia` with request and limit `nvidia.com/gpu: 1` on a worker advertising positive allocatable
+GPU. A successful rollout alone does not establish the device request.
+
+After success, verify both run leases encode `closed` and both profiles `available`; no project mode,
+generated-config, or data-root record remains; `.build/hostbootstrap-demo.dhall` is gone while
+`.build/hostbootstrap-demo.test.dhall` remains; `.test_data` exists and is empty; no hostbootstrap-named
+container survives; and `incus list` reports no instance. Any unrelated ambient container or GPU process is
+ambient state and must remain untouched, so the audit is "no container of this run" rather than "no
+container".
+
+Before leaving the machine, also record the complete host static gate on it. A Linux/NVIDIA host is an
+x86_64 Linux gate host, and the coverage matrix visits a hardware set once, so that cell is collected on
+this visit rather than by convening the machine again. The dated host, versions, run IDs, duration, image
+digests, and audit belong in
+[NVIDIA GPU substrate acceptance](../../DEVELOPMENT_PLAN/phase-26-nvidia-gpu-substrate.md); the gate-host
+row belongs in
+[host-portability acceptance](../../DEVELOPMENT_PLAN/phase-28-host-portability-acceptance.md).
+
 ### Windows pristine acceptance
 
 Run the Windows acceptance only from a disposable demo state with no `.build`, `.hostbootstrap`, generated

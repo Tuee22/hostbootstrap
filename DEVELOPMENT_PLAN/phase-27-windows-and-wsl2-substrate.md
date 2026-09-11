@@ -38,6 +38,20 @@ all.
 - that a long-running gate launched from an agent harness survives, using the durable-run mechanism rather than a
   naive background launch.
 
+## What one Windows visit records
+
+This phase declares exactly one substrate beyond the baseline (§ II), and its gate is the live Windows
+matrix. The same machine is also a Windows gate host, so a visit to it records two cells (§ JJ):
+
+| Cell | Owned by |
+|---|---|
+| Windows substrate acceptance | this phase |
+| Windows gate host, host static gate | [phase 28](phase-28-host-portability-acceptance.md) |
+
+A Windows host can additionally present an x86_64 Linux gate host through WSL2, which § JJ admits as a
+Linux gate host in its own right. That is a convenience rather than a requirement: the x86_64 Linux cell
+is already produced by the Linux/NVIDIA visit, and no cell is owed to two machines at once.
+
 What this phase does **not** confirm is that the host static gate passes on a Windows outer host. That is
 a § JJ obligation every phase holds over its own suites, discharged on the ordinary host static gate long
 before this acceptance phase is reached, and Windows is an outer host realization there rather than a

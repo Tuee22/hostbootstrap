@@ -2927,8 +2927,9 @@ project itself provisions would be a substrate that somehow also proves outer-ho
 
 A gate host is therefore identified by what it *is*, never by how it came to exist. Bare metal, a virtual
 machine, a container, and a WSL2 distribution are each a gate host, and a run on any of them is evidence
-for its own OS family and for no other. There are three supported families — Windows, macOS, and Linux —
-and a phase's dated evidence names the family and the machine that produced it.
+for its own OS family and architecture and for no other. There are three supported families — Windows,
+macOS, and Linux — and a phase's dated evidence names the family, the architecture, and the machine that
+produced it.
 
 This is not a way to obtain a substrate gate cheaply. § II's distinction is untouched: a substrate gate is
 about where the *effects of the lifecycle under test* execute, and running a static suite on a Linux gate
@@ -2938,9 +2939,49 @@ machinery a source of gate hosts: `ensure wsl2`, `ensure lima`, and the provider
 establish the substrate the project under test runs in, never to obtain a development environment for the
 repository's own gates. How a developer or CI comes by a gate host is outside the plan.
 
+#### The coverage matrix, and visiting hardware once
+
+There are three gate-host families, and the Linux family carries an **architecture** dimension. § N builds
+every binary host-native, so an x86_64 Linux gate host and an arm64 Linux gate host compile and self-test
+genuinely different code out of one source tree. A run on one is not evidence for the other, for the same
+reason a macOS run is not evidence for Windows.
+
+Combining that with the substrate acceptances of § II, exactly **five cells** need real hardware, and no
+more:
+
+| Cell | What it establishes | Owning phase |
+|---|---|---|
+| Apple Silicon / Metal | the apple-silicon substrate acceptance | [phase 25](phase-25-apple-silicon-substrate.md) |
+| Linux / NVIDIA | the nvidia substrate acceptance | [phase 26](phase-26-nvidia-gpu-substrate.md) |
+| Windows | the windows substrate acceptance | [phase 27](phase-27-windows-and-wsl2-substrate.md) |
+| `linux-cpu` on x86_64 | the baseline floor and the x86_64 Linux gate host | [phase 28](phase-28-host-portability-acceptance.md) |
+| `linux-cpu` on arm64 | the baseline floor and the arm64 Linux gate host | [phase 28](phase-28-host-portability-acceptance.md) |
+
+The order in which the cells are filled carries no meaning. What matters is that every cell is filled
+against the current covered source, and that a cell nobody has filled is *named as owed* rather than
+assumed from a neighbouring one.
+
+**A hardware set is visited once.** One physical machine can usually fill more than one cell: an Apple
+Silicon host carries the Metal substrate and an arm64 Linux gate host, a Linux/NVIDIA host carries the
+nvidia substrate and an x86_64 Linux gate host, and a Windows host carries the windows substrate and a
+Windows gate host. A visit that records only the cell it was convened for leaves the machine owing a
+second visit for evidence it could have produced in the same sitting — and the cost of a visit is a human
+physically changing machines, which is the most expensive step in this plan.
+
+So a visit to a hardware set records **every cell that hardware can produce**, and each cell's dated
+evidence names the family, the architecture, and the machine. Three visits fill all five cells and all
+three gate-host families; a fourth machine is never required. This is a rule about *sequencing evidence
+collection*, not a weakening of any cell: each still carries its own dated run, its own totals, and its own
+covers digest.
+
+It follows that no phase may demand a *fresh machine* for a cell another phase's visit already fills, and
+that a phase whose gate names one hardware set must not quietly require a second. § C's rule that a phase
+never carries a closure obligation for hardware it does not declare is the same rule read from the phase's
+side.
+
 #### What a phase owes, and what it does not
 
-A phase closes when its own suites hold the four rules above and its declared gate passes on the gate host
+A phase closes when its own suites hold the five rules above and its declared gate passes on the gate host
 that ran it. It does **not** owe evidence from every family: requiring three gate hosts to close a
 baseline sprint is exactly the closure obligation § C forbids, because the hardware is not something the
 phase declares. Cross-family confirmation is owned by one terminal acceptance phase, the

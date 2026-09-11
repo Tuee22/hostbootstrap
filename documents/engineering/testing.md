@@ -63,11 +63,15 @@ The host static gate is not the complete quality gate: `fourmolu` and `hlint` li
 
 A host static gate run is evidence for its **gate host**: the operating system, architecture, and toolchain
 of the process running the gate. Bare metal, a virtual machine, a container, and a WSL2 distribution each
-count as a gate host of their own OS family. This is distinct from the outer host's provider and substrate;
-a macOS static pass proves neither Windows portability nor a Linux/container lifecycle. The
+count as a gate host of their own OS family and architecture. The Linux family is split by architecture,
+because every binary is built host-native and an x86_64 and an arm64 Linux gate host therefore compile and
+self-test different code from one source tree. This is distinct from the outer host's provider and
+substrate; a macOS static pass proves neither Windows portability nor a Linux/container lifecycle. The
 [host-portability acceptance phase](../../DEVELOPMENT_PLAN/phase-28-host-portability-acceptance.md) owns the
-separate dated Windows, macOS, and Linux runs, including component durations, totals, and platform-row
-coverage. The [development-plan index](../../DEVELOPMENT_PLAN/README.md) owns completion status.
+separate dated Windows, macOS, x86_64 Linux, and arm64 Linux runs, including component durations, totals,
+and platform-row coverage. A hardware set is visited once and records every gate-host result it can
+produce, so those runs are collected on the substrate-acceptance visits rather than by convening extra
+machines. The [development-plan index](../../DEVELOPMENT_PLAN/README.md) owns completion status.
 
 ### Harness portability
 

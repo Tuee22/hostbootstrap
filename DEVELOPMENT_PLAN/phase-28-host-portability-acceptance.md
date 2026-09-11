@@ -5,7 +5,8 @@
 **Substrates**: none (static)
 **Gate**: the host static gate — `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/`,
 `poetry run python -m hostbootstrap.check_code`, and `poetry run python -m hostbootstrap.test_all` — passing
-host-native on a Windows, a macOS, and a Linux gate host, each recorded with its own dated evidence
+host-native on a Windows gate host, a macOS gate host, an x86_64 Linux gate host, and an arm64 Linux gate
+host, each recorded with its own dated evidence
 **Gate kind**: deferred
 
 > **Purpose**: Confirm on real machines that the sources § N builds host-native everywhere do in fact build
@@ -18,6 +19,13 @@ family stops at the worked-demo phase. It declares no substrate: outer-host port
 declaration (§ II), and running a static suite on a Linux gate host does not establish live provider or container acceptance.
 Compiled local fixtures can prove the native process and kernel behavior they actually exercise.
 
+Per § G this phase is **expected to sit `Active` between runs**, and that is not a report of unfinished
+work in this tree. Its covers set is the host-portable source itself, so any ordinary source change expires
+the claim for every cell until each family re-runs. Reading `Active` here as a defect would invite the one
+outcome the phase exists to prevent: quietly carrying a stale portability claim because re-recording it is
+inconvenient. `Done` is reachable only in the window between the last source change and the next, with all
+four cells freshly recorded.
+
 It exists because of an ownership hole that would otherwise have no owner. § JJ obliges every phase to hold
 the five harness rules over its own suites, and that obligation is mechanical — the absence guards check it
 on any gate host. But *confirming the portability claim itself* needs three machines, and § C forbids a
@@ -29,20 +37,32 @@ are host-portable is never confirmed at all. Here it is confirmed once, by the p
 
 - the complete host static gate passes host-native on a **Windows** gate host;
 - it passes host-native on a **macOS** gate host;
-- it passes host-native on a **Linux** gate host;
+- it passes host-native on an **x86_64 Linux** gate host and on an **arm64 Linux** gate host;
 - the differences between those runs are the ones the suites *declare* — a case skipped on one family
   carries an explicit platform condition naming the frame it needs — and never an undeclared difference in
   totals;
 - the § JJ absence guards are non-vacuous on each family, so a host-shaped idiom reintroduced on any of them
   fails the gate there.
 
-What this phase does **not** confirm is anything about a substrate. A gate host is identified by what it is
-rather than by how it came to exist (§ JJ), so a virtual machine, a container, and a WSL2 distribution each
-count as a gate host of their own family — and none of them is a `linux-cpu` substrate gate. The
-[Apple-Silicon](phase-25-apple-silicon-substrate.md),
+The Linux family is split by architecture because § N builds every binary host-native: an x86_64 and an
+arm64 Linux gate host compile and self-test genuinely different code from one source tree, so neither is
+evidence for the other (§ JJ). The other two families are single-architecture in practice and carry no
+such split.
+
+This phase owns two of the five cells § JJ's coverage matrix names — `linux-cpu` on x86_64 and `linux-cpu`
+on arm64 — plus the three gate-host families. The remaining three cells are substrate acceptances owned by
+the [Apple-Silicon](phase-25-apple-silicon-substrate.md),
 [NVIDIA-GPU](phase-26-nvidia-gpu-substrate.md), and
-[Windows-and-WSL2](phase-27-windows-and-wsl2-substrate.md) acceptance phases own the hardware-context
-confirmations, and each keeps its own declared gate.
+[Windows-and-WSL2](phase-27-windows-and-wsl2-substrate.md) phases. Because a hardware set is visited once
+(§ JJ), those three visits also produce every gate-host result this phase needs, and this phase requires no
+machine of its own: the Apple visit supplies the macOS gate host and an arm64 Linux gate host, the
+Linux/NVIDIA visit supplies an x86_64 Linux gate host, and the Windows visit supplies the Windows gate host.
+This phase never demands a fresh machine for a cell one of those visits already fills.
+
+What this phase does **not** confirm is anything about a substrate. A gate host is identified by what it is
+rather than by how it came to exist (§ JJ), so bare metal, a virtual machine, a container, and a WSL2
+distribution each count as a gate host of their own family and architecture — and none of them is a
+`linux-cpu` substrate gate. Each of the three substrate phases keeps its own declared gate.
 
 ## Sprints
 
@@ -153,15 +173,18 @@ None.
 
 #### Objective
 
-Record the host static gate passing host-native on a Linux gate host.
+Record the host static gate passing host-native on an x86_64 Linux gate host.
 
 #### Deliverables
 
 - One dated run naming the gate host's OS version, architecture, GHC and Cabal versions, test total, and
-  duration. Per § JJ a WSL2 distribution and a container are each a Linux gate host of their own right, so this family does not require separate metal.
+  duration. Per § JJ bare metal, a virtual machine, a container, and a WSL2 distribution are each a Linux
+  gate host of their own right, so this cell does not require separate metal.
 - The per-family differences this run's total reflects are enumerated against the suites' own platform
   conditions, so a difference in totals is explained by a condition a reader can find rather than by the
   run.
+- The arm64 Linux cell is a separate one, because § N compiles different code for each architecture. It is
+  recorded by Sprint 28.4 on the Apple visit that can produce it, and this sprint makes no claim about it.
 - The run asserts nothing the suites do not already assert. It confirms that what they assert holds here.
 
 #### Validation
@@ -206,13 +229,16 @@ for the gate host that produced it and for no other (§ II).
 
 #### Objective
 
-Record the host static gate passing host-native on a Windows, a macOS, and a Linux gate host against
-the current tree.
+Record the host static gate passing host-native on each gate-host cell against the current tree: a
+Windows gate host, a macOS gate host, an x86_64 Linux gate host, and an arm64 Linux gate host.
 
 #### Deliverables
 
-- three dated runs, one per gate family, each naming its host and toolchain versions;
-- the per-family difference in totals enumerated against the suites' own platform conditions.
+- four dated runs, one per gate-host cell, each naming its family, architecture, machine, and toolchain
+  versions;
+- the per-family difference in totals enumerated against the suites' own platform conditions;
+- each run collected on a visit already owed to a substrate acceptance, so this sprint adds no visit of its
+  own (§ JJ). A cell still owed is named as owed, never inferred from a neighbouring cell.
 
 #### Validation
 
@@ -231,21 +257,44 @@ The Python environment is reconstructed from `pyproject.toml` on this gate host,
 is deliberately untracked and each family resolves its own. That is what makes a per-family Python run
 evidence about that family's resolved toolchain rather than a replay of another's.
 
-A current-source macOS family result and a complete native Linux family result remain owed. A Linux
-guest realized on this Windows host is not one: § II makes a gate host the OS, architecture, and
-toolchain the gate process runs on, and confirming the Linux family means a Linux outer host's own
-native run.
+On the same date, the current source passes the x86_64 Linux cell on `matt-junction`, native x86_64
+Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, and Poetry 2.4.1.
+From `core/`, `cabal build all --ghc-options=-Werror` passes in 114.56 seconds and
+`cabal test all --ghc-options=-Werror` passes 2,505/2,505 core cases in 169.73 seconds of suite
+execution (174.20 seconds for the complete Cabal command). Both components run: the core suite reports
+its Apple lane as `Unsupported: native direct-Colima lane not requested`, and the provider-live component
+compiles and reports `Unsupported: provider-live not requested`. Each is the declared no-request outcome
+of a row that cannot hold its clause on this gate host, which § NN counts as evidence rather than as a
+missing case. From the repository root, `poetry run python -m hostbootstrap.check_code` passes
+and `poetry run python -m hostbootstrap.test_all` passes 235/235 in 1.59 seconds. The POSIX ownership,
+host-wall, and shipped guest-alias rows execute against the Linux kernel, while the Windows ownership
+families and the three platform rows in `WslGlobalWallWindowsSpec` assert their declared refusals. The
+five-case difference from the Windows total is the source selection enumerated in Sprint 28.1.
+
+This cell was collected on the visit [phase 26](phase-26-nvidia-gpu-substrate.md) already required, which
+is the § JJ rule working as intended: the machine convened for the nvidia substrate also carries the
+x86_64 Linux gate host, and recording both in one sitting removes any later reason to return to it.
+
+The Python environment on this gate host is likewise reconstructed from `pyproject.toml`, resolving
+Python 3.12.3 rather than replaying the Windows family's 3.14.7.
+
+The macOS gate host and the arm64 Linux gate host remain owed, and both are cells of the one Apple visit
+(§ JJ): an Apple Silicon machine carries the macOS family natively and an arm64 Linux gate host in a VM or
+container. Recording them together is what keeps that visit from happening twice.
 
 #### Remaining Work
 
-Run the complete current-source host-static gate on native macOS and native Linux gate hosts. The
-Windows family passes against the current tree. Any further host-portable source change requires fresh
-coverage from every affected family.
+Record the current-source host static gate on a macOS gate host and on an arm64 Linux gate host. Both are
+produced by the single Apple Silicon visit that [phase 25](phase-25-apple-silicon-substrate.md) also needs,
+so they cost no additional machine. The Windows and x86_64 Linux cells pass against the current tree. Any
+further host-portable source change requires fresh coverage from every affected cell.
 
 ## Remaining Work
 
-Sprint 28.4 owns the current-source macOS and native Linux family runs and their platform accounting.
-Access to those gate hosts is required; the available Windows family has passing evidence.
+Sprint 28.4 owns the two current-source cells still owed — a macOS gate host and an arm64 Linux gate
+host — and their platform accounting. Both are produced by the single Apple Silicon visit
+[phase 25](phase-25-apple-silicon-substrate.md) also requires, so this phase adds no machine of its own
+(§ JJ). The Windows and x86_64 Linux cells have passing current-source evidence.
 
 ## Documentation Requirements
 
