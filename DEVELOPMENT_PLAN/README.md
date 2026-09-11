@@ -65,7 +65,7 @@ its row here.
 | 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Done | **apple-silicon** | — |
 | 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Done | **nvidia** | — |
 | 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Done | **windows** | — |
-| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | Sprint 28.4: current-tree macOS and arm64 Linux cells |
+| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Done | — | — |
 | 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Done | — | — |
 
 ## The current frontier
@@ -99,8 +99,9 @@ The [host-portability acceptance phase](phase-28-host-portability-acceptance.md)
 runs for four cells — a Windows gate host, a macOS gate host, an x86_64 Linux gate host, and an arm64 Linux
 gate host — with the suite's explicit platform conditions explaining their totals. The Linux family splits
 by architecture because § N compiles different code for each. Static and substrate evidence are distinct.
-Its Windows cell passes against the current tree on 2026-09-11 at 2,500/2,500 core cases and 235/235 Python
-cases.
+All four cells pass against the current tree on 2026-09-11: the Windows cell at 2,500/2,500 core cases, and
+the macOS, x86_64 Linux, and arm64 Linux cells at 2,505/2,505 each, every cell with 235/235 Python cases.
+The five-case difference is the Windows source selection the phase enumerates.
 
 The [host-providers phase](phase-15-host-providers-and-the-lift.md) is closed by its 2026-09-09 native
 Linux/x86_64 KVM/Incus run: all 2,497 static cases passed before the live component completed its prepared
@@ -116,9 +117,9 @@ that hardware can produce, so three machines fill all five and a fourth is never
 Silicon visit carries the Metal substrate, the macOS gate host, and an arm64 Linux gate host; the
 Linux/NVIDIA visit carries the nvidia substrate and the x86_64 Linux gate host; the Windows visit carries
 the windows substrate and the Windows gate host. The 2026-09-11 Linux/NVIDIA visit recorded both of its
-cells, so that machine is not owed a return. One row stays open: the Apple visit, which owes the macOS
-gate host and the arm64 Linux gate host. Every other row is closed against the current covered source.
-No gate is running.
+cells, and the 2026-09-11 Apple visit recorded the macOS gate host and the arm64 Linux gate host alongside
+the Metal substrate it already carried, so neither machine is owed a return. Every row is closed against
+the current covered source. No gate is running.
 
 ## Validation policy
 

@@ -1,6 +1,6 @@
 # Phase 28 — Host-portability acceptance
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: none (static)
 **Gate**: the host static gate — `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/`,
@@ -8,6 +8,16 @@
 host-native on a Windows gate host, a macOS gate host, an x86_64 Linux gate host, and an arm64 Linux gate
 host, each recorded with its own dated evidence
 **Gate kind**: deferred
+**Gate evidence**: 2026-09-11 ; x86_64 Windows 11 Home 10.0.26200, AMD Ryzen 7 5700G, GHC 9.12.4,
+Cabal 3.16.1.0, repository-venv Python 3.14.7, Poetry 2.4.1 ; `cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` from `core/`, then `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` ; pass ; covers c9c91d0b5dcfbbe1c18be2c54f8563d2767a5c6dc8113f11bfe35c539f8e4e65
+**Gate evidence**: 2026-09-11 ; `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic,
+GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1 ; `cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` from `core/`, then `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` ; pass ; covers c9c91d0b5dcfbbe1c18be2c54f8563d2767a5c6dc8113f11bfe35c539f8e4e65
+**Gate evidence**: 2026-09-11 ; `MacBookPro`, native arm64 macOS 26.6.2 (build 25G83), Apple M1 Max,
+GHC 9.12.4, Cabal 3.16.1.0, Python 3.14.3, Poetry 2.3.2 ; `cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` from `core/`, then `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` ; pass ; covers c9c91d0b5dcfbbe1c18be2c54f8563d2767a5c6dc8113f11bfe35c539f8e4e65
+**Gate evidence**: 2026-09-11 ; aarch64 Ubuntu 24.04.4 LTS container, Linux 6.8.0-100-generic, carried by
+the Apple visit's MacBook Pro through Colima 0.10.3, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3,
+Poetry 2.4.1 ; `cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` from `core/`, then `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` ; pass ; covers c9c91d0b5dcfbbe1c18be2c54f8563d2767a5c6dc8113f11bfe35c539f8e4e65
+**Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `core/hostbootstrap-core/app` `core/hostbootstrap-core/test` `core/hostbootstrap-core/provider-live` `core/hostbootstrap-core/dhall` `core/hostbootstrap-core/hostbootstrap-core.cabal` `core/cabal.project` `hostbootstrap` `stubs` `tests` `pyproject.toml`
 
 > **Purpose**: Confirm on real machines that the sources § N builds host-native everywhere do in fact build
 > and self-test on every supported gate host family.
@@ -220,9 +230,9 @@ family that is not becomes available, and the phase reports nothing while holdin
 A family whose run is not available is named as owed rather than assumed, because a dated run is evidence
 for the gate host that produced it and for no other (§ II).
 
-### Sprint 28.4: The current-tree portability run [Active]
+### Sprint 28.4: The current-tree portability run [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: none
 **Docs to update**: `documents/engineering/testing.md`
@@ -278,23 +288,58 @@ x86_64 Linux gate host, and recording both in one sitting removes any later reas
 The Python environment on this gate host is likewise reconstructed from `pyproject.toml`, resolving
 Python 3.12.3 rather than replaying the Windows family's 3.14.7.
 
-The macOS gate host and the arm64 Linux gate host remain owed, and both are cells of the one Apple visit
-(§ JJ): an Apple Silicon machine carries the macOS family natively and an arm64 Linux gate host in a VM or
-container. Recording them together is what keeps that visit from happening twice.
+On the same date, the current source passes the macOS cell on `MacBookPro`, native arm64 macOS 26.6.2
+(build 25G83) on an Apple M1 Max, with GHC 9.12.4, Cabal 3.16.1.0, Python 3.14.3, and Poetry 2.3.2. From
+`core/`, `cabal build all --ghc-options=-Werror` passes in 215.73 seconds and
+`cabal test all --ghc-options=-Werror --test-show-details=direct` passes 2,505/2,505 core cases in
+412.49 seconds of suite execution (590.05 seconds for the complete Cabal command). Both components run:
+the core suite reports its Apple lane as `Unsupported: native direct-Colima lane not requested`, which is
+the declared no-request outcome of an opt-in lane [phase 25](phase-25-apple-silicon-substrate.md) records
+live, and the provider-live component compiles and reports `Unsupported: provider-live not requested`. From
+the repository root, `poetry run python -m hostbootstrap.check_code` passes and
+`poetry run python -m hostbootstrap.test_all` passes 235/235 in 5.71 seconds of pytest execution. The fixed
+coverage manifest exercises the POSIX ownership, host-wall, and shipped guest-alias rows against the Darwin
+kernel, while the eleven Windows ownership cases and three of the four `WslGlobalWallWindowsSpec` cases
+assert their declared refusals. The total matches both Linux cells, and the five-case difference from the
+Windows total is the source selection enumerated in Sprint 28.1.
+
+On the same date, the current source passes the arm64 Linux cell on an aarch64 Ubuntu 24.04.4 LTS
+container, Linux 6.8.0-100-generic with 9 CPUs and 31 GiB, carried by that same Apple visit through
+Colima 0.10.3, with GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, and Poetry 2.4.1. Its covered source is
+byte-identical to the macOS cell's. From `core/`, a clean `cabal build all --ghc-options=-Werror` passes in
+122.71 seconds and `cabal test all --ghc-options=-Werror --test-show-details=direct` passes 2,505/2,505
+core cases in 148.69 seconds of suite execution (250.78 seconds for the complete Cabal command), with the
+same two declared no-request outcomes. From the repository root,
+`poetry run python -m hostbootstrap.check_code` passes and
+`poetry run python -m hostbootstrap.test_all` passes 235/235 in 1.68 seconds. The fixed coverage manifest
+reports the same Linux realization the x86_64 cell reports, row for row and count for count, which is what
+makes the two architectures comparable evidence rather than one standing in for the other.
+
+A container gate host runs under a reaping PID 1. `ColimaSpec`'s hard-parent-death case proves that the
+runner's process group dies with its parent by polling the grandchild with signal 0, and a PID 1 that never
+reaps leaves that grandchild a zombie the probe still finds. The kernel behaviour under test is the same on
+either arrangement; only a reaping init lets the case observe it. This is a property of how a gate host is
+assembled (§ JJ), not of the source, and it is named here so the next container visit does not rediscover
+it.
+
+The Python environment on each of these two gate hosts is likewise reconstructed from `pyproject.toml`,
+resolving Python 3.14.3 on the macOS cell and Python 3.12.3 on the arm64 Linux cell.
+
+The core suite carries the documentation validator, so this plan's text is itself gated by these runs. After
+the status reconciliation this sprint's closure entails, that validator passes 5/5 against the current text
+on both cells, which is what makes the recorded runs evidence for the document a reader is holding rather
+than for an earlier draft of it.
 
 #### Remaining Work
 
-Record the current-source host static gate on a macOS gate host and on an arm64 Linux gate host. Both are
-produced by the single Apple Silicon visit that [phase 25](phase-25-apple-silicon-substrate.md) also needs,
-so they cost no additional machine. The Windows and x86_64 Linux cells pass against the current tree. Any
-further host-portable source change requires fresh coverage from every affected cell.
+None. Every cell this sprint owns has current-source evidence. Any further host-portable source change
+expires all four and requires fresh coverage from each.
 
 ## Remaining Work
 
-Sprint 28.4 owns the two current-source cells still owed — a macOS gate host and an arm64 Linux gate
-host — and their platform accounting. Both are produced by the single Apple Silicon visit
-[phase 25](phase-25-apple-silicon-substrate.md) also requires, so this phase adds no machine of its own
-(§ JJ). The Windows and x86_64 Linux cells have passing current-source evidence.
+None. All four gate-host cells carry dated evidence against the current covered source, recorded by
+Sprint 28.4. The phase returns to `Active` on the next host-portable source change, which is § G's expected
+shape for a portability claim rather than a defect.
 
 ## Documentation Requirements
 
