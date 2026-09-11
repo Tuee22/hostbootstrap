@@ -216,26 +216,31 @@ the current tree.
 
 #### Validation
 
-On 2026-09-09, the current source passes the native Windows family gate on x86_64
-Windows 11 Home 10.0.26200 with GHC 9.12.4, Cabal 3.16.1.0, Python 3.14.7, and Poetry 2.4.1.
-The warning-clean core build passes; `cabal test all --ghc-options=-Werror` passes 2,500/2,500
-in 504.50 seconds, and the provider-live component reports its declared no-request Unsupported
-outcome. The Python code check and 235/235 tests pass. The documentation-only check subsequently
-passes 5/5 in 6.36 seconds. The Windows ownership families execute their native rows; POSIX-only
-process fixtures assert their declared refusals.
+On 2026-09-11, the current source passes the native Windows family gate on x86_64
+Windows 11 Home 10.0.26200 with an AMD Ryzen 7 5700G, GHC 9.12.4, Cabal 3.16.1.0,
+repository-venv Python 3.14.7, and Poetry 2.4.1. From `core/`, the warning-clean build passes and
+`cabal test all --ghc-options=-Werror` passes 2,500/2,500 in 338.12 seconds of suite execution; the
+provider-live component reports its declared no-request `Unsupported` outcome. From the repository
+root, `poetry run python -m hostbootstrap.check_code` passes and
+`poetry run python -m hostbootstrap.test_all` passes 235/235 in 3.92 seconds. The Windows ownership
+families execute their native rows, and the POSIX-only process fixtures assert their declared refusals,
+which is the platform condition the Windows total reflects. That core run carries the documentation
+validator, so it is also the run under which this plan's current text passes.
 
-The same source's complete core gate also passes inside an Ubuntu 24.04.4 WSL guest at 2,505/2,505
-in 291.83 seconds with GHC 9.12.4 and Cabal 3.16.1.0. Its real separate-process recursive fixtures
-and Linux ownership rows execute; the five-case total difference follows the suite's platform
-conditions. This is Linux guest core evidence, not a complete native Linux outer-host family gate.
-That task-created guest is removed at the user-requested pause. A current-source macOS family
-result and a complete native Linux family result remain owed.
+The Python environment is reconstructed from `pyproject.toml` on this gate host, because `poetry.lock`
+is deliberately untracked and each family resolves its own. That is what makes a per-family Python run
+evidence about that family's resolved toolchain rather than a replay of another's.
+
+A current-source macOS family result and a complete native Linux family result remain owed. A Linux
+guest realized on this Windows host is not one: § II makes a gate host the OS, architecture, and
+toolchain the gate process runs on, and confirming the Linux family means a Linux outer host's own
+native run.
 
 #### Remaining Work
 
-Run the complete current-source host-static gate on native macOS and native Linux gate hosts.
-The Windows family passes; the Linux guest core result is supplementary evidence. Any further
-host-portable source change requires fresh coverage from every affected family.
+Run the complete current-source host-static gate on native macOS and native Linux gate hosts. The
+Windows family passes against the current tree. Any further host-portable source change requires fresh
+coverage from every affected family.
 
 ## Remaining Work
 

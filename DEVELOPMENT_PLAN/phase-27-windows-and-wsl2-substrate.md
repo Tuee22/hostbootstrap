@@ -1,11 +1,17 @@
 # Phase 27 — Windows and WSL2 substrate
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: windows
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
 reporting `10/10 passed` on a native Windows host, followed by the terminal ownership and WSL wall audit
 **Gate kind**: deferred
+**Gate evidence**: 2026-09-11 ; x86_64 Windows 11 Home 10.0.26200, AMD Ryzen 7 5700G, 15.87 GiB,
+NVIDIA GeForce RTX 3090 driver 616.64, WSL 2.7.10.0 (kernel 6.18.33.2-2), GHC 9.12.4, Cabal 3.16.1.0,
+Poetry 2.4.1, repository-venv Python 3.14.7 ; repository Python bootstrapper
+`poetry run hostbootstrap run --project-root demo test run all`, launched through the harness-owned
+durable Windows launcher ; pass ; covers
+dbd7ee8515737e4c8391a9337a1815eb7db8de2d6dc28a4893e0b099b669b83e
 **Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `demo/src` `demo/app` `demo/test` `demo/docker` `hostbootstrap`
 
 > **Purpose**: Add the Windows-only native host-wall backend and CUDA worker, exercise WSL2 as the Windows
@@ -151,9 +157,9 @@ accelerator daemon and typed frame-indexed teardown across the WSL boundary. Its
 
 None.
 
-### Sprint 27.4: The Windows acceptance run [Active]
+### Sprint 27.4: The Windows acceptance run [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: windows
 **Docs to update**: `documents/engineering/testing.md`
@@ -164,10 +170,9 @@ Record the dated live acceptance matrix on a native Windows host.
 
 #### Deliverables
 
-- Initialize the pristine demo from the repository root with
-  `poetry run hostbootstrap run --project-root demo test init` on the native Windows gate host.
-- Run the repository Python bootstrapper's
-  `poetry run hostbootstrap run --project-root demo test run all` through the documented Windows
+- Initialize the pristine demo from the repository root with the bootstrapper's harness `test init`
+  entry on the native Windows gate host.
+- Run the repository Python bootstrapper's complete-matrix harness entry through the documented Windows
   durable-run mechanism and record `10/10 passed`, the host/toolchain, duration, run IDs, and image digests.
 - Audit closed run leases, released ownership, removed generated config and WSL distro, preserved durable
   parent, and restoration of the prior WSL wall body before global shutdown.
@@ -175,34 +180,68 @@ Record the dated live acceptance matrix on a native Windows host.
 
 #### Validation
 
-On 2026-09-09, native x86_64 Windows 11 Home 10.0.26200 has GHC 9.12.4,
-Cabal 3.16.1.0, Poetry 2.4.1, repository-venv Python 3.14.7, and an NVIDIA GeForce RTX 3090
-on driver 616.64. The current source passes the warning-clean core build and the complete core
-gate at 2,500/2,500 in 504.50 seconds. The Python code check and 235/235 tests pass, as do the
-demo warning-clean build and 149/149 tests. These are static preflight results.
-The current 208-file covered source digest is
+The gate host is native x86_64 Windows 11 Home 10.0.26200 with an AMD Ryzen 7 5700G, 15.87 GiB of host
+memory, and an NVIDIA GeForce RTX 3090 on driver 616.64. Its toolchain is GHC 9.12.4, Cabal 3.16.1.0,
+Poetry 2.4.1, repository-venv Python 3.14.7, Docker CLI 29.6.1, and WSL 2.7.10.0 on kernel 6.18.33.2-2.
+The substrate detector classifies it `windows-gpu` (amd64) and the fail-fast host minimums pass.
+
+The current-source static preflight passes on that host: the warning-clean core build and the complete
+core gate at 2,500/2,500 in 329.88 seconds, the Python code check and 235/235 tests, and the demo
+warning-clean build with 149/149 tests. The 208-file covered source measures
 `dbd7ee8515737e4c8391a9337a1815eb7db8de2d6dc28a4893e0b099b669b83e`.
 
-The worked-demo phase records the current-source Production Up/Down/Destroy pass, cold-restart
-alias identity check, and Windows CUDA result. Its Harness matrix is interrupted at the user's
-request during the second guest build, before a complete result. It supplies no `10/10` acceptance
-claim for this phase. At the pause, no WSL distribution, utility VM, demo daemon, generated run
-config, run data, or active wall record remains. The original `.wslconfig` measures SHA-256
-`2986099d4e292abed1bacbf7b7cb514188bad4304f930800803a85470ee4e694`;
-the operator test config and Production marker are preserved. Sprint 24.42 owns those run and
-cleanup details.
+The harness `test init` entry writes the operator-owned `.build/hostbootstrap-demo.test.dhall`, which
+declares 6 CPUs, 10 GiB memory, 80 GiB storage and the two stable variants and measures SHA-256
+`8a88f68edd459803fe6ffa8a60cabc4615fea91ce489842a6ba798fbab43136b`. The repository Python
+bootstrapper's complete-matrix entry then runs through the harness-owned durable Windows launcher, which
+creates the process outside the agent harness's tree. It starts at 2026-09-11 01:28:44 UTC, exits 0 at
+04:26:15 UTC after 10,651 seconds (2 hours 57 minutes 31 seconds), and reports exactly `10/10 passed`.
+A gate of that length surviving an agent-driven session is itself the durable-run confirmation this
+phase declares; no naive background launch is used.
+
+Both `hello-world` (`run-7a1188be2e68`) and `hello-universe` (`run-7eeb3f4ea634`) pass pristine
+bootstrap, web build, end-to-end tabs, registry persistence, and durable readback. The matrix performs
+four pristine generations, each in its own freshly installed Ubuntu 24.04 distribution, taking the
+per-user global WSL2 wall at fences 23, 24, 25, and 26. Every generation pulls published CPU/amd64 base
+digest `sha256:e46fb5699af246dc631704cd9bba5020776a7e96fbba1f4c450b5b9971ffb9d5` without Docker
+layer-cache reuse, runs the in-image quality gate and export checks, and publishes its derived image to
+the run-local registry:
+
+| Variant | Generation | Derived image digest |
+|---------|------------|----------------------|
+| `hello-world` | 1 | `sha256:8997e96ad7e45b71d888b1d51b80227c6e79540cac96ebb4a474cfcac851032d` |
+| `hello-world` | 2 | `sha256:de2d2bcfa28c033d6f0d46339021cb6e7181a04f82ca153f9a2ca55b79648a8b` |
+| `hello-universe` | 1 | `sha256:0c872c258e4cc260e87219bcb0fb00b163e5bfc6218956087d9c5f1414da685a` |
+| `hello-universe` | 2 | `sha256:9e388ac4f0c17d23393824b6db4886bde36f300f3914a76cd706305e9e3f33d8` |
+
+Each of the four bring-ups warns that applying the wall ceiling runs a global cross-distro shutdown before
+taking its fence, and each of the four teardowns reports releasing the global wall and restoring the
+original `.wslconfig` body ahead of any global shutdown. The managed wall body's idle timeouts hold the
+guest across the full observed 2-hour-57-minute duration, so the sizing is measured against this run
+rather than assumed. The Windows ownership row runs against the real Win32 surface throughout. All four
+generations install, measure, and launch the hidden Windows host accelerator daemon, which resolves the
+WSL2 cluster exposure and serves a loopback-only `ws://127.0.0.1` endpoint; each waits for that daemon to
+build its worker and connect, and each end-to-end case passes against it.
+
+The terminal audit finds both leases `closed`, at epochs 4 and 8, and both profiles `available`. No
+project mode, generated-config, or data-root record remains, the generated
+`.build/hostbootstrap-demo.dhall` is gone while the operator test config remains at its exact hash,
+`.test_data` exists and is empty, and neither run data directory survives. No WSL distribution is
+installed, the utility VM is stopped, and no demo daemon or detached matrix process runs. The restored
+`.wslconfig` measures its exact original SHA-256
+`2986099d4e292abed1bacbf7b7cb514188bad4304f930800803a85470ee4e694` and no active wall record remains.
+The terminal 208-file source measurement still matches the in-run
+`dbd7ee8515737e4c8391a9337a1815eb7db8de2d6dc28a4893e0b099b669b83e`.
 
 #### Remaining Work
 
-Run the complete native Windows matrix against the current source and audit its terminal state.
-The Windows/WSL2/CUDA host and initialized test configuration are available. No current-source
-passing matrix is recorded.
+None. This run confirms the Windows-only wall, ownership, and accelerator behavior; the
+[worked-demo phase](phase-24-worked-demo.md) owns the same run's universal `linux-cpu` matrix claim.
 
 ## Remaining Work
 
-Sprint 27.4 owns the current-source Windows matrix, terminal ownership and wall audit, and matching
-covered-source evidence. The repository Python bootstrapper's
-`poetry run hostbootstrap run --project-root demo test run all` must report `10/10 passed`.
+None. Sprint 27.4 records the current-source Windows matrix reporting `10/10 passed`, the terminal
+ownership and wall audit, and the matching covered-source measurement.
 
 ## Documentation Requirements
 

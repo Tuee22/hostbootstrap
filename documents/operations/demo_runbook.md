@@ -396,6 +396,34 @@ The shared Docker context and any pre-existing Colima `default` profile are ambi
 unchanged. The dated host, versions, run IDs, duration, image digests, and audit belong in
 [Apple Silicon substrate acceptance](../../DEVELOPMENT_PLAN/phase-25-apple-silicon-substrate.md).
 
+### Windows pristine acceptance
+
+Run the Windows acceptance only from a disposable demo state with no `.build`, `.hostbootstrap`, generated
+`hostbootstrap-demo.dhall`, `.test_data`, or installed `hostbootstrap-demo-vm` distribution. Record the
+`.wslconfig` origin's bytes first; the wall audit at the end compares against them, and an absent origin is
+itself a valid origin to restore. From the repository root:
+
+```text
+poetry run hostbootstrap run --project-root demo test init
+poetry run hostbootstrap run --project-root demo test run all
+```
+
+Launch the second command through [durable Windows runs](../engineering/durable_windows_runs.md) rather
+than directly, because the matrix outlives any agent-driven shell. The complete matrix performs four fresh
+WSL2 guest installations and four terminal destroys, taking the per-user global wall at four successive
+fences. Each bring-up warns before applying the wall ceiling, because doing so runs a global cross-distro
+`wsl --shutdown`. Allow at least three hours on a four-core-class host, plus the initial cold host-native
+build. Success is exactly `10/10 passed`.
+
+After success, verify both run leases encode `closed` and both profiles `available`; no project mode,
+generated-config, or data-root record remains; `.build/hostbootstrap-demo.dhall` is gone while
+`.build/hostbootstrap-demo.test.dhall` remains; `.test_data` exists and is empty; `wsl -l -v` reports no
+installed distribution; no accelerator daemon is live; and `.wslconfig` holds its exact origin bytes with
+no active wall record. An idle utility VM left by post-run observation is settled with `wsl --shutdown`,
+which is safe once no distribution remains. The dated host, versions, run IDs, duration, image digests, and
+audit belong in
+[Windows and WSL2 substrate acceptance](../../DEVELOPMENT_PLAN/phase-27-windows-and-wsl2-substrate.md).
+
 ## Safe Operating Guidance
 
 - Do not run the long harness on a machine carrying production demo state.

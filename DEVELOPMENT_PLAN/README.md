@@ -61,10 +61,10 @@ its row here.
 | 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Done | linux-cpu | — |
 | 22 | [Service runtime](phase-22-service-runtime.md) | Done | linux-cpu | — |
 | 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
-| 24 | [The worked demo](phase-24-worked-demo.md) | Active | linux-cpu | Sprint 24.42: Harness matrix and terminal audit |
+| 24 | [The worked demo](phase-24-worked-demo.md) | Done | linux-cpu | — |
 | 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Done | **apple-silicon** | — |
 | 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Active | **nvidia** | Sprint 26.4: current-tree matrix and audit |
-| 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | Sprint 27.4: Windows live matrix and audit |
+| 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Done | **windows** | — |
 | 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | Sprint 28.4: current-tree macOS and native Linux runs |
 | 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Done | — | — |
 
@@ -76,23 +76,29 @@ and gives children only root-selected execution grants. Documentation reconcilia
 source comments, help text, and architecture guards. [The legacy ledger](legacy_tracking_for_deletion.md) is empty.
 The table above owns phase status; each phase's validation section owns its dated gate evidence.
 
-The [host-portability acceptance phase](phase-28-host-portability-acceptance.md) records separate native
-Windows, macOS, and Linux gate runs, with the suite's explicit platform conditions explaining their totals.
-Static and substrate evidence are distinct. The journal helpers and reverse-root codec pass their native
-Windows core gate and published-base compiler build. Exact terminal Down-to-Destroy continuation,
-Pending resume, terminal retries, and fresh Up rearm pass the host-static gate and real Linux recursive
-selection. The realized-Linux CLI/context gate also passes. The worked-demo, NVIDIA, Windows, and
-portability rows require their own gates against the current covered source.
+The [worked-demo phase](phase-24-worked-demo.md) is closed by its 2026-09-11 run on a native Windows outer
+host realizing `linux-cpu` through WSL2: the Production Up/Down/Destroy sequence, then a complete Harness
+matrix reporting `10/10 passed` in 2 hours 57 minutes across four pristine guest generations, then a terminal
+ownership audit whose source measurement still matches the in-run tree. The
+[Windows/WSL2 acceptance phase](phase-27-windows-and-wsl2-substrate.md) is closed by the Windows-only
+behavior that same run exercises: the global wall taken at four successive fences and restored to its exact
+original bytes ahead of any global shutdown, the Windows ownership row against the real Win32 surface, the
+hidden Windows host accelerator daemon serving a loopback-only endpoint, and a three-hour gate surviving an
+agent session through the durable-run mechanism.
 
 The [Apple-Silicon acceptance phase](phase-25-apple-silicon-substrate.md) is closed by its 2026-09-09
 pristine Apple matrix, native direct-Colima lane, and terminal ownership audit against one unchanged
 covered tree. Its phase document records the dated results and image digests. The
 [NVIDIA acceptance phase](phase-26-nvidia-gpu-substrate.md) records a 2026-09-09 native
 Linux/x86_64 RTX 5090 matrix and terminal audit. Changes to its covered journal source make the
-current-tree run owed again; its phase document retains the dated result and covered-source digest. The
-[Windows/WSL2 acceptance phase](phase-27-windows-and-wsl2-substrate.md) retains results from
-2026-09-05, which precede later changes to the surfaces that lane exercises. Its native Windows
-gate host is available, and Sprint 27.4 records the current preflight and live-run progress.
+current-tree run owed again; its phase document retains the dated result and covered-source digest.
+
+The [host-portability acceptance phase](phase-28-host-portability-acceptance.md) records separate native
+Windows, macOS, and Linux gate runs, with the suite's explicit platform conditions explaining their totals.
+Static and substrate evidence are distinct. Its Windows family passes against the current tree on
+2026-09-11 at 2,500/2,500 core cases and 235/235 Python cases. A current-source macOS family run and a
+complete native Linux family run remain owed, and a Linux guest realized on a Windows host is not one of
+them: § II makes a gate host the OS, architecture, and toolchain the gate process itself runs on.
 
 The [host-providers phase](phase-15-host-providers-and-the-lift.md) is closed by its 2026-09-09 native
 Linux/x86_64 KVM/Incus run: all 2,497 static cases passed before the live component completed its prepared
@@ -103,12 +109,11 @@ the rolling CPU/amd64 tag was pushed, pulled at
 `sha256:e46fb5699af246dc631704cd9bba5020776a7e96fbba1f4c450b5b9971ffb9d5`, and smoked again against
 that exact published digest.
 
-Work is paused at the user's request on 2026-09-09. The worked-demo Production sequence and
-current Windows/Linux core checks pass; its complete Harness matrix remains owed after interruption
-in the second guest build. Cleanup is complete, and Sprint 24.42 records the exact retained inputs
-and resource audit. Resume with that sprint, then work through the open rows in numerical order.
-The current-source NVIDIA run needs native Linux/NVIDIA host access; the available SSH key is refused
-for `matt@matt-junction`. Native macOS access is also required for portability. No gate is running.
+Two acceptance rows stay open, and both wait on hardware rather than on work in this tree. The
+current-source NVIDIA run needs a native Linux host with an NVIDIA GPU; the available SSH key is refused
+for `matt@matt-junction`. The portability row needs a native macOS gate host and a native Linux gate host
+for the two families the Windows run cannot speak for. Every other row is closed against the current
+covered source. No gate is running.
 
 ## Validation policy
 
