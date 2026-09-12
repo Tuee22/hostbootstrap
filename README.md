@@ -111,7 +111,7 @@ Configuration is strict, binary-owned Dhall:
 
 The demo's config includes its own resources, deploy settings, context, and message fields.
 `hostbootstrap-core` owns no universal project config or project defaults. The extension is generic over
-`ProjectSpec projectId cfg tcfg`, with `cfg :: Type -> Type`:
+`ProjectSpec cfg tcfg`, with `cfg :: Type -> Type`:
 `cfg (Production projectId)` cannot be confused with `cfg (Harness projectId runId)`.
 
 Host exposure is intentionally not another Dhall setting. Project config names semantic services and their
@@ -128,11 +128,10 @@ activation-bound private channel internally and mints no `HarnessConfigAuthority
 [generic project model](documents/architecture/generic_project_model.md) and
 [secrets](documents/engineering/secrets.md).
 
-Projects with a provider budget carry one host-level ceiling. Current code validates decoded scalars and
-host/provider capacity, but the complete topology-derived workload set is not yet passed through
-`fitsBudget` before effects, and the demo chart does not yet apply matching requests/limits. That
-full-plan gate is target work, not current evidence. See
-[resource budgeting](documents/engineering/resource_budgeting.md).
+Projects with a provider budget carry one host-level ceiling. `Cluster.Budget` admits the
+topology-derived workload set against it, and an applied cordon proves that concurrent slices plus
+overhead fit. See [resource budgeting](documents/engineering/resource_budgeting.md) and
+[applied cordon](documents/engineering/applied_cordon.md), which own that contract.
 
 ## CLI Surface
 
@@ -288,44 +287,31 @@ Authoritative current evidence and remaining live substrates are in the
 
 ## Current Status
 
-The implemented code is usable, but the stronger target is deliberately open. Planned repairs cover:
+The contracts this README describes are built. Readiness and reconciliation are plan- and
+resource-indexed; polling, probes and prepare-time precondition sets are opaque and validated;
+operation sessions are versioned and one-use over durable fences with crash-recoverable journals; the
+four-clause ownership invariant holds over one closed seam with a platform row beneath it; there is one
+validated forward/topology/reverse plan; handoffs are authenticated in both the normal and recovery
+directions; the Production/Harness mode lease is project-wide; and project, step and config
+constructors cannot represent contradictory states. Spawning a child that outlives its launcher is a
+closed boundary whose stdio disposition, descriptor inheritance, session, environment and working
+directory are properties of a type rather than fields a call site fills in — see
+[`Detached`](core/hostbootstrap-core/src/HostBootstrap/Detached.hs). The method every one of those
+boundaries applies is stated once in
+[documents/architecture/unrepresentable_state.md](documents/architecture/unrepresentable_state.md), and
+each claim of unrepresentability ships a registered compile-fail fixture.
 
-- total, plan/resource-indexed readiness and reconciliation;
-- opaque validated polling/probes, closed prepare-time precondition sets, and backend effects that accept
-  only the matching fresh prepared pair;
-- versioned one-use operation sessions with durable initial/rotated fences and crash-recoverable acquisition,
-  repair, phase-change, adoption, teardown, and migration journals;
-- one ownership invariant every substrate can satisfy — an OS-released exclusive lock, a durable origin
-  record written before the first mutation, binding to the object's kernel identity rather than its
-  pathname, and release conditioned on re-observing that identity — plus exact ownership receipts and
-  foreign-state refusal
-  (see [documents/architecture/ownership_invariant.md](documents/architecture/ownership_invariant.md)).
-  Those four clauses are one transaction, held once over one closed seam with a platform row beneath
-  rather than once per owned object; the clause order is a property of the types,
-  and the drivers that hold them are the binary's own typed operations rather than programs carried as
-  string literals
-  (see [documents/architecture/ownership_seam.md](documents/architecture/ownership_seam.md));
-- one validated forward/topology/reverse plan;
-- authenticated normal/recovery handoffs and controller/build config gates;
-- a project-wide Production/Harness mode lease, exact bound-Production recovery profiles, exhaustive
-  bound-run recovery, and restartable Open→Closing terminal harness cleanup; and
-- opaque project/step/config constructors that cannot represent contradictory states; and
-- a closed boundary for spawning a child that outlives its launcher, so its stdio disposition,
-  descriptor inheritance, session, environment, and working directory are properties of a type rather
-  than fields a call site fills in
-  (see [`Detached`](core/hostbootstrap-core/src/HostBootstrap/Detached.hs), whose assembled process
-  specification is private so those dispositions are not call-site parameters).
-  The method every boundary above applies is stated once in
-  [documents/architecture/unrepresentable_state.md](documents/architecture/unrepresentable_state.md).
+The host static gate passes host-native on every supported outer host, and the suites assert from none
+of them in particular: the host-portability acceptance phase records separate native Windows, macOS and
+Linux runs, and the per-platform difference in their totals is enumerated against the suites' own
+declared platform conditions rather than left to the run.
 
-The host static gate passes host-native on every supported outer host, and the suites assert from none of
-them in particular: the host-portability acceptance phase records separate native Windows, macOS, and Linux
-runs, and the per-platform difference in their totals is enumerated against the suites' own declared
-platform conditions rather than left to the run.
-
-Phase status, blockers, and deletion work are authoritative only in
+**The plan currently carries open work.** Phase status, what each open phase owes, and the deletion
+ledger are authoritative only in
 [DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md) and
-[design rationale](DEVELOPMENT_PLAN/rationale.md).
+[design rationale](DEVELOPMENT_PLAN/rationale.md). This page deliberately does not restate them: a root
+document that carries its own status list becomes a second authority that drifts from the first, which
+is what [the documentation standard](documents/documentation_standards.md) forbids.
 
 ## Repository Map
 

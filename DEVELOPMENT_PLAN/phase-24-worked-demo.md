@@ -1,6 +1,6 @@
 # Phase 24 — The worked demo
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 16 (provider, cluster, and guest lifecycle foundations), Phase 17 (proof-complete
 recursive lifecycle command), Phase 22 (service-runtime activation and `service run` semantics), Phase 23
 (base image publication and the opportunistic warm store)
@@ -2639,10 +2639,72 @@ source measurement still matches the in-run
 None. The dated run above is complete: the Production sequence, the `10/10` matrix, the terminal
 ownership audit, and the matching source measurement.
 
+### Sprint 24.43: The demo's daemon claims are protected-store entries [Active]
+
+**Status**: Active
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/operations/demo_runbook.md`, `documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+The run-ownership module records, in its own header, that it exists to replace a bare directory-creation
+lock whose crash left two directories behind with nothing to distinguish a dead predecessor from a live
+one, and an operator had to remove both by hand. The demo holds two of those locks. A hard kill of
+`project up` leaves them and wedges every subsequent run — the exact failure the ownership work was done
+to remove. The protected store is already imported by this module.
+
+#### Deliverables
+
+- Both daemon claims become protected-store entries, so a dead holder is released by the kernel rather than by hand.
+- The nine accessors that each append one suffix to one directory become one function taking the suffix.
+- A stale entry from a killed predecessor is resolved by the sweep rather than by a message telling an operator which directories to delete.
+
+#### Validation
+
+The host static gate for the claim construction. The behavioural confirmation — kill the run, then
+start another and observe it proceed — belongs to the acceptance phase that declares the hardware, not
+to this sprint.
+
+#### Remaining Work
+
+The kill-and-restart confirmation is owed by the substrate acceptance that declares the host.
+
+### Sprint 24.44: The demo's cluster configuration and tool paths are its own [Planned]
+
+**Status**: Planned
+**Implementation**: `demo/kind.yaml`, `demo/kind-in-cluster.yaml`, `demo/src/HostBootstrapDemo/Commands.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/derived_project_standards.md`
+
+#### Objective
+
+Two of the three cluster configurations are byte-identical apart from their comments, while the
+selector branches three ways — so one branch is a distinction the YAML does not make. Separately, the
+container path of the base image's formatter and linter is a constant the bootstrapper owns and the
+demo re-spells as two literals, which is both a duplication across languages and the reason the demo's
+own code-check can only ever run inside the image.
+
+#### Deliverables
+
+- The selector branches once per configuration that differs, or the configurations are made to differ for the reason the branch claims.
+- The drift guard that counts mount lines in those files is updated with them.
+- The style-tool location reaches the demo through the configuration seam rather than as a literal.
+- The demo's code-check resolves its tools on a host as well as in the image.
+
+#### Validation
+
+The host static gate, plus this phase's demo suite.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
 ## Remaining Work
 
-None. Sprint 24.42 records the current-tree Production lifecycle, the complete `10/10` Harness matrix,
-the terminal ownership audit, and the matching covered-source measurement.
+The demo's daemon claims are owed the protected store rather than directory locks.
+**Sprint 24.43** owns it. Sprint 24.44 follows with the cluster configurations and the style-tool
+path.
 
 ## Documentation Requirements
 

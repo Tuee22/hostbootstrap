@@ -176,16 +176,23 @@ phase's own Remaining Work (§ I).
 
 ### F. System Component Inventory
 
-[system-components.md](system-components.md) is the authoritative inventory for:
+[system-components.md](system-components.md) is the authoritative **inventory** — what exists and where
+it lives:
 
 - `hostbootstrap-core` Haskell module surfaces (`HostBootstrap.*`)
 - the `ensure` reconcilers and their host applicability
-- the project-local `<project>.dhall` schema
-- the runtime binary-context fields inside that local config
 - the thin Python bootstrapper surface
 - the explicit pipx self-update surface for the Python bootstrapper
-- the base image contents and warm Cabal store
 - the optparse command tree that consuming project binaries extend
+
+It **summarizes and links** for topics whose canonical home is a governed document: the project-local
+`<project>.dhall` schema belongs to
+[schema.md](../documents/engineering/schema.md), the runtime binary-context fields to
+[binary_context_config.md](../documents/architecture/binary_context_config.md), and the base image and
+warm Cabal store to [base_image.md](../documents/engineering/base_image.md). Naming an inventory
+authoritative for a contract another page owns creates two canonical homes for one topic, which
+[the documentation standard](../documents/documentation_standards.md) forbids and which no check can
+detect once both pages disagree.
 
 When the host-management architecture changes, update the component inventory in the same change.
 
@@ -252,6 +259,13 @@ program is a weaker claim than one invoking `cabal`/`poetry` against the tree di
 latter is guaranteed to exercise the source the digest measures. And because this repository ships two
 different programs both named `hostbootstrap` — the Python bootstrapper and the bare core executable
 (`hostbootstrap-core.cabal`) — a row naming it must say **which**, or a reader cannot tell what ran.
+
+A `**Gate evidence**` row records **every leg its `**Gate**` names**. A gate written as a composition —
+a static suite *plus* a live run, a focused pattern *plus* the whole suite — is one claim, and a row
+naming only the cheaper half claims something the phase did not establish. `parseEvidenceRow` checks
+only that the command field contains a backtick, so this is the rule a reader must apply until the check
+that compares the two fields exists. Where a gate genuinely closes in two sittings, the row says so with
+two entries rather than by omitting one.
 
 A three-family acceptance phase is expected to sit `Active` between runs: its covers set is the
 host-portable tree, so ordinary source change expires its claim. That is the honest reading of a
@@ -523,11 +537,12 @@ Substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`, `windows-cpu`, `
 by `hostbootstrap-core`.
 **The purpose of the `ensure` suite is that an absent dependency with a supported install plan is
 installed rather than treated as a manual prerequisite.** Context-free host dependencies are represented
-by probe-first `ensure` reconcilers — a host-applicability predicate plus a reconcile action — exposed to
-projects as library primitives
-(`ensureDocker`, `ensureLima`, `ensureCuda`, `ensureCudaWin`, `ensureWsl2`,
-`ensureHomebrew`, `ensureGhc`, `ensureIncus`, and the accelerator build-stack reconciler
-`ensureAppleMetal`) and as `ensure-*` step kinds composed into the lift chain. There is no
+by probe-first `ensure` reconcilers — a host-applicability predicate plus a reconcile action. Each
+module contributes exactly one `reconciler` value (`HostBootstrap.Ensure.Docker.reconciler` and its
+peers for Lima, Cuda, CudaWin, Wsl2, Homebrew, Ghc, Incus, and the accelerator build stack
+AppleMetal); `allReconcilers` collects them and `runEnsure` applies one. They reach a chain as `ensure-*`
+step kinds. There is no per-dependency `ensureX` entry point, because a nine-name surface is nine places
+a new host dependency has to be registered instead of one. There is no
 top-level `ensure` command, and no reconciler is reachable as a verb. The command surface is exactly the
 tree § P fixes; the one internal marker § P admits is not a command and cannot reach a reconciler.
 The reconcile action **installs** the
@@ -954,8 +969,24 @@ or derived, gates on the project's canonical `check-code` — for a derived imag
 `<project> test` report card is the project-level validation gate. The mechanical documentation
 validator (`HostBootstrap.DocValidator`) runs through the code-check. The plan
 distinguishes mechanically enforced gates from editor-only guidance, and § II from § JJ: the container
-`check-code` owns the formatter and linter, while the host static gate owns the behavioural and
-source-shape suites on every supported outer host.
+`check-code` owns the formatter and linter for a derived project, while the host static gate owns the
+behavioural and source-shape suites on every supported outer host.
+
+**This repository's own Haskell sources are inside that contract, not beside it.** The formatter check
+and the linter run against `core/hostbootstrap-core` and `demo/` source roots in the repository's
+canonical source gate, on the same footing as the Python `check_code`. A source root that no formatter
+reads is a source root with no style contract at all, however carefully the doctrine is written — and
+the library is the largest root the family builds on.
+
+**The style contract is committed, not defaulted.** `fourmolu.yaml` and `.hlint.yaml` live in the
+repository. Without them the contract is whatever the tools happened to default to on the day the
+rolling base was last republished, so a base rebuild can change what passes with no repository change —
+which makes the gate's verdict a property of the calendar rather than of the source.
+
+**`-Werror` belongs in the build description.** It is declared in the `common warnings` stanza of
+`hostbootstrap-core.cabal`, not supplied as a flag each caller remembers. A gate that depends on a
+remembered flag is a gate that is weaker exactly when someone is in a hurry, and it is why the same gate
+came to be written three different ways in three different documents.
 
 ### S. Imported Practices and Explicit Non-Adoption
 
@@ -2760,9 +2791,14 @@ single-project and opportunistic-store policy are all this section's owning phas
 
 **Owning phase**: [the composition-and-network-algebra phase](phase-21-composition-and-network-algebra.md)
 A network endpoint is not interchangeable text. Core models the scope from which a client can reach an
-endpoint (`ClusterOnly`, `ProviderLocal`, `HostLocal`, or `Public`) and keeps that index on opaque
-endpoint, exposure, and client values. A finalized registry plan jointly binds the client, verified
-published exposure, backing object-store endpoint, credential authority, and blob-delivery strategy.
+endpoint — `NetworkScope` is exactly `HostLocal`, `VmLocal`, `ClusterOnly` — and keeps that index on
+opaque endpoint, exposure, and client values. The three name the three places a client can stand: the
+machine running the binary, the provider guest, and inside the cluster. There is no scope for "public",
+because nothing this algebra admits is reachable from outside the host it was brought up on, and an
+unreachable fourth tag would be a proof obligation nobody can discharge.
+
+A finalized registry plan jointly binds the client, verified published exposure, backing object-store
+endpoint, credential authority, and blob-delivery strategy.
 Consumers may contribute concrete registry resources and image operations, but may not independently
 select endpoint strings or a serialized redirect boolean.
 
@@ -2777,9 +2813,9 @@ because another process can acquire it in the gap. Kind/nvkind `hostPort: 0` is 
 launcher resolves zero to a candidate before the runtime binds it. Cluster teardown releases the exact relay
 and its mappings by identity.
 
-`RedirectToBackend` is constructible only from a proof that the client scope can reach the backend
-scope. There is no proof from `HostLocal` to `ClusterOnly`; that topology can construct only
-`ProxyThroughRegistry`. Rendering is total over delivery strategy, so proxy delivery emits
+A `Redirect` delivery strategy is constructible only from a `Reachability` proof that the client scope
+can reach the backend scope. There is no proof from `HostLocal` to `ClusterOnly`; that topology can
+construct only `Proxy`. Rendering is total over delivery strategy, so proxy delivery emits
 `storage.redirect.disable: true` and redirect delivery emits `false`. The boolean is output, never an
 input to the DSL.
 
@@ -2794,6 +2830,7 @@ host-client→NodePort→cluster-only-MinIO proof. The canonical architecture is
 ### HH. Unrepresentable Illegal State
 
 **Owning phase**: [the installed-identity, operator-verification, and authority-kernels phase](phase-5-installed-identity-and-authority-kernels.md)
+
 A boundary is a type, not a convention. Where a value has exactly one lawful shape, the unlawful shapes
 have no constructor: a private constructor with a validating smart producer, a rank-2 continuation that
 prevents a value escaping the scope that authorized it, a closed sum with a total eliminator, and
@@ -2801,6 +2838,25 @@ phantom indices that refuse cross-plan, cross-scope, or cross-resource mixing. S
 § X are instances of this rule rather than competitors to it — readiness witnesses, capabilities, and
 command authorities are three boundaries that already apply it. § K governs *which* path a host
 invocation names; this section governs the *shape* every such value is allowed to take.
+
+**A coordinate carried across a sealed boundary is a type, not a primitive.** Hiding a constructor stops
+a stranger forging the value; it does nothing about the authorized minter transposing two of its
+arguments. A producer of the shape `Text -> Text -> Text -> Word64 -> Word64 -> Word64 -> Sealed` accepts
+every permutation of its own coordinates, and when the canonical renderer beside it has the same untyped
+shape, a transposition is self-consistent from mint to wire and no test distinguishes it. So each
+coordinate role — a plan digest, an operation key, a session, a fence, an attempt, a journal version —
+gets its own newtype, shared by the producer and the renderer. It costs nothing at runtime and converts
+an argument-order defect into a type error.
+[unrepresentable_state.md](../documents/architecture/unrepresentable_state.md) states the same rule about
+indices: an index on a type whose accessors return plain `Text` is documentation, not enforcement. It
+applies to the values a sealed producer consumes for exactly the same reason.
+
+**A registered compile-fail fixture pins the diagnostic it expects.** `rejectsWith` names one contiguous
+phrase; a fixture that merely fails to compile proves nothing, because a typo satisfies it equally. An
+expectation split into separately-matched fragments is the same defect wearing a list, since an unrelated
+error on the same line can satisfy each fragment independently. A boundary whose fixture pins nothing is
+a boundary with prose where its proof should be — and the weakest fixtures tend to be the ones the
+doctrine cites most confidently.
 
 A claim of unrepresentability carries a proof obligation. A boundary asserting that a shape cannot be
 constructed ships a compile-fail fixture under `core/hostbootstrap-core/test/compile-fail/`, registered
@@ -2881,6 +2937,21 @@ runs as an ordinary process of the outer host, and it passes host-native on macO
 alike. A suite that only builds and self-tests on POSIX cannot gate a binary the plan says is built
 host-native everywhere.
 
+**This is the gate, spelled once.** Every other document cites this list rather than paraphrasing it:
+
+```
+cd core && cabal test all --ghc-options=-Werror
+cd demo && cabal test all --ghc-options=-Werror
+poetry run python -m hostbootstrap.check_code
+poetry run python -m hostbootstrap.test_all
+```
+
+All four legs, in the spelling above. Dropping `-Werror` accepts warnings the gate refuses; dropping the
+`demo/` leg leaves the only real consumer ungated; dropping `check_code` leaves the Python layer's types
+and formatting unchecked. A paraphrase that omits any of them is a weaker gate wearing this one's name,
+and the omission does not announce itself — which is how three documents came to describe this gate three
+different ways.
+
 The harness therefore holds five rules. Each is a property of the test harness, never a weakening of the
 contract a guard asserts: a host-portable guard proves the same thing on every host, which is exactly why
 it may not be written in terms of one.
@@ -2956,6 +3027,13 @@ more:
 | Windows | the windows substrate acceptance | [phase 27](phase-27-windows-and-wsl2-substrate.md) |
 | `linux-cpu` on x86_64 | the baseline floor and the x86_64 Linux gate host | [phase 28](phase-28-host-portability-acceptance.md) |
 | `linux-cpu` on arm64 | the baseline floor and the arm64 Linux gate host | [phase 28](phase-28-host-portability-acceptance.md) |
+
+**A cell is a hardware-coverage unit; a gate-host run is not a cell.** The two are counted separately and
+the table above counts only the first. Five cells need hardware; the same hardware produces **four
+gate-host runs** — Windows, macOS, x86_64 Linux, arm64 Linux — because the three gate-host families split
+Linux by architecture. Those four are the host-portability phase's four sprints. So that phase owns two
+*cells* in the table and four *runs* in its own document, and both numbers are right about different
+things. Anywhere else in this plan, "cell" means a row of the table above and nothing else.
 
 The order in which the cells are filled carries no meaning. What matters is that every cell is filled
 against the current covered source, and that a cell nobody has filled is *named as owed* rather than

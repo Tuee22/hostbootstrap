@@ -1,6 +1,6 @@
 # Phase 3 — Host tools and substrate detection
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 2 (Haskell core scaffolding)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`
@@ -408,9 +408,42 @@ host-native at 1,894/1,894 in 226.70 seconds, plus
 
 None.
 
+### Sprint 3.10: One substrate detection, and a total accelerator answer [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/python_haskell_boundary.md`, `documents/engineering/prerequisites.md`
+
+#### Objective
+
+This module states in its own header that it is a port of the bootstrapper's detection, and the two
+are the same program down to their refusal strings. § M gives pre-binary detection to the bootstrapper,
+so the binary's job is to receive that answer, not to compute it a second time. Alongside it, the
+accelerator question is answered by membership in a literal list while its neighbour is a total case —
+so a substrate added to the closed sum silently answers 'no accelerator' instead of failing to
+compile.
+
+#### Deliverables
+
+- The binary accepts the substrate the bootstrapper detected through the documented invocation-context seam.
+- Its own detection remains as a labelled fallback for direct invocation, and says in one line that it is one.
+- The accelerator predicate is a total case over the substrate sum, so a new substrate is a compile error rather than a default answer.
+- The architecture alias table and the accelerator marker list have one home each across the two languages.
+
+#### Validation
+
+The host static gate. The substrate suite already pins each classification and its refusals; the
+accelerator predicate gains the case a new constructor would break.
+
+#### Remaining Work
+
+The emitting half is Sprint 1.7. Until it lands the fallback is the live path and nothing regresses.
+
 ## Remaining Work
 
-None.
+Detection is owed as one implementation rather than two. **Sprint 3.10** owns it, together
+with the total accelerator answer.
 
 ## Documentation Requirements
 

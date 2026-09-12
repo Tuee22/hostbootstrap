@@ -1,6 +1,6 @@
 # Phase 8 — Ensure reconcilers
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 7 (Dhall configuration and the generic project model)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`
@@ -286,6 +286,99 @@ On 2026-09-01, after tightening the interrupted-toolchain probe, the Windows hos
 
 None. The worked-demo phase adopts this vocabulary at its own pristine-host call site; a live confirmation
 is not a closure obligation of this static phase (§ C, § II).
+
+### Sprint 8.7: A dispatched command names a real executable [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/library_hierarchy.md`
+
+#### Objective
+
+§ K makes a bare command name unrepresentable at host-tool resolution. One layer up, the lift's raw
+command leaf is a plain list, and the fold over an empty one produces a dispatch naming the empty
+string — the same illegal shape, reachable by a different route. Beside it, the self-reference value
+holds two adjacent unvalidated paths with both its constructor and its accessors exported, so a handed
+value can be re-pointed and the two paths can be swapped.
+
+#### Deliverables
+
+- The raw command leaf carries a non-empty argument vector, so the equation that dispatches an empty executable has no reason to exist and is deleted.
+- The self-reference value's two paths are distinct newtypes, so they cannot be transposed.
+- Its constructor and its field accessors are both hidden — an exported accessor still admits record update, which is the half that matters.
+- A compile-fail fixture pins that a caller cannot re-point a self-reference it was handed.
+
+#### Validation
+
+The host static gate, plus the new fixture. The lift suite covers the dispatch shapes.
+
+#### Remaining Work
+
+The reconciler workflow and the accelerator probe are Sprints 8.8 and 8.9.
+
+### Sprint 8.8: One group-and-socket reconciler workflow [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure.hs`, `core/hostbootstrap-core/src/HostBootstrap/Ensure/Docker.hs`, `core/hostbootstrap-core/src/HostBootstrap/Ensure/Incus.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/ensure_reconcilers.md`
+
+#### Objective
+
+Two reconcilers hold the same workflow: read the environment, find the invoking non-root user, skip
+with a message when there is none, add that user to a group, verify, then grant the socket. They differ
+in a group name, a socket path, and a label. § LL calls a second copy of one workflow a defect because
+each copy passes its own tests — and the exit-code formatting inside them is repeated nine times
+across the two files.
+
+#### Deliverables
+
+- `Ensure.hs`, which already owns the shared reconciler vocabulary, gains the group-and-socket workflow parameterised by group, socket, and label.
+- Both reconcilers become applications of it.
+- The three-way exit-code report is written once.
+
+#### Validation
+
+The host static gate. The ensure suite already pins each reconciler's messages; unchanged messages are
+the evidence that the shared workflow is the same workflow.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
+### Sprint 8.9: One accelerator probe [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/Cuda.hs`, `core/hostbootstrap-core/src/HostBootstrap/Ensure/CudaWin.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/ensure_reconcilers.md`
+
+#### Objective
+
+The question "does the accelerator tool report a device" is answered by four separate
+implementations — twice with identical bodies in one module, once inline in its Windows neighbour, and
+once more in substrate detection. One of them is the answer; the others are copies of it.
+
+#### Deliverables
+
+- The probe has one implementation, shared by the reconcilers that ask it.
+- Substrate detection's marker list and this probe agree by construction rather than by inspection.
+- The duplicate bodies are deleted.
+
+#### Validation
+
+The host static gate.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
+## Remaining Work
+
+The lift's dispatch leaf is owed a type that cannot name an empty executable.
+**Sprint 8.7** owns it. Sprints 8.8 and 8.9 follow with the shared reconciler workflow and the single
+accelerator probe.
 
 ## Documentation Requirements
 

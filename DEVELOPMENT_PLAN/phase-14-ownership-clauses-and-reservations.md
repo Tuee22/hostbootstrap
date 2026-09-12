@@ -1,6 +1,6 @@
 # Phase 14 — The four ownership clauses and host-local reservations
 
-**Status**: Done
+**Status**: Active
 **Current sprint**: None — every sprint is closed
 **Depends on**: Phase 3 (host tools and the closed effect vocabulary), Phase 4 (protected store),
 Phase 11 (prepared operations and preconditions)
@@ -676,15 +676,128 @@ claim needs a second machine and § C forbids a baseline phase owing hardware it
 
 None. Every host-local owner holds its clauses through the one seam and against the one row.
 
+### Sprint 14.14: One record tape behind the ownership seam [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Ownership.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_seam.md`
+
+#### Objective
+
+The four-clause algebra is genuinely shared: every owner enters, records, binds and releases through
+the one seam. What each owner supplies to that seam — publish a fresh record, publish a bound one,
+forget it, read it back, and collapse the two error layers — is hand-copied, five times. Two of those
+copies are identical apart from three message strings, including the four-line comment explaining why
+collapsing the layers once is what keeps every caller from writing its own.
+
+They have already drifted: one copy carries the record key into its foreign-record refusal and the
+other does not, so the same condition produces two different refusals depending on which owner saw it.
+Deciding which is correct is part of this sprint, not a detail of it — adopting whichever is refactored
+first would pick a winner silently.
+
+#### Deliverables
+
+- A record tape lives beside the ownership primitives, holding the publish, forget and read-back operations over one session, key and subject.
+- A two-method carrier class lifts a clause fault and a store fault into a domain's own error sum, replacing the lifting ten modules hand-write.
+- The provider owner adopts both and keeps only what is genuinely its own.
+- The foreign-record refusal divergence is resolved deliberately, and the sprint records which behaviour was chosen and why.
+
+#### Validation
+
+The host static gate. The provider ownership and reconcile suites pin the refusals; the chosen
+foreign-record refusal is asserted explicitly so the decision is visible in a test rather than in a
+diff.
+
+#### Remaining Work
+
+The cluster, harness and remaining owners are Sprints 14.15 to 14.17.
+
+### Sprint 14.15: The cluster owner adopts the record tape [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Ownership.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_seam.md`
+
+#### Objective
+
+The cluster owner holds the second full copy of the store adapter. With the tape in place its
+domain-specific part is the standing check and the create-then-bind path; the rest is the tape.
+
+#### Deliverables
+
+- The cluster owner's publish, forget, read-back and collapse helpers are replaced by the shared tape and carrier.
+- Its own error sum gains the carrier instance rather than hand-written lifting.
+- The node-identity subject text is a parameter, not a copied literal.
+
+#### Validation
+
+The host static gate; the cluster ownership and reconcile suites.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
+### Sprint 14.16: The harness owners adopt the record tape [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness/DataRoot.hs`, `core/hostbootstrap-core/src/HostBootstrap/Harness/GeneratedConfig.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/harness_workflow.md`
+
+#### Objective
+
+These two carry the same eight helpers as each other, verbatim including their documentation
+comments, and share twelve consecutive identical import lines. They are the smallest copies and the
+clearest demonstration that the adapter was duplicated rather than independently derived.
+
+#### Deliverables
+
+- Both owners use the shared tape and carrier.
+- The duplicated helpers and the duplicated import block are deleted.
+- Each keeps only its own subject and its own removal-set guard.
+
+#### Validation
+
+The host static gate. The run-ownership phase re-runs its own gate over these modules.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
+### Sprint 14.17: The remaining publishers adopt the tape, and one reader decodes the wire [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Shipped.hs`, `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima/Ownership.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_seam.md`
+
+#### Objective
+
+Two owners keep single publish helpers as local definitions inside larger functions — the last copies.
+Alongside them, the little-endian word reader is byte-identical in the shipped-ownership row and in the
+Windows wall host, which is one wire-format decoder written twice in two unrelated modules.
+
+#### Deliverables
+
+- The remaining local publish helpers are replaced by the shared tape.
+- The little-endian reader has one home, imported by both readers of that wire format.
+- No copy of the store adapter remains; the ledger row for it is removed in the same change.
+
+#### Validation
+
+The host static gate.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
 ## Remaining Work
 
-None. The nouns are stated once, the clause order is a property of the types, one seam of primitives
-mints the tokens by actually holding each clause, both kernels fill that seam, one selector chooses
-between them, and one producer makes clause 4 reachable from the durable record. All three host-local
-owners — the run's data root, its generated sibling config, and the per-user host wall — reach the
-clauses through that seam and against that row, so the identity read, the no-replace publication, the
-exclusive entry, the identity-conditional act, and the durable record encoding each exist once beneath
-every one of them.
+The store adapter behind the ownership seam is owed one implementation rather than five,
+and its already-divergent foreign-record refusal is owed a decision. **Sprint 14.14** owns both. Sprints
+14.15 to 14.17 adopt the result at the remaining owners.
 
 ## Documentation Requirements
 

@@ -1,6 +1,6 @@
 # Phase 16 — Cluster lifecycle, budgets, and cordoning
 
-**Status**: Done
+**Status**: Active
 **Current sprint**: None
 **Depends on**: Phase 12 (the generic plan-indexed budget boundary), Phase 14 (the four ownership clauses
 and the ownership seam), Phase 15 (host providers and the self-reference lift)
@@ -2528,9 +2528,124 @@ here because the refusal left a cluster standing that had to be removed by hand.
 
 None.
 
+### Sprint 16.51: One owner selects the cluster configuration [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/cluster_lifecycle.md`
+
+#### Objective
+
+Core derives a cluster configuration filename from the driver, and its only consumer computes the
+plan from core and then overwrites that field with its own three-way selection. So the decision has two
+owners and core's is never exercised — which is why core's accelerator answer can name a file that
+exists nowhere in the tree without anything noticing. One owner decides; the other stops deciding.
+
+#### Deliverables
+
+- The driver-to-configuration mapping names files that exist, and a case asserts each resolves.
+- The consumer stops overwriting the field, or core stops deriving it — one of the two, stated in this sprint as the decision it is.
+- The accelerator template the GPU driver names is the one the repository ships.
+- A case pins that the selected configuration file resolves for every driver.
+
+#### Validation
+
+The host static gate for the selection and its resolution; the cluster-live leg confirms the selected
+file is the one the driver actually consumes.
+
+#### Remaining Work
+
+Backend-complete wall admission, the ingress sum, and the shared gate commitment are Sprints 16.52 to
+16.54.
+
+### Sprint 16.52: Backend-complete admission at the cluster wall [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/applied_cordon.md`
+
+#### Objective
+
+The adoption half of the budget-admission contract: this phase is where the wall is actually applied,
+so the named-every-backend rule has to hold here rather than only in the contract.
+
+#### Deliverables
+
+- Every backend constructor is named at the admission site, with its own sizing decision.
+- A backend that inherits whole-unit sizing says so deliberately, with the reason it does.
+- The budget suite covers each backend rather than the three that were named.
+
+#### Validation
+
+The host static gate; the cluster-live leg for the backends this host realizes.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
+### Sprint 16.53: Accelerator ingress is a closed sum [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/cluster_lifecycle.md`
+
+#### Objective
+
+The ingress plan is a record with a string discriminant and two optional fields that are present
+exactly when that string holds one value. Its producer is correct and nothing else enforces the
+correlation, while the constructor is exported — so the invalid combinations are constructible by any
+consumer and only prose says they are wrong.
+
+#### Deliverables
+
+- The ingress plan becomes a sum with a case per service type, each carrying exactly the fields that case has.
+- The correlated optional fields disappear because the invalid combinations have no constructor.
+- The state-directory accessor stops repeating one body across two constructors.
+- Rendering is total over the new sum.
+
+#### Validation
+
+The host static gate.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
+### Sprint 16.54: One prepared-gate commitment [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`, `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Two backends commit to the same six prepared-gate fields in the same order and then hash them
+differently — one length-frames and digests, the other joins with a separator. Two answers to one
+question, differing where nobody compares them.
+
+#### Deliverables
+
+- The field projection has one home beside the prepared gate itself.
+- Both backends commit through it with the same construction.
+- The sprint states which construction is canonical, and checks whether any recorded durable state depends on the one being replaced.
+
+#### Validation
+
+The host static gate. The commitment bytes are pinned by existing cases, so the chosen construction is
+asserted rather than assumed.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
 ## Remaining Work
 
-None.
+Cluster configuration selection is owed one owner. **Sprint 16.51** owns it. Sprints 16.52
+to 16.54 follow with backend-complete wall admission, the ingress sum, and the shared gate commitment.
 
 ## Documentation Requirements
 

@@ -1,6 +1,6 @@
 # Phase 25 — Apple Silicon substrate
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: apple-silicon
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
@@ -256,9 +256,42 @@ status harmony, and the recorded evidence against the tree. `git diff --check` p
 
 None. Both live lanes, the terminal audit, and the matching evidence measurement are complete.
 
+### Sprint 25.5: The Apple Silicon acceptance against the current tree [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: apple-silicon
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+This phase's evidence covers the host-portable tree, so ordinary source change expires its claim —
+which § G names as the expected state for an acceptance phase between runs rather than as an unclosed
+phase. The claim is re-established by running the gate on an Apple Silicon host, not by re-recording a digest
+over a tree nothing re-tested. That visit also carries the macOS gate host and an arm64 Linux gate host.
+
+#### Deliverables
+
+- The phase's declared gate is re-run in full on the hardware it declares.
+- A gate-evidence row records the date, the gate host, the command as run, and the result.
+- The row names which program ran where two share a name, and prefers an invocation against the tree over a separately installed one.
+- The covers digest is re-measured over this phase's own paths and recorded.
+- Every cell this hardware can produce is recorded in the same visit, so the machine is not owed a second one.
+
+#### Validation
+
+The phase's own gate, on its own hardware. Re-recording the digest without the run is the one thing
+this sprint may not do.
+
+#### Remaining Work
+
+The run is owed at the next visit to this hardware. It is taken once no other phase carries open
+work, because any earlier source change re-owes it.
+
 ## Remaining Work
 
-None.
+The Apple Silicon acceptance is owed against the current tree. **Sprint 25.5** owns
+the re-run, at the next visit to the hardware this phase declares.
 
 ## Documentation Requirements
 

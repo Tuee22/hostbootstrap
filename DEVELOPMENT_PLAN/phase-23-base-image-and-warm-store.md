@@ -1,6 +1,6 @@
 # Phase 23 — Base image publication and the opportunistic warm store
 
-**Status**: Done
+**Status**: Active
 **Current sprint**: None — phase complete
 **Depends on**: Phase 22 (service runtime)
 **Substrates**: linux-cpu
@@ -164,10 +164,161 @@ Cabal 3.16.1.0, the warm store, and an `Up to date` inherited-store resolution.
 
 None.
 
+### Sprint 23.5: A committed style contract [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`, `documents/engineering/code_check_doctrine.md`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/code_check_doctrine.md`, `documents/languages/haskell.md`
+
+#### Objective
+
+§ R now says the style contract is committed rather than defaulted. Today no formatter or linter
+configuration exists anywhere in the repository, so the contract is whatever the tools defaulted to on
+the day the rolling base was last republished — which makes a base rebuild able to change what passes
+with no repository change at all. A committed configuration is what turns the gate's verdict into a
+property of the source.
+
+#### Deliverables
+
+- `fourmolu.yaml` and `.hlint.yaml` are committed at the repository root.
+- Their settings are chosen to match the existing sources as closely as possible, so the reformat that follows is as small as it can be.
+- The code-check doctrine names them as the contract and stops describing style as a property of the installed tool.
+- No source is reformatted in this sprint.
+
+#### Validation
+
+The host static gate is unaffected: this sprint adds configuration and changes no source.
+
+#### Remaining Work
+
+The reformat, the gate, the smoke, and the image surface are Sprints 23.6 to 23.9.
+
+### Sprint 23.6: The repository's Haskell sources meet the committed style [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core`, `demo`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/code_check_doctrine.md`
+
+#### Objective
+
+Formatting only. This sprint exists separately so the diff has one shape and a reviewer knows that
+before opening it: no semantic change, no import change, no export change. Landing it inside any other
+sprint would make that sprint unreviewable and would obscure the history of every module the
+deduplication work has just restructured.
+
+#### Deliverables
+
+- The formatter is applied in place to the library, its internal sublibraries, its application, its suites and the worked consumer.
+- The diff contains formatting and nothing else; that property is the deliverable.
+- This sprint lands as its own commit.
+
+#### Validation
+
+The host static gate, unchanged in every total. An identical set of passing cases before and after is
+the evidence that the change is formatting.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
+### Sprint 23.7: The source gate runs the formatter and the linter [Planned]
+
+**Status**: Planned
+**Implementation**: `hostbootstrap/cli.py`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/code_check_doctrine.md`, `documents/engineering/build_release.md`
+
+#### Objective
+
+The repository's source gate runs the Python checks and four warning-clean Cabal invocations, and no
+formatter or linter at all. The only places either tool runs today are the base image's two sample
+files and the worked consumer's own sources — so the library, the largest Haskell root the family
+builds on, has never been read by either. § R now places it inside the contract; this is the step that
+makes that mechanical.
+
+#### Deliverables
+
+- The source gate gains a formatter check and a linter step over the library and consumer source roots.
+- They run before the expensive Cabal legs, so a style regression fails in seconds rather than after a full build.
+- Linter findings are triaged into accepted hints and justified configuration entries — never a per-module compiler suppression, of which the library currently has none.
+- The gate's failure message names which check failed and over which root.
+
+#### Validation
+
+The source gate itself, on a clean tree: it passes, and it fails on a deliberately misformatted file.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
+### Sprint 23.8: The compatibility smoke asks a consumer's question [Planned]
+
+**Status**: Planned
+**Implementation**: `docker/compatibility-smoke.Dockerfile`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/base_image.md`, `documents/engineering/warm_store.md`
+
+#### Objective
+
+The smoke says it proves a derived project resolves against the inherited store, and what it resolves
+is the base's own warm-store package set — the very packages whose resolution produced that store. Its
+question is close to tautological, and it is the last gate between a rebuilt base and the registry.
+
+#### Deliverables
+
+- The smoke resolves a small consumer package whose dependency closure is not the warm store's own.
+- It continues to check the toolchain and the store's presence as distinct failures.
+- It verifies that the formatter and linter the base installs actually start, since the doctrine treats their presence as part of what the base guarantees.
+- Its comment describes what it now does.
+
+#### Validation
+
+The smoke build itself, against a freshly built local image and again against the pulled digest, which
+is what this phase's gate already requires.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
+### Sprint 23.9: The bootstrapper's image surface is typed [Planned]
+
+**Status**: Planned
+**Implementation**: `hostbootstrap/base_image.py`, `hostbootstrap/docker_ops.py`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/base_image.md`
+
+#### Objective
+
+Three small defects on the publication surface. A flavor selector that no production code calls maps
+the Windows accelerator substrate to the CPU base, contradicting every other part of the system; a
+build specification carries resource caps alongside a builder flag that decides whether those caps are
+honoured at all, so a silently-ignored request is expressible; and the package's one type suppression
+hides a default value that is not of the type it claims.
+
+#### Deliverables
+
+- The uncalled flavor selector is deleted, or corrected and given a call site — one of the two, decided here.
+- Its test covers every substrate rather than the three that leave the Windows cases unexercised.
+- The builder selection and the resource caps become one value, so caps cannot be requested from a builder that ignores them.
+- The environment default is an empty mapping of the declared type, and the suppression is deleted.
+
+#### Validation
+
+The host static gate, with coverage at 100%. The flavor test's extension to every substrate is the
+part that matters: the current gap is a worked example of line coverage certifying an untested
+branch.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
 ## Remaining Work
 
-None. The dated native build, pre-publication local-ID smoke, rolling-tag push, pull, digest resolution,
-and published-artifact smoke are recorded in Sprint 23.4.
+The style contract is owed as committed configuration. **Sprint 23.5** owns it, and
+Sprints 23.6 to 23.9 follow with the reformat, the gate that reads it, the consumer smoke, and the typed
+image surface.
 
 ## Documentation Requirements
 

@@ -38,88 +38,69 @@ its row here.
 | # | Phase | Status | Substrate | Open |
 |---|-------|--------|-----------|------|
 | 0 | [Governance and documentation standards](phase-0-governance-and-documentation-standards.md) | Done | — | — |
-| 1 | [Python pre-binary floor](phase-1-python-pre-binary-floor.md) | Done | linux-cpu | — |
-| 2 | [Haskell core scaffolding](phase-2-haskell-core-scaffolding.md) | Done | — | — |
-| 3 | [Host tools and substrate detection](phase-3-host-tools-and-substrate-detection.md) | Done | linux-cpu | — |
+| 1 | [Python pre-binary floor](phase-1-python-pre-binary-floor.md) | Active | linux-cpu | architecture value; subprocess vocabulary |
+| 2 | [Haskell core scaffolding](phase-2-haskell-core-scaffolding.md) | Active | — | warning policy; suite toolkit |
+| 3 | [Host tools and substrate detection](phase-3-host-tools-and-substrate-detection.md) | Active | linux-cpu | one detection; total accelerator answer |
 | 4 | [Protected store](phase-4-protected-store.md) | Done | linux-cpu | — |
-| 5 | [Installed identity, operator verification, and authority kernels](phase-5-installed-identity-and-authority-kernels.md) | Done | — | — |
-| 6 | [Canonical quantities and reconcile results](phase-6-canonical-quantities-and-reconcile-results.md) | Done | — | — |
-| 7 | [Dhall configuration and the generic project model](phase-7-dhall-configuration-and-project-model.md) | Done | — | — |
-| 8 | [Ensure reconcilers](phase-8-ensure-reconcilers.md) | Done | linux-cpu | — |
+| 5 | [Installed identity, operator verification, and authority kernels](phase-5-installed-identity-and-authority-kernels.md) | Active | — | identity decision; fixture diagnostics |
+| 6 | [Canonical quantities and reconcile results](phase-6-canonical-quantities-and-reconcile-results.md) | Active | — | closed quantity result |
+| 7 | [Dhall configuration and the generic project model](phase-7-dhall-configuration-and-project-model.md) | Active | — | derived role table; output policy |
+| 8 | [Ensure reconcilers](phase-8-ensure-reconcilers.md) | Active | linux-cpu | dispatch leaf; reconciler workflow |
 | 9 | [Lifecycle modes and run leases](phase-9-lifecycle-modes-and-run-leases.md) | Done | linux-cpu | — |
 | 10 | [Sessions, journal, and fences](phase-10-sessions-journal-and-fences.md) | Done | linux-cpu | — |
 | 11 | [Prepared operations](phase-11-prepared-operations.md) | Done | linux-cpu | — |
-| 12 | [Step algebra and the project plan](phase-12-step-algebra-and-project-plan.md) | Done | linux-cpu | — |
+| 12 | [Step algebra and the project plan](phase-12-step-algebra-and-project-plan.md) | Active | linux-cpu | non-empty plan; backend-complete admission |
 | 13 | [Authenticated handoff and child admission](phase-13-authenticated-handoff-and-child-admission.md) | Done | linux-cpu | — |
-| 14 | [Ownership clauses and reservations](phase-14-ownership-clauses-and-reservations.md) | Done | linux-cpu | — |
-| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Done | linux-cpu | — |
-| 16 | [Cluster lifecycle, budgets, and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Done | linux-cpu | — |
-| 17 | [Recursive lifecycle command](phase-17-recursive-lifecycle-command.md) | Done | linux-cpu | — |
+| 14 | [Ownership clauses and reservations](phase-14-ownership-clauses-and-reservations.md) | Active | linux-cpu | the record tape |
+| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Active | linux-cpu | one guest-VM row; coordinate opener |
+| 16 | [Cluster lifecycle, budgets, and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Active | linux-cpu | one config owner; ingress sum |
+| 17 | [Recursive lifecycle command](phase-17-recursive-lifecycle-command.md) | Active | linux-cpu | named route interactivity |
 | 18 | [Recovery and migration](phase-18-recovery-and-migration.md) | Done | linux-cpu | — |
-| 19 | [Test harness and run ownership](phase-19-test-harness-and-run-ownership.md) | Done | linux-cpu | — |
-| 20 | [`test` and `context` commands](phase-20-test-and-context-commands.md) | Done | linux-cpu | — |
-| 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Done | linux-cpu | — |
-| 22 | [Service runtime](phase-22-service-runtime.md) | Done | linux-cpu | — |
-| 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
-| 24 | [The worked demo](phase-24-worked-demo.md) | Done | linux-cpu | — |
-| 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Done | **apple-silicon** | — |
-| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Done | **nvidia** | — |
-| 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Done | **windows** | — |
-| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Done | — | — |
-| 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Done | — | — |
+| 19 | [Test harness and run ownership](phase-19-test-harness-and-run-ownership.md) | Active | linux-cpu | gate re-run |
+| 20 | [`test` and `context` commands](phase-20-test-and-context-commands.md) | Active | linux-cpu | parsed role at the surface |
+| 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Active | linux-cpu | port as a value |
+| 22 | [Service runtime](phase-22-service-runtime.md) | Active | linux-cpu | gate re-run, both legs |
+| 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Active | linux-cpu | style contract; core style gate |
+| 24 | [The worked demo](phase-24-worked-demo.md) | Active | linux-cpu | protected-store daemon claims |
+| 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Active | **apple-silicon** | acceptance re-run |
+| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Active | **nvidia** | acceptance re-run |
+| 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | acceptance re-run |
+| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | acceptance re-run |
+| 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Active | — | reconciliation; validator checks |
 
 ## The current frontier
 
-The cluster backend compiles its platform-specific helpers only on the hosts that execute them, and its
-Windows tests assert the declared refusals. The recursive lifecycle command admits root-only command entries
-and gives children only root-selected execution grants. Documentation reconciliation covers the governed documents,
-source comments, help text, and architecture guards. [The legacy ledger](legacy_tracking_for_deletion.md) is empty.
-The table above owns phase status; each phase's validation section owns its dated gate evidence.
+Twenty-three phases are `Active`. The table above says which and what each owes; this section says how
+they relate, and nothing here overrides a row there.
 
-The [worked-demo phase](phase-24-worked-demo.md) is closed by its 2026-09-11 run on a native Windows outer
-host realizing `linux-cpu` through WSL2: the Production Up/Down/Destroy sequence, then a complete Harness
-matrix reporting `10/10 passed` in 2 hours 57 minutes across four pristine guest generations, then a terminal
-ownership audit whose source measurement still matches the in-run tree. The
-[Windows/WSL2 acceptance phase](phase-27-windows-and-wsl2-substrate.md) is closed by the Windows-only
-behavior that same run exercises: the global wall taken at four successive fences and restored to its exact
-original bytes ahead of any global shutdown, the Windows ownership row against the real Win32 surface, the
-hidden Windows host accelerator daemon serving a loopback-only endpoint, and a three-hour gate surviving an
-agent session through the durable-run mechanism.
+The open work divides into four kinds. **Typed boundaries that were stated in prose rather than in the
+type**: a validated plan whose accessor discards its non-emptiness, a dispatch leaf that admits an empty
+executable, a role decision taken on raw text after the value was parsed, a record whose optional fields
+are correlated by comment. **Workflows written more than once**: the store adapter behind the ownership
+seam, the two guest-VM backend constructors, the group-and-socket reconciler, the runtime-dependency
+coordinate checkers, and — across the language boundary — outer-host detection, the architecture alias
+table, and the accelerator probe. **A quality gate that never reached the sources it was written for**:
+the formatter and the linter run against the base image's sample files and the worked consumer, and have
+never read the library. **And the documentation the first three drifted from**, together with the
+validator checks that would have caught the drift.
 
-The [Apple-Silicon acceptance phase](phase-25-apple-silicon-substrate.md) is closed by its 2026-09-09
-pristine Apple matrix, native direct-Colima lane, and terminal ownership audit against one unchanged
-covered tree. Its phase document records the dated results and image digests. The
-[NVIDIA acceptance phase](phase-26-nvidia-gpu-substrate.md) is closed by its 2026-09-11 native
-Linux/x86_64 RTX 5090 run on `matt-junction`: `10/10 passed` in 51 minutes 35 seconds across four
-pristine generations, with the one-GPU request observed live through the Kubernetes API on distinct
-accelerator and device-plugin pods per generation, and a terminal audit whose 208-file source
-measurement still matches the in-run tree.
+[The legacy ledger](legacy_tracking_for_deletion.md) is no longer empty. Each row names the phase whose
+completion deletes the shape, and the ledger schedules nothing on its own: the deleting phase's own
+sprint does that.
 
-The [host-portability acceptance phase](phase-28-host-portability-acceptance.md) records separate dated gate
-runs for four cells — a Windows gate host, a macOS gate host, an x86_64 Linux gate host, and an arm64 Linux
-gate host — with the suite's explicit platform conditions explaining their totals. The Linux family splits
-by architecture because § N compiles different code for each. Static and substrate evidence are distinct.
-All four cells pass against the current tree on 2026-09-11: the Windows cell at 2,500/2,500 core cases, and
-the macOS, x86_64 Linux, and arm64 Linux cells at 2,505/2,505 each, every cell with 235/235 Python cases.
-The five-case difference is the Windows source selection the phase enumerates.
+**The acceptance phases close last.** Phases 25 to 28 cover the host-portable tree, so any source change
+in a lower phase re-owes their runs — re-running them before the rest of the plan settles would record
+evidence that the next sprint expires. They are taken once no other phase carries open work, and each
+is owed at the next visit to the hardware it declares. § G names that state as the honest reading of a
+portability claim between runs rather than as an unclosed phase.
 
-The [host-providers phase](phase-15-host-providers-and-the-lift.md) is closed by its 2026-09-09 native
-Linux/x86_64 KVM/Incus run: all 2,497 static cases passed before the live component completed its prepared
-Incus lifecycle and mutation-free Direct refusal with no residue. The
-[base-image phase](phase-23-base-image-and-warm-store.md) is closed by its 2026-09-09 native
-Linux/x86_64 run: the complete source preflight and immutable local-ID compatibility smoke passed before
-the rolling CPU/amd64 tag was pushed, pulled at
-`sha256:e46fb5699af246dc631704cd9bba5020776a7e96fbba1f4c450b5b9971ffb9d5`, and smoked again against
-that exact published digest.
+The documentation reconciliation phase is last for the same reason in reverse: it corrects governed
+prose against the source those phases are changing, and its validator checks are what keep the two
+aligned afterwards. Reconciling first would reconcile to a tree that is about to move.
 
-§ JJ's coverage matrix names five cells, and a hardware set is visited once: a visit records every cell
-that hardware can produce, so three machines fill all five and a fourth is never required. The Apple
-Silicon visit carries the Metal substrate, the macOS gate host, and an arm64 Linux gate host; the
-Linux/NVIDIA visit carries the nvidia substrate and the x86_64 Linux gate host; the Windows visit carries
-the windows substrate and the Windows gate host. The 2026-09-11 Linux/NVIDIA visit recorded both of its
-cells, and the 2026-09-11 Apple visit recorded the macOS gate host and the arm64 Linux gate host alongside
-the Metal substrate it already carried, so neither machine is owed a return. Every row is closed against
-the current covered source. No gate is running.
+Closed and not reopened: the protected store, lifecycle modes and run leases, sessions and fences,
+prepared operations, authenticated handoff and child admission, and recovery and migration. Their
+covered paths are outside the open work, and their gate evidence still measures the tree it names.
 
 ## Validation policy
 
@@ -127,7 +108,10 @@ the current covered source. No gate is running.
 in its scope. A phase closes on **its own** gate; it never carries a closure obligation needing hardware it
 does not declare.
 
-Two gates carry that weight, and a phase says which one closes it (§ II). The **host static gate** —
+Two gates **close phases**, and a phase says which one closes it (§ II). Two further gates guard a
+build without closing anything — the container `check-code` and the repository's own source gate — which
+is why [the testing page](../documents/engineering/testing.md) counts four and this section counts two.
+They are the same four gates counted for different purposes. The **host static gate** —
 `cabal test all --ghc-options=-Werror` from `core/` plus the two Python commands — runs as an ordinary
 process of the outer host and proves the pure, typed, and lexical contracts. Because every binary is
 built host-native (§ N), it must pass host-native on macOS, Linux, and Windows alike (§ JJ); running it

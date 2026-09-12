@@ -1,6 +1,6 @@
 # Phase 6 — Canonical quantities, readiness, and reconcile results
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 5 (operator, root, and command authority)
 **Substrates**: none (static)
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`
@@ -126,6 +126,41 @@ rejected at teardown by the type checker.
 #### Remaining Work
 
 None.
+
+### Sprint 6.4: The budget path answers with a closed result [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon/Foundation.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/resource_budgeting.md`
+
+#### Objective
+
+This phase's own contribution is that a reconcile answer is a closed sum rather than a sentence, and
+the library holds excellent examples of it. The canonical-quantity constructors are not among them:
+they answer with free text, and a caller that needs to know *which* dimension failed reads it by
+matching on a string — or, at the cluster wall, by concatenating one into a typed constructor, which
+keeps the shape and loses the machine-readable part.
+
+#### Deliverables
+
+- The quantity constructors answer with a closed error naming the dimension and the bound it broke.
+- The cluster wall's slice refusal carries that value rather than an interpolated sentence.
+- Rendering the new sum produces the operator-facing text those messages carry today, so diagnostics do not regress.
+- A case asserts the dimension of a refusal without matching on its rendered text.
+
+#### Validation
+
+The host static gate. The budget and cordon suites already cover the refusals; the new assertion is
+that they can be identified without string matching.
+
+#### Remaining Work
+
+The remaining free-text error channels elsewhere in the library are not in this sprint's scope.
+
+## Remaining Work
+
+The canonical-quantity refusals are owed as a closed result. **Sprint 6.4** owns it.
 
 ## Documentation Requirements
 

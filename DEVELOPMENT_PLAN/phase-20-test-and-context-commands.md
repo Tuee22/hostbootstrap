@@ -1,6 +1,6 @@
 # Phase 20 — `test` and `context` command semantics
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 19 (test harness and exclusive run ownership)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus the focused `CLISpec` and `ContextSpec`
@@ -194,9 +194,41 @@ context and exact Harness mutation boundaries; its covered digest matches the he
 
 None.
 
+### Sprint 20.6: The initializer carries the role it parsed [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/binary_context_config.md`
+
+#### Objective
+
+§ Z fixes this surface's grammar and its side-effect boundary. The initializer takes its default role
+as rendered text and hands that text to a decision about installed identity, so the surface is where a
+parsed value is turned back into a string and compared. This sprint is the command-surface half of that
+change: the parser's default and help text are rendered from the role value rather than carrying a
+second literal spelling of it.
+
+#### Deliverables
+
+- The initializer's role parameter is the parsed role kind.
+- The parser default and its help text render that value.
+- No literal role spelling remains at this surface.
+- The command suite covers an aliased and a normalised spelling reaching the same parsed value.
+
+#### Validation
+
+The host static gate, plus this phase's focused command and context suites. The gate-evidence row
+records both the full suite and the focused legs its gate names.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
 ## Remaining Work
 
-None.
+The initializer surface is owed the parsed role rather than its rendered text, and this
+phase's gate evidence is owed a row that records both legs its gate names. **Sprint 20.6** owns both.
 
 ## Documentation Requirements
 

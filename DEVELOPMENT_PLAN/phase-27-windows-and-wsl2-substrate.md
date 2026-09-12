@@ -1,6 +1,6 @@
 # Phase 27 — Windows and WSL2 substrate
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: windows
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
@@ -252,10 +252,42 @@ The terminal 208-file source measurement still matches the in-run
 None. This run confirms the Windows-only wall, ownership, and accelerator behavior; the
 [worked-demo phase](phase-24-worked-demo.md) owns the same run's universal `linux-cpu` matrix claim.
 
+### Sprint 27.5: The Windows and WSL2 acceptance against the current tree [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: windows
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+This phase's evidence covers the host-portable tree, so ordinary source change expires its claim —
+which § G names as the expected state for an acceptance phase between runs rather than as an unclosed
+phase. The claim is re-established by running the gate on a Windows host, not by re-recording a digest
+over a tree nothing re-tested. That visit also carries the Windows gate host, and it confirms the demo's daemon claims survive a killed predecessor.
+
+#### Deliverables
+
+- The phase's declared gate is re-run in full on the hardware it declares.
+- A gate-evidence row records the date, the gate host, the command as run, and the result.
+- The row names which program ran where two share a name, and prefers an invocation against the tree over a separately installed one.
+- The covers digest is re-measured over this phase's own paths and recorded.
+- Every cell this hardware can produce is recorded in the same visit, so the machine is not owed a second one.
+
+#### Validation
+
+The phase's own gate, on its own hardware. Re-recording the digest without the run is the one thing
+this sprint may not do.
+
+#### Remaining Work
+
+The run is owed at the next visit to this hardware. It is taken once no other phase carries open
+work, because any earlier source change re-owes it.
+
 ## Remaining Work
 
-None. Sprint 27.4 records the current-source Windows matrix reporting `10/10 passed`, the terminal
-ownership and wall audit, and the matching covered-source measurement.
+The Windows and WSL2 acceptance is owed against the current tree. **Sprint 27.5** owns
+the re-run, at the next visit to the hardware this phase declares.
 
 ## Documentation Requirements
 

@@ -92,14 +92,48 @@ Poetry project (the `hostbootstrap` CLI distribution) is rooted at the repositor
 carries its own `demo/cabal.project`. The root also carries `docker/`, `documents/`, and
 `DEVELOPMENT_PLAN/` and no Cabal project file.
 
+## Working the development plan
+
+`DEVELOPMENT_PLAN/` is a work queue, not just a record. When asked to advance the project:
+
+1. Read the status table in [DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md). It is the sole
+   cross-phase status authority; no other document's prose overrides it.
+2. Take the **lowest-numbered `Active` phase**. Phase numbers are the dependency order, so a lower
+   phase never waits on a higher one.
+3. Inside it, work the sprints in order — the `Active` sprint first, then each `Planned` one. A sprint
+   is one working session: § G caps it at roughly 400 lines of production Haskell across at most three
+   source modules, and a sprint that outgrows that is split rather than stretched.
+4. Close a sprint by filling in its `#### Validation` with what actually ran, and setting its
+   `#### Remaining Work` to `None.`
+5. Close the phase by re-running **its own declared `**Gate**`** — not a convenient subset — and
+   recording a `**Gate evidence**` row. A deferred phase also re-measures the digest over its
+   `**Evidence covers**` paths. Then set the phase `Done` in both its header and the README table;
+   `checkPhaseStatusHarmony` fails if the two disagree.
+
+Two things that will bite otherwise:
+
+- **Editing any source file expires the completion evidence of every `Done` deferred phase whose
+  `**Evidence covers**` set contains it**, and `cabal test all` then fails through `DocValidatorSpec`.
+  That is the validator working, not a regression. The phase is reopened before the edit, not after.
+- The acceptance phases (Apple Silicon, NVIDIA, Windows/WSL2, host portability) close **last**, once no
+  other phase carries open work, because each covers the host-portable tree and any earlier change
+  re-owes their runs.
+
+[DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md](DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md)
+lists shapes still standing that the architecture does not want, each with the phase that deletes it.
+It schedules nothing on its own; the deleting phase's own sprints do that.
+
 ## Development commands
 
 ### Haskell core
 
 - `hostbootstrap-core` (under `core/hostbootstrap-core/`) is built and tested with Cabal against
   the pinned GHC, driven by `core/cabal.project`.
-- Build the library with `cabal build` (from `core/`).
-- Run the Haskell tests with `cabal test` (from `core/`).
+- Build the library with `cabal build all --ghc-options=-Werror` (from `core/`).
+- Run the Haskell tests with `cabal test all --ghc-options=-Werror` (from `core/`).
+- Run the worked consumer the same way from `demo/`. The `demo/` leg is part of the gate, not an extra.
+- `-Werror` is not optional. It is the spelling every phase closes on, so a run without it accepts
+  warnings the gate refuses and tells you nothing about whether your change closes anything.
 - The Haskell quality gate (formatter check, linter, type-correct build) runs through the project's
   canonical code-check.
 
@@ -123,11 +157,24 @@ carries its own `demo/cabal.project`. The root also carries `docker/`, `document
 
 ## Running tests on Windows
 
-The fast suites run foreground on every platform and need no special handling:
-`poetry run python -m hostbootstrap.test_all` and `cabal test` finish well within the tool timeout —
-run them foreground and iterate normally, on Windows as elsewhere.
+The fast suites run foreground on every platform and need no special handling. The **host static
+gate** is these four commands, and all four finish well within the tool timeout — run them foreground
+and iterate normally, on Windows as elsewhere:
 
-They are the **host static gate**, and they are expected to *pass* natively on Windows, not merely to
+```bash
+cd core && cabal test all --ghc-options=-Werror
+cd demo && cabal test all --ghc-options=-Werror
+poetry run python -m hostbootstrap.check_code
+poetry run python -m hostbootstrap.test_all
+```
+
+§ JJ of
+[DEVELOPMENT_PLAN/development_plan_standards.md](DEVELOPMENT_PLAN/development_plan_standards.md) is
+canonical for that list, and this file does not restate it in a second spelling. Dropping
+`check_code`, the `demo/` leg, or `-Werror` runs a strictly weaker gate than the one a phase closes
+on, and the difference is silent.
+
+The gate is expected to *pass* natively on Windows, not merely to
 run: the project binary is built host-native on every substrate, so its sources and suites are
 host-portable. A failure that turns out to be a POSIX-only fixture, a native path separator, or a
 locale-decoded source read is a defect in the suite rather than an expected platform limit. The gate
@@ -135,8 +182,9 @@ kinds and the rules the harness holds are canonical in
 [documents/engineering/testing.md](documents/engineering/testing.md), and each is owned by a phase in
 [DEVELOPMENT_PLAN/](DEVELOPMENT_PLAN/README.md).
 
-The **long demo gate** (`hostbootstrap run -- test run all` and `project up`, ~25–50 min) is different
-**on Windows only**. Launched as a naive `run_in_background` shell it is a descendant of `claude.exe`
+The **long demo gate** (the Python bootstrapper's `poetry run hostbootstrap run -- test run all` and
+`project up`) is different **on Windows only**. Budget hours, not minutes: the recorded runs are
+51 minutes on NVIDIA/Linux and 2 hours 57 minutes on Windows. Launched as a naive `run_in_background` shell it is a descendant of `claude.exe`
 and gets force-killed mid-run by the harness's own reaper (`taskkill /PID <pid> /T /F`). To run it
 durably on Windows:
 
@@ -167,8 +215,10 @@ versions; it is not required to replay a committed input lock.
   an opportunistic cache and misses may resolve and build normally.
 - Do **not** build the base locally and build derived projects against the un-republished local image —
   that hides the drift between the repo and Docker Hub.
-- The canonical command is `hostbootstrap base build-and-push --flavor <f> --arch <a>` (plain
-  single-arch `docker build` + `docker push`, host-native, no buildx). See
+- The canonical command is `poetry run hostbootstrap base build-and-push --flavor <f> --arch <a>`
+  (plain single-arch `docker build` + `docker push`, host-native, no buildx). `base` is a maintainer
+  command of the **Python bootstrapper**, gated to the repository Poetry environment; it is not
+  reachable from a pipx install. See
   [documents/engineering/base_image.md](documents/engineering/base_image.md) and
   [documents/engineering/build_release.md](documents/engineering/build_release.md).
 

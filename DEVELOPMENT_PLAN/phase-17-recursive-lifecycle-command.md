@@ -1,6 +1,6 @@
 # Phase 17 — The recursive lifecycle command
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 13 (authenticated handoff and rooted lifecycle protocol), Phase 16 (cluster lifecycle,
 budgets, and cordoning)
 **Substrates**: linux-cpu
@@ -2866,9 +2866,42 @@ the control behind the private component. Run `HarnessSpec` and the complete cor
 None. On 2026-08-24 the warning-clean build, command-level restart fixture, focused 45-case Harness gate, and
 complete 2,454/2,454 core host-static gate passed.
 
+### Sprint 17.58: The process route names its interactivity [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Process/Route.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/run_models.md`
+
+#### Objective
+
+The route's closed argument grammar distinguishes an interactive provider invocation from a
+noninteractive one, and the distinction travels as an unnamed boolean inside anonymous tuples through
+four construction sites. The doctrine spells the distinction out in prose precisely because it matters;
+in the code it is the second element of a triple. Alongside it, the path and argument validators return
+the same unmarked text they were given, so "this argument passed the grammar" is a property of calling
+order rather than of the value.
+
+#### Deliverables
+
+- Interactivity is a two-case type, named at every site that carries it.
+- The anonymous tuples threading it become named results.
+- A validated path and a validated argument are distinct from unvalidated text, so the closed grammar is a property of the value.
+- The argument-vector fixtures continue to pin the exact rendered vector per provider.
+
+#### Validation
+
+The host static gate. The route's argv rendering is pinned by an existing fixture; an unchanged
+rendering is the evidence that naming the distinction changed nothing about it.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
 ## Remaining Work
 
-None.
+The process route's interactivity is owed a name rather than a tuple position.
+**Sprint 17.58** owns it.
 
 ## Documentation Requirements
 

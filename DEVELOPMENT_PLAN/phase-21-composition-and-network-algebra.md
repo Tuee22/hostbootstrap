@@ -1,6 +1,6 @@
 # Phase 21 — Composition and network algebra
 
-**Status**: Done
+**Status**: Active
 **Current sprint**: None
 **Depends on**: Phase 16 (cluster lifecycle, budgets, and cordoning)
 **Substrates**: linux-cpu
@@ -178,9 +178,40 @@ and Cabal 3.16.1.0. Authenticated forwarding uses `foldLeaf` for both crossings;
 WSL argument checks, unsupported frame shapes, and the nonvacuous duplicate-renderer guard pass. The native
 macOS registry and finalized-plan checks also passed 42/42 in 20.08 seconds.
 
+### Sprint 21.4: A port is a value, and there is one of it [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Network.hs`, `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/network_reachability.md`
+
+#### Objective
+
+This phase owns the reachability algebra, where an endpoint is deliberately not interchangeable text.
+The port inside it is a bare integer, and the predicate that decides whether one is in range is
+defined twice with identical bodies in two modules — so the range is agreed by coincidence rather than
+by construction, and every consumer re-decides whether its integer was checked.
+
+#### Deliverables
+
+- A port is a value with a validating producer, in the module that owns the reachability vocabulary.
+- The range predicate has one definition; the copy is deleted.
+- Exposure, registry and dependency surfaces carry the value rather than a bare integer.
+- A case pins the refusal of an out-of-range port at the producer rather than at each consumer.
+
+#### Validation
+
+The host static gate; the registry and network suites cover the exposure paths.
+
+#### Remaining Work
+
+The vocabulary corrections to this phase's governed page are owned by the documentation
+reconciliation phase.
+
 ## Remaining Work
 
-None.
+A port is owed a type, and its range predicate one definition. **Sprint 21.4** owns
+both.
 
 ## Documentation Requirements
 

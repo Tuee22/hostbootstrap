@@ -1,6 +1,6 @@
 # Phase 1 — Python pre-binary floor
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 0 (governance and documentation standards)
 **Substrates**: linux-cpu
 **Gate**: `poetry run python -m hostbootstrap.check_code` and
@@ -140,6 +140,107 @@ Both commands pass from the repository root. Dated evidence: `235 passed` in 1.4
 #### Remaining Work
 
 None.
+
+### Sprint 1.5: One architecture value in the bootstrapper [Active]
+
+**Status**: Active
+**Implementation**: `hostbootstrap/substrate.py`, `hostbootstrap/base_image.py`, `hostbootstrap/docker_ops.py`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/python_haskell_boundary.md`
+
+#### Objective
+
+The bootstrapper already names substrates and image flavors with closed enumerations. Architecture is
+the third member of that vocabulary and is carried as a bare string, so every function that takes one
+accepts any string and re-derives validity, or does not. One `Arch` value makes the two supported
+architectures the only ones expressible, and makes the alias table a single mapping into it.
+
+#### Deliverables
+
+- `Arch` joins `SubstrateName` and `Flavor` as a closed enumeration in `hostbootstrap/substrate.py`.
+- `Substrate.arch` and every tag, reference, build-argument, and download-URL producer take `Arch`.
+- The alias table maps host machine strings into `Arch` once; the repeated membership test at the build-argument boundary is gone because its input is already narrowed.
+- `normalize_architecture` in `docker_ops.py` reads the same table rather than carrying its own copy, and the copy is deleted.
+- The mapping tables keyed by architecture are keyed by `Arch`, so a lookup cannot miss.
+- `stubs/` no longer appears as a check target: it holds no stubs, and its presence needs a comment in the check runner explaining why one tool must skip it.
+
+#### Validation
+
+The host static gate. `poetry run python -m hostbootstrap.check_code` type-checks the narrowed
+signatures under strict `mypy`, and `poetry run python -m coverage run -m hostbootstrap.test_all`
+holds the 100% line gate — which means the tests must exercise both architectures rather than the one
+the host happens to be.
+
+#### Remaining Work
+
+The subprocess vocabulary and the detection boundary are Sprint 1.6 and Sprint 1.7.
+
+### Sprint 1.6: One way to run a command in the bootstrapper [Planned]
+
+**Status**: Planned
+**Implementation**: `hostbootstrap/process.py`, `hostbootstrap/prereqs.py`, `hostbootstrap/self_update.py`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/python_haskell_boundary.md`
+
+#### Objective
+
+`process.py` is the bootstrapper's declared subprocess wrapper and only the Docker operations use it,
+because it offers an asynchronous interface and most callers are synchronous. The rest reach for
+`subprocess.run` directly, so the package carries four unrelated conventions for the same act: run a
+command, decide whether it failed, and say so in this module's own vocabulary. A synchronous sibling
+lets each caller keep its own error type and stop re-deriving the mechanics.
+
+#### Deliverables
+
+- `process.py` gains a synchronous probe that returns a result or reports that the command could not be executed at all, and a synchronous checked runner.
+- The prerequisite checks, substrate detection, and self-update paths call them and wrap one result into their own error type.
+- No module outside `process.py` imports `subprocess`.
+- The distinction between 'ran and failed' and 'could not be run' survives in the result rather than in which exception was caught.
+
+#### Validation
+
+The host static gate, with coverage still at 100%. The prerequisite and self-update suites already
+assert on the failure text each module produces; those assertions are the regression test that the
+error vocabulary did not change when the mechanics did.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
+### Sprint 1.7: The bootstrapper's detection is the one the binary uses [Planned]
+
+**Status**: Planned
+**Implementation**: `hostbootstrap/substrate.py`, `hostbootstrap/bootstrap.py`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/python_haskell_boundary.md`
+
+#### Objective
+
+Something must detect the host before the binary exists, and § M gives that job to the bootstrapper.
+What does not follow is that the binary should detect it again: the two implementations agree today
+down to their error strings, which is the shape a second implementation has right up until it drifts.
+The bootstrapper passes what it found to the binary it launches.
+
+#### Deliverables
+
+- The bootstrapper hands its detected substrate and architecture to the binary through the documented invocation-context seam.
+- The seam is typed and explicit, not an inherited environment value read opportunistically.
+- `documents/architecture/python_haskell_boundary.md` states which side detects and which side receives.
+
+#### Validation
+
+The host static gate. The consuming half is Sprint 3.10 and the two land together; until it does, the
+binary's own detection remains the fallback and nothing regresses.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
+## Remaining Work
+
+The bootstrapper's architecture vocabulary is owed. **Sprint 1.5** owns it: architecture
+is a closed value rather than a string, and the alias table has one home. Sprints 1.6 and 1.7 follow with
+the subprocess vocabulary and the detection boundary.
 
 ## Documentation Requirements
 

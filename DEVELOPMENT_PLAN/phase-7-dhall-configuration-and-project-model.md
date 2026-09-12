@@ -1,6 +1,6 @@
 # Phase 7 — Dhall configuration and the generic project model
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 6 (canonical quantities and reconcile results)
 **Substrates**: none (static)
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`, including the schema golden tests
@@ -357,6 +357,70 @@ passed 61/61 under `-Werror`, the two canonical-mount compile-fail cases passed 
 #### Remaining Work
 
 None.
+
+### Sprint 7.10: The role vocabulary is derived from the role type [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Context.hs`, `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/binary_context_config.md`
+
+#### Objective
+
+The role names a config may declare are listed twice: once as a total rendering over the role sum, and
+once as a literal list used for help text and for the refusal that enumerates valid roles. Adding a
+role breaks the first and silently leaves the second stale, so the new role would exist and be
+undiscoverable. One table, derived from the type.
+
+#### Deliverables
+
+- The role sum derives enumeration and bounds.
+- The name list is derived from the total renderer over every constructor.
+- The literal list is deleted, so help text and the refusal enumerate the same set the parser accepts.
+- A case asserts that the accepted set and the advertised set are the same set.
+
+#### Validation
+
+The host static gate.
+
+#### Remaining Work
+
+The existing-output policy is Sprint 7.11.
+
+### Sprint 7.11: One existing-output policy for config initialization [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/Class.hs`, `core/hostbootstrap-core/src/HostBootstrap/Command.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/generic_project_model.md`
+
+#### Objective
+
+Initialization carries two independent flags whose documented meanings contradict each other — one
+overwrites an existing output, the other makes an existing output a no-op — and the command surface
+accepts both at once. Core resolves the pair in one expression at one call site. The value is handed
+to each project's own builder, so a downstream project is free to resolve it differently, which makes
+the contradiction a property of the published surface rather than of one function.
+
+#### Deliverables
+
+- The pair becomes one policy value with a case per intended behaviour: refuse, overwrite, skip.
+- The command surface builds it from mutually exclusive options, so the contradictory combination has no spelling.
+- The resolution expression at the call site disappears, because the value already says which behaviour was asked for.
+
+#### Validation
+
+The host static gate; the command suite covers each policy and the refusal of the combination that no
+longer parses.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
+## Remaining Work
+
+The role vocabulary is owed as one derived table. **Sprint 7.10** owns it. Sprint 7.11
+follows with the existing-output policy.
 
 ## Documentation Requirements
 

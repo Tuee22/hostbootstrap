@@ -1,6 +1,6 @@
 # Phase 28 — Host-portability acceptance
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: none (static)
 **Gate**: the host static gate — `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/`,
@@ -335,11 +335,42 @@ than for an earlier draft of it.
 None. Every cell this sprint owns has current-source evidence. Any further host-portable source change
 expires all four and requires fresh coverage from each.
 
+### Sprint 28.5: The host-portability acceptance against the current tree [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: none
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+This phase's evidence covers the host-portable tree, so ordinary source change expires its claim —
+which § G names as the expected state for an acceptance phase between runs rather than as an unclosed
+phase. The claim is re-established by running the gate on each gate host family, not by re-recording a digest
+over a tree nothing re-tested. The four gate-host runs this phase records are produced by three visits; no fourth machine is required.
+
+#### Deliverables
+
+- The phase's declared gate is re-run in full on the hardware it declares.
+- A gate-evidence row records the date, the gate host, the command as run, and the result.
+- The row names which program ran where two share a name, and prefers an invocation against the tree over a separately installed one.
+- The covers digest is re-measured over this phase's own paths and recorded.
+- Every cell this hardware can produce is recorded in the same visit, so the machine is not owed a second one.
+
+#### Validation
+
+The phase's own gate, on its own hardware. Re-recording the digest without the run is the one thing
+this sprint may not do.
+
+#### Remaining Work
+
+The run is owed at the next visit to this hardware. It is taken once no other phase carries open
+work, because any earlier source change re-owes it.
+
 ## Remaining Work
 
-None. All four gate-host cells carry dated evidence against the current covered source, recorded by
-Sprint 28.4. The phase returns to `Active` on the next host-portable source change, which is § G's expected
-shape for a portability claim rather than a defect.
+The host-portability acceptance is owed against the current tree. **Sprint 28.5** owns
+the re-run, at the next visit to the hardware this phase declares.
 
 ## Documentation Requirements
 

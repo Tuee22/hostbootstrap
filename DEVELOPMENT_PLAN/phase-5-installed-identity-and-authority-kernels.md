@@ -1,6 +1,6 @@
 # Phase 5 — Installed identity, operator verification, and authority kernels
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 4 (protected store)
 **Substrates**: none (static)
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`, including the compile-fail fixtures,
@@ -287,9 +287,131 @@ the remaining families belongs to the
 
 None.
 
+### Sprint 5.9: The identity decision reads the role it parsed [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/binary_context_config.md`
+
+#### Objective
+
+Writing the root config at the binary's own sibling path is what provisions the installed handoff and
+build identities. That decision is currently taken by comparing the raw `--role` text against one
+spelling, while the same function has already parsed that text into a role value — and the parser
+accepts aliases and normalises case and separators. So a config written under an accepted alias is
+byte-identical to one written under the canonical spelling and provisions nothing, with no error. The
+parsed value is the one the decision is about.
+
+#### Deliverables
+
+- The initializer's default-role parameter is the parsed role kind, not its rendered text.
+- The provisioning guard compares parsed role kinds.
+- The parser default and help text render that value rather than carrying a second literal.
+- Cases cover an accepted alias and a case- and separator-normalised spelling, each asserting that identity is provisioned — the assertions that would have caught this, and whose absence is why it stood.
+
+#### Validation
+
+The host static gate; the command suite is where the new cases land.
+
+#### Remaining Work
+
+The fixture diagnostics, the testing seam, and the coordinate pilot are Sprints 5.10 to 5.12.
+
+### Sprint 5.10: Every registered fixture pins the diagnostic it expects [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/test/CompileFailSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/unrepresentable_state.md`
+
+#### Objective
+
+§ HH requires a compile-fail fixture to fail *for its named reason*, because a fixture that merely
+fails to compile is satisfied by a typo. Forty-four registered fixtures pin no diagnostic at all, and
+two of those are the ones the architecture page cites as the proof for its readiness and capability
+boundaries — so the weakest fixtures are carrying the most confident prose.
+
+#### Deliverables
+
+- Each fixture that pins nothing gains one contiguous expected phrase, read from the diagnostic it actually produces.
+- The capability and readiness fixtures the boundary table cites are done first.
+- Expectations split across separately-matched fragments are re-joined into one phrase, because fragments can be satisfied independently by an unrelated error on the same line.
+- Any fixture found to fail for a reason other than the one it is registered under is reported rather than re-pinned to whatever it happened to say.
+
+#### Validation
+
+The host static gate. The compile-fail suite is the subject and the long pole.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
+### Sprint 5.11: The session testing seam leaves the public surface [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session/Testing.hs`, `core/hostbootstrap-core/hostbootstrap-core.cabal`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/unrepresentable_state.md`
+
+#### Objective
+
+The comparable direct-provider testing seam is described as private precisely so downstream code
+cannot use it to mint a value in the sealed column. This one is an exposed module, and it renders
+coordinator bytes for the durable store. The types it exposes mint no authority; the bytes it produces
+are another matter, and no fixture asserts that a consumer cannot reach them.
+
+#### Deliverables
+
+- The module moves into a private sublibrary, the pattern the package already uses five times.
+- A compile-fail fixture pins that a downstream consumer cannot import it.
+- The suites that legitimately use it depend on the private sublibrary directly.
+
+#### Validation
+
+The host static gate, plus the new fixture.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
+### Sprint 5.12: Coordinate types at the prepared-gate boundary [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Prepared/Internal.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/unrepresentable_state.md`
+
+#### Objective
+
+§ HH now states that a coordinate carried across a sealed boundary is a type. The prepared gate is the
+smallest complete instance and the one the architecture page leads with: its producer takes three text
+coordinates then three numeric ones, and the canonical renderer beside it has the same shape, so
+transposing two of them is invisible from mint to wire. This sprint is the pilot — one boundary, done
+fully, so the cost of the remaining ones can be judged from something real rather than estimated.
+
+#### Deliverables
+
+- Each coordinate role at this boundary gets a newtype: the plan digest, the operation key, the session, the fence, the attempt, and the journal version.
+- The producer and the canonical renderer both take them, so the two cannot disagree about order.
+- No runtime representation changes and no durable bytes change; this is an argument-order proof, not a format change.
+- The sprint reports what the change cost, so the remaining boundaries are a decision with evidence behind it.
+
+#### Validation
+
+The host static gate. Existing cases pin the canonical bytes, so an unchanged rendering is the
+evidence that the newtypes are a compile-time property only.
+
+#### Remaining Work
+
+The remaining sealed producers are not in this sprint's scope and are not scheduled until this one
+reports.
+
 ## Remaining Work
 
-None.
+The installed-identity decision is owed against the parsed role rather than raw text.
+**Sprint 5.9** owns it. Sprints 5.10 to 5.12 follow with fixture diagnostics, the testing seam, and the
+coordinate-type pilot.
 
 ## Documentation Requirements
 

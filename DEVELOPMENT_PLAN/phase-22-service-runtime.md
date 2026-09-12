@@ -1,6 +1,6 @@
 # Phase 22 — Service runtime
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 20 (`test` and `context` command semantics), Phase 21 (composition and network algebra)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus a live `service run` on linux-cpu
@@ -298,31 +298,40 @@ the current tree.
 
 None.
 
+### Sprint 22.5: The service-runtime gate records both its legs [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+This phase's gate is a composition: the static suite *and* a live service run on a realized
+`linux-cpu` host. Its evidence records a focused pattern from the first half. A row that names the
+cheaper leg claims something narrower than the gate, and the check that would catch that does not exist
+yet — § G now states the rule, so the row is brought up to it.
+
+#### Deliverables
+
+- The declared gate is re-run in full, both legs.
+- The evidence row names each leg, the gate host, and the command as run, rather than a focused subset of one.
+- The covers digest is re-measured over this phase's own paths and recorded.
+- Where the gate genuinely closes in two sittings, the row says so with two entries.
+
+#### Validation
+
+The phase's own gate, both legs.
+
+#### Remaining Work
+
+The dead service-entry-point names in this phase's governed pages are owned by the documentation
+reconciliation phase.
+
 ## Remaining Work
 
-None.
-
-## Validation Record
-
-- 2026-08-22, linux-cpu: `ActivationSpec` passed all 35 focused cases under `-Werror`.
-- 2026-08-22, linux-cpu: the live `CLISpec` `service run` case verified the measured executable and signed
-  activation, traversed the role engine, ran only the signed accelerator program, and exited cleanly.
-- 2026-08-22, linux-cpu: `cabal test all --ghc-options=-Werror` passed all 2,383 tests in 148.19 seconds,
-  including compile-fail boundaries and `DocValidatorSpec`.
-- 2026-08-24, linux-cpu: focused `ActivationSpec` passed 35/35 under `-Werror`; its signed runtime case proves
-  Serve can enter the same protected store after admission releases the global transaction lock.
-- 2026-08-24, Ubuntu 24.04 linux-cpu/x86_64: `cabal test all --ghc-options=-Werror` passed all 2,454 core
-  tests in 148.82 seconds. A fresh Incus-backed Production run installed distinct signed revisions for web
-  (`cluster-service-3`) and accelerator (`daemon-3`); both deployments reached `1/1 Running` concurrently.
-  Process inspection showed each `service run` holding only its own role-generation lease, while no process
-  held the authority store's global `store.lock` during Serve.
-
-- 2026-09-05, Linux x86_64, GHC 9.12.4 and Cabal 3.16.1.0: the complete gate passed
-  2,493/2,493 in 145.95 seconds. The live `CLISpec` case entered the actual `service run` command,
-  measured its executable, verified the signed installed activation, and dispatched only the selected
-  accelerator program. `IOServiceHandler.hs` rejects an unrestricted IO handler; the registry ownership
-  guard rejects unbounded constructors and selectors. The native macOS focused checks passed 110/110
-  in 6.33 seconds.
+This phase's gate evidence is owed a row that records the live leg its gate names, not
+only the static one. **Sprint 22.5** owns the re-run.
 
 ## Documentation Requirements
 

@@ -156,6 +156,11 @@ Rules:
 If a governed document grows past roughly 300 lines, ask whether it should split. Two focused
 documents are easier to skim than one combined one.
 
+This one is **advisory and deliberately unchecked**. Several governed documents are legitimately longer
+than the guideline because their subject is a single contract that does not decompose, and a mechanical
+limit would report those every run — a check that flags what it cannot fix trains a reader to ignore
+it. Ask the question; do not expect the validator to ask it for you.
+
 ## Update Rules
 
 - when the `hostbootstrap-core` library surface (host-tool resolution, `ensure` reconcilers,
@@ -214,9 +219,8 @@ not enforce literal backlink reciprocity: this field is curated conceptual-consu
 complete graph. Remove an entry when the named document no longer consumes the contract conceptually;
 do not manufacture a reciprocal prose link solely to satisfy metadata.
 
-The individual checks (`checkGovernedMeta`, `checkRootDoc`, `checkRootDocPresent`,
-`checkBroadDoctrine`, `checkDocRequirements`, `checkLinks`, `checkReadmeRefs`, `checkNaming`,
-`checkTaxonomy`) are exported
+The individual checks (`checkGovernedMeta`, `checkRootDoc`, `checkBroadDoctrine`,
+`checkDocRequirements`, `checkLinks`, `checkReadmeRefs`, `checkNaming`, `checkTaxonomy`) are exported
 from `HostBootstrap.DocValidator` so the same mechanical floor can be reused across the project
 family. The plan-doctrine checks (`checkPhaseNumbering`, `checkPhaseHeader`, `checkPhaseStatusHarmony`,
 `checkPhaseOrdering`, `checkRemainingWorkOrdering`, `checkNoReversal`, `checkSprintStructure`,
@@ -248,7 +252,33 @@ governed document drifts from the rules above. That command is the test leg, not
 quality gate: the canonical code-check also runs the formatter check, linter, and a warnings-as-errors
 build.
 
-The [documentation reconciliation phase](../DEVELOPMENT_PLAN/phase-29-documentation-reconciliation.md)
-extends the validator with architecture absence guards and phase-name citation checks over governed documents
-and production source. Each architecture refusal names the constructive phase to rewrite and its rationale;
-negative fixtures prove the checks detect removed authority modules and unrestricted service handlers.
+### Rules the validator grows to enforce
+
+Each rule below is normative now and mechanical when its check lands. The
+[documentation reconciliation phase](../DEVELOPMENT_PLAN/phase-29-documentation-reconciliation.md) owns
+the implementations, one check per sprint, each with the negative fixture this section already requires.
+
+- **A backticked identifier in governed prose names something that exists.** A module, type, function,
+  constructor or CLI flag written in backticks resolves against the tree. This is the rule with the
+  widest reach: a canonical contract page can otherwise describe a vocabulary the compiler has never
+  seen, and every other check here will pass while it does. Prose that names a type abstractly is
+  legitimate — [the plan standard](../DEVELOPMENT_PLAN/development_plan_standards.md) says so about its
+  own shortened names — so the check carries an explicit reviewed allowlist rather than a silent skip.
+- **A root document does not contradict the plan's status table.** `README.md`, `AGENTS.md` and
+  `CLAUDE.md` may summarize status and must not restate it; where they do make a claim, it agrees with
+  [the plan index](../DEVELOPMENT_PLAN/README.md).
+- **`AGENTS.md` and `CLAUDE.md` agree.** The two are one document with two audiences. They differ only
+  in the words naming that audience.
+- **A relative link resolves including its anchor.** A `#section-name` fragment names a heading the
+  target actually has.
+- **A phase header carries no field § G does not declare.** An undeclared field is a convention one
+  phase invented and the others do not share.
+- **The architecture-drift guard reads the test tree as well as the source tree.** A rule about how
+  source may cite a phase applies to the suites too, or it is a rule about where the check looks.
+
+### Prior extensions
+
+The reconciliation phase also carries architecture absence guards and phase-name citation checks over
+governed documents and production source. Each architecture refusal names the constructive phase to
+rewrite and its rationale; negative fixtures prove the checks detect removed authority modules and
+unrestricted service handlers.

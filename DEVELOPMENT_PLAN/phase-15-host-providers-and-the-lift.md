@@ -1,6 +1,6 @@
 # Phase 15 — Host providers and the self-reference lift
 
-**Status**: Done
+**Status**: Active
 **Current sprint**: None — phase complete
 **Depends on**: Phase 8 (ensure reconcilers), Phase 12 (step algebra and plan-owned resource
 projections), Phase 13 (authenticated handoff and the frame-child entry), Phase 14 (the four ownership
@@ -1659,9 +1659,70 @@ residue checks.
 
 None.
 
+### Sprint 15.38: One guest-VM backend row [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/lima.md`, `documents/engineering/wsl2.md`
+
+#### Objective
+
+§ LL says the substrate axis is a lift, not a fork: adding a provider adds a row, not a branch. Two of
+the backend constructors are the same function written twice — identical guard sequence, identical
+shape, identical failure construction — differing in a host guard, a provider kind, a tool, and four
+labels. They are so nearly the same that both already construct the same backend specification value,
+which is the two substrates agreeing in code that they are one realization while the module spells them
+apart.
+
+#### Deliverables
+
+- A guest-VM backend constructor takes the host guard, provider kind, tool and label as parameters.
+- The Lima and WSL2 constructors become applications of it.
+- The invalid-input and tool-requirement helpers that all four backend constructors redefine are hoisted to one definition parameterised by label.
+- Adding a guest-VM provider is a new application, not a new copy.
+
+#### Validation
+
+The host static gate. The provider backend suite pins each constructor's guards and refusals; unchanged
+refusals are the evidence that the shared row is the same row.
+
+#### Remaining Work
+
+The coordinate opener is Sprint 15.39.
+
+### Sprint 15.39: One runtime-dependency coordinate opener [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Four coordinate checkers in this module are two pairs, each pair identical apart from one domain
+literal. The module already demonstrates the fix two lines above them: the package openers beside these
+share a parameterised implementation. The checkers were simply not given the same treatment, and the
+cost is that a new requirement added to one does not apply to its twin.
+
+#### Deliverables
+
+- The coordinate and carried-coordinate checks are parameterised by domain, beside the package opener that already is.
+- The four public names become applications of the two implementations.
+- A requirement added once applies to every domain.
+
+#### Validation
+
+The host static gate; the dependency suite covers each domain's refusals.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
 ## Remaining Work
 
-None.
+The guest-VM backends are owed one row rather than two copies. **Sprint 15.38** owns it.
+Sprint 15.39 follows with the shared coordinate opener.
 
 ## Documentation Requirements
 

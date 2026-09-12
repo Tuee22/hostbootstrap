@@ -1,6 +1,6 @@
 # Phase 19 — Test harness and exclusive run ownership
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 18 (recovery and migration)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus on a realized linux-cpu host
@@ -338,9 +338,38 @@ writing to it.
 
 None.
 
+### Sprint 19.8: The run-ownership gate against the current tree [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+This phase's evidence covers the harness modules and the run-ownership internals. The shared record
+tape reaches two of them, so the covered tree changes and the phase's claim expires with it. The claim
+is re-established by re-running the gate, not by assuming the change was harmless.
+
+#### Deliverables
+
+- The phase's declared gate is re-run in full — the static suite and the realized `linux-cpu` leg, not one of the two.
+- A gate-evidence row records both legs, the gate host, and the command as run.
+- The covers digest is re-measured over this phase's own paths and recorded.
+
+#### Validation
+
+The phase's own gate, both legs. Re-recording the digest without re-running is the one thing this
+sprint may not do.
+
+#### Remaining Work
+
+The run is owed once the record tape reaches the harness owners.
+
 ## Remaining Work
 
-None.
+The run-ownership gate is owed against the current tree, because the harness owners'
+record publication changes beneath it. **Sprint 19.8** owns the re-run.
 
 ## Documentation Requirements
 
